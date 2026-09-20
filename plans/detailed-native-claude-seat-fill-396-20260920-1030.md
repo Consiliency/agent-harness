@@ -1,234 +1,102 @@
-# Detailed plan: native-first claude seat under Claude Code, machine-decided, counted by governed loops (agent-harness#396, agent-harness#636)
+# Detailed plan: REVIEWTRUTH early slice — native claude seat under Claude Code, counted (EC-REVIEWTRUTH-14; EC-REVIEWTRUTH-1/-4 classification)
 
-- status: proposed (r2 — amended after board round 1: gemini AGREE, codex DISAGREE, claude PARTIALLY AGREE, grok PARTIALLY AGREE)
-- refs: Consiliency/agent-harness#396, Consiliency/agent-harness#636, Consiliency/agent-harness#906 (the train-review consumer), Consiliency/agent-harness#914 (landed gate this extends)
-- execute: effort=high, reason=review-seat routing touches the HARDEN launch boundary and a floor that gates merges
+- status: proposed (r3 — reframed under the maintainer's 2026-09-20 ratification of an EARLY REVIEWTRUTH slice; folds board rounds 1–2 of agent-harness#918)
+- authority: v10 Phase 7 REVIEWTRUTH (`specs/phase-plans-v10.md`), lane plan `plans/phase-plan-v10-REVIEWTRUTH.md` (status committed). This slice executes AHEAD of the phase's recorded SCHED/HARDEN ordering gates under a maintainer waiver scoped to this slice only (recorded on Consiliency/agent-harness#396, 2026-09-20). The rest of REVIEWTRUTH stays behind its gates.
+- refs: Consiliency/agent-harness#396, #636, #906 (consumer: the train review of #914 runs 3 of 4 seats under Claude Code), #918 (this plan's PR)
+- execute: effort=high, reason=review-seat routing at the HARDEN launch boundary; a floor that gates merges; the phase's live assumption probe
 
 ## Task
 
-The maintainer's standing ruling (recorded on agent-harness#396 and #636, restated 2026-09-20): a harness
-fills its native models' seats through its own native sub-agent capability; TUI/CLI adapters serve only
-non-native hosts. Under Claude Code the claude seat must therefore be filled by the driving session's native
-sub-agent and COUNT toward the reviewer floor. Today the runtime encodes the inversion in three coordinated
-places, so every in-session board and the new train review run 3 of 4 seats with the claude seat reported as
-`UNAVAILABLE/tui_adapter_required` and no fill request:
+Deliver the roadmap goals below (referenced, not restated) as one bounded slice:
 
-1. `panel_invoker.native_agent_leg_request` raises for TUI-policy models (`claude-fable-*`, `claude-opus-*`),
-   which are the ONLY default claude seat models, so the deferred seat never carries a `NativeAgentLegRequest`
-   (`invoke_board` skips `attach_native_agent_request` when `_claude_tui_policy_model(seat.model)`).
-2. `_exec_claude_tui_leg` defers under Claude Code with the typed detail `tui_adapter_required`, whose prose
-   asserts the opposite route.
-3. The claude skill prose (`claude-advisor-board/SKILL.md` around lines 115 and 139) says "Never fill the
-   seat with a native Task Agent" and "expect … no native-fill request".
+- **EC-REVIEWTRUTH-14** — the native fill for the TUI-policy claude/fable seat under Claude Code, counted only once the verdict is bound back into the board result.
+- **EC-REVIEWTRUTH-4** — a board driven inside Claude Code resolves to FULL / FLOOR-ONLY / BELOW-FLOOR; a silent 3-of-4 reported as FULL is impossible.
+- **EC-REVIEWTRUTH-1 (partial)** — the three-state classifier itself, used on the native-fill path; wiring it into every governed gate stays with SL-3/SL-5.
 
-And even where a request IS surfaced (non-TUI-policy models, `advisor-board --json`), nothing lets the
-driving session's fill be handed BACK so it counts: `PanelResult.usable_legs` sees only runtime-spawned
-legs, and `run_governed_premerge_loop` / `governed_board_gate` / `run_train --review-only` have no input
-for a supplied leg. The seat is fillable in prose only (agent-harness#636's complaint).
+Today (all verified against `main`): `native_agent_leg_request` raises for TUI-policy models, so the default fable seat carries no request; both `invoke_board` deferral paths emit `tui_adapter_required`; the claude skill prose forbids the native fill; nothing lets a driving session hand a fill back; and the phase's live probe cannot reach its `resolved` arm because the LEGIBLE adapter never emits the fields that arm requires.
 
-Non-native hosts (codex, gemini, opencode) keep the self-PTY TUI adapter route unchanged.
+Non-native hosts keep the self-PTY adapter route, byte-neutral.
 
-## Research summary
+## Lane ownership (from the phase plan; this slice touches only these)
 
-- `panel_invoker.py`: `_under_claude_code` (CLAUDECODE=1 / CLAUDE_CODE_ENTRYPOINT), `_claude_leg_deferred_reason`
-  (`under_claude_code` vs `native_adapter_required`), `NativeAgentLegRequest` + `native_agent_leg_request`
-  (pure builder; raises for TUI-policy models), `attach_native_agent_request` / `PanelLegResult.needs_native_agent`
-  / `PanelResult.native_fill_requests` (ABDNATIVE #183 companion, live caller in `invoke_board`),
-  `_TYPED_UNAVAILABLE_DETAILS` (`subscription_auth_unproven`, `tui_adapter_required`, `tui_backing_required`),
-  `_exec_claude_tui_leg` (defers under Claude Code), the HARDEN review-mode gate (`native_host_deferral_only`,
-  `exact_broker_routes`, factory + revalidation) which is reached BEFORE any deferral result is built.
-- `cli.py`: `_native_agent_request_json` and the `advisor-board --json` payload's `needs_native_agent`.
-- `governed_review.governed_board_gate` (agent-harness#914) and `governed_premerge.run_governed_premerge_loop`
-  (forwards a fixed kwarg set to `invoke`); `train_runner.run_train(review_only=True)`; `_default_train_review`.
-- `roadmap_assumptions.py` reads `seat_result == "UNAVAILABLE/tui_adapter_required"` (a consumer of the token).
-- The train bundle and an `advisor-board` artifact are deterministic BEFORE any seat is spent, so a fill can be
-  produced first and supplied to a single invocation: no re-spend, no leg caching, no in-run mailbox.
+| file | lane |
+|---|---|
+| `panel_invoker.py`, `advisor_board/composition.py` | SL-2 |
+| `governed_review.py` | SL-3 |
+| `governed_premerge.py`, `cli.py`, `train_runner.py` | SL-5 |
+| `legible_evidence.py` (the probe adapter) | LEGIBLE (carried under the same waiver; classifier untouched) |
 
-## Decisions for the board
+`IF-0-REVIEWTRUTH-1` (the `PanelLegOutcome` vocabulary and `reviewed_seat_count`) remains SL-2's to publish; this slice does NOT mint a parallel outcome vocabulary — a fill is expressed through today's `status`/`detail` (`detail="native_fill"`) and the three-state classifier reads `usable` legs, so SL-2's later freeze maps onto it without rework.
 
-- **D1 Routing (fixes the inversion).** Under Claude Code the claude seat — every claude model, TUI-policy
-  included — defers with typed detail `under_claude_code` AND carries a `NativeAgentLegRequest`.
-  `native_agent_leg_request` raises for TUI-policy models only when NOT under Claude Code (there the adapter is
-  the route). `under_claude_code` joins `_TYPED_UNAVAILABLE_DETAILS`; `tui_adapter_required` is no longer emitted
-  under Claude Code (it remains the token for a host where the adapter genuinely cannot run). Both deferral
-  paths change (r2, gemini C / codex C): the per-seat matrix AND the early `native_host_deferral_only and spawn
-  is None` return in `invoke_board`, which today independently emits `tui_adapter_required` and skips the
-  request for TUI-policy models; `tui_backing_required` stays a refusal on both paths. The HARDEN review-mode
-  gate, factory and revalidation are untouched and still run before either deferral result is built.
-  Consumer with semantics (r2, claude 8 overrides the first draft): `roadmap_assumptions.
-  _classify_reviewtruth_transition` is the LEGIBLE roadmap's live probe for THIS transition
-  (`legible_evidence._observe_reviewtruth_fable_transition` captures the observation) — `pending` requires
-  `seat_result == "UNAVAILABLE/tui_adapter_required"` with `native_fill_request is False`; `resolved`
-  requires the issue CLOSED with `native_fill_request is True`, `verdict_bound is True`, `seat_count ==
-  "FULL"`. The probe is the instrument this fix is graded by, so it is NOT loosened: neither arm changes.
-  Instead the transition is sequenced so the probe never observes a mixed state — the routing flip (token +
-  request attach on both paths) lands in the SAME PR that closes agent-harness#396 and #636, after which the
-  `resolved` arm is what a live observation satisfies. Tests pinning the old token
-  (`test_panel_native_fill_183.py` — which today calls the inversion "load-bearing SECURITY" at ~:386-394 —
-  `test_legible_roadmap_contract.py`, `test_legible_review_repairs.py`, `test_legible_evidence.py`,
-  `test_govlean_roadmap_reseal.py`, `test_panel_invoker_spawn.py`) are updated for the Claude Code case only;
-  non-native expectations unchanged. Below-minimum support (claude, non-blocking): the claude-only-board
-  `_claude_code_support_status` branch in `invoke_board` returns `UNAVAILABLE` with the support detail and
-  no request — under Claude Code that is a genuine "no claude here", left as is, but it must NOT be
-  confused with a deferral: the fill ingestion refuses it (`native_fill_seat_not_deferred`).
-- **D2 Supplied fill (makes it count).** A frozen `NativeLegFill(seat_key, leg="claude", model, text,
-  artifact_sha256, brief_sha256, filled_by, filled_at)` supplied to `invoke_board(native_leg_fills=…)`. For a
-  seat deferred under Claude Code whose fill matches the staged artifact digest AND the effective brief digest,
-  the leg result is built from the fill: status from the terminal-verdict contract (OK if conforming, else
-  DEGRADED), `text` = fill text, `detail="native_fill"`, provenance attached as metadata (never a schema field).
-  Fill ingestion contract (r2, codex A/E, gemini E, grok A): the fill is applied ONLY to a seat whose runtime
-  result is `UNAVAILABLE` with detail exactly `under_claude_code` AND carries `needs_native_agent` (an empty `UNAVAILABLE` from `tui_backing_required`
-  or an authentication refusal is NOT fillable); `seat_key` AND `model` must match the emitted request; a
-  second fill for the same seat, or a fill for a seat that produced a runtime result, is refused
-  (`native_fill_duplicate_seat` / `native_fill_seat_not_deferred`) — a fill never replaces a runtime leg and
-  each seat counts once; digest mismatch is `native_fill_digest_mismatch`. Status is derived from the
-  terminal-verdict contract: OK only when the LAST non-empty line is a conforming verdict, else DEGRADED
-  (a fill without a verdict never counts as usable). All refusals are typed, never silent, never a spawn,
-  never authority. Application point (r2, claude 4): fills are applied to the collected leg results
-  IMMEDIATELY after every seat has returned and BEFORE `president_findings_from_legs` / `invoke_president`
-  and before `PanelResult` is assembled, on both deferral paths — the president rules on the same legs
-  `usable_legs` counts; a fill can never leave "3 ruled on, 4 usable". Fabrication limit stated out loud
-  (claude 5): the binding defeats SUBSTITUTION (another bundle, another brief, a seat the runtime ran, a seat
-  dropped by author exclusion) but does not prove a model produced the text; provenance is a first-party
-  assertion recorded as metadata, not cryptographic evidence. `usable_legs` then counts the seat.
-- **D3 Emit-then-fill protocol (machine-decided, agent-harness#636).** `advisor-board --emit-native-request`
-  and `run-train --governed --review-only --emit-native-request` compose the board, stage the exact artifact,
-  and write `<out>/native-fill/request.json` (the `NativeAgentLegRequest` + `artifact_sha256` + `brief_sha256`
-  + the staged artifact path) WITHOUT spending any seat; the driving session runs its native sub-agent with the
-  request's instructions and writes `<out>/native-fill/claude.md`; the same command with
-  `--native-leg claude=<file>` runs the other seats and counts the fill (D2). `governed_board_gate` and
-  `run_governed_premerge_loop` forward `native_leg_fills`.
-  Envelope (r2, codex B — the blocking gap): the emit step writes `request.json` (request_id, seat_key, model,
-  lens, effort, artifact_sha256, brief_sha256, `artifact_path`, `instructions_path`, board composition) AND
-  stages the exact bundle bytes at `artifact_path` (gemini B). The driving session writes the review text to
-  `claude.md` next to it. `--native-leg claude=<dir-or-request.json>` loads the PAIR: `load_native_leg_fill`
-  takes every digest from the EMITTED request.json, never from the current invocation. Invocation then
-  compares the emitted binding against the actually staged artifact, the resolved instructions and the
-  composed seat (seat_key/model), and refuses stale input (`native_fill_stale_request`) BEFORE any other
-  seat is spent. Digests are always over CONTENT (staged artifact bytes, resolved brief text), never over
-  `artifact_ref` / `brief_ref` paths (grok E). The emit arm never calls today's invoking gate (grok B):
-  `governed_board_gate(emit_native_request=True)` performs the same composition, author exclusion, floor
-  and staging the invoke arm will redo, builds the request with `native_fill_request_payload`, and returns
-  WITHOUT minting an authorization or calling `invoke_board`. Bytes (r2, claude 3): every digest in this plan is over the READ-BACK staged text (write,
-  then `read_text`, exactly as `governed_board_gate` mints since agent-harness#914), never the in-memory
-  string, so universal-newline normalisation cannot diverge emit from invoke; the emit arm persists the
-  artifact and request under `<out>/native-fill/<request_id>/` (advisor-board: `--native-fill-dir`, default
-  next to the artifact; run-train: `<ledger-dir>/native-fill/<request_id>/`), NOT in the gate's scratch,
-  which is removed in its `finally`. For `run-train`, whose bundle comes from a LIVE PR/workspace read
-  (`train_runner` Step 3 + the review-only guards), the invoke step rebuilds the bundle from the CURRENT
-  ledger and admitted heads, read-back-normalises it, and compares it to the emitted artifact: a train that
-  moved between the two commands is refused (`native_fill_stale_request`) before any seat is spent, so a
-  frozen artifact can never approve a state it no longer represents. The determinism claim is therefore
-  "identical inputs give identical bytes", enforced by comparison, not assumed. Alternative considered and rejected: an in-run
-  mailbox the runtime polls while other seats run — it couples the HARDEN leg lifetime to the driving session's
-  reaction time and needs a background launch plus a watcher; the two-phase protocol has no timing.
-- **D4 Prose in lockstep.** The claude-* skills that carry seat prose — `claude-advisor-board`,
-  `claude-plan-phase`, `claude-execute-phase` (their governed-review paragraphs) and `claude-run-train`
-  (the review-only protocol) — state the native-fill protocol. The non-native skills (codex/gemini/opencode
-  advisor-board) keep their ROUTE prose unchanged (the self-PTY adapter is their route) but their DESCRIPTION
-  of Claude Code ("inside Claude Code … no native-fill request", codex-advisor-board ~:131 and the gemini/
-  opencode item 7) is corrected in the same PR (claude 10): a description the change makes false is not
-  "unchanged prose".
-  `roadmap_assumptions` recognises `under_claude_code` where it recognised `tui_adapter_required`.
-- **D5 Non-native hosts unchanged.** `_exec_claude_tui_leg` outside Claude Code, `native_adapter_required`,
-  the self-PTY trust gate, subscription scrubbing: byte-neutral. No `claude -p`, no SDK, no API key route
-  (the fill is DATA from the first-party session, not a launch).
+## Decisions (D1–D6; rounds 1–2 folded)
+
+- **D1 Routing.** Under Claude Code the claude seat — every claude model, TUI-policy included — defers `UNAVAILABLE` with typed detail `under_claude_code` AND carries a `NativeAgentLegRequest`; `native_agent_leg_request` raises for TUI-policy models only when NOT under Claude Code. `under_claude_code` joins `_TYPED_UNAVAILABLE_DETAILS`. BOTH deferral paths change: the per-seat matrix AND the early `native_host_deferral_only and spawn is None` return in `invoke_board`; `tui_backing_required` stays a refusal on both. Outside Claude Code nothing changes (`native_adapter_required` affordance, self-PTY trust gate, scrubbing). No `claude -p`, SDK, API key or alternate endpoint anywhere: a fill is DATA from the first-party session, not a launch. The HARDEN review-mode gate, factory and revalidation run unchanged before either deferral result is built.
+- **D2 Fill ingestion contract.** `NativeLegFill(seat_key, model, text, artifact_sha256, brief_sha256, composition_sha256, request_id, filled_by, filled_at)`, loaded ONLY from an emitted `request.json` + `claude.md` pair (digests from the EMITTED request, never from the current invocation). Eligible target: a seat whose runtime result is `UNAVAILABLE/under_claude_code` carrying `needs_native_agent`, matched by `seat_key` and `model`; once per seat; never replaces a runtime result; `tui_backing_required` / support-missing / authentication `UNAVAILABLE`s are NOT fillable. Status from the terminal-verdict contract: OK only when the LAST non-empty line is a conforming verdict, else DEGRADED (never usable). Provenance attached as metadata (never a schema field); the binding defeats SUBSTITUTION (another bundle, brief, composition, a seat the runtime ran, a seat dropped by author exclusion) and does not prove a model produced the text.
+  **Refusal timing (codex r2-3):** `preflight_native_leg_fills` runs BEFORE any reviewer launch and refuses — typed, zero launches — duplicates (`native_fill_duplicate_seat`), ineligible seats (`native_fill_seat_not_deferred`: routing would not defer this seat here), digest mismatch (`native_fill_digest_mismatch`, artifact and brief checked separately), composition drift (`native_fill_composition_drift`), and stale requests (`native_fill_stale_request`). `apply_native_leg_fills` then attaches accepted fills to the collected results IMMEDIATELY after every seat has returned and BEFORE `president_findings_from_legs` / `invoke_president` / `PanelResult` assembly, on both paths; the early deferral path no longer returns early once fills exist — it builds its results and joins the common tail (claude r2-B), so the president rules on exactly the legs `usable_legs` counts.
+- **D3 Emit → fill → invoke protocol.** `advisor-board --emit-native-request [--native-fill-dir <dir>]` and `run-train --governed --review-only --emit-native-request` perform the same composition, author exclusion, floor and staging the invoke arm will redo, then write `<dir>/native-fill/<request_id>/{request.json, artifact.md, instructions.md}` and return WITHOUT minting an authorization or calling `invoke_board` (`governed_board_gate(emit_native_request=True)` for the train). `request.json` carries request_id, seat_key, model, lens, effort, `artifact_sha256`, `brief_sha256`, `composition_sha256` (over the sorted seat_keys of the composed board), and the paths. The driving session writes `claude.md` beside it. `--native-leg claude=<dir-or-request.json>` loads the pair and runs the invoke arm. All digests are over CONTENT read back from disk (write, then `read_text`, as `governed_board_gate` mints since #914), never over paths; artifacts persist under the caller's dir (train: `<ledger-dir>/native-fill/`), never in the gate's rmtree'd scratch. The invoke arm re-composes, re-stages (the train arm REBUILDS the bundle from the current ledger and admitted heads) and compares emitted vs actual artifact, brief, composition and seat before spending any seat. No re-spend, no in-run mailbox (rejected: it couples HARDEN leg lifetime to the driving session's reaction time). `governed_board_gate(native_leg_fills=…)`, `run_governed_premerge_loop(native_leg_fills=…)` and `_default_train_review(…, native_leg_fills=…, emit_native_request=…)` forward on the existing seams; the frozen two-arg `train_review_fn(bundle_text, run_mode)` surface is kept via `functools.partial`, as the authority is bound today.
+- **D4 Three-state classification (EC-REVIEWTRUTH-1/-4).** `classify_board_delivery(board, panel) -> "FULL" | "FLOOR_ONLY" | "BELOW_FLOOR"` in `governed_review.py` (SL-3): FULL when usable seats == `DEFAULT_TARGET_SEATS`, FLOOR_ONLY when `FLOOR_SEATS <= usable < target` (carrying the typed shortfall: the deferred seat's request, or its typed unavailability), BELOW_FLOOR below the floor. `governed_board_gate` records it on the `GateResult` (`delivery` field, additive) and the premerge loop surfaces it; a FLOOR_ONLY board may proceed under today's floor but is never reported as FULL. A natively filled seat counts toward FULL only once its verdict is bound (D2). This is the classifier EC-1 names; its use at every governed gate remains SL-3/SL-5.
+- **D5 The phase's live probe (LEGIBLE-A3) — two-phase under Claude Code (grok/claude/gemini/codex r2).** `roadmap_assumptions._classify_reviewtruth_transition` and `legible_evidence._flatten_reviewtruth_observation` are BYTE-IDENTICAL. `run_reviewtruth_fable_probe(repo, …, native_leg_fills=None)` under Claude Code becomes the emit → fill → invoke protocol on the fixed probe artifact with `CODE_REVIEW_BOARD`: without a fill it returns a typed `FableProbeRecord(kind="fill_requested", request_path=…)` — an INCOMPLETE observation the assumption-probe caller records as "fill requested" and can neither pass nor classify (it never reaches the classifier, so `None` is unreachable); with a fill it runs the real board and emits `native_fill_request` (from `needs_native_agent`), `verdict_bound` (the fill was applied under D2's binding), `seat_count` (D4's state, `FULL` or `degraded` in the flattener's vocabulary) plus today's fields. Outside Claude Code the single-leg adapter is unchanged. The issue snapshot is injectable so PR-2's tests exercise both arms; the LIVE probe is an operator instrument run against `main`, not a pre-merge CI check, so the PR-2 branch state is never observed live. Sequencing: PR-1 changes no routing (probe stays `pending`); PR-2 lands the routing flip, the two-phase probe and `Closes` #396/#636 in one merge; the first complete post-merge observation satisfies `resolved`.
+- **D6 Prose in lockstep.** `claude-advisor-board`, `claude-plan-phase`, `claude-execute-phase` (their governed-review paragraphs) and `claude-run-train` state the protocol; `codex-/gemini-/opencode-advisor-board` keep their ROUTE prose byte-identical but their DESCRIPTION of Claude Code ("no native-fill request") is corrected; `docs/advisor-board-capabilities-card.md` Claude Code row; CHANGELOG.
 
 ## Changes
 
-### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (modify)
+### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (SL-2, modify)
 - `native_agent_leg_request` — modify — raise for TUI-policy models only when `not _under_claude_code(env)`.
 - `_exec_claude_tui_leg` — modify — under Claude Code return `("UNAVAILABLE", "under_claude_code")`.
 - `_TYPED_UNAVAILABLE_DETAILS` — modify — add `under_claude_code`.
-- `invoke_board` per-seat matrix — modify — attach the native request for the claude seat under Claude Code
-  regardless of TUI policy; accept `native_leg_fills`; apply D2 after the HARDEN gate, before `PanelResult`.
-- `invoke_board` early `native_host_deferral_only` return — modify — same detail/request change as the matrix;
-  fills applied before its return (r2).
-- `NativeLegFill` (frozen dataclass) + `load_native_leg_fill(request_json, review_md)` (digests from the
-  EMITTED request only) + `attach_native_fill_provenance` — add.
-- `apply_native_leg_fills(board, legs, fills, *, staged_artifact_sha256, brief_sha256)` — add — the D2
-  ingestion contract as one pure function (typed refusals, once-per-seat, verdict-contract status).
-- `native_fill_request_payload(board, artifact, brief_ref, …)` — add — the emit-side dict (D3), pure.
+- `invoke_board` — modify — accept `native_leg_fills`; both deferral paths attach the request for every claude seat under Claude Code; `preflight_native_leg_fills` before any launch; `apply_native_leg_fills` after results, before the president step; the early deferral path joins the common tail.
+- `NativeLegFill`, `load_native_leg_fill(request_json, review_md)`, `native_fill_request_payload(...)`, `preflight_native_leg_fills(...)`, `apply_native_leg_fills(...)`, `attach_native_fill_provenance` — add (pure; no spawn, no authority).
 
-### `phase-loop-runtime/src/phase_loop_runtime/cli.py` (modify)
-- `advisor-board` — modify — `--emit-native-request [--native-fill-dir <dir>]` and repeatable
-  `--native-leg <seat>=<dir-or-request.json>`; the JSON payload reports `native_fill` per leg.
-- `run-train` — modify — same two flags, valid only with `--governed --review-only`.
+### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py` (SL-2, modify)
+- `composition_digest(board) -> str` — add — sha256 over the sorted seat_keys (used by D2/D3).
 
-### `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `governed_premerge.py`, `train_runner.py` (modify)
-- `governed_board_gate(native_leg_fills=None, emit_native_request=False)` — modify — forward fills to
-  `invoke_board`; the emit arm returns the request without invoking.
-- `_default_train_review(artifact, run_mode, *, canonical_repo_authority, native_leg_fills=None,
-  emit_native_request=False)` — modify — the frozen two-arg `train_review_fn(bundle_text, run_mode)` seam is
-  kept; the coordinator binds fills/emit via `functools.partial` exactly as it binds the authority today
-  (grok D: PR-1 alone cannot make `run-train` count the seat without this thread).
-- `run_governed_premerge_loop(native_leg_fills=None)` — modify — forward on the `invoke` seam only when set.
-- `run_train(review_only, emit_native_request, native_leg_fills)` — modify — emit arm stages the exact
-  bundle and returns `{"status": "native_fill_requested", "request_path", "artifact_path"}` before any board;
-  the invoke arm rebuilds the bundle from the current ledger and refuses a moved train
-  (`native_fill_stale_request`) before spending a seat; fills forwarded.
+### `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (SL-3, modify)
+- `governed_board_gate(native_leg_fills=None, emit_native_request=False)` — modify; `classify_board_delivery` — add; `GateResult.delivery` — add (additive, default None).
 
-### `phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py` (modify)
-- `_classify_reviewtruth_transition` — modify — the `pending` arm also accepts
-  `UNAVAILABLE/under_claude_code`; `resolved` unchanged (see D1).
+### `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `train_runner.py`, `cli.py` (SL-5, modify)
+- `run_governed_premerge_loop(native_leg_fills=None)` — forward when set; surface `delivery`.
+- `_default_train_review(..., native_leg_fills=None, emit_native_request=False)`; `run_train(review_only, emit_native_request, native_leg_fills)` — emit arm stages under `<ledger-dir>/native-fill/` and returns `native_fill_requested`; invoke arm rebuilds and compares before any seat.
+- `advisor-board --emit-native-request [--native-fill-dir]`, `--native-leg <seat>=<dir-or-request.json>` (repeatable, duplicates refused); `run-train` the same two flags, valid only with `--governed --review-only`; JSON payloads report `native_fill` and `delivery`.
 
-### `phase-loop-runtime/tests/test_native_claude_seat_fill.py` (create)
-- routing under Claude Code for fable/opus seats (request attached, detail `under_claude_code`); outside
-  Claude Code unchanged (adapter route, `native_adapter_required` builder unchanged); D2 acceptance (counts,
-  4/4 usable, floor honoured); digest mismatch refused; fill for a non-deferred seat refused; no spawn and no
-  authority constructed for a fill; emit arm spends no seat (spawn = never-called sentinel); `run-train`
-  emit → fill → invoke end to end through the REAL `invoke_board` and REAL authorization under the sanctioned
-  factory-replacement seam on a mixed-vendor board where claude is eligible (4/4), and a board where the
-  author vendor is claude (the fill cannot restore an excluded seat); BOTH deferral paths (production-shaped
-  `spawn=None` early return, and the per-seat matrix); CLI-level staleness: emit for artifact/brief A, change
-  the ledger or brief to B, submit A's fill → typed refusal with ZERO reviewer launches; duplicate-seat
-  refusal; fill for a runtime-produced seat refused; fill without a conforming verdict → DEGRADED, not
-  usable; loader never stamps current digests onto an old review; `roadmap_assumptions` `pending` with the
-  new token and `resolved` producible; CLI flag validation.
+### `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py` (LEGIBLE, modify)
+- `run_reviewtruth_fable_probe(..., native_leg_fills=None, issue_snapshot=None)` and `_invoke_reviewtruth_fable_adapter` — modify — D5 two-phase observation under Claude Code; `FableProbeRecord.kind` — add (`observation` | `fill_requested`). `_flatten_reviewtruth_observation` — unchanged. `roadmap_assumptions.py` — unchanged.
+
+### Tests (create `phase-loop-runtime/tests/test_native_claude_seat_fill.py`; update the pinning suites)
+- Routing under Claude Code on BOTH paths (production-shaped `spawn=None` early return; per-seat matrix) for fable/opus seats: request attached, detail `under_claude_code`; outside Claude Code byte-identical; `native_agent_leg_request(env={})` still raises for TUI-policy models.
+- Ingestion: fill counts (4/4 FULL) on a mixed board through the REAL `invoke_board` + REAL authorization under the sanctioned factory-replacement seam; a board where claude is the author vendor (the fill cannot restore an excluded seat); duplicate, non-deferred, runtime-produced, backing-refused, no-verdict (DEGRADED), artifact-digest, brief-digest, composition-drift and stale-request cases, each with ZERO reviewer launches on refusal; loader never stamps current digests; president sees the filled leg (a president-requiring policy on the early path).
+- Classification: FULL / FLOOR_ONLY / BELOW_FLOOR with a typed shortfall; a lost fill preserves FLOOR_ONLY.
+- Protocol: `advisor-board` and `run-train` emit → fill → invoke end to end; emit spends no seat; CLI staleness (emit for A, move the ledger/brief to B, submit A's fill → typed refusal, zero launches); flag validation.
+- Probe: `fill_requested` incomplete record under Claude Code without a fill; a complete filled observation classifies `resolved` with an injected CLOSED snapshot; `pending` unchanged outside Claude Code; classifier/flattener byte-identical (a test asserts their source digests).
+- Pinning suites updated for the Claude Code case only: `test_panel_native_fill_183.py` (its "load-bearing SECURITY" tests inverted, not kept), `test_panel_invoker_spawn.py`, `test_legible_evidence.py`, `test_legible_roadmap_contract.py`, `test_legible_review_repairs.py`, `test_govlean_roadmap_reseal.py`.
 
 ## Documentation impact
-- `skills-src/claude/claude-advisor-board/SKILL.md` — modify — replace the two inversion paragraphs with the
-  emit → native sub-agent → `--native-leg` protocol; regenerate `phase-loop-skills/` and `skills_bundle/`.
-- `skills-src/claude/claude-run-train/SKILL.md` — modify — the review-only protocol under Claude Code.
-- `CHANGELOG.md` — modify — Unreleased entry naming agent-harness#396/#636.
-- `docs/advisor-board-capabilities-card.md` — modify — the Claude Code row.
+- `skills-src/claude/{claude-advisor-board,claude-plan-phase,claude-execute-phase,claude-run-train}/SKILL.md` — modify (D6); regenerate `phase-loop-skills/` and `skills_bundle/`.
+- `skills-src/{codex,gemini,opencode}/*-advisor-board/SKILL.md` — modify — Claude Code description only.
+- `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md` — modify.
 
-## Dependencies & order (r2)
-1. PR-1 — the machinery with NO routing change: `NativeLegFill`, request/artifact persistence, the loader
-   (emitted digests only), `apply_native_leg_fills` on both deferral paths before the president step, the
-   `advisor-board` and `run-train` flags, gate/loop forwarding, and their tests driven by INJECTED
-   `under_claude_code` deferrals. Under Claude Code nothing observable changes yet (the seat still defers as
-   today), so the LEGIBLE probe stays `pending`.
-2. PR-2 — the routing flip on both paths (token `under_claude_code`, request attached for TUI-policy seats),
-   the claude skill protocol prose, the non-native skills' corrected description of Claude Code, the
-   token-pinning test updates, and `Closes` agent-harness#396 / #636 in the same merge so the probe moves
-   from `pending` straight to `resolved`.
-Two PRs keep each under the review size that converged on agent-harness#914.
+## Dependencies & order
+1. **PR-1 — machinery, no routing change:** `NativeLegFill`, request/artifact persistence, loader, `composition_digest`, `preflight_native_leg_fills`, `apply_native_leg_fills` on both paths before the president step, `classify_board_delivery`, the `advisor-board` / `run-train` flags, gate/loop/train forwarding, tests driven by INJECTED `under_claude_code` deferrals. Under Claude Code nothing observable changes; the probe stays `pending`.
+2. **PR-2 — routing flip + probe + prose + closure:** D1 on both paths, the two-phase probe (D5), the pinning-suite inversions, the skill and card prose (D6), and `Closes` Consiliency/agent-harness#396 / #636 in the same merge.
 
 ## Verification
 ```
 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python -m pytest -q \
-  phase-loop-runtime/tests/test_native_claude_seat_fill.py \
-  phase-loop-runtime/tests/test_panel_native_fill_183.py phase-loop-runtime/tests/test_panel_invoker*.py \
-  phase-loop-runtime/tests/test_advisor_board*.py phase-loop-runtime/tests/test_governed_*.py \
-  phase-loop-runtime/tests/test_train_*.py phase-loop-runtime/tests/test_legible_evidence.py \
-  phase-loop-runtime/tests/test_legible_roadmap_contract.py phase-loop-runtime/tests/test_legible_review_repairs.py \
-  phase-loop-runtime/tests/test_govlean_roadmap_reseal.py phase-loop-runtime/tests/test_cli*.py
-# (r2) every file above exists on main; the earlier globs missed the suites that pin the inversion
-# live, under Claude Code, from a git toplevel: emit → fill natively → invoke; expect 4 usable legs
+  phase-loop-runtime/tests/test_native_claude_seat_fill.py phase-loop-runtime/tests/test_panel_native_fill_183.py \
+  phase-loop-runtime/tests/test_panel_invoker*.py phase-loop-runtime/tests/test_advisor_board*.py \
+  phase-loop-runtime/tests/test_governed_*.py phase-loop-runtime/tests/test_train_*.py \
+  phase-loop-runtime/tests/test_legible_evidence.py phase-loop-runtime/tests/test_legible_roadmap_contract.py \
+  phase-loop-runtime/tests/test_legible_review_repairs.py phase-loop-runtime/tests/test_govlean_roadmap_reseal.py \
+  phase-loop-runtime/tests/test_cli*.py
+# live, under Claude Code, from a git toplevel (after PR-2): emit → fill natively → invoke → 4 usable, delivery FULL
 phase-loop advisor-board --board code-review --artifact <bundle> --emit-native-request --json
-phase-loop advisor-board --board code-review --artifact <bundle> --native-leg claude=<fill> --json
+phase-loop advisor-board --board code-review --artifact <bundle> --native-leg claude=<dir> --json
 ```
-Mutants that must fail: request no longer attached for a fable seat (on EACH deferral path); the
-artifact-digest check removed AND, separately, the brief-digest check removed (claude 11: two tests, not one
-"digest mismatch"); loader stamps current digests instead of the emitted ones; fill accepted for a non-deferred or
-already-filled seat; fill status forced OK without a verdict; emit arm spawns; train invoke arm skips the
-moved-train comparison; outside-Claude-Code route changed.
+Mutants that must fail: request not attached on EITHER path; artifact-digest check removed; brief-digest check removed; composition check removed; loader stamps current digests; duplicate accepted; non-deferred seat filled; fill status forced OK without a verdict; fills applied after the president step; early path still returns before the president; emit arm launches; train invoke arm skips the rebuild comparison; probe classifies an unfilled Claude Code observation; classifier or flattener source changed; outside-Claude-Code route changed.
 
 ## Acceptance criteria
-- [ ] Under Claude Code, `invoke_board(CODE_REVIEW_BOARD, …)` returns the claude seat `UNAVAILABLE/under_claude_code` with `needs_native_agent` set, for the default (fable) seat.
-- [ ] A supplied fill whose EMITTED digests match the staged artifact and resolved brief, for a seat deferred as `under_claude_code`, makes the seat usable and the board 4 of 4; a mismatched or stale binding, a non-deferred seat, a duplicate, or a fill without a conforming verdict is a typed refusal or DEGRADED, with zero reviewer launches on a refusal.
-- [ ] `run-train --governed --review-only --emit-native-request` spends no seat and writes the request; with `--native-leg claude=<file>` the approval record's `usable_reviewers` counts the fill.
-- [ ] Outside Claude Code every existing panel/board test is byte-identical in outcome; `native_agent_leg_request(env=<non-Claude>)` still raises for TUI-policy models.
-- [ ] The claude-* skills that carry seat prose describe the protocol; the codex/gemini/opencode skills keep their adapter ROUTE prose byte-identical while their description of Claude Code no longer promises "no native-fill request".
-- [ ] `roadmap_assumptions._classify_reviewtruth_transition` is byte-identical; after PR-2 merges with the issues closed, a live observation under Claude Code satisfies its `resolved` arm.
+- [ ] EC-REVIEWTRUTH-14 — proven by `test_native_claude_seat_fill.py` (request emitted for the default fable seat under Claude Code on both paths; a bound fill classifies FULL alongside 3 CLI seats; a dropped fill preserves FLOOR_ONLY; no request outside Claude Code or without a fable seat) and the live `advisor-board` emit → fill → invoke run above.
+- [ ] EC-REVIEWTRUTH-4 — proven by the FULL / FLOOR_ONLY / BELOW_FLOOR tests for a board driven under Claude Code; a silent 3-of-4 FULL is unreachable.
+- [ ] EC-REVIEWTRUTH-1 (partial: the classifier) — proven by `classify_board_delivery` tests on the three states with a typed shortfall; full gate wiring stays with SL-3/SL-5 and is NOT claimed here.
+- [ ] Every refused fill (duplicate, ineligible, digest, composition, stale) is typed and launches zero reviewers; every accepted fill is visible to the president before any ruling.
+- [ ] `roadmap_assumptions._classify_reviewtruth_transition` and `_flatten_reviewtruth_observation` are byte-identical; under Claude Code an unfilled probe returns `fill_requested` (never `None`), and a filled probe with the issues closed satisfies `resolved`.
+- [ ] Non-native route byte-identical in outcome across the existing panel/board suites; the non-native skills' route prose is byte-identical while their Claude Code description no longer promises "no native-fill request".
