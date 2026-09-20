@@ -674,6 +674,42 @@ class TestPrebuiltRefresh:
         assert second["status"] == "blocked" and second["detail"]["reason"] == "remote_drift"
         assert published == {}
 
+    def test_stale_upstream_block_is_durable_until_the_pr_is_closed(self, tmp_path: Path):
+        """PR #909 r4, codex: the stale-upstream block must not erase the downstream's
+        admission either -- a re-run re-blocks; only closing the PR lets it republish."""
+        from test_train_merge import TRAIN_2NODE_MD, _make_publish_stub, _setup_p3_done
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map, sha_a="sha-admitted-a", sha_b="sha-admitted-b")
+        run_loop_calls: list = []
+
+        def _run(pr_open, live_a):
+            def _run_loop(ws, *a, **kw):
+                run_loop_calls.append(ws.name)
+                return (None, [])
+            return run_train(
+                roadmap, ledger, run_mode="autonomous",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=_run_loop,
+                _publish=_make_publish_stub({}),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=pr_open,
+                _live_pr_head_sha_fn=lambda ws, br: live_a if br == "feat/train-a" else "sha-admitted-b",
+                _merge_phase_enabled=True,
+            )
+
+        first = _run(_pr_is_open_true, "sha-oob-a")  # upstream repo-a advanced out of band
+        assert first["status"] == "blocked" and first["detail"]["reason"] == "upstream_changed_downstream_pr_open"
+        second = _run(_pr_is_open_true, "sha-oob-a")  # plain re-run, PR still open
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "upstream_changed_downstream_pr_open", (
+            "a re-run must re-block, not republish the downstream fresh"
+        )
+        assert run_loop_calls == [], "no rebuild happened while the stale PR stayed open"
+        state = read_ledger(ledger)["repo-b/specs/plan-b.md"]
+        assert state.status == "blocked" and state.head_sha == "sha-admitted-b" and state.pr_url
+
     def test_live_head_read_failure_is_a_typed_block_not_an_escape(self, tmp_path: Path):
         """agent-harness#289, taken deliberately: the refresh's drift check reads the live
         head, so a failed read must be a blocked return with a ledger row."""

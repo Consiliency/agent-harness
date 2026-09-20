@@ -2969,12 +2969,20 @@ def _run_train_unfenced(
                   "; ".join(change_reasons)
                   + "; close/supersede the stale downstream PR and re-run"
               )
+              # agent-harness#906 (PR #909 r4, codex): keep the admitted head + PR on the
+              # row. The remedy text asks the operator to close the stale PR; it does not
+              # enforce it. Without these fields a plain re-run dropped the node from the
+              # completed set and republished fresh -- over whatever the remote held by
+              # then. With them, a re-run re-enters this same check and blocks again until
+              # the PR is actually closed (then Step 3 drops it and it republishes).
               append_record(
                   ledger_path,
                   LedgerRecord(
                       node_id=nid,
                       status="blocked",
                       branch=completed_nodes[nid].get("branch"),
+                      head_sha=completed_nodes[nid].get("admitted_head_sha"),
+                      pr_url=completed_nodes[nid].get("pr_url"),
                   ),
               )
               return {
