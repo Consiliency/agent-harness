@@ -42,6 +42,19 @@ activated = pytest.mark.skipif(not guard.active(), reason=guard.SKIP_REASON)
 SUBJECT = {"repository": "Consiliency/agent-harness", "issue": 396, "model": FABLE, "source_anchor": "test"}
 
 
+def _code_digest(fn) -> str:
+    """SHA-256 of a function's AST with docstrings stripped: behaviour, not prose."""
+    import ast
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str):
+                node.body = node.body[1:] or [ast.Pass()]
+    return hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
+
+
 def _seat(model: str = FABLE, harness: str = "claude") -> Seat:
     return Seat(model=model, effort="max", harness=harness, lens="correctness")
 
@@ -179,13 +192,13 @@ class TestInvariantsThatSurviveTheSlice:
         assert all(leg.needs_native_agent is None for leg in result.legs)
 
     def test_transition_classifier_and_flattener_are_byte_identical(self):
-        # The instrument this slice is graded by: source digests on the base this lane was
-        # authored against; PR-2 must leave both untouched.
-        cls = hashlib.sha256(inspect.getsource(ra._classify_reviewtruth_transition).encode()).hexdigest()
-        flat = hashlib.sha256(inspect.getsource(le._flatten_reviewtruth_observation).encode()).hexdigest()
-        assert (cls, flat) == (
-            "34f258ab40013c3d3eb2489d8965901b8a442539a32b16d1b17e5bcd8bf445b6",
-            "8514b34f19c15b1767833fdad441b5f6274df57b9a9d9f1d235e44d50ee59b2e",
+        # The instrument this slice is graded by: the two functions' CODE must not change. The
+        # digest is over the AST with docstrings stripped (a docstring-only edit — e.g. a seam
+        # rename mentioned in prose — is not a behaviour change; board r2, claude N1), pinned on
+        # the base this lane was authored against. PR-2 must leave both untouched.
+        assert (_code_digest(ra._classify_reviewtruth_transition), _code_digest(le._flatten_reviewtruth_observation)) == (
+            "73554cee0ba7dda61a49f9efa5c3663e777c410dafff95b7637cc5033204df21",
+            "07372f003a604aacda5f431a885011cff3ec7d1cd00de3cf4a70ef788f3cfc59",
         )
 
 
@@ -521,10 +534,30 @@ class TestProtocol:
                       f"a fill loaded from the emitted request did not reach the review exactly once: {ok.get('status')} / {len(review.calls)}")
         mint = _Never("mint")
         monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
-        stale = NativeLegFill(**{**fill.__dict__, "artifact_sha256": "0" * 64})
-        halted = _train(_ledger(tmp_path / "moved"), native_leg_fills=[stale])
+        # The SAME loaded fill (digests untouched) against a train that MOVED: the node's admitted
+        # head on this ledger is different, so the bundle the runner REBUILDS differs from the
+        # emitted one. A runner comparing against the saved emission instead of the rebuilt
+        # bundle would accept it.
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        moved_ledger = tmp_path / "moved" / "train.ledger.jsonl"
+        append_record(moved_ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/train-repo-a",
+            head_sha="sha-moved-b", pr_url="https://gh.com/repo-a/pr/1", merge_order=0,
+        ))
+        halted = run_train(
+            roadmap, moved_ledger, run_mode="governed",
+            resolve_workspace=lambda node: ws_map[node.node_id],
+            _run_loop=lambda *a, **kw: (None, []), _publish=publish,
+            _set_upstream_ref_fn=lambda *a, **kw: [], _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true, _live_pr_head_sha_fn=lambda ws, br: "sha-moved-b",
+            _workspace_head_fn=lambda ws: "sha-moved-b", _is_ancestor_fn=lambda ws, a, b: True,
+            _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"], _merge_phase_enabled=True,
+            review_only=True, _merge_pr_fn=merge,
+            _reverify_fn=lambda *a, **k: True, _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            native_leg_fills=[fill], _train_review_fn=_Never("review"),
+        )
         guard.require(n, halted.get("status") == "review_halted" and halted.get("reason") == "native_fill_stale_request",
-                      f"stale fill not refused as native_fill_stale_request: {halted.get('status')}/{halted.get('reason')}")
+                      f"a fill for a MOVED train was not refused as native_fill_stale_request: {halted.get('status')}/{halted.get('reason')}")
         guard.require(n, mint.calls == 0 and publish.calls == 0 and merge.calls == 0, "a seat was minted or a merge attempted")
 
     @activated
@@ -640,6 +673,17 @@ class TestProbe:
                       f"flattened observation lacks the resolved fields: {flat}")
         guard.require(n, ra._classify_reviewtruth_transition({**flat, "issue_state": "CLOSED", "issue_disposition": "completed"}) == "resolved",
                       f"the byte-identical classifier does not read resolved: {flat}")
+        # Outcome-sensitive: the same call over a board whose claude seat stayed DEFERRED (the fill
+        # was not bound) must NOT report a bound verdict or a full board — an observer that always
+        # reports resolved fields would pass the case above and fail here.
+        unbound = pi.PanelResult(legs=tuple([_deferred_leg(claude_seat)] + legs))
+        monkeypatch.setattr(gr_mod, "governed_board_gate", lambda **kw: gr_mod.GateResult(ran=True, promoted=False, panel=unbound))
+        out2 = observe(repo, SUBJECT, native_leg_fills=[fill], issue_snapshot={"state": "CLOSED", "stateReason": "completed"})
+        flat2 = le._flatten_reviewtruth_observation(out2) if isinstance(out2, Mapping) and not isinstance(out2, Incomplete) else {}
+        guard.require(n, isinstance(out2, Incomplete) or (flat2.get("verdict_bound") is False and flat2.get("seat_count") != "FULL"),
+                      f"an unbound board was reported as bound/full: {out2!r} → {flat2}")
+        guard.require(n, ra._classify_reviewtruth_transition({**flat2, "issue_state": "CLOSED", "issue_disposition": "completed"}) != "resolved"
+                      if flat2 else True, "an unbound board classified resolved")
 
     @activated
     def test_assumption_probe_caller_fails_closed_on_an_incomplete_observation(self, tmp_path, monkeypatch):
