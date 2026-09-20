@@ -23,6 +23,12 @@ regressions, each named so nothing is silently dropped):
   seat policy; only the bound-and-usable property is asserted here).
 - the live emit → fill → invoke run with real seats (an acceptance run from the driving session,
   recorded on the implementation PR, not a unit falsifier).
+- the CLI probe consumer ``run_reviewtruth_fable_probe`` raising a typed ``LegibleSidecarError`` on an
+  incomplete observation (the sidecar-capture falsifier drives it only indirectly; PR-2 regresses it).
+- negative flag validation: ``--emit-native-request`` / ``--native-leg`` without ``--governed
+  --review-only`` is a usage error (PR-2 regresses it; here only the positive parse is falsified).
+- ``pending`` unchanged BEFORE the flip on a non-native host (the legacy adapter path): PR-2's LEGIBLE
+  suite updates carry it; no RED falsifier here because it is true on the pre-implementation base.
 """
 from __future__ import annotations
 
