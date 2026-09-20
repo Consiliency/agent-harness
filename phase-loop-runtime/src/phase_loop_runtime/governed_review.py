@@ -307,6 +307,9 @@ def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None) -> 
     )
 
 
+_UNSET: object = object()  # "no digest bound" — distinct from any token value
+
+
 def governed_board_gate(
     *,
     artifact: str,
@@ -349,6 +352,7 @@ def governed_board_gate(
     leg authorization, a lease, a claim, or the seal.
     """
     import shutil
+    import subprocess
     import tempfile
     from dataclasses import replace as _replace
 
@@ -385,7 +389,7 @@ def governed_board_gate(
             board = compose_fn()
         finally:
             _backing.clear_review_composition_authorization()
-    except (OSError, ValueError) as exc:
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         return _block_result(
             "review_isolation_unavailable",
             "governed_board_composition_unavailable",
@@ -409,19 +413,32 @@ def governed_board_gate(
     if dropped:
         board = _replace(board, seats=seats)
     invoke_fn = invoke if invoke is not None else _pi.invoke_board
-    brief_text = _pi._resolve_brief("review", brief_ref)
-    scratch = Path(tempfile.mkdtemp(prefix="train-review-"))
-    token = _backing.set_review_instruction_digest(brief_text)
+    # Board r1 (agent-harness#914, codex): brief resolution, scratch allocation and the
+    # digest binding are PREPARATION and can fail like everything after them — an
+    # unreadable brief, a full tmpdir, a refused digest. They run inside the same
+    # guarded scope so every failure holds as ``review_isolation_unavailable`` and the
+    # ``finally`` undoes exactly what was set up (a digest bound without a scratch, a
+    # scratch allocated without a digest).
+    scratch: Path | None = None
+    token: object = _UNSET
     try:
+        brief_text = _pi._resolve_brief("review", brief_ref)
+        scratch = Path(tempfile.mkdtemp(prefix="train-review-"))
+        token = _backing.set_review_instruction_digest(brief_text)
         provider_scratch = scratch / "provider"
         provider_scratch.mkdir()
         artifact_path = scratch / "train-review-bundle.md"
         artifact_path.write_text(artifact, encoding="utf-8")
+        # Mint over the READ-BACK staged text, as the CLI does: ``invoke_board`` resolves
+        # ``artifact_ref`` through ``read_text`` (universal newlines), so minting over the
+        # in-memory string would diverge on any CR and fail closed for no reason (board
+        # r1, agent-harness#914, claude). This is the "exact staged bytes" promise.
+        staged_artifact = artifact_path.read_text(encoding="utf-8")
         # Dynamic lookup on purpose: the sanctioned hermetic seam replaces this factory
         # and requires the invoker's own lookup to return the identical object.
         authorization = _backing.prepare_review_isolation_authorization(
             board,
-            artifact,
+            staged_artifact,
             mode="review",
             canonical_repo_authority=canonical_repo_authority,
         )
@@ -436,14 +453,16 @@ def governed_board_gate(
             invoke_kwargs["brief_ref"] = brief_ref
         if max_concurrency is not None:
             invoke_kwargs["max_concurrency"] = max_concurrency
-        panel = invoke_fn(board, artifact, **invoke_kwargs)
-    except (OSError, ValueError, UnicodeError) as exc:
+        panel = invoke_fn(board, staged_artifact, **invoke_kwargs)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         return _block_result(
             "review_isolation_unavailable",
             "governed_board_isolation_unavailable",
             f"review isolation unavailable: {exc}; holding (non-human)",
         )
     finally:
-        _backing.reset_review_instruction_digest(token)
-        shutil.rmtree(scratch, ignore_errors=True)
+        if token is not _UNSET:
+            _backing.reset_review_instruction_digest(token)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)

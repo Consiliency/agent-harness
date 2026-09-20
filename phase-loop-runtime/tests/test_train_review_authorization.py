@@ -20,7 +20,12 @@ from phase_loop_runtime import train_runner as tr
 from phase_loop_runtime.advisor_board import backing as backing_mod
 from phase_loop_runtime.advisor_board import composition as composition_mod
 from phase_loop_runtime.advisor_board.schema import Board, Seat
-from phase_loop_runtime.governed_premerge import run_governed_premerge_loop
+from phase_loop_runtime.closeout_validators import ReviewFinding
+from phase_loop_runtime.governed_premerge import (
+    REVIEW_POLICY_VERSION,
+    LoopResult,
+    run_governed_premerge_loop,
+)
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
@@ -37,6 +42,28 @@ from test_train_prebuilt import PREBUILT_1NODE_MD, _make_prebuilt_publish_stub  
 
 ADMITTED = "sha-admitted-a"
 NODE = "repo-a/specs/plan-a.md"
+
+
+def _approval_with_panel_review_fn(artifact: str, run_mode: str) -> LoopResult:
+    """An approval carrying a REAL two-leg panel, the shape the production gate returns,
+    so the coordinator stamps ``usable_reviewers`` from ``panel.usable_legs``."""
+    panel = PanelResult(legs=[
+        PanelLegResult(leg="codex", status="OK", text="Reviewed.\nAGREE"),
+        PanelLegResult(leg="gemini", status="OK", text="Reviewed.\nAGREE"),
+    ])
+    return LoopResult(mergeable=True, ran=True, rounds=1, panel=panel)
+
+
+def _rejection_with_findings_review_fn(artifact: str, run_mode: str) -> LoopResult:
+    """A rejection carrying the per-leg finding the production gate attaches (D3)."""
+    base = _rejection_review_fn(artifact, run_mode)
+    return LoopResult(
+        mergeable=False, ran=True, rounds=1, reason=base.reason,
+        terminal_blocker=base.terminal_blocker,
+        findings=(ReviewFinding(code="panel_block", reason="leg codex: DISAGREE",
+                                severity="block", blocker_class="review_gate_block",
+                                body="The merge order is wrong.\nDISAGREE"),),
+    )
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -161,6 +188,32 @@ class TestAuthorizedGateSequence:
         marker = object()
         _, _, obs, _, _ = self._run(tmp_path, monkeypatch, spawn=marker)
         assert obs["invoke_kwargs"]["spawn"] is marker
+
+    def test_minted_text_is_the_staged_text_even_with_carriage_returns(self, tmp_path, monkeypatch):
+        """Board r1 (claude): ``invoke_board`` resolves ``artifact_ref`` through
+        ``read_text`` (universal newlines). The authorization must be minted over THAT
+        text, as the CLI does — a CR in the bundle (a roadmap title is free text) must
+        not diverge mint from stage and fail the review closed for no reason."""
+        repo = _canonical_repo(tmp_path)
+        board = _board("codex", "gemini", "grok")
+        minted: dict = {}
+        monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization",
+                            lambda b, art, **k: minted.setdefault("artifact", art) or object())
+        seen: dict = {}
+
+        def _invoke(board_, artifact_, **kw):
+            seen["resolved"] = pi._resolve_artifact(None, kw["artifact_ref"])
+            seen["passed"] = artifact_
+            return _legs(board_)
+
+        bundle = "# Train\r\n\r\ntitle with CR\r\nbundle\r\n"
+        gate = gr.governed_board_gate(
+            artifact=bundle, author_executor="train-coordinator", run_mode="governed",
+            canonical_repo_authority=repo, compose=lambda: board, invoke=_invoke,
+        )
+        assert gate.promoted
+        assert "\r" not in seen["resolved"], "read_text translates CRLF; the staged view is LF"
+        assert minted["artifact"] == seen["resolved"] == seen["passed"]
 
     def test_custom_brief_binds_its_digest_and_is_forwarded(self, tmp_path, monkeypatch):
         brief = tmp_path / "brief.md"
@@ -382,6 +435,106 @@ class TestHoldsAndDiagnostics:
 # (e) stale head   (f) review-only
 
 
+def _prep_gate(tmp_path, monkeypatch, *, invoke=None):
+    """A gate call whose composition succeeds; the caller breaks ONE preparation step."""
+    repo = _canonical_repo(tmp_path)
+    board = _board("codex", "gemini", "grok")
+    minted = []
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization",
+                        lambda *a, **k: minted.append(1) or object())
+    invoke_fn = invoke if invoke is not None else (lambda b, a, **k: _legs(b))
+    return lambda: gr.governed_board_gate(
+        artifact="bundle", author_executor="train-coordinator", run_mode="governed",
+        canonical_repo_authority=repo, compose=lambda: board, invoke=invoke_fn,
+    ), minted
+
+
+class _ScratchSpy:
+    """Records every scratch the gate allocates so a test can assert its removal."""
+
+    def __init__(self, monkeypatch):
+        import tempfile
+        self.paths: list[Path] = []
+        real = tempfile.mkdtemp
+
+        def _mkdtemp(*a, **k):
+            path = real(*a, **k)
+            self.paths.append(Path(path))
+            return path
+
+        monkeypatch.setattr(tempfile, "mkdtemp", _mkdtemp)
+
+
+class TestPreparationFailuresHold:
+    """Board r1 (agent-harness#914, codex): brief resolution, scratch allocation and the
+    digest binding are preparation steps INSIDE the guarded scope — each failure holds
+    as ``review_isolation_unavailable`` and leaves neither a bound digest nor a scratch."""
+
+    def test_unreadable_brief_holds_without_binding_a_digest(self, tmp_path, monkeypatch):
+        run, minted = _prep_gate(tmp_path, monkeypatch)
+        monkeypatch.setattr(pi, "_resolve_brief",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("brief unreadable")))
+        monkeypatch.setattr(backing_mod, "set_review_instruction_digest", _Never("set digest"))
+        monkeypatch.setattr(backing_mod, "reset_review_instruction_digest", _Never("reset digest"))
+        spy = _ScratchSpy(monkeypatch)
+        gate = run()
+        assert not gate.promoted and gate.reason == "review_isolation_unavailable"
+        assert "brief unreadable" in gate.findings[0].reason
+        assert spy.paths == [] and minted == []
+
+    def test_scratch_allocation_failure_holds(self, tmp_path, monkeypatch):
+        import tempfile
+        run, minted = _prep_gate(tmp_path, monkeypatch)
+        monkeypatch.setattr(tempfile, "mkdtemp",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("tmp full")))
+        monkeypatch.setattr(backing_mod, "reset_review_instruction_digest", _Never("reset digest"))
+        gate = run()
+        assert not gate.promoted and gate.reason == "review_isolation_unavailable"
+        assert "tmp full" in gate.findings[0].reason and minted == []
+
+    def test_digest_refusal_after_scratch_removes_the_scratch(self, tmp_path, monkeypatch):
+        run, minted = _prep_gate(tmp_path, monkeypatch)
+        spy = _ScratchSpy(monkeypatch)
+        monkeypatch.setattr(backing_mod, "set_review_instruction_digest",
+                            lambda text: (_ for _ in ()).throw(ValueError("digest refused")))
+        monkeypatch.setattr(backing_mod, "reset_review_instruction_digest", _Never("reset digest"))
+        gate = run()
+        assert not gate.promoted and gate.reason == "review_isolation_unavailable"
+        assert "digest refused" in gate.findings[0].reason and minted == []
+        assert len(spy.paths) == 1 and not spy.paths[0].exists()
+
+    @pytest.mark.parametrize("exc", [
+        subprocess.TimeoutExpired(cmd=["codex"], timeout=1),
+        subprocess.CalledProcessError(1, ["codex"]),
+    ])
+    def test_subprocess_failure_during_invocation_holds(self, tmp_path, monkeypatch, exc):
+        run, _ = _prep_gate(tmp_path, monkeypatch,
+                            invoke=lambda *a, **k: (_ for _ in ()).throw(exc))
+        spy = _ScratchSpy(monkeypatch)
+        gate = run()
+        assert not gate.promoted and gate.reason == "review_isolation_unavailable"
+        assert gate.findings[0].code == "governed_board_isolation_unavailable"
+        assert len(spy.paths) == 1 and not spy.paths[0].exists()
+
+    def test_subprocess_failure_during_composition_holds(self, tmp_path, monkeypatch):
+        repo = _canonical_repo(tmp_path)
+        gate = gr.governed_board_gate(
+            artifact="bundle", author_executor="train-coordinator", run_mode="governed",
+            canonical_repo_authority=repo,
+            compose=lambda: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd=["agy"], timeout=1)),
+            invoke=_Never("invoke"),
+        )
+        assert not gate.promoted and gate.reason == "review_isolation_unavailable"
+        assert gate.findings[0].code == "governed_board_composition_unavailable"
+
+    def test_successful_review_removes_its_scratch(self, tmp_path, monkeypatch):
+        run, minted = _prep_gate(tmp_path, monkeypatch)
+        spy = _ScratchSpy(monkeypatch)
+        gate = run()
+        assert gate.promoted and minted == [1]
+        assert len(spy.paths) == 1 and not spy.paths[0].exists()
+
+
 def _ledger(tmp_path: Path, *, approved: int | None = None) -> Path:
     ledger = tmp_path / "ledger" / "train.ledger.jsonl"
     append_record(ledger, LedgerRecord(
@@ -449,6 +602,22 @@ class TestReviewOnly:
         rec = read_ledger(ledger)[tr._TRAIN_REVIEW_NODE_ID]
         assert rec.status == "approved"
 
+    def test_review_only_approval_then_governed_run_merges_without_re_board(self, tmp_path):
+        """Two real invocations over ONE ledger (board r1, codex): the review-only run
+        records the usable-reviewer floor evidence from its panel; the later governed
+        run honours it and merges the ADMITTED head without spending a second board."""
+        ledger = _ledger(tmp_path)
+        first, merged_first = _run_review(tmp_path, ledger, review_only=True,
+                                          review_fn=_approval_with_panel_review_fn)
+        assert first["status"] == "review_approved" and merged_first == []
+        assert first["usable_reviewers"] == 2
+        rec = read_ledger(ledger)[tr._TRAIN_REVIEW_NODE_ID]
+        assert rec.usable_reviewers == 2 and rec.review_policy_version == REVIEW_POLICY_VERSION
+        second, merged_second = _run_review(tmp_path, ledger, review_only=False,
+                                            review_fn=_Never("train_review_fn"))
+        assert second["status"] == "merged", second
+        assert merged_second == [("repo-a", ADMITTED)]
+
     def test_later_governed_run_merges_without_re_review(self, tmp_path):
         ledger = _ledger(tmp_path, approved=3)
         result, merged = _run_review(tmp_path, ledger, review_only=False, review_fn=_Never("train_review_fn"))
@@ -463,9 +632,15 @@ class TestReviewOnly:
 
     def test_rejected_review_halts_with_zero_merges_and_carries_findings(self, tmp_path):
         ledger = _ledger(tmp_path)
-        result, merged = _run_review(tmp_path, ledger, review_only=True, review_fn=_rejection_review_fn)
+        result, merged = _run_review(tmp_path, ledger, review_only=True,
+                                     review_fn=_rejection_with_findings_review_fn)
         assert result["status"] == "review_halted" and merged == []
-        assert "findings" in result
+        assert result["findings"], "the per-leg diagnostics must reach the caller"
+        assert result["findings"][0] == {
+            "code": "panel_block", "reason": "leg codex: DISAGREE", "severity": "block",
+            "body": "The merge order is wrong.\nDISAGREE",
+        }
+        assert result["terminal_blocker"]["blocker_class"] == "review_gate_block"
 
     def test_node_without_admitted_pr_is_refused_before_publication(self, tmp_path):
         ledger = _ledger(tmp_path)
@@ -488,6 +663,18 @@ class TestReviewOnly:
         assert result["detail"]["workspace_head"] == "sha-new-a"
         assert publish.calls == 0
 
+    def test_unreadable_workspace_head_is_refused_not_approved(self, tmp_path):
+        """Board r1 (claude): the refresh arm refuses an unreadable HEAD by type; the
+        review-only guard must not be looser than the arm it protects."""
+        ledger = _ledger(tmp_path)
+        publish = _Never("publish_fn")
+        result, merged = _run_review(tmp_path, ledger, review_only=True, head=None,
+                                     publish=publish, review_fn=_Never("train_review_fn"))
+        assert result["status"] == "review_only_requires_admitted_prs", result
+        assert result["detail"]["reason"] == "workspace_head_unreadable"
+        assert result["detail"]["node_id"] == NODE and merged == [] and publish.calls == 0
+        assert tr._TRAIN_REVIEW_NODE_ID not in read_ledger(ledger)
+
     def test_stale_live_head_halts_before_any_board_even_when_approved(self, tmp_path):
         for approved in (None, 3):
             ledger = _ledger(tmp_path / f"case-{approved}", approved=approved)
@@ -504,3 +691,52 @@ class TestReviewOnly:
         with pytest.raises(SystemExit) as exc:
             cli.main(["run-train", "--train", str(train), "--review-only"])
         assert exc.value.code == 2
+
+
+class TestCanonicalRepoAuthorityResolution:
+    """agent-harness#906 D2 (board r1, gemini): the authority the coordinator binds the
+    isolation authorization to — cwd git toplevel, else the first node's workspace,
+    else no authority (the gate then refuses ``review_isolation_unavailable``)."""
+
+    @staticmethod
+    def _topo():
+        return parse_train_roadmap(PREBUILT_1NODE_MD).topo_order()
+
+    def test_cwd_git_toplevel_wins_over_node_workspaces(self, tmp_path, monkeypatch):
+        repo = _canonical_repo(tmp_path)
+        other = tmp_path / "node-ws"
+        other.mkdir()
+        monkeypatch.chdir(repo)
+        got = tr._train_canonical_repo_authority(self._topo(), lambda node: other)
+        assert got == repo.resolve()
+
+    def test_non_git_cwd_falls_back_to_first_node_workspace(self, tmp_path, monkeypatch):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        ws = tmp_path / "node-ws"
+        ws.mkdir()
+        monkeypatch.chdir(plain)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        got = tr._train_canonical_repo_authority(self._topo(), lambda node: ws)
+        assert got == ws.resolve()
+
+    @pytest.mark.parametrize("exc", [
+        FileNotFoundError("git"), subprocess.TimeoutExpired(cmd=["git"], timeout=15),
+    ])
+    def test_git_failure_falls_back_to_first_node_workspace(self, tmp_path, monkeypatch, exc):
+        ws = tmp_path / "node-ws"
+        ws.mkdir()
+        monkeypatch.setattr(tr.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(exc))
+        got = tr._train_canonical_repo_authority(self._topo(), lambda node: ws)
+        assert got == ws.resolve()
+
+    def test_no_git_and_no_workspace_yields_no_authority(self, tmp_path, monkeypatch):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+
+        def _no_ws(node):
+            raise KeyError(node.node_id)
+
+        assert tr._train_canonical_repo_authority(self._topo(), _no_ws) is None

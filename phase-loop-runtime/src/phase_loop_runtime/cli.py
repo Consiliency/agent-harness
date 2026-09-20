@@ -4428,6 +4428,9 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
         )
         for finding in result.get("findings", []) or []:
             print(f"  [{finding.get('severity')}] {finding.get('code')}: {finding.get('reason')}", file=sys.stderr)
+            if finding.get("body"):
+                for line in str(finding["body"]).rstrip().splitlines():
+                    print(f"      {line}", file=sys.stderr)
         return 1
 
     if result["status"] == "merge_halted":

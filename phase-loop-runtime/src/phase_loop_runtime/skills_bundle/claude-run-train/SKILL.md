@@ -21,7 +21,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   and stop BEFORE any merge (`review_approved`): approval is recorded on the ledger and a
   later `--governed` run merges without re-review. Review-only publishes nothing: a node
   without an admitted open PR, or a prebuilt workspace whose HEAD moved past its admitted
-  head, is refused (`review_only_requires_admitted_prs`) before anything runs; an admitted
+  head, is refused (`review_only_requires_admitted_prs`) before any board or publication; an admitted
   head that no longer matches the live PR head halts as `review_halted` / `stale_head`.
   `--review-only` without `--governed` is a usage error.
 - The train-level review runs through the broker-authorized review board (the same

@@ -17,13 +17,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   directory) on the existing premerge-loop seam; tierless, mode-less, never constructing a leg
   authorization, lease, claim or seal.
 - **A held review names each leg's refusal.** The zero-usable hold keeps the per-leg findings
-  with the leg's detail; `review_halted` results carry them.
+  with the leg's detail; `review_halted` results carry them, with a blocking leg's review
+  text (`body`), which the CLI prints.
 - **`run-train --governed --review-only`** reviews the ADMITTED heads, records approval, and
   stops before any merge (`review_approved`); it never enters the publication step, refuses a
   node without an admitted PR or a prebuilt workspace whose HEAD moved past its admitted head
   (`review_only_requires_admitted_prs`), and halts on a stale admitted head
   (`review_halted`/`stale_head`) before spending a board. A later `--governed` run merges
-  without re-review. `--review-only` without `--governed` is a usage error.
+  without re-review. `--review-only` without `--governed` is a usage error. A prebuilt
+  workspace whose HEAD cannot be read is refused (`workspace_head_unreadable`), as the
+  refresh arm refuses it.
+- Hardening from the code review of agent-harness#914: brief resolution, scratch allocation
+  and the digest binding are inside the gate's guarded scope (every preparation failure
+  holds as `review_isolation_unavailable` and undoes only what was set up); subprocess
+  failures hold like the CLI's; the authorization is minted over the staged text exactly
+  as `invoke_board` resolves it; the coordinator's git-toplevel resolution cannot abort a
+  run.
 
 ### Run Train: refresh an admitted prebuilt PR; land single-node prebuilt trains under `--governed` (agent-harness#906)
 

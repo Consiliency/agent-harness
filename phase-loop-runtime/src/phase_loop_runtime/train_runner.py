@@ -2388,11 +2388,16 @@ def _train_canonical_repo_authority(
     workspace. A train bundle is reviewed as ONE artifact under that authority; the
     authorization schema carries exactly one canonical repository.
     """
-    completed = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, timeout=15, check=False,
-    )
-    top = completed.stdout.strip() if completed.returncode == 0 else ""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        top = completed.stdout.strip() if completed.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        # No git on PATH, or a hung resolution: not an authority, fall through to the
+        # node workspaces (board r1, agent-harness#914).
+        top = ""
     if top:
         return Path(top).resolve()
     for node in topo_order:
@@ -2961,6 +2966,21 @@ def _run_train_unfenced(
             _nid_ro = _node_ro.node_id
             _admitted_ro = completed_nodes[_nid_ro].get("admitted_head_sha")
             _head_ro = workspace_head_fn(resolve_workspace(_node_ro))
+            if _admitted_ro and not _head_ro:
+                # The refresh arm refuses this same condition as a typed refusal
+                # (``workspace_head_unreadable``); review-only must not be looser than
+                # the arm it protects (board r1, agent-harness#914, claude).
+                return {
+                    "status": "review_only_requires_admitted_prs",
+                    "nodes": completed_nodes,
+                    "detail": {
+                        "reason": "workspace_head_unreadable",
+                        "node_id": _nid_ro,
+                        "admitted_head_sha": _admitted_ro,
+                        "message": "review-only could not read the prebuilt workspace "
+                                   "HEAD to confirm it is the admitted head",
+                    },
+                }
             if _admitted_ro and _head_ro and _head_ro != _admitted_ro:
                 return {
                     "status": "review_only_requires_admitted_prs",
@@ -3636,6 +3656,8 @@ def _run_train_unfenced(
                         "code": getattr(f, "code", None),
                         "reason": getattr(f, "reason", None),
                         "severity": getattr(f, "severity", None),
+                        # A DISAGREE's actionable review text (board r1, grok).
+                        "body": getattr(f, "body", None),
                     }
                     for f in (getattr(review_result, "findings", None) or ())
                 ],
