@@ -318,7 +318,7 @@ class TestProtocol:
         # artifact paths and touches no board, publisher or merge.
         from phase_loop_runtime.train_roadmap import parse_train_roadmap
         from phase_loop_runtime.train_runner import run_train
-        from test_train_prebuilt import PREBUILT_1NODE_MD, _make_prebuilt_publish_stub
+        from test_train_prebuilt import PREBUILT_1NODE_MD
         from test_train_review_authorization import _ledger, _pr_is_open_true, _preflight_pass, ADMITTED
 
         n = "test_run_train_emit_arm_spends_nothing"
