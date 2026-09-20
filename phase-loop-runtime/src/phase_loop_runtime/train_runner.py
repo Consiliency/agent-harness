@@ -2318,7 +2318,9 @@ def _live_pr_merged_sha(
     return sha
 
 
-def _default_train_review(artifact: str, run_mode: str) -> "LoopResult":
+def _default_train_review(
+    artifact: str, run_mode: str, *, canonical_repo_authority: "Path | str | None" = None
+) -> "LoopResult":
     """Train-level governed review: one-round bounded panel review.
 
     Returns a :class:`LoopResult` with ``mergeable=True`` on approval or a
@@ -2342,15 +2344,63 @@ def _default_train_review(artifact: str, run_mode: str) -> "LoopResult":
 
     Stubbable seam: inject ``_train_review_fn`` into :func:`run_train`.
     """
-    from .governed_premerge import run_governed_premerge_loop
+    import functools
 
+    from .governed_premerge import run_governed_premerge_loop
+    from .governed_review import governed_board_gate
+
+    # agent-harness#906: the train review dispatches through the broker-AUTHORIZED
+    # board gate. The legacy `governed_planning_gate` -> `invoke_panel` route reaches
+    # the review-mode launch boundary without a HARDEN isolation authorization and
+    # every leg refuses ("missing HARDEN review authorization"), which the loop then
+    # reported only as `no_usable_review`. The gate performs the advisor-board CLI's
+    # sequence (composition authority, compose, isolation authorization over the exact
+    # staged bytes, `invoke_board`) and keeps the same GateResult contract.
     return run_governed_premerge_loop(
         artifact=artifact,
         author_executor="train-coordinator",
         run_mode=run_mode,
         max_rounds=1,
         apply_fix=None,
+        invoke=functools.partial(
+            governed_board_gate, canonical_repo_authority=canonical_repo_authority
+        ),
     )
+
+
+def _non_human_train_blocker(summary: str) -> Dict[str, object]:
+    return {
+        "human_required": False,
+        "blocker_class": "review_gate_block",
+        "blocker_summary": summary,
+        "required_human_inputs": (),
+    }
+
+
+def _train_canonical_repo_authority(
+    topo_order: "List[TrainNode]", resolve_workspace: "ResolveWorkspace"
+) -> Optional[Path]:
+    """The repository authority a train review binds its isolation authorization to.
+
+    agent-harness#906 D2: the coordinator's current directory's git toplevel when it is
+    one (how the advisor-board CLI resolves it, and how the chunker lane runs
+    ``run-train`` from the supplier checkout); otherwise the first topo-order node's
+    workspace. A train bundle is reviewed as ONE artifact under that authority; the
+    authorization schema carries exactly one canonical repository.
+    """
+    completed = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    top = completed.stdout.strip() if completed.returncode == 0 else ""
+    if top:
+        return Path(top).resolve()
+    for node in topo_order:
+        try:
+            return Path(resolve_workspace(node)).resolve()
+        except Exception:  # noqa: BLE001 - a node without a workspace yields no authority
+            continue
+    return None
 
 
 def _build_train_review_bundle(
@@ -2470,6 +2520,9 @@ def _run_train_unfenced(
     # P4 gate: False (default) preserves P3 behavior for all existing callers.
     # The CLI sets this True; run_mode then determines autonomous vs governed.
     _merge_phase_enabled: bool = False,
+    # agent-harness#906: review the ADMITTED heads and stop before any merge. Requires
+    # governed mode with the merge phase enabled; never enters the publication step.
+    review_only: bool = False,
     # P4 seams — unused when _merge_phase_enabled is False.
     _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
@@ -2883,7 +2936,46 @@ def _run_train_unfenced(
     # is stale because its upstream was rebuilt (Finding #4).
     rebuilt_this_run: Set[str] = set()
 
-    for i, node in enumerate(topo_order):
+    if review_only:
+        # agent-harness#906 D4: review-only reviews what is ADMITTED and publishes
+        # nothing. Every node must already be in the completed set after the Step 3
+        # live read (a closed unmerged PR was dropped there); a prebuilt workspace that
+        # moved past its admitted head would be republished by the refresh arm on a
+        # normal run, so it is refused here by name. Step 4 is then skipped outright,
+        # which makes the refresh arm, the execute arm and the replay arm unreachable.
+        missing = [n.node_id for n in topo_order if n.node_id not in completed_nodes]
+        if missing:
+            return {
+                "status": "review_only_requires_admitted_prs",
+                "nodes": completed_nodes,
+                "detail": {
+                    "reason": "nodes_without_admitted_pr",
+                    "missing": missing,
+                    "message": "review-only reviews admitted heads; run without "
+                               "--review-only to publish drafts first",
+                },
+            }
+        for _node_ro in topo_order:
+            if getattr(_node_ro, "mode", "execute") != "prebuilt":
+                continue
+            _nid_ro = _node_ro.node_id
+            _admitted_ro = completed_nodes[_nid_ro].get("admitted_head_sha")
+            _head_ro = workspace_head_fn(resolve_workspace(_node_ro))
+            if _admitted_ro and _head_ro and _head_ro != _admitted_ro:
+                return {
+                    "status": "review_only_requires_admitted_prs",
+                    "nodes": completed_nodes,
+                    "detail": {
+                        "reason": "local_candidate_not_admitted",
+                        "node_id": _nid_ro,
+                        "workspace_head": _head_ro,
+                        "admitted_head_sha": _admitted_ro,
+                        "message": "the workspace HEAD is not the admitted head; "
+                                   "review-only never admits a new head",
+                    },
+                }
+
+    for i, node in enumerate(() if review_only else topo_order):
         nid = node.node_id
 
         # Resume: skip nodes already confirmed pr_open (live PR check passed) OR
@@ -3389,9 +3481,17 @@ def _run_train_unfenced(
     # Resolve P4 seams (defaults to live; tests inject stubs).
     merge_pr_fn = _merge_pr_fn if _merge_pr_fn is not None else _live_merge_pr
     reverify_fn = _reverify_fn if _reverify_fn is not None else _live_reverify
-    train_review_fn = (
-        _train_review_fn if _train_review_fn is not None else _default_train_review
-    )
+    if _train_review_fn is not None:
+        train_review_fn = _train_review_fn
+    else:
+        import functools as _functools
+
+        train_review_fn = _functools.partial(
+            _default_train_review,
+            canonical_repo_authority=_train_canonical_repo_authority(
+                topo_order, resolve_workspace
+            ),
+        )
     pr_merged_sha_fn = (
         _pr_merged_sha_fn if _pr_merged_sha_fn is not None else _live_pr_merged_sha
     )
@@ -3481,6 +3581,34 @@ def _run_train_unfenced(
     # `_MIN_USABLE_REVIEWERS`, so a floor raised later (#375) auto-invalidates a
     # stored count that no longer clears it (no old-floor snapshot is trusted).
     # Pre-#358 records have `usable_reviewers is None` → re-review.
+    if review_only:
+        # agent-harness#906 D5 (review-only): do not spend a board on a bundle whose
+        # admitted head is no longer the live PR head; the merge-time
+        # `--match-head-commit` pin could never honour the approval. Governed merge
+        # runs keep today's behaviour (pinned by test_train_merge: an out-of-band open
+        # PR proceeds and fails closed at the merge pin), recorded as a plan deviation.
+        _stale = [
+            {
+                "node_id": _nid_s,
+                "admitted_head_sha": completed_nodes[_nid_s].get("admitted_head_sha"),
+                "live_head_sha": completed_nodes[_nid_s].get("head_sha"),
+            }
+            for _nid_s in sorted(out_of_band_upstreams)
+            if _nid_s in completed_nodes
+        ]
+        if _stale:
+            return {
+                "status": "review_halted",
+                "nodes": completed_nodes,
+                "reason": "stale_head",
+                "detail": {"stale": _stale},
+                "terminal_blocker": _non_human_train_blocker(
+                    "stale admitted head(s): " + ", ".join(
+                        f"{s['node_id']} admitted {s['admitted_head_sha']} live {s['live_head_sha']}"
+                        for s in _stale
+                    )
+                ),
+            }
     train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
     already_approved = (
         train_review_rec is not None
@@ -3502,6 +3630,15 @@ def _run_train_unfenced(
                 "nodes": completed_nodes,
                 "terminal_blocker": review_result.terminal_blocker,
                 "reason": review_result.reason or "train_review_rejected",
+                # agent-harness#906 D3: every leg's own reason survives the hold.
+                "findings": [
+                    {
+                        "code": getattr(f, "code", None),
+                        "reason": getattr(f, "reason", None),
+                        "severity": getattr(f, "severity", None),
+                    }
+                    for f in (getattr(review_result, "findings", None) or ())
+                ],
             }
 
         # Record approval (synthetic node_id — never a real roadmap node) WITH
@@ -3529,6 +3666,19 @@ def _run_train_unfenced(
                 review_policy_version=_review_policy_version,
             ),
         )
+    else:
+        _usable_reviewers = train_review_rec.usable_reviewers
+        _review_policy_version = train_review_rec.review_policy_version
+    if review_only:
+        # agent-harness#906 D4: the approval is durable (appended above, or already on
+        # the ledger); stop BEFORE the first merge. A later `--governed` run resumes
+        # through `already_approved` without re-boarding.
+        return {
+            "status": "review_approved",
+            "nodes": completed_nodes,
+            "usable_reviewers": _usable_reviewers,
+            "review_policy_version": _review_policy_version,
+        }
 
     # --- Sequential merge in topo order with downstream re-verify -----------
     #

@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Run Train: broker-authorized train review, per-leg refusal diagnostics, `--review-only` (agent-harness#906)
+
+- **The coordinator's governed train review now runs through the broker-authorized review
+  board.** It reached the review-mode launch boundary without the typed HARDEN isolation
+  authorization, so every reviewer leg refused ("missing HARDEN review authorization") and the
+  loop reported only `no_usable_review`. `_default_train_review` now dispatches through a
+  board gate that performs the `advisor-board` CLI's sequence (composition authority, compose,
+  isolation authorization over the exact staged bytes, `invoke_board` with a scratch provider
+  directory) on the existing premerge-loop seam; tierless, mode-less, never constructing a leg
+  authorization, lease, claim or seal.
+- **A held review names each leg's refusal.** The zero-usable hold keeps the per-leg findings
+  with the leg's detail; `review_halted` results carry them.
+- **`run-train --governed --review-only`** reviews the ADMITTED heads, records approval, and
+  stops before any merge (`review_approved`); it never enters the publication step, refuses a
+  node without an admitted PR or a prebuilt workspace whose HEAD moved past its admitted head
+  (`review_only_requires_admitted_prs`), and halts on a stale admitted head
+  (`review_halted`/`stale_head`) before spending a board. A later `--governed` run merges
+  without re-review. `--review-only` without `--governed` is a usage error.
+
 ### Run Train: refresh an admitted prebuilt PR; land single-node prebuilt trains under `--governed` (agent-harness#906)
 
 - **A prebuilt node whose local candidate advanced past its admitted head is refreshed on

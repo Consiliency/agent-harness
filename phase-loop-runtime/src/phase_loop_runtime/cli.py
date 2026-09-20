@@ -887,6 +887,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_train_sub.add_argument(
+        "--review-only",
+        dest="review_only",
+        action="store_true",
+        default=False,
+        help=(
+            "With --governed: run the train-level review of the ADMITTED heads, record "
+            "approval on the ledger, and stop before any merge. Publishes nothing; a "
+            "node without an admitted open PR is refused. A later --governed run merges "
+            "without re-review."
+        ),
+    )
+    run_train_sub.add_argument(
         "--workspace-root",
         default=".",
         metavar="DIR",
@@ -4229,6 +4241,12 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
 
     # run_mode mirrors how 'run' handles --governed (cli.py:796)
     run_mode = "governed" if bool(getattr(args, "governed", False)) else "autonomous"
+    # agent-harness#906: --review-only is a governed-only operation; never silently
+    # upgrade an autonomous run, error instead.
+    review_only = bool(getattr(args, "review_only", False))
+    if review_only and run_mode != "governed":
+        parser.error("--review-only requires --governed")
+        return 1  # unreachable
 
     # Workspace resolution precedence (highest first):
     #   1. --workspace <repo>=<path> CLI override (arbitrary absolute paths)
@@ -4334,6 +4352,7 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             resolve_workspace=_resolve_workspace,
             coordinator_runtime=coordinator_runtime,
             _merge_phase_enabled=True,  # P4 gate: autonomous→drafts_open, governed→merge
+            review_only=review_only,
         )
     finally:
         try:
@@ -4378,6 +4397,26 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
                 print(f"  {node_id}: {info.get('pr_url', '?')}")
         return 0
 
+    if result["status"] == "review_approved":
+        # agent-harness#906: --review-only terminal — approval recorded, ZERO merges.
+        nodes = result.get("nodes", {})
+        if not as_json:
+            print(
+                f"run-train: train-level review APPROVED — {len(nodes)} admitted PR(s), "
+                f"usable reviewers: {result.get('usable_reviewers')}; stopped before merge "
+                f"(--review-only). Re-run with --governed to merge."
+            )
+            for node_id, info in nodes.items():
+                print(f"  {node_id}: {info.get('pr_url', '?')} @ {info.get('admitted_head_sha', '?')}")
+        return 0
+    if result["status"] == "review_only_requires_admitted_prs":
+        detail = result.get("detail", {})
+        print(
+            f"run-train: --review-only refused before any publication: "
+            f"{detail.get('reason')} — {detail.get('message', '')}",
+            file=sys.stderr,
+        )
+        return 1
     if result["status"] == "review_halted":
         # Panel rejected the train — ZERO merges (partial-merge-disaster guard).
         blocker = result.get("terminal_blocker") or {}
@@ -4387,6 +4426,8 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             f"(reason: {reason}; human_required: {blocker.get('human_required', False)})",
             file=sys.stderr,
         )
+        for finding in result.get("findings", []) or []:
+            print(f"  [{finding.get('severity')}] {finding.get('code')}: {finding.get('reason')}", file=sys.stderr)
         return 1
 
     if result["status"] == "merge_halted":
