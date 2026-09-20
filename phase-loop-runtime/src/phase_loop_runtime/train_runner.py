@@ -2830,9 +2830,15 @@ def _run_train_unfenced(
                     live_sha = live_pr_head_sha_fn(workspace, rec.branch)
                 except Exception as exc:  # agent-harness#289: a failed live read is a
                     # typed blocked return with a ledger row, never an uncaught escape.
+                    # The row KEEPS the admitted head and PR (PR #909 r2, codex): a
+                    # transient read failure between two refused retries must not erase
+                    # the durable refusal and let the next run publish fresh.
                     append_record(
                         ledger_path,
-                        LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
+                        LedgerRecord(
+                            node_id=nid, status="blocked", branch=rec.branch,
+                            head_sha=rec.head_sha, pr_url=rec.pr_url,
+                        ),
                     )
                     return {
                         "status": "blocked",

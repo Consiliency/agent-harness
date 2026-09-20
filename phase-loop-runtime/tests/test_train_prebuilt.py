@@ -579,13 +579,20 @@ class TestPrebuiltRefresh:
         state = read_ledger(ledger)["repo-a/specs/plan-a.md"]
         assert state.status == "blocked" and state.head_sha == ADMITTED and state.pr_url
         # supersede: the operator closes the stale PR; resume drops the node and republishes
+        # as a NEW PR (distinct URL), never a create against the closed one
         roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        def _publish_new_pr(workspace, owned_paths, **kw):
+            out = _make_prebuilt_publish_stub(published)(workspace, owned_paths, **kw)
+            out["pr_url"] = f"https://gh.com/{workspace.name}/pr/2"
+            return out
+
         third = run_train(
             roadmap, ledger, run_mode="autonomous",
             resolve_workspace=lambda n: ws_map[n.node_id],
             _run_loop=lambda *a, **kw: (None, []),
-            _publish=_make_prebuilt_publish_stub(published),
+            _publish=_publish_new_pr,
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass, _pr_is_open=_pr_is_open_false,
             _live_pr_head_sha_fn=lambda ws, br: None,
@@ -594,7 +601,28 @@ class TestPrebuiltRefresh:
         )
         assert third["status"] == "drafts_open"
         assert published["repo-a"]["prebuilt"] is True
-        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].head_sha == "sha-COMMITTED-repo-a"
+        latest = read_ledger(ledger)["repo-a/specs/plan-a.md"]
+        assert latest.head_sha == "sha-COMMITTED-repo-a"
+        assert latest.pr_url == "https://gh.com/repo-a/pr/2", "a distinct PR, the old URL kept in history"
+        assert any("https://gh.com/repo-a/pr/1" in ln for ln in ledger.read_text().splitlines())
+
+    def test_transient_live_read_failure_between_retries_keeps_the_refusal(self, tmp_path: Path):
+        """PR #909 r2, codex: refusal -> read exception -> retry must still refuse."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        first = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert first["detail"]["reason"] == "remote_drift"
+
+        def _raises(ws, br):
+            raise RuntimeError("gh transient")
+
+        second = self._run(tmp_path, ledger, published, head="sha-new-a", live_fn=_raises)
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "live_pr_head_read_failed"
+        third = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert third["status"] == "blocked" and third["detail"]["reason"] == "remote_drift", (
+            "the read-failure row must keep the admission so the retry re-enters the decision"
+        )
+        assert published == {}
 
     def test_drift_observed_at_resume_then_restored_is_still_refused(self, tmp_path: Path):
         """PR #909 r1, codex/grok: the Step 3 observation is remembered even when the
