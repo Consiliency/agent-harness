@@ -29,6 +29,10 @@ regressions, each named so nothing is silently dropped):
   --review-only`` is a usage error (PR-2 regresses it; here only the positive parse is falsified).
 - ``pending`` unchanged BEFORE the flip on a non-native host (the legacy adapter path): PR-2's LEGIBLE
   suite updates carry it; no RED falsifier here because it is true on the pre-implementation base.
+- ``validate_verification_sidecar`` is UNCHANGED by design (plan r6): it reads the bound record extension
+  that ``finalize_operational_attestation`` also produces, so a kind check there would break or be
+  vacuous; a hand-written incomplete record is closed by the producer (the runner's sealing path obtains
+  its observation only through the one function and refuses before any write) — no validator falsifier.
 """
 from __future__ import annotations
 
