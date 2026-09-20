@@ -908,6 +908,22 @@ def inspect_publish_resume_candidate(repo: Path, *, checkpoint_root: Path, node_
         return PublishResumeCandidate(PublishTransactionState.CONFLICTED, transaction)
     if transaction.checkpoint_root.resolve() != Path(checkpoint_root).resolve():
         return PublishResumeCandidate(PublishTransactionState.CONFLICTED, transaction)
+    if (
+        transaction.state == PublishTransactionState.TERMINAL_SEALED
+        and _git_output(Path(repo), "rev-parse", transaction.exact_ref) != transaction.expected_commit_oid
+    ):
+        # agent-harness#906: a SEALED transaction whose head the workspace has ADVANCED
+        # PAST is a completed prior publication attempt, not in-flight work. The HEAD and
+        # workspace checks below describe an in-flight publish (or its crash-after-seal
+        # replay, which still takes them: same head, same checks, unchanged) and must not
+        # run against it -- reporting it CONFLICTED failed the whole train at preflight
+        # (board PR #907 r1, claude seat, executed). It is returned ATTACHED: the
+        # post-accept path in `publish_from_worktree` needs the transaction to finish
+        # sealing, and `prepare_*_transaction` already treats a sealed transaction as not
+        # active. Whether it counts as PUBLISHED is not the inspector's call -- the broker
+        # seals on every terminal class -- the coordinator decides from the evidence store
+        # (`train_runner._sealed_publish_disposition`).
+        return PublishResumeCandidate(PublishTransactionState.TERMINAL_SEALED, transaction)
     if transaction.state in (
         PublishTransactionState.PREPARED,
         PublishTransactionState.COMMIT_OBJECT_DURABLE,
@@ -1135,7 +1151,19 @@ def publish_from_worktree(
         if active and authority is not None and checkpoint_root is not None
         else PublishResumeCandidate(PublishTransactionState.CONFLICTED)
     )
-    resuming = candidate.transaction is not None and candidate.state != PublishTransactionState.CONFLICTED
+    # agent-harness#906: a sealed transaction for an OLD head (the workspace advanced past
+    # it) is a completed prior publication -- never resumed, a fresh one is prepared. A
+    # sealed transaction for the CURRENT head is the crash-after-seal replay and resumes.
+    sealed_prior = (
+        candidate.transaction is not None
+        and candidate.state == PublishTransactionState.TERMINAL_SEALED
+        and candidate.transaction.committed_head_sha != _git_output(repo, "rev-parse", "HEAD")
+    )
+    resuming = (
+        candidate.transaction is not None
+        and candidate.state != PublishTransactionState.CONFLICTED
+        and not sealed_prior
+    )
     if not prebuilt and not owned_paths:
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
     if not prebuilt and not resuming and _git(repo, "add", "--", *owned_paths).returncode:
@@ -1162,7 +1190,7 @@ def publish_from_worktree(
         authority = publish_authority.envelope_authority_preimage
         if Path(checkpoint_root).resolve() != Path(publish_authority.checkpoint_root).resolve():
             return _blocked("checkpoint_root_mismatch", "checkpoint_root must equal the authority handoff root")
-        if candidate.transaction is not None:
+        if candidate.transaction is not None and not sealed_prior:
             if candidate.state == PublishTransactionState.CONFLICTED:
                 raise RuntimeError("active publish transaction is conflicted")
             transaction = candidate.transaction

@@ -73,6 +73,25 @@ PREBUILT_3NODE_MD = """\
 """
 
 
+PREBUILT_ORDER_ONLY_MD = """\
+# Release Train: prebuilt-order-only
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+**Mode:** prebuilt
+
+### Node: repo-b / specs/plan-b.md
+
+**Depends on:** repo-a / specs/plan-a.md
+**Channel:** order-only
+**Mode:** prebuilt
+"""
+
+
 def _preflight_pass(nodes, resolve_workspace):
     return []
 
@@ -375,15 +394,13 @@ class TestPrebuiltFullTrain:
 
 
 class TestPrebuiltGovernedRejected:
-    def test_governed_prebuilt_opens_zero_prs(self, tmp_path: Path):
-        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
-        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
-        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
-        published: dict = {}
+    """agent-harness#906: the --governed refusal keys on the SAME predicate the P4 merge
+    loop uses -- `edges_for_downstream(node)` non-empty -- because `reverify_fn` runs for
+    every node inside `if _upstream_edges_m:`, order-only edges included. A prebuilt node
+    with ANY upstream edge is refused at preflight with zero PRs; one with none lands."""
 
-        result = run_train(
-            roadmap,
-            ledger,
+    def _governed_kwargs(self, ws_map, published, **extra):
+        kw = dict(
             run_mode="governed",
             resolve_workspace=lambda n: ws_map[n.node_id],
             _run_loop=lambda *a, **kw: (None, []),
@@ -395,10 +412,611 @@ class TestPrebuiltGovernedRejected:
             _merge_phase_enabled=True,
             _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"],
         )
+        kw.update(extra)
+        return kw
 
+    def test_governed_prebuilt_with_channel_upstream_refused_zero_prs(self, tmp_path: Path):
+        roadmap = parse_train_roadmap(PREBUILT_3NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        published: dict = {}
+        result = run_train(roadmap, ledger, **self._governed_kwargs(ws_map, published))
         assert result["status"] == "preflight_failed"
-        assert any("prebuilt" in e for e in result["errors"])
-        assert published == {}, "zero PRs must open when prebuilt+governed is rejected"
+        assert any("upstream" in e and "repo-b/specs/plan-b.md" in e for e in result["errors"])
+        assert "manually" not in " ".join(result["errors"]), (
+            "the refusal must not instruct a manual merge the run-train skill forbids"
+        )
+        assert published == {}, "zero PRs must open when an upstream-bearing prebuilt is refused"
+
+    def test_governed_prebuilt_with_order_only_upstream_refused_zero_prs(self, tmp_path: Path):
+        """Order-only edges carry no channel but DO reach reverify_fn (board PR #907 r1)."""
+        roadmap = parse_train_roadmap(PREBUILT_ORDER_ONLY_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        published: dict = {}
+        result = run_train(roadmap, ledger, **self._governed_kwargs(ws_map, published))
+        assert result["status"] == "preflight_failed", result
+        assert any("repo-b/specs/plan-b.md" in e and "repo-a/specs/plan-a.md" in e for e in result["errors"])
+        assert published == {}
+
+    def test_governed_single_node_prebuilt_lands_pinned_to_admitted_head(self, tmp_path: Path):
+        """A prebuilt node with NO upstream edge never reaches reverify_fn; it publishes,
+        passes train review, and merges pinned (--match-head-commit) to its ADMITTED head."""
+        from test_train_merge import _approval_review_fn
+
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        published: dict = {}
+        merge_heads: dict = {}
+
+        def _merge_pr(workspace, branch, base="main", head_sha=None):
+            merge_heads[workspace.name] = head_sha
+            return f"sha-merged-{workspace.name}"
+
+        def _reverify_must_not_run(*a, **kw):
+            raise AssertionError("reverify_fn must never run for a zero-edge prebuilt node")
+
+        result = run_train(
+            roadmap, ledger,
+            **self._governed_kwargs(
+                ws_map, published,
+                _merge_pr_fn=_merge_pr,
+                _reverify_fn=_reverify_must_not_run,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            ),
+        )
+        assert result["status"] == "merged", result
+        assert published["repo-a"]["prebuilt"] is True
+        assert merge_heads == {"repo-a": "sha-COMMITTED-repo-a"}, (
+            "the merge must be pinned to the broker-admitted head the publish returned"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4b. agent-harness#906: refreshing an admitted prebuilt PR on local advance
+
+from phase_loop_runtime.train_ledger import LedgerRecord, append_record  # noqa: E402
+
+
+def _pr_is_open_true(workspace: Path, branch: str) -> bool:
+    return True
+
+
+ADMITTED = "sha-admitted-a"
+
+
+class TestPrebuiltRefresh:
+    """The Step 4 skip block reads the workspace HEAD for a prebuilt pr_open node. Only a
+    fast-forward advance of the admitted head falls through into the prebuilt publish
+    arm; remote drift and divergence are refused before any admission."""
+
+    def _ledger_with_open_pr(self, tmp_path: Path) -> Path:
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open",
+            branch="feat/train-repo-a", head_sha=ADMITTED,
+            pr_url="https://gh.com/repo-a/pr/1", merge_order=0,
+        ))
+        return ledger
+
+    def _run(self, tmp_path, ledger, published, *, head, ancestor=True, live=ADMITTED,
+             live_fn=None, publish=None, head_fn=None):
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        return run_train(
+            roadmap, ledger,
+            run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=publish or _make_prebuilt_publish_stub(published),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=live_fn or (lambda ws, br: live),
+            _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"],
+            _workspace_head_fn=head_fn or (lambda ws: head),
+            _is_ancestor_fn=lambda ws, a, b: ancestor,
+            _merge_phase_enabled=True,  # autonomous + merge phase => stops at drafts_open
+        )
+
+    def test_unchanged_resume_skips_without_publishing(self, tmp_path: Path):
+        ledger = self._ledger_with_open_pr(tmp_path)
+        before = ledger.read_bytes()
+        published: dict = {}
+        result = self._run(tmp_path, ledger, published, head=ADMITTED)
+        assert result["status"] == "drafts_open"
+        assert published == {}
+        assert ledger.read_bytes() == before
+
+    def test_fast_forward_advance_refreshes_through_the_prebuilt_arm(self, tmp_path: Path):
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        result = self._run(tmp_path, ledger, published, head="sha-new-a", ancestor=True)
+        assert result["status"] == "drafts_open", result
+        assert published["repo-a"]["prebuilt"] is True, "the refresh IS the prebuilt arm"
+        assert published["repo-a"]["owned_paths"] == ["src/x.py"], "owned paths re-derived"
+        lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
+        pr_open_lines = [ln for ln in lines if '"pr_open"' in ln]
+        assert len(pr_open_lines) == 2, "append-only: the prior pr_open line is preserved"
+        assert ADMITTED in pr_open_lines[0]
+        assert "sha-COMMITTED-repo-a" in pr_open_lines[1], "the NEW admitted head is last"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].head_sha == "sha-COMMITTED-repo-a"
+        assert result["nodes"]["repo-a/specs/plan-a.md"]["head_sha"] == "sha-COMMITTED-repo-a"
+
+    def test_remote_drift_is_refused_before_any_admission(self, tmp_path: Path):
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        result = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert result["status"] == "blocked"
+        assert result["detail"]["reason"] == "remote_drift"
+        assert published == {}, "no publish_fn call: refused before admission"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].status == "blocked"
+
+    def test_unobserved_live_head_is_refused_before_any_admission(self, tmp_path: Path):
+        """A live read that returns nothing is not 'no drift' (PR #909 r1, claude)."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        result = self._run(tmp_path, ledger, published, head="sha-new-a", live=None)
+        assert result["status"] == "blocked"
+        assert result["detail"]["reason"] == "live_pr_head_unavailable"
+        assert published == {}
+
+    def test_refusal_is_durable_across_retries_until_the_pr_is_superseded(self, tmp_path: Path):
+        """PR #909 r1, codex (blocking): after a remote_drift refusal the blocked row must not
+        hide the prior admission -- a plain retry re-enters the decision and is refused
+        again; only closing the PR (supersede) lets the node publish fresh as a NEW PR."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        first = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert first["status"] == "blocked" and first["detail"]["reason"] == "remote_drift"
+        second = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "remote_drift", (
+            "a retry must NOT bypass the refusal by publishing fresh"
+        )
+        assert published == {}, "no publish across both refused runs"
+        state = read_ledger(ledger)["repo-a/specs/plan-a.md"]
+        assert state.status == "blocked" and state.head_sha == ADMITTED and state.pr_url
+        # supersede: the operator closes the stale PR; resume drops the node and republishes
+        # as a NEW PR (distinct URL), never a create against the closed one
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        def _publish_new_pr(workspace, owned_paths, **kw):
+            out = _make_prebuilt_publish_stub(published)(workspace, owned_paths, **kw)
+            out["pr_url"] = f"https://gh.com/{workspace.name}/pr/2"
+            return out
+
+        third = run_train(
+            roadmap, ledger, run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_publish_new_pr,
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass, _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"],
+            _merge_phase_enabled=True,
+        )
+        assert third["status"] == "drafts_open"
+        assert published["repo-a"]["prebuilt"] is True
+        latest = read_ledger(ledger)["repo-a/specs/plan-a.md"]
+        assert latest.head_sha == "sha-COMMITTED-repo-a"
+        assert latest.pr_url == "https://gh.com/repo-a/pr/2", "a distinct PR, the old URL kept in history"
+        assert any("https://gh.com/repo-a/pr/1" in ln for ln in ledger.read_text().splitlines())
+
+    def test_transient_live_read_failure_between_retries_keeps_the_refusal(self, tmp_path: Path):
+        """PR #909 r2, codex: refusal -> read exception -> retry must still refuse."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        first = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert first["detail"]["reason"] == "remote_drift"
+
+        def _raises(ws, br):
+            raise RuntimeError("gh transient")
+
+        second = self._run(tmp_path, ledger, published, head="sha-new-a", live_fn=_raises)
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "live_pr_head_read_failed"
+        third = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert third["status"] == "blocked" and third["detail"]["reason"] == "remote_drift", (
+            "the read-failure row must keep the admission so the retry re-enters the decision"
+        )
+        assert published == {}
+
+    def test_drift_observed_at_resume_then_restored_is_still_refused(self, tmp_path: Path):
+        """PR #909 r1, codex/grok: the Step 3 observation is remembered even when the
+        decision's re-read flaps back to the admitted head."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        reads = iter(["sha-oob-a", ADMITTED, ADMITTED])
+
+        def _flapping(ws, br):
+            return next(reads)
+
+        result = self._run(tmp_path, ledger, published, head="sha-new-a", live_fn=_flapping)
+        assert result["status"] == "blocked" and result["detail"]["reason"] == "remote_drift"
+        assert published == {}
+
+    def test_diverged_candidate_is_refused_before_any_admission(self, tmp_path: Path):
+        ledger = self._ledger_with_open_pr(tmp_path)
+        published: dict = {}
+        result = self._run(tmp_path, ledger, published, head="sha-rewritten-a", ancestor=False)
+        assert result["status"] == "blocked"
+        assert result["detail"]["reason"] == "candidate_diverged"
+        assert published == {}
+
+    def test_rejected_admission_leaves_the_old_admitted_head(self, tmp_path: Path):
+        ledger = self._ledger_with_open_pr(tmp_path)
+
+        def _publish_refused(workspace, owned_paths, **kw):
+            return {"status": "blocked", "reason": "admission_rejected", "branch": "feat/train-repo-a"}
+
+        result = self._run(tmp_path, ledger, {}, head="sha-new-a", publish=_publish_refused)
+        assert result["status"] == "blocked"
+        assert result["detail"]["reason"] == "admission_rejected"
+        lines = ledger.read_text().splitlines()
+        assert sum('"pr_open"' in ln for ln in lines) == 1, "no new pr_open was fabricated"
+        assert any(ADMITTED in ln and '"pr_open"' in ln for ln in lines)
+
+    def test_rejected_refresh_then_drift_is_still_refused_on_retry(self, tmp_path: Path):
+        """A rejected refresh must not erase the admission either: a later retry that meets
+        drift re-enters the decision and refuses (PR #909 r3 follow-through)."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+
+        def _publish_refused(workspace, owned_paths, **kw):
+            return {"status": "blocked", "reason": "admission_rejected", "branch": "feat/train-repo-a"}
+
+        first = self._run(tmp_path, ledger, {}, head="sha-new-a", publish=_publish_refused)
+        assert first["status"] == "blocked"
+        published: dict = {}
+        second = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "remote_drift"
+        assert published == {}
+
+    def test_stale_upstream_block_is_durable_until_the_pr_is_closed(self, tmp_path: Path):
+        """PR #909 r4, codex: the stale-upstream block must not erase the downstream's
+        admission either -- a re-run re-blocks; only closing the PR lets it republish."""
+        from test_train_merge import TRAIN_2NODE_MD, _make_publish_stub, _setup_p3_done
+
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = _setup_p3_done(tmp_path, roadmap, ws_map, sha_a="sha-admitted-a", sha_b="sha-admitted-b")
+        run_loop_calls: list = []
+
+        def _run(pr_open, live_a):
+            def _run_loop(ws, *a, **kw):
+                run_loop_calls.append(ws.name)
+                return (None, [])
+            return run_train(
+                roadmap, ledger, run_mode="autonomous",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=_run_loop,
+                _publish=_make_publish_stub({}),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=pr_open,
+                _live_pr_head_sha_fn=lambda ws, br: live_a if br == "feat/train-a" else "sha-admitted-b",
+                _merge_phase_enabled=True,
+            )
+
+        first = _run(_pr_is_open_true, "sha-oob-a")  # upstream repo-a advanced out of band
+        assert first["status"] == "blocked" and first["detail"]["reason"] == "upstream_changed_downstream_pr_open"
+        second = _run(_pr_is_open_true, "sha-oob-a")  # plain re-run, PR still open
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "upstream_changed_downstream_pr_open", (
+            "a re-run must re-block, not republish the downstream fresh"
+        )
+        assert run_loop_calls == [], "no rebuild happened while the stale PR stayed open"
+        state = read_ledger(ledger)["repo-b/specs/plan-b.md"]
+        assert state.status == "blocked" and state.head_sha == "sha-admitted-b" and state.pr_url
+
+    def test_live_head_read_failure_is_a_typed_block_not_an_escape(self, tmp_path: Path):
+        """agent-harness#289, taken deliberately: the refresh's drift check reads the live
+        head, so a failed read must be a blocked return with a ledger row."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+
+        def _raises(ws, br):
+            raise RuntimeError("gh unavailable")
+
+        result = self._run(tmp_path, ledger, {}, head="sha-new-a", live_fn=_raises)
+        assert result["status"] == "blocked"
+        assert result["detail"]["reason"] == "live_pr_head_read_failed"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].status == "blocked"
+
+    def test_execute_nodes_are_never_refreshed(self, tmp_path: Path):
+        roadmap = parse_train_roadmap(EXECUTE_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/train-repo-a",
+            head_sha=ADMITTED, pr_url="https://gh.com/repo-a/pr/1", merge_order=0,
+        ))
+
+        def _head_must_not_be_read(ws):
+            raise AssertionError("an execute node's workspace HEAD is coordinator-managed")
+
+        result = run_train(
+            roadmap, ledger, run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_prebuilt_publish_stub({}),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass, _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: ADMITTED,
+            _workspace_head_fn=_head_must_not_be_read,
+            _merge_phase_enabled=True,
+        )
+        assert result["status"] == "drafts_open"
+
+    def test_crash_after_running_append_resumes_to_one_publish(self, tmp_path: Path):
+        """D4: a `running` record hides the prior pr_open in the last-wins fold, so the
+        node republishes at HEAD through the ordinary arm -- exactly once -- and the prior
+        pr_open line stays in the file."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+        append_record(ledger, LedgerRecord(node_id="repo-a/specs/plan-a.md", status="running"))
+        published: dict = {}
+        calls = []
+
+        def _publish(workspace, owned_paths, **kw):
+            calls.append(kw.get("prebuilt"))
+            return _make_prebuilt_publish_stub(published)(workspace, owned_paths, **kw)
+
+        result = self._run(tmp_path, ledger, published, head="sha-new-a", publish=_publish)
+        assert result["status"] == "drafts_open"
+        assert calls == [True]
+        lines = ledger.read_text().splitlines()
+        assert any(ADMITTED in ln and '"pr_open"' in ln for ln in lines), "prior line preserved"
+
+
+EXECUTE_1NODE_MD = """\
+# Release Train: execute-single
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
+
+
+class TestRefreshGitHelpers:
+    """The default seams behind `_prebuilt_refresh_decision`, against REAL git (board PR
+    #909 r1, gemini: every refresh test injects them, so an argument-order mutant in
+    `_is_ancestor` would have survived)."""
+
+    def test_workspace_head_and_is_ancestor_against_real_git(self, tmp_path: Path):
+        from phase_loop_runtime.train_runner import _is_ancestor, _workspace_head
+
+        repo = _make_repo_with_origin(tmp_path)
+        base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / "a.txt").write_text("a\n"); _git(repo, "add", "a.txt"); _git(repo, "commit", "-q", "-m", "a")
+        child = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        assert _workspace_head(repo) == child
+        assert _is_ancestor(repo, base, child) is True
+        assert _is_ancestor(repo, child, base) is False, "argument order: (ancestor, descendant)"
+        assert _is_ancestor(repo, "0" * 40, child) is None, "unknown object: undecidable, not False"
+        assert _workspace_head(tmp_path / "not-a-repo") is None
+
+    def test_undecidable_ancestry_is_refused_before_admission(self, tmp_path: Path):
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/train-repo-a",
+            head_sha=ADMITTED, pr_url="https://gh.com/repo-a/pr/1", merge_order=0,
+        ))
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        published: dict = {}
+        result = run_train(
+            roadmap, ledger, run_mode="autonomous",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_prebuilt_publish_stub(published),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_preflight_pass, _pr_is_open=_pr_is_open_true,
+            _live_pr_head_sha_fn=lambda ws, br: ADMITTED,
+            _workspace_head_fn=lambda ws: "sha-new-a",
+            _is_ancestor_fn=lambda ws, a, b: None,
+            _merge_phase_enabled=True,
+        )
+        assert result["status"] == "blocked"
+        assert result["detail"]["reason"] == "ancestry_unreadable"
+        assert published == {}
+
+
+def publish_from_worktree_real(repo, owned_paths, authority) -> str:
+    from test_publishing import _Broker
+    from phase_loop_runtime.publishing import publish_from_worktree
+    return publish_from_worktree(
+        repo, owned_paths, prebuilt=True, broker_client=_Broker(),
+        publish_authority=authority, checkpoint_root=authority.checkpoint_root,
+    )["status"]
+
+
+class TestSealedPriorTransaction:
+    """agent-harness#906 Step 2: a TERMINAL_SEALED prior transaction is never a resume
+    candidate; the evidence store decides whether the attempt is over."""
+
+    def test_disposition_maps_evidence_by_the_brokers_own_key(self, tmp_path: Path, monkeypatch):
+        """The evidence read is keyed exactly as the broker files it
+        (`<verb>\\0sha256(repo\\0branch\\0head)`) at the repository's broker namespace, and
+        the three terminal classes map to complete / ambiguous / no. Writing to a REAL
+        store needs FABPUB bootstrap receipts, so the store is faked at the seam the helper
+        imports; the store's own suite covers its reads."""
+        from types import SimpleNamespace
+        from phase_loop_runtime.convergence.broker import evidence as evidence_mod
+        from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
+        from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+        from phase_loop_runtime.convergence.contracts import publish_committed_branch_idempotency_key
+        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+        from phase_loop_runtime.train_runner import _sealed_publish_disposition
+
+        repo = _make_repo_with_origin(tmp_path)
+        expected_root = repository_broker_namespace(repo)
+        records: dict = {}
+        seen_roots: list = []
+
+        class _FakeStore:
+            def __init__(self, root, **kw):
+                seen_roots.append(Path(root))
+            def replay(self):
+                return dict(records)
+
+        monkeypatch.setattr(evidence_mod, "BrokerEvidenceStore", _FakeStore)
+        from phase_loop_runtime.convergence.contracts import BrokerVerb
+        tx = SimpleNamespace(canonical_repository_identity="ident", branch="feat/x", committed_head_sha="abc")
+        # the broker's own dedup shape: `<verb>\0<base>` (see BrokerService._dedup_key)
+        key = f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0" + publish_committed_branch_idempotency_key("ident", "feat/x", "abc")
+
+        assert _sealed_publish_disposition(repo, tx) == "no"
+        assert seen_roots == [expected_root], "the read must target the repository's broker namespace"
+        records[key] = EvidenceRecord(key, TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, "pr")
+        assert _sealed_publish_disposition(repo, tx) == "complete"
+        records[key] = EvidenceRecord(key, TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN, "none")
+        assert _sealed_publish_disposition(repo, tx) == "complete"
+        records[key] = EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "?")
+        assert _sealed_publish_disposition(repo, tx) == "ambiguous"
+        # a record filed under a DIFFERENT head is not this transaction's evidence
+        records.clear()
+        records[f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0" + publish_committed_branch_idempotency_key("ident", "feat/x", "zzz")] = (
+            EvidenceRecord("other", TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, "pr")
+        )
+        assert _sealed_publish_disposition(repo, tx) == "no"
+
+    def test_disposition_is_unreadable_when_the_store_cannot_be_opened(self, tmp_path: Path, monkeypatch):
+        from types import SimpleNamespace
+        from phase_loop_runtime.convergence.broker import evidence as evidence_mod
+        from phase_loop_runtime.train_runner import _sealed_publish_disposition
+
+        def _boom(root, **kw):
+            raise PermissionError("no receipt")
+
+        monkeypatch.setattr(evidence_mod, "BrokerEvidenceStore", _boom)
+        tx = SimpleNamespace(canonical_repository_identity="i", branch="b", committed_head_sha="h")
+        assert _sealed_publish_disposition(_make_repo_with_origin(tmp_path), tx) == "unreadable"
+
+    def _run_step2(self, tmp_path, monkeypatch, disposition):
+        """Drive the REAL Step 2 (default preflight, FABPUB active) with the inspector
+        returning a sealed prior; the disposition seam stands in for the evidence read."""
+        from phase_loop_runtime import publishing
+        from phase_loop_runtime.convergence.broker import live
+
+        repo = _make_repo_with_origin(tmp_path)
+        _git(repo, "checkout", "-q", "-b", "feat/train-repo")
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "x.py").write_text("x = 1\n")
+        _git(repo, "add", "src/x.py"); _git(repo, "commit", "-q", "-m", "work")
+        from types import SimpleNamespace
+        # a sealed transaction for an OLD head: the workspace HEAD (real git) differs
+        sealed = publishing.PublishResumeCandidate(
+            "TERMINAL_SEALED", SimpleNamespace(committed_head_sha="sha-old-admitted")
+        )
+        monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+        monkeypatch.setattr(publishing, "inspect_publish_resume_candidate", lambda *a, **k: sealed)
+
+        class _Auth:
+            checkpoint_root = tmp_path / "checkpoints"
+            envelope_authority_preimage = {"node_id": "repo-a/specs/plan-a.md"}
+
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        published: dict = {}
+        broker = type("B", (), {"requires_gh_auth_preflight": False})()
+        result = run_train(
+            roadmap, tmp_path / "ledger" / "train.ledger.jsonl",
+            run_mode="autonomous",
+            resolve_workspace=lambda n: repo,
+            coordinator_runtime=_make_runtime(broker),
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_prebuilt_publish_stub(published),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _pr_is_open=_pr_is_open_false,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _publish_authority_fn=lambda *a, **k: _Auth(),
+            _sealed_disposition_fn=lambda ws, tx: disposition,
+            _merge_phase_enabled=True,
+        )
+        return result, published
+
+    def test_exact_chunker_checkpoint_state_sealed_s25_workspace_at_s26_pr_closed(self, tmp_path, monkeypatch):
+        """The treesitter-chunker continuation state, verbatim (agent-harness#906 handoff):
+        the checkpoint store's active pointer selects a TERMINAL_SEALED transaction whose
+        expected commit is the OLD admitted head; the workspace branch has advanced one
+        commit; the old PR is closed. Runtime 0.7.14 failed the whole train at preflight
+        with "publish transaction conflicted during all-repository preflight". Here the
+        REAL inspector reads that REAL on-disk state through the REAL default preflight;
+        only the evidence read (needs FABPUB receipts) and the publisher are seams."""
+        from test_publishing import _fabpub_publish_authority, _make_repo, _git as _pgit
+        from phase_loop_runtime import publishing
+        from phase_loop_runtime.convergence.broker import live
+        from phase_loop_runtime.train_runner import _default_preflight
+
+        monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+        repo = _make_repo(tmp_path)  # on feat/p1-test
+        # an origin so the prebuilt preflight's ahead-of-base check has something to compare
+        origin = tmp_path / "origin.git"; _pgit(tmp_path, "init", "-q", "--bare", str(origin))
+        _pgit(repo, "remote", "add", "origin", str(origin)); _pgit(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+        _pgit(repo, "fetch", "-q", "origin")
+        (repo / "owned.py").write_text("s25\n"); _pgit(repo, "add", "owned.py"); _pgit(repo, "commit", "-q", "-m", "S25")
+        authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+        # S25: a real publish through the transaction store -> TERMINAL_SEALED on disk
+        assert publish_from_worktree_real(repo, ["owned.py"], authority) == "published"
+        sealed = publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a").load_active()
+        assert sealed is not None, "active pointer still selects the S25 transaction"
+        # S26: the workspace advances one commit; the store is untouched
+        (repo / "owned.py").write_text("s26\n"); _pgit(repo, "add", "owned.py"); _pgit(repo, "commit", "-q", "-m", "S26")
+        s26 = _pgit(repo, "rev-parse", "HEAD").stdout.strip()
+        # the REAL inspector on the REAL state: sealed, attached, not CONFLICTED
+        cand = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+        assert cand.state == publishing.PublishTransactionState.TERMINAL_SEALED and cand.transaction is not None
+
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(  # the production ledger still says pr_open at S25
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/p1-test",
+            head_sha=cand.transaction.committed_head_sha, pr_url="https://gh.com/repo-a/pr/96", merge_order=0,
+        ))
+        published: dict = {}
+        broker = type("B", (), {"requires_gh_auth_preflight": False})()
+        result = run_train(
+            roadmap, ledger, run_mode="autonomous",
+            resolve_workspace=lambda n: repo,
+            coordinator_runtime=_make_runtime(broker),
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_prebuilt_publish_stub(published),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_default_preflight,          # REAL preflight, incl. Step 2 inspection
+            _pr_is_open=_pr_is_open_false,             # #96 closed as superseded
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _publish_authority_fn=lambda *a, **k: authority,
+            _sealed_disposition_fn=lambda ws, tx: "complete",  # the broker observed the S25 effect
+            _merge_phase_enabled=True,
+        )
+        assert result["status"] == "drafts_open", result
+        assert published["repo"]["prebuilt"] is True, "republished once at S26 through the prebuilt arm"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].head_sha == "sha-COMMITTED-repo"
+        assert _pgit(repo, "rev-parse", "HEAD").stdout.strip() == s26, "the workspace was not touched"
+        assert publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a").load_active() is not None, (
+            "the sealed S25 checkpoint was not deleted or rewritten to get past preflight"
+        )
+
+    def test_sealed_prior_with_observed_effect_does_not_block_preflight(self, tmp_path, monkeypatch):
+        result, published = self._run_step2(tmp_path, monkeypatch, "complete")
+        assert result["status"] == "drafts_open", result
+        assert published["repo"]["prebuilt"] is True, "a FRESH prebuilt publish ran, not a replay"
+
+    def test_sealed_prior_with_ambiguous_evidence_fails_preflight_zero_prs(self, tmp_path, monkeypatch):
+        result, published = self._run_step2(tmp_path, monkeypatch, "ambiguous")
+        assert result["status"] == "preflight_failed", result
+        assert any("sealed publish transaction has ambiguous" in e for e in result["errors"])
+        assert published == {}
+
+    @pytest.mark.parametrize("disposition", ["no", "unreadable"])
+    def test_sealed_prior_without_usable_evidence_fails_preflight_zero_prs(self, tmp_path, monkeypatch, disposition):
+        """PR #909 r1, grok's seventh mutant: only 'complete' may proceed."""
+        result, published = self._run_step2(tmp_path, monkeypatch, disposition)
+        assert result["status"] == "preflight_failed", result
+        assert any(f"sealed publish transaction has {disposition}" in e for e in result["errors"])
+        assert published == {}
 
 
 # ---------------------------------------------------------------------------

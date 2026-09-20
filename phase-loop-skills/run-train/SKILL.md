@@ -21,6 +21,20 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   per-repo loop and will not orchestrate a multi-repo train.
 - Do NOT merge, force-push, or close PRs outside the coordinator; the runtime
   enforces the partial-merge and false-green guards.
+- Prebuilt nodes (`**Mode:** prebuilt`): a prebuilt node with NO upstream edge lands
+  under `--governed` like any other node (train review, then merge pinned to its
+  admitted head). A prebuilt node with ANY upstream edge, order-only included, is
+  refused at preflight under `--governed` (its re-verify needs phase-loop state a
+  prebuilt node does not carry); run without `--governed` and it stops at
+  `drafts_open`. Do not merge such a PR by hand; that support is a tracked follow-up.
+- Refreshing an open prebuilt PR: when the node's workspace HEAD advances past the
+  broker-admitted head (a fast-forward), re-running the train republishes the node
+  through fresh broker admission and a non-force push to the same branch; the open PR
+  is reconciled at the new head and the ledger gains a new `pr_open` record (the old
+  one is kept). The coordinator refuses BEFORE any admission when the live PR head
+  differs from the admitted head (`remote_drift`) or when HEAD does not descend from
+  the admitted head (`candidate_diverged`). A PR closed out of band is lifecycle
+  drift: the node republishes as a new PR by the existing resume rule.
 - Inspect `phase-loop train-status --train <file>` to check the ledger without
   modifying state.
 
@@ -58,6 +72,8 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   opened. Fix the reported issues and re-run.
 - `drafts_open`: draft PRs opened; merge phase not yet run. Pass `--governed`
   to continue to review and merge.
+  Bounded-mode note: for a prebuilt node with upstream edges this is the terminal
+  status under the coordinator today.
 - `review_halted`: the train-level panel did not approve; `terminal_blocker`
   carries `human_required=False` (the block is a non-human review terminal).
   No nodes were merged. Re-run after addressing review findings.
