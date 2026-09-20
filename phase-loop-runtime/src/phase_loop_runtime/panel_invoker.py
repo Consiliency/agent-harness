@@ -4663,7 +4663,9 @@ def native_agent_leg_request(
 
 NATIVE_FILL_DETAIL = "native_fill"
 NATIVE_FILL_REQUEST_FILE = "request.json"
-NATIVE_FILL_REVIEW_FILE = "claude.md"
+NATIVE_FILL_REVIEW_FILE = "review.md"
+#: Accepted as a fallback review filename in the directory form (the first live runs used it).
+NATIVE_FILL_REVIEW_FILE_LEGACY = "claude.md"
 NATIVE_FILL_ARTIFACT_FILE = "artifact.md"
 NATIVE_FILL_INSTRUCTIONS_FILE = "instructions.md"
 
@@ -4811,8 +4813,10 @@ def load_native_leg_fills(spec: str) -> NativeLegFill:
     target = Path(where)
     request_json = target if target.is_file() else target / NATIVE_FILL_REQUEST_FILE
     review_md = request_json.parent / NATIVE_FILL_REVIEW_FILE
+    if not review_md.is_file() and (request_json.parent / NATIVE_FILL_REVIEW_FILE_LEGACY).is_file():
+        review_md = request_json.parent / NATIVE_FILL_REVIEW_FILE_LEGACY
     if not request_json.is_file() or not review_md.is_file():
-        raise ValueError(f"native fill needs {request_json} and {review_md}")
+        raise ValueError(f"native fill needs {request_json} and {review_md} (the review file named in request.json)")
     return load_native_leg_fill(request_json, review_md)
 
 

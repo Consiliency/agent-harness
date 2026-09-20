@@ -20,7 +20,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (duplicate seat, seat not deferred, artifact/brief digest mismatch, composition drift → typed
   refusal, zero launches), runs the other seats once, binds the fill before the president rules,
   and counts it as usable only when its last non-empty line is a conforming verdict. Every digest
-  is over content read back from disk, never a path. `run-train --governed --review-only` gains
+  is over CONTENT, never a path: the artifact digest over the staged text as read back from disk, the
+  brief digest over the resolved instructions, the composition digest over the sorted seat keys; the
+  train's rebuild comparison normalises newlines the same way. The review file is `review.md`. `run-train --governed --review-only` gains
   the same two flags (`<ledger-dir>/native-fill/`; a train that moved between the two commands is
   refused as `native_fill_stale_request` before any seat is spent).
 - **The LEGIBLE fable-transition probe** crosses one observation function; under Claude Code

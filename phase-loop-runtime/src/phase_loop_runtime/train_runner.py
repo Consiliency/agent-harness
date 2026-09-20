@@ -3668,7 +3668,9 @@ def _run_train_unfenced(
         # new bytes, never spending a seat).
         from .panel_invoker import content_sha256 as _content_sha256
 
-        _current = _content_sha256(_current_bundle)
+        # Digest the bundle as it would be READ BACK from disk (universal newlines), exactly as the
+        # emit arm digested the staged artifact — a CR in a roadmap title must not false-refuse.
+        _current = _content_sha256(_current_bundle.replace("\r\n", "\n").replace("\r", "\n"))
         _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != _current]
         if _stale:
             return {

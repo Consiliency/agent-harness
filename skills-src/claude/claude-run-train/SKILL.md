@@ -28,7 +28,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   early slice, EC-REVIEWTRUTH-14): run `--governed --review-only --emit-native-request` first (it
   stages the bundle and `request.json` under `<ledger-dir>/native-fill/<request_id>/` and spends
   nothing), spawn a native sub-agent with `instructions.md` as its brief over `artifact.md`, write its
-  review (verdict on the LAST non-empty line) to `claude.md` beside them, then re-run with
+  review (verdict on the LAST non-empty line) to `review.md` beside them, then re-run with
   `--governed --review-only --native-leg claude=<that dir>`. A moved train refuses the fill as
   `native_fill_stale_request` before any seat is spent; re-emit. The fill counts only once bound.
 - The train-level review runs through the broker-authorized review board (the same

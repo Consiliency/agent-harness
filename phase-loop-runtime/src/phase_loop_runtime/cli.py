@@ -1958,7 +1958,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             print(json.dumps(record, indent=2, sort_keys=True))
         else:
             print(f"advisor-board: native fill requested for seat {record['seat_key']} — write the review to "
-                  f"{Path(record['request_path']).parent / 'claude.md'} and re-run with --native-leg claude={Path(record['request_path']).parent}")
+                  f"{Path(record['request_path']).parent / 'review.md'} and re-run with --native-leg claude={Path(record['request_path']).parent}")
         return 0
     native_leg_fills: tuple = ()
     native_leg_specs = list(getattr(args, "native_legs", []) or [])
@@ -4498,13 +4498,15 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
         if not as_json:
             print(
                 f"run-train: native fill requested for seat {result.get('seat_key')} — write the review to "
-                f"{Path(result['request_path']).parent / 'claude.md'} and re-run with "
+                f"{Path(result['request_path']).parent / 'review.md'} and re-run with "
                 f"--governed --review-only --native-leg claude={Path(result['request_path']).parent}"
             )
         return 0
     if result["status"] == "review_approved":
         # agent-harness#906: --review-only terminal — approval recorded, ZERO merges.
         nodes = result.get("nodes", {})
+        if not as_json and emit_native_request:
+            print("run-train: the train review is already approved on the ledger; no native fill request was emitted.")
         if not as_json:
             print(
                 f"run-train: train-level review APPROVED — {len(nodes)} admitted PR(s), "
