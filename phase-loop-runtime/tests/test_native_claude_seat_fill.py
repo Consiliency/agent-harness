@@ -541,16 +541,26 @@ class TestProtocol:
         request_path = Path(emitted["request_path"])
         (request_path.parent / "claude.md").write_text("Reviewed the train.\nAGREE\n")
         fill = load(request_path, request_path.parent / "claude.md")
-        review = _Spy(result=None)
+        # PROPAGATION (board r4, codex B1): through the DEFAULT review path — coordinator →
+        # premerge loop → governed gate — the loaded fill must arrive at the gate as
+        # ``native_leg_fills``; a runner that drops fills on the way cannot pass.
+        from phase_loop_runtime import governed_review as gr_mod
+        gate_calls: list = []
+        four_usable = pi.PanelResult(legs=tuple(
+            pi.PanelLegResult(leg=str(seat.harness).lower(), status="OK", text="Reviewed.\nAGREE", seat_key=seat.seat_key)
+            for seat in _mixed_board().seats))
 
-        def reviewing(artifact, run_mode, **kw):
-            from phase_loop_runtime.governed_premerge import LoopResult
-            review.calls.append((artifact, run_mode, kw))
-            return LoopResult(mergeable=True, ran=True, rounds=1)
+        def gate_spy(**kw):
+            gate_calls.append(kw)
+            return gr_mod.GateResult(ran=True, promoted=True, panel=four_usable)
 
-        ok = _train(ledger, native_leg_fills=[fill], _train_review_fn=reviewing)
-        guard.require(n, ok.get("status") == "review_approved" and len(review.calls) == 1,
-                      f"a fill loaded from the emitted request did not reach the review exactly once: {ok.get('status')} / {len(review.calls)}")
+        monkeypatch.setattr(gr_mod, "governed_board_gate", gate_spy)
+        ok = _train(ledger, native_leg_fills=[fill])
+        guard.require(n, ok.get("status") == "review_approved" and len(gate_calls) == 1,
+                      f"a fill loaded from the emitted request did not reach the gate exactly once: {ok.get('status')} / {len(gate_calls)}")
+        got = gate_calls[0].get("native_leg_fills") or ()
+        guard.require(n, len(got) == 1 and got[0].request_id == fill.request_id and got[0].artifact_sha256 == fill.artifact_sha256,
+                      f"the gate did not receive the loaded fill: {sorted(gate_calls[0].keys())}")
         mint = _Never("mint")
         monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
         # The SAME loaded fill (digests untouched) against a train that MOVED: the node's admitted
@@ -696,7 +706,9 @@ class TestProbe:
         # was not bound) must NOT report a bound verdict or a full board — an observer that always
         # reports resolved fields would pass the case above and fail here.
         unbound = pi.PanelResult(legs=tuple([_deferred_leg(claude_seat)] + legs))
-        monkeypatch.setattr(gr_mod, "governed_board_gate", lambda **kw: gr_mod.GateResult(ran=True, promoted=False, panel=unbound))
+        # promoted=True here on purpose (three runtime seats meet the floor): an observer that
+        # infers binding from promotion instead of reading the claude leg fails this arm.
+        monkeypatch.setattr(gr_mod, "governed_board_gate", lambda **kw: gr_mod.GateResult(ran=True, promoted=True, panel=unbound))
         out2 = observe(repo, SUBJECT, native_leg_fills=[fill], issue_snapshot={"state": "CLOSED", "stateReason": "completed"})
         flat2 = le._flatten_reviewtruth_observation(out2) if isinstance(out2, Mapping) and not isinstance(out2, Incomplete) else {}
         guard.require(n, isinstance(out2, Incomplete) or (flat2.get("verdict_bound") is False and flat2.get("seat_count") != "FULL"),
