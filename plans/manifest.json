@@ -7895,7 +7895,32 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-20T10:58:24Z",
+          "by": "claude-plan-detailed",
+          "status": "proposed",
+          "metadata": {
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "issues": [
+              "Consiliency/agent-harness#396",
+              "Consiliency/agent-harness#636"
+            ]
+          }
+        },
+        {
+          "at": "2026-09-20T12:02:56Z",
+          "by": "claude-plan-detailed",
+          "status": "ratified",
+          "metadata": {
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "issues": [
+              "Consiliency/agent-harness#396",
+              "Consiliency/agent-harness#636"
+            ]
+          }
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
@@ -7904,7 +7929,7 @@
       "status": "ratified",
       "task_summary": "REVIEWTRUTH early slice (maintainer-ratified 2026-09-20): native claude seat under Claude Code, counted (EC-REVIEWTRUTH-14)",
       "type": "detailed",
-      "updated_at": "2026-09-20T12:02:36Z"
+      "updated_at": "2026-09-20T12:02:56Z"
     }
   ],
   "schema_version": 1
