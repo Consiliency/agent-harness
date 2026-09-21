@@ -274,3 +274,15 @@ def test_generated_copies_match_their_canonical_sources() -> None:
         "the 'Bounding A Slow Leg' section differs across sites; regenerate the bundle from "
         f"skills-src. Variants: { {k[:60]: v for k, v in bodies.items()} }"
     )
+
+
+@pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_explicit_no_deadline_requires_supported_policy(site: Path) -> None:
+    text = " ".join(_section(site).split())
+    for claim in (
+        'monitoring_policy="heartbeat_only"',
+        "Omitting `timeouts_by_leg` still imposes a hard backstop",
+        "The gemini/agy route, API/gateway routes, capture, and legacy `invoke_panel` are unsupported",
+        "bounded mode only", "progress_unobserved", "No automatic retries",
+    ):
+        assert claim in text, f"{site}: missing policy contract {claim}"

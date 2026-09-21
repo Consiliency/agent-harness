@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: REVIEWTRUTH
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
+roadmap_sha256: 900a415f9d4e4387e96fc95a81d524929ac7c3a39cf36a8d6c39305710e7571e
 automation:
   suite_command: 'PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py phase-loop-runtime/tests/test_phase_worktree_executor.py phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py phase-loop-runtime/tests/test_advisor_board_golden.py phase-loop-runtime/tests/test_advisor_board_research.py phase-loop-runtime/tests/test_panel_invoker_spawn.py phase-loop-runtime/tests/test_panel_native_fill_183.py phase-loop-runtime/tests/test_train_merge.py'
 ---

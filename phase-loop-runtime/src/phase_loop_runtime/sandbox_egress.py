@@ -238,7 +238,7 @@ def require_egress_isolation(available: bool | None = None) -> None:
 def isolated_network(
     policy: EgressPolicy | None = None,
     *,
-    timeout_s: float = 3600.0,
+    timeout_s: float | None = 3600.0,
     required: bool | None = None,
 ):
     """Hold a filtered network namespace open and yield an argv PREFIX for it.
@@ -251,7 +251,8 @@ def isolated_network(
 
     ``timeout_s`` bounds how long the holder survives and must EXCEED the leg budget: at a
     fixed 600s a long leg outlived its own namespace mid-run. Callers with a known deadline
-    should pass it.
+    should pass it. ``None`` ties the holder and uplink to an owner pipe instead:
+    context exit or abrupt owner death closes the pipe, with no thinking deadline.
 
     There are THREE ways this can fail -- the mechanism is absent, the namespace never
     comes up, and the rules fail to install -- and every one of them used to fall through to
@@ -296,13 +297,26 @@ def isolated_network(
         resolv = os.path.join(work, "resolv.conf")
         with open(resolv, "w", encoding="utf-8") as handle:
             handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
-        holder = subprocess.Popen(
-            ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
-             f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
-             f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
-        )
+        owner_read = owner_write = None
+        holder = None
         slirp = None
         try:
+            if timeout_s is None:
+                from .panel_invoker import launch_provider
+
+                owner_read, owner_write = os.pipe()
+                holder = launch_provider(
+                    ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
+                     f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
+                     f'echo $$ > {pidfile}; touch {ready}; read -r _owner_lifetime'],
+                    stdin=owner_read, close_fds=True,
+                )
+            else:
+                holder = subprocess.Popen(
+                    ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
+                     f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
+                     f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
+                )
             deadline = time.monotonic() + 15
             while not os.path.exists(ready) and time.monotonic() < deadline:
                 time.sleep(0.05)
@@ -311,11 +325,19 @@ def isolated_network(
                 return
             nspid = Path(pidfile).read_text(encoding="utf-8").strip()
 
-            slirp = subprocess.Popen(
-                ["slirp4netns", "--configure", "--mtu=65520",
-                 "--disable-host-loopback", nspid, "tap0"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            if timeout_s is None:
+                slirp = launch_provider(
+                    ["slirp4netns", "--configure", "--mtu=65520",
+                     "--disable-host-loopback", f"--exit-fd={owner_read}", nspid, "tap0"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    pass_fds=(owner_read,), close_fds=True,
+                )
+            else:
+                slirp = subprocess.Popen(
+                    ["slirp4netns", "--configure", "--mtu=65520",
+                     "--disable-host-loopback", nspid, "tap0"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
             time.sleep(2.5)  # the tap must be configured before traffic flows
             if slirp.poll() is not None:
                 yield _degrade(
@@ -388,6 +410,19 @@ def isolated_network(
                 return
             yield prefix
         finally:
+            if owner_read is not None:
+                os.close(owner_read)
+            if owner_write is not None:
+                os.close(owner_write)
             if slirp is not None:
                 slirp.terminate()
-            holder.terminate()
+            if holder is not None:
+                holder.terminate()
+            if timeout_s is None:
+                for process in (slirp, holder):
+                    if process is not None:
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=2)

@@ -1035,3 +1035,37 @@ def test_the_guard_ignores_the_sanctioned_call() -> None:
     assert not _direct_reads('verify_enforce_mode(env, default="warn")')
     # a Mapping parameter named env is not the process environment
     assert not _direct_reads('env.get("PHASE_LOOP_VERIFY_ENFORCE")')
+
+
+@pytest.mark.parametrize("command", ["outside-agent-preflight", "outside-agent-validate"])
+def test_validation_cli_does_not_load_review_or_runner_machinery(command, tmp_path):
+    import json
+
+    fixture = Path(__file__).parent / "fixtures/outside_agent_contract_v0_2_1/test-vectors/outside-agent/valid-work-request.json"
+    argv = [command, str(fixture), "--output", str(tmp_path / "verdict.json")]
+    code = (
+        "import sys; from phase_loop_runtime import cli;"
+        f"assert cli.main({argv!r}) == 0;"
+        "assert not {'phase_loop_runtime.closeout', 'phase_loop_runtime.closeout_validators', "
+        "'phase_loop_runtime.runner', 'phase_loop_runtime.panel_invoker'} & sys.modules.keys()"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        env={"PYTHONPATH": SRC, "PATH": "/usr/bin:/bin"}, check=True,
+    )
+    assert json.loads(result.stdout) == json.loads((tmp_path / "verdict.json").read_text())
+
+
+def test_deferred_cli_closeout_still_registers_every_builtin_gate(tmp_path):
+    code = (
+        "import sys; from phase_loop_runtime import cli;"
+        "assert 'phase_loop_runtime.closeout_validators' not in sys.modules;"
+        f"cli.build_phase_loop_closeout(phase_alias='STARTUP', plan_path={str(tmp_path / 'plan.md')!r});"
+        "from phase_loop_runtime import closeout_validators as cv;"
+        "print(sorted(f.__module__.rsplit('.', 1)[-1] for f in cv.registered_closeout_validators()))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        env={"PYTHONPATH": SRC, "PATH": "/usr/bin:/bin"}, check=True,
+    )
+    assert set(ast.literal_eval(result.stdout.strip().splitlines()[-1])) == BUILTIN_VALIDATOR_MODULES
