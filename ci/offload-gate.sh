@@ -14,9 +14,13 @@
 # runner for work that was supposed to move, and would read as a green "offload".
 set -euo pipefail
 
-# Wall clock at entry. The lock-wait budget below is stated relative to the
-# WORKFLOW's job timeout, so the refusal message has to report how much of that
-# timeout is actually left -- not just how long we waited.
+# Wall clock at THIS SCRIPT's entry -- not at the job's start. The job began
+# earlier: checkout with fetch-depth 0, the tailnet join, the dagger CLI
+# resolve+install and the engine preflight all run before the composite invokes
+# this file, and nothing inside a step can read the job's own start time (the
+# jobs API is not available in-script and GITHUB_RUN_STARTED is a RUN, not this
+# job). So the remaining-budget figure below is a script-relative ESTIMATE that
+# bridges the gap with the measured setup constant, and says so where it prints.
 OFFLOAD_STARTED_AT="$(date +%s)"
 
 MODULE="${MODULE:-ci/dagger}"
@@ -66,21 +70,34 @@ OFFLOAD_LOCK="${OFFLOAD_LOCK:-/tmp/dagger-offload.lock}"
 #                            runs in the 2026-09-21 audit: 66.5/66.8/67.1/
 #                            67.1/67.5 min -- agent-harness#945 section 1)
 #   checkout + setup  ~450s (fetch-depth:0 clone, tailscale, dagger CLI, upload)
-#   wait budget       2700s (45 min) = 7200 - 4050 - 450
+#   margin            ~300s
+#   wait budget       2400s (40 min) = 7200 - 4050 - 450 - 300
 #
 # The old 5400 (90 min) exceeded the whole cap once the suite was added to it.
 # Run 35570673600 spent 79.5 min inside that wait, took the lock at 08:16:57
 # with ~40 min left, and was cancelled at the 120-minute ceiling: the timeout
-# was arithmetically certain before the suite started. 2700 cannot produce that
-# outcome -- a run that waits the full budget still has the measured suite plus
-# margin left, and a run that cannot get the lock in 45 min fails fast and loud
-# instead of burning two hours of runner time to say the same thing.
-OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-2700}"
+# was arithmetically certain before the suite started.
+#
+# WHAT THIS DELIBERATELY GIVES UP. 4050 is the slowest of five OBSERVATIONS, not
+# an enforced upper bound -- the suite has no internal timeout, and the audit
+# shows its dominant node growing with repo size. So the numbers above cannot
+# prove that a given long wait would have ended in a timeout, only that it would
+# have finished near the cap if nothing ran slow. This gate therefore refuses a
+# narrow band of runs -- roughly a 2400-2750s wait -- that the old default might
+# have carried to a green finish with minutes to spare. That trade is intended:
+# a landing decided in the last few minutes of a 120-minute budget is one slow
+# node away from a cancelled run that reports as a repo failure, and a refusal at
+# 40 minutes is cheap, legible and immediately retryable. Widen the wait only by
+# widening the cap with it.
+OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-2400}"
 OFFLOAD_LOCK_POLL_SECONDS="${OFFLOAD_LOCK_POLL_SECONDS:-1}"
-# Only used to report the remaining budget in the refusal message; it does not
-# bound anything here (the workflow's timeout-minutes does).
+# Only used to report the remaining budget in the refusal message; none of the
+# three bounds anything here (the workflow's timeout-minutes does). SETUP is the
+# measured cost of the steps that ran BEFORE this script, which is what makes the
+# script-relative clock a usable stand-in for the job clock.
 OFFLOAD_JOB_BUDGET_SECONDS="${OFFLOAD_JOB_BUDGET_SECONDS:-7200}"
 OFFLOAD_SUITE_SECONDS="${OFFLOAD_SUITE_SECONDS:-4050}"
+OFFLOAD_SETUP_SECONDS="${OFFLOAD_SETUP_SECONDS:-450}"
 _lock_fifo=""
 _lock_out=""
 _lock_pid=""
@@ -126,11 +143,14 @@ offload_lock_acquire() {
   echo "offload lock: waiting for $OFFLOAD_LOCK on $host (up to ${OFFLOAD_LOCK_WAIT_SECONDS}s; the suite that follows needs ~${OFFLOAD_SUITE_SECONDS}s of the ${OFFLOAD_JOB_BUDGET_SECONDS}s job budget)"
   while ! grep -q '^acquired$' "$_lock_out"; do
     if ! kill -0 "$_lock_pid" 2>/dev/null; then
-      local waited remaining
-      waited=$(( $(date +%s) - _lock_wait_started ))
-      remaining=$(( OFFLOAD_JOB_BUDGET_SECONDS - ($(date +%s) - OFFLOAD_STARTED_AT) ))
+      local now waited remaining
+      now="$(date +%s)"
+      waited=$(( now - _lock_wait_started ))
+      # Script-relative: the job clock started ~OFFLOAD_SETUP_SECONDS earlier.
+      remaining=$(( OFFLOAD_JOB_BUDGET_SECONDS - OFFLOAD_SETUP_SECONDS - (now - OFFLOAD_STARTED_AT) ))
       echo "offload lock: could not take $OFFLOAD_LOCK on $host (another offloaded suite is running there); refusing to run unlocked" >&2
-      echo "offload lock: waited ${waited}s of the ${OFFLOAD_LOCK_WAIT_SECONDS}s wait budget; ~${remaining}s of the ${OFFLOAD_JOB_BUDGET_SECONDS}s job budget remains and the suite needs ~${OFFLOAD_SUITE_SECONDS}s" >&2
+      echo "offload lock: waited ${waited}s of the ${OFFLOAD_LOCK_WAIT_SECONDS}s wait budget; the suite needs ~${OFFLOAD_SUITE_SECONDS}s and ~${remaining}s of the ${OFFLOAD_JOB_BUDGET_SECONDS}s job budget remains" >&2
+      echo "offload lock: that remaining figure is a script-relative estimate -- this step cannot read the job's start, so it charges a measured ${OFFLOAD_SETUP_SECONDS}s for the checkout, tailnet and CLI steps that ran before it" >&2
       cat "$_lock_out" >&2
       exec 3>&-
       rm -f "$_lock_fifo" "$_lock_out"

@@ -8,18 +8,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
 
-- `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2700 (45 min) instead of
+- `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2400 (40 min) instead of
   5400. The offload job is capped at 120 minutes (`test.yml`) and the measured suite is
   66.5–67.5 minutes across the five offloaded main runs in the 2026-09-21 audit, so a
   90-minute wait could not be followed by the suite it was waiting to run. Run
   35570673600 waited 79.5 minutes for `/tmp/dagger-offload.lock` on `ai`, took the lock
   with ~40 minutes left, and was cancelled at the ceiling — a timeout that was
-  arithmetically certain before any test executed. 2700 = 7200 (cap) − 4050 (suite) −
-  450 (checkout, tailnet and CLI setup, artifact upload).
-- The refusal now reports the wait actually spent, the wait budget, what remains of the
-  job budget and what the suite needs, so a queued run is legible as contention rather
-  than as a slow suite. `OFFLOAD_JOB_BUDGET_SECONDS` and `OFFLOAD_SUITE_SECONDS`
-  (defaults 7200/4050) supply those figures and bound nothing themselves. Lock
+  arithmetically certain before any test executed. 2400 = 7200 (cap) − 4050 (suite) −
+  450 (checkout, tailnet and CLI setup, artifact upload) − 300 (margin).
+- This deliberately refuses a narrow band of runs that might have finished. 4050 is the
+  slowest of five observations, not an enforced bound: the suite has no internal timeout
+  and the audit shows its dominant node growing with repo size. So a wait of roughly
+  2400–2750 seconds could, on a fast day, still have landed green under the old default,
+  and is now refused. That is the intended trade — a landing decided in the last minutes
+  of a 120-minute budget is one slow node away from a cancelled run that reports as a
+  repo failure, while a refusal at 40 minutes is cheap, legible and immediately
+  retryable. Widening the wait requires widening the cap with it.
+- The refusal now reports the wait actually spent, the wait budget, what the suite needs
+  and what remains of the job budget, so a queued run is legible as contention rather
+  than as a slow suite. The remaining figure is labelled in the message as a
+  script-relative estimate: no step can read its own job's start time, so the script
+  charges a measured `OFFLOAD_SETUP_SECONDS` for the steps that preceded it.
+  `OFFLOAD_JOB_BUDGET_SECONDS`, `OFFLOAD_SUITE_SECONDS` and `OFFLOAD_SETUP_SECONDS`
+  (defaults 7200/4050/450) supply these figures and bound nothing themselves. Lock
   semantics are unchanged: still one suite per engine host, still fail-closed, still
   never an unlocked run.
 
