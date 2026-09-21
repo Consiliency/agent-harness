@@ -413,6 +413,46 @@ def _run_bound_child(
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
+_REPRODUCIBILITY_RERUNS: dict[
+    tuple[tuple[str, ...], str, tuple[tuple[str, str], ...], str],
+    subprocess.CompletedProcess[str],
+] = {}
+
+
+def _rerun_bound_child(
+    command: list[str], *, input_text: str, cwd: Path, environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Re-execute a captured child once per distinct invocation.
+
+    `_assert_captured_observable` re-runs the captured command and requires the
+    rerun to reproduce the recorded digests; that reproducibility proof is the
+    point of the second execution and is preserved -- the first verification of
+    any record still spawns the child and still compares it.
+
+    What this elides is the *third* and later executions of a byte-identical
+    invocation. `_assert_complete_mutation_observables` calls
+    `_assert_bound_mutation_observables` on a list the caller has already passed
+    to it, so every mutation record was verified twice and the same child ran
+    twice more. A cache keyed on the complete input to the child (argv, stdin,
+    environment, cwd) cannot mask a mismatch: each record is still compared
+    against its own recorded digests, so two records that shared a key but
+    recorded different output still fail exactly as before.
+    """
+    key = (
+        tuple(command),
+        input_text,
+        tuple(sorted(environment.items())),
+        str(cwd),
+    )
+    cached = _REPRODUCIBILITY_RERUNS.get(key)
+    if cached is None:
+        cached = _run_bound_child(
+            command, input_text=input_text, cwd=cwd, environment=environment
+        )
+        _REPRODUCIBILITY_RERUNS[key] = cached
+    return cached
+
+
 def _run_bound_child_bytes(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
     process = subprocess.Popen(
         command,
@@ -1141,7 +1181,7 @@ def _assert_captured_observable(
     rendered = json.loads(captured["stdout"])
     assert rendered["status"] == record["status"] == expected_status
     assert rendered.get("anchor") == record["anchor"] == expected_anchor
-    rerun = _run_bound_child(
+    rerun = _rerun_bound_child(
         expected_command,
         input_text=expected_input_bytes.decode("utf-8"),
         cwd=cwd,
@@ -2037,14 +2077,51 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
 
     match_cache = {}
 
+    # Resolve every (commit, frozen path) pair in one child instead of one
+    # `git rev-parse <commit>:<path>` child per pair. On today's ancestry that
+    # is 20,332 processes collapsed into one: `git cat-file --batch-check`
+    # answers exactly the question `git rev-parse` answered -- the object name
+    # a `<rev>:<path>` spec resolves to, or `missing` where rev-parse exited
+    # non-zero -- reading one line of output per line of input, in order.
+    batch_specs = [f"{commit}:{path}" for commit in walked_commits for path in test_paths]
+    resolved_specs: dict[str, str | None] = {}
+    if batch_specs:
+        batch_res = _run_bound_child(
+            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+            input_text="".join(f"{spec}\n" for spec in batch_specs),
+            cwd=REPO_ROOT,
+            environment={"PATH": os.environ.get("PATH", "")},
+        )
+        assert batch_res.returncode == 0, batch_res.stderr
+        batch_lines = batch_res.stdout.splitlines()
+        assert len(batch_lines) == len(batch_specs), (
+            len(batch_lines),
+            len(batch_specs),
+        )
+        for spec, line in zip(batch_specs, batch_lines):
+            fields = line.split()
+            resolved_specs[spec] = (
+                fields[0]
+                if len(fields) >= 2 and fields[1] in {"blob", "tree", "commit", "tag"}
+                else None
+            )
+
+    def resolve_spec(spec: str) -> str | None:
+        """Blob id for a `<commit>:<path>` spec, or None where it does not resolve."""
+        if spec not in resolved_specs:
+            # A parent outside the walked set is not in the batch; ask directly
+            # so the answer is identical to the per-pair query it replaces.
+            res = _run_bound_child(["git", "rev-parse", spec], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
+            resolved_specs[spec] = res.stdout.strip() if res.returncode == 0 else None
+        return resolved_specs[spec]
+
     def commit_matches(commit):
         if commit not in match_cache:
             object_exists = _run_bound_child(["git", "cat-file", "-e", f"{commit}^{{commit}}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
             assert object_exists.returncode == 0
             matches = True
             for path, blob in head_blobs.items():
-                res = _run_bound_child(["git", "rev-parse", f"{commit}:{path}"], input_text="", cwd=REPO_ROOT, environment={"PATH": os.environ.get("PATH", "")})
-                if res.returncode != 0 or res.stdout.strip() != blob:
+                if resolve_spec(f"{commit}:{path}") != blob:
                     matches = False
             match_cache[commit] = matches
         return match_cache[commit]
