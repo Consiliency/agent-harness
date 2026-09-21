@@ -48,13 +48,32 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - `0.7.15` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
-- Tag, publication and fleet-adoption evidence for `0.7.15` are recorded here after the
-  maintainer-gated tag push, the same way the `0.7.14` record below was completed. They are
-  deliberately absent rather than asserted in advance.
+- Release PRs: `Consiliency/agent-harness#928` (cut, merged `a68c380d`), `#929` (onboarding,
+  merged `8d87ccf1`) and `#933` (publish-workflow tag-path timeout, merged `a024d987`); each
+  under the cross-vendor gate. Release head (tag target): `a024d9878739043d27d015a36a0553cba8449e5c`.
+  PR-level suite on `#933`'s head: run `35565456939`, success; the main test run on the tag
+  target (`35570673600`) was still in progress when this record was written.
+- Signed annotated tag `v0.7.15`: tag object `59100b814e4c186f0bf573956e09721950407394`,
+  target `a024d987`, GitHub verification `valid`. History: a first tag object (`177e03df`,
+  unsigned, at `8d87ccf1`) was pushed on 2026-09-21 and its publish run `35563072987` was
+  cancelled by the build job's then 25-minute timeout at 50% of the Gate A suite (nothing
+  reached PyPI); after `#933` landed the tag was deleted and re-created, signed, at `a024d987`.
+- Trusted-publish workflow `35570678898`: build/Gate A job `106241466216` (106 min, under the
+  140-minute tag-path bound) and publish job `106268485619` completed successfully. The publish
+  job downloaded the build artifacts, verified both entries in `SHA256SUMS`, and published without
+  rebuilding.
+- PyPI publication: `phase-loop-runtime==0.7.15`, wheel and sdist both present and not yanked;
+  the PyPI-reported digests equal the workflow's `SHA256SUMS`. A fresh public-PyPI Python 3.10
+  install resolved 0.7.15 from site-packages and `phase-loop --version` reported 0.7.15.
+- GitHub Release: `https://github.com/Consiliency/agent-harness/releases/tag/v0.7.15`.
+- Fleet adoption: not claimed by this record; the pinned agent-harness clone is refreshed by the
+  dotfiles bootstrap separately.
+- Not in this release: `Consiliency/agent-harness#908` (heartbeat-only review monitoring) and
+  `#936` (roadmap phases 14–17) landed on `main` after the tag target and ship in `0.7.16`.
 
 ### Previous release: 0.7.14 (published)
 
@@ -89,16 +108,20 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.15 (prepared)
+### This release: 0.7.15 (published)
 
-The digests below are from the pre-tag local build of the release candidate, produced by
-`python -m build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
-record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
-and the published digests are recorded here after the tag push.
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`35570678898` from its build of the tagged commit `a024d987`, verified by the publish job
+without rebuilding, and equal to the digests PyPI reports. The pre-tag local build of the
+candidate at `8d87ccf1` (`python -m build` under `umask 022`, `Consiliency/agent-harness#519`)
+measured wheel `09d7e9420f6b747b70120b9fa2cb34c872dfa4e8b15351e65b7cd8a6493bddef` and sdist
+`80913168481ad8e19b452c8ae681451be29a49d6ea8c9bfb445c0e064d1bd538`; the published tuples differ
+because the tag target adds `#933`'s docs and CHANGELOG lines (present in the sdist) and because
+archive bytes are timestamp/toolchain-dependent — a preparation measurement, not a content
+discrepancy in the runtime.
 
-- prepared direct-wheel sha256: `09d7e9420f6b747b70120b9fa2cb34c872dfa4e8b15351e65b7cd8a6493bddef`
-- prepared direct-sdist sha256: `80913168481ad8e19b452c8ae681451be29a49d6ea8c9bfb445c0e064d1bd538`
+- direct-wheel sha256: `b4b95fd1453425403d1cd94c02640fe8ec39cb543d7507e127e09862bcbf82ef`
+- direct-sdist sha256: `1c5cbe0f96f40ba402674bba8e851c07f8babd8a9c83269b10e6e6669d1906e5`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.14
@@ -126,15 +149,15 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.15` build described above.
+Measured on the published `0.7.15` artifacts downloaded from workflow `35570678898`.
 
 - Wheel artifact: `phase_loop_runtime-0.7.15-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.15.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.15.data`, `phase_loop_runtime-0.7.15.dist-info`
 - Wheel file count: `468`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `1074`
-- Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
+- Sdist file count: `940` regular files (`1075` archive members including directories)
+- Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
