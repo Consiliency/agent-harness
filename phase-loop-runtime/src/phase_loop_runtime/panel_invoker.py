@@ -1927,7 +1927,11 @@ def _provider_launch_prefix(cwd):
         # `--wd` -> exit 1 "No such file or directory (os error 2)", path-based chdir -> OK).
         # `env --chdir` runs after nsenter and setpriv, so the chdir is a plain path lookup in
         # the namespace the provider will live in; the cwd attested as ``provider_cwd_sha256``
-        # is unchanged.
+        # is unchanged. A plain nested user+mount namespace does NOT reproduce the failure --
+        # the fchdir()ed cwd stays reachable there -- so the class needs the provider's own
+        # sandbox; the real-CLI receipt is the evidence, the shape test below the control.
+        # GNU coreutils `env --chdir` (8.28+), absolute path because the leg env may carry a
+        # scrubbed PATH; the prefix is already Linux/util-linux-only (nsenter, setpriv).
         directory = os.fsdecode(os.path.abspath(cwd)) if cwd is not None else os.getcwd()
         prefix.extend(("/usr/bin/env", "--chdir=" + directory, "--"))
     return prefix

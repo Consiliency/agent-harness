@@ -924,9 +924,10 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
 # namespace by PATH. `nsenter --wd` fchdir()ed to a dentry opened in the caller's mount namespace,
 # which a provider that canonicalises its cwd (codex's own sandbox) cannot resolve -- the real
 # codex CLI exited 1 with "No such file or directory (os error 2)" before any inference, and
-# completed a review once the chdir became a path lookup after nsenter/setpriv. Nested user
-# namespaces are refused inside the holder, so the canonicalising provider itself cannot run in
-# this suite; the receipt lives with the PR evidence. This control pins the launch shape the
+# completed a review once the chdir became a path lookup after nsenter/setpriv. A plain nested
+# user+mount namespace inside the holder does NOT reproduce the failure (the fchdir()ed cwd is
+# still reachable there; board r5, native seat), so the class needs the provider's own sandbox
+# and the real-CLI receipt lives with the PR evidence. This control pins the launch shape the
 # receipt was taken with, so the fchdir form cannot silently return.
 def test_launch_prefix_chdirs_by_path_inside_the_namespace(tmp_path):
     cwd = tmp_path / "seat with spaces"
