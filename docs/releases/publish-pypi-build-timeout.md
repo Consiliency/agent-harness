@@ -50,7 +50,7 @@ against pull-request timings only, and the first tag after it hit the cap:
   publish job was skipped and nothing reached PyPI.
 
 The tag/dispatch bound is `140`: twice the one measured run, which is the
-headroom #757 applied on the pull-request path (25 is about twice its 12-minute
+headroom agent-harness#757 applied on the pull-request path (25 is about twice its 12-minute
 maximum). It is expressed as
 `${{ github.event_name == 'pull_request' && 25 || 140 }}` — an Actions
 value-select, safe because the pull-request operand is non-zero — so the
