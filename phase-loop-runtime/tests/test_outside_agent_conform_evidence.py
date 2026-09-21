@@ -2057,6 +2057,27 @@ def _sealed_docs_candidate(git) -> str:
     return children[0][0]
 
 
+BATCH_CHECK_FORMAT = "%(objectname)\t%(objecttype)"
+BATCH_CHECK_OBJECT_TYPES = frozenset({"blob", "tree", "commit", "tag"})
+
+
+def _batch_check_object_name(line: str) -> str | None:
+    """Object name a `git cat-file --batch-check` line resolves to, else None.
+
+    git echoes the input verbatim on a `missing` line but always renders a found
+    object through the format string, whose separator is a TAB. Splitting on the
+    first tab therefore tells the two apart even for a path containing a space or
+    a tab: `<oid>:d/gone blob missing` and `<oid>:d/gone\tblob missing` both leave
+    a remainder that is not a bare object type, while a found object leaves
+    exactly `blob`. Returning None is the same answer `git rev-parse` gave by
+    exiting non-zero.
+    """
+    object_name, separator, object_type = line.partition("\t")
+    if separator and object_type in BATCH_CHECK_OBJECT_TYPES:
+        return object_name
+    return None
+
+
 def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str, object]:
     """Run the committed frozen test blobs in clean, non-Git candidate exports."""
     test_paths = CONFORM_IMMUTABLE_LIFECYCLE_PATHS
@@ -2079,15 +2100,16 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
 
     # Resolve every (commit, frozen path) pair in one child instead of one
     # `git rev-parse <commit>:<path>` child per pair. On today's ancestry that
-    # is 20,332 processes collapsed into one: `git cat-file --batch-check`
+    # is 20,355 processes collapsed into one: `git cat-file --batch-check`
     # answers exactly the question `git rev-parse` answered -- the object name
     # a `<rev>:<path>` spec resolves to, or `missing` where rev-parse exited
     # non-zero -- reading one line of output per line of input, in order.
+    # `_batch_check_object_name` carries the parse and its tab rationale.
     batch_specs = [f"{commit}:{path}" for commit in walked_commits for path in test_paths]
     resolved_specs: dict[str, str | None] = {}
     if batch_specs:
         batch_res = _run_bound_child(
-            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+            ["git", "cat-file", f"--batch-check={BATCH_CHECK_FORMAT}"],
             input_text="".join(f"{spec}\n" for spec in batch_specs),
             cwd=REPO_ROOT,
             environment={"PATH": os.environ.get("PATH", "")},
@@ -2099,12 +2121,7 @@ def _capture_immutable_lifecycle(root: Path, candidate_commit: str) -> dict[str,
             len(batch_specs),
         )
         for spec, line in zip(batch_specs, batch_lines):
-            fields = line.split()
-            resolved_specs[spec] = (
-                fields[0]
-                if len(fields) >= 2 and fields[1] in {"blob", "tree", "commit", "tag"}
-                else None
-            )
+            resolved_specs[spec] = _batch_check_object_name(line)
 
     def resolve_spec(spec: str) -> str | None:
         """Blob id for a `<commit>:<path>` spec, or None where it does not resolve."""
