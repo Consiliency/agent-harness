@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import json
 import shutil
@@ -262,12 +263,27 @@ def _pin_claude_print_route_by_default():
 # that could couple it to repo size (child processes, bytes hashed, tree copies,
 # tar members extracted, files read).
 #
-# It is inert unless PHASE_LOOP_CONFORM_TIMING=1 is set in the *parent* pytest
-# process. The mutation/EC probes build an explicit child environment, so the
-# flag never reaches a nested pytest run and probe output bytes are unchanged.
+# It has no behavioural side effect unless PHASE_LOOP_CONFORM_TIMING=1 is set in
+# the *parent* pytest process. With the flag unset the hook below returns
+# immediately, no wrapper class is built and no symbol is rebound, so
+# `subprocess.Popen`, `shutil.copytree`, `shutil.rmtree`,
+# `tarfile.TarFile.extractall`, `Path.read_bytes` and `Path.read_text` keep their
+# original identities. With the flag set the wrappers are installed for the
+# duration of one measured test call and restored in a `finally`, so no wrapper
+# survives collection, fixtures, teardown or the next test.
+#
+# The mutation and EC probes build an explicit child environment from a fixed
+# whitelist, so the flag never reaches a nested pytest run and probe output bytes
+# are unchanged.
 # ---------------------------------------------------------------------------
 
 _CONFORM_TIMING_ENV = "PHASE_LOOP_CONFORM_TIMING"
+
+# Children that outlive the test that spawned them are charged to that test
+# (see `_TimedPopen._conform_record`). If one completes after its test's report
+# has already printed, the event lands here and is reported at session end
+# rather than being silently attributed to an unrelated test.
+_CONFORM_LATE_EVENTS: list[dict] = []
 
 
 def _conform_timing_enabled() -> bool:
@@ -277,27 +293,32 @@ def _conform_timing_enabled() -> bool:
 class _ConformTimingRecorder:
     """Wall-clock and scale accounting for one test, keyed by call site."""
 
-    def __init__(self) -> None:
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = nodeid
         self.events: list[dict] = []
         self.counters: dict[str, int] = {}
-        self.started = 0.0
-        self.active = False
+        self.started = time.perf_counter()
+        self.reported = False
 
     # -- accounting ---------------------------------------------------------
     def bump(self, name: str, amount: int = 1) -> None:
         self.counters[name] = self.counters.get(name, 0) + amount
 
-    def add(self, *, kind: str, label: str, site: str, seconds: float, **extra) -> None:
-        self.events.append(
-            {
-                "kind": kind,
-                "label": label,
-                "site": site,
-                "seconds": seconds,
-                "offset": max(0.0, (time.perf_counter() - seconds) - self.started),
-                **extra,
-            }
-        )
+    def add(self, *, kind: str, label: str, site: str, seconds: float, **extra) -> dict:
+        event = {
+            "kind": kind,
+            "label": label,
+            "site": site,
+            "seconds": seconds,
+            "offset": max(0.0, (time.perf_counter() - seconds) - self.started),
+            **extra,
+        }
+        self.events.append(event)
+        if self.reported:
+            # The report for this test has already printed; surface the event at
+            # session end instead of losing it or charging it to another test.
+            _CONFORM_LATE_EVENTS.append({"nodeid": self.nodeid, **event})
+        return event
 
     # -- call-site attribution ---------------------------------------------
     @staticmethod
@@ -338,12 +359,12 @@ class _ConformTimingRecorder:
         return head
 
     # -- report -------------------------------------------------------------
-    def report(self, nodeid: str, total: float) -> str:
+    def report(self, total: float) -> str:
         lines: list[str] = []
         write = lines.append
         write("")
         write("=" * 78)
-        write(f"CONFORM TIMING agent-harness#945 :: {nodeid}")
+        write(f"CONFORM TIMING agent-harness#945 :: {self.nodeid}")
         write(f"total wall seconds: {total:.2f}")
         for key, value in _conform_repo_scale_cached():
             write(f"repo scale :: {key}: {value}")
@@ -382,14 +403,21 @@ class _ConformTimingRecorder:
                 f"  {event['label']:<22s} {event['site']}  {extra}"
             )
         write("-" * 78)
-        write("probe children by payload identity (seconds, calls)")
-        by_probe: dict[str, list[float]] = {}
+        write("probe children by payload identity (seconds, calls, stdin digests)")
+        by_probe: dict[str, list[dict]] = {}
         for event in self.events:
             probe = event.get("probe")
             if probe:
-                by_probe.setdefault(probe, []).append(event["seconds"])
-        for probe, seconds in sorted(by_probe.items(), key=lambda item: -sum(item[1])):
-            write(f"  {sum(seconds):9.2f}s  n={len(seconds):<4d} {probe}")
+                by_probe.setdefault(probe, []).append(event)
+        for probe, probe_events in sorted(
+            by_probe.items(), key=lambda item: -sum(event["seconds"] for event in item[1])
+        ):
+            digests = sorted({event.get("stdin_sha256", "?")[:12] for event in probe_events})
+            write(
+                f"  {sum(event['seconds'] for event in probe_events):9.2f}s"
+                f"  n={len(probe_events):<4d} {probe}"
+                f"  distinct stdin: {len(digests)} {','.join(digests)}"
+            )
         write("-" * 78)
         write("scale counters (what grows with the repo)")
         for key, value in sorted(self.counters.items()):
@@ -398,16 +426,13 @@ class _ConformTimingRecorder:
         return "\n".join(lines)
 
 
-_CONFORM_TIMING = _ConformTimingRecorder()
-
-
 @functools.lru_cache(maxsize=1)
 def _conform_repo_scale_cached() -> tuple[tuple[str, int], ...]:
-    return tuple(sorted(_conform_repo_scale().items()))
+    """Repo-size facts recorded alongside the timings, not inferred.
 
-
-def _conform_repo_scale() -> dict[str, int]:
-    """Repo-size facts recorded alongside the timings, not inferred."""
+    Resolved before the wrappers are installed, so these children are never
+    charged to the measured test.
+    """
     root = Path(__file__).resolve().parents[2]
     scale: dict[str, int] = {}
     probes = {
@@ -422,168 +447,227 @@ def _conform_repo_scale() -> dict[str, int]:
         ],
     }
     for key, argv in probes.items():
-        completed = _CONFORM_REAL_POPEN(
-            argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        completed = subprocess.run(
+            argv, cwd=root, capture_output=True, text=True, check=False
         )
-        out, _ = completed.communicate()
         if completed.returncode != 0:
             continue
-        scale[key] = int(out.strip()) if key.startswith("first_parent") else len(out.splitlines())
+        scale[key] = (
+            int(completed.stdout.strip())
+            if key.startswith("first_parent")
+            else len(completed.stdout.splitlines())
+        )
     scale["test_files"] = len(list((root / "phase-loop-runtime" / "tests").glob("test_*.py")))
-    return scale
+    return tuple(sorted(scale.items()))
 
 
-def _conform_probe_name(input_text: str) -> str | None:
-    """Name a probe child by the payload it is fed on stdin.
+# Installs nest: the falsifier suite installs while a flag-set session already
+# has the wrappers bound. Only the OUTERMOST install rebinds a symbol and only
+# the outermost restore puts it back, so a second layer can never wrap a wrapper
+# and clobber the inner layer's attribution. The stack's last entry is the
+# recorder a child started right now belongs to.
+_CONFORM_RECORDER_STACK: list["_ConformTimingRecorder"] = []
+_CONFORM_BOUND_ORIGINALS: dict[str, object] = {}
 
-    The mutation and EC probes are all spawned from the same two lines, so the
-    command line alone cannot tell them apart; the stdin payload can.
+
+def _conform_timing_install(recorder: "_ConformTimingRecorder"):
+    """Wrap the measured seams; return a callable that restores every original.
+
+    Nothing here runs unless the caller decided the flag is set, so with the flag
+    unset no wrapper class exists and no symbol is rebound.
     """
-    if not input_text.startswith("{"):
+    depth = len(_CONFORM_RECORDER_STACK)
+    _CONFORM_RECORDER_STACK.append(recorder)
+    if depth:
+        # Already bound by an outer scope. Attribution follows the stack, so the
+        # only thing this scope owns is its own entry.
+        def restore_nested() -> None:
+            del _CONFORM_RECORDER_STACK[depth:]
+
+        return restore_nested
+
+    real_popen = subprocess.Popen
+    real_copytree = shutil.copytree
+    real_rmtree = shutil.rmtree
+    real_extractall = tarfile.TarFile.extractall
+    real_read_bytes = Path.read_bytes
+    real_read_text = Path.read_text
+
+    # `shutil._copytree` recurses by calling the module-global `copytree`, so a
+    # nested directory re-enters the wrapper. Recording only the outermost call
+    # keeps durations additive and stops `os.walk(dst)` recounting descendants
+    # once per level.
+    copytree_depth = [0]
+
+    def probe_name(input_text: str) -> str | None:
+        """Name a probe child by the payload it is fed on stdin.
+
+        The mutation and EC probes are all spawned from the same two lines, so
+        the command line alone cannot tell them apart; the stdin payload can.
+        """
+        if not input_text.startswith("{"):
+            return None
+        try:
+            payload = json.loads(input_text)
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        for key in ("mutation_id", "id", "case_id", "nodeid"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                return value
         return None
-    try:
-        payload = json.loads(input_text)
-    except ValueError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    for key in ("mutation_id", "id", "case_id", "nodeid"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-    return None
 
+    class _TimedPopen(real_popen):  # type: ignore[misc,valid-type]
+        """Behaviour-identical Popen that records wall time and output size."""
 
-_CONFORM_REAL_POPEN = subprocess.Popen
-_CONFORM_REAL_COPYTREE = shutil.copytree
-_CONFORM_REAL_RMTREE = shutil.rmtree
-_CONFORM_REAL_EXTRACTALL = tarfile.TarFile.extractall
-_CONFORM_REAL_READ_BYTES = Path.read_bytes
-_CONFORM_REAL_READ_TEXT = Path.read_text
+        def __init__(self, args, *posargs, **kwargs):
+            # Charge the child to the test that STARTED it, not to whichever
+            # test happens to be running when it is awaited.
+            self._conform_recorder = _CONFORM_RECORDER_STACK[-1]
+            self._conform_started = time.perf_counter()
+            self._conform_site = _ConformTimingRecorder.site()
+            self._conform_label = _ConformTimingRecorder.command_label(args)
+            self._conform_event = None
+            self._conform_probe = None
+            self._conform_stdin_sha256 = None
+            super().__init__(args, *posargs, **kwargs)
 
+        def _conform_record(self, out_bytes: int = 0) -> None:
+            owner = self._conform_recorder
+            if self._conform_event is not None:
+                # `communicate` calls `wait` internally, so the event is created
+                # before the output sizes are known, and a caller may call
+                # `communicate` again -- a second call drains nothing and returns
+                # empty. Output is monotonic: a later completion cannot unproduce
+                # bytes, so only a HIGHER count moves the event, and it moves the
+                # counter by the delta. Repeated completions add nothing twice
+                # and cannot subtract what was already counted.
+                if out_bytes > self._conform_event["out_bytes"]:
+                    owner.bump(
+                        "child_output_bytes",
+                        out_bytes - self._conform_event["out_bytes"],
+                    )
+                    self._conform_event["out_bytes"] = out_bytes
+                return
+            self._conform_event = owner.add(
+                kind="process",
+                label=self._conform_label,
+                site=self._conform_site,
+                seconds=time.perf_counter() - self._conform_started,
+                out_bytes=out_bytes,
+                probe=self._conform_probe,
+                stdin_sha256=self._conform_stdin_sha256,
+            )
+            owner.bump("child_processes")
+            owner.bump(f"child_processes::{self._conform_label}")
+            owner.bump("child_output_bytes", out_bytes)
 
-class _TimedPopen(_CONFORM_REAL_POPEN):  # type: ignore[misc,valid-type]
-    """Behaviour-identical Popen that records wall time and output size."""
+        def communicate(self, *posargs, **kwargs):
+            payload = None
+            if posargs and isinstance(posargs[0], str):
+                payload = posargs[0]
+            elif isinstance(kwargs.get("input"), str):
+                payload = kwargs["input"]
+            if payload is not None and self._conform_stdin_sha256 is None:
+                self._conform_stdin_sha256 = hashlib.sha256(
+                    payload.encode("utf-8")
+                ).hexdigest()
+                self._conform_probe = probe_name(payload)
+                if self._conform_event is not None:
+                    self._conform_event["probe"] = self._conform_probe
+                    self._conform_event["stdin_sha256"] = self._conform_stdin_sha256
+            stdout, stderr = super().communicate(*posargs, **kwargs)
+            self._conform_record(sum(len(part or ()) for part in (stdout, stderr)))
+            return stdout, stderr
 
-    def __init__(self, args, *posargs, **kwargs):
-        self._conform_started = time.perf_counter()
-        self._conform_site = _ConformTimingRecorder.site()
-        self._conform_label = _ConformTimingRecorder.command_label(args)
-        self._conform_recorded = None
-        self._conform_probe = None
-        super().__init__(args, *posargs, **kwargs)
+        def wait(self, *posargs, **kwargs):
+            returncode = super().wait(*posargs, **kwargs)
+            self._conform_record()
+            return returncode
 
-    def _conform_record(self, out_bytes: int = 0) -> None:
-        if not _CONFORM_TIMING.active:
-            return
-        if self._conform_recorded is not None:
-            # `communicate` calls `wait` internally, so the event is recorded
-            # before the output sizes are known. Update it rather than drop it.
-            if out_bytes:
-                self._conform_recorded["out_bytes"] = out_bytes
-                _CONFORM_TIMING.bump("child_output_bytes", out_bytes)
-            return
-        event = {
-            "out_bytes": out_bytes,
-            "probe": self._conform_probe,
-        }
-        _CONFORM_TIMING.add(
-            kind="process",
-            label=self._conform_label,
-            site=self._conform_site,
-            seconds=time.perf_counter() - self._conform_started,
-            **event,
-        )
-        self._conform_recorded = _CONFORM_TIMING.events[-1]
-        _CONFORM_TIMING.bump("child_processes")
-        _CONFORM_TIMING.bump(f"child_processes::{self._conform_label}")
-        _CONFORM_TIMING.bump("child_output_bytes", out_bytes)
+    def timed_copytree(src, dst, *posargs, **kwargs):
+        started = time.perf_counter()
+        site = _ConformTimingRecorder.site()
+        outermost = copytree_depth[0] == 0
+        copytree_depth[0] += 1
+        try:
+            result = real_copytree(src, dst, *posargs, **kwargs)
+        finally:
+            copytree_depth[0] -= 1
+        if outermost:
+            copied = sum(len(files) for _, _, files in os.walk(dst))
+            current = _CONFORM_RECORDER_STACK[-1]
+            current.add(
+                kind="fs", label="shutil.copytree", site=site,
+                seconds=time.perf_counter() - started, files=copied,
+            )
+            current.bump("copytree_calls")
+            current.bump("copytree_files", copied)
+        return result
 
-    def communicate(self, *posargs, **kwargs):
-        if posargs and isinstance(posargs[0], str):
-            self._conform_probe = _conform_probe_name(posargs[0])
-        elif "input" in kwargs and isinstance(kwargs["input"], str):
-            self._conform_probe = _conform_probe_name(kwargs["input"])
-        stdout, stderr = super().communicate(*posargs, **kwargs)
-        self._conform_record(sum(len(part or ()) for part in (stdout, stderr)))
-        return stdout, stderr
-
-    def wait(self, *posargs, **kwargs):
-        returncode = super().wait(*posargs, **kwargs)
-        self._conform_record()
-        return returncode
-
-
-def _timed_copytree(src, dst, *posargs, **kwargs):
-    started = time.perf_counter()
-    site = _ConformTimingRecorder.site()
-    result = _CONFORM_REAL_COPYTREE(src, dst, *posargs, **kwargs)
-    if _CONFORM_TIMING.active:
-        copied = sum(len(files) for _, _, files in os.walk(dst))
-        _CONFORM_TIMING.add(
-            kind="fs", label="shutil.copytree", site=site,
-            seconds=time.perf_counter() - started, files=copied,
-        )
-        _CONFORM_TIMING.bump("copytree_calls")
-        _CONFORM_TIMING.bump("copytree_files", copied)
-    return result
-
-
-def _timed_rmtree(path, *posargs, **kwargs):
-    started = time.perf_counter()
-    site = _ConformTimingRecorder.site()
-    result = _CONFORM_REAL_RMTREE(path, *posargs, **kwargs)
-    if _CONFORM_TIMING.active:
-        _CONFORM_TIMING.add(
+    def timed_rmtree(path, *posargs, **kwargs):
+        started = time.perf_counter()
+        site = _ConformTimingRecorder.site()
+        result = real_rmtree(path, *posargs, **kwargs)
+        current = _CONFORM_RECORDER_STACK[-1]
+        current.add(
             kind="fs", label="shutil.rmtree", site=site,
             seconds=time.perf_counter() - started,
         )
-        _CONFORM_TIMING.bump("rmtree_calls")
-    return result
+        current.bump("rmtree_calls")
+        return result
 
-
-def _timed_extractall(self, *posargs, **kwargs):
-    started = time.perf_counter()
-    site = _ConformTimingRecorder.site()
-    result = _CONFORM_REAL_EXTRACTALL(self, *posargs, **kwargs)
-    if _CONFORM_TIMING.active:
+    def timed_extractall(self, *posargs, **kwargs):
+        started = time.perf_counter()
+        site = _ConformTimingRecorder.site()
+        result = real_extractall(self, *posargs, **kwargs)
         try:
             members = len(self.getmembers())
         except Exception:  # pragma: no cover - accounting must never fail a test
             members = -1
-        _CONFORM_TIMING.add(
+        current = _CONFORM_RECORDER_STACK[-1]
+        current.add(
             kind="fs", label="tar.extractall", site=site,
             seconds=time.perf_counter() - started, members=members,
         )
-        _CONFORM_TIMING.bump("tar_extractall_calls")
+        current.bump("tar_extractall_calls")
         if members > 0:
-            _CONFORM_TIMING.bump("tar_members_extracted", members)
-    return result
+            current.bump("tar_members_extracted", members)
+        return result
 
+    def timed_read_bytes(self, *posargs, **kwargs):
+        data = real_read_bytes(self, *posargs, **kwargs)
+        current = _CONFORM_RECORDER_STACK[-1]
+        current.bump("path_read_calls")
+        current.bump("path_read_bytes", len(data))
+        return data
 
-def _timed_read_bytes(self, *posargs, **kwargs):
-    data = _CONFORM_REAL_READ_BYTES(self, *posargs, **kwargs)
-    if _CONFORM_TIMING.active:
-        _CONFORM_TIMING.bump("path_read_calls")
-        _CONFORM_TIMING.bump("path_read_bytes", len(data))
-    return data
+    def timed_read_text(self, *posargs, **kwargs):
+        data = real_read_text(self, *posargs, **kwargs)
+        current = _CONFORM_RECORDER_STACK[-1]
+        current.bump("path_read_calls")
+        current.bump("path_read_bytes", len(data))
+        return data
 
-
-def _timed_read_text(self, *posargs, **kwargs):
-    data = _CONFORM_REAL_READ_TEXT(self, *posargs, **kwargs)
-    if _CONFORM_TIMING.active:
-        _CONFORM_TIMING.bump("path_read_calls")
-        _CONFORM_TIMING.bump("path_read_bytes", len(data))
-    return data
-
-
-if _conform_timing_enabled():
     subprocess.Popen = _TimedPopen  # type: ignore[assignment]
-    shutil.copytree = _timed_copytree  # type: ignore[assignment]
-    shutil.rmtree = _timed_rmtree  # type: ignore[assignment]
-    tarfile.TarFile.extractall = _timed_extractall  # type: ignore[assignment]
-    Path.read_bytes = _timed_read_bytes  # type: ignore[assignment]
-    Path.read_text = _timed_read_text  # type: ignore[assignment]
+    shutil.copytree = timed_copytree  # type: ignore[assignment]
+    shutil.rmtree = timed_rmtree  # type: ignore[assignment]
+    tarfile.TarFile.extractall = timed_extractall  # type: ignore[assignment]
+    Path.read_bytes = timed_read_bytes  # type: ignore[assignment]
+    Path.read_text = timed_read_text  # type: ignore[assignment]
+
+    def restore() -> None:
+        del _CONFORM_RECORDER_STACK[depth:]
+        subprocess.Popen = real_popen  # type: ignore[assignment]
+        shutil.copytree = real_copytree  # type: ignore[assignment]
+        shutil.rmtree = real_rmtree  # type: ignore[assignment]
+        tarfile.TarFile.extractall = real_extractall  # type: ignore[assignment]
+        Path.read_bytes = real_read_bytes  # type: ignore[assignment]
+        Path.read_text = real_read_text  # type: ignore[assignment]
+
+    return restore
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -592,17 +676,32 @@ def pytest_runtest_call(item):
     if not _conform_timing_enabled():
         yield
         return
-    _CONFORM_TIMING.events.clear()
-    _CONFORM_TIMING.counters.clear()
-    _CONFORM_TIMING.started = time.perf_counter()
-    _CONFORM_TIMING.active = True
+    _conform_repo_scale_cached()  # resolve before wrapping, never charged
+    recorder = _ConformTimingRecorder(item.nodeid)
+    restore = _conform_timing_install(recorder)
     try:
         yield
     finally:
-        total = time.perf_counter() - _CONFORM_TIMING.started
-        _CONFORM_TIMING.active = False
-        if not _CONFORM_TIMING.events and total < 1.0:
-            return
-        report = _CONFORM_TIMING.report(item.nodeid, total)
-        print(report, flush=True)
-        print(report, file=sys.stderr, flush=True)
+        restore()
+        total = time.perf_counter() - recorder.started
+        recorder.reported = True
+        if recorder.events or total >= 1.0:
+            report = recorder.report(total)
+            print(report, flush=True)
+            print(report, file=sys.stderr, flush=True)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Report children that completed after their own test's report printed."""
+    if not _CONFORM_LATE_EVENTS:
+        return
+    lines = ["", "=" * 78, "CONFORM TIMING agent-harness#945 :: late completions"]
+    for event in _CONFORM_LATE_EVENTS:
+        lines.append(
+            f"  {event['seconds']:8.2f}s  {event['label']:<22s}"
+            f"  charged to {event['nodeid']}  {event['site']}"
+        )
+    lines.append("=" * 78)
+    report = "\n".join(lines)
+    print(report, flush=True)
+    print(report, file=sys.stderr, flush=True)
