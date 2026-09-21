@@ -6,7 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-## [0.7.15] - 2026-09-20
+## [0.7.15] - 2026-09-21
 
 ### Docs: the host×seat routing rule is stated where agents read it (agent-harness#924)
 
@@ -1120,6 +1120,10 @@ listed.
   run holding most of its context but missing two nameable symbols — unaddressed. The test is now
   what you can name rather than how much you already know, in the bundled skill and both skill
   sources.
+- **CI runs on GitHub-hosted runners for this public repository** (`Consiliency/agent-harness#740`).
+  All twelve job definitions across the eight workflows moved from paid Blacksmith runners to
+  `ubuntu-latest`, which GitHub meters for free on public repositories; no workflow logic changed.
+  Recorded in `docs/releases/github-hosted-runners-for-public-repo.md`.
 
 ## [0.7.14] - 2026-08-24
 
