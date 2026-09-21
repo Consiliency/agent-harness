@@ -42,6 +42,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   copy can drift, and a value the lookup cannot find is a failure rather than a skip, so
   a rename or a deleted line cannot make the check vacuous.
 
+## [0.7.16] - 2026-09-21
 ### Claude native review task delivery (agent-harness#937)
 
 - Brokered Claude TUI reviews type a fixed review request before the sealed
@@ -67,6 +68,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   while preserving bounded-mode termination and real cleanup clocks.
 - Provider launches preserve their requested working directory when entering
   the egress namespace, including launches with a heartbeat ownership namespace.
+- A native (Claude Code sub-agent) fill for the claude seat is refused under
+  `heartbeat_only` in the whole-board preflight, before any availability probe, minting or
+  launch; bounded monitoring keeps accepting a valid native fill.
 - Roadmap provenance now appends current-authority bindings while preserving
   historical review and lifecycle records. This does not complete a roadmap
   phase or approve an earlier frozen test receipt for a changed inventory.
@@ -85,14 +89,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   offload attempt. Offload re-enablement requires a reviewed environment with
   passing real egress checks; missing tun now fails its preflight immediately.
 
-### CI: the publish-pypi tag path gets its own measured timeout (agent-harness#757 follow-up)
+### Roadmap: board evolution phases appended (agent-harness#936, source agent-harness#935)
 
-- `publish-pypi.yml`'s build job keeps the 25-minute bound on pull requests (chronology
-  node deselected) and runs with 140 minutes — twice the one measured tag run — on a
-  tag push or manual dispatch, where Gate A executes the full standalone suite (70 min
-  for `v0.7.14`). The 25-minute cap cancelled the `v0.7.15` tag run at 50% of that suite
-  before the publish job ran; a tag cut before this change runs the file at its own
-  commit, so such a tag must be re-pointed at a head carrying this change to publish.
+- v10 phases 14–17 — PRESROUTE (a HARDEN-authorized president execution route; ladder
+  Astra, Fable, Grok, Gemini by seat alias with registry-pinned ids; the interim ratification
+  note expires when it lands), EXECFIND (a blocking review finding may carry a failing test
+  the harness runs in the staged tree; seats never execute), RATIFY (typed ruling classes, an
+  append-only ruling ledger, a human tier that only adds to two universal triggers) and
+  GOVSETUP (a governance profile selectable at install; `autonomous` stays the default).
+  Roadmap and seals only; no runtime behaviour changes until those phases are executed.
+
+### Release record: 0.7.15 published (agent-harness#938)
+
+- `docs/releases/outside-agent-release-handoff.md` records the 0.7.15 publication (signed
+  tag, workflow and job ids, PyPI digests, the cancelled first run and the re-pointed tag).
+
 
 ## [0.7.15] - 2026-09-21
 
@@ -1200,6 +1211,18 @@ listed.
   All thirteen job definitions across the eight workflows moved from paid Blacksmith runners to
   `ubuntu-latest`, which GitHub meters for free on public repositories; no workflow logic changed.
   Recorded in `docs/releases/github-hosted-runners-for-public-repo.md`.
+
+### CI: the publish-pypi tag path gets its own measured timeout (agent-harness#757 follow-up)
+
+- Shipped in the `v0.7.15` tag commit `a024d987` (agent-harness#933's landing): the tag was
+  re-pointed onto this landing after this section was first rolled, so the entry is recorded
+  here rather than under 0.7.16.
+- `publish-pypi.yml`'s build job keeps the 25-minute bound on pull requests (chronology
+  node deselected) and runs with 140 minutes — twice the one measured tag run — on a
+  tag push or manual dispatch, where Gate A executes the full standalone suite (70 min
+  for `v0.7.14`). The 25-minute cap cancelled the `v0.7.15` tag run at 50% of that suite
+  before the publish job ran; a tag cut before this change runs the file at its own
+  commit, so such a tag must be re-pointed at a head carrying this change to publish.
 
 ## [0.7.14] - 2026-08-24
 
