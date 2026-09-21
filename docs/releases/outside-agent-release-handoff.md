@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.15`
-- Runtime `phase_loop_runtime.__version__`: `0.7.15`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.15`
+- Version: `0.7.16`
+- Runtime `phase_loop_runtime.__version__`: `0.7.16`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.16`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.15`
+- Validator version: `0.7.16`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,21 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.16` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.15` tag commit (`a024d987`, which is agent-harness#933's landing and
+  therefore already in 0.7.15): agent-harness#937 (typed review request before the sealed paste
+  for brokered Claude TUI seats), #908 (explicit heartbeat-only review monitoring with sandbox
+  ownership), #936 (v10 roadmap phases 14–17), #938 (the 0.7.15 published record). Source
+  issue: agent-harness#942.
+- Tag, publication and fleet-adoption evidence for `0.7.16` are recorded here after the
+  maintainer-gated tag push, the same way the `0.7.15` record below was completed. They are
+  deliberately absent rather than asserted in advance.
+
+### Previous release: 0.7.15 (published)
 
 - `publication_status=published`
 - `0.7.15` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -108,7 +123,19 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.15 (published)
+### This release: 0.7.16 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`python -m build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
+record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
+and the published digests are recorded here after the tag push.
+
+- prepared direct-wheel sha256: `8ad6fb71a1c29afa6553d94028bb8d325bcf6d837c6130607f88c2d10ff6568f`
+- prepared direct-sdist sha256: `fe727482cbf5a5544cf2a4545533b5af3c898d4555b8cd85dcc7673a22d96f19`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.15 (published)
 
 The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
 `35570678898` from its build of the tagged commit `a024d987`, verified by the publish job
@@ -149,22 +176,22 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the published `0.7.15` artifacts downloaded from workflow `35570678898`.
+Measured on the prepared `0.7.16` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.15-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.15.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.15.data`, `phase_loop_runtime-0.7.15.dist-info`
+- Wheel artifact: `phase_loop_runtime-0.7.16-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.16.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.16.data`, `phase_loop_runtime-0.7.16.dist-info`
 - Wheel file count: `468`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `940` regular files (`1075` archive members including directories)
+- Sdist file count: `941` regular files (`1076` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
-`0.7.15` is published (tag push → PyPI, recorded above), so governed-pipeline may
-consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.15`,
-then calling:
+Once `0.7.16` is published (tag push → PyPI; this document records it as
+`prepared` until then), governed-pipeline may consume it as an authoritative
+validator by pinning `phase-loop-runtime==0.7.16`, then calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -211,14 +238,16 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
-- `0.7.15` was not published or tagged from this handoff, and no workflow was dispatched
+- `0.7.16` was not published or tagged from this handoff, and no workflow was dispatched
   by it. The maintainer-gated tag push remains the only trigger (`EC-RELEASE-4`).
+- For `0.7.15`: the package was not published from this handoff; trusted workflow
+  `35570678898` published it from the signed `v0.7.15` tag (verified tag object
+  `59100b814e4c186f0bf573956e09721950407394`).
 - For `0.7.14`: the package was not published from this handoff; trusted workflow
-  `32783112944` published it from the signed `v0.7.14` tag.
-- The git tag was not created from this handoff; its verified tag object is
-  `2de6c06973b84890b62184fa023d387f6044a43c`.
-- The PyPI workflow was not dispatched from this handoff; the tag push triggered
-  it and the workflow completed successfully.
+  `32783112944` published it from the signed `v0.7.14` tag (verified tag object
+  `2de6c06973b84890b62184fa023d387f6044a43c`).
+- No PyPI workflow has been dispatched for `0.7.16`; for `0.7.15` and `0.7.14` the
+  maintainer's tag push triggered the workflow and it completed successfully.
 - Production governed-pipeline enforcement is not claimed by this handoff.
 - Maintainers retain ownership of future publishing, tagging, workflow dispatch,
   and downstream production pin rollout.
