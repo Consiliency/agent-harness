@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
+
+- `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2700 (45 min) instead of
+  5400. The offload job is capped at 120 minutes (`test.yml`) and the measured suite is
+  66.5–67.5 minutes across the five offloaded main runs in the 2026-09-21 audit, so a
+  90-minute wait could not be followed by the suite it was waiting to run. Run
+  35570673600 waited 79.5 minutes for `/tmp/dagger-offload.lock` on `ai`, took the lock
+  with ~40 minutes left, and was cancelled at the ceiling — a timeout that was
+  arithmetically certain before any test executed. 2700 = 7200 (cap) − 4050 (suite) −
+  450 (checkout, tailnet and CLI setup, artifact upload).
+- The refusal now reports the wait actually spent, the wait budget, what remains of the
+  job budget and what the suite needs, so a queued run is legible as contention rather
+  than as a slow suite. `OFFLOAD_JOB_BUDGET_SECONDS` and `OFFLOAD_SUITE_SECONDS`
+  (defaults 7200/4050) supply those figures and bound nothing themselves. Lock
+  semantics are unchanged: still one suite per engine host, still fail-closed, still
+  never an unlocked run.
+
 ### Claude native review task delivery (agent-harness#937)
 
 - Brokered Claude TUI reviews type a fixed review request before the sealed
