@@ -13,6 +13,7 @@ status so a verbose auth error is never mistaken for a real review.
 from __future__ import annotations
 
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -70,6 +71,7 @@ from .agy_canary_evidence import (
     seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
+from . import gemini_heartbeat
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
@@ -235,13 +237,15 @@ class _ReviewMonitor:
             self.record["terminal_reason"] = "monitoring_write_failed"
             raise
 
-    def owned_command(self, command: Sequence[str]) -> list[str]:
+    def owned_command(self, command: Sequence[str], *, gemini_profile=None) -> list[str]:
         if self.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
         # The PID namespace's init owns even descendants that start a new session.
         # Kernel parent-death notification kills the namespace on abrupt owner loss.
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev", "--", *command]
+                "--bind", "/", "/", "--dev", "/dev",
+                *(gemini_profile.mount_args if gemini_profile is not None else ()),
+                "--", *command]
 
 
 _CaptureMutationResult = TypeVar("_CaptureMutationResult")
@@ -2154,6 +2158,7 @@ def _brokered_grok_command(
 
 def _brokered_gemini_command(
     *, model: str, deadline_s: float, staged_tree: Path | None = None,
+    monitoring_policy: str = "bounded",
 ) -> list[str]:
     """The brokered agy argv.
 
@@ -2161,6 +2166,12 @@ def _brokered_gemini_command(
     withholds directory access entirely. That is the deliberate posture this extraction
     preserves byte-for-byte.
     """
+    if monitoring_policy == "heartbeat_only":
+        return ["agy", "--model", model, "--sandbox", "--mode", "plan",
+                "--disable-slash-commands", "--input-format", "stream-json",
+                "--output-format", "stream-json", "--print=", "--print-timeout", "0"]
+    if monitoring_policy != "bounded" or not math.isfinite(deadline_s) or deadline_s <= 0:
+        raise ValueError("gemini_bounded_deadline_invalid")
     tree = _require_staged_tree(staged_tree)
     # agy honours no read-only lever, so the grant IS the directory: only the clone, never
     # the parent review dir, which holds the seat's own attested bundle and instructions.
@@ -2696,6 +2707,31 @@ def _broker_gemini_stream_input(prompt: str) -> str:
     return _broker_gemini_stream_protocol(prompt).transport
 
 
+_GEMINI_BROKER_DETAILS = frozenset({
+    "Gemini broker stream rejected: malformed JSON",
+    "Gemini broker stream rejected: malformed stream event",
+    "Gemini broker stream rejected: tool or subagent activity observed",
+    "Gemini broker stream changed or omitted its conversation",
+    "Gemini broker stream has an incomplete ingestion result sequence",
+    "Gemini broker stream has a malformed chunk acknowledgement",
+    "Gemini broker stream has no successful terminal response",
+    "Gemini broker stream final response reports truncation",
+    "Gemini broker native exit without an accepted review",
+    "Gemini broker native timeout under heartbeat-only",
+    "Gemini broker deadline exceeded",
+    "Gemini broker denied a tool permission without review text",
+    "Gemini broker completed without review text",
+    "Gemini broker response lacks a terminal verdict",
+    "Gemini broker local provider failure",
+    "review_monitoring_write_failed",
+    "gemini_heartbeat_capability_unavailable",
+    "gemini_heartbeat_admission_handshake_failed",
+    "brokered Gemini subscription credential reference is unavailable",
+    "brokered Gemini subscription credential reference is invalid",
+    "review_operation_cancelled",
+})
+
+
 def _broker_gemini_stream_result(
     raw: str, protocol: _BrokerGeminiStreamProtocol,
 ) -> tuple[int, str, str, dict[str, object]]:
@@ -2722,9 +2758,12 @@ def _broker_gemini_stream_result(
             "provider_stream_final_no_truncation": final_no_truncation,
         }
 
+    diagnostic = "Gemini broker stream rejected: malformed JSON"
     try:
         for line in raw.splitlines():
+            diagnostic = "Gemini broker stream rejected: malformed JSON"
             event = json.loads(line)
+            diagnostic = "Gemini broker stream rejected: malformed stream event"
             if not isinstance(event, dict) or not isinstance(event.get("event"), str):
                 raise ValueError("malformed stream event")
             event_conversation = event.get("conversation_id")
@@ -2738,6 +2777,7 @@ def _broker_gemini_stream_result(
                 if isinstance(step_conversation, str) and step_conversation:
                     conversation_ids.add(step_conversation)
                 if step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
+                    diagnostic = "Gemini broker stream rejected: tool or subagent activity observed"
                     raise ValueError("tool or subagent activity observed")
             elif event["event"] == "result":
                 candidate = event.get("result")
@@ -2749,8 +2789,8 @@ def _broker_gemini_stream_result(
                 results.append(candidate)
             elif event["event"] != "init":
                 raise ValueError("unexpected stream event")
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return 1, "", f"Gemini broker stream rejected: {exc}", metadata("parse_error")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 1, "", diagnostic, metadata("parse_error")
     if len(conversation_ids) != 1:
         return 1, "", "Gemini broker stream changed or omitted its conversation", metadata("session_reset")
     if len(results) != len(protocol.acknowledgements) + 1:
@@ -2783,6 +2823,20 @@ def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[
     return {key: value for key, value in env.items() if key in allowed}
 
 
+def _preflight_gemini_heartbeat(board, monitoring_policy, env=None):
+    if monitoring_policy == "heartbeat_only" and any(str(seat.harness or "").lower() == "gemini" for seat in board.seats):
+        gemini_heartbeat.require_capability(_broker_subscription_env(env))
+
+
+def _broker_agy_settings_bytes():
+    settings = {
+        "permissions": {"deny": list(_BROKER_AGY_DENY_ACTIONS)},
+        "toolPermission": "request-review",
+        "allowNonWorkspaceAccess": False,
+    }
+    return (json.dumps(settings, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
 @contextmanager
 def _brokered_agy_environment(
     base_env: Mapping[str, str], evidence: dict[str, object] | None,
@@ -2808,12 +2862,7 @@ def _brokered_agy_environment(
     config_dir.mkdir(parents=True, mode=0o700)
     token_ref = config_dir / "antigravity-oauth-token"
     os.symlink(token, token_ref)
-    settings = {
-        "permissions": {"deny": list(_BROKER_AGY_DENY_ACTIONS)},
-        "toolPermission": "request-review",
-        "allowNonWorkspaceAccess": False,
-    }
-    settings_bytes = (json.dumps(settings, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    settings_bytes = _broker_agy_settings_bytes()
     settings_path = config_dir / "settings.json"
     settings_path.write_bytes(settings_bytes)
     settings_path.chmod(0o400)
@@ -3797,6 +3846,7 @@ def _run_leg_with_liveness(
     input_text: str | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
+    gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -3814,55 +3864,93 @@ def _run_leg_with_liveness(
     fed by a daemon writer thread so a large prompt can't deadlock against the child
     filling its own stdout/stderr pipe buffers.
     """
+    if gemini_profile is not None and review_monitor is None:
+        raise ValueError("gemini_heartbeat_monitor_required")
+    proc = None
+
     def _popen() -> subprocess.Popen[bytes]:
+        nonlocal proc
         # Launch INSIDE the filtered network namespace when one is held. The board found
         # the filtering was computed, reported, and never applied to a provider; a prefix
         # here composes with argv, cwd, env, stdin and process-group handling unchanged,
         # so the seat lands in the namespace instead of beside it.
-        return launch_provider(
+        proc = launch_provider(
             cmd,
-            process_owner=() if review_monitor is None else review_monitor.owned_command(()),
+            process_owner=() if review_monitor is None else review_monitor.owned_command((), gemini_profile=gemini_profile),
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
+            **({"pass_fds": gemini_profile.pass_fds} if gemini_profile is not None else {}),
         )
+        if gemini_profile is not None:
+            gemini_profile.process = proc
+        return proc
 
-    if quiescence_latch is None:
-        proc = _popen()
-        _anchor_process_group(proc)
-    else:
-        proc = quiescence_latch.launch(_popen)
-    if input_text is not None and proc.stdin is not None:
-
-        def _feed() -> None:
-            try:
-                proc.stdin.write(input_text.encode("utf-8", errors="replace"))
-                proc.stdin.close()
-            except (BrokenPipeError, OSError, ValueError):
-                pass  # child exited before consuming stdin — nothing to do
-
-        threading.Thread(target=_feed, daemon=True).start()
-
-    out_buf = bytearray()
-    err_buf = bytearray()
-    fd_map = {proc.stdout.fileno(): out_buf, proc.stderr.fileno(): err_buf}
-    open_fds = set(fd_map)
-    start = time.monotonic()
-    last_heartbeat = start
-    last_output_progress: float | None = None
-    last_cpu_sample = start
-    last_ticks = group_cpu_ticks(proc.pid)
-
-    def _decode() -> tuple[str, str]:
-        return (
-            out_buf.decode("utf-8", errors="replace"),
-            err_buf.decode("utf-8", errors="replace"),
-        )
+    def _reap():
+        if proc is None:
+            return
+        try:
+            _terminate_process_group(proc)
+        finally:
+            if gemini_profile is not None and gemini_profile.identity is not None:
+                try:
+                    gemini_profile.verify_quiescence()
+                except gemini_heartbeat.GeminiQuiescenceError as exc:
+                    error = ProviderProcessGroupQuiescenceError(str(exc))
+                    if quiescence_latch is not None:
+                        error = quiescence_latch.trip(error)
+                    raise error from exc
+        if quiescence_latch is not None:
+            quiescence_latch.release(proc)
 
     try:
+        if quiescence_latch is None:
+            proc = _popen()
+            _anchor_process_group(proc)
+        else:
+            proc = quiescence_latch.launch(_popen)
+        if gemini_profile is not None:
+            gemini_profile.admit(proc, review_monitor.cancel)
+    except BaseException:
+        try:
+            _reap()
+        finally:
+            if proc is not None:
+                for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+        raise
+    try:
+        if input_text is not None and proc.stdin is not None:
+
+            def _feed() -> None:
+                try:
+                    proc.stdin.write(input_text.encode("utf-8", errors="replace"))
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError, ValueError):
+                    pass  # child exited before consuming stdin — nothing to do
+
+            threading.Thread(target=_feed, daemon=True).start()
+
+        out_buf = bytearray()
+        err_buf = bytearray()
+        fd_map = {proc.stdout.fileno(): out_buf, proc.stderr.fileno(): err_buf}
+        open_fds = set(fd_map)
+        start = time.monotonic()
+        last_heartbeat = start
+        last_output_progress: float | None = None
+        last_cpu_sample = start
+        last_ticks = group_cpu_ticks(proc.pid)
+
+        def _decode() -> tuple[str, str]:
+            return (
+                out_buf.decode("utf-8", errors="replace"),
+                err_buf.decode("utf-8", errors="replace"),
+            )
+
         while True:
             if review_monitor is not None:
                 review_monitor.observe(None if last_output_progress is None else time.monotonic() - last_output_progress)
@@ -3937,11 +4025,9 @@ def _run_leg_with_liveness(
                 return _LegRun(proc.returncode or 1, out_s, err_s + marker)
     finally:
         try:
-            _terminate_process_group(proc)
-            if quiescence_latch is not None:
-                quiescence_latch.release(proc)
+            _reap()
         finally:
-            for pipe in (proc.stdout, proc.stderr):
+            for pipe in (proc.stdout, proc.stderr, *((proc.stdin,) if gemini_profile is not None and gemini_profile.quiescent else ())):
                 try:
                     if pipe is not None:
                         pipe.close()
@@ -5626,6 +5712,11 @@ def _exec_leg(
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
+    if leg == "gemini" and review_monitor is not None:
+        if not brokered or agy_capture is not None or research_seat is not None:
+            return 1, "", "gemini_heartbeat_broker_required"
+        if review_monitor.cancel.is_set():
+            return 1, "", "review_operation_cancelled"
     if brokered and not broker_prompt:
         return 1, "", "brokered route rejects empty prompt"
     env = _broker_subscription_env(env) if brokered else (
@@ -5914,6 +6005,7 @@ def _exec_leg(
             cmd = _brokered_gemini_command(
                 model=gemini_model, deadline_s=deadline_s,
                 staged_tree=_sandbox_in(review_dir),
+                monitoring_policy="heartbeat_only" if review_monitor is not None else "bounded",
             )
         if agy_capture is not None:
             if provider_authority is None:
@@ -5938,7 +6030,7 @@ def _exec_leg(
         # burned most of its budget (a slow leg, not a transient stall; re-running it
         # would ~double wall-clock — the full-concurrent-path hang).
         rc, review_text, log_text = 1, "", ""
-        for _attempt in range(2):
+        for _attempt in range(1 if review_monitor is not None else 2):
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
@@ -5953,31 +6045,58 @@ def _exec_leg(
                 # inside an owned HOME whose fixed settings deny every action.
                 # The legacy ``-p`` path remains byte-identical.
                 if brokered:
-                    with _brokered_agy_environment(env, broker_evidence) as agy_env:
-                        _record_broker_provider_evidence(
-                            broker_evidence, harness="gemini", model=gemini_model,
-                            command=cmd, prompt=prompt, cwd=out_dir, env=agy_env,
-                            prompt_transport="stream_json_same_session_ingestion",
-                            no_tool_controls=(
-                                "sandbox", "mode-plan", "disable-slash-commands",
-                                "deny-all-actions", "stream-json-same-session-ingestion",
-                                "no-add-dir", "no-dangerous-permissions",
-                            ),
-                            stdin_prompt=True,
-                            transport_payload=broker_stream_input,
-                            transport_metadata={
-                                "provider_stream_protocol": _BROKER_AGY_STREAM_PROTOCOL,
-                                "provider_stream_chunk_count": len(broker_stream.chunk_sha256),
-                                "provider_stream_chunk_sha256": broker_stream.chunk_sha256,
-                                "provider_stream_chunk_bytes": broker_stream.chunk_bytes,
-                                "provider_stream_final_event_sha256": broker_stream.final_event_sha256,
-                            },
-                        )
-                        proc = _run_leg_with_liveness(
-                            cmd, cwd=provider_cwd, env=agy_env,
-                            deadline_s=deadline_s, input_text=broker_stream_input,
-                            quiescence_latch=quiescence_latch,
-                        )
+                    profile = None
+                    try:
+                        with contextlib.ExitStack() as profile_stack:
+                            if review_monitor is not None:
+                                profile = profile_stack.enter_context(gemini_heartbeat.owned_profile(
+                                    env, settings_bytes=_broker_agy_settings_bytes(),
+                                    credential_path=Path(env.get("HOME", str(Path.home()))) / ".gemini/antigravity-cli/antigravity-oauth-token",
+                                ))
+                                agy_env = profile.env
+                                cmd = [profile.executable, *cmd[1:]]
+                                if broker_evidence is not None:
+                                    broker_evidence.update(profile.evidence)
+                                    broker_evidence["provider_agy_deny_actions"] = _BROKER_AGY_DENY_ACTIONS
+                                    broker_evidence["provider_credential_home_source"] = (
+                                        "scrubbed_subscription_home" if "HOME" in env else "process_home_fallback"
+                                    )
+                            else:
+                                agy_env = profile_stack.enter_context(_brokered_agy_environment(env, broker_evidence))
+                            _record_broker_provider_evidence(
+                                broker_evidence, harness="gemini", model=gemini_model,
+                                command=cmd, prompt=prompt, cwd=out_dir, env=agy_env,
+                                prompt_transport="stream_json_same_session_ingestion",
+                                no_tool_controls=(
+                                    "sandbox", "mode-plan", "disable-slash-commands",
+                                    "deny-all-actions", "stream-json-same-session-ingestion",
+                                    "no-add-dir", "no-dangerous-permissions",
+                                ),
+                                stdin_prompt=True,
+                                transport_payload=broker_stream_input,
+                                transport_metadata={
+                                    "provider_stream_protocol": _BROKER_AGY_STREAM_PROTOCOL,
+                                    "provider_stream_chunk_count": len(broker_stream.chunk_sha256),
+                                    "provider_stream_chunk_sha256": broker_stream.chunk_sha256,
+                                    "provider_stream_chunk_bytes": broker_stream.chunk_bytes,
+                                    "provider_stream_final_event_sha256": broker_stream.final_event_sha256,
+                                },
+                            )
+                            proc = _run_leg_with_liveness(
+                                cmd, cwd=provider_cwd, env=agy_env,
+                                deadline_s=deadline_s, input_text=broker_stream_input,
+                                quiescence_latch=quiescence_latch,
+                                **({"review_monitor": review_monitor, "gemini_profile": profile}
+                                   if review_monitor is not None else {}),
+                            )
+                    except gemini_heartbeat.GeminiQuiescenceError as exc:
+                        error = ProviderProcessGroupQuiescenceError(str(exc))
+                        if quiescence_latch is not None:
+                            error = quiescence_latch.trip(error)
+                        raise error from exc
+                    finally:
+                        if profile is not None and broker_evidence is not None:
+                            broker_evidence.update(profile.evidence)
                 else:
                     proc = _run_leg_with_liveness(
                         cmd, cwd=provider_cwd, env=env, deadline_s=deadline_s,
@@ -6012,7 +6131,7 @@ def _exec_leg(
                             stderr=str(timeout_stderr or ""), staged=capture_staged,
                         ),
                     )
-                return 124, "", f"timeout after {deadline_s}s"
+                return 124, "", "Gemini broker deadline exceeded" if brokered else f"timeout after {deadline_s}s"
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
@@ -6020,14 +6139,38 @@ def _exec_leg(
             review_text = raw_stream
             rc = proc.returncode
             log_text = proc.stderr or ""
+            native_rc = rc
+            original_log = log_text
             if brokered and rc == 0:
                 rc, review_text, stream_detail, stream_metadata = _broker_gemini_stream_result(
                     raw_stream, broker_stream,
                 )
-                if stream_metadata:
+                if stream_metadata and broker_evidence is not None:
                     broker_evidence.update(stream_metadata)
                 if stream_detail:
                     log_text = stream_detail
+            retry_text = raw_stream if native_rc != 0 else review_text
+            bounded_stall = bool(
+                _GEMINI_TRANSIENT_RE.search(original_log if native_rc != 0 else log_text)
+                or (len(retry_text.strip()) < 200 and _GEMINI_TRANSIENT_RE.search(retry_text))
+            )
+            if brokered:
+                if review_monitor is not None and review_monitor.cancel.is_set():
+                    return 1, "", "review_operation_cancelled"
+                native_timeout = "timeout waiting for response" in original_log.lower() or (
+                    len(raw_stream.strip()) < 200 and "timeout waiting for response" in raw_stream.lower()
+                )
+                if review_monitor is not None and (native_rc != 0 or rc != 0 or not review_text.strip()) and native_timeout:
+                    return 1, "", "Gemini broker native timeout under heartbeat-only"
+                if native_rc != 0:
+                    review_text = ""
+                    log_text = "Gemini broker native exit without an accepted review"
+                elif rc == 0 and not review_text.strip():
+                    if _TOOL_DENIED_RE.search(original_log):
+                        return 1, "", "Gemini broker denied a tool permission without review text"
+                    log_text = "Gemini broker completed without review text"
+                elif rc == 0:
+                    log_text = "" if _completion_ok(review_text, mode) else "Gemini broker response lacks a terminal verdict"
             if agy_capture is not None:
                 if not seat_key or capture_staged is None:
                     raise AgyCanaryEvidenceError("capture-enabled Gemini launch is missing sealed stage or seat")
@@ -6065,14 +6208,14 @@ def _exec_leg(
             # DISCUSSES "connection reset"/"please try again" (plausible — this panel reviews
             # code) as a stall and discard+re-run it. So: stderr always counts; stdout counts
             # only when the body is too short to be a real review.
-            stall = bool(
+            stall = bounded_stall if brokered else bool(
                 _GEMINI_TRANSIENT_RE.search(log_text)
                 or (
                     len(review_text.strip()) < 200
                     and _GEMINI_TRANSIENT_RE.search(review_text)
                 )
             )
-            if not (soft_empty or stall):
+            if review_monitor is not None or not (soft_empty or stall):
                 break  # real output OR hard non-transient error → stop (never hammer)
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
@@ -6295,8 +6438,10 @@ def _default_spawn(
     ):
         try:
             if review_monitor is not None and (timeout_s is not None or agy_capture is not None or research_seat is not None
-                or leg not in ("claude", "codex", "grok")):
+                or leg not in ("claude", "codex", "grok", "gemini")):
                 raise ValueError("review_monitoring_unsupported_route")
+            if review_monitor is not None and leg == "gemini":
+                gemini_heartbeat.require_capability(_broker_subscription_env(env))
             revalidate_review_isolation_authorization(
                 review_authorization, None, artifact, mode=mode,
                 monitoring_policy="heartbeat_only" if review_monitor is not None else "bounded",
@@ -6574,7 +6719,9 @@ def _default_spawn(
                     # fail-open class this work exists to remove.
                     **_sandbox_evidence(),
                 })
+                gemini_detail = None
                 def _parent_infer() -> tuple[str, str]:
+                    nonlocal gemini_detail
                     if leg == "claude":
                         return _exec_claude_tui_leg(
                             review_dir, out_dir, leg_timeout, artifact,
@@ -6582,12 +6729,29 @@ def _default_spawn(
                             backstop_s=leg_deadline, broker_prompt=sealed_prompt,
                             broker_evidence=broker.evidence, **broker_extra,
                         )
-                    rc, text, log = _exec_leg(
-                        leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
-                        deadline_s=leg_deadline, broker_prompt=sealed_prompt,
-                        broker_evidence=broker.evidence, **broker_extra,
-                    )
-                    return _classify_leg(rc, text, log, provider_mode), text
+                    try:
+                        rc, text, log = _exec_leg(
+                            leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
+                            deadline_s=leg_deadline, broker_prompt=sealed_prompt,
+                            broker_evidence=broker.evidence, **broker_extra,
+                        )
+                    except ProviderProcessGroupQuiescenceError:
+                        raise
+                    except Exception as exc:
+                        if leg != "gemini":
+                            raise
+                        gemini_detail = (
+                            "review_monitoring_write_failed" if review_monitor is not None and review_monitor.write_failed
+                            else str(exc) if str(exc) in _GEMINI_BROKER_DETAILS
+                            else "Gemini broker local provider failure"
+                        )
+                        return "DEGRADED", ""
+                    status = _classify_leg(rc, text, log, provider_mode)
+                    if leg == "gemini" and status != "OK":
+                        if log not in _GEMINI_BROKER_DETAILS:
+                            raise ValueError("gemini_broker_diagnostic_invalid")
+                        gemini_detail = log
+                    return status, text
                 def _cancel_parent_infer() -> None:
                     # Expiry requests cancellation; only failed cleanup is fatal.
                     broker_latch.cancel()
@@ -6612,13 +6776,15 @@ def _default_spawn(
             if response is None or probe is None:
                 raise ValueError("broker completed without a response")
             response_text = str(response["text"])
+            if gemini_detail is not None and response["status"] == "OK":
+                raise ValueError("gemini_broker_diagnostic_status_mismatch")
             broker.evidence.update({
                 "provider_response_status": str(response["status"]),
                 "provider_response_sha256": sha256(response_text.encode()).hexdigest(),
                 "provider_response_bytes": len(response_text.encode()),
             })
             return _BrokeredSpawnResult(
-                str(response["status"]), response_text, evidence=probe
+                str(response["status"]), response_text, gemini_detail, evidence=probe
             )
         if leg == "claude":
             if quiescence_latch is not None:
@@ -6674,8 +6840,10 @@ def _default_spawn(
         if status != "OK" and not str(review_text).strip() and str(log_text).strip():
             return status, review_text, str(log_text).strip()[:2000]
         return status, review_text
-    except ProviderProcessGroupQuiescenceError:
+    except (ProviderProcessGroupQuiescenceError, gemini_heartbeat.GeminiQuiescenceError) as exc:
         quiescence_failed = True
+        if isinstance(exc, gemini_heartbeat.GeminiQuiescenceError):
+            raise ProviderProcessGroupQuiescenceError(str(exc)) from exc
         raise
     except Exception as exc:  # fail-closed
         # THE REASON GOES IN `detail`, NEVER IN `text`. Three comments in this file say so
@@ -7587,6 +7755,7 @@ def invoke_board(
             # here, before minting or any launch (agent-harness#908 board r4 (d)).
             native_fill_requested=bool(native_leg_fills),
         )
+        _preflight_gemini_heartbeat(board, monitoring_policy, base_env)
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(
             leg=seat.harness or seat.vendor_family, status="UNAVAILABLE",

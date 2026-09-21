@@ -150,6 +150,7 @@ if mode=='cancel':
         ready.with_suffix('.tmp').write_text(Path('/proc/self/stat').read_text().split()[0])
         os.replace(ready.with_suffix('.tmp'),ready)
         while True: time.sleep(.1)
+    print('synthetic provider ready',file=sys.stderr,flush=True)
     while True: time.sleep(.1)
 if mode=='wait':
     while not Path({str(tmp_path / 'release')!r}).exists(): time.sleep(.01)
@@ -173,11 +174,14 @@ if mode=='native-stdout':
     Path({str(observation)!r}).write_text(json.dumps(observed))
     print('connection reset PRIVATE_FIXTURE_SENTINEL')
     raise SystemExit(7)
-if mode=='native-timeout':
+if mode in ('native-timeout','native-timeout-zero'):
     print('Error: timeout waiting for response PRIVATE_FIXTURE_SENTINEL',file=sys.stderr)
-    raise SystemExit(1)
+    raise SystemExit(0 if mode=='native-timeout-zero' else 1)
 if mode=='malformed':
     print('{{PRIVATE_FIXTURE_SENTINEL',flush=True)
+    raise SystemExit(0)
+if mode=='quoted-timeout':
+    print('{{'+'x'*220+' timeout waiting for response',flush=True)
     raise SystemExit(0)
 if mode=='event': print(json.dumps(['PRIVATE_FIXTURE_SENTINEL']))
 for e in events[:-1]:
@@ -188,7 +192,9 @@ if mode=='tool':
     print(json.dumps({{'event':'step_update','step_update':{{'step_type':'tool','tool_info':'PRIVATE_FIXTURE_SENTINEL'}}}}))
 if mode=='denied-empty':
     print('auto-denied tool permission PRIVATE_FIXTURE_SENTINEL',file=sys.stderr)
-emit('' if mode in ('empty','denied-empty') else '<truncated 123 bytes>' if mode=='truncation' else 'No blocking findings.\\nAGREE',
+if mode=='empty-timeout':
+    print('Error: timeout waiting for response',file=sys.stderr)
+emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123 bytes>' if mode=='truncation' else 'No blocking findings.\\nAGREE',
      status='ERROR' if mode=='final' else 'SUCCESS',
      session='another-session' if mode=='session' else 'fixture-session')
 ''')
@@ -233,12 +239,41 @@ def test_missing_capability_refuses_whole_board_before_effects(fixture_cli, monk
     assert "gemini" in record["monitoring"]["diagnostic"]
 
 
+def test_public_preflight_uses_the_supplied_subscription_environment(fixture_cli, monkeypatch):
+    fixture_cli.module.require_capability(panel._broker_subscription_env())
+    monkeypatch.setattr(panel, "default_matrix", lambda **kw: pytest.fail("availability preceded capability check"))
+    monkeypatch.setattr(backing, "prepare_review_isolation_authorization",
+                        lambda *a, **kw: pytest.fail("authorization preceded actual-environment capability check"))
+    result = panel.invoke_board(
+        DEFAULT_BOARD, "input", monitoring_policy="heartbeat_only",
+        base_env={"PATH": "/missing-gemini-image", "HOME": str(fixture_cli.home)},
+    )
+    assert len(result.legs) == 4
+    assert all(leg.status == "UNAVAILABLE" and "gemini" in leg.detail for leg in result.legs)
+    assert all(leg.review_monitoring["terminal_reason"] == "policy_refusal" for leg in result.legs)
+    assert not fixture_cli.attempts.exists()
+
+
+def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli, monkeypatch):
+    supplied = dict(os.environ)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    cancel = threading.Event()
+    cancel.set()
+    result = panel.invoke_board(gemini_board(), "input", monitoring_policy="heartbeat_only",
+                                base_env=supplied, cancel_event=cancel)
+    assert result.legs[0].detail == "review_operation_cancelled"
+    assert not fixture_cli.attempts.exists()
+
+
 @pytest.mark.parametrize("mode,status,detail", [
     ("ok", "OK", None), ("empty", "EMPTY", "without review text"),
     ("malformed", "ERROR", "malformed JSON"), ("ack", "ERROR", "acknowledgement"),
     ("tool", "ERROR", "tool or subagent"), ("native", "ERROR", "native exit"),
     ("native-stdout", "ERROR", "native exit"),
     ("native-timeout", "ERROR", "native timeout"),
+    ("native-timeout-zero", "ERROR", "native timeout"),
+    ("empty-timeout", "ERROR", "native timeout"),
+    ("quoted-timeout", "ERROR", "malformed JSON"),
     ("denied-empty", "ERROR", "tool permission"),
     ("event", "ERROR", "malformed stream event"),
     ("session", "ERROR", "conversation"), ("count", "ERROR", "incomplete ingestion"),
@@ -298,6 +333,77 @@ def test_pre_cancelled_public_gemini_never_launches(fixture_cli, tmp_path):
     verdict, = [json.loads(p.read_text()) for p in (tmp_path / "records").glob("*.verdict.json")]
     assert verdict["status"] == "UNAVAILABLE" and verdict["text"] == ""
     assert verdict["detail"] == "review_operation_cancelled"
+
+
+def test_profile_does_not_relabel_a_body_failure_as_a_capability_failure(fixture_cli):
+    with pytest.raises(OSError, match="synthetic body failure"):
+        with _profile(fixture_cli):
+            raise OSError("synthetic body failure")
+
+
+def test_monitor_write_failure_stays_distinct_from_capability(fixture_cli, tmp_path, monkeypatch):
+    fixture_cli.mode.write_text("wait")
+    original = panel._ReviewMonitor.observe
+    def fail_after_admission(self, age=None, terminal=None):
+        if fixture_cli.attempts.exists() and terminal is None:
+            self.write_failed = True
+            raise OSError("PRIVATE_FIXTURE_SENTINEL")
+        return original(self, age, terminal)
+    monkeypatch.setattr(panel._ReviewMonitor, "observe", fail_after_admission)
+    result = panel.invoke_board(gemini_board(), "input", monitoring_policy="heartbeat_only",
+                                stream_dir=tmp_path / "records")
+    leg, = result.legs
+    assert leg.status != "OK" and leg.text == ""
+    assert leg.detail == "review_monitoring_write_failed"
+    assert leg.harden_isolation_evidence["provider_agy_home_cleanup_verified"]
+
+
+def test_heartbeat_credential_reference_uses_supplied_home(fixture_cli, tmp_path):
+    configured_home = tmp_path / "configured-home"
+    configured_token = configured_home / ".gemini/antigravity-cli/antigravity-oauth-token"
+    configured_token.parent.mkdir(parents=True)
+    configured_token.write_text("synthetic-configured-token\n")
+    fixture_cli.mode.write_text("refresh")
+    result = panel.invoke_board(gemini_board(), "input", monitoring_policy="heartbeat_only",
+                                base_env={**os.environ, "HOME": str(configured_home)},
+                                stream_dir=tmp_path / "records")
+    leg, = result.legs
+    assert leg.status == "OK", leg.detail
+    assert configured_token.read_text() == "synthetic-refreshed\n"
+    assert fixture_cli.token.read_text() == "synthetic-token-only\n"
+    assert leg.harden_isolation_evidence["provider_credential_home_source"] == "scrubbed_subscription_home"
+
+
+def test_heartbeat_credential_home_fallback_is_recorded_truthfully(fixture_cli, tmp_path):
+    env = {key: value for key, value in os.environ.items() if key != "HOME"}
+    result = panel.invoke_board(gemini_board(), "input", monitoring_policy="heartbeat_only",
+                                base_env=env, stream_dir=tmp_path / "records")
+    leg, = result.legs
+    assert leg.status == "OK", leg.detail
+    assert leg.harden_isolation_evidence["provider_credential_home_source"] == "process_home_fallback"
+
+
+def test_explicit_empty_home_is_not_reported_as_process_home_fallback(fixture_cli, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "README.md").write_text("synthetic review authority\n")
+    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    relative_home = repo / "relative-home"
+    token = relative_home / ".gemini/antigravity-cli/antigravity-oauth-token"
+    token.parent.mkdir(parents=True)
+    token.write_text("synthetic-relative-token\n")
+    fixture_cli.mode.write_text("refresh")
+    monkeypatch.chdir(relative_home)
+    result = panel.invoke_board(gemini_board(), "input", repo_dir=repo,
+                                base_env={**os.environ, "HOME": ""}, monitoring_policy="heartbeat_only",
+                                stream_dir=tmp_path / "records", review_policy=panel.ReviewLandingPolicy(("gemini",), False))
+    leg, = result.legs
+    assert leg.status == "OK", leg.detail
+    assert token.read_text() == "synthetic-refreshed\n"
+    assert fixture_cli.token.read_text() == "synthetic-token-only\n"
+    assert leg.harden_isolation_evidence["provider_credential_home_source"] == "scrubbed_subscription_home"
 
 
 def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_cli, tmp_path):
@@ -720,7 +826,7 @@ from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 gh.QUALIFIED_IMAGE_SHA256={fixture_cli.module.QUALIFIED_IMAGE_SHA256!r}
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
-panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}))
+panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}),review_policy=panel.ReviewLandingPolicy(('gemini',),False))
 '''
     worker = panel.launch_provider([sys.executable, "-c", worker_code],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -783,7 +889,7 @@ def _qualification_record(operation):
     monitor = {"schema": "review_monitoring.v1", "invocation": "fixture-operation",
                "requested_policy": "heartbeat_only", "effective_policy": "heartbeat_only",
                "model_deadline_s": None, "silence_deadline_s": None,
-               "terminal_reason": "completed"}
+               "terminal_reason": "completed", "admission_expires_monotonic_ns": 10000000100}
     broker = {
         "schema": "parent_unix_broker_v1", "operation_deadline_s": None,
         "stage_bundle_sha256": "e" * 64, "stage_instructions_sha256": "f" * 64,
@@ -797,6 +903,9 @@ def _qualification_record(operation):
         "provider_argv_sha256": sha256("\0".join(argv + ["<STDIN_SEALED_INLINE_PROMPT>"]).encode()).hexdigest(),
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_profile_sha256": _digest_record(_qualification_profile()),
+        "provider_namespace_identity": {"init_pid": 100002, "init_start": "2",
+                                        "pid_namespace_device": 4, "pid_namespace_inode": 12345},
+        "provider_namespace_quiescence": {"init_exited": True, "live_members": [], "unreadable_entries": 0},
         "provider_agy_settings_sha256": "3" * 64,
         "provider_input_sha256": "1" * 64, "provider_prompt_sha256": "1" * 64,
         "provider_transport_sha256": "2" * 64,
@@ -813,10 +922,18 @@ def _qualification_record(operation):
         "profile_sha256": _digest_record(_qualification_profile()),
         "settings_sha256": "3" * 64,
         "image_readonly": True, "home_removed": True, "init_exited": True,
+        "credential_home_source": "scrubbed_subscription_home",
+        "credential_target_regular_before": True, "credential_target_regular_after": True,
         "live_namespace_members": [], "owned_fds_closed": True,
         "sandbox_network_filtered": True, "network_rules_verified": True,
-        "init_pid": 100002, "init_start": "2", "pid_namespace_inode": 12345,
-        "helpers": [{"pid": 100003, "start": "3", "executable_sha256": "c" * 64}],
+        "network_rule_checks": 3,
+        "init_pid": 100002, "init_start": "2", "pid_namespace_device": 4, "pid_namespace_inode": 12345,
+        "provider_pid": 100003, "provider_start": "3",
+        "mount_namespace_device": 4, "mount_namespace_inode": 12346,
+        "mount_namespace_users_after": [], "mount_scan_unreadable_entries": 0,
+        "fd_cleanup_observations": [{"pid": 100002, "start": "2", "state": "absent", "fd_count": 0},
+                                    {"pid": 100003, "start": "3", "state": "absent", "fd_count": 0}],
+        "helpers": [{"pid": 100003, "start": "3", "executable_sha256": "c" * 64, "is_agy": True}],
         "kill_event": None,
     }
     if operation == "cancel":
@@ -928,6 +1045,15 @@ def test_cancel_record_cannot_report_an_ok_review():
     with pytest.raises(ValueError): _validate_record(record)
 
 
+def test_completion_record_needs_a_terminal_review_even_with_coherent_hashes():
+    record = _qualification_record("completion")
+    _validate_record(record)
+    record["result"]["text"] = "A nonterminal partial response"
+    record["broker"]["provider_response_sha256"] = sha256(record["result"]["text"].encode()).hexdigest()
+    _rebind_record(record)
+    with pytest.raises(ValueError): _validate_record(record)
+
+
 @pytest.mark.parametrize("operation", ["completion", "cancel", "owner-loss"])
 @pytest.mark.parametrize("bad_fact", ["live_namespace_members", "init_exited", "home_removed", "owned_fds_closed"])
 def test_every_operation_requires_verified_cleanup(operation, bad_fact):
@@ -946,3 +1072,173 @@ def test_owner_loss_never_accepts_a_fabricated_terminal_record(fabrication):
     if fabrication == "result": record["result"] = {"status": "OK", "text": "AGREE", "detail": None}
     _rebind_record(record)
     with pytest.raises(ValueError): _validate_record(record)
+
+
+@pytest.mark.parametrize("field", ["init_pid", "init_start", "pid_namespace_device", "pid_namespace_inode", "expiry", "quiescence"])
+def test_qualification_cross_checks_namespace_and_admission_identity(field):
+    record = _qualification_record("completion")
+    _validate_record(record)
+    if field == "expiry": record["monitoring"]["admission_expires_monotonic_ns"] += 1
+    elif field == "quiescence": record["broker"]["provider_namespace_quiescence"]["init_exited"] = False
+    else: record["broker"]["provider_namespace_identity"][field] = "other" if field == "init_start" else 99999
+    _rebind_record(record)
+    with pytest.raises(ValueError): _validate_record(record)
+
+
+@pytest.mark.parametrize("field", ["provider_start", "unknown_helper", "not_agy", "fd_open", "mount_user", "credential_missing", "no_rules"])
+def test_qualification_requires_measured_entry_and_cleanup_facts(field):
+    record = _qualification_record("completion")
+    _validate_record(record)
+    if field == "provider_start": record["observer"]["provider_start"] = "999"
+    if field == "unknown_helper": record["observer"]["helpers"][0]["executable_sha256"] = "4" * 64
+    if field == "not_agy": record["observer"]["helpers"][0]["is_agy"] = False
+    if field == "fd_open": record["observer"]["fd_cleanup_observations"][0].update(state="open", fd_count=1)
+    if field == "mount_user": record["observer"]["mount_namespace_users_after"] = [{"pid": 100003, "start": "3"}]
+    if field == "credential_missing": record["observer"]["credential_target_regular_after"] = False
+    if field == "no_rules": record["observer"]["network_rule_checks"] = 0
+    _rebind_record(record)
+    with pytest.raises(ValueError): _validate_record(record)
+
+
+def test_helper_observer_rejects_same_pid_exec_even_into_an_allowed_helper(tmp_path):
+    observer_type = _qualification_validator().__globals__["HelperObserver"]
+    shell_hash = sha256(Path("/usr/bin/dash").read_bytes()).hexdigest()
+    sleep_hash = sha256(Path("/usr/bin/sleep").read_bytes()).hexdigest()
+    proc = panel.launch_provider(["/usr/bin/dash", "-c", "read trigger; exec /usr/bin/sleep 30"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        start = Path(f"/proc/{proc.pid}/stat").read_text().rsplit(") ", 1)[1].split()[19]
+        observer = observer_type(shell_hash, {"sleep": sleep_hash}, (proc.pid, start))
+        observer.observe(proc.pid, start)
+        proc.stdin.write(b"go\n")
+        proc.stdin.flush()
+        until = time.monotonic() + 2  # synthetic exec admission only
+        while sha256(Path(f"/proc/{proc.pid}/exe").read_bytes()).hexdigest() != sleep_hash:
+            assert time.monotonic() < until
+            time.sleep(.01)
+        assert Path(f"/proc/{proc.pid}/stat").read_text().rsplit(") ", 1)[1].split()[19] == start
+        with pytest.raises(ValueError, match="identity policy"):
+            observer.observe(proc.pid, start)
+    finally:
+        proc.kill()
+        proc.wait(5)
+        proc.stdin.close()
+
+
+def _qualification_directory(root):
+    artifact, brief, help_text = "synthetic artifact", "synthetic instructions", "synthetic help"
+    prompt = panel._render_broker_inline_prompt(artifact, brief, "review")
+    request = {"artifact_sha256": sha256(artifact.encode()).hexdigest(),
+               "instructions_sha256": sha256(brief.encode()).hexdigest(),
+               "provider_input_sha256": sha256(prompt.encode()).hexdigest(),
+               "provider_transport_sha256": sha256(panel._broker_gemini_stream_protocol(prompt).transport.encode()).hexdigest()}
+    for operation in ("completion", "cancel", "owner-loss"):
+        folder = root / operation
+        folder.mkdir()
+        record = _qualification_record(operation)
+        record["request"] = request
+        record["help_sha256"] = sha256(help_text.encode()).hexdigest()
+        if record["broker"] is not None:
+            record["broker"].update(stage_bundle_sha256=request["artifact_sha256"], stage_instructions_sha256=request["instructions_sha256"],
+                                    provider_input_sha256=request["provider_input_sha256"], provider_prompt_sha256=request["provider_input_sha256"],
+                                    provider_transport_sha256=request["provider_transport_sha256"])
+        _rebind_record(record)
+        (folder / "artifact.md").write_text(artifact)
+        (folder / "brief.md").write_text(brief)
+        (folder / "agy-help.txt").write_text(help_text)
+        admission = {**record["observer"], "monitoring": {**record["monitoring"], "terminal_reason": None}, "kill_event": None}
+        (folder / "admission-observation.json").write_text(json.dumps(admission))
+        prereg = {k: record[k] for k in ("operation", "source_sha256", "image_sha256", "help_sha256", "profile", "profile_sha256", "request")}
+        prereg["attempt_limit"] = 1
+        (folder / "preregistration.json").write_text(json.dumps(prereg))
+        (folder / "qualification.json").write_text(json.dumps(record))
+        if operation != "owner-loss":
+            (folder / "terminal.json").write_text(json.dumps({key: record[key] for key in ("monitoring", "broker", "result")}))
+    return {"expected_source_sha256": {"panel_invoker.py": "a" * 64}, "expected_image_sha256": "c" * 64,
+            "expected_help_sha256": sha256(help_text.encode()).hexdigest(), "expected_profile_sha256": _digest_record(_qualification_profile())}
+
+
+@pytest.mark.parametrize("mutation", ["failed_attempt", "pending_attempt", "unregistered_receipt", "prereg_mismatch", "input_change", "admission_change", "duplicate_operation", "terminal_change", "owner_terminal", "admission_expiry", "admission_policy"])
+def test_directory_validator_cannot_select_success_from_an_incomplete_attempt_set(tmp_path, mutation):
+    validate = _qualification_validator().__globals__["validate_directory"]
+    expected = _qualification_directory(tmp_path)
+    assert validate(tmp_path, **expected)["route_qualified"] is True
+    if mutation in ("failed_attempt", "pending_attempt", "duplicate_operation"):
+        import shutil
+        extra = tmp_path / "extra"
+        shutil.copytree(tmp_path / "completion", extra)
+        if mutation != "duplicate_operation": (extra / "qualification.json").unlink()
+        if mutation == "failed_attempt": (extra / "failure.json").write_text('{"qualification_passed":false}')
+    if mutation == "unregistered_receipt": (tmp_path / "completion/preregistration.json").unlink()
+    if mutation == "prereg_mismatch":
+        p = tmp_path / "completion/preregistration.json"
+        value = json.loads(p.read_text()); value["attempt_limit"] = 2; p.write_text(json.dumps(value))
+    if mutation == "input_change": (tmp_path / "owner-loss/artifact.md").write_text("different input")
+    if mutation == "admission_change":
+        p = tmp_path / "owner-loss/admission-observation.json"
+        value = json.loads(p.read_text()); value["provider_start"] = "999"; p.write_text(json.dumps(value))
+    if mutation == "terminal_change":
+        p = tmp_path / "completion/terminal.json"
+        value = json.loads(p.read_text()); value["result"]["text"] = "Different. DISAGREE"; p.write_text(json.dumps(value))
+    if mutation == "owner_terminal": (tmp_path / "owner-loss/terminal.json").write_text("{}")
+    if mutation in ("admission_expiry", "admission_policy"):
+        p = tmp_path / "owner-loss/admission-observation.json"
+        value = json.loads(p.read_text())
+        if mutation == "admission_expiry": value["monitoring"]["admission_expires_monotonic_ns"] += 1
+        else: value["monitoring"]["effective_policy"] = "bounded"
+        p.write_text(json.dumps(value))
+    with pytest.raises(ValueError): validate(tmp_path, **expected)
+
+
+def test_helper_observer_includes_nested_pid_namespaces(tmp_path):
+    driver = _qualification_validator().__globals__
+    command = ["bwrap", "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/",
+               "--proc", "/proc", "--dev", "/dev", "--", "/usr/bin/unshare",
+               "--user", "--map-root-user", "--pid", "--fork", "--kill-child", "/usr/bin/sleep", "30"]
+    proc = panel.launch_provider(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 5  # synthetic process startup only
+        while True:
+            table = driver["process_table"]()
+            children = driver["descendants"](table, proc.pid)
+            sleeping = []
+            for pid in children:
+                try:
+                    if Path(f"/proc/{pid}/exe").resolve() == Path("/usr/bin/sleep"):
+                        sleeping.append(pid)
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
+            if sleeping:
+                break
+            assert proc.poll() is None, proc.stderr.read().decode()
+            assert time.monotonic() < deadline, "nested synthetic helper did not start"
+            time.sleep(.02)
+        def namespace_pids(pid):
+            return next(line for line in Path(f"/proc/{pid}/status").read_text().splitlines()
+                        if line.startswith("NSpid:")).split()[1:]
+        outer_depth = len(namespace_pids("self")) + 1
+        init = next(pid for pid in children if len(namespace_pids(pid)) == outer_depth and namespace_pids(pid)[-1] == "1")
+        assert os.stat(f"/proc/{sleeping[0]}/ns/pid").st_ino != os.stat(f"/proc/{init}/ns/pid").st_ino
+        observer = driver["HelperObserver"](sha256(Path("/usr/bin/bwrap").read_bytes()).hexdigest(),
+                                             {"unshare": sha256(Path("/usr/bin/unshare").read_bytes()).hexdigest()})
+        with pytest.raises(ValueError, match="outside the registered identity policy") as caught:
+            driver["observe_owned_helpers"](table, init, observer)
+        driver["write_failure"](tmp_path, caught.value, "helper_observation", observer, {})
+        failure = json.loads((tmp_path / "failure.json").read_text())
+        assert failure["rejected_image"]["executable_sha256"] == sha256(Path("/usr/bin/sleep").read_bytes()).hexdigest()
+        assert failure["rejected_image"]["pid"] == sleeping[0]
+        assert "outside the registered identity policy" in failure["reason"]
+        driver["write_failure"](tmp_path, OSError("PRIVATE_FIXTURE_SENTINEL"), "observer_cleanup", observer, {})
+        updated = json.loads((tmp_path / "failure.json").read_text())
+        assert updated["reason"] == failure["reason"]
+        assert "PRIVATE_FIXTURE_SENTINEL" not in json.dumps(updated)
+    finally:
+        panel._terminate_process_group(proc)
+        proc.stderr.close()
+
+
+def test_qualification_refuses_an_empty_network_rule_set(monkeypatch):
+    from phase_loop_runtime import sandbox_egress
+    monkeypatch.setattr(sandbox_egress, "egress_rules", lambda: [])
+    with pytest.raises(ValueError, match="rule set is empty"):
+        _qualification_validator().__globals__["inspect_network"](os.getpid())

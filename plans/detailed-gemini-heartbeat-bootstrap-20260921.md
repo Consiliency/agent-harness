@@ -5,7 +5,7 @@ owner_skill: codex-plan-detailed
 input_base_commit: dc47379d6ebc51f7dc2b2536a930be7271d4b4df
 related_issues: [agent-harness#905, agent-harness#892, agent-harness#908]
 automation:
-  suite_command: "PYTHONPATH=phase-loop-runtime/src .venv/bin/python -m pytest -q phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py phase-loop-runtime/tests/test_review_monitor_policy.py phase-loop-runtime/tests/test_leg_liveness_monitor.py phase-loop-runtime/tests/test_panel_tui_liveness_188.py phase-loop-runtime/tests/test_panel_invoker_timeout_argv.py phase-loop-runtime/tests/test_advisor_board_cli_legacy.py phase-loop-runtime/tests/test_advisor_board_backcompat.py phase-loop-runtime/tests/test_harden_evidence_verifier.py phase-loop-runtime/tests/test_skill_liveness_contract.py phase-loop-runtime/tests/test_skills_canon_parity.py phase-loop-runtime/tests/test_launch_seam_coverage.py phase-loop-runtime/tests/test_the_real_launch_carries_the_prefix.py phase-loop-runtime/tests/test_broker_command_builders.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_egress_prefix_crosses_the_broker_thread.py"
+  suite_command: "PYTHONPATH=phase-loop-runtime/src .venv/bin/python -m pytest -q phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py phase-loop-runtime/tests/test_review_monitor_policy.py phase-loop-runtime/tests/test_leg_liveness_monitor.py phase-loop-runtime/tests/test_panel_tui_liveness_188.py phase-loop-runtime/tests/test_panel_invoker_timeout_argv.py phase-loop-runtime/tests/test_advisor_board_cli_legacy.py phase-loop-runtime/tests/test_advisor_board_backcompat.py phase-loop-runtime/tests/test_harden_evidence_verifier.py phase-loop-runtime/tests/test_skill_liveness_contract.py phase-loop-runtime/tests/test_skills_canon_parity.py phase-loop-runtime/tests/test_the_real_launch_carries_the_prefix.py phase-loop-runtime/tests/test_broker_command_builders.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_egress_prefix_crosses_the_broker_thread.py"
   verification_status: not_run
   human_required: false
 ---
@@ -183,7 +183,9 @@ grammar, stream parsing and the parent/broker result consumer.
 Create `phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py` for focused
 behavioral and Linux lifecycle controls. Modify the existing Gemini-refusal cases
 in `test_review_monitor_policy.py` to check unsupported capability instead of
-unconditional unsupported route. Add builder/timeout coverage in
+unconditional unsupported route. After qualification, update the heartbeat
+claims in `test_skill_liveness_contract.py` alongside the canonical skills.
+Add builder/timeout coverage in
 `test_broker_command_builders.py` and `test_panel_invoker_timeout_argv.py` only
 where those existing fixtures are the appropriate boundary. Keep frozen HARDEN
 tests unchanged. New tests initially fail on the input base for intended reasons;
@@ -233,10 +235,34 @@ they never substitute for completion. The owner-loss observer is the external
 qualification driver, which survives the killed invocation process. Each observed
   PID includes start identity to exclude reuse. A descendant executing agy bytes
   other than the pinned image invalidates qualification; inspect executable
-  identity rather than trusting its process name. Report only local quiescence, never
+identity rather than trusting its process name. Report only local quiescence, never
 provider billing settlement. No real credential payload or raw private profile
 is retained. A modern receipt remains intentionally ineligible for the historical
 bounded-success `verify_broker`; do not modify that verifier or its frozen tests.
+
+The qualifier registers helper image hashes before an operation (bwrap/setpriv
+by default; explicitly supplied additional helper images remain separate inputs).
+Sample executable identities repeatedly, record observed transitions, and reject
+unregistered images or a changed entry image. This is sampled process evidence,
+not a complete kernel exec audit or a claim that the entry pin covers helpers.
+Observe the pinned init's full descendant tree, including nested PID namespaces.
+Retain fixed failure reasons, stages and observed/rejected helper image metadata
+without credential contents; cleanup failures must not overwrite the first cause.
+Cross-check namespace PID/start/device/inode and admission expiry between the
+broker, monitor and observer. Observe owned fd tables and accessible mount
+namespace users after teardown, recording unreadable foreign entries separately.
+Observe credential-target regular-file presence before and after without reading
+its contents or requiring identity/content equality across legitimate refreshes.
+Directory validation binds retained input bytes and admission observations and
+accounts for every preregistration, including missing or failed attempts; it
+returns success only for all three distinct operations. Publish a success receipt
+only after validation and observer cleanup. These are the source-board round-one
+evidence corrections, not substitutes for real qualification.
+Also bind terminal runtime records and admission policy/expiry to the envelopes;
+owner loss must not fabricate a terminal record. Pin the package's Python source
+tree, require a nonempty checked network policy, and trigger real cancellation on
+observed output progress after admission. The accessible namespace scan is
+corroboration; held namespace-init exit is the cleanup proof for nested members.
 
 The owner-loss record set is deliberately different: the killed process cannot
 emit its terminal broker receipt. The external driver retains the observed
@@ -250,7 +276,8 @@ helper identities are measured and recorded, not falsely covered by that pin.
 
 ## Documentation impact
 
-Update `CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, the four
+Update `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`,
+`docs/advisor-board-capabilities-card.md`, the four
 `skills-src/{codex,claude,gemini,opencode}/*-advisor-board/SKILL.md` sources and
 generated bundled copies using the existing regeneration script. Document the
 digest/Python capability requirement, zero semantics, one attempt, fixed failure

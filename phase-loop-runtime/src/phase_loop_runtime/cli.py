@@ -1894,7 +1894,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         consume_capture_environment,
         write_private_board,
     )
-    from .panel_invoker import _mode_instructions, invoke_board
+    from .panel_invoker import _mode_instructions, _preflight_gemini_heartbeat, invoke_board
 
     monitoring_policy = getattr(args, "monitoring_policy", "bounded")
     try:
@@ -1902,6 +1902,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             monitoring_policy, DEFAULT_BOARD,
             native_fill_requested=bool(getattr(args, "native_legs", []) or []),
         )
+        _preflight_gemini_heartbeat(DEFAULT_BOARD, monitoring_policy)
     except ValueError as exc:
         record = {
             "schema": "review_monitoring.v1", "requested_policy": monitoring_policy,
@@ -1964,7 +1965,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # CLIs before the staged inputs and provider authorities exist.  Ordinary
     # non-capture invocation retains the auth-aware production composer.
     try:
-        board = DEFAULT_BOARD if capture is not None else compose_review_board()
+        board = DEFAULT_BOARD if capture is not None or monitoring_policy == "heartbeat_only" else compose_review_board()
     finally:
         # A pre-composition authority is operation-local even when a caller has
         # replaced the composer with a hermetic callback.
@@ -2041,6 +2042,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 artifact_text,
                 mode="review",
                 canonical_repo_authority=canonical_repo_authority,
+                **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
             )
         except (OSError, UnicodeError, ValueError) as exc:
             reset_review_instruction_digest(instruction_token)
@@ -2058,6 +2060,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 "repo_dir": scratch,
                 **({"native_leg_fills": native_leg_fills} if native_leg_fills else {}),
                 "agy_canary_capture": capture,
+                **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
             }
             if review_authorization is not None:
                 invoke_kwargs["review_authorization"] = review_authorization
