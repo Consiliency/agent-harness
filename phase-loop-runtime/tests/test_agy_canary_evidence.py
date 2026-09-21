@@ -2345,6 +2345,19 @@ def test_write_lease_refuses_a_foreign_owner_that_merely_compares_equal(request)
     whose `__eq__` returns True for anything would pass it and be displaced
     silently -- reproduced before this fix: `_sigio_is_unowned` answered True and
     the guard took the lease over a live owner.
+
+    The predicate half below runs on every interpreter and is the regression
+    guard. The end-to-end half CHECKS ITS OWN PREMISE first, because the
+    adversary cannot be constructed everywhere: measured, CPython 3.10's
+    `signal.signal` coerces a lying-`__eq__` callable to SIG_DFL, so no foreign
+    owner is ever installed, the guard correctly admits, and an unconditional
+    "expect refusal" reds the 3.10 lane while the production code is right on
+    both. 3.12 retains the object and the half runs.
+
+    Skipped on the MEASURED premise rather than on a version number: a version
+    guard would hide that the adversary is neutralisable by the platform, and
+    would stay stale if a later interpreter restored retention. A test that
+    cannot establish its own precondition is asserting, not testing.
     """
     if _delegate_to_a_single_threaded_child(request):
         return
@@ -2360,13 +2373,22 @@ def test_write_lease_refuses_a_foreign_owner_that_merely_compares_equal(request)
             pass
 
     owner = _PermissiveOwner()
+    # Version-independent, and the half the identity fix actually protects.
     assert owner == signal.SIG_DFL, "this owner no longer exercises the equality path"
     assert not evidence._sigio_is_unowned(owner), (
         "a callable that merely compares equal to SIG_DFL is treated as unowned"
     )
+
     previous = signal.getsignal(signal.SIGIO)
     signal.signal(signal.SIGIO, owner)
     try:
+        if signal.getsignal(signal.SIGIO) is not owner:
+            pytest.skip(
+                "this interpreter did not retain the foreign owner "
+                f"(getsignal returned {signal.getsignal(signal.SIGIO)!r}), so "
+                "there is no owner present for the guard to refuse; the "
+                "predicate assertion above still covers the fix"
+            )
         with pytest.raises(
             evidence.AgyCanaryEvidenceError, match="displace an existing SIGIO owner"
         ):
