@@ -234,8 +234,9 @@ runner's automatic commit/push; it is not a sandbox for commands in the roadmap 
 executor instructions. Keep those within the agreed authority too. Without an
 explicit closeout mode, `run` defaults to pushing completed work.
 
-Add `--governed` when your project requires independent review; the default is
-autonomous unless `PHASE_LOOP_RUN_MODE=governed` is set. Governance is a requirement
+Add `--governed` explicitly when your project requires independent review; the
+default is autonomous. The CLI does not apply `PHASE_LOOP_RUN_MODE`, so exporting
+that variable does not activate governed mode. Governance is a requirement
 to satisfy, not a setting to relax when a reviewer is unavailable.
 
 ## What you get

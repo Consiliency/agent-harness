@@ -53,9 +53,9 @@ knowing before that first run:
 engine (it ships no code and no console script of its own; the obvious PyPI name
 `agent-harness` is an **unrelated third party**). With zero configuration you get:
 
-- **Autonomous by default.** `run_mode` is `autonomous` unless
-  `PHASE_LOOP_RUN_MODE=governed` is set. The selected executor still needs its own
-  authentication. Opt into cross-vendor review with `--governed` when required;
+- **Autonomous by default.** Opt into cross-vendor review explicitly with
+  `--governed` when required. The CLI does not apply `PHASE_LOOP_RUN_MODE`;
+  exporting it does not activate governed mode. The selected executor still needs its own authentication;
   a single provider cannot satisfy independent cross-vendor review.
 - **Degraded-CLI tolerant.** Missing or unbilled executor CLIs (codex / claude /
   gemini / grok / opencode / pi) are **skipped, not fatal** — a run continues on whatever
@@ -166,7 +166,7 @@ Model selection has two independent axes:
   This repo ships a default (planning at `max` effort, implementation at the
   implementer model); a checkout with no policy keeps the legacy resolution.
 - **`run_mode`** — *how governed*. `autonomous` (default) runs unattended with no
-  panel; `governed` (opt-in, `--governed` / `PHASE_LOOP_RUN_MODE=governed`) adds a
+  panel; `governed` (opt-in with `--governed`) adds a
   cross-vendor advisor-board review at planning and pre-merge, bounded, with a
   non-human escalation terminal. Candidate seats are codex / gemini / claude / grok;
   a seat joins when its CLI is present on `PATH`, and pre-merge still holds when too
