@@ -301,16 +301,24 @@ class _ConformTimingRecorder:
 
     # -- call-site attribution ---------------------------------------------
     @staticmethod
-    def site() -> str:
+    def site(depth: int = 3) -> str:
+        """Name the call site as a short caller chain.
+
+        One frame is not enough here: every probe and most git calls funnel
+        through the `_run_bound_child` / `git` pass-through wrappers, so a
+        single frame collapses unrelated phases onto one line.
+        """
         frame = sys._getframe(1)
         skip = (__file__, subprocess.__file__, shutil.__file__, tarfile.__file__)
-        while frame is not None:
+        chain: list[str] = []
+        while frame is not None and len(chain) < depth:
             filename = frame.f_code.co_filename
             if not any(filename == candidate for candidate in skip if candidate):
-                name = os.path.basename(filename)
-                return f"{name}:{frame.f_lineno} {frame.f_code.co_name}"
+                chain.append(
+                    f"{os.path.basename(filename)}:{frame.f_lineno} {frame.f_code.co_name}"
+                )
             frame = frame.f_back
-        return "<unknown>"
+        return " <- ".join(chain) if chain else "<unknown>"
 
     @staticmethod
     def command_label(argv) -> str:
@@ -374,6 +382,15 @@ class _ConformTimingRecorder:
                 f"  {event['label']:<22s} {event['site']}  {extra}"
             )
         write("-" * 78)
+        write("probe children by payload identity (seconds, calls)")
+        by_probe: dict[str, list[float]] = {}
+        for event in self.events:
+            probe = event.get("probe")
+            if probe:
+                by_probe.setdefault(probe, []).append(event["seconds"])
+        for probe, seconds in sorted(by_probe.items(), key=lambda item: -sum(item[1])):
+            write(f"  {sum(seconds):9.2f}s  n={len(seconds):<4d} {probe}")
+        write("-" * 78)
         write("scale counters (what grows with the repo)")
         for key, value in sorted(self.counters.items()):
             write(f"  {key}: {value}")
@@ -416,6 +433,27 @@ def _conform_repo_scale() -> dict[str, int]:
     return scale
 
 
+def _conform_probe_name(input_text: str) -> str | None:
+    """Name a probe child by the payload it is fed on stdin.
+
+    The mutation and EC probes are all spawned from the same two lines, so the
+    command line alone cannot tell them apart; the stdin payload can.
+    """
+    if not input_text.startswith("{"):
+        return None
+    try:
+        payload = json.loads(input_text)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for key in ("mutation_id", "id", "case_id", "nodeid"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 _CONFORM_REAL_POPEN = subprocess.Popen
 _CONFORM_REAL_COPYTREE = shutil.copytree
 _CONFORM_REAL_RMTREE = shutil.rmtree
@@ -431,25 +469,41 @@ class _TimedPopen(_CONFORM_REAL_POPEN):  # type: ignore[misc,valid-type]
         self._conform_started = time.perf_counter()
         self._conform_site = _ConformTimingRecorder.site()
         self._conform_label = _ConformTimingRecorder.command_label(args)
-        self._conform_recorded = False
+        self._conform_recorded = None
+        self._conform_probe = None
         super().__init__(args, *posargs, **kwargs)
 
     def _conform_record(self, out_bytes: int = 0) -> None:
-        if self._conform_recorded or not _CONFORM_TIMING.active:
+        if not _CONFORM_TIMING.active:
             return
-        self._conform_recorded = True
+        if self._conform_recorded is not None:
+            # `communicate` calls `wait` internally, so the event is recorded
+            # before the output sizes are known. Update it rather than drop it.
+            if out_bytes:
+                self._conform_recorded["out_bytes"] = out_bytes
+                _CONFORM_TIMING.bump("child_output_bytes", out_bytes)
+            return
+        event = {
+            "out_bytes": out_bytes,
+            "probe": self._conform_probe,
+        }
         _CONFORM_TIMING.add(
             kind="process",
             label=self._conform_label,
             site=self._conform_site,
             seconds=time.perf_counter() - self._conform_started,
-            out_bytes=out_bytes,
+            **event,
         )
+        self._conform_recorded = _CONFORM_TIMING.events[-1]
         _CONFORM_TIMING.bump("child_processes")
         _CONFORM_TIMING.bump(f"child_processes::{self._conform_label}")
         _CONFORM_TIMING.bump("child_output_bytes", out_bytes)
 
     def communicate(self, *posargs, **kwargs):
+        if posargs and isinstance(posargs[0], str):
+            self._conform_probe = _conform_probe_name(posargs[0])
+        elif "input" in kwargs and isinstance(kwargs["input"], str):
+            self._conform_probe = _conform_probe_name(kwargs["input"])
         stdout, stderr = super().communicate(*posargs, **kwargs)
         self._conform_record(sum(len(part or ()) for part in (stdout, stderr)))
         return stdout, stderr
