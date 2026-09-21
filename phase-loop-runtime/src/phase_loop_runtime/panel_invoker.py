@@ -3064,6 +3064,11 @@ def _claude_tui_command(
     return command
 
 
+_BROKER_CLAUDE_DIRECT_REQUEST = (
+    "Please perform the review requested in the following framed material. "
+)
+
+
 def _broker_claude_tui_command(
     *, model: str | None, effort: str | None, session_id: str,
 ) -> list[str]:
@@ -4405,9 +4410,15 @@ def _run_claude_tui_session(
                 ):
                     detector_armed = False
                     try:
+                        # Claude treats a bracketed paste as supplied data. Keep the
+                        # fixed task request outside it; never type reviewed bytes.
+                        direct_request = (
+                            _BROKER_CLAUDE_DIRECT_REQUEST.encode()
+                            if broker_transcript_path is not None else b""
+                        )
                         os.write(
                             master_fd,
-                            b"\x1b[200~"
+                            direct_request + b"\x1b[200~"
                             + prompt.encode("utf-8", errors="replace")
                             + b"\x1b[201~",
                         )
@@ -5261,6 +5272,12 @@ def _exec_claude_tui_leg(
             command=command, prompt=prompt, cwd=tui_cwd, env=env,
             prompt_transport="pty_input",
             no_tool_controls=("safe-mode", "no-chrome", "disable-slash-commands", "strict-mcp-config", "empty-mcp", "empty-agents", "tools-empty"),
+            transport_payload=_BROKER_CLAUDE_DIRECT_REQUEST + prompt,
+            transport_metadata={
+                "provider_task_request_delivery": "plain_text_before_bracketed_paste",
+                "provider_task_request_sha256": sha256(_BROKER_CLAUDE_DIRECT_REQUEST.encode()).hexdigest(),
+                "provider_task_request_bytes": len(_BROKER_CLAUDE_DIRECT_REQUEST.encode()),
+            },
             redacted_argv_values=(
                 {broker_session_id: "<CLAUDE_SESSION_ID>"}
                 if broker_session_id is not None
