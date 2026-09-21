@@ -158,9 +158,13 @@ directory of the monorepo,
 with unprefixed base directories and optional `_overrides/<harness>/` overlays.
 
 ```sh
-phase-loop install --harness codex --source <path-to>/phase-loop-skills --symlink --dry-run
-phase-loop install --harness codex --source <path-to>/phase-loop-skills --symlink --apply
+phase-loop install --harness codex --source <path-to>/phase-loop-skills --copy --dry-run
+phase-loop install --harness codex --source <path-to>/phase-loop-skills --copy --apply
 ```
+
+These commands install copies and replace existing managed skill directories.
+Back up customizations before applying. See [Team onboarding](https://github.com/Consiliency/agent-harness/blob/main/docs/TEAM-ONBOARDING.md)
+for provider prerequisites, governance choices and the first-run check.
 
 Path resolution is provided by `phase_loop_runtime.skill_paths`, which keeps handoffs
 repo-local, preserves harness-specific reflection roots, and documents the default

@@ -10,14 +10,20 @@ skills, extracted from a private fleet repo into a public, Apache-2.0 package.
 - **`phase-loop-skills/`** — the harness-neutral workflow skill bundle covering the
   roadmap → plan → execute loop, cross-vendor review, and skill authoring, each skill
   with optional per-harness overrides. See
-  [`phase-loop-skills/README.md`](phase-loop-skills/README.md) for the list; it is the
-  single source of truth, so nothing here can drift out of sync with it.
+  [`phase-loop-skills/README.md`](phase-loop-skills/README.md) for the generated bundle;
+  authored sources live in `skills-src/`.
 
-## Quickstart (60 seconds)
+## Start here
+
+Follow [Team onboarding](docs/TEAM-ONBOARDING.md) for the canonical setup path,
+whether you use one machine or a fleet, inside or outside a tailnet. Agents should
+start there too: establish the user's executor, governance needs and publishing
+authority before the first real run.
 
 ```sh
-pip install consiliency-harness   # the install-friendly front door → phase-loop-runtime
-phase-loop run                    # autonomous by default: no subscription auth, no dotfiles
+uv tool install phase-loop-runtime
+phase-loop --version
+phase-loop doctor --json
 ```
 
 **`run` needs a roadmap.** It executes `specs/phase-plans-v<N>.md`, so a repo without
@@ -45,9 +51,10 @@ knowing before that first run:
 engine (it ships no code and no console script of its own; the obvious PyPI name
 `agent-harness` is an **unrelated third party**). With zero configuration you get:
 
-- **Zero-auth, autonomous by default.** `run_mode` is `autonomous` — the runner
-  drives phases unattended, with no advisor panel and **no subscription login
-  required**. Opt into governed review with `--governed`.
+- **Autonomous by default.** `run_mode` is `autonomous` unless
+  `PHASE_LOOP_RUN_MODE=governed` is set. The selected executor still needs its own
+  authentication. Opt into cross-vendor review with `--governed` when required;
+  a single provider cannot satisfy independent cross-vendor review.
 - **Degraded-CLI tolerant.** Missing or unbilled executor CLIs (codex / claude /
   gemini / grok / opencode / pi) are **skipped, not fatal** — a run continues on whatever
   is installed and authed.
@@ -75,7 +82,8 @@ Full contract, including the per-install-mode pass condition: `docs/TEAM-ONBOARD
 consiliency-harness` (or the engine directly, `pip install phase-loop-runtime`)
 gives you the `phase-loop` / `codex-phase-loop` CLIs with the workflow skills
 bundled in the wheel, so `phase-loop run` works with no dotfiles. Pin a release with
-`pip install consiliency-harness==X.Y.Z`.
+`pip install phase-loop-runtime==X.Y.Z` (replace `X.Y.Z` with a published version).
+The shim's version is independent of the runtime's version.
 
 **(2) Interactive-harness skills** — if you drive an interactive harness (Claude
 Code, Codex, Gemini, OpenCode) and want the workflow skills **copied into that

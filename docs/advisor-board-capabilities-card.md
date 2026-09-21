@@ -195,11 +195,14 @@ execution operation exists, so a seated rung reports
 
 ### Invoking a board
 
+```sh
+phase-loop advisor-board <artifact>      # runtime-composed four-vendor board
 ```
-advisor-board <artifact>                       # bare → the `default` board
-advisor-board --board code-review <artifact>   # a named preset
-advisor-board --seats gpt-6-astra:max:codex <art>  # ad-hoc seats (model:effort[:harness])
-```
+
+The public CLI does not accept `--board` or `--seats`, and does not load the TOML
+configuration below. Named presets and custom boards are library interfaces;
+they are not operator controls for this command. CLI configuration is follow-up
+[agent-harness#927](https://github.com/Consiliency/agent-harness/issues/927).
 
 Runtime entry point: `panel_invoker.invoke_board(board, artifact, ...)`. Legacy
 callers keep using `panel_invoker.invoke_panel(...)` unchanged.
@@ -277,9 +280,10 @@ for leg in result.legs:
 
 ---
 
-## How to add a custom board
+## Custom boards through the library
 
-Boards layer over the presets from
+This section describes `advisor_board.config.load_boards()`, not CLI setup.
+Library callers explicitly load boards layered over presets from
 `$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`
 (`advisor_board.board_config_path()`; shape frozen by
 `fixtures/advisor-boards.example.toml`). A user board with the same name as a
@@ -287,7 +291,7 @@ preset overrides it.
 
 ```toml
 # ~/.config/agent-harness/advisor-boards.toml
-default_board = "my-review"          # optional: what bare `advisor-board` resolves to
+default_board = "my-review"          # library default; does not configure the CLI
 
 [[boards]]
 name = "my-review"
@@ -351,10 +355,9 @@ a two-same-vendor board is not collapsed.
      contract-sanctioned delta (ABDRESOLVE finding 4), asserted explicitly in the
      golden proof.
 
-3. **The presets.** If you invoked the panel for a premerge review, that is now the
-   `default` board (bare `advisor-board`). For a lens-differentiated review reach for
-   `--board code-review`; for divergent thinking, `--board brainstorm`. Define your
-   own in `advisor-boards.toml` (above).
+3. **The presets.** The public `advisor-board` command composes its board through
+   the runtime. Named presets and custom TOML boards are available to library
+   callers through `load_boards()`; the CLI does not select them.
 
 4. **Auth / observability posture is unchanged for the default path.** Subscription
    stays the default lane; the default board scrubs vendor keys exactly as before;

@@ -5,6 +5,15 @@ Agent guidance for contributors working in this repository.
 This is the anchor for agent-facing conventions in `agent-harness`. Keep it
 tight and self-contained.
 
+## Helping a user install or configure the harness
+
+Start with `docs/TEAM-ONBOARDING.md`. Establish the target machine/harness,
+executor authentication, governance requirements and closeout authority; reuse
+decisions already supplied by the user. Follow its manual-closeout first-run
+path and report installation, provider readiness and review readiness separately.
+This repository's contributor rules are not a governance policy to copy into
+the user's project.
+
 ## Referencing issues & PRs (multi-repo)
 
 `agent-harness` is one node in a multi-repo fleet, so a bare `#123` is
