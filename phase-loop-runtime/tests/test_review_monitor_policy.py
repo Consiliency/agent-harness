@@ -918,3 +918,107 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
             assert int(record["caps"], 16) == 0
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+# --- agent-harness#908 board round 4, finding (f): the provider's cwd is re-established INSIDE the
+# namespace by PATH. `nsenter --wd` fchdir()ed to a dentry opened in the caller's mount namespace,
+# which a provider that canonicalises its cwd (codex's own sandbox) cannot resolve -- the real
+# codex CLI exited 1 with "No such file or directory (os error 2)" before any inference, and
+# completed a review once the chdir became a path lookup after nsenter/setpriv. Nested user
+# namespaces are refused inside the holder, so the canonicalising provider itself cannot run in
+# this suite; the receipt lives with the PR evidence. This control pins the launch shape the
+# receipt was taken with, so the fchdir form cannot silently return.
+def test_launch_prefix_chdirs_by_path_inside_the_namespace(tmp_path):
+    cwd = tmp_path / "seat with spaces"
+    cwd.mkdir()
+    prefix = ("nsenter", "--net", "--mount", "-t", "1", "-U", "--preserve-credentials",
+              "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
+    token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+    try:
+        composed = panel._provider_launch_prefix(cwd)
+    finally:
+        panel._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert composed[:len(prefix)] == list(prefix), "the egress prefix is preserved verbatim"
+    assert composed[len(prefix):] == ["/usr/bin/env", "--chdir=" + str(cwd.resolve()), "--"], (
+        "the chdir runs AFTER nsenter and setpriv, by path, in the namespace the provider lives in"
+    )
+    assert not any(str(item).startswith("--wd") for item in composed), (
+        "nsenter --wd fchdir()s to an outer-namespace dentry; a canonicalising provider sees "
+        "'(unreachable)' and exits with ENOENT"
+    )
+    # no prefix -> no chdir wrapper either (the plain Popen cwd applies)
+    token = panel._EGRESS_LAUNCH_PREFIX.set(())
+    try:
+        assert panel._provider_launch_prefix(cwd) == []
+    finally:
+        panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+# --- agent-harness#908 board round 4, finding (d): a native leg fill (EC-REVIEWTRUTH-14) is a route
+# heartbeat-only excludes ("no native host seat", CONTRACTS.md review monitoring policy v1). It is
+# refused by the whole-board preflight, before minting, composition effects or any launch, so a
+# valid fill can never be bound as a usable OK under the policy. Bounded keeps the fill.
+def test_policy_preflight_refuses_a_native_fill_under_heartbeat_only():
+    with pytest.raises(ValueError, match="review_monitoring_unsupported_route:native_fill"):
+        backing.resolve_review_monitoring_policy("heartbeat_only", supported_board(), native_fill_requested=True)
+    policy = backing.resolve_review_monitoring_policy("bounded", supported_board(), native_fill_requested=True)
+    assert policy.requested == policy.effective == "bounded"
+
+
+def test_production_invoker_refuses_a_valid_native_fill_under_heartbeat_only(tmp_path, monkeypatch):
+    """The seat's reproduction: production invoke_board, a fill BOUND to the real digests. Under
+    heartbeat_only the whole-board preflight refuses before ANY effect (no availability probe, no
+    authorization minting, no launch): every leg UNAVAILABLE with the typed route refusal."""
+    from test_native_claude_seat_fill import CC, _bound_fill, _typed_deferral_spawn
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("review me\n")
+    board = supported_board()
+    seat = next(s for s in board.seats if s.harness == "claude")
+    fill = _bound_fill(panel.NativeLegFill, board, seat, artifact.read_text())
+    def forbidden(*args, **kwargs):
+        pytest.fail("policy refusal reached an effect")
+    monkeypatch.setattr(panel, "default_matrix", forbidden)
+    monkeypatch.setattr(backing, "prepare_review_isolation_authorization", forbidden)
+    monkeypatch.setattr(panel, "launch_provider", forbidden)
+    monkeypatch.setattr(panel, "run_provider", forbidden)
+    result = panel.invoke_board(
+        board, "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path),
+        base_env=dict(CC), native_leg_fills=[fill], monitoring_policy="heartbeat_only",
+    )
+    assert len(result.legs) == len(board.seats) and not result.usable_legs
+    assert all(leg.status == "UNAVAILABLE" for leg in result.legs)
+    assert all("review_monitoring_unsupported_route:native_fill" in (leg.detail or "") for leg in result.legs)
+    assert all(getattr(leg, "_review_monitoring", {}).get("terminal_reason") == "policy_refusal" for leg in result.legs)
+
+
+def test_bounded_policy_still_binds_a_valid_native_fill(tmp_path, monkeypatch):
+    """Control: the same bound fill under the default bounded policy binds as before (EC-REVIEWTRUTH-14),
+    so the refusal keys on the policy alone and bounded native-fill behaviour is preserved."""
+    from harden_tdd_guard import invoke_sanctioned_review_transport
+    from test_native_claude_seat_fill import CC, _bound_fill, _typed_deferral_spawn
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("review me\n")
+    board = supported_board()
+    seat = next(s for s in board.seats if s.harness == "claude")
+    fill = _bound_fill(panel.NativeLegFill, board, seat, artifact.read_text())
+    result = invoke_sanctioned_review_transport(
+        board, "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path),
+        base_env=dict(CC), native_leg_fills=[fill],
+    )
+    claude = next(leg for leg in result.legs if leg.leg == "claude")
+    assert claude.status == "OK" and claude.usable and claude.detail == "native_fill"
+
+
+def test_cli_refuses_native_leg_with_heartbeat_only_before_loading_the_fill(tmp_path, monkeypatch, capsys):
+    from phase_loop_runtime import cli
+    from phase_loop_runtime.advisor_board import composition
+    monkeypatch.setattr(composition, "compose_review_board", lambda: pytest.fail("auth composition"))
+    monkeypatch.setattr(panel, "load_native_leg_fills", lambda spec: pytest.fail("the fill was loaded"))
+    rc = cli._advisor_board_command(args=SimpleNamespace(
+        artifact=str(tmp_path / "need-not-exist"), monitoring_policy="heartbeat_only", json=True,
+        native_legs=["claude=" + str(tmp_path / "absent")],
+    ))
+    assert rc == 2
+    record = json.loads(capsys.readouterr().out)
+    assert record["status"] == "UNAVAILABLE" and record["monitoring"]["terminal_reason"] == "policy_refusal"
+    assert "native_fill" in record["monitoring"]["diagnostic"]

@@ -1917,9 +1917,19 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 def _provider_launch_prefix(cwd):
     prefix = list(_EGRESS_LAUNCH_PREFIX.get())
     if prefix and prefix[0] == "nsenter":
-        # Entering the holder's mount namespace otherwise resets cwd to its root.
+        # Entering the holder's mount namespace otherwise resets cwd to its root, so the
+        # requested cwd is re-established INSIDE the namespace, and by PATH. `nsenter --wd`
+        # is the wrong tool for that: it opens the directory in the caller's mount namespace
+        # and fchdir()s to that dentry after setns(), which leaves a cwd the target namespace
+        # cannot resolve (`getcwd` reports "(unreachable)/..."). A provider that canonicalises
+        # its cwd -- codex's own sandbox does -- then fails with ENOENT before any inference
+        # (agent-harness#908 board round 4, finding (f); reproduced with the real codex CLI:
+        # `--wd` -> exit 1 "No such file or directory (os error 2)", path-based chdir -> OK).
+        # `env --chdir` runs after nsenter and setpriv, so the chdir is a plain path lookup in
+        # the namespace the provider will live in; the cwd attested as ``provider_cwd_sha256``
+        # is unchanged.
         directory = os.fsdecode(os.path.abspath(cwd)) if cwd is not None else os.getcwd()
-        prefix.insert(1, "--wd=" + directory)
+        prefix.extend(("/usr/bin/env", "--chdir=" + directory, "--"))
     return prefix
 
 
@@ -7552,6 +7562,9 @@ def invoke_board(
             research=(research_policy or board.research_policy).enabled
             if (research_policy or board.research_policy) is not None else False,
             gateway=omnigent is not None or gateway_available is True,
+            # A supplied native fill is a route heartbeat-only excludes; refuse the whole board
+            # here, before minting or any launch (agent-harness#908 board r4 (d)).
+            native_fill_requested=bool(native_leg_fills),
         )
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(

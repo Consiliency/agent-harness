@@ -203,14 +203,22 @@ class ReviewMonitoringPolicy:
 def resolve_review_monitoring_policy(
     requested: str, board: object, *, timeouts_by_leg: Mapping | None = None,
     mode: str = "review", capture: bool = False, research: bool = False,
-    gateway: bool = False,
+    gateway: bool = False, native_fill_requested: bool = False,
 ) -> ReviewMonitoringPolicy:
-    """Pure whole-board preflight; never probe or replace a requested seat."""
+    """Pure whole-board preflight; never probe or replace a requested seat.
+
+    ``native_fill_requested``: the caller supplied a native leg fill (EC-REVIEWTRUTH-14). Under
+    heartbeat-only that route is unsupported (CONTRACTS.md, review monitoring policy v1: no native
+    host seat); it is refused HERE, before composition, auth, minting or any launch, so a fill can
+    never be bound as a usable OK under a policy that excludes it (agent-harness#908 board r4 (d)).
+    """
     if requested not in ("bounded", "heartbeat_only"):
         raise ValueError("review_monitoring_policy_invalid")
     if requested == "heartbeat_only":
         if timeouts_by_leg:
             raise ValueError("review_monitoring_timeout_conflict")
+        if native_fill_requested:
+            raise ValueError("review_monitoring_unsupported_route:native_fill")
         if mode != "review" or capture or research or gateway:
             raise ValueError("review_monitoring_unsupported_transport")
         if getattr(board, "allow_api_key_fallback", False):

@@ -509,8 +509,10 @@ seat position, requested/effective policy, admission window, null model/silence
 deadlines, last observed progress age, observation state, and terminal reason.
 Genuine output within the existing print-read observation interval is
 `progress_observed`; older output or no output is `progress_unobserved`.
-The TUI timestamp excludes startup and trust answers; repeated cosmetic repaints
-do not refresh it after the existing novelty detector has seen their text.
+The TUI timestamp is refreshed by novel output lines, review-file growth and
+transcript growth — a startup banner is novel output and refreshes it; only
+repeated cosmetic repaints do not, once the existing novelty detector has seen
+their text. The CPU-tick heartbeat never refreshes it.
 Neither state is a health attestation or permission to terminate. Frozen
 broker request/response keys, status literals, and observer envelopes are unchanged.
 

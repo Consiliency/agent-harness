@@ -1898,7 +1898,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
 
     monitoring_policy = getattr(args, "monitoring_policy", "bounded")
     try:
-        resolve_review_monitoring_policy(monitoring_policy, DEFAULT_BOARD)
+        resolve_review_monitoring_policy(
+            monitoring_policy, DEFAULT_BOARD,
+            native_fill_requested=bool(getattr(args, "native_legs", []) or []),
+        )
     except ValueError as exc:
         record = {
             "schema": "review_monitoring.v1", "requested_policy": monitoring_policy,

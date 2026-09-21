@@ -16,8 +16,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   reduces repeated CLI startup work in the retained conformance proof while
   preserving its checks and loading every closeout gate when closeout runs.
 - Monitoring distinguishes recent genuine output from unknown silence, including
-  nonzero observation ages; TUI startup does not count as progress, and repeated
-  cosmetic repaints do not refresh it. Real broker tests cross the old deadline after admission
+  nonzero observation ages; novel TUI output (a startup banner included) refreshes
+  the progress timestamp, repeated cosmetic repaints and the CPU heartbeat do not. Real broker tests cross the old deadline after admission
   while preserving bounded-mode termination and real cleanup clocks.
 - Provider launches preserve their requested working directory when entering
   the egress namespace, including launches with a heartbeat ownership namespace.
