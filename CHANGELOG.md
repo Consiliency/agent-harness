@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-09-21
+
 ### Public onboarding baseline (agent-harness#929; release slice of agent-harness#927)
 
 - The installer refuses existing unmanaged destinations and dirty checkouts before
@@ -749,10 +751,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
   Likewise a path that cannot be placed inside the repo, which was previously skipped: a
   skipped argument vanishes into an empty result that prints as a clean pass.
-- The **qualification shown is the most specific claim's.** A phase can claim a file and
-  its parent directory with different qualifications; taking the first match made the
-  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
-  swap an exact file's narrow scope for the broad directory note.
+- **An intermediate iteration showed the qualification of the most specific claim** (an
+  exact token, else the longest literal prefix, else overall length) so that bullet order in
+  the roadmap could not swap an exact file's narrow scope for the broad directory note. **That
+  ranking is not the shipped behaviour**: three successive rankings each attached a broader
+  qualification to a narrower path, so it was removed — see the bullet below on
+  qualifications being scoped to the reported phase, attributed to their claim, and no
+  longer ranked. An exact token carrying its own qualification still settles the matter alone.
 - **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
   which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
   directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
@@ -785,49 +790,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   exact token naming a directory symlink was normalized to `X11/` and stopped matching — which
   meant ownership still depended on symlink state. The trailing-slash equivalence in `_claims`
   is symmetric too, so neither spelling can miss.
-- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
-  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
-  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
-  skipped argument vanishes into an empty result that prints as a clean pass.
-- The **qualification shown is the most specific claim's.** A phase can claim a file and
-  its parent directory with different qualifications; taking the first match made the
-  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
-  swap an exact file's narrow scope for the broad directory note.
-- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
-  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
-  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
-  command defines as "claimed by another phase" — so an unreadable roadmap was
-  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
-  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
-  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
-- Ownership is answered **by NAME**: the repository ROOT is resolved, the argument never is.
-  `Path.resolve()` does not merely collapse `.` and `..` — it rewrites every symlink in the
-  path — and that rewriting arrived as a side effect of handling `./` and absolute spellings,
-  not as a requirement. Containing it cost four review rounds (an internal symlink rewritten
-  to its target and matching no token; `..` cancelling a symlink and naming a file the caller
-  never typed; a "both identities" union reporting a phantom third path), and every one of
-  those defects was downstream of resolving the argument. Resolving only the root keeps the
-  case that motivated it — a symlinked checkout root, where an absolute argument and `--repo`
-  may be spelled under different roots — and drops the rest. It also makes `--preflight` agree
-  with `audit`, which has always worked by name because `git diff --name-only` reports names.
-  **Known limitation, documented rather than patched:** in a repo containing an internal
-  symlink, editing through it modifies the target's file and this reports only the typed
-  name's owner — the same limitation `audit` has.
-- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
-  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
-  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
-  skipped argument vanishes into an empty result that prints as a clean pass.
-- The **qualification shown is the most specific claim's.** A phase can claim a file and
-  its parent directory with different qualifications; taking the first match made the
-  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
-  swap an exact file's narrow scope for the broad directory note.
-- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
-  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
-  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
-  command defines as "claimed by another phase" — so an unreadable roadmap was
-  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
-  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
-  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
+- **An intermediate iteration answered ownership by NAME only** (the repository ROOT resolved,
+  the argument never), because resolving the argument had produced three defects in four
+  review rounds: an internal symlink rewritten to its target and matching no token, `..`
+  cancelling a symlink and naming a file the caller never typed, and a "both identities"
+  union reporting a phantom third path. That iteration carried a documented limitation —
+  an edit through an internal symlink reported only the typed name's owner. **It is not the
+  shipped behaviour.** The final implementation, described in the two bullets below and in
+  the graduation-instrument entry, evaluates a path under both identities it denotes and
+  unions the owners, with the lexical identity dropped only where `..` cancelled a symlink;
+  `--preflight` still agrees with `audit`, which works by name because
+  `git diff --name-only` reports names.
 - A path is evaluated under **both identities it denotes** — the name as written and the
   symlink-resolved target — and the owning phases are unioned. Choosing either alone
   fail-opens in a different direction: lexical-only let a phase preflight `src/link/owned.py`,
@@ -859,6 +832,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   module form cannot import and exits 1 — again the "claimed by another phase" code — so a
   module-only tool reported a phantom ownership block for every path on the supported
   install (same shape as #670/#693).
+
 ### HARDEN: isolated review and verification contracts
 
 - Review staging rejects every symlink path that resolves outside its source tree, and
@@ -1036,6 +1010,108 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The repository-wide FABPUB decision remains in force: publish byte-neutrality
   is retracted because canonical publication intentionally renumbers shared
   admission epochs and writes its deterministic publication evidence.
+
+### Fixes and hardening merged without a changelog entry (v0.7.14..v0.7.15 sweep)
+
+Each `feat(`/`fix(`/`perf(`/`ci:` pull request merged between `v0.7.14` and this release was
+checked against the section above; these landed without an entry of their own and are recorded
+here. Plan, test-freeze, closeout and docs-only bookkeeping pull requests are deliberately not
+listed.
+
+- **The v10 convergence runtime substrate ships** (`Consiliency/agent-harness#719`). The
+  convergence JSONL event log is durable and replay-safe, Git/GitHub/provider/registry authority
+  is resolved fresh rather than cached, the Codex, Claude and outside-agent adapters are fenced,
+  and status is ledger-only. The completed runtime API is exported and its durability and
+  authority semantics are documented in `docs/phase-loop/convergence-runtime.md`.
+- **The SCHED lane scheduler lands its atomic runtime repair** (`Consiliency/agent-harness#706`,
+  `Consiliency/agent-harness#704`). Generation bytes and lease authority now survive retries,
+  failures, descendant processes, authenticated teardown and released-generation reclamation, and
+  a concurrent parent reduction requires both a trusted parsed closeout status and owned-path
+  authority before it runs.
+- **A closeout gate that did not run is no longer indistinguishable from one that passed**
+  (`Consiliency/agent-harness#787`; review items G-1, G-2, G-6). A crashing validator is logged
+  with its traceback and emits a `gate_crashed` finding at the review mode's severity; a built-in
+  gate module that fails to import is narrowed to `ImportError` and names the module in a warning
+  instead of vanishing from the registry. Behaviour change, scoped: under an explicitly requested
+  `PHASE_LOOP_REVIEW=block` posture a crashed gate now blocks rather than completing. Nothing in
+  the fleet or CI sets that variable, so the default `warn` path is unchanged.
+- **The closeout-time retry of a built-in validator runs inside the gate's exception boundary**
+  (`Consiliency/agent-harness#794`, follow-up to `Consiliency/agent-harness#787`). A retried
+  module raising anything other than `ImportError` used to propagate straight out of a gate that
+  is forbidden to break the closeout; it now emits `gate_crashed` and stays in the unavailable
+  record so the next closeout retries it. The severity rewrite moved inside the same boundary, so
+  a validator yielding a non-`ReviewFinding` can no longer escape it either. Loading a
+  present-but-broken built-in still fails loudly at load.
+- **An executor that exits without a completed turn is rejected instead of accepted**
+  (`Consiliency/agent-harness#786`, `Consiliency/agent-harness#785`). Native or legacy
+  `executing`-only output from an exited child is refused immediately as `contract_bug` with an
+  `executor_exited_without_closeout` diagnostic, and the real subprocess return code is persisted
+  in `launch.json` before any wrapper-success override. `executing` is excluded only from executor
+  final-response schemas; the shared lifecycle schema and legitimate handoffs are untouched.
+- **Progress relabelled `executed` is no longer falsely accepted, and a healthy executor is not
+  reaped** (`Consiliency/agent-harness#788`, `Consiliency/agent-harness#785`). Every Codex launch
+  now requests a fresh, initially absent `--output-last-message` file and only that file may
+  supply the closeout, so an interim turn cannot stand in for a completed one.
+- **FABPUB reconciles an already-open pull request only after an exact, request-bound diagnostic**
+  (`Consiliency/agent-harness#755`). The diagnostic and readback PR URLs must be byte-identical,
+  the remote head and base must match exactly, and the head must be owned by the same repository;
+  every malformed or ambiguous outcome stays permanently fail-closed.
+- **Publication no longer mistakes tracked Python implementation modules for credential
+  artifacts** (`Consiliency/agent-harness#894`, `Consiliency/agent-harness#893`). The exception
+  requires regular parent and staged source blobs, a successful AST classification and a complete
+  staged-blob scan with pinned offline detectors. No caller allowlist, inline suppression or
+  configuration override is introduced, and it is not a guarantee against obfuscated secrets.
+- **A train locks each Git common directory once** (`Consiliency/agent-harness#883`,
+  `Consiliency/agent-harness#807`). Linked worktrees and several directories in one repository
+  could deadlock a train by taking the same common-directory lock twice; each resolved repository
+  namespace is now acquired once in stable order, with per-worktree generation leases preserved
+  and every handle registered for cleanup before locking.
+- **Importing `publishing` no longer replaces the train runner's authority builder**
+  (`Consiliency/agent-harness#828`, `Consiliency/agent-harness#811`). The import-time installer is
+  removed, so the runner keeps its own finalized builder in either import order; the preimage
+  class and the compatibility helper remain available.
+- **The HARDEN evidence verifier bounds JSON nesting before decoding**
+  (`Consiliency/agent-harness#868`, `Consiliency/agent-harness#825`). It relied on CPython's
+  decoder recursion threshold, which let deeply nested documents through on Python 3.12 to 3.14
+  that its own self-test required it to reject. A maximum of 512 nested containers is now enforced
+  ahead of the decode, respecting strings and escapes. Documents deeper than 512 that were
+  previously accepted are now rejected; canonical, numeric, duplicate-key and byte limits are
+  unchanged.
+- **`phase-loop status` reports the whole pre-terminal space** (`Consiliency/agent-harness#832`,
+  `Consiliency/agent-harness#830`). Both operands of the manifest/snapshot reconciliation are now
+  derived from their own authoritative tables rather than restated as literals. `unknown` — the
+  label a phase wears on a dirty tree, exactly when resume and dispatch are about to act — was in
+  neither set and so was silently unreportable; a dirty-tree disagreement now prints.
+- **Two FAB docstrings no longer emit invalid-escape warnings on a cold import**
+  (`Consiliency/agent-harness#850`, `Consiliency/agent-harness#822`). Raw-string prefixes remove
+  both warning sites, which were failing three diagnostic tests. The complete AST, docstring
+  values included, is unchanged.
+- **The LEGIBLE live Fable transition probe is authorized under the HARDEN typed review
+  contract** (`Consiliency/agent-harness#768`). The asserted-host `tui_adapter_required`
+  observation is preserved while the separate external subscription Fable leg consumes the single
+  broker route, and the authorization is closed and the instruction digest reset on every exit.
+- **The process-liveness test helper treats a vanished `/proc/<pid>` entry as absence**
+  (`Consiliency/agent-harness#871`, `Consiliency/agent-harness#870`). A child exiting between the
+  open and the read raised `ProcessLookupError` and reddened CI; permission and I/O errors still
+  propagate. Test-support only — no production bytes changed.
+- **The PyPI publish job's build step is bounded at 25 minutes instead of 100**
+  (`Consiliency/agent-harness#757`). The rationale is recorded in
+  `docs/releases/publish-pypi-build-timeout.md`.
+- **`claude-plan-detailed` Step 2 no longer contradicts itself on reading versus delegating**
+  (`Consiliency/agent-harness#651`). "Skip reconnaissance when the context is already in session"
+  and "do not read source directly, that is the Explore teammates' job" left the common case — a
+  run holding most of its context but missing two nameable symbols — unaddressed. The test is now
+  what you can name rather than how much you already know, in the bundled skill and both skill
+  sources.
+- **Importing the CLI or the panel module no longer leaves the built-in FAB closeout gate
+  unregistered** (`Consiliency/agent-harness#827`, fixes `Consiliency/agent-harness#819`).
+  `events` imported `closeout` while its module graph was still initialising, so a
+  fresh-process import could silently drop the gate; the diagnostic helper is now imported
+  at its two use sites. Seven fresh-process import cases went from 5 failed to 7 passed.
+- **CI runs on GitHub-hosted runners for this public repository** (`Consiliency/agent-harness#740`).
+  All thirteen job definitions across the eight workflows moved from paid Blacksmith runners to
+  `ubuntu-latest`, which GitHub meters for free on public repositories; no workflow logic changed.
+  Recorded in `docs/releases/github-hosted-runners-for-public-repo.md`.
 
 ## [0.7.14] - 2026-08-24
 
