@@ -11,7 +11,7 @@ or make production merge enforcement live.
 - Version: `0.7.15`
 - Runtime `phase_loop_runtime.__version__`: `0.7.15`
 - Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.15`
-- Console scripts: `phase-loop`, `codex-phase-loop`
+- Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
@@ -116,9 +116,9 @@ without rebuilding, and equal to the digests PyPI reports. The pre-tag local bui
 candidate at `8d87ccf1` (`python -m build` under `umask 022`, `Consiliency/agent-harness#519`)
 measured wheel `09d7e9420f6b747b70120b9fa2cb34c872dfa4e8b15351e65b7cd8a6493bddef` and sdist
 `80913168481ad8e19b452c8ae681451be29a49d6ea8c9bfb445c0e064d1bd538`; the published tuples differ
-because the tag target adds `#933`'s docs and CHANGELOG lines (present in the sdist) and because
-archive bytes are timestamp/toolchain-dependent — a preparation measurement, not a content
-discrepancy in the runtime.
+because archive bytes are timestamp/toolchain-dependent (the sdist carries no repository-root
+CHANGELOG, docs or workflow files, so `#933` contributes no packaged content) — a preparation
+measurement, not a content discrepancy in the runtime.
 
 - direct-wheel sha256: `b4b95fd1453425403d1cd94c02640fe8ec39cb543d7507e127e09862bcbf82ef`
 - direct-sdist sha256: `1c5cbe0f96f40ba402674bba8e851c07f8babd8a9c83269b10e6e6669d1906e5`
@@ -162,9 +162,9 @@ Measured on the published `0.7.15` artifacts downloaded from workflow `355706788
 
 ## Governed-Pipeline Pinning
 
-Once `0.7.15` is published (tag push → PyPI; this document records it as
-`prepared` until then), governed-pipeline may consume it as an authoritative
-validator by pinning `phase-loop-runtime==0.7.15`, then calling:
+`0.7.15` is published (tag push → PyPI, recorded above), so governed-pipeline may
+consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.15`,
+then calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
