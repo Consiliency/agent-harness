@@ -33,6 +33,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (defaults 7200/4050/450) supply these figures and bound nothing themselves. Lock
   semantics are unchanged: still one suite per engine host, still fail-closed, still
   never an unlocked run.
+- `tests/test_ci_offload_lock.py` now pins the derivation instead of leaving it in a
+  comment: it reads the script's four defaults and `jobs.offload.timeout-minutes` from
+  `test.yml` and fails when wait + suite + setup no longer fits the cap, when the 300 s
+  margin is consumed, or when the quoted job budget stops matching the workflow. A cap
+  edit or a wait bump that breaks the arithmetic now goes red. A default the lookup
+  cannot find is a failure, not a skip, so a rename cannot make the check vacuous.
 
 ### Claude native review task delivery (agent-harness#937)
 

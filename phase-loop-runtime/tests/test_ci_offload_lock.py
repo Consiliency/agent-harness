@@ -11,6 +11,7 @@ the remote command locally and a stub `dagger` that records when it ran.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "ci" / "offload-gate.sh"
@@ -204,3 +206,63 @@ def test_engine_port_is_passed_to_ssh_as_a_flag(harness) -> None:
 def test_script_is_executable_and_parses() -> None:
     assert os.access(SCRIPT, os.X_OK)
     assert subprocess.run(["bash", "-n", str(SCRIPT)]).returncode == 0
+
+
+# --- the wait budget is DERIVED from the workflow's job cap ---------------
+#
+# The derivation (agent-harness#945) lived only in a comment, so a future edit
+# to either side could silently invalidate it: raise the wait, or lower
+# `timeout-minutes`, and the script would again be able to spend its whole wait
+# and then have no room for the suite it waited for. That is exactly the shape
+# of run 35570673600 (79.5 min queued, cancelled at the 120-min ceiling). These
+# two tests read BOTH real files and fail when the arithmetic stops holding.
+
+WORKFLOW = REPO / ".github" / "workflows" / "test.yml"
+
+
+def _script_default(name: str) -> int:
+    """The literal default of `NAME="${NAME:-<int>}"` in the script.
+
+    Missing or unparseable is a hard failure, never a skip: a rename that made
+    this lookup silently return nothing would leave the invariant below asserting
+    about numbers the script no longer uses.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    hits = re.findall(rf'^{re.escape(name)}="\$\{{{re.escape(name)}:-(\d+)\}}"$', text, re.MULTILINE)
+    assert len(hits) == 1, f"expected exactly one default for {name} in {SCRIPT}, found {hits}"
+    return int(hits[0])
+
+
+def _offload_job_cap_seconds() -> int:
+    job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["offload"]
+    minutes = job["timeout-minutes"]
+    assert isinstance(minutes, int), f"offload timeout-minutes is not an int: {minutes!r}"
+    return minutes * 60
+
+
+@pytest.mark.skipif(not WORKFLOW.is_file(), reason=".github/workflows/test.yml is not in this checkout")
+def test_lock_wait_plus_suite_and_setup_fit_inside_the_offload_job_cap() -> None:
+    cap = _offload_job_cap_seconds()
+    wait = _script_default("OFFLOAD_LOCK_WAIT_SECONDS")
+    suite = _script_default("OFFLOAD_SUITE_SECONDS")
+    setup = _script_default("OFFLOAD_SETUP_SECONDS")
+    spent = wait + suite + setup
+    assert spent <= cap, (
+        f"a run that spends the whole lock wait cannot finish inside the job cap: "
+        f"wait {wait}s + suite {suite}s + setup {setup}s = {spent}s > cap {cap}s "
+        f"({WORKFLOW.name} jobs.offload.timeout-minutes). Lower the wait or raise the cap."
+    )
+    # A margin of zero satisfies the inequality while leaving a run that waits
+    # the full budget finishing exactly at the ceiling -- and the suite figure is
+    # the slowest OBSERVED run, not an enforced bound. Keep real slack.
+    assert cap - spent >= 300, (
+        f"only {cap - spent}s of margin below the cap; the suite figure is an observation, "
+        f"not a bound, so the documented 300s margin must survive."
+    )
+
+
+@pytest.mark.skipif(not WORKFLOW.is_file(), reason=".github/workflows/test.yml is not in this checkout")
+def test_job_budget_default_matches_the_workflow_cap() -> None:
+    # The refusal message quotes OFFLOAD_JOB_BUDGET_SECONDS as "the job budget".
+    # If the workflow's cap moves and this does not, the message misreports it.
+    assert _script_default("OFFLOAD_JOB_BUDGET_SECONDS") == _offload_job_cap_seconds()
