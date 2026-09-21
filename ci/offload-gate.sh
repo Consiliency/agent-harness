@@ -14,6 +14,15 @@
 # runner for work that was supposed to move, and would read as a green "offload".
 set -euo pipefail
 
+# Wall clock at THIS SCRIPT's entry -- not at the job's start. The job began
+# earlier: checkout with fetch-depth 0, the tailnet join, the dagger CLI
+# resolve+install and the engine preflight all run before the composite invokes
+# this file, and nothing inside a step can read the job's own start time (the
+# jobs API is not available in-script and GITHUB_RUN_STARTED is a RUN, not this
+# job). So the remaining-budget figure below is a script-relative ESTIMATE that
+# bridges the gap with the measured setup constant, and says so where it prints.
+OFFLOAD_STARTED_AT="$(date +%s)"
+
 MODULE="${MODULE:-ci/dagger}"
 SOURCE="${SOURCE:-.}"
 
@@ -53,12 +62,47 @@ fi
 # it over in the environment. Unset means "nobody decided" and resolves to the
 # expensive-but-correct answer, never to the skip.
 OFFLOAD_LOCK="${OFFLOAD_LOCK:-/tmp/dagger-offload.lock}"
-OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-5400}"
+# The wait must leave enough of the job's timeout for the suite it is waiting to
+# run; a wait longer than (job cap - suite) can only ever end in a timeout.
+#
+#   job cap          7200s  (120 min, `offload:` timeout-minutes in test.yml)
+#   suite, measured  ~4050s (67.5 min, the slowest of the five offloaded main
+#                            runs in the 2026-09-21 audit: 66.5/66.8/67.1/
+#                            67.1/67.5 min -- agent-harness#945 section 1)
+#   checkout + setup  ~450s (fetch-depth:0 clone, tailscale, dagger CLI, upload)
+#   margin            ~300s
+#   wait budget       2400s (40 min) = 7200 - 4050 - 450 - 300
+#
+# The old 5400 (90 min) exceeded the whole cap once the suite was added to it.
+# Run 35570673600 spent 79.5 min inside that wait, took the lock at 08:16:57
+# with ~40 min left, and was cancelled at the 120-minute ceiling: the timeout
+# was arithmetically certain before the suite started.
+#
+# WHAT THIS DELIBERATELY GIVES UP. 4050 is the slowest of five OBSERVATIONS, not
+# an enforced upper bound -- the suite has no internal timeout, and the audit
+# shows its dominant node growing with repo size. So the numbers above cannot
+# prove that a given long wait would have ended in a timeout, only that it would
+# have finished near the cap if nothing ran slow. This gate therefore refuses a
+# narrow band of runs -- roughly a 2400-2750s wait -- that the old default might
+# have carried to a green finish with minutes to spare. That trade is intended:
+# a landing decided in the last few minutes of a 120-minute budget is one slow
+# node away from a cancelled run that reports as a repo failure, and a refusal at
+# 40 minutes is cheap, legible and immediately retryable. Widen the wait only by
+# widening the cap with it.
+OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-2400}"
 OFFLOAD_LOCK_POLL_SECONDS="${OFFLOAD_LOCK_POLL_SECONDS:-1}"
+# Only used to report the remaining budget in the refusal message; none of the
+# three bounds anything here (the workflow's timeout-minutes does). SETUP is the
+# measured cost of the steps that ran BEFORE this script, which is what makes the
+# script-relative clock a usable stand-in for the job clock.
+OFFLOAD_JOB_BUDGET_SECONDS="${OFFLOAD_JOB_BUDGET_SECONDS:-7200}"
+OFFLOAD_SUITE_SECONDS="${OFFLOAD_SUITE_SECONDS:-4050}"
+OFFLOAD_SETUP_SECONDS="${OFFLOAD_SETUP_SECONDS:-450}"
 _lock_fifo=""
 _lock_out=""
 _lock_pid=""
 _lock_host=""
+_lock_wait_started=""
 
 # The lock is held by a `flock ... -c cat` on the engine host whose stdin is a
 # pipe we keep open here; closing our end (or dying: the runner kills the ssh)
@@ -86,6 +130,7 @@ offload_lock_acquire() {
   esac
   _lock_fifo="$(mktemp -u)"
   _lock_out="$(mktemp)"
+  _lock_wait_started="$(date +%s)"
   mkfifo "$_lock_fifo"
   # Keepalives so a dead link surfaces as an exited ssh (which the supervisor
   # below turns into a stopped call) instead of a holder that looks alive.
@@ -95,10 +140,17 @@ offload_lock_acquire() {
   _lock_pid=$!
   exec 3>"$_lock_fifo"
   trap offload_lock_release EXIT
-  echo "offload lock: waiting for $OFFLOAD_LOCK on $host (up to ${OFFLOAD_LOCK_WAIT_SECONDS}s)"
+  echo "offload lock: waiting for $OFFLOAD_LOCK on $host (up to ${OFFLOAD_LOCK_WAIT_SECONDS}s; the suite that follows needs ~${OFFLOAD_SUITE_SECONDS}s of the ${OFFLOAD_JOB_BUDGET_SECONDS}s job budget)"
   while ! grep -q '^acquired$' "$_lock_out"; do
     if ! kill -0 "$_lock_pid" 2>/dev/null; then
-      echo "offload lock: could not take $OFFLOAD_LOCK on $host within ${OFFLOAD_LOCK_WAIT_SECONDS}s (another offloaded suite is running there); refusing to run unlocked" >&2
+      local now waited remaining
+      now="$(date +%s)"
+      waited=$(( now - _lock_wait_started ))
+      # Script-relative: the job clock started ~OFFLOAD_SETUP_SECONDS earlier.
+      remaining=$(( OFFLOAD_JOB_BUDGET_SECONDS - OFFLOAD_SETUP_SECONDS - (now - OFFLOAD_STARTED_AT) ))
+      echo "offload lock: could not take $OFFLOAD_LOCK on $host (another offloaded suite is running there); refusing to run unlocked" >&2
+      echo "offload lock: waited ${waited}s of the ${OFFLOAD_LOCK_WAIT_SECONDS}s wait budget; the suite needs ~${OFFLOAD_SUITE_SECONDS}s and ~${remaining}s of the ${OFFLOAD_JOB_BUDGET_SECONDS}s job budget remains" >&2
+      echo "offload lock: that remaining figure is a script-relative estimate -- this step cannot read the job's start, so it charges a measured ${OFFLOAD_SETUP_SECONDS}s for the checkout, tailnet and CLI steps that ran before it" >&2
       cat "$_lock_out" >&2
       exec 3>&-
       rm -f "$_lock_fifo" "$_lock_out"
@@ -170,7 +222,10 @@ echo "chronology node: $([ "$CHRONOLOGY" = true ] && echo retained || echo desel
 # runner, because the runners are ephemeral and independent; the path is
 # deliberately generic so any repo offloading to the same engine can share it.
 # Fail closed: if the lock cannot be taken within the wait, exit non-zero with a
-# message naming the lock -- never run unlocked.
+# message naming the lock, the wait it spent, and what is left of the job budget
+# -- never run unlocked. The wait is sized against that budget where it is
+# defined above; a queue longer than the wait is a scheduling problem the run
+# cannot solve by waiting through its own timeout.
 JUNIT_DIR=./junit-offload
 rm -rf "$JUNIT_DIR"
 offload_lock_acquire
