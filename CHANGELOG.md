@@ -6,19 +6,33 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Settings write-lease signal guard survives a multi-threaded host (agent-harness#950)
+### Settings write-lease signal guard (agent-harness#950)
 
-- The Antigravity canary's settings write lease now installs a process-wide
-  SIGIO disposition for the lifetime of the lease and restores the previous
-  handler on every exit path, exceptions included. A `pthread_sigmask` block
-  covers only the calling thread, so a lease break delivered to any other
-  thread previously took SIGIO's default action and terminated the process.
-- The guard's single-thread precondition is derived from `/proc/self/task`
-  rather than `threading.active_count()`, which sees only threads the
-  `threading` module created and so read as single-threaded in a process
-  carrying a `_thread`- or C-spawned thread. An unreadable inventory now
-  refuses the lease instead of assuming one thread.
-- Lease-break detection is unchanged: it is observed through `F_GETLEASE`, not
+- **The admission contract is unchanged**: the settings write lease is still
+  granted only to a single-threaded main thread on Linux. What changed is the
+  INSTRUMENT. The precondition is now read from `/proc/self/task`, the kernel's
+  own task inventory, instead of `threading.active_count()`, which counts only
+  threads the `threading` module created and so answered 1 for a process
+  carrying a `_thread`- or C-spawned thread. An unreadable inventory refuses the
+  lease rather than assuming one thread.
+- A process-wide SIGIO disposition is installed for the lifetime of the lease
+  and the previous handler is restored on every exit path, exceptions included.
+  This is defence in depth for the case the precondition cannot cover: a thread
+  that appears after admission and unblocks SIGIO for itself. A `pthread_sigmask`
+  block is per-thread and cannot reach such a thread; the disposition is
+  process-wide and can. It is not a licence to admit multi-threaded callers.
+- The lease is refused when another component already owns SIGIO, that is when
+  the existing disposition is neither the default, nor ignore, nor this guard's
+  own handler. While the lease is held every SIGIO is discarded, and restoring
+  the handler afterwards cannot replay what was dropped: measured at one
+  delivery with no guard, zero inside the lease window, and still zero after the
+  guard restores it. Refusing is the same fail-closed direction as an unreadable
+  inventory.
+- A failed entry can no longer leave the disposition installed. An exception
+  raised after the handler is in place but before the guard returns hands no
+  token to `clean_settings`, so the exit path never runs; without rollback the
+  process would discard every SIGIO for the rest of its life.
+- Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
   through signal delivery.
 
 ## [0.7.16] - 2026-09-21

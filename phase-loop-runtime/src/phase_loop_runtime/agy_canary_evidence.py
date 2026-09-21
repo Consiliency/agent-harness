@@ -2832,11 +2832,36 @@ def _lease_sigio_handler(signum: int, frame: Any) -> None:
     return None
 
 
+def _sigio_is_unowned(handler: Any) -> bool:
+    """True when nothing but us is relying on SIGIO delivery.
+
+    While the lease is held our disposition DISCARDS every SIGIO, and restoring
+    the previous handler afterwards cannot replay what was dropped. Measured with
+    a pre-existing Python SIGIO handler: one delivery with no guard, zero inside
+    the lease window, and still zero after the guard restores it. So a process
+    that already has a SIGIO consumer must be refused rather than silently
+    robbed -- the same fail-closed direction as an unreadable thread inventory.
+
+    `SIG_DFL` is the case this guard exists for. `SIG_IGN` is safe because those
+    notifications were already being discarded. Our own handler is a nested
+    guard. Anything else, `None` included, belongs to someone.
+    """
+    return handler in (signal.SIG_DFL, signal.SIG_IGN, _lease_sigio_handler)
+
+
 def _begin_lease_signal_guard() -> _LeaseSignalGuard:
+    # ADMISSION IS UNCHANGED BY agent-harness#950: exactly one thread, main
+    # thread, Linux, no SIGIO already pending. What changed is the INSTRUMENT --
+    # the kernel task inventory instead of `threading.active_count()`, which
+    # cannot see a `_thread`- or C-spawned thread and so answered 1 for a process
+    # that had two. The process-wide disposition installed below is
+    # defence-in-depth for the window this precondition cannot cover (a thread
+    # that appears AFTER admission), never a licence to admit a multi-threaded
+    # caller. Maintainer ruling, 2026-09-21.
     thread_count = _live_thread_count()
     if (not sys.platform.startswith("linux") or
             threading.current_thread() is not threading.main_thread() or
-            thread_count is None or
+            thread_count != 1 or
             not hasattr(signal, "pthread_sigmask") or
             not hasattr(signal, "sigtimedwait") or signal.SIGIO in signal.sigpending()):
         raise AgyCanaryEvidenceError(
@@ -2850,28 +2875,39 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
         raise AgyCanaryEvidenceError(
             "settings write lease cannot restore the existing SIGIO handler"
         )
-    # Process-wide first, per-thread second. With more than one thread alive the
-    # mask alone is not sufficient, and the handler is what makes any thread
-    # count survivable; installing it unconditionally keeps the single-threaded
-    # case identical in effect and removes the ordering as a thing to reason about.
-    try:
-        signal.signal(signal.SIGIO, _lease_sigio_handler)
-    except (OSError, ValueError) as exc:
+    if not _sigio_is_unowned(previous_handler):
         raise AgyCanaryEvidenceError(
-            "settings write lease cannot install its SIGIO handler"
-        ) from exc
+            "settings write lease will not displace an existing SIGIO owner"
+        )
     try:
-        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
-    except OSError as exc:
-        signal.signal(signal.SIGIO, previous_handler)
-        raise AgyCanaryEvidenceError(
-            "settings write lease cannot block SIGIO"
-        ) from exc
-    if signal.SIGIO in signal.sigpending():
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
-        signal.signal(signal.SIGIO, previous_handler)
-        raise AgyCanaryEvidenceError("settings write lease SIGIO state is ambiguous")
-    return _LeaseSignalGuard(mask=previous, previous_handler=previous_handler)
+        try:
+            signal.signal(signal.SIGIO, _lease_sigio_handler)
+        except (OSError, ValueError) as exc:
+            raise AgyCanaryEvidenceError(
+                "settings write lease cannot install its SIGIO handler"
+            ) from exc
+        try:
+            previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+        except OSError as exc:
+            raise AgyCanaryEvidenceError(
+                "settings write lease cannot block SIGIO"
+            ) from exc
+        if signal.SIGIO in signal.sigpending():
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            raise AgyCanaryEvidenceError("settings write lease SIGIO state is ambiguous")
+        guard = _LeaseSignalGuard(mask=previous, previous_handler=previous_handler)
+    except BaseException:
+        # Entry failed, so no caller holds a token and `_end_lease_signal_guard`
+        # will never run: its `finally` cannot repair an entry failure. Without
+        # this, a `KeyboardInterrupt` raised after the disposition is installed
+        # leaves this process discarding every SIGIO for the rest of its life --
+        # a failure mode the pre-#950 code could not have, because it installed
+        # no disposition at all. Keyed on the OBSERVED disposition rather than a
+        # flag, so there is no window between installing and recording it.
+        if signal.getsignal(signal.SIGIO) is _lease_sigio_handler:
+            signal.signal(signal.SIGIO, previous_handler)
+        raise
+    return guard
 
 
 def _end_lease_signal_guard(guard: _LeaseSignalGuard) -> None:
