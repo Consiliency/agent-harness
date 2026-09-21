@@ -30,17 +30,23 @@ phase-loop-skills/
 ```
 
 The base `SKILL.md` is shared; `_overrides/<harness>/` files replace or augment it for a
-specific harness at install time.
+specific harness at install time. Author skill changes in `skills-src/`; the skill
+subdirectories are generated from those sources, then synchronized into the runtime's
+packaged bundle. This top-level README is maintained here, not emitted by the generator.
 
 ## Install
 
 Use the runtime's installer (it resolves the per-harness prefix + skill root):
 
 ```sh
-phase-loop install --harness claude --source <path-to>/phase-loop-skills --symlink --dry-run
-phase-loop install --harness claude --source <path-to>/phase-loop-skills --symlink --apply
+phase-loop install --harness claude --source <path-to>/phase-loop-skills --copy --dry-run
+phase-loop install --harness claude --source <path-to>/phase-loop-skills --copy --apply
 ```
 
 Or just run the repo's `install-agent-harness.sh --harness <h>`, which installs the
 runtime and these skills together. Default skill roots: `~/.claude/skills`,
 `~/.codex/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`.
+
+Copy installation replaces the listed managed directories; back up local edits
+before applying. See [Team onboarding](../docs/TEAM-ONBOARDING.md) for setup checks,
+governance choices and known limitations in installed paths for non-Codex skills.

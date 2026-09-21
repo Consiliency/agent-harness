@@ -101,6 +101,32 @@ skill_dest() {
 # Validate every requested harness up front.
 for _h in $HARNESSES; do skill_dest "$_h" >/dev/null || exit 2; done
 
+# A rerun may update only a clean, standalone checkout of the configured repo.
+# Remove terminal / and /. components so they cannot hide a symlink below.
+while [ "$HOME_DIR" != / ]; do
+    case "$HOME_DIR" in
+        */) HOME_DIR="${HOME_DIR%/}" ;;
+        */.) HOME_DIR="${HOME_DIR%/.}"; HOME_DIR="${HOME_DIR:-/}" ;;
+        *) break ;;
+    esac
+done
+if [ -e "$HOME_DIR" ] || [ -L "$HOME_DIR" ]; then
+    if [ -L "$HOME_DIR" ] || [ ! -d "$HOME_DIR/.git" ] || [ -L "$HOME_DIR/.git" ] ||
+       [ ! -f "$HOME_DIR/install-agent-harness.sh" ] || [ ! -f "$HOME_DIR/RELEASE_PIN" ] ||
+       [ ! -d "$HOME_DIR/phase-loop-skills" ] ||
+       ! _origin="$(git -C "$HOME_DIR" config --local --get remote.origin.url 2>/dev/null)" ||
+       [ "${_origin%.git}" != "${REPO%.git}" ] ||
+       ! _root="$(git -C "$HOME_DIR" rev-parse --show-toplevel 2>/dev/null)" ||
+       [ "$_root" != "$(cd "$HOME_DIR" && pwd -P)" ] ||
+       ! _changes="$(git -C "$HOME_DIR" status --porcelain --untracked-files=all 2>/dev/null)" ||
+       [ -n "$_changes" ]; then
+        echo "ERROR: refusing existing AGENT_HARNESS_HOME: $HOME_DIR" >&2
+        echo "Choose an absent directory, or a clean standalone agent-harness checkout with the configured origin." >&2
+        echo "Existing files, symlinks, linked worktrees and local changes are preserved." >&2
+        exit 1
+    fi
+fi
+
 say() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 
 # --- 1) uv (cross-OS official installer; no Homebrew dependency) -----------
@@ -119,14 +145,13 @@ export PATH="$HOME/.local/bin:$PATH"
 phase-loop --version
 
 # --- 3) workflow skills for each harness, from the public bundle -----------
-# Persistent clone (NOT a temp dir) so the --symlink skill links never dangle,
-# and so `git -C "$HOME_DIR" pull` + re-run is the update path.
+# Keep a release checkout as the source for copied, harness-expanded skills.
 say "[3/3] installing workflow skills (${HARNESSES}) from ${REF}…"
 if [ -d "$HOME_DIR/.git" ]; then
-    git -C "$HOME_DIR" fetch --depth 1 origin "$REF" >/dev/null 2>&1 || true
-    git -C "$HOME_DIR" checkout -q "$REF" 2>/dev/null || git -C "$HOME_DIR" checkout -q "FETCH_HEAD"
+    git -C "$HOME_DIR" fetch --depth 1 origin "$REF"
+    git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q FETCH_HEAD
 else
-    rm -rf "$HOME_DIR"; mkdir -p "$(dirname "$HOME_DIR")"
+    mkdir -p "$(dirname "$HOME_DIR")"
     git clone --depth 1 --branch "$REF" "$REPO" "$HOME_DIR"
 fi
 for _h in $HARNESSES; do
@@ -138,7 +163,7 @@ for _h in $HARNESSES; do
     fi
     mkdir -p "$_dest"
     phase-loop --repo "$HOME_DIR" install --harness "$_h" \
-        --source "$HOME_DIR/phase-loop-skills" --destination "$_dest" --symlink --apply
+        --source "$HOME_DIR/phase-loop-skills" --destination "$_dest" --copy --apply
     echo "  ✓ ${_h} skills → ${_dest}"
 done
 

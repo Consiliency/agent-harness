@@ -8,6 +8,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [0.7.15] - 2026-09-21
 
+### Public onboarding baseline (agent-harness#929; release slice of agent-harness#927)
+
+- The installer refuses existing unmanaged destinations and dirty checkouts before
+  package installation, preserves linked worktrees and symlinks, and stops updates
+  when fetching the requested ref fails or checkout would overwrite ignored files.
+  Terminal `/.` symlink spellings also refuse; configured Git URL rewrites do not
+  break updates of the installer's own checkout. Skill installation uses copy mode.
+- Team onboarding is the canonical setup guide, with accurate runtime pins, manual
+  first-run closeout, provider/governance prerequisites and support limits. Custom
+  board CLI controls and broader setup automation remain agent-harness#927 follow-ups.
+
 ### Docs: the host×seat routing rule is stated where agents read it (agent-harness#924)
 
 - Every harness fills the seat of its OWN vendor with its native subagent; every other seat
