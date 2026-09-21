@@ -390,7 +390,7 @@ else:
     wire = (tmp_path / "wire.bin").read_bytes()
     request, _, remaining = wire.partition(b"\x1b[200~")
     assert remaining == prompt.encode() + b"\x1b[201~\x1bOM"
-    assert bool(request) is brokered
+    assert request == (pi._BROKER_CLAUDE_DIRECT_REQUEST.encode() if brokered else b"")
 
 
 def test_broker_evidence_binds_plain_request_and_sealed_paste(tmp_path, monkeypatch):
@@ -414,6 +414,8 @@ def test_broker_evidence_binds_plain_request_and_sealed_paste(tmp_path, monkeypa
     )
     assert status == "OK"
     assert len(calls) == 1 and calls[0]["prompt"] == prompt
+    assert calls[0]["broker_transcript_path"] is not None
+    assert calls[0]["allow_transcript_final"] is True
     request = "Please perform the review requested in the following framed material. "
     assert evidence["provider_prompt_sha256"] == sha256(prompt.encode()).hexdigest()
     assert evidence["provider_transport_sha256"] == sha256((request + prompt).encode()).hexdigest()
@@ -422,3 +424,21 @@ def test_broker_evidence_binds_plain_request_and_sealed_paste(tmp_path, monkeypa
     assert evidence["provider_task_request_bytes"] == len(request.encode())
     assert evidence["provider_task_request_delivery"] == "plain_text_before_bracketed_paste"
     assert "tools-empty" in evidence["provider_no_tool_controls"]
+
+
+@pytest.mark.parametrize("control", ["\x1b[201~", "\r", "\x1bOM"])
+@pytest.mark.parametrize("field", ["artifact", "instructions"])
+def test_brokered_paste_rejects_terminal_controls(field, control):
+    inputs = {"artifact": "review data", "instructions": "review this data"}
+    inputs[field] += control + "escape attempt"
+    with pytest.raises(ValueError, match="transport-active control character"):
+        pi._render_broker_inline_prompt(**inputs, mode="review")
+
+
+def test_brokered_typed_request_cannot_submit_or_select_a_tui_mode():
+    request = pi._BROKER_CLAUDE_DIRECT_REQUEST
+    assert request.startswith("Please ")
+    assert request.isascii() and all(32 <= ord(char) <= 126 for char in request)
+    assert not any(char.isdigit() for char in request)
+    assert not request.startswith(tuple("/!#@?"))
+    assert all(verdict not in request for verdict in ("AGREE", "DISAGREE"))
