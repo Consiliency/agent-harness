@@ -50,6 +50,9 @@ Pin a specific release for the whole team with `--ref vX.Y.Z` — take the versi
 [releases page](https://github.com/Consiliency/agent-harness/releases/latest). Omit `--ref`
 and the installer resolves the current release itself.
 
+This guide targets current releases. Historical tags without `RELEASE_PIN` or
+`phase-loop install --copy` need a version-specific setup procedure.
+
 **Prereqs:** git, `curl` (the installer uses it to resolve the release pin, and the one-liner
 form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
 / OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
@@ -65,6 +68,10 @@ configured repository. Files, symlinks, linked worktrees, unrelated checkouts an
 dirty checkouts are refused before installing packages. Choose an absent destination
 instead of deleting existing work.
 
+Keep this checkout dedicated to the installer: updates use shallow fetches and
+detach HEAD at the requested ref. Do not point `AGENT_HARNESS_HOME` at a development
+checkout whose branch or history you want to keep working on.
+
 An update also refuses checkout if the new ref would overwrite an ignored local
 file. Installation is not transactional: after any failure, check the runtime
 version and skills again before use; a package install may already have succeeded.
@@ -76,6 +83,10 @@ To inspect those destinations before applying, use an already installed runtime:
 ```sh
 phase-loop install --harness claude --source agent-harness/phase-loop-skills --copy --dry-run --json
 ```
+
+That source path is for clone-then-run. After a one-liner install, use
+`"$HOME/.local/share/agent-harness/phase-loop-skills"` instead, or the bundle under
+your chosen `AGENT_HARNESS_HOME`. Use a bundle matching the installed release.
 
 For the runtime only, use `uv tool install phase-loop-runtime` or install into your
 own Python environment with `pip install phase-loop-runtime`. To pin it, use
@@ -235,6 +246,10 @@ to satisfy, not a setting to relax when a reviewer is unavailable.
   - **plan-phase** — architect one phase into parallel swim-lanes
   - **execute-phase** — run a phase's lanes to completion
   - **plan-detailed** — a single bounded change, no roadmap overhead
+  - **execute-detailed** — implement that bounded plan
+  - **advisor-board** — cross-vendor review (also installed as **advisor-panel**)
+  - **run-train** — coordinate a cross-repo release train
+  - **task-contextualizer** — brief a subagent
   - **phase-loop** — drive the loop end-to-end
   - **skill-editor** / **skill-improvement-planner** — author/refine skills
 

@@ -106,6 +106,7 @@ def effects(env):
 
 @pytest.mark.parametrize("kind", [
     "file", "directory", "empty_directory", "symlink", "symlink_trailing_slash",
+    "symlink_trailing_dot", "symlink_dot_slash",
     "dangling_symlink", "linked_worktree", "wrong_origin", "dirty", "untracked",
     "git_symlink", "incomplete_checkout",
 ])
@@ -120,10 +121,14 @@ def test_unmanaged_destination_is_preserved_before_install_effects(installation,
         target.mkdir()
         if kind == "directory":
             (target / "sentinel").write_text("keep me\n")
-    elif kind in ("symlink", "symlink_trailing_slash", "dangling_symlink"):
+    elif kind in ("symlink", "symlink_trailing_slash", "symlink_trailing_dot", "symlink_dot_slash", "dangling_symlink"):
         target.symlink_to(template if kind != "dangling_symlink" else template / "absent")
         if kind == "symlink_trailing_slash":
             env["AGENT_HARNESS_HOME"] += "/"
+        elif kind == "symlink_trailing_dot":
+            env["AGENT_HARNESS_HOME"] += "/."
+        elif kind == "symlink_dot_slash":
+            env["AGENT_HARNESS_HOME"] += "/./"
     elif kind == "linked_worktree":
         git_run("-C", str(template), "worktree", "add", "-q", "--detach", str(target))
     else:
@@ -157,11 +162,13 @@ def test_unmanaged_destination_is_preserved_before_install_effects(installation,
 
 
 @pytest.mark.parametrize("existing", [False, True])
-def test_absent_or_recognized_checkout_installs_copies(installation, existing):
+@pytest.mark.parametrize("suffix", ["", "/."])
+def test_absent_or_recognized_checkout_installs_copies(installation, existing, suffix):
     env, template, _ = installation
     target = Path(env["AGENT_HARNESS_HOME"])
     if existing:
         shutil.copytree(template, target)
+    env["AGENT_HARNESS_HOME"] += suffix
     result = run_installer(env)
     assert result.returncode == 0, result.stderr
     calls = effects(env)
@@ -187,18 +194,38 @@ def test_failed_fetch_does_not_checkout_stale_ref_or_replace_skills(installation
     assert not any(call[0] == "phase-loop" and "install" in call for call in calls)
 
 
-def test_update_preserves_ignored_file_that_new_ref_tracks(installation):
+@pytest.mark.parametrize("collision", [False, True])
+def test_real_update_preserves_ignored_file_collisions(installation, collision):
     env, template, git_run = installation
     target = Path(env["AGENT_HARNESS_HOME"])
     shutil.copytree(template, target)
-    (target / ".git/info/exclude").write_text("local-notes\n")
-    (target / "local-notes").write_text("operator content\n")
+    if collision:
+        (target / ".git/info/exclude").write_text("local-notes\n")
+        (target / "local-notes").write_text("operator content\n")
     (template / "local-notes").write_text("new release content\n")
     git_run("-C", str(template), "add", "local-notes")
     git_run("-C", str(template), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "new release")
     git_run("-C", str(template), "tag", "v1.2.4")
     env.update(AGENT_HARNESS_REF="v1.2.4", INSTALL_TEST_REAL_UPDATE="1")
     result = run_installer(env)
-    assert result.returncode != 0
-    assert (target / "local-notes").read_text() == "operator content\n"
-    assert not any(call[0] == "phase-loop" and "install" in call for call in effects(env))
+    assert any(call[0] == "git" and "checkout" in call for call in effects(env))
+    if collision:
+        assert result.returncode != 0
+        assert "would be overwritten by checkout" in result.stderr
+        assert (target / "local-notes").read_text() == "operator content\n"
+        assert not any(call[0] == "phase-loop" and "install" in call for call in effects(env))
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (target / "local-notes").read_text() == "new release content\n"
+        assert git_run("-C", str(target), "rev-parse", "HEAD").stdout == git_run("-C", str(template), "rev-parse", "v1.2.4").stdout
+
+
+def test_managed_checkout_with_git_url_rewrite_can_update(installation):
+    env, template, git_run = installation
+    target = Path(env["AGENT_HARNESS_HOME"])
+    shutil.copytree(template, target)
+    git_run("-C", str(target), "config", "url.ssh://git@github.com/.insteadOf", "https://github.com/")
+    assert git_run("-C", str(target), "remote", "get-url", "origin").stdout.strip() != REPO
+    result = run_installer(env)
+    assert result.returncode == 0, result.stderr
+    assert any(call[0] == "git" and "checkout" in call for call in effects(env))

@@ -30,8 +30,9 @@ phase-loop-skills/
 ```
 
 The base `SKILL.md` is shared; `_overrides/<harness>/` files replace or augment it for a
-specific harness at install time. Author changes in `skills-src/`; this directory
-is generated from those sources, then synchronized into the runtime's packaged bundle.
+specific harness at install time. Author skill changes in `skills-src/`; the skill
+subdirectories are generated from those sources, then synchronized into the runtime's
+packaged bundle. This top-level README is maintained here, not emitted by the generator.
 
 ## Install
 

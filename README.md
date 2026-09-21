@@ -20,6 +20,8 @@ whether you use one machine or a fleet, inside or outside a tailnet. Agents shou
 start there too: establish the user's executor, governance needs and publishing
 authority before the first real run.
 
+With `uv` already installed (otherwise use the installer below):
+
 ```sh
 uv tool install phase-loop-runtime
 phase-loop --version

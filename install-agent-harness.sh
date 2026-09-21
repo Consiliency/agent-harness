@@ -102,15 +102,19 @@ skill_dest() {
 for _h in $HARNESSES; do skill_dest "$_h" >/dev/null || exit 2; done
 
 # A rerun may update only a clean, standalone checkout of the configured repo.
-# Strip trailing slashes so they cannot hide a symlink from the test below.
-while [ "$HOME_DIR" != / ] && [ "${HOME_DIR%/}" != "$HOME_DIR" ]; do
-    HOME_DIR="${HOME_DIR%/}"
+# Remove terminal / and /. components so they cannot hide a symlink below.
+while [ "$HOME_DIR" != / ]; do
+    case "$HOME_DIR" in
+        */) HOME_DIR="${HOME_DIR%/}" ;;
+        */.) HOME_DIR="${HOME_DIR%/.}"; HOME_DIR="${HOME_DIR:-/}" ;;
+        *) break ;;
+    esac
 done
 if [ -e "$HOME_DIR" ] || [ -L "$HOME_DIR" ]; then
     if [ -L "$HOME_DIR" ] || [ ! -d "$HOME_DIR/.git" ] || [ -L "$HOME_DIR/.git" ] ||
        [ ! -f "$HOME_DIR/install-agent-harness.sh" ] || [ ! -f "$HOME_DIR/RELEASE_PIN" ] ||
        [ ! -d "$HOME_DIR/phase-loop-skills" ] ||
-       ! _origin="$(git -C "$HOME_DIR" remote get-url origin 2>/dev/null)" ||
+       ! _origin="$(git -C "$HOME_DIR" config --local --get remote.origin.url 2>/dev/null)" ||
        [ "${_origin%.git}" != "${REPO%.git}" ] ||
        ! _root="$(git -C "$HOME_DIR" rev-parse --show-toplevel 2>/dev/null)" ||
        [ "$_root" != "$(cd "$HOME_DIR" && pwd -P)" ] ||
