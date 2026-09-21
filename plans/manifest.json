@@ -8169,56 +8169,56 @@
         {
           "at": "2026-09-20T10:58:24Z",
           "by": "claude-plan-detailed",
-          "transition": "committed",
           "metadata": {
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "planning_artifact_only": true,
             "recorded_as": "proposed",
             "repair_note": "original event used a non-vocabulary literal under a `status` key; rewritten to the runtime vocabulary by Consiliency/agent-harness#922"
-          }
+          },
+          "transition": "committed"
         },
         {
           "at": "2026-09-20T12:37:03Z",
           "by": "claude-execute-detailed",
-          "transition": "executing",
           "metadata": {
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "implementation_pr": "Consiliency/agent-harness#921",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
             "maintainer_ratified_at": "2026-09-20T12:02:56Z",
-            "recorded_as": "ratified",
-            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
             "plan_pr": "Consiliency/agent-harness#918",
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
             "record_pr": "Consiliency/agent-harness#919",
+            "recorded_as": "ratified",
             "red_lane_pr": "Consiliency/agent-harness#920",
-            "implementation_pr": "Consiliency/agent-harness#921",
             "repair_note": "the ratification was recorded under a `status` key with a non-vocabulary literal; execution began when PR 921 was opened"
-          }
+          },
+          "transition": "executing"
         },
         {
           "at": "2026-09-20T16:39:04Z",
           "by": "claude-execute-detailed",
-          "transition": "completed",
           "metadata": {
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "final_review_four_vendor_agree": true,
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
             "landed": {
-              "pr": "Consiliency/agent-harness#921",
               "commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
+              "pr": "Consiliency/agent-harness#921",
               "record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a"
             },
-            "final_review_four_vendor_agree": true,
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "residuals": "Consiliency/agent-harness#915 items 3-7"
-          }
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "claude-plan-detailed",
@@ -8259,6 +8259,27 @@
             "run_id": "20260921-gemini-heartbeat-bootstrap"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-21T18:26:58Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "bootstrap_review_exception": "closed after real qualification and three-vendor draft-review acceptance; further source changes require four vendors",
+            "diagnostic": "Full local suite failed: 15 failed, 6578 passed, 735 skipped. Baseline matching is not green; G4 remains partial.",
+            "dirty_path_classification": "plan_owned_only",
+            "doc_delta_decision": "docs_updated",
+            "no_merge_install_release_or_harden_approval": true,
+            "plan_sha256": "afacddeb4c71754f21904bf22ea9c0b9bae63e2271a83cacdd230b97c4ad010b",
+            "pr": "Consiliency/agent-harness#944",
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/af7adc1dc3d3/codex-gemini-heartbeat-bootstrap-20260921/20260921-gemini-heartbeat-bootstrap.md",
+            "ruling_sha256": "3c3003ed514b1f1dcf6313bca2a2be4fa3b4a3241bddc8be6aa2f004314bb843",
+            "run_id": "20260921-gemini-heartbeat-bootstrap",
+            "source_review_artifact_sha256": "cec5528faa242be5ac668dc514f29ca3d3bc1c898f5405715d7571c13b591da0",
+            "verification_artifact_path": ".phase-loop/gemini-heartbeat-bootstrap-20260921/verification.json",
+            "verification_artifact_sha256": "31edf5b4d3563091d7b160842d34201c6c25db08fd1f0ac4904718b07e5aeacf",
+            "verification_status": "failed"
+          },
+          "transition": "failed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -8266,10 +8287,10 @@
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/af7adc1dc3d3/codex-gemini-heartbeat-bootstrap-20260921/20260921-gemini-heartbeat-bootstrap.md",
       "roadmap_ref": null,
       "slug": "gemini-heartbeat-bootstrap-20260921",
-      "status": "executing",
+      "status": "failed",
       "task_summary": "Qualify brokered Gemini heartbeat-only reviews under the scoped operator bootstrap exception",
       "type": "detailed",
-      "updated_at": "2026-09-21T12:27:49Z"
+      "updated_at": "2026-09-21T18:26:58Z"
     }
   ],
   "schema_version": 1
