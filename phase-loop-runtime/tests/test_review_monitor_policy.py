@@ -26,6 +26,7 @@ def supported_board():
 
 
 def test_heartbeat_default_board_refuses_before_effects(monkeypatch):
+    monkeypatch.setenv("PATH", "/missing-gemini-capability")
     def forbidden(*args, **kwargs):
         pytest.fail("policy refusal reached an effect")
     monkeypatch.setattr(panel, "default_matrix", forbidden)
@@ -102,6 +103,7 @@ def test_heartbeat_tui_survives_silence(tmp_path, monkeypatch):
 
 
 def test_cli_default_board_refuses_before_composition(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PATH", "/missing-gemini-capability")
     from phase_loop_runtime import cli
     from phase_loop_runtime.advisor_board import composition
     monkeypatch.setattr(composition, "compose_review_board", lambda: pytest.fail("auth composition"))
