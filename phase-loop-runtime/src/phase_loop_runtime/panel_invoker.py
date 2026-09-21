@@ -200,6 +200,50 @@ class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
     """A provider process group could not be proven absent after termination."""
 
 
+class _ReviewOperationCancelled(RuntimeError):
+    pass
+
+
+class _ReviewMonitor:
+    """Operation-owned, content-free observation; silence grants no kill authority."""
+
+    def __init__(self, path: Path, invocation: str, position: int, cancel: threading.Event):
+        self.path, self.cancel = path, cancel
+        self.write_failed = False
+        self.record = {
+            "schema": "review_monitoring.v1", "invocation": invocation,
+            "seat_position": position, "requested_policy": "heartbeat_only",
+            "effective_policy": "heartbeat_only", "admission_window_s": 10,
+            "model_deadline_s": None, "silence_deadline_s": None,
+            "last_genuine_progress_age_s": None,
+            "observation_state": "progress_unobserved", "terminal_reason": None,
+        }
+
+    def observe(self, age: float | None = None, terminal: str | None = None) -> None:
+        if terminal is not None and age is None:
+            age = self.record["last_genuine_progress_age_s"]
+        self.record.update(last_genuine_progress_age_s=age,
+                           observation_state="progress_observed" if age is not None and age <= _LEG_LIVENESS_READ_INTERVAL_S else "progress_unobserved",
+                           terminal_reason=terminal)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self.record, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(temporary, self.path)
+        except OSError:
+            self.write_failed = True
+            self.record["terminal_reason"] = "monitoring_write_failed"
+            raise
+
+    def owned_command(self, command: Sequence[str]) -> list[str]:
+        if self.cancel.is_set():
+            raise _ReviewOperationCancelled("review_operation_cancelled")
+        # The PID namespace's init owns even descendants that start a new session.
+        # Kernel parent-death notification kills the namespace on abrupt owner loss.
+        return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
+                "--bind", "/", "/", "--dev", "/dev", "--", *command]
+
+
 _CaptureMutationResult = TypeVar("_CaptureMutationResult")
 
 
@@ -221,6 +265,7 @@ class _ProviderQuiescenceLatch:
         self._primary: ProviderProcessGroupQuiescenceError | None = None
         self._processes: dict[int, subprocess.Popen[bytes]] = {}
         self._sweeping = False
+        self._cancelled = False
 
     def launch(
         self, factory: Callable[[], subprocess.Popen[bytes]],
@@ -229,6 +274,8 @@ class _ProviderQuiescenceLatch:
         with self._condition:
             if self._primary is not None:
                 raise self._primary
+            if self._cancelled:
+                raise _ReviewOperationCancelled("review_operation_cancelled")
             proc = factory()
             _anchor_process_group(proc)
             if proc.pid in self._processes:
@@ -304,6 +351,8 @@ class _ProviderQuiescenceLatch:
         return primary
 
     def raise_if_set(self) -> None:
+        if self._cancelled and self._primary is None:
+            raise _ReviewOperationCancelled("review_operation_cancelled")
         if not self._event.is_set():
             return
         with self._condition:
@@ -319,6 +368,16 @@ class _ProviderQuiescenceLatch:
         """True only when no provider group remains owned by this operation."""
         with self._condition:
             return not self._processes and not self._sweeping
+
+    def cancel(self) -> None:
+        with self._condition:
+            self._cancelled = True
+            processes = tuple(self._processes.values())
+        for proc in processes:
+            try:
+                _terminate_process_group(proc, force_group=True)
+            except ProviderProcessGroupQuiescenceError as exc:
+                raise self.trip(exc)
 
 
 def _capture_mutation(
@@ -765,6 +824,8 @@ _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S = 2.0
 # DISARMED the instant we paste), so review output / reviewed diffs that happen to
 # contain these strings can never inject a keystroke or mis-classify a healthy review.
 _CLAUDE_TUI_TRUST_HEADER = "permission required: accessing workspace"
+_CLAUDE_TUI_TRUST_HEADER_CURRENT = "accessing workspace:"
+_CLAUDE_TUI_TRUST_QUESTION = "quick safety check: is this a project you created or one you trust?"
 _CLAUDE_TUI_TRUST_CHOICE = "trust this folder"
 _CLAUDE_TUI_TRUST_PROMPT = "enter y/n"
 _CLAUDE_TUI_TRUST_REJECT = "please answer y or n"  # Claude rejected a non-y/n answer
@@ -908,6 +969,10 @@ class PanelLegResult:
     def harden_isolation_evidence(self) -> Mapping[str, object] | None:
         """Actual broker/namespace facts, deliberately outside result serialization."""
         return getattr(self, "_harden_isolation_evidence", None)
+
+    @property
+    def review_monitoring(self) -> Mapping[str, object] | None:
+        return getattr(self, "_review_monitoring", None)
 
 
 def attach_native_agent_request(
@@ -1849,7 +1914,16 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
-def launch_provider(argv, **kwargs) -> "subprocess.Popen[bytes]":
+def _provider_launch_prefix(cwd):
+    prefix = list(_EGRESS_LAUNCH_PREFIX.get())
+    if prefix and prefix[0] == "nsenter":
+        # Entering the holder's mount namespace otherwise resets cwd to its root.
+        directory = os.fsdecode(os.path.abspath(cwd)) if cwd is not None else os.getcwd()
+        prefix.insert(1, "--wd=" + directory)
+    return prefix
+
+
+def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -1869,12 +1943,18 @@ def launch_provider(argv, **kwargs) -> "subprocess.Popen[bytes]":
     that read call sites was defeated on spelling five times and removed. A raw spawn of a
     provider added elsewhere is a review finding.
     """
-    return subprocess.Popen([*_EGRESS_LAUNCH_PREFIX.get(), *argv], **kwargs)
+    prefix = _provider_launch_prefix(kwargs.get("cwd"))
+    if process_owner:
+        # Enter the network namespace before creating the ownership PID namespace,
+        # but drop capabilities only AFTER both namespaces exist.
+        position = prefix.index("setpriv") if "setpriv" in prefix else len(prefix)
+        prefix[position:position] = process_owner
+    return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
 def run_provider(argv, **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`."""
-    return subprocess.run([*_EGRESS_LAUNCH_PREFIX.get(), *argv], **kwargs)
+    return subprocess.run([*_provider_launch_prefix(kwargs.get("cwd")), *argv], **kwargs)
 
 
 def _record_sandbox_facts(
@@ -3697,6 +3777,7 @@ def _run_leg_with_liveness(
     stall_threshold_s: float = _LEG_STALL_THRESHOLD_S,
     input_text: str | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    review_monitor: _ReviewMonitor | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -3721,6 +3802,7 @@ def _run_leg_with_liveness(
         # so the seat lands in the namespace instead of beside it.
         return launch_provider(
             cmd,
+            process_owner=() if review_monitor is None else review_monitor.owned_command(()),
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -3751,6 +3833,7 @@ def _run_leg_with_liveness(
     open_fds = set(fd_map)
     start = time.monotonic()
     last_heartbeat = start
+    last_output_progress: float | None = None
     last_cpu_sample = start
     last_ticks = group_cpu_ticks(proc.pid)
 
@@ -3762,8 +3845,13 @@ def _run_leg_with_liveness(
 
     try:
         while True:
+            if review_monitor is not None:
+                review_monitor.observe(None if last_output_progress is None else time.monotonic() - last_output_progress)
+                if review_monitor.cancel.is_set():
+                    review_monitor.observe(terminal="user_cancel")
+                    return _LegRun(1, "", "review_operation_cancelled")
             # (1) wall-clock backstop — should rarely fire once stall detection works.
-            if time.monotonic() - start >= deadline_s:
+            if review_monitor is None and time.monotonic() - start >= deadline_s:
                 _terminate_process_group(proc)
                 out_s, err_s = _decode()
                 raise subprocess.TimeoutExpired(
@@ -3787,6 +3875,7 @@ def _run_leg_with_liveness(
                 if chunk:
                     fd_map[fd].extend(chunk)
                     last_heartbeat = time.monotonic()
+                    last_output_progress = last_heartbeat
                 else:
                     open_fds.discard(fd)  # EOF on this pipe
             # (3) secondary CPU heartbeat — reset only, never a kill trigger.
@@ -3822,7 +3911,7 @@ def _run_leg_with_liveness(
                         err_s,
                     )
             # (5) stall: silent AND CPU-flat past the threshold while still running.
-            elif time.monotonic() - last_heartbeat >= stall_threshold_s:
+            elif review_monitor is None and time.monotonic() - last_heartbeat >= stall_threshold_s:
                 _terminate_process_group(proc)
                 out_s, err_s = _decode()
                 marker = f"\n[leg-liveness] stalled: no output/CPU for {int(stall_threshold_s)}s"
@@ -3964,7 +4053,10 @@ def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
     the harness-created scratch cwd. Conjunction = trust header AND a y/n choice string
     AND the run-unique cwd path token — path-scoping keeps the auto-answer bound to the
     exact directory the harness allocated (never derived from PR/branch content)."""
-    if _CLAUDE_TUI_TRUST_HEADER not in screen:
+    if not (
+        _CLAUDE_TUI_TRUST_HEADER in screen
+        or (_CLAUDE_TUI_TRUST_HEADER_CURRENT in screen and _CLAUDE_TUI_TRUST_QUESTION in screen)
+    ):
         return False
     if (
         _CLAUDE_TUI_TRUST_PROMPT not in screen
@@ -4014,6 +4106,7 @@ def _run_claude_tui_session(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     allow_transcript_final: bool = False,
     broker_transcript_path: Path | None = None,
+    review_monitor: _ReviewMonitor | None = None,
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
@@ -4042,6 +4135,7 @@ def _run_claude_tui_session(
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
     last_heartbeat = start_monotonic
+    last_output_progress: float | None = None
     # #188: GENUINE-progress heartbeat state. The kill clock (``last_heartbeat``)
     # is reset ONLY by reviewer progress — never by cosmetic PTY animation or
     # incidental CPU. ``seen_tui_lines`` accumulates de-animated visible lines so a
@@ -4138,6 +4232,7 @@ def _run_claude_tui_session(
                 # provider-launch path uses `_popen`".
                 return launch_provider(
                     command,
+                    process_owner=() if review_monitor is None else review_monitor.owned_command(()),
                     cwd=str(cwd),
                     env=dict(env),
                     stdin=slave_fd,
@@ -4165,7 +4260,12 @@ def _run_claude_tui_session(
         return 1, "", f"claude_tui_launch_error:{type(exc).__name__}", ""
 
     try:
-        while time.monotonic() < deadline:
+        while review_monitor is not None or time.monotonic() < deadline:
+            if review_monitor is not None:
+                review_monitor.observe(None if last_output_progress is None else time.monotonic() - last_output_progress)
+                if review_monitor.cancel.is_set():
+                    review_monitor.observe(terminal="user_cancel")
+                    return _finish(1, "", "review_operation_cancelled")
             novel_this_iter = False  # substantive new content arrived this iteration
             if master_fd is not None:
                 readable, _, _ = select.select(
@@ -4192,6 +4292,7 @@ def _run_claude_tui_session(
                         ):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
+                            last_output_progress = now_novel
                             last_novel = now_novel
                             novel_this_iter = True
                     else:
@@ -4233,6 +4334,7 @@ def _run_claude_tui_session(
                 # never paste the review into its y/n field, the reproduced bug).
                 if (
                     _CLAUDE_TUI_TRUST_HEADER in screen
+                    or _CLAUDE_TUI_TRUST_HEADER_CURRENT in screen
                     or _CLAUDE_TUI_TRUST_PROMPT in screen
                 ):
                     gate_signature_seen = True
@@ -4305,6 +4407,7 @@ def _run_claude_tui_session(
             if len(review_text) > last_review_len:
                 last_review_len = len(review_text)
                 last_heartbeat = now
+                last_output_progress = now
             if _completion_ok(review_text, mode):
                 return _finish(0, review_text, "claude_tui_file_output")
             if now >= next_transcript_check:
@@ -4318,9 +4421,11 @@ def _run_claude_tui_session(
                 if transcript_activity != last_transcript_activity:
                     last_transcript_activity = transcript_activity
                     last_heartbeat = now
+                    last_output_progress = now
                 if len(transcript_text) > last_transcript_len:
                     last_transcript_len = len(transcript_text)
                     last_heartbeat = now
+                    last_output_progress = now
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
                 broker_final = _broker_final()
@@ -4347,7 +4452,7 @@ def _run_claude_tui_session(
             # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
-            if now - last_heartbeat >= stall_threshold_s:
+            if review_monitor is None and now - last_heartbeat >= stall_threshold_s:
                 review_text = _current_output()
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
@@ -5024,6 +5129,7 @@ def _exec_claude_tui_leg(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     broker_prompt: str | None = None,
     broker_evidence: dict[str, object] | None = None,
+    review_monitor: _ReviewMonitor | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -5174,6 +5280,8 @@ def _exec_claude_tui_leg(
         if capture_output_reader is not None
         else {}
     )
+    if review_monitor is not None:
+        tui_extra["review_monitor"] = review_monitor
     if quiescence_latch is not None:
         tui_extra["quiescence_latch"] = quiescence_latch
     leg_started = time.monotonic()
@@ -5470,6 +5578,7 @@ def _exec_leg(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     broker_prompt: str | None = None,
     broker_evidence: dict[str, object] | None = None,
+    review_monitor: _ReviewMonitor | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -5631,6 +5740,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
+                    **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
@@ -5657,7 +5767,7 @@ def _exec_leg(
             # BEFORE the auth-signature scan ever runs, so which stream(s) the
             # body appears in here no longer matters.
             log_text = (proc.stdout or "") + (proc.stderr or "")
-            if rc != 0 or review_text.strip():
+            if review_monitor is not None or rc != 0 or review_text.strip():
                 break  # hard failure OR real output → stop (never hammer, never waste)
             if _elapsed >= timeout_s * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
@@ -6038,6 +6148,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt if brokered else None,
                     quiescence_latch=quiescence_latch,
+                    **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
@@ -6055,7 +6166,7 @@ def _exec_leg(
                     and _GEMINI_TRANSIENT_RE.search(review_text)
                 )
             )
-            if not (soft_empty or stall):
+            if review_monitor is not None or not (soft_empty or stall):
                 break
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break
@@ -6128,6 +6239,7 @@ def _default_spawn(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_authorization: ReviewIsolationAuthorization | None = None,
     canonical_repo_authority: Path | str | None = None,
+    review_monitor: _ReviewMonitor | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -6147,6 +6259,19 @@ def _default_spawn(
     byte (the golden keystone); an explicit value BOUNDS a slow/stalled leg so it
     fails its own leg instead of hanging the whole panel.
     """
+    if review_monitor is not None or (
+        review_authorization is not None and not _has_injected_review_execution_seam(leg=leg)
+    ):
+        try:
+            if review_monitor is not None and (timeout_s is not None or agy_capture is not None or research_seat is not None
+                or leg not in ("claude", "codex", "grok")):
+                raise ValueError("review_monitoring_unsupported_route")
+            revalidate_review_isolation_authorization(
+                review_authorization, None, artifact, mode=mode,
+                monitoring_policy="heartbeat_only" if review_monitor is not None else "bounded",
+            )
+        except ValueError as exc:
+            return "UNAVAILABLE", "", str(exc)
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     # The raw exec boundary is never a production review escape hatch.  Tests may
@@ -6184,6 +6309,8 @@ def _default_spawn(
     # the revalidations, so the two decisions stay in one place each.
     sandbox_root_choice: "_sandbox_policy.SandboxRootChoice | None" = None
     egress_stack = contextlib.ExitStack()
+    broker: ParentUnixBroker | None = None
+    quiescence_failed = False
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
@@ -6278,7 +6405,7 @@ def _default_spawn(
             # downstream of this point, so all three inherit the prefix.
             egress_ctx = _sandbox_egress.isolated_network(
                 # Outlive the leg: the namespace must not expire under a long review.
-                timeout_s=float(_LEG_TIMEOUT_MAX_S) + 300.0,
+                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
             )
             egress_prefix = egress_stack.enter_context(egress_ctx)
             if _sandbox_egress.egress_required() and not egress_prefix:
@@ -6337,6 +6464,8 @@ def _default_spawn(
         # path calls the leg execs with their exact prior signatures — existing
         # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.
         extra: dict[str, object] = {}
+        if review_monitor is not None:
+            extra["review_monitor"] = review_monitor
         if effort is not None:
             extra["effort"] = effort
         if env is not None:
@@ -6368,9 +6497,15 @@ def _default_spawn(
             leg_authorization = derive_review_leg_authorization(
                 review_authorization, artifact,
                 harness=leg, model=broker_model,
-                deadline_s=float(leg_deadline), mode=mode,
+                deadline_s=None if review_monitor is not None else float(leg_deadline), mode=mode,
                 canonical_repo_authority=resolved_repo_dir,
             )
+            if review_monitor is not None:
+                review_monitor.record.update(
+                    admission_expires_monotonic_ns=leg_authorization.expires_monotonic_ns,
+                    authorization_expiry_scope="admission_only",
+                )
+                review_monitor.observe()
             broker = ParentUnixBroker(
                 leg_authorization,
                 harness=leg,
@@ -6423,20 +6558,26 @@ def _default_spawn(
                     )
                     return _classify_leg(rc, text, log, provider_mode), text
                 def _cancel_parent_infer() -> None:
-                    broker_latch.trip(ProviderProcessGroupQuiescenceError(
-                        "broker operation deadline elapsed"
-                    ))
+                    # Expiry requests cancellation; only failed cleanup is fatal.
+                    broker_latch.cancel()
                 adapter = _make_broker_inference_adapter(
                     _parent_infer,
                     _cancel_parent_infer,
                     broker_latch.is_quiescent,
                 )
                 response, probe = broker.run_credentialless_client(
-                    adapter, deadline_s=float(leg_deadline),
+                    adapter, deadline_s=None if review_monitor is not None else float(leg_deadline),
+                    **({"cancel_event": review_monitor.cancel} if review_monitor is not None else {}),
                 )
                 broker_latch.raise_if_set()
             finally:
-                broker.close()
+                primary = sys.exc_info()[1]
+                try:
+                    broker.close()
+                except OSError:
+                    if primary is None:
+                        raise
+                    broker.evidence["cleanup_failed"] = True
             if response is None or probe is None:
                 raise ValueError("broker completed without a response")
             response_text = str(response["text"])
@@ -6503,6 +6644,7 @@ def _default_spawn(
             return status, review_text, str(log_text).strip()[:2000]
         return status, review_text
     except ProviderProcessGroupQuiescenceError:
+        quiescence_failed = True
         raise
     except Exception as exc:  # fail-closed
         # THE REASON GOES IN `detail`, NEVER IN `text`. Three comments in this file say so
@@ -6516,12 +6658,15 @@ def _default_spawn(
         # `panel_nonconforming | block | review_gate_block`. The identical exception raised
         # one call site away went to `detail` with empty text and was a WARN. Same fault,
         # two verdicts, decided by which line raised.
+        if review_monitor is not None:
+            return _BrokeredSpawnResult("DEGRADED", "", str(exc)[:2000],
+                                       evidence=broker.evidence if broker is not None else None)
         return "DEGRADED", "", str(exc)[:2000]
     finally:
         egress_stack.close()
-        if provider_output_dir is not None and agy_capture is None:
+        if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
-        if base is not None:
+        if base is not None and not quiescence_failed:
             # The staged tree is deliberately read-only, and `rmtree(ignore_errors=True)`
             # cannot unlink through a 0o500 directory -- it would fail SILENTLY and leak
             # the whole stage every round. Drop it first, through the helper that
@@ -6529,7 +6674,7 @@ def _default_spawn(
             if staged_tree_path is not None:
                 _review_stage.remove_review_stage(staged_tree_path)
             shutil.rmtree(base, ignore_errors=True)
-        if capture_scratch is not None and agy_capture is None:
+        if capture_scratch is not None and agy_capture is None and not quiescence_failed:
             shutil.rmtree(capture_scratch, ignore_errors=True)
 
 
@@ -6563,6 +6708,7 @@ def _default_spawn_via_provider(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_authorization: ReviewIsolationAuthorization | None = None,
     canonical_repo_authority: Path | str | None = None,
+    review_monitor: _ReviewMonitor | None = None,
 ) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -6570,6 +6716,8 @@ def _default_spawn_via_provider(
     # ``brief_ref`` / ``timeout_s`` (#114) are threaded the same way: omitted-when-
     # None so the default path's ``_default_spawn`` call stays byte-identical.
     extra: dict[str, object] = {}
+    if review_monitor is not None:
+        extra["review_monitor"] = review_monitor
     if effort is not None:
         extra["effort"] = effort
     if env is not None:
@@ -6720,6 +6868,24 @@ def _write_incremental_verdict(
         )
 
 
+@contextmanager
+def _review_cancellation_scope(cancel_event: threading.Event | None):
+    previous = {}
+    if cancel_event is not None and threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous[sig] = signal.getsignal(sig)
+            signal.signal(sig, lambda signum, frame: cancel_event.set())
+    try:
+        yield
+    except BaseException:
+        if cancel_event is not None:
+            cancel_event.set()
+        raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def _run_legs_ordered(
     items: "Sequence[object]",
     run_one: "Callable[[object], PanelLegResult]",
@@ -6728,6 +6894,7 @@ def _run_legs_ordered(
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     review_dir: "Path | None" = None,
     fatal_latch: _ProviderQuiescenceLatch | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> list[PanelLegResult]:
     """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
 
@@ -6780,12 +6947,22 @@ def _run_legs_ordered(
         return []
     max_workers = max(1, min(max_concurrency or len(seq), _PANEL_MAX_WORKERS))
     streaming = on_leg_complete is not None or review_dir is not None
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(run_one, item) for item in seq]
+    def run_with_cancellation(item: object) -> PanelLegResult:
+        try:
+            return run_one(item)
+        except ProviderProcessGroupQuiescenceError:
+            if cancel_event is not None:
+                cancel_event.set()
+            raise
+    with ThreadPoolExecutor(max_workers=max_workers) as pool, _review_cancellation_scope(cancel_event):
+        worker = run_one if cancel_event is None else run_with_cancellation
+        futures = [pool.submit(worker, item) for item in seq]
 
         def _cancel_and_raise(
             error: ProviderProcessGroupQuiescenceError,
         ) -> None:
+            if cancel_event is not None:
+                cancel_event.set()
             primary = fatal_latch.trip(error) if fatal_latch is not None else error
             for pending in futures:
                 pending.cancel()
@@ -7289,6 +7466,8 @@ def invoke_board(
     review_authorization: ReviewIsolationAuthorization | None = None,
     canonical_repo_authority: Path | str | None = None,
     president_invoke: Callable[[str, str], Mapping[str, str]] | None = None,
+    monitoring_policy: str = "bounded",
+    cancel_event: threading.Event | None = None,
     native_leg_fills: Sequence[NativeLegFill] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
@@ -7364,6 +7543,31 @@ def invoke_board(
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
     """
+    try:
+        if review_authorization is not None and getattr(review_authorization, "monitoring_policy", "bounded") != monitoring_policy:
+            raise ValueError("review_monitoring_policy_mismatch")
+        _advisor_board_backing.resolve_review_monitoring_policy(
+            monitoring_policy, board, timeouts_by_leg=timeouts_by_leg,
+            mode=mode or _mode_for_purpose(board.purpose), capture=agy_canary_capture is not None,
+            research=(research_policy or board.research_policy).enabled
+            if (research_policy or board.research_policy) is not None else False,
+            gateway=omnigent is not None or gateway_available is True,
+        )
+    except ValueError as exc:
+        refused = PanelResult(tuple(PanelLegResult(
+            leg=seat.harness or seat.vendor_family, status="UNAVAILABLE",
+            detail=str(exc), seat_key=seat.seat_key,
+        ) for seat in board.seats))
+        for index, leg in enumerate(refused.legs):
+            object.__setattr__(leg, "_review_monitoring", {
+                "schema": "review_monitoring.v1", "requested_policy": monitoring_policy,
+                "effective_policy": None, "seat_position": index,
+                "model_deadline_s": None, "terminal_reason": "policy_refusal",
+            })
+        return refused
+    policy_kwargs = {"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}
+    invocation_id = uuid.uuid4().hex if policy_kwargs else ""
+    operation_cancel = cancel_event if cancel_event is not None else threading.Event()
     explicit_mode = mode is not None
     effective_research = _effective_research_policy(
         board.research_policy, research_policy
@@ -7416,6 +7620,15 @@ def invoke_board(
         if review_instruction_token is not None:
             reset_review_instruction_digest(review_instruction_token)
             review_instruction_token = None
+        if policy_kwargs:
+            for index, leg in enumerate(result.legs):
+                if leg.review_monitoring is None:
+                    object.__setattr__(leg, "_review_monitoring", {
+                        "schema": "review_monitoring.v1", "invocation": invocation_id,
+                        "requested_policy": monitoring_policy, "effective_policy": None,
+                        "seat_position": index, "model_deadline_s": None,
+                        "terminal_reason": "policy_refusal",
+                    })
         return result
     def _finalize_with_president(results_: list[PanelLegResult]) -> PanelResult:
         """The common tail: the president rules AFTER every seat (incl. a bound fill)."""
@@ -7599,7 +7812,7 @@ def invoke_board(
                     return review_refusal("harden_review_research_route_refused")
                 if agy_canary_capture is not None:
                     return review_refusal("harden_review_capture_route_refused")
-                if omnigent is not None or gateway_available is not None:
+                if omnigent is not None or gateway_available is True:
                     return review_refusal("harden_review_gateway_route_refused")
                 if not exact_broker_routes and not native_host_deferral_only:
                     return review_refusal("harden_review_unsupported_route_refused")
@@ -7609,6 +7822,7 @@ def invoke_board(
                         authorization_artifact,
                         mode=mode,
                         canonical_repo_authority=canonical_repo_authority,
+                        **policy_kwargs,
                     )
                 except ValueError as exc:
                     return review_refusal(str(exc))
@@ -7622,6 +7836,7 @@ def invoke_board(
                         authorization_artifact,
                         mode=mode,
                         canonical_repo_authority=canonical_repo_authority,
+                        **policy_kwargs,
                     )
                 except ValueError as exc:
                     return review_refusal(str(exc))
@@ -7896,7 +8111,7 @@ def invoke_board(
         if _fill_refusal_common is not None:
             return review_exit(_fill_refusal_common)
 
-        def _run_seat(item: Seat | tuple[int, Seat]) -> PanelLegResult:
+        def _run_seat_body(item: Seat | tuple[int, Seat], monitor: _ReviewMonitor | None = None) -> PanelLegResult:
             # The full per-seat body — backing decision → skip / omnigent / homebrew →
             # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
             # so both the skip decisions and the spawn happen concurrently per seat. It
@@ -7910,7 +8125,7 @@ def invoke_board(
             # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
             # runs on its default lane instead of skipping on an empty ('') lane.
             capture_quiescence.raise_if_set()
-            if effective_research.enabled:
+            if effective_research.enabled or policy_kwargs:
                 index, seat = cast("tuple[int, Seat]", item)
             else:
                 index, seat = -1, cast(Seat, item)
@@ -8010,6 +8225,8 @@ def invoke_board(
                     # (not `status, text`) so the diagnostic tuple survives to the
                     # normalization just below.
                     research_extra: dict[str, object] = {}
+                    if monitor is not None:
+                        research_extra["review_monitor"] = monitor
                     if research_seat is not None:
                         research_extra["research_seat"] = research_seat
                         research_extra["brief_append"] = research_instructions(
@@ -8146,6 +8363,44 @@ def invoke_board(
                 else result
             )
 
+        def _run_seat(item: Seat | tuple[int, Seat]) -> PanelLegResult:
+            if not policy_kwargs:
+                return _run_seat_body(item)
+            index, seat = cast("tuple[int, Seat]", item)
+            monitor_root = Path(stream_dir) if stream_dir is not None else (
+                Path(repo_dir or Path.cwd()) / ".phase-loop" / "review-monitoring"
+            )
+            monitor = _ReviewMonitor(monitor_root / invocation_id / f"seat-{index}.json",
+                                     invocation_id, index, operation_cancel)
+            broker_evidence = None
+            try:
+                monitor.observe()
+                if operation_cancel.is_set():
+                    result = _skip(seat, seat.harness, "review_operation_cancelled")
+                else:
+                    result = _run_seat_body(item, monitor)
+                broker_evidence = result.harden_isolation_evidence
+                if monitor.write_failed:
+                    result = _skip(seat, seat.harness, "review_monitoring_write_failed")
+                if operation_cancel.is_set():
+                    result = replace(result, status="UNAVAILABLE", text="", detail="review_operation_cancelled")
+                monitor.observe(terminal="monitoring_write_failed" if monitor.write_failed else
+                                "user_cancel" if operation_cancel.is_set() else
+                                "completed" if result.status == "OK" else "process_exit_or_failure")
+            except OSError:
+                result = _skip(seat, seat.harness, "review_monitoring_write_failed")
+                monitor.record["terminal_reason"] = "monitoring_write_failed"
+            except BaseException:
+                try:
+                    monitor.observe(terminal="quiescence_unproven")
+                except OSError:
+                    pass
+                raise
+            if broker_evidence is not None:
+                attach_harden_isolation_evidence(result, broker_evidence)
+            object.__setattr__(result, "_review_monitoring", dict(monitor.record))
+            return result
+
         # Fan the seats out concurrently (parallel by default; max_concurrency=1 →
         # sequential); results come back in SEAT ORDER (positional re-key + golden
         # order/content assertions depend on it). ``on_leg_complete`` / ``stream_dir``
@@ -8153,7 +8408,7 @@ def invoke_board(
         # both ``None`` (default) keeps the byte-identical ordered path (golden intact).
         items: list[Seat] | list[tuple[int, Seat]] = (
             list(enumerate(board.seats))
-            if effective_research.enabled
+            if effective_research.enabled or policy_kwargs
             else list(board.seats)
         )
         results = _run_legs_ordered(
@@ -8165,6 +8420,7 @@ def invoke_board(
             fatal_latch=(
                 capture_quiescence if agy_canary_capture is not None else None
             ),
+            **({"cancel_event": operation_cancel} if policy_kwargs else {}),
         )
         if agy_canary_capture is not None:
             if len(results) != len(capture_seats):

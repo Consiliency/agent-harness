@@ -363,3 +363,37 @@ a two-same-vendor board is not collapsed.
    stays the default lane; the default board scrubs vendor keys exactly as before;
    `sink=None` (the default) emits no observability envelope, so the live default
    panel stays byte-neutral.
+
+## Explicit heartbeat-only monitoring (agent-harness#892)
+
+`invoke_board(..., monitoring_policy="heartbeat_only", cancel_event=event)`
+requests one attempt per seat without model-thinking or silence deadlines.
+Omission means `bounded` and retains the backstop; timeout overrides conflict
+with heartbeat-only. Silence and flat CPU indicate `progress_unobserved`, not
+provider health. No reviewer is dropped or substituted by policy preflight.
+
+| Route | Bounded | Heartbeat-only |
+| --- | --- | --- |
+| Brokered homebrew/subscription Claude TUI | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
+| Gemini / agy | Existing internal print timer | Unsupported |
+| Gateway, API-key, capture, research, native host fill | Existing route restrictions | Unsupported |
+| Legacy invoke_panel | Existing behavior | Unsupported |
+| CLI default four-vendor board | Existing behavior | Whole board refused before auth |
+
+Only admission has a finite 10-second window. Once admitted, the broker waits
+for completion, terminal failure, cancellation, or owner loss. Provider PID
+namespaces enforce owner-loss cleanup, including descendants that detach their
+sessions. Metadata-only `review_monitoring.v1` snapshots live below
+`stream_dir/<invocation>/seat-<position>.json` (default:
+`<repo>/.phase-loop/review-monitoring/`). Final leg records expose
+`review_monitoring` without changing legacy dataclass serialization.
+No record proves provider-side billing settlement or remote request health.
+
+With a staged review tree, heartbeat-only retains the required egress namespace.
+Its holder and uplink follow an owner pipe rather than a wall-clock lease; context
+exit or owner death closes them. The provider ownership namespace is created
+after network entry and before capability removal, so cancellation ownership
+does not restore the provider's ability to change its firewall. Missing required
+egress remains a DEGRADED leg with the exception detail, never an isolation claim.

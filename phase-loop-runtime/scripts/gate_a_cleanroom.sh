@@ -182,7 +182,7 @@ run_probe() {  # $1=rundir  $2=expect(present|absent)
   # entry point, not an env opt-in.
   env -i \
     HOME="$CLEAN_HOME" \
-    PATH="$VENV/bin:/usr/bin:/bin" \
+    PATH="$VENV/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
     PYTHONNOUSERSITE=1 \
     DOTFILES_ROOT="$DOTFILES_ROOT" \
     GATE_A_BUNDLE="$BUNDLE" \
@@ -309,7 +309,7 @@ site_packages = Path(site.getsitepackages()[0]).resolve()
 PYEOF
     if ! env -i \
         HOME="$CLEAN_HOME" \
-        PATH="$VENV/bin:/usr/bin:/bin" \
+        PATH="$VENV/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         PYTHONNOUSERSITE=1 \
         PYTHONDONTWRITEBYTECODE=1 \
         PYTHONPATH="$SUITE_TREE/tests" \
@@ -386,7 +386,7 @@ PYEOF
   # wheel on the path. No PYTHONPATH to a source tree (would shadow the wheel).
   if ! env -i \
       HOME="$CLEAN_HOME" \
-      PATH="$VENV/bin:/usr/bin:/bin" \
+      PATH="$VENV/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
       PYTHONNOUSERSITE=1 \
       PYTHONDONTWRITEBYTECODE=1 \
       "${LEGIBLE_AUTHORITY_ENV[@]}" \

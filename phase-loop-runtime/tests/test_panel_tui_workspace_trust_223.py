@@ -48,13 +48,14 @@ _MODAL = (
 )
 
 
-def test_trust_modal_answered_once_then_leg_completes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("header", ["Permission Required: Accessing workspace:", "Accessing workspace:"])
+def test_trust_modal_answered_once_then_leg_completes(tmp_path, monkeypatch, header):
     """The modal is answered ``y`` (recorded by the fake), the editor burst arms
     readiness, and the leg completes OK — the review prompt is NOT pasted into the
     y/n field (the reproduced bug)."""
     _fast_timing(monkeypatch)
     script = (
-        _MODAL
+        _MODAL.replace("Permission Required: Accessing workspace:", header)
         + "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; "
         + "printf '\\nClaude Code v2.1.208\\nWelcome back\\nmanual mode on ready now\\n'; "
         + "printf 'The staged bundle looks correct.\\n\\nAGREE\\n' > panel-claude.txt; "
@@ -173,7 +174,8 @@ def test_production_shaped_cwd_full_path_token_answers(tmp_path, monkeypatch):
     assert (out / "answer.txt").read_text().strip() == "y"
 
 
-def test_wrong_dir_modal_is_not_answered(tmp_path, monkeypatch):
+@pytest.mark.parametrize("header", ["Permission Required: Accessing workspace:", "Accessing workspace:"])
+def test_wrong_dir_modal_is_not_answered(tmp_path, monkeypatch, header):
     """CR F1/R5 (negative): a trust modal for a DIFFERENT directory whose basename is
     also ``out`` must NOT be auto-answered (the old bare-basename token would have
     vacuously matched). No ``y`` is sent; the gate is never cleared."""
@@ -182,7 +184,8 @@ def test_wrong_dir_modal_is_not_answered(tmp_path, monkeypatch):
     out.mkdir()
     # Modal for a FOREIGN path (basename "out", different full path than our cwd).
     script = (
-        "printf 'Permission Required: Accessing workspace:\\n/tmp/some-other-run/out\\n"
+        f"printf '{header}\\n/tmp/some-other-run/out\\n"
+        "Quick safety check: Is this a project you created or one you trust?\\n"
         "y. Yes, I trust this folder\\nn. No, exit\\nEnter y/n:'; "
         "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; sleep 60"
     )

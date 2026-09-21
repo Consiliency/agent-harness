@@ -485,3 +485,39 @@ a landing decision. `tests/test_president_wiring.py`.
 - **Standalone launchers.** A caller that wants the four-seat board without a
   president passes an explicit `review_policy=ReviewLandingPolicy(required_seats=...,
   requires_president=False)` rather than a president-requiring tier.
+
+## Review monitoring policy v1 (agent-harness#892)
+
+The opt-in policy vocabulary is `bounded | heartbeat_only`; omission is bounded.
+Heartbeat-only permits only brokered subscription/homebrew Claude TUI, Codex,
+and Grok, with no timeout overrides, capture, research, API fallback, gateway,
+or native host seat. Whole-board capability preflight precedes availability,
+auth, session creation, and provider dispatch. Gemini/agy remains unsupported.
+
+The requested/effective policy is bound to the operation lease and minted leg.
+Heartbeat-only admission expires 10 seconds after minting and is single-use;
+complete frame receipt and ownership are checked before inference. Admitted
+model response waiting has no aggregate wall-clock deadline or silence cutoff.
+It makes one attempt, including when that attempt completes empty.
+Cancellation and owner loss retain child/provider/server ownership until
+quiescence; unproven quiescence cannot become successful evidence.
+Private staged inputs and diagnostics are retained when quiescence cannot be
+proven; that retention is failure evidence, not successful cleanup.
+
+`review_monitoring.v1` is a separate metadata-only opt-in record: invocation and
+seat position, requested/effective policy, admission window, null model/silence
+deadlines, last observed progress age, observation state, and terminal reason.
+Genuine output within the existing print-read observation interval is
+`progress_observed`; older output or no output is `progress_unobserved`.
+The TUI timestamp excludes startup and trust answers; repeated cosmetic repaints
+do not refresh it after the existing novelty detector has seen their text.
+Neither state is a health attestation or permission to terminate. Frozen
+broker request/response keys, status literals, and observer envelopes are unchanged.
+
+When staging requires egress isolation, acquisition follows staged-tree and operation
+authorization revalidation. Heartbeat-only holds the network helper lifetime through
+an owner pipe, with no aggregate expiry; owner exit closes both helpers. Provider
+PID ownership is established after network entry but before the capability bounding
+set is emptied. Every launch retains the common provider launch seam and broker
+threads inherit its ContextVar prefix. EgressUnavailable stays DEGRADED with empty
+review text and the exception in detail; sandbox facts describe actual enforcement.

@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGLIFE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
+roadmap_sha256: 900a415f9d4e4387e96fc95a81d524929ac7c3a39cf36a8d6c39305710e7571e
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_leglife_phase.py phase-loop-runtime/tests/test_advisor_board_golden.py phase-loop-runtime/tests/test_panel_invoker.py phase-loop-runtime/tests/test_panel_invoker_spawn.py phase-loop-runtime/tests/test_panel_invoker_timeout_argv.py phase-loop-runtime/tests/test_advisor_board_concurrency.py phase-loop-runtime/tests/test_advisor_board_integration.py phase-loop-runtime/tests/test_advisor_board_config.py phase-loop-runtime/tests/test_advisor_board_resolver.py phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py phase-loop-runtime/tests/test_advisor_board_observability.py phase-loop-runtime/tests/test_advisor_board_cli_legacy.py'
 ---

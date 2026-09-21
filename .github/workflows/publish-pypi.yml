@@ -30,6 +30,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install review sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux
+          # Only this ephemeral CI runner: unshare must be allowed to create the
+          # user/network namespaces whose enforcement the integration tests prove.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
+          unshare --net --map-root-user true
       - name: Verify tag matches phase-loop-runtime version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

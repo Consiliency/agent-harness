@@ -346,8 +346,16 @@ def test_runtime_v10_reground_record_is_present_and_ancestral():
     plan_path = root / "plans" / "phase-plan-v10-RUNTIME.md"
     roadmap_path = root / "specs" / "phase-plans-v10.md"
     roadmap_digest = hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
-    defect = reground_defect(current, root=root, roadmap_digest=roadmap_digest)
+    # Grounding is historical; an append-only authority binds an amended roadmap.
+    # Comparing the first grounding record with today's bytes would require erasing it.
+    history = current["plan_authority_history"]
+    defect = reground_defect(current, root=root, roadmap_digest=history[0]["roadmap_sha256"])
     assert defect is None, f"the v10-RUNTIME re-grounding record is not durable: {defect}"
+    from phase_loop_runtime import plan_manifest
+    authority_check = plan_manifest.check(root)
+    assert authority_check.exit_code == 0, authority_check
+    assert history[-1]["roadmap_sha256"] == roadmap_digest
+    assert history[-1]["plan_sha256"] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
     assert f"roadmap_sha256: {roadmap_digest}" in plan_path.read_text(encoding="utf-8")
 
     superseded = rows["vergence-v1-RUNTIME"]

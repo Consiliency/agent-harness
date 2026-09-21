@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PROOFGATE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1
+roadmap_sha256: 900a415f9d4e4387e96fc95a81d524929ac7c3a39cf36a8d6c39305710e7571e
 automation:
   suite_command: [bash, -lc, 'cd phase-loop-runtime && PYTHONPATH=src python -m pytest -m "not dotfiles_integration" -q && bash scripts/gate_a_cleanroom.sh']
 ---

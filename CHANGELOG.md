@@ -6,6 +6,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Explicit heartbeat-only review monitoring (agent-harness#892)
+
+- Supported brokered Linux subscription Claude TUI, Codex and Grok reviews may
+  opt into monitoring without a model-thinking or silence deadline. Admission
+  and cleanup remain finite; unsupported routes and the default four-vendor
+  board refuse the policy. No reviewer is silently substituted.
+- Short validation commands defer unrelated runner and closeout imports. This
+  reduces repeated CLI startup work in the retained conformance proof while
+  preserving its checks and loading every closeout gate when closeout runs.
+- Monitoring distinguishes recent genuine output from unknown silence, including
+  nonzero observation ages; TUI startup does not count as progress, and repeated
+  cosmetic repaints do not refresh it. Real broker tests cross the old deadline after admission
+  while preserving bounded-mode termination and real cleanup clocks.
+- Provider launches preserve their requested working directory when entering
+  the egress namespace, including launches with a heartbeat ownership namespace.
+- Roadmap provenance now appends current-authority bindings while preserving
+  historical review and lifecycle records. This does not complete a roadmap
+  phase or approve an earlier frozen test receipt for a changed inventory.
+- Hosted test and release-wheel jobs install and probe Linux sandbox tools
+  before verification. Unprivileged user namespaces are enabled only on their
+  ephemeral runners; offload test images include the matching dependencies.
+  These checks exercise the actual isolation rather than bypassing it.
+  The clean-room PATH includes system sbin directories so its installed
+  iptables can be discovered without exposing user-local tools.
+  A privileged Dagger exec bootstraps offloaded tests through setpriv, dropping
+  to the ordinary CI user with zero capabilities and no-new-privileges before
+  probing nested namespaces and running tests. The exec retains Dagger's
+  expanded container policy after process credentials are dropped.
+  The current rootless offload engine lacks the tun device inside test execs,
+  so the complete hosted matrix and clean-room lane are selected before any
+  offload attempt. Offload re-enablement requires a reviewed environment with
+  passing real egress checks; missing tun now fails its preflight immediately.
+
 ## [0.7.15] - 2026-09-21
 
 ### Public onboarding baseline (agent-harness#929; release slice of agent-harness#927)

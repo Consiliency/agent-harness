@@ -11,6 +11,17 @@ metered and its per-minute rate is the cheaper of the two. Treat a new
 
 ## Why the legacy hosted lanes are still skipped (2026-09-04)
 
+**2026-09-20 update (agent-harness#892):** the complete hosted Python matrix and
+clean-room lane now run because the current rootless offload engine does not
+provide `/dev/net/tun` inside its exec containers. The real egress tests require
+that device. `OFFLOAD_SANDBOX_READY` in `test.yml` is explicitly false; changing
+it requires a reviewed offload environment with passing real egress checks.
+Trust and secret availability remain necessary for offloading but do not prove
+sandbox capability. Dagger also checks the device before starting its suites.
+No test selection or timeout changes, automatic retry after offload failure,
+host configuration changes, or AI-stack deployment are part of this routing
+change. The historical explanation below describes the previous eligible path.
+
 Moving off Blacksmith invalidated the stated reason for a guard, without
 invalidating the guard.
 

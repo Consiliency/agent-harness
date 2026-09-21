@@ -65,6 +65,10 @@ jobs:
           # GitHub also withholds secrets from fork-PR runs, so this is a second,
           # independent reason a fork can never reach the offload path.
           TS_AUTHKEY_SET: ${{ secrets.TS_AUTHKEY != '' }}
+          # The current rootless Dagger engine cannot provide /dev/net/tun to
+          # nested exec containers. Use the complete hosted lanes until a
+          # reviewed offload environment proves the real egress tests pass.
+          OFFLOAD_SANDBOX_READY: 'false'
         run: |
           set -euo pipefail
           trusted=false
@@ -80,11 +84,11 @@ jobs:
             trusted=true
           fi
           eligible=false
-          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ]; then
+          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$OFFLOAD_SANDBOX_READY" = "true" ]; then
             eligible=true
           fi
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
-          echo "trusted=$trusted eligible=$eligible"
+          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY eligible=$eligible"
 
   offload:
     name: suite (offloaded to ai)
@@ -134,14 +138,15 @@ jobs:
   hosted:
     name: suite (hosted fallback)
     runs-on: ubuntu-latest
-    # The hosted suite of record on the fork/no-secret path is the existing
+    # The hosted suite of record on an ineligible-offload path is the existing
     # matrix + clean-room pair below (they carry the two-lane selection, the
     # retention guard's subject, and the junit uploads). This job collapses their
     # verdict into ONE result for `gate`, instead of duplicating the suite.
     #
     # The opposite of `offload`, never `failure()`/`always()`: this is the
-    # fork/no-secret path, NOT a fallback from a failed offload. A failed offload
-    # must stay failed -- otherwise an unreachable host silently becomes green.
+    # fork/no-secret or unsupported-sandbox path, NOT a retry of a failed
+    # offload. A failed offload must stay failed -- otherwise an unreachable
+    # host silently becomes green.
     needs: [elig, pytest, chronology-retention, cleanroom]
     if: always() && needs.elig.outputs.eligible != 'true'
     timeout-minutes: 5
@@ -228,8 +233,8 @@ jobs:
     name: pytest (py${{ matrix.python-version }})
     # Legacy hosted lanes. The offload graph above owns the suite on the eligible
     # path, so running these too would duplicate work the `ai` offload already
-    # covers. Kept for the fork/no-secret path, where `hosted` is the suite of
-    # record.
+    # covers. Kept for the fork/no-secret or unsupported-sandbox path, where
+    # `hosted` is the suite of record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
     runs-on: ubuntu-latest
@@ -254,6 +259,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Install review sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux
+          # Only this ephemeral CI runner: unshare must be allowed to create the
+          # user/network namespaces whose enforcement the integration tests prove.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
+          unshare --net --map-root-user true
 
       - name: Install phase-loop-runtime + pytest
         # This step installs test tools explicitly. Keep build aligned with the
@@ -447,6 +464,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Install review sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux
+          # Only this ephemeral CI runner: unshare must be allowed to create the
+          # user/network namespaces whose enforcement the integration tests prove.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
+          unshare --net --map-root-user true
 
       - name: Install build + pytest
         run: python -m pip install build pytest

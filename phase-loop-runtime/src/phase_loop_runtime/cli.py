@@ -101,7 +101,6 @@ def _preimport_attest_bootstrap(argv: list[str]) -> dict[str, object] | None:
 
 _ATTEST_PREIMPORT_BOOTSTRAP = _preimport_attest_bootstrap(sys.argv[1:])
 
-from .closeout import build_phase_loop_closeout
 from .consiliency_ingest import ingest
 from .consiliency_layout import ARCHETYPE_IDS, MODIFIER_IDS
 from .consiliency_scaffold import ScaffoldError, scaffold
@@ -113,7 +112,6 @@ from .git_topology import collect_git_topology
 from .handoff import handoff_metadata, write_tui_handoff
 from .install_status import build_install_status
 from .models import CLAUDE_EXECUTION_MODES, CLOSEOUT_MODES, EXECUTORS, LANE_IR_DIAGNOSTIC_KINDS, LANE_SCHEDULER_MODES, LoopEvent, PHASE_SCHEDULER_MODES, PipelinePlanMetadata, StateSnapshot, VISUAL_EVIDENCE_OPT_OUT_REASONS, avatar_visual_evidence_advisory_applies, derive_visual_observation_or_error, resolve_visual_evidence_artifact, utc_now
-from .closeout_validators import resolve_review_mode, visual_evidence_decoder_absent_is_silent
 from .events_migration import MigrationError, migrate_ledger
 from .migrate_handoffs import migrate_handoffs, records_to_json
 from .observability import append_work_unit_metric, build_notification_payload, build_terminal_summary, build_work_unit_metric, hotfix_run_artifacts, run_notification_command
@@ -124,7 +122,6 @@ from .reconcile import reconcile
 from .redaction import apply_diagnostics_redaction
 from . import repo_validation
 from .render import render_archive_result, render_skill_sync_result, render_state_inspection, render_status
-from .runner import run_loop, status_snapshot
 from .runtime_paths import roadmap_paths_match
 from .skill_install import actions_to_json, install_skills
 # DECOUPLE SL-1: the dotfiles-domain modules (adoption_bundle, build_bundle,
@@ -139,6 +136,38 @@ from .state_degradation import clear as clear_degradation
 from .state_ops import archive_state, inspect_state
 from .verification_evidence import ARTIFACT_NAME, EVIDENCE_PROVENANCE_TRACKED_CLOSEOUT, LOG_NAME, detect_changed_dependency_manifests, resolve_install_command, run_verification, validate_verification_artifact
 from . import __version__
+
+
+# Keep CLI call seams patchable without loading execution and review machinery
+# for the many short validation processes used by conformance proofs.
+def build_phase_loop_closeout(*args, **kwargs):
+    from .closeout import build_phase_loop_closeout as invoke
+
+    return invoke(*args, **kwargs)
+
+
+def resolve_review_mode(*args, **kwargs):
+    from .closeout_validators import resolve_review_mode as invoke
+
+    return invoke(*args, **kwargs)
+
+
+def visual_evidence_decoder_absent_is_silent(*args, **kwargs):
+    from .closeout_validators import visual_evidence_decoder_absent_is_silent as invoke
+
+    return invoke(*args, **kwargs)
+
+
+def run_loop(*args, **kwargs):
+    from .runner import run_loop as invoke
+
+    return invoke(*args, **kwargs)
+
+
+def status_snapshot(*args, **kwargs):
+    from .runner import status_snapshot as invoke
+
+    return invoke(*args, **kwargs)
 
 
 def _add_common_subparser_args(sub: argparse.ArgumentParser, *, name: str) -> None:
@@ -1082,6 +1111,10 @@ def build_parser() -> argparse.ArgumentParser:
               "review.md). Preflighted against the staged artifact, brief and composition before any launch."),
     )  # ah#84
     advisor_board_sub.add_argument(
+        "--monitoring-policy", choices=("bounded", "heartbeat_only"), default="bounded",
+        help="Explicit heartbeat-only monitoring; refuses unsupported requested boards before auth.",
+    )
+    advisor_board_sub.add_argument(
         "--agy-canary-private-board-name",
         help="Capture-only basename for the full board JSON inside the private evidence root.",
     )
@@ -1851,6 +1884,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         prepare_review_isolation_authorization,
         reset_review_instruction_digest,
         set_review_instruction_digest,
+        resolve_review_monitoring_policy,
     )
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
     from .advisor_board.fixtures import DEFAULT_BOARD
@@ -1862,6 +1896,20 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     )
     from .panel_invoker import _mode_instructions, invoke_board
 
+    monitoring_policy = getattr(args, "monitoring_policy", "bounded")
+    try:
+        resolve_review_monitoring_policy(monitoring_policy, DEFAULT_BOARD)
+    except ValueError as exc:
+        record = {
+            "schema": "review_monitoring.v1", "requested_policy": monitoring_policy,
+            "effective_policy": None, "terminal_reason": "policy_refusal",
+            "diagnostic": str(exc), "model_deadline_s": None,
+        }
+        if bool(getattr(args, "json", False)):
+            print(json.dumps({"usable": False, "status": "UNAVAILABLE", "monitoring": record}))
+        else:
+            print(f"advisor-board: {exc}", file=sys.stderr)
+        return 2
     artifact_path = Path(args.artifact)
     # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
     # artifact resolver. Fail closed with a recoverable exit, never a traceback.

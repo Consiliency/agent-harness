@@ -50,7 +50,10 @@ VERDICTS_FILE = "verdicts.txt"
 # The suite needs a real git binary (the chronology proof shells out to it) and
 # `git merge-tree --write-tree`, which is git >= 2.38. Debian bookworm ships 2.39.
 #
-BASE_PACKAGES = ["git", "ca-certificates", "jq"]  # jq: ci/main-red.sh tests run a jq-backed gh stub
+BASE_PACKAGES = [
+    "git", "ca-certificates", "jq",  # jq-backed gh stubs in ci/main-red.sh tests
+    "bubblewrap", "slirp4netns", "iptables", "util-linux", "python3",
+]
 
 # A SECOND, higher interpreter must be on PATH. Several suite tests resolve an
 # interpreter PIN (`automation.python: python3.12`) and assert the runtime honours
@@ -153,6 +156,43 @@ class AgentHarnessCi:
             .with_user("ci")
         )
 
+    def _sandbox_exec(self, container: dagger.Container, script: str) -> dagger.Container:
+        # Dagger's default exec denies nested namespaces. Its expanded exec
+        # policy remains active, but the fixed setpriv bootstrap drops process
+        # privileges before test code runs as ci with no capabilities or ability
+        # to acquire privileges through exec.
+        preflight = """
+set -euo pipefail
+python - <<'PY_CHECK'
+import os
+from pathlib import Path
+status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+assert os.geteuid() == 1000 and os.getegid() == 1000, "CI tests must run as ci"
+assert all(int(status[key], 16) == 0 for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")), "CI capabilities were not dropped"
+assert int(status["NoNewPrivs"]) == 1, "CI exec must not regain privileges"
+try:
+    list(Path("/root").iterdir())
+except PermissionError:
+    pass
+else:
+    raise AssertionError("CI user can read the root-only directory")
+print("CI sandbox preflight: uid=1000 capabilities=0 no_new_privs=1")
+assert Path("/dev/net/tun").is_char_device(), "CI egress requires /dev/net/tun; use the hosted suite on unsupported engines"
+PY_CHECK
+bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- true
+unshare --user --map-root-user --net --mount sh -c 'mount --make-rprivate / && iptables -L >/dev/null'
+"""
+        return (
+            container.with_user("root")
+            .with_exec(
+                ["/usr/bin/setpriv", "--reuid=ci", "--regid=ci", "--init-groups",
+                 "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
+                 "--no-new-privs", "/bin/bash", "-c", preflight + script],
+                insecure_root_capabilities=True,
+            )
+            .with_user("ci")
+        )
+
     @function
     async def git_probe(self, source: dagger.Directory) -> str:
         """Prove the mounted source carries a COMPLETE object database.
@@ -250,7 +290,7 @@ PYTHONPATH="$suite_root/tests" python -m pytest \\
   "$suite_root/tests/test_legible_evidence.py" \\
   -m "not dotfiles_integration"
 """
-        return self._base(source, python_version).with_exec(["bash", "-c", script])
+        return self._sandbox_exec(self._base(source, python_version), script)
 
     @function
     def suite(
@@ -276,9 +316,7 @@ mkdir -p /junit
 export GATE_A_JUNIT=/junit/junit-gate-a.xml
 {deselect}bash scripts/gate_a_cleanroom.sh
 """
-        return self._base(source, "3.12", cache_scope="gate-a").with_exec(
-            ["bash", "-c", script]
-        )
+        return self._sandbox_exec(self._base(source, "3.12", cache_scope="gate-a"), script)
 
     @function
     async def all(self, source: dagger.Directory, chronology: bool = True) -> dagger.Directory:

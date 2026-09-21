@@ -395,3 +395,51 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     assert report["env"]["GATE_RESULT"] == "${{ needs.gate.result }}"
     assert report["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert "main-red" not in (jobs["gate"].get("needs") or []), "the reporter must never gate"
+
+
+@pytest.mark.parametrize("event,ref,head_repo,secret,trusted", [
+    ("pull_request", "refs/pull/1/merge", "owner/repo", "true", True),
+    ("pull_request", "refs/pull/1/merge", "fork/repo", "true", False),
+    ("push", "refs/heads/main", "", "true", True),
+    ("push", "refs/heads/topic", "", "true", False),
+    ("schedule", "refs/heads/main", "", "true", True),
+    ("workflow_dispatch", "refs/heads/main", "", "true", True),
+    ("pull_request", "refs/pull/1/merge", "owner/repo", "false", True),
+])
+@pytest.mark.parametrize("sandbox_ready", ["false", "true"])
+def test_offload_requires_trust_secret_and_supported_sandbox(
+    tmp_path, event, ref, head_repo, secret, trusted, sandbox_ready,
+):
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    step = next(s for s in jobs["elig"]["steps"] if s.get("id") == "elig")
+    assert step["env"]["OFFLOAD_SANDBOX_READY"] == "false"
+    output = tmp_path / "outputs"
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], capture_output=True, text=True,
+        env={**os.environ, "EVENT_NAME": event, "REF": ref,
+             "PR_HEAD_REPO": head_repo, "REPO": "owner/repo",
+             "TS_AUTHKEY_SET": secret, "OFFLOAD_SANDBOX_READY": sandbox_ready,
+             "GITHUB_OUTPUT": str(output)},
+    )
+    assert result.returncode == 0, result.stderr
+    eligible = trusted and secret == "true" and sandbox_ready == "true"
+    assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
+    assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
+    for lane in ("pytest", "cleanroom"):
+        assert jobs[lane]["if"] == "needs.elig.outputs.eligible != 'true'"
+    assert jobs["pytest"]["strategy"]["matrix"]["python-version"] == ["3.10", "3.11", "3.12"]
+
+
+@pytest.mark.parametrize("offload,hosted,success", [
+    ("skipped", "success", True), ("success", "skipped", True),
+    ("failure", "skipped", False), ("skipped", "failure", False),
+    ("skipped", "skipped", False), ("success", "success", False),
+])
+def test_suite_gate_requires_one_real_success(offload, hosted, success):
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    result = subprocess.run(
+        ["bash", "-c", jobs["gate"]["steps"][0]["run"]],
+        capture_output=True, text=True,
+        env={**os.environ, "OFFLOAD": offload, "HOSTED": hosted},
+    )
+    assert (result.returncode == 0) is success, result.stdout + result.stderr
