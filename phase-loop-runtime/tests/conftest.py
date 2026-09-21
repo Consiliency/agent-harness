@@ -478,6 +478,30 @@ _CONFORM_RECORDER_STACK: list["_ConformTimingRecorder"] = []
 _CONFORM_RETIRED_BINDINGS: list[list[tuple[str, object, object, object, object]]] = []
 
 
+# Re-entrancy depth per SEAM, module-level so that two wrapper layers -- a
+# surviving one and a freshly installed one -- coordinate through the same
+# counter. The outermost layer for a seam records; any layer re-entered inside
+# it passes straight through. Per-seam rather than global so that a read nested
+# inside a copytree is still its own measurement, as it was before.
+_CONFORM_SEAM_DEPTH: dict[str, int] = {}
+
+
+class _conform_seam:
+    """Own a seam for the duration of one call, or defer to the layer that does."""
+
+    def __init__(self, seam: str) -> None:
+        self.seam = seam
+        self.owns = False
+
+    def __enter__(self) -> "_conform_seam":
+        self.owns = _CONFORM_SEAM_DEPTH.get(self.seam, 0) == 0
+        _CONFORM_SEAM_DEPTH[self.seam] = _CONFORM_SEAM_DEPTH.get(self.seam, 0) + 1
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        _CONFORM_SEAM_DEPTH[self.seam] -= 1
+
+
 def _conform_current_recorder():
     """The recorder a seam belongs to right now, or None outside a measured call."""
     return _CONFORM_RECORDER_STACK[-1] if _CONFORM_RECORDER_STACK else None
@@ -513,12 +537,6 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
     real_extractall = tarfile.TarFile.extractall
     real_read_bytes = Path.read_bytes
     real_read_text = Path.read_text
-
-    # `shutil._copytree` recurses by calling the module-global `copytree`, so a
-    # nested directory re-enters the wrapper. Recording only the outermost call
-    # keeps durations additive and stops `os.walk(dst)` recounting descendants
-    # once per level.
-    copytree_depth = [0]
 
     def probe_name(input_text: str) -> str | None:
         """Name a probe child by the payload it is fed on stdin.
@@ -618,17 +636,17 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
             return returncode
 
     def timed_copytree(src, dst, *posargs, **kwargs):
+        # `shutil._copytree` recurses by calling the module-global `copytree`, so
+        # a nested directory re-enters the wrapper, and a surviving wrapper layer
+        # would re-enter it too. Recording only the layer that owns the seam keeps
+        # durations additive and stops `os.walk(dst)` recounting descendants.
         if _conform_current_recorder() is None:
             return real_copytree(src, dst, *posargs, **kwargs)
         started = time.perf_counter()
         site = _ConformTimingRecorder.site()
-        outermost = copytree_depth[0] == 0
-        copytree_depth[0] += 1
-        try:
+        with _conform_seam("shutil.copytree") as seam:
             result = real_copytree(src, dst, *posargs, **kwargs)
-        finally:
-            copytree_depth[0] -= 1
-        if outermost:
+        if seam.owns:
             copied = sum(len(files) for _, _, files in os.walk(dst))
             current = _conform_current_recorder()
             current.add(
@@ -644,7 +662,10 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
             return real_rmtree(path, *posargs, **kwargs)
         started = time.perf_counter()
         site = _ConformTimingRecorder.site()
-        result = real_rmtree(path, *posargs, **kwargs)
+        with _conform_seam("shutil.rmtree") as seam:
+            result = real_rmtree(path, *posargs, **kwargs)
+        if not seam.owns:
+            return result
         current = _conform_current_recorder()
         current.add(
             kind="fs", label="shutil.rmtree", site=site,
@@ -658,7 +679,10 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
             return real_extractall(self, *posargs, **kwargs)
         started = time.perf_counter()
         site = _ConformTimingRecorder.site()
-        result = real_extractall(self, *posargs, **kwargs)
+        with _conform_seam("tarfile.TarFile.extractall") as seam:
+            result = real_extractall(self, *posargs, **kwargs)
+        if not seam.owns:
+            return result
         try:
             members = len(self.getmembers())
         except Exception:  # pragma: no cover - accounting must never fail a test
@@ -674,18 +698,20 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
         return result
 
     def timed_read_bytes(self, *posargs, **kwargs):
-        data = real_read_bytes(self, *posargs, **kwargs)
+        with _conform_seam("pathlib.Path.read_bytes") as seam:
+            data = real_read_bytes(self, *posargs, **kwargs)
         current = _conform_current_recorder()
-        if current is None:
+        if current is None or not seam.owns:
             return data
         current.bump("path_read_calls")
         current.bump("path_read_bytes", len(data))
         return data
 
     def timed_read_text(self, *posargs, **kwargs):
-        data = real_read_text(self, *posargs, **kwargs)
+        with _conform_seam("pathlib.Path.read_text") as seam:
+            data = real_read_text(self, *posargs, **kwargs)
         current = _conform_current_recorder()
-        if current is None:
+        if current is None or not seam.owns:
             return data
         current.bump("path_read_calls")
         current.bump("path_read_bytes", len(data))
@@ -774,10 +800,16 @@ def pytest_runtest_call(item):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_teardown(item, nextitem):
-    """Sweep wrappers a fixture teardown resurrected after the call-phase restore."""
-    if not _conform_timing_enabled():
-        yield
-        return
+    """Sweep wrappers a fixture teardown resurrected after the call-phase restore.
+
+    Deliberately NOT gated on the current flag. A test may delete
+    PHASE_LOOP_CONFORM_TIMING after the call phase installed the wrappers; if the
+    sweep re-read the flag it would skip, fixture undo would restore both the
+    flag and the wrapper, and the next measured test would wrap a wrapper and
+    count every read twice. The sweep is gated on what this session actually
+    retired, which is the only state that can require cleaning up. With the flag
+    never set there is nothing retired and this returns immediately.
+    """
     try:
         yield
     finally:

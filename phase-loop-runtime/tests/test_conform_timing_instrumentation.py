@@ -425,3 +425,206 @@ def test_zz_leak_b_a_following_test_spawns_in_setup_and_body(
 ):
     """The consecutive-test regression: this is where the IndexError landed."""
     assert _spawn_and_wait()[0].strip() == "probe"
+
+
+# ---------------------------------------------------------------------------
+# Flag mutation during a measured test (board round 3, agent-harness#947)
+#
+# The teardown sweep used to re-read PHASE_LOOP_CONFORM_TIMING. A test that was
+# measured and then DELETED the flag skipped the sweep entirely; fixture undo
+# then restored both the flag and the wrapper, and the next measured test wrapped
+# a wrapper so both layers counted the same operation. The symptom is a silent
+# double count, not a crash, so these assert COUNTER VALUES -- a clean run does
+# not disprove this one.
+# ---------------------------------------------------------------------------
+
+
+class _Seam:
+    """One wrapped symbol, with a way to exercise it exactly once."""
+
+    def __init__(self, name, get, set_value, exercise, counter):
+        self.name = name
+        self.get = get
+        self.set_value = set_value
+        self.exercise = exercise
+        self.counter = counter
+
+    def __repr__(self) -> str:  # pragma: no cover - test ids only
+        return self.name
+
+
+def _exercise_popen(tmp_path):
+    _spawn_and_wait()
+
+
+def _exercise_copytree(tmp_path):
+    source = tmp_path / f"src-{len(list(tmp_path.iterdir()))}"
+    (source / "inner").mkdir(parents=True)
+    (source / "inner" / "f.txt").write_text("x", encoding="utf-8")
+    shutil.copytree(source, tmp_path / f"dst-{source.name}")
+
+
+def _exercise_rmtree(tmp_path):
+    victim = tmp_path / f"victim-{len(list(tmp_path.iterdir()))}"
+    victim.mkdir()
+    (victim / "f.txt").write_text("x", encoding="utf-8")
+    shutil.rmtree(victim)
+
+
+def _exercise_extractall(tmp_path):
+    index = len(list(tmp_path.iterdir()))
+    payload = tmp_path / f"p{index}.txt"
+    payload.write_text("x", encoding="utf-8")
+    archive_path = tmp_path / f"a{index}.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        archive.add(payload, arcname="f.txt")
+    with tarfile.open(archive_path) as archive:
+        archive.extractall(tmp_path / f"out{index}")
+
+
+def _exercise_read_bytes(tmp_path):
+    target = tmp_path / "read-bytes.txt"
+    target.write_text("payload", encoding="utf-8")
+    assert target.read_bytes() == b"payload"
+
+
+def _exercise_read_text(tmp_path):
+    target = tmp_path / "read-text.txt"
+    target.write_text("payload", encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == "payload"
+
+
+SEAMS = [
+    _Seam("subprocess.Popen", lambda: subprocess.Popen,
+          lambda v: setattr(subprocess, "Popen", v), _exercise_popen, "child_processes"),
+    _Seam("shutil.copytree", lambda: shutil.copytree,
+          lambda v: setattr(shutil, "copytree", v), _exercise_copytree, "copytree_calls"),
+    _Seam("shutil.rmtree", lambda: shutil.rmtree,
+          lambda v: setattr(shutil, "rmtree", v), _exercise_rmtree, "rmtree_calls"),
+    _Seam("tarfile.TarFile.extractall", lambda: tarfile.TarFile.extractall,
+          lambda v: setattr(tarfile.TarFile, "extractall", v), _exercise_extractall,
+          "tar_extractall_calls"),
+    _Seam("pathlib.Path.read_bytes", lambda: Path.read_bytes,
+          lambda v: setattr(Path, "read_bytes", v), _exercise_read_bytes, "path_read_calls"),
+    _Seam("pathlib.Path.read_text", lambda: Path.read_text,
+          lambda v: setattr(Path, "read_text", v), _exercise_read_text, "path_read_calls"),
+]
+
+
+def _run_call_phase(timing, nodeid, during=None):
+    """Drive the call hookwrapper exactly as pytest does."""
+    item = types.SimpleNamespace(nodeid=nodeid)
+    generator = timing.pytest_runtest_call(item)
+    next(generator)
+    captured = during() if during is not None else None
+    with pytest.raises(StopIteration):
+        generator.send(None)
+    return item, captured
+
+
+def _run_teardown_phase(timing, item, during=None):
+    """Drive the teardown hookwrapper; `during` stands in for fixture undo."""
+    generator = timing.pytest_runtest_teardown(item, None)
+    next(generator)
+    if during is not None:
+        during()
+    with pytest.raises(StopIteration):
+        generator.send(None)
+
+
+def _counter_delta_for_one_exercise(timing, seam, tmp_path):
+    """Install a fresh measured scope, exercise the seam once, return the count."""
+    recorder = timing._ConformTimingRecorder(f"probe::{seam.name}")
+    restore = timing._conform_timing_install(recorder)
+    try:
+        seam.exercise(tmp_path)
+    finally:
+        restore()
+    return recorder.counters.get(seam.counter, 0)
+
+
+@pytest.mark.parametrize("seam", SEAMS, ids=lambda seam: seam.name)
+def test_deleting_the_flag_mid_test_cannot_leave_a_double_counting_wrapper(
+    timing, monkeypatch, tmp_path, seam
+):
+    """Codex's sequence, measured: the next test must count the operation ONCE."""
+    with _as_the_outermost_scope(timing):
+        monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+        original = seam.get()
+
+        def delete_the_flag_mid_test():
+            saved_by_monkeypatch = seam.get()
+            monkeypatch.delenv(timing._CONFORM_TIMING_ENV, raising=False)
+            return saved_by_monkeypatch
+
+        item, wrapper = _run_call_phase(timing, "probe::flag_deleted", delete_the_flag_mid_test)
+        assert wrapper is not original, "the call phase must have installed a wrapper"
+        assert seam.get() is original, "the call phase must restore before teardown"
+
+        def fixture_undo():
+            # monkeypatch restores BOTH what it saved and the environment it saved.
+            seam.set_value(wrapper)
+            monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+
+        _run_teardown_phase(timing, item, fixture_undo)
+
+        assert seam.get() is original, (
+            f"{seam.name} survived teardown; the sweep re-read the flag"
+        )
+        assert _counter_delta_for_one_exercise(timing, seam, tmp_path) == 1, (
+            f"{seam.name} counted the operation more than once"
+        )
+
+
+@pytest.mark.parametrize("seam", SEAMS, ids=lambda seam: seam.name)
+def test_setting_the_flag_mid_test_cannot_leave_a_double_counting_wrapper(
+    timing, monkeypatch, tmp_path, seam
+):
+    """The mirror: unset at call start, set mid-test, nothing installed to leak."""
+    with _as_the_outermost_scope(timing):
+        monkeypatch.delenv(timing._CONFORM_TIMING_ENV, raising=False)
+        original = seam.get()
+
+        def set_the_flag_mid_test():
+            monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+            return seam.get()
+
+        item, during = _run_call_phase(timing, "probe::flag_set", set_the_flag_mid_test)
+        assert during is original, "an unset flag at call start must install nothing"
+        _run_teardown_phase(timing, item)
+
+        assert seam.get() is original
+        assert _counter_delta_for_one_exercise(timing, seam, tmp_path) == 1
+
+
+def test_a_surviving_layer_cannot_double_count_even_if_one_is_left_installed(
+    timing, tmp_path
+):
+    """Second defence: the per-seam guard, with a layer deliberately left behind."""
+    with _as_the_outermost_scope(timing):
+        leaked = timing._ConformTimingRecorder("probe::leaked_layer")
+        leak_restore = timing._conform_timing_install(leaked)
+        stale = _current_identities()
+        timing._CONFORM_RECORDER_STACK.clear()  # orphan the layer, leave it bound
+        timing._CONFORM_RETIRED_BINDINGS.clear()
+        assert _current_identities() == stale, "the stale layer must still be bound"
+
+        recorder = timing._ConformTimingRecorder("probe::over_a_leak")
+        restore = timing._conform_timing_install(recorder)
+        try:
+            for seam in SEAMS:
+                seam.exercise(tmp_path)
+        finally:
+            restore()
+            timing._CONFORM_RECORDER_STACK.append(leaked)
+            leak_restore()
+
+        for seam in SEAMS:
+            assert recorder.counters.get(seam.counter, 0) >= 1, seam.name
+        assert recorder.counters["copytree_calls"] == 1
+        assert recorder.counters["rmtree_calls"] == 1
+        assert recorder.counters["tar_extractall_calls"] == 1
+        assert recorder.counters["child_processes"] == 1
+        # read_bytes and read_text each counted once, and nothing counted twice.
+        assert recorder.counters["path_read_calls"] == 2
+        assert not leaked.counters, leaked.counters
