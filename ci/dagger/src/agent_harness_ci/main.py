@@ -134,8 +134,8 @@ class AgentHarnessCi:
             .with_exec(
                 [
                     "python", "-m", "pip", "install", "--quiet",
-                    "./phase-loop-runtime[visual]", "pytest", "build==1.6.1",
-                    "setuptools>=70.1",
+                    "./phase-loop-runtime[visual]", "pytest", "pytest-xdist==3.8.0",
+                    "build==1.6.1", "setuptools>=70.1",
                 ]
             )
             .with_exec(["chown", "-R", "ci:ci", "/src"])
@@ -273,7 +273,12 @@ CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"
 PYTHONPATH=src:tests python -m pytest --collect-only -q \\
   "{CHRONOLOGY_NODE}" >/dev/null
 
+# `--max-worker-restart=0` is load-bearing: xdist's default is to replace a dead
+# worker, and on this suite that left the controller waiting on its queue with
+# every worker idle -- a hang, not a failure. Zero turns a crash into a red that
+# names the node. `loadfile` keeps a file's tests on one worker.
 PYTHONPATH=src:tests python -m pytest -m "not dotfiles_integration" \\
+  -n auto --dist loadfile --max-worker-restart=0 \\
   "${{suite_args[@]}}" \\
   --ignore tests/test_legible_roadmap_contract.py \\
   --ignore tests/test_legible_evidence.py
