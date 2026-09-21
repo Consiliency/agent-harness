@@ -21,7 +21,14 @@ jobs:
   build:
     name: build + verify wheel + sdist
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # A pull_request run deselects the CONFORM chronology node and is measured at
+    # 7-12 minutes (docs/releases/publish-pypi-build-timeout.md). A tag or
+    # workflow_dispatch run executes the FULL standalone suite in Gate A and is
+    # measured at 70 minutes (v0.7.14); the 25-minute cap cancelled the v0.7.15 tag
+    # run at 50% of that suite. The bound is per path, each about twice its
+    # measured worst case (the headroom agent-harness#757 applied): 25 ~= 2 x 12,
+    # 140 = 2 x 70. (`a && b || c` is a value-select; it is safe because 25 != 0.)
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 140 }}
     steps:
       - uses: actions/checkout@v4
         with:
