@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.14`
-- Runtime `phase_loop_runtime.__version__`: `0.7.14`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.14`
+- Version: `0.7.15`
+- Runtime `phase_loop_runtime.__version__`: `0.7.15`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.15`
 - Console scripts: `phase-loop`, `codex-phase-loop`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.14`
+- Validator version: `0.7.15`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,16 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.15` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Tag, publication and fleet-adoption evidence for `0.7.15` are recorded here after the
+  maintainer-gated tag push, the same way the `0.7.14` record below was completed. They are
+  deliberately absent rather than asserted in advance.
+
+### Previous release: 0.7.14 (published)
 
 - `publication_status=published`
 - Release PR: `Consiliency/agent-harness#649`; reviewed head
@@ -79,6 +89,20 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
+### This release: 0.7.15 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`python -m build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
+record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
+and the published digests are recorded here after the tag push.
+
+- prepared direct-wheel sha256: `09d7e9420f6b747b70120b9fa2cb34c872dfa4e8b15351e65b7cd8a6493bddef`
+- prepared direct-sdist sha256: `80913168481ad8e19b452c8ae681451be29a49d6ea8c9bfb445c0e064d1bd538`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.14
+
 This release handoff covers phase-loop-runtime 0.7.14 with a digest-enumerated
 contract mirror. Publication, tag creation, workflow dispatch, and downstream
 adoption remained maintainer-owned and were not published or not dispatched by
@@ -102,19 +126,22 @@ this metadata document.
 
 ## Package Surface Inventory
 
-- Wheel artifact: `phase_loop_runtime-0.7.14-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.14.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.14.data`, `phase_loop_runtime-0.7.14.dist-info`
-- Wheel file count: `460`
+Measured on the prepared `0.7.15` build described above.
+
+- Wheel artifact: `phase_loop_runtime-0.7.15-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.15.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.15.data`, `phase_loop_runtime-0.7.15.dist-info`
+- Wheel file count: `468`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `881`
+- Sdist file count: `1074`
 - Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
-Governed-pipeline may consume this published runtime as an authoritative
-validator by pinning `phase-loop-runtime==0.7.14`, then calling:
+Once `0.7.15` is published (tag push → PyPI; this document records it as
+`prepared` until then), governed-pipeline may consume it as an authoritative
+validator by pinning `phase-loop-runtime==0.7.15`, then calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -161,8 +188,10 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
-- The package was not published from this handoff; trusted workflow `32783112944`
-  published it from the signed `v0.7.14` tag.
+- `0.7.15` was not published or tagged from this handoff, and no workflow was dispatched
+  by it. The maintainer-gated tag push remains the only trigger (`EC-RELEASE-4`).
+- For `0.7.14`: the package was not published from this handoff; trusted workflow
+  `32783112944` published it from the signed `v0.7.14` tag.
 - The git tag was not created from this handoff; its verified tag object is
   `2de6c06973b84890b62184fa023d387f6044a43c`.
 - The PyPI workflow was not dispatched from this handoff; the tag push triggered
