@@ -254,13 +254,14 @@ def test_public_preflight_uses_the_supplied_subscription_environment(fixture_cli
     assert not fixture_cli.attempts.exists()
 
 
-def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli, monkeypatch):
+def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli, monkeypatch, tmp_path):
     supplied = dict(os.environ)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     cancel = threading.Event()
     cancel.set()
     result = panel.invoke_board(gemini_board(), "input", monitoring_policy="heartbeat_only",
-                                base_env=supplied, cancel_event=cancel)
+                                base_env=supplied, cancel_event=cancel,
+                                stream_dir=tmp_path / "records")
     assert result.legs[0].detail == "review_operation_cancelled"
     assert not fixture_cli.attempts.exists()
 
