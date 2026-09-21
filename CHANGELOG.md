@@ -39,6 +39,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   offload attempt. Offload re-enablement requires a reviewed environment with
   passing real egress checks; missing tun now fails its preflight immediately.
 
+### CI: the publish-pypi tag path gets its own measured timeout (agent-harness#757 follow-up)
+
+- `publish-pypi.yml`'s build job keeps the 25-minute bound on pull requests (chronology
+  node deselected) and runs with 140 minutes — twice the one measured tag run — on a
+  tag push or manual dispatch, where Gate A executes the full standalone suite (70 min
+  for `v0.7.14`). The 25-minute cap cancelled the `v0.7.15` tag run at 50% of that suite
+  before the publish job ran; a tag cut before this change runs the file at its own
+  commit, so such a tag must be re-pointed at a head carrying this change to publish.
+
 ## [0.7.15] - 2026-09-21
 
 ### Public onboarding baseline (agent-harness#929; release slice of agent-harness#927)
