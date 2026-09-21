@@ -270,7 +270,20 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   under the canonical evidence-store lock. A competing train/attempt fails closed, and recovery
   promotes any unsealed shared start to permanent `OUTCOME_AMBIGUOUS_BLOCKED`; train-local
   `ADAPTER_STARTED` alone is never authority.
-
+- **IF-0-PRESROUTE-1** — the president operation: identity `public_board_president.v1`, its
+  completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` lines, terminal `FORCING
+  DECISION:`), and the `president.ruling.json` record shape; frozen when PRESROUTE lane A
+  publishes it so RATIFY can extend the line grammar against a fixed base.
+- **IF-0-EXECFIND-1** — the falsifier block grammar (one fenced block per blocking finding: a
+  unified diff that creates exactly one new `phase-loop-runtime/tests/test_finding_<id>.py` and
+  touches nothing else, plus the expected node id) and the
+  per-finding outcome vocabulary `red_on_head | green_on_head | apply_failed | node_missing |
+  error`, carried as a non-field attachment on `PanelLegResult`.
+- **IF-0-RATIFY-1** — the ruling class grammar (`round_local | contract_changing |
+  roadmap_changing | release_rule`) and the `ruling_ledger.v1` row schema, including the guard
+  field and its resolution bound.
+- **IF-0-GOVSETUP-1** — the `governance_profile.v1` schema, the resolver precedence (explicit,
+  environment, repo file, user file, default) and the four named profiles.
 
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
 
@@ -1213,6 +1226,402 @@ never coupled to fleet infrastructure.
 **Produces**
 - IF-0-GOVLEAN-1
 
+### Phase 14 — President Execution Route (PRESROUTE)
+
+**Objective**
+Give the president ladder a HARDEN-authorized execution operation so `requires_president`
+landings rule autonomously; order the ladder by seat alias as EC-PRESROUTE-3 states, with model
+ids taken from the frozen registry; expire the interim ratification note in the same landing.
+Source: agent-harness#935 (maintainer direction 2026-09-21); gap record: agent-harness#752.
+
+**Exit criteria**
+- [ ] EC-PRESROUTE-0 — **TEST LANE LANDED FIRST (content-bound form).** Every runtime module of
+  this phase has its tests recorded with the EC-GOVLEAN-2 content-bound receipt (blob hashes plus
+  RED output digest against the pre-implementation base) and re-verified byte-equal at merge; no
+  commit-topology assertion is used. Falsified by a frozen test whose merge-time bytes differ from
+  its freeze-time record, or by absent RED output for any module.
+- [ ] EC-PRESROUTE-1 — **A president operation exists and is the only route to a ruling.** A
+  HARDEN-authorized operation `public_board_president.v1` with its own mode, brief and completion
+  grammar (terminal line `FORCING DECISION:`; per-finding `FINDING <id>: BLOCKING|DEFERRED — <reason>`
+  lines, the grammar `panel_invoker` already parses), whose authorization is minted the same way
+  review isolation is minted for `spawn` (`child_credentialless=True`, `child_network_egress=False`,
+  `live_tree_exposed=False`) and is bound to the seam exactly as `spawn` is. `president_adapter`
+  routes a seated rung through it; every other refusal path of the ladder is unchanged, and
+  EC-HARDEN-5 still refuses a ruling routed through advisory or laundered through a review leg.
+  Falsified by a seated rung still answering `president_execution_route_unavailable`; by a ruling
+  whose receipt carries no president authorization identity; by the review operation's completion
+  classifier accepting a `FORCING DECISION:` text as a review; by a ruling produced with network
+  egress or credentials in the child.
+- [ ] EC-PRESROUTE-2 — **Every rung has a launchable route through the single launch site.**
+  Astra runs through the codex CLI, Grok through the grok CLI, Gemini through `agy`, each via
+  `launch_provider` and nowhere else. The Fable rung is filled natively when the driving harness is
+  Claude Code (a deferred fill with a durable resume/join point, the same seam family as
+  `load_native_leg_fills`) and through the self-PTY adapter elsewhere; a native president fill is
+  refused under `heartbeat_only` exactly as a native leg fill is. Falsified by a rung that spawns
+  outside `launch_provider`; by a Fable ruling obtained by spawning a second Claude TUI under Claude
+  Code; by a native president fill accepted under `heartbeat_only`; by a fill whose digests do not
+  bind the brief and findings it was asked to rule on.
+- [ ] EC-PRESROUTE-3 — **The ladder is ordered by seat alias, stated here once, on each
+  vendor's current registry id.** `PRESIDENT_LADDER` equals `("sol", "fable", "grok", "gemini")`
+  (Astra, Fable, Grok, Gemini) — this criterion is the ONLY place the order is written; the
+  Execution Notes, the verification recipe and the pinned tests reference it. Each alias resolves
+  to its vendor's frozen registry PIN (the documented Opus substitution counts as the `fable`
+  seat); at freeze the four PINs are each vendor's current id as recorded by the registry's own
+  bump process with its per-consumer launch falsifier (agent-harness#777), so "latest" is a
+  registry fact refreshed there, never a roadmap literal; every id site carries the
+  `model-id-source:` marker, and descent happens only on a typed `president_unavailable`. This
+  criterion SUPERSEDES the ladder sentence of EC-GOVLEAN-5 (see Execution Notes, governance
+  supersession on PRESROUTE delivery); the alias `sol` is a seat identity and is not renamed.
+  Falsified by the tuple differing; by a walk visiting rungs out of that order; by a rung resolving
+  to an id the registry marks superseded at freeze; by `check_model_id_sources.py` reporting an
+  unmarked id; by any other ACTIVE roadmap, contract or recipe text restating the order or naming
+  a model id (preserved historical text — EC-GOVLEAN-5 and the 2026-08-12 supersession note — is
+  exempt; it is superseded, not rewritten).
+- [ ] EC-PRESROUTE-4 — **The interim note expires in the same PR, and the override is refused.**
+  The landing PR appends the final `EXPIRED by Consiliency/agent-harness#<its number>` row to
+  `plans/decision-interim-president-ratification-20260904.md`, marks the note closed, and deletes
+  or switches to `landing_tier=` every launcher that hard-codes `requires_president=False` for
+  `plan`/`production_code`; from that merge a `plan`/`production_code` landing carrying
+  `requires_president=False` is refused by the runtime with a typed reason, not merely documented
+  as a violation. Falsified by such a landing succeeding; by the note lacking the row at merge.
+- [ ] EC-PRESROUTE-5 — **A ruling is a durable, bound record.** `PanelResult.president` plus the
+  per-finding rulings are written to the review stream as `president.ruling.json` carrying the
+  authorization identity, rung index, model id, format re-ask count and the findings digest;
+  `president_blocks_landing` remains the only landing predicate and `DEFERRED` is recorded, never
+  waived. Falsified by a ruling with no stream record; by a record whose findings digest differs
+  from the findings the prompt carried; by a DEFERRED finding disappearing from the next round's
+  ledger.
+
+**Scope notes**
+Decompose into 2 lanes. Lane A owns the operation, its authorization identity and the adapter
+(new `president_operation.py`; `president_adapter.py`; additive identity in
+`advisor_board/backing.py`; a new `CONTRACTS.md` section, amendment path as ABDPRES). Lane B owns
+the rung routes, the native Fable fill, the ladder reorder and the note expiry (`panel_invoker.py`
+ladder tuple and alias sites only; `cli.py` native-president flag; the decision note; the pinned
+tests `test_govlean_panel_policy.py` and `test_president_wiring.py`). Shared file
+`panel_invoker.py`: lane A adds no lines there. Ownership overlap declared: HARDEN, REVIEWTRUTH and
+LEGLIFE (committed) own `panel_invoker.py` and `advisor_board/*`, and RESIDUAL (committed) owns
+`cli.py`; this phase touches them only by keyword-only additive seams and new modules, edits no
+frozen surface, and serializes its landings after theirs through the manifest. The round-1 board
+split on whether these overlaps need `Depends on` edges (the native seat: yes; codex and grok:
+declared overlap suffices, an edge would put LEGLIFE's timeout enforcement on the president
+route's critical path for no semantic reason); the amendment keeps the declared overlap and puts
+the question to the maintainer's ratification. The shape of every touch is falsifiable
+without an edge: a landing PR of this phase whose diff deletes or rewrites an existing line of a
+shared owned file outside the seams named here fails this phase (the roadmap-ownership workflow
+gates WHICH paths a PR touches; this sentence gates HOW).
+
+**Non-goals**
+Executable findings (EXECFIND). Ruling classes, the ruling ledger and the human tier (RATIFY).
+Any change to review-leg isolation or to the review completion grammar. Renaming the `sol` alias.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/president_operation.py` (new)
+- `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py` (additive identity)
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` (new section)
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (ladder tuple, alias sites, native president seam)
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py` (native-president flag)
+- `plans/decision-interim-president-ratification-20260904.md`
+- `phase-loop-runtime/tests/test_govlean_panel_policy.py`, `phase-loop-runtime/tests/test_president_wiring.py`
+
+**Depends on**
+- HARDEN
+- GOVLEAN
+
+**Produces**
+- IF-0-PRESROUTE-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 15 — Executable Findings (EXECFIND)
+
+**Objective**
+Make a blocking review finding a failing test the harness runs, not a paragraph: a seat emits a
+falsifier as text, the harness applies and runs it in the staged tree, and only a finding that is
+red on the reviewed head binds. Seats never execute; the isolation contract is unchanged.
+Source: agent-harness#935.
+
+**Exit criteria**
+- [ ] EC-EXECFIND-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0, for
+  every runtime module of this phase.
+- [ ] EC-EXECFIND-1 — **Falsifier grammar is parsed, attached, and byte-neutral.** A seat may
+  attach to each blocking finding one fenced `falsifier` block carrying a unified diff that
+  creates exactly one NEW file `phase-loop-runtime/tests/test_finding_<finding-id>.py` (the
+  EC-EXECFIND-2 shape; the parser rejects any other shape, including a modification of an
+  existing file, before the runner sees it) and names the expected pytest node id. A parser beside `terminal_verdict` extracts the blocks; they attach to `PanelLegResult`
+  through the non-field attachment channel (the `attach_native_agent_request` precedent), so the
+  golden stays byte-identical and `terminal_verdict` is unchanged. Falsified by a golden delta; by
+  a diff touching a path outside `phase-loop-runtime/tests/` or modifying an existing file
+  reaching the runner; by one block claimed by two findings being accepted; by a block without a
+  node id being accepted.
+- [ ] EC-EXECFIND-2 — **The harness runs the falsifier inside its own sandbox; a seat never
+  executes, and a falsifier can only ADD one new test file.** A falsifier diff must create exactly
+  one NEW file matching `phase-loop-runtime/tests/test_finding_<finding-id>.py` and touch nothing
+  else — no modification of any existing file, so `conftest.py`, shared fixture modules and every
+  file another test imports are unreachable by construction; the harness refuses any other diff
+  as `apply_failed`. The harness applies it with `git apply` inside a tree from
+  `review_stage.stage_review_tree` under a new authorization identity `public_board_falsifier.v1`
+  minted like review isolation (`child_credentialless=True`, `child_network_egress=False`,
+  `live_tree_exposed=False`), and runs exactly the named node with `--junitxml` under a declared
+  wall-clock bound and output cap; `collect_test_execution_evidence` semantics bind the outcome to
+  one of `red_on_head | green_on_head | apply_failed | node_missing | error`, where `red_on_head`
+  requires the node to have run and failed and a bound or cap expiry is `error`. Seat-authored
+  test code is untrusted and executes only inside that sandbox; the seat process itself still has
+  no tools and its own execution attempt stays a refusal. Falsified by a diff that modifies an
+  existing file (including `conftest.py`) being applied; by a falsifier run with network or
+  credentials; by a run outside the staged tree; by a non-terminating falsifier not recorded as
+  `error` within the bound; by a passing node recorded as `red_on_head`; by a run executing any
+  node other than the named one; by a seat's tool attempt being honoured.
+- [ ] EC-EXECFIND-3 — **Findings are decomposed per finding, and only a red finding binds.**
+  `_findings_from_panel` emits one `ReviewFinding` per finding with codes `finding_bound`
+  (`red_on_head`, severity block), `finding_unbound` (`green_on_head`, severity warn, routed to
+  the president), `finding_receipt` (cites a receipt-class artifact by digest, severity block
+  pending the president's ruling) and `finding_prose` (no falsifier, warn); the whole-leg codes
+  remain for degraded and non-conforming legs. Falsified by a bound finding not blocking; by an
+  unbound finding blocking without a president ruling; by a receipt finding accepted whose digest
+  does not resolve; by a degraded leg producing a per-finding code.
+- [ ] EC-EXECFIND-4 — **The brief teaches the form and the caller may inline fixtures.** The
+  sealed brief instructs the falsifier form for blocking findings, and named test fixtures may be
+  inlined as additional `artifact_ref` paths under the 512 KiB sealed-prompt cap (the 16 KiB soft
+  warning stays); brokered seats still receive text only and `context_refs` stay metadata-only.
+  Falsified by a seat handed a path instead of bytes; by a bound finding produced from a brief
+  that carried no falsifier instruction; by a prompt over the cap being sent.
+- [ ] EC-EXECFIND-5 — **Optional first, required only after a recorded measurement.** A
+  `falsifier_policy` of `optional | required` governs whether a blocking finding without a
+  falsifier is accepted as `finding_prose`; the default is `optional` until a pre-registered
+  measurement over at least ten board rounds (share of blocking findings carrying a falsifier,
+  share of those `red_on_head`, rounds to converge against the preceding ten rounds) is recorded
+  in this phase's ledger. Falsified by the default flipping without the record; by a `required`
+  policy accepting a prose blocking finding.
+- [ ] EC-EXECFIND-6 — **The fix round consumes node ids, and bound findings are green before the
+  president rules.** The EC-REVIEWTRUTH-8 repair context carries each bound finding as its node id
+  plus the RED output digest, the node is re-run after repair, and a president invocation is
+  refused while any bound finding is still red. Falsified by a president prompt built while a
+  bound finding is red; by a repair context carrying only prose for a bound finding.
+
+**Scope notes**
+Decompose into 2 lanes. Lane A owns the harness runner and its authorization (new `falsifier.py`;
+additive `review_stage.py`; additive identity in `advisor_board/backing.py`). Lane B owns the
+grammar, parser and attachment, the per-finding decomposition and the brief (`panel_invoker.py`
+parser and attachment; `governed_review.py`; `advisor_board/composition.py`). Intra-phase freeze
+on day one: the attachment dataclass name and the outcome vocabulary of EC-EXECFIND-2, so lane B
+builds against the shape before lane A lands. Ownership overlap declared as in PRESROUTE
+(REVIEWTRUTH additionally owns `governed_review.py`): additive seams only, landings serialized
+after the owning phases' through the manifest, and the same touch-shape falsifier as PRESROUTE's
+scope notes (a landing PR deleting or rewriting an existing line of a shared owned file outside
+the named seams fails this phase).
+
+**Non-goals**
+Seats writing fixes or production code (reviewer is never author). Any change to seat isolation
+or to the review completion grammar. Making falsifiers required by default. Ruling classes and
+the ledger (RATIFY).
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/falsifier.py` (new)
+- `phase-loop-runtime/src/phase_loop_runtime/review_stage.py` (additive)
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py` (additive identity)
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (parser, attachment)
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (per-finding decomposition)
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py` (brief instruction)
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` (new section)
+- `phase-loop-runtime/tests/test_advisor_board_golden.py`, `phase-loop-runtime/tests/test_governed_review.py`
+
+**Depends on**
+- REVIEWTRUTH
+- HARDEN
+
+**Produces**
+- IF-0-EXECFIND-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 16 — Ratification Tiers and Ruling Ledger (RATIFY)
+
+**Objective**
+Enumerate the president's remit as what tests cannot settle, type every ruling by what it
+changes, record contract-, roadmap- and release-rule-changing rulings in an append-only ledger
+that a guard test carries forward, and reserve the human tier for a non-unanimous board or an
+exhausted ladder. Source: agent-harness#935.
+
+**Exit criteria**
+- [ ] EC-RATIFY-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0.
+- [ ] EC-RATIFY-1 — **The president rules only on the residual.** The president prompt is built
+  from the partitioned ledger: bound findings are excluded (EC-EXECFIND-6 guarantees they are
+  green), and the president rules on `finding_unbound`, `finding_receipt`, `finding_prose`, scope
+  items (a new finding on unchanged code: in-round or follow-up) and design disputes a seat has
+  flagged as such. A ruling line naming a bound finding is refused as a format failure. Falsified
+  by a president prompt containing a bound finding; by a ruling waiving a bound finding; by a
+  scope item reaching the landing decision without a ruling.
+- [ ] EC-RATIFY-2 — **Every ruling carries a class.** The `FINDING` line grammar gains a class
+  `round_local | contract_changing | roadmap_changing | release_rule` (positional ids retained;
+  the legacy form parses as `round_local` for one release). `round_local` rulings land
+  autonomously subject to EC-RATIFY-4; the other three require an EC-RATIFY-3 row before the
+  landing may proceed.
+  Falsified by a `contract_changing` ruling landing with no row; by a class outside the four
+  being accepted; by the legacy form failing to parse during the compatibility window.
+- [ ] EC-RATIFY-3 — **The ruling ledger is append-only, ancestor-frozen and guarded, and guard
+  state is a fold over appended rows.** Rows of schema `ruling_ledger.v1` (ruling id, class, PR,
+  reviewed sha, president model id and authorization identity, per-seat verdicts, decision text,
+  guard node id or `pending`, declared resolution bound) live in `plans/rulings.jsonl`, frozen
+  from every ancestor the way `plan_authority_history` is (the all-parents prefix rule). A ruling's
+  effective guard state is derived by folding its rows: a row landed with a guard node id is
+  guarded from the start (that node is green on the landing head, verified at landing); a row
+  landed with `pending` is resolved by a later appended `guard_resolved` row naming a node green
+  on its landing head; only a ruling whose latest folded state is still `pending` past its declared
+  bound is `unguarded` (derived, never written in place). The single blocking rule: while any
+  ruling of a class is `unguarded`, the landing of the next ruling of that same class is refused.
+  Falsified by an in-place row edit passing the check; by a `pending` guard resolved by anything
+  other than an appended row; by a ruling landed with a verified guard node becoming `unguarded`;
+  by a same-class ruling landing while an `unguarded` ruling exists; by a row whose reviewed sha
+  is not an ancestor of the landing.
+- [ ] EC-RATIFY-4 — **Two universal human triggers, a tier that only adds, and never a
+  synchronous wait.** A non-unanimous board and an exhausted president ladder escalate under
+  every setting. `ratification_policy` gains `human_tier: never | contract_changing | always`,
+  which ADDS ruling classes to those two triggers: `never` adds none (so a unanimous board with a
+  valid president ruling lands autonomously, whatever the class); `contract_changing` adds the
+  three changing classes; `always` adds every ruling including `round_local`. An escalation sets a
+  `human_required` blocker only under the attended release-guard mode; an unattended run produces
+  the existing non-human `escalate` hold with the ruling attached. Falsified by a synchronous
+  human wait anywhere; by `human_required` set under unattended; by a unanimous ruling
+  escalating under `never`; by a `round_local` ruling landing without escalation under `always`;
+  by an exhausted ladder or a non-unanimous board proceeding without a hold under any tier.
+- [ ] EC-RATIFY-5 — **The reconciliation order is stated where agents read it.** The execute and
+  plan skills state, in this order: bound findings green, president rules the residual, ledger row
+  for the three changing classes, guard test authored by the fix author; regenerated bundles for
+  every harness carry the same four steps. Falsified by any installed skill body lacking a step.
+
+**Scope notes**
+Decompose into 2 lanes. Lane A owns the prompt partition, ruling classes and the human-tier
+resolver (`panel_invoker.py` president prompt and ruling parser; `ratification_policy.py`;
+`gate_posture.py`; `release_guard.py` read-only consumption). Lane B owns the ledger and its
+verification plus the skills (new `ruling_ledger.py`; `plan_manifest.py` additive check;
+`plans/rulings.jsonl`; `skills-src/` and regeneration). The lanes share no files. Ownership
+overlap declared as in PRESROUTE.
+
+**Non-goals**
+Executing rulings (the author still repairs). Changing landing tiers' required seats. Any UI.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (president prompt, ruling parser)
+- `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`
+- `phase-loop-runtime/src/phase_loop_runtime/gate_posture.py`
+- `phase-loop-runtime/src/phase_loop_runtime/ruling_ledger.py` (new)
+- `phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py` (additive check)
+- `plans/rulings.jsonl` (new, append-only)
+- `skills-src/` execute and plan skills plus regeneration outputs
+
+**Depends on**
+- PRESROUTE
+- EXECFIND
+
+**Produces**
+- IF-0-RATIFY-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
+### Phase 17 — Governance Profile at Setup (GOVSETUP)
+
+**Objective**
+Make whether a human, a president and a panel are required a persisted, selectable setting at
+installation and repo setup, resolved by one resolver every command shares, with unknown values
+refused. Source: agent-harness#935; onboarding slice of agent-harness#927.
+
+**Exit criteria**
+- [ ] EC-GOVSETUP-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0.
+- [ ] EC-GOVSETUP-1 — **A typed profile schema.** `governance_profile.v1` carries `run_mode`
+  (`autonomous | governed`), per-tier `panel` (required seat aliases or `none`), per-tier
+  `president` (`required | not_required`), `human_tier` (EC-RATIFY-4 values),
+  and `falsifier_policy` (EC-EXECFIND-5 values); the president order is not a profile field
+  (EC-PRESROUTE-3 owns it). It persists at `$XDG_CONFIG_HOME/agent-harness/governance.toml`
+  (user) and `.phase-loop/governance.toml` (repo). Falsified by an unknown key or value being
+  accepted; by a `president_order` key being accepted; by a profile naming a model id being
+  accepted.
+- [ ] EC-GOVSETUP-2 — **One resolver, refusing the unknown.** Precedence is explicit flag, then
+  environment, then repo file, then user file, then the built-in default; an unknown value is a
+  typed refusal (replacing `resolve_run_mode`'s silent coercion to `autonomous`); `run`,
+  `run-train` and `advisor-board` all consume the resolver (today `run-train` ignores the
+  environment and `advisor-board` never loads the board TOML). Falsified by any of the three
+  commands reaching a profile different from the resolver's for the same inputs; by an unknown
+  environment value coercing to `autonomous`.
+- [ ] EC-GOVSETUP-3 — **Setup surfaces write and report it.** `install-agent-harness.sh
+  --governance <name|path>` writes the user file (non-interactive; prompts only under a TTY with
+  `--interactive`), `phase-loop init --governance <name|path>` writes the repo file, and
+  `phase-loop doctor` prints the effective profile with the source of every field. Falsified by an
+  install given the flag that writes nothing; by `doctor` reporting a profile the resolver would
+  not produce; by a prompt appearing without a TTY.
+- [ ] EC-GOVSETUP-4 — **Named profiles, and the shipped default is byte-equal to today on both
+  axes.** Built-in profiles are frozen tables with a golden. Landing tiers are evaluated by the
+  landing path regardless of `run_mode` (as today: the default `run_mode` is `autonomous` and a
+  `plan` or `production_code` landing still requires the four seats plus a president ruling), so
+  every profile carries the landing table and the EC-GOVSETUP-6 floor. `autonomous`
+  (`run_mode=autonomous`: the governed planning and pre-merge gates do not run; `human_tier=
+  never`) is exactly today's behaviour and is the shipped default, so an unattended `phase-loop
+  run` with no profile configured spawns no panel it did not spawn before; `governed`
+  (`run_mode=governed`, `human_tier=never`), `attended` (`run_mode=governed`, `human_tier=
+  contract_changing`) and `strict` (`run_mode=governed`, `human_tier=always`) are opt-in — each
+  profile's human behaviour is exactly EC-RATIFY-4's semantics for that `human_tier` value,
+  nothing more. Every profile's tier table equals the current hard-coded `ReviewLandingPolicy`
+  defaults unless it raises them under EC-GOVSETUP-6. Falsified by a `run` with no profile
+  configured behaving differently from a pre-GOVSETUP run on the same inputs (either axis); by
+  any profile's table lowering today's defaults; by an unnamed profile being accepted; by
+  `strict` escalating on a trigger EC-RATIFY-4 does not define for `always`; by a `plan` or
+  `production_code` landing proceeding without a president ruling under any profile.
+- [ ] EC-GOVSETUP-6 — **A profile can raise a landing tier's requirements, never lower them
+  below the floor.** For `plan` and `production_code` no profile may set `president` to
+  `not_required` or reduce `panel` below the existing seat floor: EC-PRESROUTE-4's refusal of
+  `requires_president=False` and the two-seat board floor are the floor, and a profile attempting
+  to go below it is refused at load with a typed reason (not silently clamped). `panel: none` and
+  `president: not_required` are accepted only for `tests_only` and `docs_only` tiers, where they
+  are today's defaults. Falsified by a profile lowering a landing tier below the floor being
+  loaded; by a lowered value being clamped instead of refused; by a `plan` landing under any
+  profile proceeding without a president ruling.
+- [ ] EC-GOVSETUP-5 — **Onboarding documents it.** `docs/TEAM-ONBOARDING.md` and
+  `docs/outside-worker-quickstart.md` document the profiles, the installer and init flags and the
+  `doctor` output, and the entry-doc check covers those sections. Falsified by the entry-doc
+  check not covering them; by a documented flag the CLI does not accept.
+
+**Scope notes**
+Decompose into 2 lanes. Lane A owns the schema, the resolver and its three CLI consumers (new
+`governance_profile.py`; `governed_review.py` resolver seam; `cli.py` additive flags only;
+`advisor_board/config.py` loader wiring). Lane B owns the installer, `init`, `doctor` and the
+docs (`install-agent-harness.sh`; `cli.py` `init`/`doctor` subcommands; `docs/`). Shared file
+`cli.py` (owned by RESIDUAL, committed): both lanes add flags to disjoint subparsers and edit no
+existing default; landings serialize after RESIDUAL's through the manifest, under the same
+touch-shape falsifier as PRESROUTE's scope notes.
+
+**Non-goals**
+A UI. Per-seat model selection (ids stay registry-pinned). Changing any profile's semantics
+beyond what RATIFY, EXECFIND and PRESROUTE define.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/governance_profile.py` (new)
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (resolver seam)
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py` (additive flags on `run`, `run-train`, `advisor-board`, `init`, `doctor`)
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `install-agent-harness.sh`
+- `docs/TEAM-ONBOARDING.md`, `docs/outside-worker-quickstart.md`
+
+**Depends on**
+- RATIFY
+
+**Produces**
+- IF-0-GOVSETUP-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
 ## Phase Dependency DAG
 
 ```
@@ -1233,6 +1642,13 @@ FABREADMIT ──→ INTEG
 RUNTIME ──→ INTEG
 INTEG ──→ RELEASE
 CONFORM ──→ GOVLEAN
+HARDEN ──→ PRESROUTE
+GOVLEAN ──→ PRESROUTE
+REVIEWTRUTH ──→ EXECFIND
+HARDEN ──→ EXECFIND
+PRESROUTE ──→ RATIFY
+EXECFIND ──→ RATIFY
+RATIFY ──→ GOVSETUP
 
 Parallel roots:
   LEGIBLE
@@ -1260,6 +1676,13 @@ Downstream semantic edges:
   FABPUB      → FABREADMIT  (merge boundary enforces the mixed-allocation interlock)
   FABPUB      → RESIDUAL    (RESIDUAL lane A rewrites the verbs.py/train_runner.py publish identity FABPUB owns)
   PROOFGATE   → SCHED       (SCHED's re-framed GC work should land under the falsifier gate)
+  HARDEN      → PRESROUTE   (the president operation is a HARDEN-authorized route; EC-HARDEN-5 stays the refusal it routes around)
+  GOVLEAN     → PRESROUTE   (the ladder, ruling grammar and tiers PRESROUTE reorders and executes are EC-GOVLEAN-5's)
+  REVIEWTRUTH → EXECFIND    (per-finding decomposition extends EC-REVIEWTRUTH-8's fix round and the typed per-seat outcome)
+  HARDEN      → EXECFIND    (the falsifier runner is a second HARDEN-authorized operation over the staged tree)
+  PRESROUTE   → RATIFY      (ruling classes extend the president line grammar PRESROUTE freezes)
+  EXECFIND    → RATIFY      (the president's residual is defined by which findings bound)
+  RATIFY      → GOVSETUP    (the profile's human tier and falsifier policy are RATIFY's and EXECFIND's vocabularies)
 
 Lane-level writer edge:
   SCHED lane B before HARDEN  (runner.py and launcher.py; lane B may land while SCHED lane A resolves agent-harness#354; HARDEN consumes the exact SCHED_HARDEN_HANDOFF before writing either path)
@@ -1270,11 +1693,9 @@ Absorbed convergence-v1 chain:
   LEGIBLE → PROOFGATE → RUNTIME ─┐
   FABPUB → FABREADMIT ───────────┴→ INTEG → RELEASE
 
-Critical paths (depth 6):
-  LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
-  LEGIBLE → CONFORM → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE
-  LEGIBLE → PROOFGATE → FABPUB → FABREADMIT → INTEG → RELEASE
-  LEGIBLE → CONFORM → FABPUB → FABREADMIT → INTEG → RELEASE
+Critical paths (depth 8, amendment 2026-09-21 — the appended board-evolution chain):
+  LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP
+  LEGIBLE → CONFORM → FABPUB → HARDEN → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP
 ```
 
 The seven detailed root plans (GOVLEAN added by the 2026-08-13 amendment) own a conflict graph that is complete except for the
@@ -1465,6 +1886,25 @@ ablation pass before ratification; the dispatch record names the planner either 
 paragraph is the reconciliation the amendment panel required: without it, gates 2 and 5 and
 EC-GOVLEAN-5 would contradict each other while all claimed authority.
 
+### Governance supersession on PRESROUTE delivery (amendment 2026-09-21, agent-harness#935)
+
+From the typed event "the merge to `main` of the PR that lands EC-PRESROUTE-3 and carries its
+phase-ledger row in the same PR", the president availability ladder is the order EC-PRESROUTE-3
+states (by seat alias, each alias resolving to its vendor's frozen registry PIN); the ladder
+sentence of EC-GOVLEAN-5 and the ladder named in the 2026-08-12 supersession paragraph above are
+historical-descriptive from that event, not competing authorities. The event is the merge, not a
+later ledger note, so running code and governing text never disagree. Nothing else in EC-GOVLEAN-5 (ruling grammar, typed re-ask,
+tiered review) is superseded. Until that event the GOVLEAN ladder keeps exclusive authority, so no
+dual-authority state exists. Model ids are never restated in roadmap text after this amendment
+(agent-harness#688 drift is the reason); the registry and its `model-id-source:` markers are the
+only carrier.
+
+Phases 14–17 are appended per append-mode discipline (no existing phase edited). PRESROUTE and
+EXECFIND may be planned concurrently once their dependencies are complete (`/claude-plan-phase
+PRESROUTE`, `/claude-plan-phase EXECFIND`); RATIFY waits for both; GOVSETUP waits for RATIFY. The
+four phases declare their file overlap with the open HARDEN, REVIEWTRUTH, LEGLIFE and RESIDUAL
+phases in their Scope notes and land after those phases' landings on the shared files.
+
 ### PROOFGATE convergence experiment (pre-registered, amendment 2026-08-12)
 
 PROOFGATE executes under the GOVLEAN rules and primitives. The committed PROOFGATE detailed plan
@@ -1527,4 +1967,18 @@ PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q 
 
 # Lint gate (agent-harness#334) — the guard that caught the F823 in agent-harness#105
 ruff check phase-loop-runtime/src/phase_loop_runtime/
+```
+
+### Phases 14–17 (amendment 2026-09-21)
+
+```bash
+# PRESROUTE: a plan-tier landing rules through the president operation (no interim override)
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k ladder   # pins the EC-PRESROUTE-3 order
+grep -q 'EXPIRED by Consiliency/agent-harness#' plans/decision-interim-president-ratification-20260904.md
+# EXECFIND: a seat falsifier that is green on the head cannot bind
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_falsifier.py phase-loop-runtime/tests/test_governed_review.py
+# RATIFY: an in-place ledger edit fails the ancestor-frozen check
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_ruling_ledger.py
+# GOVSETUP: the three commands and doctor agree on the effective profile
+phase-loop doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["governance_profile"]["effective"])'
 ```

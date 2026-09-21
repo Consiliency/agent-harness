@@ -101,10 +101,11 @@ def test_v10_representations_agree_with_structured_field():
 
 @_needs_v10
 def test_detects_invented_critical_path_edge():
-    # Corrupt one of the four co-equal longest chains with an unbacked RUNTIME -> HARDEN edge.
+    # Corrupt one of the two co-equal longest chains (depth 8 since the 2026-09-21
+    # amendment appended EXECFIND → RATIFY → GOVSETUP) with an unbacked RUNTIME -> HARDEN edge.
     mutated = _mutate(
-        "LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → LEGLIFE",
-        "LEGIBLE → PROOFGATE → RUNTIME → HARDEN → REVIEWTRUTH → LEGLIFE",
+        "LEGIBLE → PROOFGATE → FABPUB → HARDEN → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP",
+        "LEGIBLE → PROOFGATE → RUNTIME → HARDEN → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP",
     )
     findings = check_representation_consistency(mutated)
     assert any(

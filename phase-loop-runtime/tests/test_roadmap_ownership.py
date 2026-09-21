@@ -198,7 +198,9 @@ class TestOwnershipMap(unittest.TestCase):
         mapping = ro.ownership_map(
             (REPO_ROOT / "specs" / "phase-plans-v10.md").read_text()
         )
-        self.assertEqual(ro.owners_for("docs/TEAM-ONBOARDING.md", mapping), [])
+        # `docs/TEAM-ONBOARDING.md` served here until the 2026-09-21 amendment made it a
+        # GOVSETUP key file; `LICENSE` is listed by no phase.
+        self.assertEqual(ro.owners_for("LICENSE", mapping), [])
 
     def test_govlean_directory_claim_covers_every_runtime_module(self):
         """A single phase claiming the whole source tree is the signal/noise problem.
