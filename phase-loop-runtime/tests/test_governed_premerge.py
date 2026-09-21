@@ -177,6 +177,12 @@ def _module_state_restored(module):
     ORIGINAL objects: functions defined in the module close over this very dict
     as their `__globals__`, so putting its contents back also makes the original
     functions resolve the original classes again.
+
+    The boundary: this restores BINDINGS only. A module whose import registers
+    itself elsewhere -- a registry entry, an atexit hook, a signal handler --
+    would leave that side effect behind, and this helper would not undo it.
+    `governed_premerge` has no such side effect today; a future one would need
+    its own teardown rather than more of this.
     """
     saved = dict(module.__dict__)
     try:

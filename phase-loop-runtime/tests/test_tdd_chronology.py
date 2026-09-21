@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
@@ -138,11 +139,13 @@ def _coordinator_run_dir(root: Path):
             os.environ["PHASE_LOOP_RUN_DIR"] = old_value
 
 
-# Measured on this repository's own helpers: EITHER setting alone suppresses the
-# detached writer, because `git maintenance run --auto` consults `gc.auto` for its
-# auto decision and `maintenance.auto` gates the launch itself. Both are set as a
-# hedge across Git versions that may reach auto-maintenance by only one of those
-# routes, not because one is known to be insufficient today.
+# `gc.auto=0` is set NOT because `git gc` is the writer -- it is not -- but
+# because `git maintenance run --auto`, which IS the writer, consults `gc.auto`
+# when deciding whether to run at all. `maintenance.auto=false` gates the launch
+# directly. Measured on this repository's own helpers: either key alone
+# suppresses it, so both are a hedge across Git versions that may reach
+# auto-maintenance by only one of those routes, not a claim that one is
+# insufficient today.
 _DETACHED_MAINTENANCE_SETTINGS = (("gc.auto", "0"), ("maintenance.auto", "false"))
 
 
@@ -154,57 +157,149 @@ def _disable_detached_git_maintenance(repo):
         )
 
 
-def _detached_git_writers_under(root):
-    """Git processes whose working directory is inside `root`.
+def _surviving_git_processes_with_cwd_under(root):
+    """Git processes still alive whose working directory is inside `root`.
 
-    Reads the kernel's view rather than asking Git, because the process this
-    looks for has already been reparented away from us.
+    Named for what it DETECTS, not for what it implies. Seeing such a process
+    does not by itself prove it writes; what makes this a useful signal is the
+    pairing -- the helpers reliably leave these behind before the fix and none
+    after it -- plus the `Errno 39` teardown failure that motivated the issue.
+
+    Reads the kernel's view rather than asking Git, because the process being
+    looked for has already been reparented to init and is no longer our child.
+
+    Raises rather than guessing when an entry cannot be read. A caller is asking
+    "is the set EMPTY?", so an unreadable entry is a candidate that was silently
+    dropped, and a negative answer built from dropped candidates is a false
+    negative -- the exact shape of falsifier that proves nothing.
     """
     found = []
-    root = str(root)
+    root = os.path.realpath(str(root))
     for entry in os.scandir("/proc"):
         if not entry.name.isdigit():
             continue
         try:
             cwd = os.readlink(os.path.join(entry.path, "cwd"))
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # exited while we walked: it is not surviving, so not ours
+        except PermissionError:
+            # Another user's process cannot have this temp directory as its cwd
+            # (0o700, created by us), so it is not a candidate we are dropping.
+            continue
+        except OSError as exc:  # pragma: no cover - unexpected /proc failure
+            raise AssertionError(
+                f"could not read cwd for pid {entry.name}: {exc}; the emptiness "
+                "of this probe's result would be unsound"
+            ) from exc
+        # Directory boundary: `/tmp/abc` must not match `/tmp/abcdef`.
+        if cwd != root and not cwd.startswith(root + os.sep):
+            continue
+        try:
             with open(os.path.join(entry.path, "cmdline"), "rb") as handle:
-                cmdline = handle.read().replace(b"\0", b" ").decode("utf-8", "replace")
-        except OSError:
-            continue  # exited while we walked, or not ours to read
-        if cwd.startswith(root) and "/git" in cmdline.split(" ")[0]:
-            found.append(cmdline.strip())
+                argv = handle.read().split(b"\0")
+            executable = os.path.realpath(os.path.join(entry.path, "exe"))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as exc:  # pragma: no cover - unexpected /proc failure
+            raise AssertionError(
+                f"could not identify pid {entry.name} whose cwd is inside {root}: "
+                f"{exc}; it may be exactly the process this probe looks for"
+            ) from exc
+        argv0 = argv[0].decode("utf-8", "replace") if argv and argv[0] else ""
+        # Accept both forms: Git re-execs its builtins by absolute path
+        # (`.../git-core/git`), but a bare `git` on PATH leaves argv[0] == "git".
+        names = {os.path.basename(executable), os.path.basename(argv0)}
+        if "git" in names:
+            rendered = b" ".join(part for part in argv if part).decode("utf-8", "replace")
+            found.append(rendered.strip() or executable)
     return found
 
 
-def test_synthetic_repositories_leave_no_detached_git_writer():
+def test_the_surviving_git_probe_matches_argv0_git_and_respects_directory_boundaries():
+    """The probe's own falsifier, for the two ways it could quietly under-report.
+
+    A probe whose negative result can be a FALSE negative proves nothing, and
+    `test_synthetic_repositories_leave_no_surviving_git_process` rests entirely
+    on this one answering "is the set empty?" truthfully.
+
+    Two shapes are covered. Git re-execs its builtins by absolute path, so the
+    real writer's `argv[0]` ends in `/git`; but a bare `git` on PATH leaves
+    `argv[0] == "git"` with no slash, which a substring test for `"/git"` would
+    miss. And `/tmp/abc` must not match a sibling `/tmp/abcdef`.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("reads /proc")
+    with tempfile.TemporaryDirectory() as parent:
+        shorter = Path(parent) / "abc"
+        longer = Path(parent) / "abcdef"
+        shorter.mkdir()
+        longer.mkdir()
+        # The child lives in the LONGER name, so a prefix test without a
+        # separator would wrongly report it when asked about the shorter one.
+        # argv[0] is a bare "git" with no slash, the form a "/git" substring
+        # test misses.
+        child = subprocess.Popen(
+            ["bash", "-c", "exec -a git sleep 30"], cwd=str(longer),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            found = []
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                found = _surviving_git_processes_with_cwd_under(longer)
+                if found:
+                    break
+                time.sleep(0.05)
+            assert found, (
+                "the probe missed a process whose argv[0] is a bare 'git'; its "
+                "empty answers would be false negatives"
+            )
+            assert _surviving_git_processes_with_cwd_under(shorter) == [], (
+                "the probe matched a directory that merely shares a name prefix "
+                f"with {shorter}; it would report writers that are not there"
+            )
+        finally:
+            child.kill()
+            child.wait()
+
+
+def test_synthetic_repositories_leave_no_surviving_git_process():
     """Falsifier for Consiliency/agent-harness#656 and the xdist flake it causes.
 
     Measured, not assumed. On the unfixed tree EVERY setup leaves three surviving
     Git processes whose cwd is inside the temporary repository: `git maintenance
-    run --auto --detach`, reparented to init, with `repack --cruft --write-midx`
-    and `pack-objects` beneath it. That is the writer that races
-    `TemporaryDirectory.cleanup()` and raises
+    run --auto --no-quiet --detach`, reparented to init, with
+    `repack -d -l --cruft --write-midx` and `pack-objects` beneath it. That is
+    the writer that races `TemporaryDirectory.cleanup()` and raises
     `OSError: [Errno 39] Directory not empty: '.git'` after every substantive
-    assertion has already passed. Fifteen such processes across five setups before
-    the fix, zero after.
+    assertion has already passed. Fifteen such processes across five setups
+    before the fix, zero after.
 
-    This asserts the PROPERTY -- that no writer survives the helper -- rather than
-    the two config keys that currently deliver it, so it keeps holding if a later
-    Git reaches auto-maintenance by another route.
+    What #656 got right is the mechanism and the repair; the one clause this
+    refines is its guess that committing a large tree crosses Git's auto-gc
+    threshold. It does not -- 1599 loose objects against a 6700 default, and
+    `git gc --auto` creates nothing at that size -- which is why the behaviour is
+    DETERMINISTIC rather than intermittent.
+
+    This asserts the PROPERTY -- that no Git process survives the helper --
+    rather than the two config keys that currently deliver it, so it keeps
+    holding if a later Git reaches auto-maintenance by another route. It detects
+    surviving processes, not writes; the pairing (always present before, never
+    after) plus the Errno 39 failure is what ties the two together.
     """
     if not sys.platform.startswith("linux"):
         pytest.skip("reads /proc to see processes that have been reparented away")
 
     small_tmp, _small_repo, _base_oid = _setup_git_repo()
     try:
-        assert _detached_git_writers_under(small_tmp.name) == []
+        assert _surviving_git_processes_with_cwd_under(small_tmp.name) == []
     finally:
         small_tmp.cleanup()
 
     large = _setup_real_repo_candidate_history()
     large_tmp, coordinator_tmp = large[0], large[7]
     try:
-        survivors = _detached_git_writers_under(large_tmp.name)
+        survivors = _surviving_git_processes_with_cwd_under(large_tmp.name)
         assert survivors == [], (
             "this repository still starts background Git maintenance that outlives "
             "the synchronous command and races teardown: " + "; ".join(survivors)
@@ -219,14 +314,17 @@ def _setup_git_repo():
     repo = Path(tmp.name)
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
     # Consiliency/agent-harness#656: git's auto-maintenance is a DETACHED writer.
-    # `git gc --auto` outlives the synchronous `git commit` that triggered it and
-    # keeps creating content under `.git`, so `TemporaryDirectory.cleanup()` can
-    # race it and raise `OSError: [Errno 39] Directory not empty: '.git'` after
-    # every substantive assertion has already passed. Under pytest-xdist four
-    # workers build four times as many repositories per second, which widens the
-    # window (Consiliency/agent-harness#945). Turn the writer off in the repository
-    # itself, BEFORE the first commit, rather than retrying the teardown: there is
-    # no external writer to tolerate here, only one this test starts.
+    # The writer is `git maintenance run --auto --no-quiet --detach`, reparented
+    # to init, with `repack -d -l --cruft --write-midx` and `pack-objects`
+    # beneath it. It is NOT `git gc --auto`, which creates nothing at this
+    # repository's size. It outlives the synchronous command that started it and
+    # keeps writing under `.git`, so `TemporaryDirectory.cleanup()` can race it
+    # into `OSError: [Errno 39] Directory not empty: '.git'` after every
+    # substantive assertion has already passed. Under pytest-xdist four workers
+    # build four times as many repositories per second, which widens the window
+    # (Consiliency/agent-harness#945). Turn the writer off in the repository
+    # itself, BEFORE the first commit, rather than retrying the teardown: there
+    # is no external writer to tolerate here, only one this test starts.
     _disable_detached_git_maintenance(repo)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, capture_output=True, check=True)
@@ -5434,14 +5532,17 @@ def _setup_real_repo_candidate_history():
         check=True,
     )
     # Consiliency/agent-harness#656: git's auto-maintenance is a DETACHED writer.
-    # `git gc --auto` outlives the synchronous `git commit` that triggered it and
-    # keeps creating content under `.git`, so `TemporaryDirectory.cleanup()` can
-    # race it and raise `OSError: [Errno 39] Directory not empty: '.git'` after
-    # every substantive assertion has already passed. Under pytest-xdist four
-    # workers build four times as many repositories per second, which widens the
-    # window (Consiliency/agent-harness#945). Turn the writer off in the repository
-    # itself, BEFORE the first commit, rather than retrying the teardown: there is
-    # no external writer to tolerate here, only one this test starts.
+    # The writer is `git maintenance run --auto --no-quiet --detach`, reparented
+    # to init, with `repack -d -l --cruft --write-midx` and `pack-objects`
+    # beneath it. It is NOT `git gc --auto`, which creates nothing at this
+    # repository's size. It outlives the synchronous command that started it and
+    # keeps writing under `.git`, so `TemporaryDirectory.cleanup()` can race it
+    # into `OSError: [Errno 39] Directory not empty: '.git'` after every
+    # substantive assertion has already passed. Under pytest-xdist four workers
+    # build four times as many repositories per second, which widens the window
+    # (Consiliency/agent-harness#945). Turn the writer off in the repository
+    # itself, BEFORE the first commit, rather than retrying the teardown: there
+    # is no external writer to tolerate here, only one this test starts.
     _disable_detached_git_maintenance(repo)
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
