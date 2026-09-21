@@ -158,34 +158,46 @@ def _disable_detached_git_maintenance(repo):
 
 
 def _surviving_git_processes_with_cwd_under(root):
-    """Git processes still alive whose working directory is inside `root`.
+    """Git processes alive AT THIS INSTANT whose working directory is inside `root`.
 
-    Named for what it DETECTS, not for what it implies. Seeing such a process
-    does not by itself prove it writes; what makes this a useful signal is the
-    pairing -- the helpers reliably leave these behind before the fix and none
-    after it -- plus the `Errno 39` teardown failure that motivated the issue.
+    Named for what it detects, and bounded in both directions.
+
+    It does not prove a WRITE: seeing such a process is a signal, not a proof.
+    What ties the two together is the pairing -- the helpers reliably leave these
+    behind before the fix and none after it -- plus the `Errno 39` teardown
+    failure that motivated Consiliency/agent-harness#656.
+
+    It also does not prove ABSENCE ACROSS TIME. It samples `/proc` once, so a
+    writer that has already exited, or one that starts a moment later, is not
+    seen. An empty result means "none right now", which is the strongest claim a
+    sample can make.
 
     Reads the kernel's view rather than asking Git, because the process being
-    looked for has already been reparented to init and is no longer our child.
+    looked for has been reparented to init and is no longer our child.
 
-    Raises rather than guessing when an entry cannot be read. A caller is asking
-    "is the set EMPTY?", so an unreadable entry is a candidate that was silently
-    dropped, and a negative answer built from dropped candidates is a false
-    negative -- the exact shape of falsifier that proves nothing.
+    Unreadable entries are handled explicitly rather than swallowed, because a
+    caller asks "is this set empty?" and a silently dropped candidate turns a
+    negative answer into a false negative:
+
+    * A vanished process (`FileNotFoundError`/`ProcessLookupError`) exited while
+      we walked. It is not surviving, so it is correctly not ours.
+    * `PermissionError` on a cwd is SKIPPED, and the reason is stated rather than
+      inferred: `root` is a `TemporaryDirectory`, created 0o700 and owned by this
+      user, so a process we may not read cannot have it as its cwd. This skip is
+      sound only for roots with that property, which is every caller here.
+    * Anything else raises, including a failure to resolve the executable link.
     """
     found = []
-    root = os.path.realpath(str(root))
+    root = os.path.realpath(str(root), strict=True)
     for entry in os.scandir("/proc"):
         if not entry.name.isdigit():
             continue
         try:
             cwd = os.readlink(os.path.join(entry.path, "cwd"))
         except (FileNotFoundError, ProcessLookupError):
-            continue  # exited while we walked: it is not surviving, so not ours
+            continue  # exited while we walked: not surviving, so not ours
         except PermissionError:
-            # Another user's process cannot have this temp directory as its cwd
-            # (0o700, created by us), so it is not a candidate we are dropping.
-            continue
+            continue  # see the docstring: cannot be inside a 0o700 dir we own
         except OSError as exc:  # pragma: no cover - unexpected /proc failure
             raise AssertionError(
                 f"could not read cwd for pid {entry.name}: {exc}; the emptiness "
@@ -197,13 +209,24 @@ def _surviving_git_processes_with_cwd_under(root):
         try:
             with open(os.path.join(entry.path, "cmdline"), "rb") as handle:
                 argv = handle.read().split(b"\0")
-            executable = os.path.realpath(os.path.join(entry.path, "exe"))
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as exc:  # pragma: no cover - unexpected /proc failure
             raise AssertionError(
-                f"could not identify pid {entry.name} whose cwd is inside {root}: "
-                f"{exc}; it may be exactly the process this probe looks for"
+                f"could not read cmdline for pid {entry.name} whose cwd is inside "
+                f"{root}: {exc}; it may be exactly what this probe looks for"
+            ) from exc
+        # STRICT: a link that cannot be resolved must surface, not be absorbed
+        # into a wrong answer by non-strict realpath returning the input.
+        try:
+            executable = os.path.realpath(os.path.join(entry.path, "exe"), strict=True)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as exc:  # pragma: no cover - unexpected /proc failure
+            raise AssertionError(
+                f"could not resolve the executable of pid {entry.name} whose cwd "
+                f"is inside {root}: {exc}; it may be exactly what this probe "
+                "looks for"
             ) from exc
         argv0 = argv[0].decode("utf-8", "replace") if argv and argv[0] else ""
         # Accept both forms: Git re-execs its builtins by absolute path
