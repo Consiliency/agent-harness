@@ -12,8 +12,10 @@ import py_compile
 import shutil
 import socket
 import stat
+import signal
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from dataclasses import replace
@@ -1815,10 +1817,163 @@ def test_root_test_runner_acquires_real_lease_as_synthetic_owner(tmp_path):
         os.close(fd)
 
 
-def test_write_lease_requires_one_signal_clean_main_thread(monkeypatch):
-    monkeypatch.setattr(evidence.threading, "active_count", lambda: 2)
+def test_write_lease_refuses_when_the_thread_inventory_is_unknown(monkeypatch):
+    """agent-harness#950: an unreadable inventory must REFUSE, never read as one thread.
+
+    This replaces a `threading.active_count()`-stubbed version of the same
+    assertion. That instrument was the defect: it counts only threads the
+    `threading` module created, so it answered 1 for a process carrying a
+    `_thread`- or C-spawned thread and the guard proceeded on a false premise.
+    The refusal now keys on the kernel inventory being UNREADABLE, which is the
+    only case in which this process genuinely cannot tell what it is sharing.
+    """
+    monkeypatch.setattr(evidence, "_live_thread_count", lambda: None)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="one signal-clean main thread"):
         evidence._begin_lease_signal_guard()
+
+
+def test_live_thread_count_sees_threads_that_threading_cannot(tmp_path):
+    """The kernel inventory counts a `_thread`-spawned thread; `threading` does not.
+
+    This is the exact blind spot that killed pytest-xdist workers: execnet
+    spawns its receiver with the low-level `_thread` module.
+    """
+    import _thread
+
+    before = evidence._live_thread_count()
+    assert before is not None and before >= 1
+    started = threading.Event()
+    release = threading.Event()
+
+    def _body():
+        started.set()
+        release.wait(30)
+
+    _thread.start_new_thread(_body, ())
+    try:
+        assert started.wait(10)
+        # `threading` is blind to it; only the kernel inventory grows.
+        assert threading.active_count() == 1
+        after = evidence._live_thread_count()
+        assert after is not None and after > before
+    finally:
+        release.set()
+
+
+def test_write_lease_guard_installs_a_process_wide_sigio_disposition_and_restores_it():
+    """Positive control: a genuinely single-threaded caller still takes the lease.
+
+    It must also leave the process exactly as it found it -- the SIGIO
+    disposition is process-wide state, so failing to put it back would be a
+    durable side effect on the caller.
+    """
+    before = signal.getsignal(signal.SIGIO)
+    guard = evidence._begin_lease_signal_guard()
+    try:
+        # Process-wide disposition is ours for the duration; that is what stops a
+        # sibling thread from taking SIGIO's default Term action.
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler
+        assert signal.SIGIO in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    finally:
+        evidence._end_lease_signal_guard(guard)
+    assert signal.getsignal(signal.SIGIO) == before
+    assert signal.SIGIO not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+
+def test_write_lease_guard_restores_the_disposition_even_when_draining_raises(monkeypatch):
+    """Every exit path restores it, exceptions included."""
+    before = signal.getsignal(signal.SIGIO)
+    guard = evidence._begin_lease_signal_guard()
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("drain failed")
+
+    monkeypatch.setattr(evidence.signal, "sigtimedwait", _boom)
+    with pytest.raises(OSError, match="drain failed"):
+        evidence._end_lease_signal_guard(guard)
+    assert signal.getsignal(signal.SIGIO) == before
+    # The mask is this thread's own state; put it back so later tests are unaffected.
+    signal.pthread_sigmask(signal.SIG_SETMASK, guard.mask)
+
+
+def test_write_lease_refuses_when_the_existing_sigio_handler_cannot_be_restored(monkeypatch):
+    """A handler installed outside Python reads as None and could not be put back."""
+    monkeypatch.setattr(evidence.signal, "getsignal", lambda _signum: None)
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError, match="cannot restore the existing SIGIO handler"
+    ):
+        evidence._begin_lease_signal_guard()
+    assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler
+
+
+def test_lease_break_never_kills_a_process_carrying_a_thread_threading_cannot_see(tmp_path):
+    """Negative control for agent-harness#950, end to end in a child process.
+
+    A `_thread`-spawned thread is invisible to `threading`, so the guard's old
+    precondition passed while being false; `pthread_sigmask` then covered only
+    the calling thread and the kernel delivered the lease break to the other
+    one, whose default SIGIO disposition is Term. The child must now SURVIVE and
+    must still DETECT the break through F_GETLEASE -- being safe must not cost
+    detection. On the pre-fix bytes this same child exits 157 (128 + SIGIO).
+    """
+    if not sys.platform.startswith("linux") or evidence.fcntl is None:
+        pytest.skip("write leases are a Linux-only path")
+    target = tmp_path / "leased.txt"
+    target.write_text("x", encoding="utf-8")
+    child = tmp_path / "lease_break_child.py"
+    child.write_text(
+        "\n".join(
+            [
+                "import _thread, fcntl, os, sys, time",
+                "from phase_loop_runtime import agy_canary_evidence as ev",
+                "path = sys.argv[1]",
+                # Invisible to `threading`, exactly like execnet's receiver.
+                "_thread.start_new_thread(time.sleep, (30,))",
+                "time.sleep(0.2)",
+                "guard = ev._begin_lease_signal_guard()",
+                "fd = os.open(path, os.O_RDWR)",
+                "try:",
+                "    fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+                "except OSError:",
+                "    print('LEASE-UNAVAILABLE')",
+                "    raise SystemExit(0)",
+                "breaker = os.path.join(os.path.dirname(path), 'breaker.py')",
+                "os.spawnv(os.P_WAIT, sys.executable, [sys.executable, breaker, path])",
+                "time.sleep(0.5)",
+                "broke = fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_WRLCK",
+                "ev._end_lease_signal_guard(guard)",
+                "print('SURVIVED broke=%s' % broke)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "breaker.py").write_text(
+        "\n".join(
+            [
+                "import os, sys",
+                "try:",
+                "    os.close(os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK))",
+                "except OSError:",
+                "    pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [sys.executable, str(child), str(target)],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    assert completed.returncode != -signal.SIGIO and completed.returncode != 128 + signal.SIGIO, (
+        "the lease break killed the child with SIGIO: "
+        f"rc={completed.returncode} stderr={completed.stderr}"
+    )
+    assert completed.returncode == 0, (
+        f"rc={completed.returncode} stdout={completed.stdout} stderr={completed.stderr}"
+    )
+    if "LEASE-UNAVAILABLE" in completed.stdout:
+        pytest.skip("kernel refused the write lease in this environment")
+    assert "SURVIVED broke=True" in completed.stdout, completed.stdout
 
 
 def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch):

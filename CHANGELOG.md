@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Settings write-lease signal guard survives a multi-threaded host (agent-harness#950)
+
+- The Antigravity canary's settings write lease now installs a process-wide
+  SIGIO disposition for the lifetime of the lease and restores the previous
+  handler on every exit path, exceptions included. A `pthread_sigmask` block
+  covers only the calling thread, so a lease break delivered to any other
+  thread previously took SIGIO's default action and terminated the process.
+- The guard's single-thread precondition is derived from `/proc/self/task`
+  rather than `threading.active_count()`, which sees only threads the
+  `threading` module created and so read as single-threaded in a process
+  carrying a `_thread`- or C-spawned thread. An unreadable inventory now
+  refuses the lease instead of assuming one thread.
+- Lease-break detection is unchanged: it is observed through `F_GETLEASE`, not
+  through signal delivery.
+
 ## [0.7.16] - 2026-09-21
 
 ### Claude native review task delivery (agent-harness#937)

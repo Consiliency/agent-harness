@@ -2789,26 +2789,100 @@ def _require_opened_path_identity(
         raise AgyCanaryEvidenceError("settings leased path identity drifted")
 
 
-def _begin_lease_signal_guard() -> set[Any]:
+@dataclass(frozen=True)
+class _LeaseSignalGuard:
+    """Everything `_begin_lease_signal_guard` changed, so every exit path can undo it."""
+
+    mask: set[Any]
+    previous_handler: Any
+
+
+def _live_thread_count() -> int | None:
+    """Count this process's OS threads from the kernel's own inventory.
+
+    `threading.active_count()` sees only threads the `threading` module itself
+    created. A thread started through the low-level `_thread` module or by a C
+    extension is invisible to it, so a process carrying one reads as
+    single-threaded -- pytest-xdist's execnet receiver is exactly such a thread
+    (agent-harness#950). `/proc/self/task` is the kernel's inventory and cannot
+    be fooled that way.
+
+    Returns None when the inventory cannot be read. A caller must treat that as
+    unsafe and refuse; it must never fall back to assuming a single thread,
+    which is the fail-open reading this function exists to remove.
+    """
+    try:
+        with os.scandir("/proc/self/task") as entries:
+            return sum(1 for _ in entries)
+    except OSError:
+        return None
+
+
+def _lease_sigio_handler(signum: int, frame: Any) -> None:
+    """Absorb a lease-break SIGIO so its default disposition cannot kill us.
+
+    The kernel delivers a lease break to any thread that has SIGIO unblocked,
+    which need not be the thread holding the lease. `pthread_sigmask` is
+    per-thread and so cannot cover the others; the DISPOSITION is process-wide
+    and is therefore what stops a sibling thread from taking SIGIO's default
+    Term action. The break itself is always observed through `F_GETLEASE` (see
+    `_require_write_lease`), never through this handler, so absorbing the
+    signal costs no detection.
+    """
+    return None
+
+
+def _begin_lease_signal_guard() -> _LeaseSignalGuard:
+    thread_count = _live_thread_count()
     if (not sys.platform.startswith("linux") or
             threading.current_thread() is not threading.main_thread() or
-            threading.active_count() != 1 or
+            thread_count is None or
             not hasattr(signal, "pthread_sigmask") or
             not hasattr(signal, "sigtimedwait") or signal.SIGIO in signal.sigpending()):
         raise AgyCanaryEvidenceError(
             "settings write lease requires one signal-clean main thread"
         )
-    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+    # Capture the disposition BEFORE replacing it. `getsignal` answers None when
+    # the handler was installed outside Python (a C extension), which we could
+    # not put back on the way out -- refuse rather than clobber it permanently.
+    previous_handler = signal.getsignal(signal.SIGIO)
+    if previous_handler is None:
+        raise AgyCanaryEvidenceError(
+            "settings write lease cannot restore the existing SIGIO handler"
+        )
+    # Process-wide first, per-thread second. With more than one thread alive the
+    # mask alone is not sufficient, and the handler is what makes any thread
+    # count survivable; installing it unconditionally keeps the single-threaded
+    # case identical in effect and removes the ordering as a thing to reason about.
+    try:
+        signal.signal(signal.SIGIO, _lease_sigio_handler)
+    except (OSError, ValueError) as exc:
+        raise AgyCanaryEvidenceError(
+            "settings write lease cannot install its SIGIO handler"
+        ) from exc
+    try:
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+    except OSError as exc:
+        signal.signal(signal.SIGIO, previous_handler)
+        raise AgyCanaryEvidenceError(
+            "settings write lease cannot block SIGIO"
+        ) from exc
     if signal.SIGIO in signal.sigpending():
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        signal.signal(signal.SIGIO, previous_handler)
         raise AgyCanaryEvidenceError("settings write lease SIGIO state is ambiguous")
-    return previous
+    return _LeaseSignalGuard(mask=previous, previous_handler=previous_handler)
 
 
-def _end_lease_signal_guard(previous: set[Any]) -> None:
-    while signal.sigtimedwait({signal.SIGIO}, 0) is not None:
-        pass
-    signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+def _end_lease_signal_guard(guard: _LeaseSignalGuard) -> None:
+    try:
+        while signal.sigtimedwait({signal.SIGIO}, 0) is not None:
+            pass
+        signal.pthread_sigmask(signal.SIG_SETMASK, guard.mask)
+    finally:
+        # Restore the disposition even if draining or unmasking raised, so a
+        # failure here cannot leave this process's SIGIO handling rewritten.
+        signal.signal(signal.SIGIO, guard.previous_handler)
 
 
 def _acquire_write_lease(fd: int, *, label: str) -> None:
@@ -3037,7 +3111,7 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
     committed = False
     settings_leased = False
     replacement_leased = False
-    lease_signal_mask: set[Any] | None = None
+    lease_signal_guard: _LeaseSignalGuard | None = None
     replacement_bytes = b""
     transitions: list[str] = []
     primary_error: BaseException | None = None
@@ -3076,7 +3150,7 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         except BlockingIOError as exc:
             raise AgyCanaryEvidenceError("settings maintenance lock is unavailable") from exc
 
-        lease_signal_mask = _begin_lease_signal_guard()
+        lease_signal_guard = _begin_lease_signal_guard()
         settings = _open_settings(settings_path)
         _acquire_write_lease(settings.fd, label="original")
         settings_leased = True
@@ -3334,9 +3408,9 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
                 os.close(settings.parent_fd)
             except OSError as exc:
                 cleanup_errors.append(f"settings-parent:{type(exc).__name__}")
-        if lease_signal_mask is not None:
+        if lease_signal_guard is not None:
             try:
-                _end_lease_signal_guard(lease_signal_mask)
+                _end_lease_signal_guard(lease_signal_guard)
             except Exception as exc:
                 cleanup_errors.append(f"signal-guard:{type(exc).__name__}")
         if lock_fd is not None:
