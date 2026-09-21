@@ -233,6 +233,20 @@ def _script_default(name: str) -> int:
     return int(hits[0])
 
 
+def _documented_margin() -> int:
+    """The margin from the script's OWN budget table (`#   margin  ~300s`).
+
+    Sourced rather than restated: a second copy of the number in this file could
+    drift from the derivation it is supposed to protect. Unparseable is a hard
+    failure -- a table that no longer states a margin cannot silently license one
+    of zero.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    hits = re.findall(r"^#\s+margin\s+~(\d+)s\s*$", text, re.MULTILINE)
+    assert len(hits) == 1, f"expected exactly one documented margin line in {SCRIPT}, found {hits}"
+    return int(hits[0])
+
+
 def _offload_job_cap_seconds() -> int:
     job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["offload"]
     minutes = job["timeout-minutes"]
@@ -246,18 +260,17 @@ def test_lock_wait_plus_suite_and_setup_fit_inside_the_offload_job_cap() -> None
     wait = _script_default("OFFLOAD_LOCK_WAIT_SECONDS")
     suite = _script_default("OFFLOAD_SUITE_SECONDS")
     setup = _script_default("OFFLOAD_SETUP_SECONDS")
-    spent = wait + suite + setup
+    # The margin is part of the invariant, not slack left over from it: the suite
+    # figure is the slowest OBSERVED run, never an enforced bound (the suite has no
+    # internal timeout and its dominant node grows with repo size), so an arrival
+    # exactly at the ceiling is a cancelled run reported as a repo failure.
+    margin = _documented_margin()
+    spent = wait + suite + setup + margin
     assert spent <= cap, (
-        f"a run that spends the whole lock wait cannot finish inside the job cap: "
-        f"wait {wait}s + suite {suite}s + setup {setup}s = {spent}s > cap {cap}s "
-        f"({WORKFLOW.name} jobs.offload.timeout-minutes). Lower the wait or raise the cap."
-    )
-    # A margin of zero satisfies the inequality while leaving a run that waits
-    # the full budget finishing exactly at the ceiling -- and the suite figure is
-    # the slowest OBSERVED run, not an enforced bound. Keep real slack.
-    assert cap - spent >= 300, (
-        f"only {cap - spent}s of margin below the cap; the suite figure is an observation, "
-        f"not a bound, so the documented 300s margin must survive."
+        f"a run that spends the whole lock wait cannot finish inside the job cap with the "
+        f"documented margin intact: wait {wait}s + suite {suite}s + setup {setup}s + margin "
+        f"{margin}s = {spent}s > cap {cap}s ({WORKFLOW.name} jobs.offload.timeout-minutes). "
+        f"Lower the wait or raise the cap."
     )
 
 

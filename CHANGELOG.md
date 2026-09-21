@@ -35,10 +35,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   never an unlocked run.
 - `tests/test_ci_offload_lock.py` now pins the derivation instead of leaving it in a
   comment: it reads the script's four defaults and `jobs.offload.timeout-minutes` from
-  `test.yml` and fails when wait + suite + setup no longer fits the cap, when the 300 s
-  margin is consumed, or when the quoted job budget stops matching the workflow. A cap
-  edit or a wait bump that breaks the arithmetic now goes red. A default the lookup
-  cannot find is a failure, not a skip, so a rename cannot make the check vacuous.
+  `test.yml` and fails when wait + suite + setup + margin no longer fits the cap, or when
+  the quoted job budget stops matching the workflow. A cap edit, a wait bump or a grown
+  suite figure that breaks the arithmetic now goes red. Every operand is sourced rather
+  than restated — the margin is read from the script's own budget table — so no second
+  copy can drift, and a value the lookup cannot find is a failure rather than a skip, so
+  a rename or a deleted line cannot make the check vacuous.
 
 ### Claude native review task delivery (agent-harness#937)
 
