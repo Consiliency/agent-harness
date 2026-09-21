@@ -230,6 +230,9 @@ PROMPT_TRANSPORT = {
     "gemini": "stream_json_same_session_ingestion",
     "grok": "stdin_sealed",
 }
+CLAUDE_DIRECT_REVIEW_REQUEST = (
+    "Please perform the review requested in the following framed material. "
+)
 # Exact provider argv grammar per harness.  A retained ``provider_argv_shape`` must
 # match token-for-token: literals are the frozen flags, patterns are the only
 # run-varying slots (owned scratch paths, effort token, deadline, session id).
@@ -2325,6 +2328,10 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls", "provider_response_status", "provider_response_sha256", "provider_response_bytes",
     }
     claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"}
+    task_request = {"provider_task_request_delivery", "provider_task_request_sha256", "provider_task_request_bytes"}
+    has_task_request = harness == "claude" and isinstance(value, dict) and bool(task_request.intersection(value))
+    if has_task_request:
+        claude |= task_request
     gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified", "provider_stream_protocol", "provider_stream_chunk_count", "provider_stream_chunk_sha256", "provider_stream_chunk_bytes", "provider_stream_final_event_sha256", "provider_stream_acknowledgements", "provider_stream_result_count", "provider_stream_output_sha256", "provider_stream_output_bytes", "provider_stream_outcome", "provider_stream_acknowledgements_verified", "provider_stream_final_no_truncation"}
     broker = closed(value, common | (claude if harness == "claude" else set()) | (gemini if harness == "gemini" else set()), "broker evidence")
     for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256", "provider_response_sha256"):
@@ -2414,6 +2421,15 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     if broker["provider_prompt_transport"] != PROMPT_TRANSPORT[harness]:
         fail("broker provider prompt transport mismatch")
     expected_transport = broker_gemini_stream_input(sealed_prompt) if harness == "gemini" else sealed_prompt
+    if has_task_request:
+        request_bytes = CLAUDE_DIRECT_REVIEW_REQUEST.encode("utf-8")
+        if (
+            broker["provider_task_request_delivery"] != "plain_text_before_bracketed_paste"
+            or broker["provider_task_request_sha256"] != sha256(request_bytes)
+            or integer(broker["provider_task_request_bytes"], "broker.provider_task_request_bytes", minimum=1) != len(request_bytes)
+        ):
+            fail("Claude direct task request is not the fixed typed request")
+        expected_transport = CLAUDE_DIRECT_REVIEW_REQUEST + sealed_prompt
     transport_bytes = expected_transport.encode("utf-8", errors="strict")
     if broker["provider_transport_sha256"] != sha256(transport_bytes) or broker["provider_transport_bytes"] != len(transport_bytes):
         fail("broker provider transport does not bind sealed input")

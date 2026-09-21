@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude native review task delivery (agent-harness#937)
+
+- Brokered Claude TUI reviews type a fixed review request before the sealed
+  bracketed paste, so the task is distinct from the supplied review data.
+  Transport evidence binds both parts; subscription routing, tool restrictions,
+  authorization and monitoring policy are unchanged.
+- The standalone evidence verifier checks the fixed request and combined input
+  digest while retaining validation of historical paste-only records. Partial
+  request metadata and mismatched transport digests fail closed.
+
 ### Explicit heartbeat-only review monitoring (agent-harness#892)
 
 - Supported brokered Linux subscription Claude TUI, Codex and Grok reviews may

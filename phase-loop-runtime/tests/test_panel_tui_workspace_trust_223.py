@@ -13,7 +13,9 @@ constants are monkeypatched short so the flows resolve in seconds.
 from __future__ import annotations
 
 import shutil
+import sys
 import time
+from hashlib import sha256
 
 import pytest
 
@@ -350,3 +352,93 @@ def test_typed_reasons_map_to_degraded_with_empty_text_and_logged_tail(tmp_path,
     assert status == "DEGRADED"
     assert text == ""
     assert "redacted tail B" in caplog.text
+
+
+@pytest.mark.parametrize("brokered", [False, True])
+def test_review_request_is_outside_brokered_paste(tmp_path, monkeypatch, brokered):
+    """A brokered paste is review data; the task request must be ordinary input."""
+    _fast_timing(monkeypatch, submit_delay=0.2, quiescence=0.1)
+    prompt = "AUTHORITATIVE-INSTRUCTIONS: review\nUNTRUSTED-REVIEW-BUNDLE: exact bytes\n"
+    script = r'''
+import json, os, sys, tty
+from pathlib import Path
+tty.setraw(0)
+print("Claude Code ready for your message", flush=True)
+wire = b""
+while not wire.endswith(b"\x1bOM"):
+    wire += os.read(0, 65536)
+Path("wire.bin").write_bytes(wire)
+request, marker, remaining = wire.partition(b"\x1b[200~")
+brokered = sys.argv[1] == "True"
+requested = request.startswith(b"Please ") and b"review" in request and b"\n" not in request
+accepted = bool(marker) and (requested if brokered else not request)
+text = "Reviewed the exact supplied bytes.\nAGREE" if accepted else "Only pasted data; no task request. This is not a vote."
+if brokered:
+    Path("owned.jsonl").write_text(json.dumps({"message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}) + "\n")
+else:
+    Path("panel-claude.txt").write_text(text)
+'''
+    rc, text, status, _ = _run_claude_tui_session(
+        command=[sys.executable, "-c", script, str(brokered)],
+        cwd=tmp_path, prompt=prompt, output_file=tmp_path / "panel-claude.txt",
+        timeout_s=15, backstop_s=15, env={"PATH": "/usr/bin:/bin"},
+        allow_transcript_final=brokered,
+        broker_transcript_path=tmp_path / "owned.jsonl" if brokered else None,
+    )
+    assert rc == 0, (status, text)
+    assert text.endswith("AGREE")
+    wire = (tmp_path / "wire.bin").read_bytes()
+    request, _, remaining = wire.partition(b"\x1b[200~")
+    assert remaining == prompt.encode() + b"\x1b[201~\x1bOM"
+    assert request == (pi._BROKER_CLAUDE_DIRECT_REQUEST.encode() if brokered else b"")
+
+
+def test_broker_evidence_binds_plain_request_and_sealed_paste(tmp_path, monkeypatch):
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    calls = []
+
+    def completed_session(**kwargs):
+        calls.append(kwargs)
+        return 0, "Reviewed.\nAGREE", "claude_tui_broker_final_assistant", ""
+
+    monkeypatch.setattr(pi, "_run_claude_tui_session", completed_session)
+    review_dir, out_dir = tmp_path / "review", tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    prompt = "Exact sealed instructions and untrusted review bytes."
+    evidence = {}
+    status, _ = _exec_claude_tui_leg(
+        review_dir, out_dir, 15, "bundle", broker_prompt=prompt,
+        broker_evidence=evidence, env={"PATH": "/usr/bin:/bin"},
+    )
+    assert status == "OK"
+    assert len(calls) == 1 and calls[0]["prompt"] == prompt
+    assert calls[0]["broker_transcript_path"] is not None
+    assert calls[0]["allow_transcript_final"] is True
+    request = "Please perform the review requested in the following framed material. "
+    assert evidence["provider_prompt_sha256"] == sha256(prompt.encode()).hexdigest()
+    assert evidence["provider_transport_sha256"] == sha256((request + prompt).encode()).hexdigest()
+    assert evidence["provider_transport_bytes"] == len((request + prompt).encode())
+    assert evidence["provider_task_request_sha256"] == sha256(request.encode()).hexdigest()
+    assert evidence["provider_task_request_bytes"] == len(request.encode())
+    assert evidence["provider_task_request_delivery"] == "plain_text_before_bracketed_paste"
+    assert "tools-empty" in evidence["provider_no_tool_controls"]
+
+
+@pytest.mark.parametrize("control", ["\x1b[201~", "\r", "\x1bOM"])
+@pytest.mark.parametrize("field", ["artifact", "instructions"])
+def test_brokered_paste_rejects_terminal_controls(field, control):
+    inputs = {"artifact": "review data", "instructions": "review this data"}
+    inputs[field] += control + "escape attempt"
+    with pytest.raises(ValueError, match="transport-active control character"):
+        pi._render_broker_inline_prompt(**inputs, mode="review")
+
+
+def test_brokered_typed_request_cannot_submit_or_select_a_tui_mode():
+    request = pi._BROKER_CLAUDE_DIRECT_REQUEST
+    assert request.startswith("Please ")
+    assert request.isascii() and all(32 <= ord(char) <= 126 for char in request)
+    assert not any(char.isdigit() for char in request)
+    assert not request.startswith(tuple("/!#@?"))
+    assert all(verdict not in request for verdict in ("AGREE", "DISAGREE"))

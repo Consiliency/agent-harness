@@ -311,6 +311,58 @@ def _recording_ci_query(layout: dict[str, Any]) -> tuple[Path, Path]:
     return query, trace_path
 
 
+def test_claude_typed_request_transport_binding_preserves_legacy_and_rejects_drift(tmp_path):
+    verifier = _load_harden_evidence_verifier()
+    layout = _verifier_fixture(verifier, tmp_path / "fixture")
+    request = _request(verifier, layout, "candidate")
+    inputs = {
+        kind: _artifact_json(verifier, layout, request[kind])["content"]
+        for kind in ("bundle", "instructions")
+    }
+    prompt = verifier.broker_sealed_prompt(inputs["bundle"], inputs["instructions"])
+    item = next(item for item in layout["evidence"]["reviews"]["candidate"]["seats"]
+                if item["harness"] == "claude")
+    seat = _artifact_json(verifier, layout, item["artifact"])
+
+    def verify(broker):
+        verifier.verify_broker(
+            broker, "claude", seat["requested_model"], seat["resolved_model"],
+            verifier.sha256(inputs["bundle"].encode()),
+            verifier.sha256(inputs["instructions"].encode()), prompt, seat["report"],
+        )
+
+    verify(seat["broker"])
+    typed = "Please perform the review requested in the following framed material. "
+    current = copy.deepcopy(seat["broker"])
+    fields = {
+        "provider_task_request_delivery": "plain_text_before_bracketed_paste",
+        "provider_task_request_sha256": verifier.sha256(typed.encode()),
+        "provider_task_request_bytes": len(typed.encode()),
+    }
+    current.update(fields)
+    current["provider_transport_sha256"] = verifier.sha256((typed + prompt).encode())
+    current["provider_transport_bytes"] = len((typed + prompt).encode())
+    verify(current)
+    for key in fields:
+        partial = copy.deepcopy(current)
+        del partial[key]
+        with pytest.raises(verifier.EvidenceError):
+            verify(partial)
+    for key, value in {
+        "provider_task_request_delivery": "inside_paste",
+        "provider_task_request_sha256": verifier.sha256(b"different request"),
+        "provider_task_request_bytes": len(typed) + 1,
+        "provider_transport_sha256": verifier.sha256(prompt.encode()),
+        "provider_transport_bytes": len(prompt.encode()),
+    }.items():
+        invalid = {**current, key: value}
+        with pytest.raises(verifier.EvidenceError):
+            verify(invalid)
+    stripped = {key: value for key, value in current.items() if key not in fields}
+    with pytest.raises(verifier.EvidenceError):
+        verify(stripped)
+
+
 class HardenEvidenceVerifierContractTests(unittest.TestCase):
     def test_harden_review_request_retains_recomputed_git_bound_inputs(self) -> None:
         """Review input must be retained evidence, not a self-reported digest."""
