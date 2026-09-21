@@ -1906,15 +1906,22 @@ def test_write_lease_refuses_when_the_existing_sigio_handler_cannot_be_restored(
     assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler
 
 
-def test_lease_break_never_kills_a_process_carrying_a_thread_threading_cannot_see(tmp_path):
-    """Negative control for agent-harness#950, end to end in a child process.
+@pytest.mark.parametrize("extra_thread", [False, True], ids=["single-threaded", "extra-thread"])
+def test_a_real_lease_break_is_survived_and_detected(tmp_path, extra_thread):
+    """The positive and negative controls for agent-harness#950, over one real path.
+
+    `single-threaded` is the positive control: a genuinely single-threaded
+    caller still takes a real `F_SETLEASE` write lease through the guard,
+    survives the break and reports it. `extra-thread` is the negative control.
 
     A `_thread`-spawned thread is invisible to `threading`, so the guard's old
     precondition passed while being false; `pthread_sigmask` then covered only
     the calling thread and the kernel delivered the lease break to the other
     one, whose default SIGIO disposition is Term. The child must now SURVIVE and
     must still DETECT the break through F_GETLEASE -- being safe must not cost
-    detection. On the pre-fix bytes this same child exits 157 (128 + SIGIO).
+    detection. On the pre-fix bytes the `extra-thread` child exits 157
+    (128 + SIGIO) while `single-threaded` already passed, which is exactly the
+    asymmetry this pair pins.
     """
     if not sys.platform.startswith("linux") or evidence.fcntl is None:
         pytest.skip("write leases are a Linux-only path")
@@ -1928,7 +1935,8 @@ def test_lease_break_never_kills_a_process_carrying_a_thread_threading_cannot_se
                 "from phase_loop_runtime import agy_canary_evidence as ev",
                 "path = sys.argv[1]",
                 # Invisible to `threading`, exactly like execnet's receiver.
-                "_thread.start_new_thread(time.sleep, (30,))",
+                ("_thread.start_new_thread(time.sleep, (30,))"
+                 if extra_thread else "pass"),
                 "time.sleep(0.2)",
                 "guard = ev._begin_lease_signal_guard()",
                 "fd = os.open(path, os.O_RDWR)",
@@ -1942,7 +1950,7 @@ def test_lease_break_never_kills_a_process_carrying_a_thread_threading_cannot_se
                 "time.sleep(0.5)",
                 "broke = fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_WRLCK",
                 "ev._end_lease_signal_guard(guard)",
-                "print('SURVIVED broke=%s' % broke)",
+                "print('SURVIVED broke=%s threads=%s' % (broke, ev._live_thread_count()))",
             ]
         ),
         encoding="utf-8",
@@ -1974,6 +1982,7 @@ def test_lease_break_never_kills_a_process_carrying_a_thread_threading_cannot_se
     if "LEASE-UNAVAILABLE" in completed.stdout:
         pytest.skip("kernel refused the write lease in this environment")
     assert "SURVIVED broke=True" in completed.stdout, completed.stdout
+    assert ("threads=2" in completed.stdout) is extra_thread, completed.stdout
 
 
 def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch):
