@@ -68,10 +68,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   by identity, never by equality, so a callable that merely compares equal to the
   default disposition cannot pass; and the handler the installation actually
   displaced, rather than an earlier reading, is what the decision rests on.
-- **Known limit**: a SIGIO handler installed by a C extension after Python set up
-  its own signal bookkeeping still reads as the default disposition, so this
-  guard cannot detect that owner and would restore the wrong disposition on the
-  way out. This is disclosed rather than implied away; nothing here detects it.
+- **Known limit**: the ownership check covers Python-visible handlers only.
+  `getsignal` reports Python's signal table rather than a fresh query of the
+  kernel disposition, so a native extension that installs a SIGIO handler through
+  raw `sigaction` still reads as the default disposition here. Such an owner
+  cannot be detected from Python, would be clobbered, and could not be restored
+  on the way out. No kernel-aware check is attempted; the limit is documented.
 - A failed entry can no longer leave either resource behind. An exception raised
   after the handler is in place but before the guard returns hands no token to
   `clean_settings`, so the exit path never runs; without rollback the process

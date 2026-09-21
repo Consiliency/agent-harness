@@ -2907,11 +2907,15 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
             "settings write lease requires one signal-clean main thread"
         )
     # A cheap pre-check so the common refusal never installs anything. It is not
-    # the authoritative one: `getsignal` reports Python's own bookkeeping, so a
-    # handler installed by a C extension AFTER Python initialised that bookkeeping
-    # still reads as SIG_DFL. This guard cannot see such an owner, and displacing
-    # one would restore the wrong disposition on the way out. That limit is real
-    # and is disclosed rather than implied away.
+    # the authoritative one -- the value `signal.signal` returns below is.
+    #
+    # BOUNDARY, stated rather than implied: this predicate covers PYTHON-VISIBLE
+    # handlers only. `getsignal` reports Python's signal table, not a fresh query
+    # of the kernel disposition, so a native extension that installs a handler
+    # through raw `sigaction` still reads here as SIG_DFL. Such an owner cannot
+    # be detected from Python, would be clobbered, and could not be restored on
+    # the way out. Making this kernel-aware is not attempted; the limit is
+    # documented instead.
     if signal.getsignal(signal.SIGIO) is None:
         raise AgyCanaryEvidenceError(
             "settings write lease cannot restore the existing SIGIO handler"
@@ -2924,9 +2928,12 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     previous_mask = None
     try:
         try:
-            # The RETURN VALUE is authoritative, not the reading above: a Python
-            # signal callback can install an owner between the check and here,
-            # and only this tells us what was actually displaced.
+            # The RETURN VALUE is authoritative, not the reading above. Under
+            # single-thread admission no other THREAD can race the check, but a
+            # signal delivered to this one thread can run a Python callback in
+            # that window. No primitive offers atomic check-before-displace, and
+            # taking the displaced value is the closest thing available -- it
+            # makes the size of the window irrelevant rather than arguable.
             previous_handler = signal.signal(signal.SIGIO, _lease_sigio_handler)
         except (OSError, ValueError) as exc:
             raise AgyCanaryEvidenceError(
