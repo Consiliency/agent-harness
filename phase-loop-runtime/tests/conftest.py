@@ -1,8 +1,14 @@
 """Shared pytest fixtures for the phase-loop-runtime test suite."""
 from __future__ import annotations
 
+import functools
 import os
 import json
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -243,3 +249,306 @@ def _pin_claude_print_route_by_default():
             os.environ.pop("CI", None)
         else:
             os.environ["CI"] = prior_ci
+
+
+# ---------------------------------------------------------------------------
+# Opt-in CI phase timing (Consiliency/agent-harness#945)
+#
+# The CONFORM chronology node
+# `test_mutation_definitions_are_frozen_but_not_executed_preimplementation`
+# dominates the CI wall clock (47.5 min on the py3.10 lane, 66.2 min on Gate A)
+# even though its source bytes are unchanged between v0.7.14 and v0.7.15. The
+# block below attributes that wall clock to call sites and records the counters
+# that could couple it to repo size (child processes, bytes hashed, tree copies,
+# tar members extracted, files read).
+#
+# It is inert unless PHASE_LOOP_CONFORM_TIMING=1 is set in the *parent* pytest
+# process. The mutation/EC probes build an explicit child environment, so the
+# flag never reaches a nested pytest run and probe output bytes are unchanged.
+# ---------------------------------------------------------------------------
+
+_CONFORM_TIMING_ENV = "PHASE_LOOP_CONFORM_TIMING"
+
+
+def _conform_timing_enabled() -> bool:
+    return os.environ.get(_CONFORM_TIMING_ENV) == "1"
+
+
+class _ConformTimingRecorder:
+    """Wall-clock and scale accounting for one test, keyed by call site."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+        self.counters: dict[str, int] = {}
+        self.started = 0.0
+        self.active = False
+
+    # -- accounting ---------------------------------------------------------
+    def bump(self, name: str, amount: int = 1) -> None:
+        self.counters[name] = self.counters.get(name, 0) + amount
+
+    def add(self, *, kind: str, label: str, site: str, seconds: float, **extra) -> None:
+        self.events.append(
+            {
+                "kind": kind,
+                "label": label,
+                "site": site,
+                "seconds": seconds,
+                "offset": max(0.0, (time.perf_counter() - seconds) - self.started),
+                **extra,
+            }
+        )
+
+    # -- call-site attribution ---------------------------------------------
+    @staticmethod
+    def site() -> str:
+        frame = sys._getframe(1)
+        skip = (__file__, subprocess.__file__, shutil.__file__, tarfile.__file__)
+        while frame is not None:
+            filename = frame.f_code.co_filename
+            if not any(filename == candidate for candidate in skip if candidate):
+                name = os.path.basename(filename)
+                return f"{name}:{frame.f_lineno} {frame.f_code.co_name}"
+            frame = frame.f_back
+        return "<unknown>"
+
+    @staticmethod
+    def command_label(argv) -> str:
+        try:
+            parts = [str(part) for part in argv]
+        except TypeError:
+            return "<opaque>"
+        if not parts:
+            return "<empty>"
+        head = os.path.basename(parts[0])
+        if head == "git":
+            return "git " + " ".join(parts[1:2])
+        if "-m" in parts[:3] and "pytest" in parts[:4]:
+            return "python -m pytest"
+        if "-c" in parts[:2]:
+            return "python -c <probe>"
+        return head
+
+    # -- report -------------------------------------------------------------
+    def report(self, nodeid: str, total: float) -> str:
+        lines: list[str] = []
+        write = lines.append
+        write("")
+        write("=" * 78)
+        write(f"CONFORM TIMING agent-harness#945 :: {nodeid}")
+        write(f"total wall seconds: {total:.2f}")
+        for key, value in _conform_repo_scale_cached():
+            write(f"repo scale :: {key}: {value}")
+        write("-" * 78)
+
+        by_site: dict[tuple[str, str], list[float]] = {}
+        by_label: dict[str, list[float]] = {}
+        for event in self.events:
+            by_site.setdefault((event["site"], event["label"]), []).append(event["seconds"])
+            by_label.setdefault(event["label"], []).append(event["seconds"])
+
+        write("phase breakdown by call site (seconds, calls, label)")
+        ranked = sorted(by_site.items(), key=lambda item: -sum(item[1]))
+        for (site, label), seconds in ranked[:30]:
+            write(
+                f"  {sum(seconds):9.2f}s  {100 * sum(seconds) / total if total else 0:5.1f}%"
+                f"  n={len(seconds):<5d} {label:<22s} {site}"
+            )
+        write("-" * 78)
+        write("aggregate by command kind")
+        for label, seconds in sorted(by_label.items(), key=lambda item: -sum(item[1])):
+            write(
+                f"  {sum(seconds):9.2f}s  {100 * sum(seconds) / total if total else 0:5.1f}%"
+                f"  n={len(seconds):<5d} {label}"
+            )
+        write("-" * 78)
+        write("slowest individual calls (offset from test start)")
+        for event in sorted(self.events, key=lambda item: -item["seconds"])[:15]:
+            extra = " ".join(
+                f"{key}={value}"
+                for key, value in event.items()
+                if key not in {"kind", "label", "site", "seconds", "offset"}
+            )
+            write(
+                f"  t+{event['offset']:8.2f}s  {event['seconds']:8.2f}s"
+                f"  {event['label']:<22s} {event['site']}  {extra}"
+            )
+        write("-" * 78)
+        write("scale counters (what grows with the repo)")
+        for key, value in sorted(self.counters.items()):
+            write(f"  {key}: {value}")
+        write("=" * 78)
+        return "\n".join(lines)
+
+
+_CONFORM_TIMING = _ConformTimingRecorder()
+
+
+@functools.lru_cache(maxsize=1)
+def _conform_repo_scale_cached() -> tuple[tuple[str, int], ...]:
+    return tuple(sorted(_conform_repo_scale().items()))
+
+
+def _conform_repo_scale() -> dict[str, int]:
+    """Repo-size facts recorded alongside the timings, not inferred."""
+    root = Path(__file__).resolve().parents[2]
+    scale: dict[str, int] = {}
+    probes = {
+        "tracked_files": ["git", "ls-files"],
+        "tracked_files_runtime": ["git", "ls-files", "phase-loop-runtime"],
+        "first_parent_commits_since_chronology_base": [
+            "git",
+            "rev-list",
+            "--first-parent",
+            "--count",
+            "54b5eb703324a9da97d849fee9c107cbeebb0d25..HEAD",
+        ],
+    }
+    for key, argv in probes.items():
+        completed = _CONFORM_REAL_POPEN(
+            argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
+        out, _ = completed.communicate()
+        if completed.returncode != 0:
+            continue
+        scale[key] = int(out.strip()) if key.startswith("first_parent") else len(out.splitlines())
+    scale["test_files"] = len(list((root / "phase-loop-runtime" / "tests").glob("test_*.py")))
+    return scale
+
+
+_CONFORM_REAL_POPEN = subprocess.Popen
+_CONFORM_REAL_COPYTREE = shutil.copytree
+_CONFORM_REAL_RMTREE = shutil.rmtree
+_CONFORM_REAL_EXTRACTALL = tarfile.TarFile.extractall
+_CONFORM_REAL_READ_BYTES = Path.read_bytes
+_CONFORM_REAL_READ_TEXT = Path.read_text
+
+
+class _TimedPopen(_CONFORM_REAL_POPEN):  # type: ignore[misc,valid-type]
+    """Behaviour-identical Popen that records wall time and output size."""
+
+    def __init__(self, args, *posargs, **kwargs):
+        self._conform_started = time.perf_counter()
+        self._conform_site = _ConformTimingRecorder.site()
+        self._conform_label = _ConformTimingRecorder.command_label(args)
+        self._conform_recorded = False
+        super().__init__(args, *posargs, **kwargs)
+
+    def _conform_record(self, out_bytes: int = 0) -> None:
+        if self._conform_recorded or not _CONFORM_TIMING.active:
+            return
+        self._conform_recorded = True
+        _CONFORM_TIMING.add(
+            kind="process",
+            label=self._conform_label,
+            site=self._conform_site,
+            seconds=time.perf_counter() - self._conform_started,
+            out_bytes=out_bytes,
+        )
+        _CONFORM_TIMING.bump("child_processes")
+        _CONFORM_TIMING.bump(f"child_processes::{self._conform_label}")
+        _CONFORM_TIMING.bump("child_output_bytes", out_bytes)
+
+    def communicate(self, *posargs, **kwargs):
+        stdout, stderr = super().communicate(*posargs, **kwargs)
+        self._conform_record(sum(len(part or ()) for part in (stdout, stderr)))
+        return stdout, stderr
+
+    def wait(self, *posargs, **kwargs):
+        returncode = super().wait(*posargs, **kwargs)
+        self._conform_record()
+        return returncode
+
+
+def _timed_copytree(src, dst, *posargs, **kwargs):
+    started = time.perf_counter()
+    site = _ConformTimingRecorder.site()
+    result = _CONFORM_REAL_COPYTREE(src, dst, *posargs, **kwargs)
+    if _CONFORM_TIMING.active:
+        copied = sum(len(files) for _, _, files in os.walk(dst))
+        _CONFORM_TIMING.add(
+            kind="fs", label="shutil.copytree", site=site,
+            seconds=time.perf_counter() - started, files=copied,
+        )
+        _CONFORM_TIMING.bump("copytree_calls")
+        _CONFORM_TIMING.bump("copytree_files", copied)
+    return result
+
+
+def _timed_rmtree(path, *posargs, **kwargs):
+    started = time.perf_counter()
+    site = _ConformTimingRecorder.site()
+    result = _CONFORM_REAL_RMTREE(path, *posargs, **kwargs)
+    if _CONFORM_TIMING.active:
+        _CONFORM_TIMING.add(
+            kind="fs", label="shutil.rmtree", site=site,
+            seconds=time.perf_counter() - started,
+        )
+        _CONFORM_TIMING.bump("rmtree_calls")
+    return result
+
+
+def _timed_extractall(self, *posargs, **kwargs):
+    started = time.perf_counter()
+    site = _ConformTimingRecorder.site()
+    result = _CONFORM_REAL_EXTRACTALL(self, *posargs, **kwargs)
+    if _CONFORM_TIMING.active:
+        try:
+            members = len(self.getmembers())
+        except Exception:  # pragma: no cover - accounting must never fail a test
+            members = -1
+        _CONFORM_TIMING.add(
+            kind="fs", label="tar.extractall", site=site,
+            seconds=time.perf_counter() - started, members=members,
+        )
+        _CONFORM_TIMING.bump("tar_extractall_calls")
+        if members > 0:
+            _CONFORM_TIMING.bump("tar_members_extracted", members)
+    return result
+
+
+def _timed_read_bytes(self, *posargs, **kwargs):
+    data = _CONFORM_REAL_READ_BYTES(self, *posargs, **kwargs)
+    if _CONFORM_TIMING.active:
+        _CONFORM_TIMING.bump("path_read_calls")
+        _CONFORM_TIMING.bump("path_read_bytes", len(data))
+    return data
+
+
+def _timed_read_text(self, *posargs, **kwargs):
+    data = _CONFORM_REAL_READ_TEXT(self, *posargs, **kwargs)
+    if _CONFORM_TIMING.active:
+        _CONFORM_TIMING.bump("path_read_calls")
+        _CONFORM_TIMING.bump("path_read_bytes", len(data))
+    return data
+
+
+if _conform_timing_enabled():
+    subprocess.Popen = _TimedPopen  # type: ignore[assignment]
+    shutil.copytree = _timed_copytree  # type: ignore[assignment]
+    shutil.rmtree = _timed_rmtree  # type: ignore[assignment]
+    tarfile.TarFile.extractall = _timed_extractall  # type: ignore[assignment]
+    Path.read_bytes = _timed_read_bytes  # type: ignore[assignment]
+    Path.read_text = _timed_read_text  # type: ignore[assignment]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Emit one timing summary per test when PHASE_LOOP_CONFORM_TIMING=1."""
+    if not _conform_timing_enabled():
+        yield
+        return
+    _CONFORM_TIMING.events.clear()
+    _CONFORM_TIMING.counters.clear()
+    _CONFORM_TIMING.started = time.perf_counter()
+    _CONFORM_TIMING.active = True
+    try:
+        yield
+    finally:
+        total = time.perf_counter() - _CONFORM_TIMING.started
+        _CONFORM_TIMING.active = False
+        if not _CONFORM_TIMING.events and total < 1.0:
+            return
+        report = _CONFORM_TIMING.report(item.nodeid, total)
+        print(report, flush=True)
+        print(report, file=sys.stderr, flush=True)
