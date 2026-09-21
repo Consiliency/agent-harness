@@ -467,7 +467,28 @@ def _conform_repo_scale_cached() -> tuple[tuple[str, int], ...]:
 # and clobber the inner layer's attribution. The stack's last entry is the
 # recorder a child started right now belongs to.
 _CONFORM_RECORDER_STACK: list["_ConformTimingRecorder"] = []
-_CONFORM_BOUND_ORIGINALS: dict[str, object] = {}
+
+# Restoration happens at the end of the CALL phase, but `monkeypatch` undoes in
+# TEARDOWN. A test that patches one of the six wrapped symbols saves whatever is
+# current -- the wrapper -- and reinstalls it after this hook has already put the
+# real symbol back, resurrecting a wrapper with no recorder behind it. Two
+# independent defences: every wrapper degrades to the real symbol when the stack
+# is empty (so a resurrected wrapper is harmless and records nothing), and the
+# teardown hook sweeps any wrapper it still finds bound (so it does not persist).
+_CONFORM_RETIRED_BINDINGS: list[list[tuple[str, object, object, object, object]]] = []
+
+
+def _conform_current_recorder():
+    """The recorder a seam belongs to right now, or None outside a measured call."""
+    return _CONFORM_RECORDER_STACK[-1] if _CONFORM_RECORDER_STACK else None
+
+
+def _conform_timing_sweep() -> None:
+    """Unbind any wrapper a fixture teardown resurrected after `restore()`."""
+    while _CONFORM_RETIRED_BINDINGS:
+        for _name, get, set_value, wrapper, real in _CONFORM_RETIRED_BINDINGS.pop():
+            if get() is wrapper:
+                set_value(real)
 
 
 def _conform_timing_install(recorder: "_ConformTimingRecorder"):
@@ -524,18 +545,27 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
 
         def __init__(self, args, *posargs, **kwargs):
             # Charge the child to the test that STARTED it, not to whichever
-            # test happens to be running when it is awaited.
-            self._conform_recorder = _CONFORM_RECORDER_STACK[-1]
-            self._conform_started = time.perf_counter()
-            self._conform_site = _ConformTimingRecorder.site()
-            self._conform_label = _ConformTimingRecorder.command_label(args)
-            self._conform_event = None
-            self._conform_probe = None
-            self._conform_stdin_sha256 = None
+            # test happens to be running when it is awaited. Outside a measured
+            # call -- a wrapper a fixture teardown resurrected -- the recorder is
+            # None and this behaves exactly like the real Popen.
+            #
+            # `hasattr` guards the case where a resurrected wrapper sits in this
+            # instance's MRO: the OUTER class assigns first, and the inner one
+            # must not overwrite it on the way down to the real `__init__`.
+            if not hasattr(self, "_conform_started"):
+                self._conform_recorder = _conform_current_recorder()
+                self._conform_started = time.perf_counter()
+                self._conform_site = _ConformTimingRecorder.site()
+                self._conform_label = _ConformTimingRecorder.command_label(args)
+                self._conform_event = None
+                self._conform_probe = None
+                self._conform_stdin_sha256 = None
             super().__init__(args, *posargs, **kwargs)
 
         def _conform_record(self, out_bytes: int = 0) -> None:
             owner = self._conform_recorder
+            if owner is None:
+                return
             if self._conform_event is not None:
                 # `communicate` calls `wait` internally, so the event is created
                 # before the output sizes are known, and a caller may call
@@ -588,6 +618,8 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
             return returncode
 
     def timed_copytree(src, dst, *posargs, **kwargs):
+        if _conform_current_recorder() is None:
+            return real_copytree(src, dst, *posargs, **kwargs)
         started = time.perf_counter()
         site = _ConformTimingRecorder.site()
         outermost = copytree_depth[0] == 0
@@ -598,7 +630,7 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
             copytree_depth[0] -= 1
         if outermost:
             copied = sum(len(files) for _, _, files in os.walk(dst))
-            current = _CONFORM_RECORDER_STACK[-1]
+            current = _conform_current_recorder()
             current.add(
                 kind="fs", label="shutil.copytree", site=site,
                 seconds=time.perf_counter() - started, files=copied,
@@ -608,10 +640,12 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
         return result
 
     def timed_rmtree(path, *posargs, **kwargs):
+        if _conform_current_recorder() is None:
+            return real_rmtree(path, *posargs, **kwargs)
         started = time.perf_counter()
         site = _ConformTimingRecorder.site()
         result = real_rmtree(path, *posargs, **kwargs)
-        current = _CONFORM_RECORDER_STACK[-1]
+        current = _conform_current_recorder()
         current.add(
             kind="fs", label="shutil.rmtree", site=site,
             seconds=time.perf_counter() - started,
@@ -620,6 +654,8 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
         return result
 
     def timed_extractall(self, *posargs, **kwargs):
+        if _conform_current_recorder() is None:
+            return real_extractall(self, *posargs, **kwargs)
         started = time.perf_counter()
         site = _ConformTimingRecorder.site()
         result = real_extractall(self, *posargs, **kwargs)
@@ -627,7 +663,7 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
             members = len(self.getmembers())
         except Exception:  # pragma: no cover - accounting must never fail a test
             members = -1
-        current = _CONFORM_RECORDER_STACK[-1]
+        current = _conform_current_recorder()
         current.add(
             kind="fs", label="tar.extractall", site=site,
             seconds=time.perf_counter() - started, members=members,
@@ -639,33 +675,78 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
 
     def timed_read_bytes(self, *posargs, **kwargs):
         data = real_read_bytes(self, *posargs, **kwargs)
-        current = _CONFORM_RECORDER_STACK[-1]
+        current = _conform_current_recorder()
+        if current is None:
+            return data
         current.bump("path_read_calls")
         current.bump("path_read_bytes", len(data))
         return data
 
     def timed_read_text(self, *posargs, **kwargs):
         data = real_read_text(self, *posargs, **kwargs)
-        current = _CONFORM_RECORDER_STACK[-1]
+        current = _conform_current_recorder()
+        if current is None:
+            return data
         current.bump("path_read_calls")
         current.bump("path_read_bytes", len(data))
         return data
 
-    subprocess.Popen = _TimedPopen  # type: ignore[assignment]
-    shutil.copytree = timed_copytree  # type: ignore[assignment]
-    shutil.rmtree = timed_rmtree  # type: ignore[assignment]
-    tarfile.TarFile.extractall = timed_extractall  # type: ignore[assignment]
-    Path.read_bytes = timed_read_bytes  # type: ignore[assignment]
-    Path.read_text = timed_read_text  # type: ignore[assignment]
+    bindings = [
+        (
+            "subprocess.Popen",
+            lambda: subprocess.Popen,
+            lambda value: setattr(subprocess, "Popen", value),
+            _TimedPopen,
+            real_popen,
+        ),
+        (
+            "shutil.copytree",
+            lambda: shutil.copytree,
+            lambda value: setattr(shutil, "copytree", value),
+            timed_copytree,
+            real_copytree,
+        ),
+        (
+            "shutil.rmtree",
+            lambda: shutil.rmtree,
+            lambda value: setattr(shutil, "rmtree", value),
+            timed_rmtree,
+            real_rmtree,
+        ),
+        (
+            "tarfile.TarFile.extractall",
+            lambda: tarfile.TarFile.extractall,
+            lambda value: setattr(tarfile.TarFile, "extractall", value),
+            timed_extractall,
+            real_extractall,
+        ),
+        (
+            "pathlib.Path.read_bytes",
+            lambda: Path.read_bytes,
+            lambda value: setattr(Path, "read_bytes", value),
+            timed_read_bytes,
+            real_read_bytes,
+        ),
+        (
+            "pathlib.Path.read_text",
+            lambda: Path.read_text,
+            lambda value: setattr(Path, "read_text", value),
+            timed_read_text,
+            real_read_text,
+        ),
+    ]
+    for _name, _get, set_value, wrapper, _real in bindings:
+        set_value(wrapper)
 
     def restore() -> None:
         del _CONFORM_RECORDER_STACK[depth:]
-        subprocess.Popen = real_popen  # type: ignore[assignment]
-        shutil.copytree = real_copytree  # type: ignore[assignment]
-        shutil.rmtree = real_rmtree  # type: ignore[assignment]
-        tarfile.TarFile.extractall = real_extractall  # type: ignore[assignment]
-        Path.read_bytes = real_read_bytes  # type: ignore[assignment]
-        Path.read_text = real_read_text  # type: ignore[assignment]
+        for _name, get, set_value, wrapper, real in bindings:
+            # Put back only what THIS scope displaced. A fixture that patched the
+            # symbol during setup keeps its patch instead of being clobbered.
+            if get() is wrapper:
+                set_value(real)
+        # Fixture teardown can still resurrect these; the teardown hook sweeps.
+        _CONFORM_RETIRED_BINDINGS.append(bindings)
 
     return restore
 
@@ -689,6 +770,18 @@ def pytest_runtest_call(item):
             report = recorder.report(total)
             print(report, flush=True)
             print(report, file=sys.stderr, flush=True)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Sweep wrappers a fixture teardown resurrected after the call-phase restore."""
+    if not _conform_timing_enabled():
+        yield
+        return
+    try:
+        yield
+    finally:
+        _conform_timing_sweep()
 
 
 def pytest_sessionfinish(session, exitstatus):

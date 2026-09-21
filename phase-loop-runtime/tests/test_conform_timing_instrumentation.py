@@ -8,6 +8,7 @@ CONFORM ``-k outside_agent`` lifecycle corpus is unchanged.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -54,14 +55,6 @@ def _current_identities() -> tuple[object, ...]:
         Path.read_bytes,
         Path.read_text,
     )
-
-
-def _drive_hook(item) -> None:
-    """Run the hookwrapper to completion exactly as pytest would."""
-    generator = timing.pytest_runtest_call(item)
-    next(generator)
-    with pytest.raises(StopIteration):
-        generator.send(None)
 
 
 def test_timing_hook_rebinds_nothing_when_the_flag_is_unset(timing, monkeypatch, capsys):
@@ -257,3 +250,178 @@ def test_probe_children_record_their_stdin_digest(timing):
     event = next(event for event in recorder.events if event["kind"] == "process")
     assert event["probe"] == "M-PROBE-1"
     assert isinstance(event["stdin_sha256"], str) and len(event["stdin_sha256"]) == 64
+
+
+# ---------------------------------------------------------------------------
+# Restoration ordering (board round 2, agent-harness#947)
+#
+# The call-phase hook restores at the end of the CALL phase, but `monkeypatch`
+# undoes in TEARDOWN. A test that patches one of the six wrapped symbols saves
+# whatever is current -- the wrapper -- and reinstalls it after the hook has
+# already restored, resurrecting a wrapper with an empty recorder stack. On the
+# superseded code that raised `IndexError: list index out of range` at the next
+# test's setup.
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _as_the_outermost_scope(timing):
+    """Run with no recorder installed, whatever the session's own flag is.
+
+    Under a flag-set session the hook has already pushed this test's recorder, so
+    a nested install rebinds nothing and the stack is never empty. Setting the
+    stack aside reproduces the orphan condition deterministically in both modes,
+    and putting it back leaves the session's own accounting untouched.
+    """
+    saved = list(timing._CONFORM_RECORDER_STACK)
+    timing._CONFORM_RECORDER_STACK.clear()
+    try:
+        yield
+    finally:
+        timing._CONFORM_RECORDER_STACK[:] = saved
+
+
+def _spawn_and_wait():
+    process = subprocess.Popen(
+        [sys.executable, "-c", "print('probe')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return process.communicate()
+
+
+def test_every_wrapper_degrades_to_the_real_symbol_on_an_empty_stack(timing, tmp_path):
+    """All six wrappers, invoked with no recorder: no raise, nothing counted."""
+    with _as_the_outermost_scope(timing):
+        recorder = timing._ConformTimingRecorder("probe::degrade")
+        restore = timing._conform_timing_install(recorder)
+        wrappers = _current_identities()
+        restore()
+        assert not timing._CONFORM_RECORDER_STACK
+        timing._conform_timing_sweep()
+        _assert_orphaned_wrappers_are_inert(timing, recorder, wrappers, tmp_path)
+
+
+def _assert_orphaned_wrappers_are_inert(timing, recorder, wrappers, tmp_path):
+    popen, copytree, rmtree, extractall, read_bytes, read_text = wrappers
+    before_events = len(recorder.events)
+    before_counters = dict(recorder.counters)
+
+    process = popen(
+        [sys.executable, "-c", "print('orphan')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, _ = process.communicate()
+    assert stdout.strip() == "orphan"
+
+    source = tmp_path / "source"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "file.txt").write_text("payload", encoding="utf-8")
+    copytree(source, tmp_path / "copy")
+    assert (tmp_path / "copy" / "nested" / "file.txt").is_file()
+
+    archive_path = tmp_path / "archive.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        archive.add(source / "nested" / "file.txt", arcname="file.txt")
+    with tarfile.open(archive_path) as archive:
+        extractall(archive, tmp_path / "extracted")
+    assert (tmp_path / "extracted" / "file.txt").is_file()
+
+    assert read_bytes(source / "nested" / "file.txt") == b"payload"
+    assert read_text(source / "nested" / "file.txt") == "payload"
+    rmtree(tmp_path / "copy")
+    assert not (tmp_path / "copy").exists()
+
+    assert len(recorder.events) == before_events
+    assert recorder.counters == before_counters
+
+    # The superseded rule, shown raising on the same empty stack.
+    with pytest.raises(IndexError):
+        timing._CONFORM_RECORDER_STACK[-1]
+    assert timing._conform_current_recorder() is None
+
+
+def test_a_wrapper_resurrected_after_restore_is_swept_at_teardown(timing, monkeypatch):
+    """Exactly what `monkeypatch` teardown does, and the sweep that undoes it."""
+    monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+    item = types.SimpleNamespace(nodeid="probe::resurrect")
+    with _as_the_outermost_scope(timing):
+        _assert_resurrected_wrappers_are_swept(timing, item)
+
+
+def _assert_resurrected_wrappers_are_swept(timing, item):
+    before = _current_identities()
+    generator = timing.pytest_runtest_call(item)
+    next(generator)
+    resurrected = _current_identities()
+    with pytest.raises(StopIteration):
+        generator.send(None)
+    assert _current_identities() == before
+    assert resurrected != before, "the hook must have rebound as the outermost scope"
+
+    # Fixture teardown reinstalling what it saved during the call phase.
+    subprocess.Popen = resurrected[0]
+    shutil.copytree = resurrected[1]
+    shutil.rmtree = resurrected[2]
+    tarfile.TarFile.extractall = resurrected[3]
+    Path.read_bytes = resurrected[4]
+    Path.read_text = resurrected[5]
+    assert _current_identities() == resurrected
+
+    # Harmless while resurrected: no recorder, no raise, nothing recorded.
+    assert _spawn_and_wait()[0].strip() == "probe"
+
+    teardown = timing.pytest_runtest_teardown(item, None)
+    next(teardown)
+    with pytest.raises(StopIteration):
+        teardown.send(None)
+    assert _current_identities() == before, dict(
+        zip(WRAPPED_SYMBOLS, _current_identities())
+    )
+
+
+def test_restore_leaves_a_fixture_patch_that_was_installed_first(timing):
+    """Reverse ordering: install over a patch, restore under it."""
+    sentinel = type("SentinelPopen", (subprocess.Popen,), {})
+    original = subprocess.Popen
+    with _as_the_outermost_scope(timing):
+        subprocess.Popen = sentinel
+        try:
+            recorder = timing._ConformTimingRecorder("probe::reverse")
+            restore = timing._conform_timing_install(recorder)
+            assert subprocess.Popen is not sentinel, "the hook must have rebound"
+            restore()
+            # restore() hands back the FIXTURE's patch, not the true original.
+            assert subprocess.Popen is sentinel
+            timing._conform_timing_sweep()
+            assert subprocess.Popen is sentinel
+        finally:
+            subprocess.Popen = original
+    assert subprocess.Popen is original
+
+
+def test_zz_leak_a_monkeypatches_a_wrapped_symbol(monkeypatch):
+    """Saves the wrapper under a flag-set session and reinstalls it at teardown."""
+    monkeypatch.setattr(subprocess, "Popen", subprocess.Popen)
+    monkeypatch.setattr(shutil, "copytree", shutil.copytree)
+    monkeypatch.setattr(Path, "read_bytes", Path.read_bytes)
+    assert _spawn_and_wait()[0].strip() == "probe"
+
+
+@pytest.fixture
+def spawns_outside_the_call_phase(tmp_path):
+    assert _spawn_and_wait()[0].strip() == "probe"
+    (tmp_path / "setup.txt").write_text("setup", encoding="utf-8")
+    assert (tmp_path / "setup.txt").read_bytes() == b"setup"
+    yield
+    assert _spawn_and_wait()[0].strip() == "probe"
+
+
+def test_zz_leak_b_a_following_test_spawns_in_setup_and_body(
+    spawns_outside_the_call_phase,
+):
+    """The consecutive-test regression: this is where the IndexError landed."""
+    assert _spawn_and_wait()[0].strip() == "probe"
