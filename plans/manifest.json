@@ -6017,7 +6017,7 @@
           "metadata": {
             "phase_alias": "RUNTIME",
             "planning_base": "3a10b03191f10bdb70c8238b535dcc6afdb5a6d7",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "roadmap_sha256": "f43945d4469190e14f4c77ffd56f3a456072595880b271f77d37fcddff960c56",
             "run_id": "20260825T144913Z-01-runtime-plan"
           },
           "transition": "committed"
@@ -6108,6 +6108,12 @@
         },
         {
           "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+          "roadmap_sha256": "f43945d4469190e14f4c77ffd56f3a456072595880b271f77d37fcddff960c56",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#928"
+        },
+        {
+          "plan_sha256": "c0cce97c5c637188eb99b0dba3bf8a92cde66ee397722175d4b70a2f5f77223b",
           "roadmap_sha256": "f43945d4469190e14f4c77ffd56f3a456072595880b271f77d37fcddff960c56",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#928"
