@@ -2845,8 +2845,46 @@ def _sigio_is_unowned(handler: Any) -> bool:
     `SIG_DFL` is the case this guard exists for. `SIG_IGN` is safe because those
     notifications were already being discarded. Our own handler is a nested
     guard. Anything else, `None` included, belongs to someone.
+
+    IDENTITY, never equality: a foreign callable whose `__eq__` returns True for
+    anything would otherwise pass a membership test and be displaced silently.
     """
-    return handler in (signal.SIG_DFL, signal.SIG_IGN, _lease_sigio_handler)
+    return (
+        handler is signal.SIG_DFL
+        or handler is signal.SIG_IGN
+        or handler is _lease_sigio_handler
+    )
+
+
+def _unwind_failed_lease_entry(previous_mask: Any, previous_handler: Any) -> None:
+    """Undo a failed entry, in reverse order, without masking the original error.
+
+    Acquisition installs the disposition and then blocks the signal, so unwinding
+    releases the mask first and restores the disposition second. Leaving SIGIO
+    blocked is not a lesser failure than leaving the disposition installed: both
+    are permanent for the life of the process, because entry failed and so no
+    caller ever receives a token for `_end_lease_signal_guard` to act on.
+
+    Each step is protected independently. A failure in one must not abort the
+    other, and NEITHER may replace the exception already propagating: the caller
+    has to learn why entry failed, not why cleanup did. That is why these
+    swallow, including `BaseException` -- a second interrupt arriving during
+    unwind must not strand the first resource.
+    """
+    if previous_mask is not None:
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        except BaseException:  # noqa: BLE001 - see docstring
+            pass
+    try:
+        if signal.getsignal(signal.SIGIO) is _lease_sigio_handler:
+            # `None` means the displaced handler was installed outside Python and
+            # cannot be reinstated; SIG_DFL is the only safe stand-in, and that
+            # loss is disclosed on the admission path rather than hidden here.
+            restore = previous_handler if previous_handler is not None else signal.SIG_DFL
+            signal.signal(signal.SIGIO, restore)
+    except BaseException:  # noqa: BLE001 - see docstring
+        pass
 
 
 def _begin_lease_signal_guard() -> _LeaseSignalGuard:
@@ -2855,9 +2893,10 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     # the kernel task inventory instead of `threading.active_count()`, which
     # cannot see a `_thread`- or C-spawned thread and so answered 1 for a process
     # that had two. The process-wide disposition installed below is
-    # defence-in-depth for the window this precondition cannot cover (a thread
-    # that appears AFTER admission), never a licence to admit a multi-threaded
-    # caller. Maintainer ruling, 2026-09-21.
+    # defence-in-depth for the one case this precondition cannot cover: a thread
+    # that appears after admission AND unblocks SIGIO for itself. A thread that
+    # merely appears inherits the mask and needs no help. Maintainer ruling,
+    # 2026-09-21.
     thread_count = _live_thread_count()
     if (not sys.platform.startswith("linux") or
             threading.current_thread() is not threading.main_thread() or
@@ -2867,45 +2906,47 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
         raise AgyCanaryEvidenceError(
             "settings write lease requires one signal-clean main thread"
         )
-    # Capture the disposition BEFORE replacing it. `getsignal` answers None when
-    # the handler was installed outside Python (a C extension), which we could
-    # not put back on the way out -- refuse rather than clobber it permanently.
-    previous_handler = signal.getsignal(signal.SIGIO)
-    if previous_handler is None:
+    # A cheap pre-check so the common refusal never installs anything. It is not
+    # the authoritative one: `getsignal` reports Python's own bookkeeping, so a
+    # handler installed by a C extension AFTER Python initialised that bookkeeping
+    # still reads as SIG_DFL. This guard cannot see such an owner, and displacing
+    # one would restore the wrong disposition on the way out. That limit is real
+    # and is disclosed rather than implied away.
+    if signal.getsignal(signal.SIGIO) is None:
         raise AgyCanaryEvidenceError(
             "settings write lease cannot restore the existing SIGIO handler"
         )
-    if not _sigio_is_unowned(previous_handler):
+    if not _sigio_is_unowned(signal.getsignal(signal.SIGIO)):
         raise AgyCanaryEvidenceError(
             "settings write lease will not displace an existing SIGIO owner"
         )
+    previous_handler = None
+    previous_mask = None
     try:
         try:
-            signal.signal(signal.SIGIO, _lease_sigio_handler)
+            # The RETURN VALUE is authoritative, not the reading above: a Python
+            # signal callback can install an owner between the check and here,
+            # and only this tells us what was actually displaced.
+            previous_handler = signal.signal(signal.SIGIO, _lease_sigio_handler)
         except (OSError, ValueError) as exc:
             raise AgyCanaryEvidenceError(
                 "settings write lease cannot install its SIGIO handler"
             ) from exc
+        if not _sigio_is_unowned(previous_handler):
+            raise AgyCanaryEvidenceError(
+                "settings write lease will not displace an existing SIGIO owner"
+            )
         try:
-            previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
         except OSError as exc:
             raise AgyCanaryEvidenceError(
                 "settings write lease cannot block SIGIO"
             ) from exc
         if signal.SIGIO in signal.sigpending():
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
             raise AgyCanaryEvidenceError("settings write lease SIGIO state is ambiguous")
-        guard = _LeaseSignalGuard(mask=previous, previous_handler=previous_handler)
+        guard = _LeaseSignalGuard(mask=previous_mask, previous_handler=previous_handler)
     except BaseException:
-        # Entry failed, so no caller holds a token and `_end_lease_signal_guard`
-        # will never run: its `finally` cannot repair an entry failure. Without
-        # this, a `KeyboardInterrupt` raised after the disposition is installed
-        # leaves this process discarding every SIGIO for the rest of its life --
-        # a failure mode the pre-#950 code could not have, because it installed
-        # no disposition at all. Keyed on the OBSERVED disposition rather than a
-        # flag, so there is no window between installing and recording it.
-        if signal.getsignal(signal.SIGIO) is _lease_sigio_handler:
-            signal.signal(signal.SIGIO, previous_handler)
+        _unwind_failed_lease_entry(previous_mask, previous_handler)
         raise
     return guard
 

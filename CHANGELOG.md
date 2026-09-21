@@ -64,11 +64,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the handler afterwards cannot replay what was dropped: measured at one
   delivery with no guard, zero inside the lease window, and still zero after the
   guard restores it. Refusing is the same fail-closed direction as an unreadable
-  inventory, and it applies to a single-threaded caller too.
-- A failed entry can no longer leave the disposition installed. An exception
-  raised after the handler is in place but before the guard returns hands no
-  token to `clean_settings`, so the exit path never runs; without rollback the
-  process would discard every SIGIO for the rest of its life.
+  inventory, and it applies to a single-threaded caller too. Ownership is decided
+  by identity, never by equality, so a callable that merely compares equal to the
+  default disposition cannot pass; and the handler the installation actually
+  displaced, rather than an earlier reading, is what the decision rests on.
+- **Known limit**: a SIGIO handler installed by a C extension after Python set up
+  its own signal bookkeeping still reads as the default disposition, so this
+  guard cannot detect that owner and would restore the wrong disposition on the
+  way out. This is disclosed rather than implied away; nothing here detects it.
+- A failed entry can no longer leave either resource behind. An exception raised
+  after the handler is in place but before the guard returns hands no token to
+  `clean_settings`, so the exit path never runs; without rollback the process
+  would discard every SIGIO, or leave it blocked, for the rest of its life.
+  Unwinding releases the mask and then restores the disposition, the reverse of
+  acquisition, and a failure in either step neither aborts the other nor replaces
+  the exception that caused the unwind.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
   through signal delivery.
 
