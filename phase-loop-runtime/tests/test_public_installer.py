@@ -31,7 +31,8 @@ def installation(tmp_path):
     template = tmp_path / "template"
     template.mkdir()
     env = {
-        **os.environ,
+        **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        "LC_ALL": "C",
         "HOME": str(home),
         "PATH": f"{tools}:/usr/bin:/bin",
         "GIT_CONFIG_NOSYSTEM": "1",

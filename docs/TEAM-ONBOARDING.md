@@ -52,6 +52,8 @@ and the installer resolves the current release itself.
 
 This guide targets current releases. Historical tags without `RELEASE_PIN` or
 `phase-loop install --copy` need a version-specific setup procedure.
+To upgrade an old installer checkout that is refused, move it aside for safekeeping
+or choose a new, absent `AGENT_HARNESS_HOME`, then rerun the installer.
 
 **Prereqs:** git, `curl` (the installer uses it to resolve the release pin, and the one-liner
 form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
