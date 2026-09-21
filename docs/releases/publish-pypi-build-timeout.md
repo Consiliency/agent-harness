@@ -1,7 +1,7 @@
 # The publish-pypi build timeout is per path, and each number is measured
 
 `publish-pypi.yml`'s `build + verify wheel + sdist` job runs with
-`timeout-minutes: 25` on a pull request and `100` on a tag push or a manual
+`timeout-minutes: 25` on a pull request and `140` on a tag push or a manual
 dispatch. The two paths run different work (see below). On pull requests, over
 the 18 completed runs sampled on 2026-09-04 the job
 averaged **7.7 minutes** and peaked at **12**, so 25 is roughly twice the worst
@@ -49,9 +49,19 @@ against pull-request timings only, and the first tag after it hit the cap:
   **cancelled at 25 min 15 s** by the timeout, at 50% of the Gate A suite; the
   publish job was skipped and nothing reached PyPI.
 
-The tag/dispatch bound is therefore `100` again — about 1.4x the one measured
-run — expressed as `${{ github.event_name == 'pull_request' && 25 || 100 }}`, so
-the pull-request bound stays where the measurement put it. Tighten the tag bound
-only after a sample of tag runs exists.
+The tag/dispatch bound is `140`: twice the one measured run, which is the
+headroom #757 applied on the pull-request path (25 is about twice its 12-minute
+maximum). It is expressed as
+`${{ github.event_name == 'pull_request' && 25 || 140 }}` — an Actions
+value-select, safe because the pull-request operand is non-zero — so the
+pull-request bound stays where the measurement put it. Tighten the tag bound only
+against a sample of tag runs, and record the sample here.
+
+**A tag cut before this change cannot be rescued by it.** A tag run executes the
+workflow file at the tagged commit, and a `workflow_dispatch` from a branch makes
+the publish job's `startsWith(github.ref, 'refs/tags/v')` condition false. The
+only path to PyPI for such a version is to re-point the tag at a head that carries
+this file (maintainer-gated); the version number is unchanged when nothing was
+published, and the release record is completed against the run that publishes.
 
 Raise a timeout only against a measurement, and record the measurement here.
