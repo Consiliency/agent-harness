@@ -277,6 +277,28 @@ actual terminal runtime/broker records. All three envelopes bind measured
 `sandbox_network_filtered` facts. The executable pin covers the entry image;
 helper identities are measured and recorded, not falsely covered by that pin.
 
+### Post-qualification CI amendment — 2026-09-21
+
+The first published candidate's exact-wheel Gate A failed 72 existing validator
+tests because its sparse source-data checkout omitted
+`phase-loop-runtime/scripts/qualify_gemini_heartbeat.py`. A real sparse-checkout
+reproduction of those same nodes failed before this correction. This is a fixture
+delivery defect, not a timeout or failed provider qualification.
+
+Modify `phase-loop-runtime/scripts/gate_a_cleanroom.sh` to include that one
+qualification script beside the existing by-path evidence verifier. Keep runtime
+imports bound to the installed wheel, all test selections and chronology rules
+unchanged. No production/driver bytes, provider launch sites, deadlines or
+qualification receipts change. Reuse the existing 72 failing tests: verify their
+RED/GREEN outcomes in the real sparse fixture, then run the existing Gate A
+contract tests and source-pinned CI. The fixture probe uses source imports and
+does not itself establish installed-wheel independence. CI must establish that.
+
+The bootstrap exception has expired. Require all four vendors to review this
+bounded plan/fixture delta and its evidence before publication. Changing Gate A
+also causes the existing CI selection policy to retain the heavy chronology node
+in its suite lanes; preserve that policy and report its actual outcome.
+
 ## Documentation impact
 
 Update `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`,
