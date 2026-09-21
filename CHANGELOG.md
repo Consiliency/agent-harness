@@ -791,19 +791,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   indistinguishable from an ownership block. The roadmap **read** is normalized too — in
   `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
   fix lived only in `preflight`, which is exactly how `audit` kept the hole.
-- Ownership is answered **by NAME**: the repository ROOT is resolved, the argument never is.
-  `Path.resolve()` does not merely collapse `.` and `..` — it rewrites every symlink in the
-  path — and that rewriting arrived as a side effect of handling `./` and absolute spellings,
-  not as a requirement. Containing it cost four review rounds (an internal symlink rewritten
-  to its target and matching no token; `..` cancelling a symlink and naming a file the caller
-  never typed; a "both identities" union reporting a phantom third path), and every one of
-  those defects was downstream of resolving the argument. Resolving only the root keeps the
-  case that motivated it — a symlinked checkout root, where an absolute argument and `--repo`
-  may be spelled under different roots — and drops the rest. It also makes `--preflight` agree
-  with `audit`, which has always worked by name because `git diff --name-only` reports names.
-  **Known limitation, documented rather than patched:** in a repo containing an internal
-  symlink, editing through it modifies the target's file and this reports only the typed
-  name's owner — the same limitation `audit` has.
+- **An intermediate iteration answered ownership by NAME only** (the repository ROOT resolved,
+  the argument never), because resolving the argument had produced three defects in four
+  review rounds: an internal symlink rewritten to its target and matching no token, `..`
+  cancelling a symlink and naming a file the caller never typed, and a "both identities"
+  union reporting a phantom third path. That iteration carried a documented limitation —
+  an edit through an internal symlink reported only the typed name's owner. **It is not the
+  shipped behaviour.** The final implementation, described in the two bullets below and in
+  the graduation-instrument entry, evaluates a path under both identities it denotes and
+  unions the owners, with the lexical identity dropped only where `..` cancelled a symlink;
+  `--preflight` still agrees with `audit`, which works by name because
+  `git diff --name-only` reports names.
 - **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
   root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
   Likewise a path that cannot be placed inside the repo, which was previously skipped: a
@@ -1120,6 +1118,11 @@ listed.
   run holding most of its context but missing two nameable symbols — unaddressed. The test is now
   what you can name rather than how much you already know, in the bundled skill and both skill
   sources.
+- **Importing the CLI or the panel module no longer leaves the built-in FAB closeout gate
+  unregistered** (`Consiliency/agent-harness#827`, fixes `Consiliency/agent-harness#819`).
+  `events` imported `closeout` while its module graph was still initialising, so a
+  fresh-process import could silently drop the gate; the diagnostic helper is now imported
+  at its two use sites. Seven fresh-process import cases went from 5 failed to 7 passed.
 - **CI runs on GitHub-hosted runners for this public repository** (`Consiliency/agent-harness#740`).
   All twelve job definitions across the eight workflows moved from paid Blacksmith runners to
   `ubuntu-latest`, which GitHub meters for free on public repositories; no workflow logic changed.
