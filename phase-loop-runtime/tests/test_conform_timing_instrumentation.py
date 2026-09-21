@@ -46,6 +46,16 @@ WRAPPED_SYMBOLS = (
 )
 
 
+SYMBOL_SETTERS = {
+    "subprocess.Popen": lambda v: setattr(subprocess, "Popen", v),
+    "shutil.copytree": lambda v: setattr(shutil, "copytree", v),
+    "shutil.rmtree": lambda v: setattr(shutil, "rmtree", v),
+    "tarfile.TarFile.extractall": lambda v: setattr(tarfile.TarFile, "extractall", v),
+    "pathlib.Path.read_bytes": lambda v: setattr(Path, "read_bytes", v),
+    "pathlib.Path.read_text": lambda v: setattr(Path, "read_text", v),
+}
+
+
 def _current_identities() -> tuple[object, ...]:
     return (
         subprocess.Popen,
@@ -201,8 +211,11 @@ def test_repeated_communicate_counts_one_child_and_one_byte_total(timing):
     process_events = [event for event in recorder.events if event["kind"] == "process"]
     assert len(process_events) == 1, process_events
     assert recorder.counters["child_processes"] == 1
-    assert recorder.counters["child_output_bytes"] == len(first_stdout)
-    assert process_events[0]["out_bytes"] == len(first_stdout)
+    # text mode, so the unit is characters and the counter says so
+    assert recorder.counters["child_output_chars"] == len(first_stdout)
+    assert "child_output_bytes" not in recorder.counters
+    assert process_events[0]["out_size"] == len(first_stdout)
+    assert process_events[0]["out_kind"] == "chars"
 
 
 def test_nested_copytree_records_one_event_and_counts_each_file_once(timing, tmp_path):
@@ -378,9 +391,16 @@ def _assert_resurrected_wrappers_are_swept(timing, item):
     next(teardown)
     with pytest.raises(StopIteration):
         teardown.send(None)
-    assert _current_identities() == before, dict(
+    # The sweep leaves the IMPORT-TIME value, which equals `before` outside a
+    # flag-set session and is the correct answer inside one too.
+    expected = tuple(
+        timing._CONFORM_PRISTINE[name] for name in WRAPPED_SYMBOLS
+    )
+    assert _current_identities() == expected, dict(
         zip(WRAPPED_SYMBOLS, _current_identities())
     )
+    for name, value in zip(WRAPPED_SYMBOLS, before):
+        SYMBOL_SETTERS[name](value)  # leave the session's own state as found
 
 
 def test_restore_leaves_a_fixture_patch_that_was_installed_first(timing):
@@ -550,30 +570,38 @@ def test_deleting_the_flag_mid_test_cannot_leave_a_double_counting_wrapper(
     """Codex's sequence, measured: the next test must count the operation ONCE."""
     with _as_the_outermost_scope(timing):
         monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
-        original = seam.get()
+        # Under a flag-set session `entry` is the session's own wrapper; the
+        # sweep is required to leave the IMPORT-TIME value, which is the only
+        # predecessor that cannot have expired.
+        entry = seam.get()
+        expected = timing._CONFORM_PRISTINE[seam.name]
+        try:
+            def delete_the_flag_mid_test():
+                saved_by_monkeypatch = seam.get()
+                monkeypatch.delenv(timing._CONFORM_TIMING_ENV, raising=False)
+                return saved_by_monkeypatch
 
-        def delete_the_flag_mid_test():
-            saved_by_monkeypatch = seam.get()
-            monkeypatch.delenv(timing._CONFORM_TIMING_ENV, raising=False)
-            return saved_by_monkeypatch
+            item, wrapper = _run_call_phase(
+                timing, "probe::flag_deleted", delete_the_flag_mid_test
+            )
+            assert wrapper is not entry, "the call phase must have installed a wrapper"
+            assert seam.get() is entry, "the call phase must restore before teardown"
 
-        item, wrapper = _run_call_phase(timing, "probe::flag_deleted", delete_the_flag_mid_test)
-        assert wrapper is not original, "the call phase must have installed a wrapper"
-        assert seam.get() is original, "the call phase must restore before teardown"
+            def fixture_undo():
+                # monkeypatch restores BOTH what it saved and the environment.
+                seam.set_value(wrapper)
+                monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
 
-        def fixture_undo():
-            # monkeypatch restores BOTH what it saved and the environment it saved.
-            seam.set_value(wrapper)
-            monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+            _run_teardown_phase(timing, item, fixture_undo)
 
-        _run_teardown_phase(timing, item, fixture_undo)
-
-        assert seam.get() is original, (
-            f"{seam.name} survived teardown; the sweep re-read the flag"
-        )
-        assert _counter_delta_for_one_exercise(timing, seam, tmp_path) == 1, (
-            f"{seam.name} counted the operation more than once"
-        )
+            assert seam.get() is expected, (
+                f"{seam.name} survived teardown; the sweep re-read the flag"
+            )
+            assert _counter_delta_for_one_exercise(timing, seam, tmp_path) == 1, (
+                f"{seam.name} counted the operation more than once"
+            )
+        finally:
+            seam.set_value(entry)
 
 
 @pytest.mark.parametrize("seam", SEAMS, ids=lambda seam: seam.name)
@@ -583,18 +611,23 @@ def test_setting_the_flag_mid_test_cannot_leave_a_double_counting_wrapper(
     """The mirror: unset at call start, set mid-test, nothing installed to leak."""
     with _as_the_outermost_scope(timing):
         monkeypatch.delenv(timing._CONFORM_TIMING_ENV, raising=False)
-        original = seam.get()
+        entry = seam.get()
+        try:
+            def set_the_flag_mid_test():
+                monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+                return seam.get()
 
-        def set_the_flag_mid_test():
-            monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
-            return seam.get()
+            item, during = _run_call_phase(
+                timing, "probe::flag_set", set_the_flag_mid_test
+            )
+            assert during is entry, "an unset flag at call start must install nothing"
+            _run_teardown_phase(timing, item)
 
-        item, during = _run_call_phase(timing, "probe::flag_set", set_the_flag_mid_test)
-        assert during is original, "an unset flag at call start must install nothing"
-        _run_teardown_phase(timing, item)
-
-        assert seam.get() is original
-        assert _counter_delta_for_one_exercise(timing, seam, tmp_path) == 1
+            # Nothing was installed, so nothing was retired and nothing is swept.
+            assert seam.get() is entry
+            assert _counter_delta_for_one_exercise(timing, seam, tmp_path) == 1
+        finally:
+            seam.set_value(entry)
 
 
 def test_a_surviving_layer_cannot_double_count_even_if_one_is_left_installed(
@@ -628,3 +661,114 @@ def test_a_surviving_layer_cannot_double_count_even_if_one_is_left_installed(
         # read_bytes and read_text each counted once, and nothing counted twice.
         assert recorder.counters["path_read_calls"] == 2
         assert not leaked.counters, leaked.counters
+
+
+# ---------------------------------------------------------------------------
+# Composition of two patch arrangements (board round 4, agent-harness#947)
+#
+# The wrapper-resurrection case and the independent-fixture case were each
+# covered, but never COMPOSED. When `monkeypatch` initialises before a fixture
+# that installs its own replacement F, the sweep used to restore the value
+# captured at install -- which is F -- after F's own fixture had already torn
+# down, leaking an expired object into every later test. It is durable: the next
+# install captures F as its own predecessor, so nothing ever puts the original
+# back.
+#
+# These assert on the symbol observed in a LATER test's SETUP phase, because a
+# leak is invisible inside the test that creates it.
+# ---------------------------------------------------------------------------
+
+PRISTINE_AT_IMPORT = {
+    "subprocess.Popen": subprocess.Popen,
+    "pathlib.Path.read_bytes": Path.read_bytes,
+}
+_SYMBOL_AT_SETUP: dict[str, object] = {}
+
+
+def _compose_fixture_then_wrapper(timing, monkeypatch, name, get, set_value):
+    """Run codex's six-step sequence and return the symbol the sweep left.
+
+    `entry` is whatever is bound when this test starts, which under a flag-set
+    session is the session's own wrapper; it is put back at the end so the
+    session's accounting is undisturbed. The value the sweep OUGHT to leave is
+    the import-time original, which is the only predecessor that cannot expire.
+    """
+    entry = get()
+    expected = timing._CONFORM_PRISTINE[name]
+    foreign = (
+        type("ForeignPopen", (expected,), {})
+        if name == "subprocess.Popen"
+        else (lambda self, *a, **k: expected(self, *a, **k))
+    )
+    with _as_the_outermost_scope(timing):
+        set_value(foreign)  # 1. an independent fixture installs F over the original
+        try:
+            monkeypatch.setenv(timing._CONFORM_TIMING_ENV, "1")
+            # 2. the instrumentation installs W, capturing F as its predecessor.
+            # 3. the test's monkeypatch saves W.
+            item, wrapper = _run_call_phase(
+                timing, f"probe::composed::{name}", during=get
+            )
+            assert wrapper is not foreign, "the call phase must have installed a wrapper"
+            assert get() is foreign, "4. call cleanup restores F, which is still live"
+
+            def teardown_order():
+                set_value(expected)  # 5a. the independent fixture restores the original
+                set_value(wrapper)   # 5b. monkeypatch.undo restores W
+
+            _run_teardown_phase(timing, item, teardown_order)  # 6. the sweep
+            left = get()
+        finally:
+            # Deliberately NOT restored here. If the sweep left an expired
+            # object, the next test must be able to observe it in its own setup
+            # phase, which is where a leak of this shape actually shows. The
+            # follower below restores.
+            pass
+    return left, foreign, expected, entry
+
+
+def test_zzc_composed_popen_does_not_leak_an_expired_fixture_patch(timing, monkeypatch):
+    left, foreign, expected, _entry = _compose_fixture_then_wrapper(
+        timing, monkeypatch, "subprocess.Popen",
+        lambda: subprocess.Popen, lambda v: setattr(subprocess, "Popen", v),
+    )
+    assert left is not foreign, "the sweep restored an expired fixture replacement"
+    assert left is expected
+
+
+def test_zzc_composed_read_bytes_does_not_leak_an_expired_fixture_patch(
+    timing, monkeypatch
+):
+    left, foreign, expected, _entry = _compose_fixture_then_wrapper(
+        timing, monkeypatch, "pathlib.Path.read_bytes",
+        lambda: Path.read_bytes, lambda v: setattr(Path, "read_bytes", v),
+    )
+    assert left is not foreign, "the sweep restored an expired fixture replacement"
+    assert left is expected
+
+
+@pytest.fixture
+def _record_symbols_at_setup(request):
+    """Observe the symbols BEFORE this test's own call phase can install over them."""
+    _SYMBOL_AT_SETUP[request.node.name] = {
+        "subprocess.Popen": subprocess.Popen,
+        "pathlib.Path.read_bytes": Path.read_bytes,
+    }
+    yield
+
+
+def test_zzd_a_later_test_sees_clean_symbols_in_its_setup_phase(
+    _record_symbols_at_setup, request
+):
+    """Where the leak is actually visible: a subsequent test's setup phase."""
+    observed = _SYMBOL_AT_SETUP[request.node.name]
+    try:
+        for name, value in observed.items():
+            assert value is PRISTINE_AT_IMPORT[name], (
+                f"{name} was left as {value!r} by an earlier test"
+            )
+    finally:
+        # Put the session back however the check went, so one leak does not
+        # cascade through the rest of the module.
+        for name, value in PRISTINE_AT_IMPORT.items():
+            SYMBOL_SETTERS[name](value)

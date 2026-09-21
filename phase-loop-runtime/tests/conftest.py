@@ -477,6 +477,22 @@ _CONFORM_RECORDER_STACK: list["_ConformTimingRecorder"] = []
 # teardown hook sweeps any wrapper it still finds bound (so it does not persist).
 _CONFORM_RETIRED_BINDINGS: list[list[tuple[str, object, object, object, object]]] = []
 
+# The values these symbols carry at conftest import, before any fixture has run.
+# The sweep needs a predecessor it can SHOW is still valid. The value captured at
+# install time is not that: an independent fixture may have installed its own
+# replacement first, in which case `real` is that fixture's object and is stale
+# the moment the fixture tears down. Restoring it then leaks an expired patch
+# into every later test. The import-time value is the one the session started
+# with and cannot expire, so the sweep restores that.
+_CONFORM_PRISTINE: dict[str, object] = {
+    "subprocess.Popen": subprocess.Popen,
+    "shutil.copytree": shutil.copytree,
+    "shutil.rmtree": shutil.rmtree,
+    "tarfile.TarFile.extractall": tarfile.TarFile.extractall,
+    "pathlib.Path.read_bytes": Path.read_bytes,
+    "pathlib.Path.read_text": Path.read_text,
+}
+
 
 # Re-entrancy depth per SEAM, module-level so that two wrapper layers -- a
 # surviving one and a freshly installed one -- coordinate through the same
@@ -508,11 +524,19 @@ def _conform_current_recorder():
 
 
 def _conform_timing_sweep() -> None:
-    """Unbind any wrapper a fixture teardown resurrected after `restore()`."""
+    """Unbind any wrapper a fixture teardown resurrected after `restore()`.
+
+    It installs the IMPORT-TIME value, not the predecessor captured at install.
+    By the time this runs, every fixture teardown for the test has already gone,
+    so a predecessor that belonged to an independent fixture has expired; putting
+    it back would leak that fixture's object into every later test. Reaching this
+    branch at all means our own wrapper is the live value, so no live fixture
+    patch can be displaced by restoring the session's original.
+    """
     while _CONFORM_RETIRED_BINDINGS:
-        for _name, get, set_value, wrapper, real in _CONFORM_RETIRED_BINDINGS.pop():
+        for name, get, set_value, wrapper, real in _CONFORM_RETIRED_BINDINGS.pop():
             if get() is wrapper:
-                set_value(real)
+                set_value(_CONFORM_PRISTINE.get(name, real))
 
 
 def _conform_timing_install(recorder: "_ConformTimingRecorder"):
@@ -580,10 +604,13 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
                 self._conform_stdin_sha256 = None
             super().__init__(args, *posargs, **kwargs)
 
-        def _conform_record(self, out_bytes: int = 0) -> None:
+        def _conform_record(self, out_size: int = 0, out_kind: str = "bytes") -> None:
             owner = self._conform_recorder
             if owner is None:
                 return
+            counter = (
+                "child_output_chars" if out_kind == "chars" else "child_output_bytes"
+            )
             if self._conform_event is not None:
                 # `communicate` calls `wait` internally, so the event is created
                 # before the output sizes are known, and a caller may call
@@ -592,25 +619,28 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
                 # bytes, so only a HIGHER count moves the event, and it moves the
                 # counter by the delta. Repeated completions add nothing twice
                 # and cannot subtract what was already counted.
-                if out_bytes > self._conform_event["out_bytes"]:
-                    owner.bump(
-                        "child_output_bytes",
-                        out_bytes - self._conform_event["out_bytes"],
-                    )
-                    self._conform_event["out_bytes"] = out_bytes
+                if out_size > self._conform_event["out_size"]:
+                    owner.bump(counter, out_size - self._conform_event["out_size"])
+                    self._conform_event["out_size"] = out_size
+                    self._conform_event["out_kind"] = out_kind
                 return
             self._conform_event = owner.add(
                 kind="process",
                 label=self._conform_label,
                 site=self._conform_site,
                 seconds=time.perf_counter() - self._conform_started,
-                out_bytes=out_bytes,
+                out_size=out_size,
+                out_kind=out_kind,
                 probe=self._conform_probe,
                 stdin_sha256=self._conform_stdin_sha256,
             )
             owner.bump("child_processes")
             owner.bump(f"child_processes::{self._conform_label}")
-            owner.bump("child_output_bytes", out_bytes)
+            if out_size:
+                # `wait` completes before the sizes are known and reports 0; the
+                # unit is only known once `communicate` returns, so do not create
+                # a zero entry under the wrong one.
+                owner.bump(counter, out_size)
 
         def communicate(self, *posargs, **kwargs):
             payload = None
@@ -627,7 +657,13 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
                     self._conform_event["probe"] = self._conform_probe
                     self._conform_event["stdin_sha256"] = self._conform_stdin_sha256
             stdout, stderr = super().communicate(*posargs, **kwargs)
-            self._conform_record(sum(len(part or ()) for part in (stdout, stderr)))
+            # `len` on a text-mode stream counts CHARACTERS, not bytes. Count the
+            # unit that was actually measured and say which it is, rather than
+            # labelling characters as bytes.
+            out_kind = "chars" if isinstance(stdout or stderr, str) else "bytes"
+            self._conform_record(
+                sum(len(part or ()) for part in (stdout, stderr)), out_kind
+            )
             return stdout, stderr
 
         def wait(self, *posargs, **kwargs):
