@@ -1,4 +1,6 @@
 """model-routing-v1 P3 — escalation ladder + bounded governed pre-merge loop."""
+import contextlib
+import importlib
 import unittest
 from unittest.mock import Mock
 
@@ -154,6 +156,56 @@ if __name__ == "__main__":
     unittest.main()
 
 
+@contextlib.contextmanager
+def _module_state_restored(module):
+    """Put `module` back exactly as it was, for a body that reloads it.
+
+    `importlib.reload` re-executes the module into the SAME namespace dict, so
+    every attribute is rebound to a NEW object -- classes included. Any module
+    that already did `from phase_loop_runtime.governed_premerge import X` keeps
+    the PRE-reload `X`, and a later identity check against it fails:
+    `test_governed_gate_crfixes.py::test_no_disjoint_reviewer_hold_reports_accurate_reason`
+    asserts `isinstance(result, LoopResult)` and is the live victim.
+
+    Serial runs hide this only because collection is alphabetical, which happens
+    to put the victim first. Under pytest-xdist the file-to-worker order is
+    whatever the scheduler picks, so the same suite reds at random
+    (Consiliency/agent-harness#945). Reversing two file arguments reproduces it
+    with no xdist at all.
+
+    Restoring the dict (rather than reloading a second time) is what returns the
+    ORIGINAL objects: functions defined in the module close over this very dict
+    as their `__globals__`, so putting its contents back also makes the original
+    functions resolve the original classes again.
+    """
+    saved = dict(module.__dict__)
+    try:
+        yield
+    finally:
+        module.__dict__.clear()
+        module.__dict__.update(saved)
+
+
+def test_reloading_governed_premerge_restores_its_class_identity():
+    """Falsifier for the restore above: it reds the moment the restore is dropped.
+
+    Both halves matter. The first assertion proves the reload genuinely rebinds
+    (so the second is not passing vacuously); the second proves the restore put
+    the original class object back.
+    """
+    gp = importlib.import_module("phase_loop_runtime.governed_premerge")
+    before = gp.LoopResult
+    with _module_state_restored(gp):
+        importlib.reload(gp)
+        assert gp.LoopResult is not before, (
+            "reload no longer rebinds LoopResult; this guard would pass vacuously"
+        )
+    assert gp.LoopResult is before, (
+        "reloading governed_premerge left a NEW LoopResult bound; every module "
+        "holding the pre-reload class now fails isinstance against it"
+    )
+
+
 def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
     """governed_premerge readiness interlock for FABREADMIT."""
     import importlib
@@ -185,6 +237,13 @@ def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
 
     from phase_loop_runtime import governed_premerge as gp
     from phase_loop_runtime import fabreadmit_capability as cap
+
+    with _module_state_restored(gp):
+        _run_readiness_interlock_body(request, gp, cap, _mock)
+
+
+def _run_readiness_interlock_body(request, gp, cap, _mock):
+    from _fabreadmit_tdd_guard import fabreadmit_require, fabreadmit_symbol, fabreadmit_this_nodeid
 
     importlib.reload(gp)
 

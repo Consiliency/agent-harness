@@ -138,10 +138,96 @@ def _coordinator_run_dir(root: Path):
             os.environ["PHASE_LOOP_RUN_DIR"] = old_value
 
 
+# Measured on this repository's own helpers: EITHER setting alone suppresses the
+# detached writer, because `git maintenance run --auto` consults `gc.auto` for its
+# auto decision and `maintenance.auto` gates the launch itself. Both are set as a
+# hedge across Git versions that may reach auto-maintenance by only one of those
+# routes, not because one is known to be insufficient today.
+_DETACHED_MAINTENANCE_SETTINGS = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+
+def _disable_detached_git_maintenance(repo):
+    """Stop this repository from starting a background writer into its own `.git`."""
+    for key, value in _DETACHED_MAINTENANCE_SETTINGS:
+        subprocess.run(
+            ["git", "config", key, value], cwd=repo, capture_output=True, check=True,
+        )
+
+
+def _detached_git_writers_under(root):
+    """Git processes whose working directory is inside `root`.
+
+    Reads the kernel's view rather than asking Git, because the process this
+    looks for has already been reparented away from us.
+    """
+    found = []
+    root = str(root)
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            cwd = os.readlink(os.path.join(entry.path, "cwd"))
+            with open(os.path.join(entry.path, "cmdline"), "rb") as handle:
+                cmdline = handle.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue  # exited while we walked, or not ours to read
+        if cwd.startswith(root) and "/git" in cmdline.split(" ")[0]:
+            found.append(cmdline.strip())
+    return found
+
+
+def test_synthetic_repositories_leave_no_detached_git_writer():
+    """Falsifier for Consiliency/agent-harness#656 and the xdist flake it causes.
+
+    Measured, not assumed. On the unfixed tree EVERY setup leaves three surviving
+    Git processes whose cwd is inside the temporary repository: `git maintenance
+    run --auto --detach`, reparented to init, with `repack --cruft --write-midx`
+    and `pack-objects` beneath it. That is the writer that races
+    `TemporaryDirectory.cleanup()` and raises
+    `OSError: [Errno 39] Directory not empty: '.git'` after every substantive
+    assertion has already passed. Fifteen such processes across five setups before
+    the fix, zero after.
+
+    This asserts the PROPERTY -- that no writer survives the helper -- rather than
+    the two config keys that currently deliver it, so it keeps holding if a later
+    Git reaches auto-maintenance by another route.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("reads /proc to see processes that have been reparented away")
+
+    small_tmp, _small_repo, _base_oid = _setup_git_repo()
+    try:
+        assert _detached_git_writers_under(small_tmp.name) == []
+    finally:
+        small_tmp.cleanup()
+
+    large = _setup_real_repo_candidate_history()
+    large_tmp, coordinator_tmp = large[0], large[7]
+    try:
+        survivors = _detached_git_writers_under(large_tmp.name)
+        assert survivors == [], (
+            "this repository still starts background Git maintenance that outlives "
+            "the synchronous command and races teardown: " + "; ".join(survivors)
+        )
+    finally:
+        large_tmp.cleanup()
+        coordinator_tmp.cleanup()
+
+
 def _setup_git_repo():
     tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name)
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, capture_output=True, check=True)
+    # Consiliency/agent-harness#656: git's auto-maintenance is a DETACHED writer.
+    # `git gc --auto` outlives the synchronous `git commit` that triggered it and
+    # keeps creating content under `.git`, so `TemporaryDirectory.cleanup()` can
+    # race it and raise `OSError: [Errno 39] Directory not empty: '.git'` after
+    # every substantive assertion has already passed. Under pytest-xdist four
+    # workers build four times as many repositories per second, which widens the
+    # window (Consiliency/agent-harness#945). Turn the writer off in the repository
+    # itself, BEFORE the first commit, rather than retrying the teardown: there is
+    # no external writer to tolerate here, only one this test starts.
+    _disable_detached_git_maintenance(repo)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, capture_output=True, check=True)
     _write_bootstrap_artifacts(repo)
@@ -5347,6 +5433,16 @@ def _setup_real_repo_candidate_history():
         capture_output=True,
         check=True,
     )
+    # Consiliency/agent-harness#656: git's auto-maintenance is a DETACHED writer.
+    # `git gc --auto` outlives the synchronous `git commit` that triggered it and
+    # keeps creating content under `.git`, so `TemporaryDirectory.cleanup()` can
+    # race it and raise `OSError: [Errno 39] Directory not empty: '.git'` after
+    # every substantive assertion has already passed. Under pytest-xdist four
+    # workers build four times as many repositories per second, which widens the
+    # window (Consiliency/agent-harness#945). Turn the writer off in the repository
+    # itself, BEFORE the first commit, rather than retrying the teardown: there is
+    # no external writer to tolerate here, only one this test starts.
+    _disable_detached_git_maintenance(repo)
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
         cwd=repo,
