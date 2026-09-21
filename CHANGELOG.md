@@ -80,7 +80,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   would discard every SIGIO, or leave it blocked, for the rest of its life.
   Unwinding releases the mask and then restores the disposition, the reverse of
   acquisition, and a failure in either step neither aborts the other nor replaces
-  the exception that caused the unwind.
+  the exception that caused the unwind. Recovery state is captured BEFORE every
+  mutation rather than from a mutating call's result, so there is no interval in
+  which a change is live without a recorded way to undo it; an interrupt that
+  lands between a call completing and its result being assigned would otherwise
+  leave the change un-undoable, and would restore the default disposition over a
+  `SIG_IGN` or an outer guard's handler. Restoration is nonetheless BEST EFFORT:
+  preserving the original exception and attempting both steps is chosen over
+  guaranteeing either.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
   through signal delivery.
 

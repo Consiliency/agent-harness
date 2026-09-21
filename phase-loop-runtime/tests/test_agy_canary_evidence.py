@@ -1553,7 +1553,7 @@ _LEASE_CHILD_ENV = "PHASE_LOOP_AGY_LEASE_CHILD"
 _CHILD_EXIT_CODES_WITH_TRUSTWORTHY_ROWS = (0, 1)
 
 
-def _run_one_node_in_a_single_threaded_child(nodeid):
+def _run_one_node_in_a_single_threaded_child(nodeid, expected_key=None):
     """Run exactly ONE node in an interpreter that satisfies the guard.
 
     Deliberately not the whole module in one batch. A batch re-runs every OTHER
@@ -1565,6 +1565,8 @@ def _run_one_node_in_a_single_threaded_child(nodeid):
     One node also makes the result unambiguous: exactly one row is expected, so
     there is no name-to-node mapping left to get wrong.
     """
+    if expected_key is None:
+        expected_key = _child_key_for_nodeid(nodeid)
     out_dir = tempfile.mkdtemp(prefix="agy-lease-child-")
     junit = os.path.join(out_dir, "child.xml")
     completed = subprocess.run(
@@ -1590,31 +1592,57 @@ def _run_one_node_in_a_single_threaded_child(nodeid):
         f"{[(r.get('classname'), r.get('name')) for r in rows]}"
     )
     case = rows[0]
+    # PRECEDENCE, not last-match-wins. A row can carry both <skipped> and
+    # <error>: a test that skips and whose fixture teardown then fails. Letting
+    # <skipped> overwrite <error> would turn a teardown failure into a parent
+    # skip, which is silent. Failure and error dominate.
     outcome = "passed"
-    for tag, label in (("failure", "failed"), ("error", "error"), ("skipped", "skipped")):
+    for tag, label in (("error", "error"), ("failure", "failed"), ("skipped", "skipped")):
         if case.find(tag) is not None:
             outcome = label
-    assert (case.get("classname"), case.get("name")) == _child_key_for_nodeid(nodeid), (
+            break
+    if outcome in ("passed", "skipped"):
+        # An accepted outcome must come from a run pytest itself called clean.
+        # Exit 1 means something in that run failed; the row may look fine while
+        # the run it came from did not.
+        assert completed.returncode == 0, (
+            f"the child reported {outcome} for {nodeid} but exited "
+            f"{completed.returncode}; a non-clean run cannot evidence an accepted "
+            f"outcome:\n{completed.stdout}\n{completed.stderr}"
+        )
+    assert (case.get("classname"), case.get("name")) == expected_key, (
         f"the child ran {(case.get('classname'), case.get('name'))}, not {nodeid}"
     )
     return completed, outcome
 
 
-def _child_key_for_nodeid(nodeid):
+def _child_key_for_nodeid(nodeid, name=None):
     """The (classname, name) a JUnit row would carry for this node id.
 
     Derived from the FULL node id, not the bare test name: two classes in one
     module may define the same method name, and a bare-name key would silently
     accept one class's row for the other's node.
+
+    `name` is STRIPPED as a known suffix rather than found by splitting, because
+    a parameter id may itself contain `::` -- `test_x[a::b]` splits into four
+    pieces and the naive last-segment rule yields `b]`. Class and module
+    segments cannot contain `::`, so splitting what remains is safe.
     """
-    parts = nodeid.split("::")
+    if name is None:
+        # No authoritative name available: fall back to the last segment, which
+        # is correct for every id whose parameters contain no `::`.
+        name = nodeid.split("::")[-1]
+    suffix = "::" + name
+    assert nodeid.endswith(suffix), f"{nodeid!r} does not end with {suffix!r}"
+    head = nodeid[: -len(suffix)]
+    parts = head.split("::")
     module_dotted = parts[0][:-3].replace("/", ".") if parts[0].endswith(".py") else parts[0]
-    classname = ".".join([module_dotted, *parts[1:-1]])
-    return (classname, parts[-1])
+    return (".".join([module_dotted, *parts[1:]]), name)
 
 
 def _child_key_for(node):
-    return _child_key_for_nodeid(node.nodeid)
+    """Prefer the node's own name: pytest knows it exactly, parameters included."""
+    return _child_key_for_nodeid(node.nodeid, getattr(node, "name", None))
 
 
 def _delegate_to_a_single_threaded_child(request):
@@ -1642,7 +1670,9 @@ def _delegate_to_a_single_threaded_child(request):
         return False
     if evidence._live_thread_count() == 1:
         return False
-    _completed, outcome = _run_one_node_in_a_single_threaded_child(request.node.nodeid)
+    _completed, outcome = _run_one_node_in_a_single_threaded_child(
+        request.node.nodeid, _child_key_for(request.node)
+    )
     if outcome == "skipped":
         # Carry the child's skip THROUGH. Reporting it as a pass would claim
         # coverage the child explicitly declined to provide.
@@ -2168,8 +2198,9 @@ def test_write_lease_guard_restores_the_disposition_even_when_draining_raises(re
 
 
 class _FakeNode:
-    def __init__(self, nodeid):
+    def __init__(self, nodeid, name=None):
         self.nodeid = nodeid
+        self.name = name if name is not None else nodeid.split("::")[-1]
 
 
 def test_delegation_keys_on_the_full_node_id_not_the_bare_test_name():
@@ -2214,10 +2245,72 @@ def test_delegation_carries_a_child_skip_through_as_a_skip(monkeypatch, request)
     monkeypatch.delenv(_LEASE_CHILD_ENV, raising=False)
     monkeypatch.setattr(
         sys.modules[__name__], "_run_one_node_in_a_single_threaded_child",
-        lambda nodeid: (None, "skipped"),
+        lambda nodeid, expected_key=None: (None, "skipped"),
     )
     with pytest.raises(Skipped):
         _delegate_to_a_single_threaded_child(request)
+
+
+def _fake_child_junit(tmp_path, monkeypatch, body, returncode=0):
+    (tmp_path / "child.xml").write_text(
+        '<testsuites><testsuite name="pytest" tests="1">' + body + "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kw: str(tmp_path))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=["pytest"], returncode=returncode,
+                                                    stdout="", stderr=""),
+    )
+
+
+def test_delegation_lets_an_error_dominate_a_skip_on_the_same_row(tmp_path, monkeypatch):
+    """A row can carry BOTH <skipped> and <error> (codex, round 3).
+
+    That is a test which skipped and whose fixture teardown then failed. Taking
+    the last matching tag turned the teardown error into a parent SKIP, which is
+    silent -- strictly worse than the skip-to-failure direction fixed last round,
+    because nothing is red to investigate.
+    """
+    _fake_child_junit(
+        tmp_path, monkeypatch,
+        '<testcase classname="tests.test_agy_canary_evidence" name="test_x">'
+        '<skipped message="no leases here"/><error message="teardown blew up"/>'
+        "</testcase>",
+        returncode=1,
+    )
+    _completed, outcome = _run_one_node_in_a_single_threaded_child(
+        "tests/test_agy_canary_evidence.py::test_x"
+    )
+    assert outcome == "error", f"an error was reported as {outcome!r}"
+
+
+def test_delegation_requires_a_clean_exit_before_accepting_a_pass_or_skip(tmp_path, monkeypatch):
+    """An accepted outcome must come from a run pytest itself called clean.
+
+    Exit 1 means something in that run failed. The row can look fine while the
+    run it came from did not, so a pass or skip read out of it is not evidence.
+    """
+    _fake_child_junit(
+        tmp_path, monkeypatch,
+        '<testcase classname="tests.test_agy_canary_evidence" name="test_x"/>',
+        returncode=1,
+    )
+    with pytest.raises(AssertionError, match="cannot evidence an accepted"):
+        _run_one_node_in_a_single_threaded_child(
+            "tests/test_agy_canary_evidence.py::test_x"
+        )
+
+
+def test_delegation_key_survives_a_parameter_id_containing_a_double_colon():
+    """`test_x[a::b]` splits into four pieces; the naive last segment is `b]`."""
+    nodeid = "tests/test_agy_canary_evidence.py::TestK::test_x[a::b]"
+    assert _child_key_for_nodeid(nodeid, "test_x[a::b]") == (
+        "tests.test_agy_canary_evidence.TestK", "test_x[a::b]"
+    )
+    assert _child_key_for(_FakeNode(nodeid, "test_x[a::b]")) == (
+        "tests.test_agy_canary_evidence.TestK", "test_x[a::b]"
+    )
 
 
 def test_delegation_rejects_a_child_row_for_a_different_node(tmp_path, monkeypatch):
@@ -2325,43 +2418,131 @@ def test_write_lease_trusts_what_signal_signal_actually_displaced(request, monke
         real_signal(signal.SIGIO, entry)
 
 
-def test_a_failed_entry_after_the_mask_unwinds_both_resources(request, monkeypatch):
-    """Rollback must unwind the MASK too, in reverse order (codex, round 2).
+# Every call inside `_begin_lease_signal_guard` that CHANGES process signal
+# state. The interrupt falsifier below is parametrised over this list rather
+# than over a window someone named after the fact: three rounds of the rollback
+# defect were each found at a different call, because each falsifier injected
+# wherever the previous review had pointed. Enumerating the mutations is what
+# stops the next one hiding one call further along.
+_LEASE_ENTRY_MUTATIONS = ("signal", "pthread_sigmask")
 
-    The earlier falsifier interrupted before the mask changed, so it proved the
-    wrong window. An interrupt after `pthread_sigmask` succeeds but before the
-    token reaches `clean_settings` used to restore only the disposition and leave
-    SIGIO blocked for the life of the process -- reproduced before this fix. The
-    exit path cannot repair it, because entry failed and no token exists.
+
+@pytest.mark.parametrize("mutating_call", _LEASE_ENTRY_MUTATIONS)
+def test_an_interrupt_at_any_mutating_call_unwinds_every_change(request, monkeypatch, mutating_call):
+    """A change-then-raise at EACH mutation must leave the process as it was.
+
+    The failure being pinned is not a single window. It is recovery state that is
+    recorded from a mutating call's RESULT: if the call changes state and then
+    raises -- a signal lands between the C call returning and the assignment --
+    the variable is never set and the change cannot be undone. Rollback then
+    leaves SIGIO blocked, or restores SIG_DFL over an outer guard's handler.
+
+    Each stub performs the real mutation and only then raises, which is exactly
+    that shape. `KeyboardInterrupt` because it is the realistic arrival and an
+    `except Exception` rollback would not catch it.
     """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
     if _delegate_to_a_single_threaded_child(request):
         return
     before_handler = signal.getsignal(signal.SIGIO)
-    assert signal.SIGIO not in signal.pthread_sigmask(signal.SIG_BLOCK, set()), (
-        "SIGIO was already blocked before this test"
-    )
-    real_sigpending = signal.sigpending
-    calls = {"n": 0}
+    before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    assert signal.SIGIO not in before_mask, "SIGIO was already blocked"
+    real = getattr(signal, mutating_call)
+    fired = {"n": 0}
 
-    def counted():
-        calls["n"] += 1
-        if calls["n"] >= 2:  # the call AFTER pthread_sigmask succeeded
-            raise KeyboardInterrupt("interrupted after the mask succeeded")
-        return real_sigpending()
+    def change_then_raise(*args, **kwargs):
+        result = real(*args, **kwargs)
+        # Only sabotage a call that actually CHANGES state: the guard also
+        # pre-READS the mask with an empty set, and interrupting that would test
+        # nothing because nothing has changed yet.
+        if mutating_call == "pthread_sigmask" and not args[1]:
+            return result
+        # Inject exactly once. Rollback calls these same functions to undo the
+        # change, and sabotaging those too would test the unwind's own error
+        # handling rather than whether the recovery state was recorded in time.
+        if fired["n"]:
+            return result
+        fired["n"] += 1
+        raise KeyboardInterrupt(f"interrupted just after {mutating_call} mutated")
 
-    monkeypatch.setattr(evidence.signal, "sigpending", counted)
-    with pytest.raises(KeyboardInterrupt):
-        evidence._begin_lease_signal_guard()
-    monkeypatch.undo()
-    assert calls["n"] >= 2, "the interrupt did not land after the mask was applied"
-    assert signal.SIGIO not in signal.pthread_sigmask(signal.SIG_BLOCK, set()), (
-        "a failed entry left SIGIO blocked; this process can no longer receive it"
-    )
+    monkeypatch.setattr(evidence.signal, mutating_call, change_then_raise)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    assert fired["n"] == 1, f"{mutating_call} was never reached as a mutation"
     assert signal.getsignal(signal.SIGIO) == before_handler, (
-        "a failed entry leaked this guard's SIGIO disposition"
+        f"an interrupt at {mutating_call} leaked this guard's SIGIO disposition"
     )
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before_mask, (
+        f"an interrupt at {mutating_call} left the signal mask changed"
+    )
+    # And the process is still usable.
     guard = evidence._begin_lease_signal_guard()
     evidence._end_lease_signal_guard(guard)
+
+
+def test_an_interrupted_nested_entry_preserves_the_outer_guards_disposition(request, monkeypatch):
+    """Nesting: an interrupted inner entry must not disable the outer disposition.
+
+    Restoring SIG_DFL here would leave the OUTER lease running with no
+    process-wide protection, which is the state the guard exists to prevent.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    outer = evidence._begin_lease_signal_guard()
+    try:
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler
+        real = signal.signal
+
+        def change_then_raise(*args, **kwargs):
+            real(*args, **kwargs)
+            raise KeyboardInterrupt("interrupted inside the nested entry")
+
+        monkeypatch.setattr(evidence.signal, "signal", change_then_raise)
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                evidence._begin_lease_signal_guard()
+        finally:
+            monkeypatch.undo()
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler, (
+            "the interrupted inner entry restored SIG_DFL over the outer guard's "
+            "disposition, leaving the outer lease unprotected"
+        )
+    finally:
+        evidence._end_lease_signal_guard(outer)
+
+
+def test_an_interrupted_entry_restores_sig_ign_rather_than_sig_dfl(request, monkeypatch):
+    """SIG_IGN is unowned but is NOT the default; restoring SIG_DFL would change it."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    entry = signal.getsignal(signal.SIGIO)
+    signal.signal(signal.SIGIO, signal.SIG_IGN)
+    try:
+        real = signal.signal
+
+        def change_then_raise(*args, **kwargs):
+            real(*args, **kwargs)
+            raise KeyboardInterrupt("interrupted after installing over SIG_IGN")
+
+        monkeypatch.setattr(evidence.signal, "signal", change_then_raise)
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                evidence._begin_lease_signal_guard()
+        finally:
+            monkeypatch.undo()
+        assert signal.getsignal(signal.SIGIO) is signal.SIG_IGN, (
+            "the interrupted entry restored SIG_DFL over a SIG_IGN disposition"
+        )
+    finally:
+        signal.signal(signal.SIGIO, entry)
 
 
 def test_unwinding_never_aborts_after_its_own_failure(request, monkeypatch):
@@ -2549,10 +2730,14 @@ def test_a_thread_that_unblocks_sigio_after_admission_cannot_kill_the_process(re
     being safe must not cost detection. Removing only the disposition install
     reds this with rc=-29 (128 + SIGIO).
     """
-    if _delegate_to_a_single_threaded_child(request):
-        return
+    # PLATFORM SKIP FIRST. Delegation reads `/proc/self/task`, which does not
+    # exist off Linux, so delegating before this skip starts a child whose
+    # thread-count assertion fails before it can reach the skip at all -- the
+    # platform guard would be bypassed by the machinery meant to serve it.
     if not sys.platform.startswith("linux") or evidence.fcntl is None:
         pytest.skip("write leases are a Linux-only path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
     target = tmp_path / "leased.txt"
     target.write_text("x", encoding="utf-8")
     child = _write_lease_child(tmp_path, "unblocker_child.py", [

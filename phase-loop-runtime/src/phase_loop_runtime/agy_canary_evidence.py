@@ -2870,6 +2870,12 @@ def _unwind_failed_lease_entry(previous_mask: Any, previous_handler: Any) -> Non
     has to learn why entry failed, not why cleanup did. That is why these
     swallow, including `BaseException` -- a second interrupt arriving during
     unwind must not strand the first resource.
+
+    The consequence, stated rather than implied: restoration here is BEST EFFORT.
+    Preserving the original exception and attempting both steps is chosen over
+    guaranteeing either, so a process whose restoration itself fails can still be
+    left with SIGIO blocked or this disposition installed. Nothing reports that,
+    because there is no channel left to report it on.
     """
     if previous_mask is not None:
         try:
@@ -2893,10 +2899,10 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     # the kernel task inventory instead of `threading.active_count()`, which
     # cannot see a `_thread`- or C-spawned thread and so answered 1 for a process
     # that had two. The process-wide disposition installed below is
-    # defence-in-depth for the one case this precondition cannot cover: a thread
-    # that appears after admission AND unblocks SIGIO for itself. A thread that
-    # merely appears inherits the mask and needs no help. Maintainer ruling,
-    # 2026-09-21.
+    # defence-in-depth for the cases this precondition cannot cover: a thread
+    # that appears between the count and the mask, and a thread that appears
+    # after admission AND unblocks SIGIO for itself. A thread that merely appears
+    # after the mask inherits it and needs no help. Maintainer ruling 2026-09-21.
     thread_count = _live_thread_count()
     if (not sys.platform.startswith("linux") or
             threading.current_thread() is not threading.main_thread() or
@@ -2924,36 +2930,46 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
         raise AgyCanaryEvidenceError(
             "settings write lease will not displace an existing SIGIO owner"
         )
-    previous_handler = None
-    previous_mask = None
+    # RECOVERY STATE IS CAPTURED BEFORE EVERY MUTATION, never from a mutating
+    # call's result. A call that changes state and THEN raises -- a signal lands
+    # between the C call returning and the assignment -- would otherwise leave
+    # the variable unset and the change un-undoable. Three rounds of this defect
+    # were each fixed one window at a time; the invariant that ends the class is
+    # that no interval exists in which a state change is live without a recorded
+    # way to undo it. `pthread_sigmask(SIG_BLOCK, set())` blocks nothing, so this
+    # pre-read is not itself a mutation.
+    recovery_handler = signal.getsignal(signal.SIGIO)
+    recovery_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
     try:
         try:
-            # The RETURN VALUE is authoritative, not the reading above. Under
-            # single-thread admission no other THREAD can race the check, but a
-            # signal delivered to this one thread can run a Python callback in
-            # that window. No primitive offers atomic check-before-displace, and
-            # taking the displaced value is the closest thing available -- it
-            # makes the size of the window irrelevant rather than arguable.
-            previous_handler = signal.signal(signal.SIGIO, _lease_sigio_handler)
+            displaced = signal.signal(signal.SIGIO, _lease_sigio_handler)
         except (OSError, ValueError) as exc:
             raise AgyCanaryEvidenceError(
                 "settings write lease cannot install its SIGIO handler"
             ) from exc
-        if not _sigio_is_unowned(previous_handler):
+        # Refine, never initialise: `recovery_handler` already holds a usable
+        # value. This replaces it with what was ACTUALLY displaced, which is also
+        # what the ownership decision rests on. Under single-thread admission no
+        # other thread can race the pre-check, but a signal delivered to this one
+        # thread can run a Python callback in that window; no primitive offers
+        # atomic check-before-displace, so taking the displaced value makes the
+        # window's size irrelevant rather than arguable.
+        recovery_handler = displaced
+        if not _sigio_is_unowned(displaced):
             raise AgyCanaryEvidenceError(
                 "settings write lease will not displace an existing SIGIO owner"
             )
         try:
-            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
         except OSError as exc:
             raise AgyCanaryEvidenceError(
                 "settings write lease cannot block SIGIO"
             ) from exc
         if signal.SIGIO in signal.sigpending():
             raise AgyCanaryEvidenceError("settings write lease SIGIO state is ambiguous")
-        guard = _LeaseSignalGuard(mask=previous_mask, previous_handler=previous_handler)
+        guard = _LeaseSignalGuard(mask=recovery_mask, previous_handler=recovery_handler)
     except BaseException:
-        _unwind_failed_lease_entry(previous_mask, previous_handler)
+        _unwind_failed_lease_entry(recovery_mask, recovery_handler)
         raise
     return guard
 
