@@ -9,13 +9,14 @@ automation:
     - -lc
     - >-
       set -euo pipefail;
+      uv run --project phase-loop-runtime python phase-loop-runtime/tests/presroute_content_tdd_adapter.py verify --repo . --landing-ref origin/main --receipt .phase-loop/evidence/PRESROUTE/content-tdd-receipt.json;
       PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q
       phase-loop-runtime/tests/test_govlean_panel_policy.py
       phase-loop-runtime/tests/test_president_wiring.py;
       PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/check_model_id_sources.py;
       grep -q 'EXPIRED by Consiliency/agent-harness#' plans/decision-interim-president-ratification-20260904.md;
       PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md;
-      PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli goal-coverage-audit --roadmap specs/phase-plans-v10.md --phase PRESROUTE --dry-run;
+      PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.goal_coverage import check_goal_coverage; r=check_goal_coverage(repo=Path("."), plan=Path("plans/phase-plan-v10-PRESROUTE.md"), roadmap=Path("specs/phase-plans-v10.md")); assert not r.unreferenced_ids and not r.dangling_refs, r';
       uv run --project phase-loop-runtime ruff check phase-loop-runtime/src/phase_loop_runtime
 ---
 
@@ -33,10 +34,11 @@ and expires the interim ratification note in the same landing. It closes the gap
 cites had no path to `main`.
 
 Current shape this phase changes: `PRESIDENT_LADDER`
-(`panel_invoker.py:495`) is `("fable", "sol", "grok-4.6", "gemini-3.8-flash")` — the
-wrong order and inline model ids; EC-PRESROUTE-3 requires `("sol", "fable", "grok",
-"gemini")` (Astra, Fable, Grok, Gemini) resolving through the frozen registry PIN, every
-id site carrying the `model-id-source:` marker. `invoke_president`
+(`panel_invoker.py:495`) is in a superseded order and pins inline model ids rather than
+registry-resolved aliases; EC-PRESROUTE-3 fixes the seat-alias order (that criterion is
+its single source; this plan never restates the order or any model id) and requires each
+alias to resolve through the frozen registry PIN with the `model-id-source:` marker on
+every id site. `invoke_president`
 (`panel_invoker.py:552`) already walks the tuple and descends only on a typed
 `president_unavailable`. Review isolation is minted in `advisor_board/backing.py`
 (`ReviewIsolationAuthorization` / `public_board_review.v1`, `child_credentialless=True`,
@@ -54,16 +56,21 @@ the review completion grammar, and does not rename the `sol` alias.
 
 ## Interface Freeze Gates
 
-- [ ] IF-0-PRESROUTE-1 — the president operation: identity `public_board_president.v1`,
-  its completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` lines, terminal
-  `FORCING DECISION:`), and the `president.ruling.json` record shape (authorization
-  identity, rung index, model id, format re-ask count, findings digest). Frozen by SL-1
-  (Lane A) in `president_operation.py` + the new `advisor_board/CONTRACTS.md` section so
-  RATIFY extends the line grammar against a fixed base. Consumed by SL-2 (Lane B).
+- [ ] IF-0-PRESROUTE-1 — the president operation. Frozen by SL-1 (Lane A) in
+  `president_operation.py` + the new `advisor_board/CONTRACTS.md` section (ABDPRES-style
+  amendment path), with a golden fixture `phase-loop-runtime/tests/data/president_ruling_v1.golden.json`
+  landed by SL-0 so Lane B (SL-2) tests against a fixed base day 1; RATIFY extends the
+  line grammar against it. Concrete freeze:
+  - **Callable**: `run_president_operation(*, findings: Sequence[str], authorization: PresidentIsolationAuthorization, invoke: Callable[[str, str], Mapping[str, str]], max_substantive_rounds: int) -> PresidentOperationResult`. `PresidentIsolationAuthorization` is the additive identity minted in `backing.py` (operation `public_board_president.v1`, `child_credentialless=True`, `child_network_egress=False`, `live_tree_exposed=False`). `PresidentOperationResult` carries `ruling: PresidentRuling` (existing dataclass), `authorization_identity: str`, `rung_index: int`, `findings_digest: str`.
+  - **Completion grammar**: per-finding `FINDING <id>: BLOCKING|DEFERRED — <reason>` lines, terminal `FORCING DECISION: <decision>` (the grammar `_valid_president_grammar` already parses).
+  - **`president.ruling.json` record shape** (`schema` = `"president.ruling.v1"`): `schema` (str), `authorization_identity` (str, `"public_board_president.v1"`), `rung_index` (int, 0-based ladder index of the ruling rung), `model_id` (str, the resolved registry PIN), `format_reask_count` (int), `findings_digest` (str, lowercase sha256 hex), `forcing_decision` (str), `finding_rulings` (list of `{"id": str, "disposition": "BLOCKING"|"DEFERRED", "reason": str}`).
+  - **Findings-digest canonicalization**: `findings_digest = hashlib.sha256("\n".join(findings).encode("utf-8")).hexdigest()` over the findings in the exact order passed to the president prompt (matching `_president_prompt`'s join); algorithm SHA-256, lowercase hex.
+  - **Native-fill composition**: the native Fable fill returns the same `PresidentOperationResult`; its `findings_digest` binds the exact brief and findings it was asked to rule on (identical canonicalization), a fill whose digest does not match those findings is rejected, and a native president fill is refused under `heartbeat_only`.
+  - **Freeze verification**: `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k ruling_record_matches_frozen_contract` builds a record, asserts its keys/types equal the golden fixture and that `findings_digest` recomputes from the findings. SL-1's new `advisor_board/CONTRACTS.md` section is the frozen artifact Lane B tests against; the SL-0 golden fixture is its executable falsifier. Consumed by SL-2 (Lane B) and RATIFY.
 
 ## Lane Index & Dependencies
 
-SL-0 — Tests-first frozen corpus (content-bound)
+SL-0 — Lane B tests-first stage (content-bound frozen corpus)
   Depends on: (none)
   Blocks: SL-1, SL-2
   Parallel-safe: no
@@ -71,34 +78,34 @@ SL-1 — President operation, authorization identity, adapter (Lane A)
   Depends on: SL-0
   Blocks: SL-2
   Parallel-safe: no
-SL-2 — Rung routes, native Fable fill, ladder reorder, note expiry (Lane B)
+SL-2 — Lane B implementation stage: rung routes, native Fable fill, ladder reorder, note expiry
   Depends on: SL-0, SL-1
   Blocks: SL-3
   Parallel-safe: no
-SL-3 — Documentation, spec reconciliation, phase reducer
+SL-3 — Documentation and phase reducer
   Depends on: SL-0, SL-1, SL-2
   Blocks: (none)
   Parallel-safe: no
 
 ## Lanes
 
-### SL-0 — Tests-first frozen corpus (content-bound)
+### SL-0 — Lane B tests-first stage (content-bound frozen corpus)
 
-- **Scope**: Land and freeze the phase's falsifiers before any production edit, with the EC-GOVLEAN-2 content-bound receipt (blob hashes plus RED output digest against the pre-implementation base), re-verified byte-equal at merge; no commit-topology assertion is used.
-- **Owned files**: `phase-loop-runtime/tests/test_president_wiring.py`, `phase-loop-runtime/tests/test_govlean_panel_policy.py`
-- **Interfaces provided**: frozen PRESROUTE falsifiers, content-bound receipt, RED-anchored ladder/wiring/operation assertions.
-- **Interfaces consumed**: the pre-implementation ladder, wiring and adapter behavior (pre-existing).
+- **Scope**: Lane B's first stage. Land and freeze the phase's falsifiers and the IF-0-PRESROUTE-1 golden fixture before any production edit, recording the content-bound receipt through the existing `content_tdd_receipt.v1` mechanism (`phase_loop_runtime.tdd_receipts`), re-verified byte-equal at merge; no commit-topology assertion is used. Lane B owns these tests per the roadmap; the freeze forbids Lane B's implementation stage (SL-2) from editing them, and Lane A (SL-1) consumes them.
+- **Owned files**: `phase-loop-runtime/tests/test_president_wiring.py`, `phase-loop-runtime/tests/test_govlean_panel_policy.py`, `phase-loop-runtime/tests/presroute_content_tdd_adapter.py`, `phase-loop-runtime/tests/data/president_ruling_v1.golden.json`, `.phase-loop/evidence/PRESROUTE/content-tdd-receipt.json`, `.phase-loop/evidence/PRESROUTE/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/PRESROUTE/content-tdd-receipt.red.stderr.log`
+- **Interfaces provided**: frozen PRESROUTE falsifiers, the IF-0-PRESROUTE-1 golden fixture, a `content_tdd_receipt.v1` receipt, RED-anchored ladder/wiring/operation assertions.
+- **Interfaces consumed**: the pre-implementation ladder, wiring and adapter behavior (pre-existing); `phase_loop_runtime.tdd_receipts` recorder/verifier (pre-existing).
 - **Parallel-safe**: no (tests-first boundary; SL-1 and SL-2 consume its frozen bytes and never edit them).
 - **Tasks**:
-  - test: Rewrite the ladder assertion to expect `("sol", "fable", "grok", "gemini")` resolved through the registry PIN, assert the walk visits rungs in that order and descends only on typed `president_unavailable`, and assert `check_model_id_sources.py` reports every id site marked. Assert a seated rung now routes through `public_board_president.v1` (not `president_execution_route_unavailable`), that a ruling receipt carries the authorization identity, and that a `plan`/`production_code` landing carrying `requires_president=False` is refused with a typed reason.
-  - test: Record raw RED output and blob hashes for each frozen test against the pre-implementation base as the content-bound receipt; bind no commit SHA, count, or tree shape.
-  - impl: Land only these two test paths tests-first; obtain the receipt before any SL-1/SL-2 production edit. A later test correction restarts SL-0.
+  - test: Rewrite the ladder assertion to expect the seat-alias order EC-PRESROUTE-3 fixes, each alias resolved through its registry PIN, assert the walk visits rungs in that order and descends only on typed `president_unavailable`, and assert `check_model_id_sources.py` reports every id site marked. Assert a seated rung now routes through `public_board_president.v1` (not `president_execution_route_unavailable`), that a ruling receipt carries the authorization identity, and that a `plan`/`production_code` landing carrying `requires_president=False` is refused with a typed reason. Add the `ruling_record_matches_frozen_contract` case that builds a `president.ruling.json` record and asserts its keys/types equal `phase-loop-runtime/tests/data/president_ruling_v1.golden.json` and that `findings_digest` recomputes from the findings (IF-0-PRESROUTE-1). Pin these `-k` node identifiers that later ECs select: in `test_president_wiring.py` — `operation`, `authorization`, `launch_provider`, `native_fable`, `heartbeat`, `ruling_record`, `findings_digest`, `ruling_record_matches_frozen_contract`; in `test_govlean_panel_policy.py` — `ladder`, `requires_president_false_refused`.
+  - test: Add `presroute_content_tdd_adapter.py`, a bounded wrapper over `phase_loop_runtime.tdd_receipts` (mirroring `proofgate_content_tdd_adapter.py`): a `record-red` subcommand that runs the frozen tests under `PHASE_LOOP_TDD_EXPECT_PRESROUTE=1`, emitting the imported `RED_ANCHOR_MARKER` plus a distinct `PRESROUTE_RED::<case-id>` marker and exiting 1, and calls `record_content_tdd_receipt`; and a `verify` subcommand that calls `verify_content_tdd_receipt`. Do not edit `tdd_receipts.py`.
+  - impl: Run `presroute_content_tdd_adapter.py record-red` to capture the RED stdout/stderr and each test file's sha256 into `.phase-loop/evidence/PRESROUTE/content-tdd-receipt.json` against the pre-implementation base; bind no commit SHA, count, or tree shape. Land these test paths, the adapter, the golden fixture, and the receipt tests-first before any SL-1/SL-2 production edit. A later test correction restarts SL-0.
 
 ### SL-1 — President operation, authorization identity, adapter (Lane A)
 
 - **Scope**: Add the HARDEN-authorized `public_board_president.v1` operation, its authorization identity, and route a seated rung through it; freeze IF-0-PRESROUTE-1.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/president_operation.py`, `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`
-- **Interfaces provided**: IF-0-PRESROUTE-1 (`public_board_president.v1`, completion grammar, `president.ruling.json` shape); a president authorization minted like review isolation and bound to the seam like `spawn`.
+- **Interfaces provided**: IF-0-PRESROUTE-1 (`public_board_president.v1`, `run_president_operation` callable, completion grammar, `president.ruling.json` shape matching the SL-0 golden); `PresidentIsolationAuthorization` minted like review isolation and bound to the seam like `spawn`.
 - **Interfaces consumed**: frozen PRESROUTE falsifiers (SL-0), `ReviewIsolationAuthorization` mint pattern (pre-existing, agent-harness#737).
 - **Parallel-safe**: no (SL-2 consumes its frozen interface).
 - **Tasks**:
@@ -106,7 +113,7 @@ SL-3 — Documentation, spec reconciliation, phase reducer
   - impl: In `president_adapter.py`, replace the seated-rung `president_execution_route_unavailable` branch so `president_adapter` routes a seated rung through the operation; keep every other refusal path unchanged and keep EC-HARDEN-5's refusal of a ruling routed through advisory or laundered through a review leg.
   - impl: Add the new `advisor_board/CONTRACTS.md` section for the operation by the same amendment path as ABDPRES; freeze the `president.ruling.json` record shape.
 
-### SL-2 — Rung routes, native Fable fill, ladder reorder, note expiry (Lane B)
+### SL-2 — Lane B implementation stage: rung routes, native Fable fill, ladder reorder, note expiry
 
 - **Scope**: Give every rung a launchable route through the single launch site, fill Fable natively under Claude Code, reorder the ladder by seat alias, write the durable ruling record, and expire the interim note with a runtime refusal.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `plans/decision-interim-president-ratification-20260904.md`
@@ -114,13 +121,13 @@ SL-3 — Documentation, spec reconciliation, phase reducer
 - **Interfaces consumed**: IF-0-PRESROUTE-1 (SL-1), `launch_provider` single launch site (`panel_invoker.py:1940`, pre-existing), `load_native_leg_fills` seam family (`panel_invoker.py:4936`, pre-existing).
 - **Parallel-safe**: no (consumes SL-1's frozen operation; serializes after HARDEN/REVIEWTRUTH/RESIDUAL shared-file landings per the concurrency ruling).
 - **Tasks**:
-  - impl: In `panel_invoker.py`, at the named ladder-tuple and alias sites only, set `PRESIDENT_LADDER = ("sol", "fable", "grok", "gemini")` resolving each alias to its vendor's frozen registry PIN with the `model-id-source:` marker; route Astra through the codex CLI, Grok through the grok CLI, Gemini through `agy`, each via `launch_provider` and nowhere else; add the native Fable seam (deferred fill with a durable resume/join point, refused under `heartbeat_only` as a native leg fill is); add the additive guard that refuses a `plan`/`production_code` landing carrying `requires_president=False` with a typed reason; write `PanelResult.president` and the per-finding rulings to the review stream as `president.ruling.json`.
+  - impl: In `panel_invoker.py`, at the named ladder-tuple and alias sites only, set `PRESIDENT_LADDER` to the seat-alias tuple EC-PRESROUTE-3 fixes, each alias resolving to its vendor's frozen registry PIN with the `model-id-source:` marker; route each non-native rung to its vendor CLI via `launch_provider` and nowhere else per EC-PRESROUTE-2; add the native Fable seam (deferred fill with a durable resume/join point, refused under `heartbeat_only` as a native leg fill is); add the additive guard that refuses a `plan`/`production_code` landing carrying `requires_president=False` with a typed reason; write `PanelResult.president` and the per-finding rulings to the review stream as `president.ruling.json` in the frozen IF-0-PRESROUTE-1 shape.
   - impl: In `cli.py`, add the native-president flag that fills the Fable rung natively when the driving harness is Claude Code and through the self-PTY adapter elsewhere, mirroring the existing native-leg flags.
   - impl: In the decision note, append the final `EXPIRED by Consiliency/agent-harness#<its number>` row and mark the note closed; do not rewrite earlier rows.
 
-### SL-3 — Documentation, spec reconciliation, phase reducer
+### SL-3 — Documentation and phase reducer
 
-- **Scope**: Refresh the docs catalog, update cross-cutting docs this phase touches, append any empirically-wrong-freeze amendments, and reduce the phase.
+- **Scope**: Refresh the docs catalog, update cross-cutting docs this phase touches, and reduce the phase. This phase amends no spec: its Spec Closeout decision is `no_spec_delta` and the roadmap is not PRESROUTE's to amend (a maintainer ruling / LEGIBLE owns roadmap edits).
 - **Owned files**: `CHANGELOG.md`, `.claude/docs-catalog.json`
 - **Interfaces provided**: (none)
 - **Interfaces consumed**: (none)
@@ -128,8 +135,7 @@ SL-3 — Documentation, spec reconciliation, phase reducer
 - **Tasks**:
   - docs: Rescan the docs catalog (`python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`; if absent, record "docs-catalog rescan helper unavailable; manual catalog audit" and proceed).
   - docs: Add the CHANGELOG note for the president operation, ladder reorder, native fill, and note expiry; record any catalog file intentionally skipped.
-  - docs: Append `### Post-execution amendments` to the PRESROUTE spec section only if a freeze was empirically wrong this run; append-only, dated. Do not edit `specs/phase-plans-v10.md` otherwise.
-  - verify: Run repo doc linters if any are configured; else no-op.
+  - verify: Assert this phase touched no spec (`git diff --exit-code -- specs/phase-plans-v10.md`), then run repo doc linters if any are configured; else no-op.
 
 ## Execution Policy
 
@@ -144,11 +150,11 @@ SL-3 — Documentation, spec reconciliation, phase reducer
 - **Binding ruling — governance supersession on PRESROUTE delivery** (agent-harness#935): from the merge to `main` of the PR that lands EC-PRESROUTE-3 and carries its phase-ledger row in the same PR, the availability ladder is the EC-PRESROUTE-3 order by seat alias; the ladder sentences of EC-GOVLEAN-5 and the 2026-08-12 supersession note become historical-descriptive from that event and are not rewritten. Until that event the GOVLEAN ladder keeps exclusive authority. Model ids are never restated in roadmap text; the registry and its `model-id-source:` markers are the only carrier.
 - **Binding ruling — concurrency on PRESROUTE and EXECFIND** (agent-harness#935, maintainer 2026-09-21): the round-1 board question in the scope notes — whether the declared overlap with HARDEN, REVIEWTRUTH, LEGLIFE and RESIDUAL needs `Depends on` edges — is ratified in the negative. Declared overlap plus the touch-shape falsifier is sufficient; no edge is added and no phase is edited. The `HARDEN → PRESROUTE` edge is satisfied by the landed isolation-authorization mechanism (`advisor_board/backing.py`, `ReviewIsolationAuthorization` / `public_board_review.v1`, agent-harness#737), not by HARDEN's completion or EC-HARDEN-5. PRESROUTE may be planned and executed now, concurrently with HARDEN, REVIEWTRUTH and SCHED, by a lane other than the one holding those phases; its landings still serialize after the owning phases' landings on any shared file line both rewrite.
 - **Touch-shape falsifier (named seams)**: `panel_invoker.py`, `advisor_board/backing.py` and `cli.py` are shared with the open HARDEN/REVIEWTRUTH/LEGLIFE/RESIDUAL phases. A landing PR of this phase whose diff deletes or rewrites an existing line of a shared owned file OUTSIDE its named seams fails the phase. Named seams where rewriting an existing line is authorized: in `panel_invoker.py`, the `PRESIDENT_LADDER` tuple and the ladder alias/id sites; in `backing.py`, additive identity only (no rewrite of the review authorization); in `cli.py`, additive flag registration only. Every other touch is additive (new modules, new keyword-only seams, new guard).
-- **Tests-first ownership reconciliation**: the scope note lists the two pinned tests under Lane B, and EC-PRESROUTE-0 requires the TEST LANE LANDED FIRST and re-verified byte-equal at merge. To satisfy both without a Lane A↔Lane B cycle (Lane B's wiring test covers Lane A's `president_operation.py`, while Lane B's impl consumes Lane A's IF-0-PRESROUTE-1), the two test files are owned by the tests-first lane SL-0, which lands and freezes them before either impl lane; SL-1 and SL-2 consume the frozen bytes and never edit them. This honors the scope note's intent (the tests are the wiring/ladder domain Lane B implements against) and the byte-equal-at-merge criterion, which an impl lane owning the tests would violate.
-- **Single-writer files**: `panel_invoker.py`, `cli.py`, decision note (SL-2 sole writer); `backing.py`, `CONTRACTS.md`, `president_operation.py`, `president_adapter.py` (SL-1 sole writer); the two test files (SL-0 sole writer); `CHANGELOG.md`, `.claude/docs-catalog.json` (SL-3 sole writer). No file is owned by two lanes.
-- **Known destructive changes**: SL-2 rewrites the `PRESIDENT_LADDER` tuple lines and the ladder alias/id sites in `panel_invoker.py` (a named seam), and SL-1 replaces the seated-rung refusal branch in `president_adapter.py` (Lane A's own file). Both are authorized. No lane deletes a file another lane produces.
+- **Lane B two stages (tests-first ownership)**: the roadmap decomposes into two lanes and assigns the two pinned tests to Lane B. Lane B runs in two stages: SL-0 is Lane B's tests-first stage (Lane B retains roadmap ownership of the tests, plus the receipt adapter, golden fixture, and receipt evidence it lands), and SL-2 is Lane B's implementation stage. EC-PRESROUTE-0's freeze forbids SL-2 from editing the SL-0 test bytes (re-verified byte-equal at merge), and Lane A (SL-1) consumes the frozen tests and golden. Splitting Lane B into a tests-first stage and an impl stage keeps Lane B's roadmap ownership of its tests while avoiding a Lane A↔Lane B cycle (Lane B's wiring test covers Lane A's `president_operation.py`, and SL-2 consumes Lane A's IF-0-PRESROUTE-1); an implementation lane owning tests does not require editing them after freeze.
+- **Single-writer files**: `panel_invoker.py`, `cli.py`, decision note (SL-2 sole writer); `backing.py`, `CONTRACTS.md`, `president_operation.py`, `president_adapter.py` (SL-1 sole writer); the two test files, `presroute_content_tdd_adapter.py`, the golden fixture, and the receipt evidence (SL-0 sole writer); `CHANGELOG.md`, `.claude/docs-catalog.json` (SL-3 sole writer). No file is owned by two lanes.
+- **Known destructive changes**: SL-2 rewrites the `PRESIDENT_LADDER` tuple lines and the ladder alias/id sites in `panel_invoker.py` (a named seam), and SL-1 replaces the seated-rung refusal branch in `president_adapter.py` (Lane A's own file). Both are authorized. No lane deletes a file another lane produces. `tdd_receipts.py` is not edited (SL-0 wraps it in a new adapter).
 - **Expected add/add conflicts**: none — SL-0 stubs no source file that a later lane replaces.
-- **SL-0 re-exports**: none — SL-0 owns only test files and adds no package `__init__` symbol.
+- **SL-0 re-exports**: none — SL-0 owns only test files, the adapter, the golden fixture, and receipt evidence, and adds no package `__init__` symbol.
 - **Stale-base guidance** (verbatim): Lane teammates working in isolated worktrees do not see sibling-lane merges automatically. If a lane finds its worktree base is pre-<first upstream dependency's merge>, it MUST stop and report rather than committing — the orchestrator will re-spawn or rebase. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree produces commits that destroy peer-lane work on `--no-ff` merge.
 
 ## Spec Closeout Plan
@@ -156,7 +162,7 @@ SL-3 — Documentation, spec reconciliation, phase reducer
 - schema: `spec_delta_closeout.v1`
 - decision: `no_spec_delta`
 - target surfaces: `phase-loop-runtime/src/phase_loop_runtime/president_operation.py`, `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `plans/decision-interim-president-ratification-20260904.md`, `CHANGELOG.md`
-- evidence paths: `plans/phase-plan-v10-PRESROUTE.md`, `plans/manifest.json`, `phase-loop-runtime/tests/test_president_wiring.py`, `phase-loop-runtime/tests/test_govlean_panel_policy.py`, `.phase-loop/runs/**/president.ruling.json`
+- evidence paths: `plans/phase-plan-v10-PRESROUTE.md`, `plans/manifest.json`, `phase-loop-runtime/tests/test_president_wiring.py`, `phase-loop-runtime/tests/test_govlean_panel_policy.py`, `phase-loop-runtime/tests/data/president_ruling_v1.golden.json`, `.phase-loop/evidence/PRESROUTE/content-tdd-receipt.json`, `.phase-loop/runs/**/president.ruling.json`
 - redaction posture: `metadata_only`
 - downstream handling: none; roadmap bytes remain unchanged and RATIFY consumes IF-0-PRESROUTE-1
 
@@ -165,6 +171,8 @@ SL-3 — Documentation, spec reconciliation, phase reducer
 Run after all lanes merge (the pytest commands are RED-first targets on base and expected to fail until the impl lands):
 
 ```bash
+uv run --project phase-loop-runtime python phase-loop-runtime/tests/presroute_content_tdd_adapter.py verify --repo . --landing-ref origin/main --receipt .phase-loop/evidence/PRESROUTE/content-tdd-receipt.json
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k ruling_record_matches_frozen_contract
 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k ladder
 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py
 PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/check_model_id_sources.py
@@ -177,16 +185,16 @@ Plan-artifact checks (green on the plan branch now):
 - `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md`
 - `PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.plan_manifest import validate_manifest; v=validate_manifest(Path("plans").joinpath("manifest.json")); assert v.valid, "; ".join(v.errors)'`
 - `PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.planner_validation import validate_plan_dispatch_hints; f=validate_plan_dispatch_hints(Path("plans").joinpath("phase-plan-v10-PRESROUTE.md").read_text()); assert not f, f'`
-- `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli goal-coverage-audit --roadmap specs/phase-plans-v10.md --phase PRESROUTE --dry-run`
+- `PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.goal_coverage import check_goal_coverage; r=check_goal_coverage(repo=Path("."), plan=Path("plans/phase-plan-v10-PRESROUTE.md"), roadmap=Path("specs/phase-plans-v10.md")); assert not r.unreferenced_ids and not r.dangling_refs, r'`
 - `python3 -c 'from pathlib import Path; assert len(Path("plans").joinpath("phase-plan-v10-PRESROUTE.md").read_text().split()) <= 3000'`
 - `git diff --exit-code -- specs/phase-plans-v10.md`
 - `git diff --check`
 
 ## Acceptance Criteria
 
-- [ ] EC-PRESROUTE-0 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py phase-loop-runtime/tests/test_govlean_panel_policy.py` collecting GREEN at merge against the recorded EC-GOVLEAN-2 content-bound receipt (blob hashes plus RED output digest on the pre-implementation base at `phase-loop-runtime/tests/test_president_wiring.py` and `phase-loop-runtime/tests/test_govlean_panel_policy.py`), re-verified byte-equal at merge; falsified by a path-entered one-byte mutation to either frozen test making its merge-time blob hash differ from its freeze-time record, by absent RED output for any module, or by any commit-topology assertion.
-- [ ] EC-PRESROUTE-1 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "operation or authorization"`; falsified by a seated rung still answering `president_execution_route_unavailable`, a ruling receipt with no president authorization identity, the review classifier accepting a `FORCING DECISION:` text as a review, or a ruling produced with child network egress or credentials.
-- [ ] EC-PRESROUTE-2 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "launch_provider or native_fable or heartbeat"`; falsified by a path-entered mutation at the launch site that lets a rung spawn outside `launch_provider`, obtains a Fable ruling by spawning a second Claude TUI under Claude Code, accepts a native president fill under `heartbeat_only`, or accepts a fill whose digests do not bind the brief and findings.
-- [ ] EC-PRESROUTE-3 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k ladder` and `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/check_model_id_sources.py`; falsified by `PRESIDENT_LADDER` differing from `("sol", "fable", "grok", "gemini")`, a walk visiting rungs out of order, a rung resolving to a registry-superseded id, an unmarked id, or any other ACTIVE roadmap/contract/recipe text restating the order or naming a model id.
-- [ ] EC-PRESROUTE-4 — proven by `grep -q 'EXPIRED by Consiliency/agent-harness#' plans/decision-interim-president-ratification-20260904.md` and `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k "requires_president_false_refused"`; falsified by a `plan`/`production_code` landing carrying `requires_president=False` succeeding, or by the note lacking the EXPIRED row at merge.
-- [ ] EC-PRESROUTE-5 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "ruling_record or findings_digest"`; falsified by a ruling with no stream record, a record whose findings digest differs from the findings the prompt carried, or a DEFERRED finding disappearing from the next round's ledger.
+- [ ] EC-PRESROUTE-0 — proven by `uv run --project phase-loop-runtime python phase-loop-runtime/tests/presroute_content_tdd_adapter.py verify --repo . --landing-ref origin/main --receipt .phase-loop/evidence/PRESROUTE/content-tdd-receipt.json`, which recomputes each frozen test file's sha256 and compares it byte-equal to the recorded `content_tdd_receipt.v1` receipt and rejects a missing receipt or absent recorded RED evidence (via `phase_loop_runtime.tdd_receipts.verify_content_tdd_receipt`); falsified by a path-entered one-byte mutation to either frozen test making its merge-time sha256 differ from its recorded freeze-time hash, by a missing receipt or absent recorded RED stdout/stderr for any module, or by any commit-topology assertion.
+- [ ] EC-PRESROUTE-1 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "operation or authorization"`; falsified by a path-entered mutation leaving a seated rung at `president_execution_route_unavailable` or producing a ruling receipt lacking the president authorization identity.
+- [ ] EC-PRESROUTE-2 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "launch_provider or native_fable or heartbeat"`; falsified by a path-entered mutation at the launch site letting a rung spawn outside `launch_provider` or a native president fill accepted under `heartbeat_only`.
+- [ ] EC-PRESROUTE-3 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k ladder` and `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/check_model_id_sources.py`; falsified by a path-entered mutation making `PRESIDENT_LADDER` differ from the tuple EC-PRESROUTE-3 fixes or `check_model_id_sources.py` report an unmarked id.
+- [ ] EC-PRESROUTE-4 — proven by `grep -q 'EXPIRED by Consiliency/agent-harness#' plans/decision-interim-president-ratification-20260904.md` and `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k requires_president_false_refused`; falsified by a `plan`/`production_code` landing carrying `requires_president=False` succeeding or the note lacking the EXPIRED row.
+- [ ] EC-PRESROUTE-5 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "ruling_record or findings_digest"`; falsified by a path-entered mutation producing a ruling with no stream record or a record whose `findings_digest` differs from the prompt's findings.
