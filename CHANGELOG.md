@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the publish-pypi tag path gets its own measured timeout (agent-harness#757 follow-up)
+
+- `publish-pypi.yml`'s build job keeps the 25-minute bound on pull requests (chronology
+  node deselected) and runs with 100 minutes on a tag push or manual dispatch, where
+  Gate A executes the full standalone suite (70 min for `v0.7.14`). The 25-minute cap
+  cancelled the `v0.7.15` tag run at 50% of that suite before the publish job ran.
+
 ## [0.7.15] - 2026-09-21
 
 ### Public onboarding baseline (agent-harness#929; release slice of agent-harness#927)

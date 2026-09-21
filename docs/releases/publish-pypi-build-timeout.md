@@ -1,7 +1,9 @@
-# The publish-pypi build timeout is 25 minutes, and the number is measured
+# The publish-pypi build timeout is per path, and each number is measured
 
 `publish-pypi.yml`'s `build + verify wheel + sdist` job runs with
-`timeout-minutes: 25`. Over the 18 completed runs sampled on 2026-09-04 it
+`timeout-minutes: 25` on a pull request and `100` on a tag push or a manual
+dispatch. The two paths run different work (see below). On pull requests, over
+the 18 completed runs sampled on 2026-09-04 the job
 averaged **7.7 minutes** and peaked at **12**, so 25 is roughly twice the worst
 observed run — enough for a slow runner or a cold cache, and still a fast failure
 if the job wedges.
@@ -32,5 +34,24 @@ in under half that.
 - `test.yml` `pytest` and `clean-room` keep **100**. Both are skipped on pull
   requests, so the sampled runs carry no timing for them; any tighter number
   would be a guess rather than a measurement.
+
+## The tag and dispatch path runs the full suite, and it is measured too
+
+Gate A deselects the chronology node **only** on `pull_request` runs
+(`GATE_A_DESELECT_CHRONOLOGY`). A tag push or a `workflow_dispatch` runs the
+full standalone suite from the exact wheel, which is the point of the release
+gate. The 2026-09-04 sample contained no tag run, so the 25-minute bound was set
+against pull-request timings only, and the first tag after it hit the cap:
+
+- `v0.7.14` (before the change): trusted-publish workflow `32783112944`, build job
+  `97609245453`, **70 min 18 s**, success.
+- `v0.7.15` (2026-09-21): workflow `35563072987`, build job `106219492015`,
+  **cancelled at 25 min 15 s** by the timeout, at 50% of the Gate A suite; the
+  publish job was skipped and nothing reached PyPI.
+
+The tag/dispatch bound is therefore `100` again — about 1.4x the one measured
+run — expressed as `${{ github.event_name == 'pull_request' && 25 || 100 }}`, so
+the pull-request bound stays where the measurement put it. Tighten the tag bound
+only after a sample of tag runs exists.
 
 Raise a timeout only against a measurement, and record the measurement here.
