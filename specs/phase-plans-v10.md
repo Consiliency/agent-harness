@@ -1905,6 +1905,23 @@ PRESROUTE`, `/claude-plan-phase EXECFIND`); RATIFY waits for both; GOVSETUP wait
 four phases declare their file overlap with the open HARDEN, REVIEWTRUTH, LEGLIFE and RESIDUAL
 phases in their Scope notes and land after those phases' landings on the shared files.
 
+
+### Concurrency ruling on PRESROUTE and EXECFIND (amendment 2026-09-21, maintainer)
+
+The round-1 board question recorded in PRESROUTE's scope notes — whether the declared ownership overlap with HARDEN, REVIEWTRUTH, LEGLIFE and RESIDUAL needs `Depends on` edges — is ratified in the negative. The declared overlap plus the touch-shape falsifier is sufficient against the class that falsifier names — a landing that deletes or rewrites an existing line of a shared owned file outside its named seams — and no edge is added and no phase is edited. It does not claim to prove behavioural compatibility of two additive landings on different lines of the same file; that is the ordinary responsibility of each landing's own pre-merge review, unchanged by this ruling.
+
+As a ratified maintainer ruling, the `HARDEN → PRESROUTE` and `HARDEN → EXECFIND` edges are **satisfied by the landed isolation-authorization mechanism** PRESROUTE mints against (`advisor_board/backing.py`, `ReviewIsolationAuthorization` / `public_board_review.v1`, agent-harness#737), not by HARDEN's completion and not by EC-HARDEN-5, which remains an open criterion of HARDEN and is not a prerequisite of either phase. HARDEN's SL-4 through SL-6 evidence producer, verifier repair and completion seal remain required for REVIEWTRUTH and are not prerequisites of either phase: HARDEN freezes no interface (`Produces: (none)`; the roadmap defines no `IF-0-HARDEN-*` gate), so these edges are cautionary file-ownership edges and are discharged by the touch-shape falsifier.
+
+PRESROUTE may therefore be planned and executed now, concurrently with HARDEN, REVIEWTRUTH and SCHED, by a lane other than the one holding those phases. Its landings still serialize after the owning phases' landings on any shared file line they both rewrite, and a landing PR whose diff deletes or rewrites an existing line of a shared owned file outside its named seams fails the phase.
+
+EXECFIND's `REVIEWTRUTH → EXECFIND` edge is relaxed at criterion granularity, and only there: it remains SEMANTIC and is NOT relaxed for EC-EXECFIND-6, which consumes EC-REVIEWTRUTH-8's repair context (`runner.py` still passes `apply_fix=None`), while EC-EXECFIND-1 through -5 consume nothing REVIEWTRUTH has not yet landed. EXECFIND may be planned now and may execute EC-EXECFIND-1 through -5 under the same cautionary-edge reading, with their prerequisites stated individually rather than as one precedent: EC-EXECFIND-1's attachment channel precedent (`attach_native_agent_request`, agent-harness#921) is landed; EC-EXECFIND-2 mints its own `public_board_falsifier.v1` authorization against the same landed mechanism; EC-EXECFIND-3's per-finding decomposition is keyed in EXECFIND's `Key files` to REVIEWTRUTH-owned `governed_review.py` and lands only through its named seam under the touch-shape falsifier, serialized after any REVIEWTRUTH landing that rewrites the same lines. EC-EXECFIND-6 is dispatched only after EC-REVIEWTRUTH-8 is verified complete on `main`.
+
+`PRESROUTE → RATIFY`, `EXECFIND → RATIFY` and `RATIFY → GOVSETUP` are unchanged: each consumes a `Produces` gate its predecessor has not frozen.
+
+This ruling is append-only and governs planning and execution by the designated lane's explicit invocation (`/claude-plan-phase`, `/claude-execute-phase`). It changes none of the structured inputs the runner derives phase selection from — the `Depends on` lines, the Phase Dependency DAG, the phase order and any `**Dispatch holds**` declaration are all unchanged — so an autonomous `phase-loop run` selects phases exactly as it did before this ruling, which is the conservative reading and is acceptable. The ruling relaxes nothing the runner enforces; it authorizes the lane to act ahead of whatever structural wait the runner derives.
+
+RUNTIME's predecessor (PROOFGATE) is `completed`; RUNTIME is dispatchable now and is not behind HARDEN.
+
 ### PROOFGATE convergence experiment (pre-registered, amendment 2026-08-12)
 
 PROOFGATE executes under the GOVLEAN rules and primitives. The committed PROOFGATE detailed plan
