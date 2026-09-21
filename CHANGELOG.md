@@ -740,10 +740,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
   Likewise a path that cannot be placed inside the repo, which was previously skipped: a
   skipped argument vanishes into an empty result that prints as a clean pass.
-- The **qualification shown is the most specific claim's.** A phase can claim a file and
-  its parent directory with different qualifications; taking the first match made the
-  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
-  swap an exact file's narrow scope for the broad directory note.
+- **An intermediate iteration showed the qualification of the most specific claim** (an
+  exact token, else the longest literal prefix, else overall length) so that bullet order in
+  the roadmap could not swap an exact file's narrow scope for the broad directory note. **That
+  ranking is not the shipped behaviour**: three successive rankings each attached a broader
+  qualification to a narrower path, so it was removed — see the bullet below on
+  qualifications being scoped to the reported phase, attributed to their claim, and no
+  longer ranked. An exact token carrying its own qualification still settles the matter alone.
 - **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
   which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
   directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
@@ -776,21 +779,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   exact token naming a directory symlink was normalized to `X11/` and stopped matching — which
   meant ownership still depended on symlink state. The trailing-slash equivalence in `_claims`
   is symmetric too, so neither spelling can miss.
-- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
-  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
-  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
-  skipped argument vanishes into an empty result that prints as a clean pass.
-- The **qualification shown is the most specific claim's.** A phase can claim a file and
-  its parent directory with different qualifications; taking the first match made the
-  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
-  swap an exact file's narrow scope for the broad directory note.
-- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
-  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
-  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
-  command defines as "claimed by another phase" — so an unreadable roadmap was
-  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
-  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
-  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
 - **An intermediate iteration answered ownership by NAME only** (the repository ROOT resolved,
   the argument never), because resolving the argument had produced three defects in four
   review rounds: an internal symlink rewritten to its target and matching no token, `..`
@@ -802,21 +790,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   unions the owners, with the lexical identity dropped only where `..` cancelled a symlink;
   `--preflight` still agrees with `audit`, which works by name because
   `git diff --name-only` reports names.
-- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
-  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
-  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
-  skipped argument vanishes into an empty result that prints as a clean pass.
-- The **qualification shown is the most specific claim's.** A phase can claim a file and
-  its parent directory with different qualifications; taking the first match made the
-  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
-  swap an exact file's narrow scope for the broad directory note.
-- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
-  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
-  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
-  command defines as "claimed by another phase" — so an unreadable roadmap was
-  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
-  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
-  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
 - A path is evaluated under **both identities it denotes** — the name as written and the
   symlink-resolved target — and the owning phases are unioned. Choosing either alone
   fail-opens in a different direction: lexical-only let a phase preflight `src/link/owned.py`,
@@ -848,6 +821,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   module form cannot import and exits 1 — again the "claimed by another phase" code — so a
   module-only tool reported a phantom ownership block for every path on the supported
   install (same shape as #670/#693).
+
 ### HARDEN: isolated review and verification contracts
 
 - Review staging rejects every symlink path that resolves outside its source tree, and
@@ -1124,7 +1098,7 @@ listed.
   fresh-process import could silently drop the gate; the diagnostic helper is now imported
   at its two use sites. Seven fresh-process import cases went from 5 failed to 7 passed.
 - **CI runs on GitHub-hosted runners for this public repository** (`Consiliency/agent-harness#740`).
-  All twelve job definitions across the eight workflows moved from paid Blacksmith runners to
+  All thirteen job definitions across the eight workflows moved from paid Blacksmith runners to
   `ubuntu-latest`, which GitHub meters for free on public repositories; no workflow logic changed.
   Recorded in `docs/releases/github-hosted-runners-for-public-repo.md`.
 
