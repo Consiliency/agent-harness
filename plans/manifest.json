@@ -8484,6 +8484,40 @@
       "task_summary": "Qualify brokered Gemini heartbeat-only reviews under the scoped operator bootstrap exception",
       "type": "detailed",
       "updated_at": "2026-09-21T18:26:58Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-09-22T10:47:56Z",
+      "file": "plans/detailed-reviewtruth-native-codex-924-20260922-1042.md",
+      "handoff_ref": "/mnt/HC_Volume_105438154/worktrees/agent-harness-reviewtruth-native-codex-924-plan-20260922/.dev-skills/handoffs/codex-plan-detailed/reviewtruth-native-codex-924-plan-20260922.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-22T10:47:56Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "execution_admitted": false,
+            "issue": "Consiliency/agent-harness#924",
+            "plan_sha256": "00dea9ad7dc892cc2d438282f010c37ffb1cc47060411cb1b30d8cbc3760a042",
+            "planning_only": true,
+            "roadmap_goal": "EC-REVIEWTRUTH-18",
+            "scope": "Codex/OpenAI single-seat protocol cell; no other native cell, heartbeat-native support, or phase completion",
+            "source_input_head": "3fbedb2d073b49797b68695aeebfd7af0d6175da",
+            "verification": "Not run: planning-only scope. Commands are specified in the plan."
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/83e6fd0b3d0f/codex-reviewtruth-native-codex-924-plan-20260922/reviewtruth-native-codex-924-plan-20260922.md",
+      "roadmap_ref": null,
+      "slug": "detailed-reviewtruth-native-codex-924-20260922",
+      "status": "committed",
+      "task_summary": "Plan the bounded Codex/OpenAI native review protocol cell under EC-REVIEWTRUTH-18; execution remains gated.",
+      "type": "detailed",
+      "updated_at": "2026-09-22T10:47:56Z"
     }
   ],
   "schema_version": 1
