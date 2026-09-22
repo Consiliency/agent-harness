@@ -8423,6 +8423,109 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-09-21T00:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": 6,
+      "convergence_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-convergence.json",
+      "convergence_sha256": "14841bb74d2ca036be8ff73c083bb9ab368bfa0bfbc5c08ff7e1e91cbf1f6324",
+      "created_at": "2026-09-22T03:42:00Z",
+      "file": "plans/detailed-train-review-packet-20260922-0342.md",
+      "git_commit_created": false,
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet.md",
+      "if_gates_produced": [],
+      "implementation_status": "in_progress",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-22T03:42:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "git_commit_created": false,
+            "implementation_status": "not_started",
+            "review_status": "pending_cross_vendor_panel",
+            "run_id": "20260922T034200Z-train-review-packet"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-22T04:21:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "event": "plan_revision_recorded",
+            "git_commit_created": false,
+            "implementation_not_started": true,
+            "plan_revision": 2,
+            "plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "prior_plan_sha256": "217c56a78ae6e72865cb767ddfcade342027abf042ba221b372d2984d1371b80",
+            "reconciliation_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-r1-reconciliation.md",
+            "reconciliation_sha256": "7f0d03ac6119d937850d753ce373750ac417d50ded3281a3bacb7554eb014056"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-22T04:21:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "convergence_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-convergence.json",
+            "convergence_sha256": "14841bb74d2ca036be8ff73c083bb9ab368bfa0bfbc5c08ff7e1e91cbf1f6324",
+            "event": "qualified_plan_review_convergence",
+            "excluded_vote": "grok round 2: reported truncation; retained, not counted",
+            "git_commit_created": false,
+            "implementation_not_started": true,
+            "plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "round_2_dispositions_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-round-2-dispositions.md",
+            "round_2_dispositions_sha256": "3c6f786ebb23bb85bc818b1b758f06a81e7060dea468dc88b264985dc4d80743",
+            "round_cap": 3,
+            "scope": "Detailed plan approval only; no runtime implementation, phase completion, supplier approval, release or installation",
+            "standing_approvals": {
+              "claude": 2,
+              "codex": 2,
+              "gemini": 2,
+              "grok": 3
+            }
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-22T04:37:13.999158+00:00",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "reviewed_plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "run_id": "train-review-packet-impl-20260922",
+            "source_base": "9e60c4b8bab45cea8cb0d837fe54eb579f9cbfcc"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T04:52:04.923744+00:00",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "delta": "Remove obsolete test_launch_seam_coverage.py only; retain behavioral test_the_real_launch_carries_the_prefix.py",
+            "event": "proposed_verification_input_correction",
+            "original_command_exit_code": 4,
+            "prior_plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "proposed_plan_sha256": "66e718e667662f2b08816d23b936ace260fed49f0fd2327cd42dee0a23ca4c2d",
+            "removed_in_commit": "7112c79aa1bb6a9a1dac931467cdf6d9f197f167",
+            "review_status": "pending_implementation_board_ratification"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "plan_revision": 2,
+      "plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+      "proposed_plan_sha256": "66e718e667662f2b08816d23b936ace260fed49f0fd2327cd42dee0a23ca4c2d",
+      "reconciliation_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-r1-reconciliation.md",
+      "reconciliation_sha256": "7f0d03ac6119d937850d753ce373750ac417d50ded3281a3bacb7554eb014056",
+      "reflection_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-reflection.md",
+      "review_status": "qualified_four_vendor_convergence",
+      "roadmap_ref": null,
+      "slug": "detailed-train-review-packet-20260922-0342",
+      "status": "executing",
+      "task_summary": "Coordinator-owned admitted train review packet, zero-model preview and content-bound approval for agent-harness#906 and agent-harness#915.",
+      "type": "detailed",
+      "updated_at": "2026-09-22T04:21:00Z"
     }
   ],
   "schema_version": 1

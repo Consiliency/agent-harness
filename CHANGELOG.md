@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Bound train review material (agent-harness#906, agent-harness#915)
+
+- Governed train reviews now receive immutable admitted Git changes, acceptance
+  criteria and head-bound evidence. `--review-material` supplies provenance;
+  `--governed --review-only --preview-review DIR --json` prepares the same packet
+  before any broker, lease, ledger mutation or model call.
+- Approval reuse requires the exact stored packet digest and current reviewer
+  floor. Legacy approvals re-review; partial trains without historical packets
+  hold. Native-fill and merge checks use the same packet identity.
+- Whole deleted subtrees may use explicit, bound operator disposal attestations.
+  Certificates prove deletion mechanics, not generatedness; other substantive
+  changes stay inline. Invalid, missing or oversized material holds without
+  truncation or extra review rounds.
+
 ### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
 
 - `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2400 (40 min) instead of

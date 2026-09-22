@@ -2659,6 +2659,37 @@ Fields:
 A synthetic `_train_review_` record (`node_id="_train_review_"`) is appended
 when the train-level review panel approves. Its `status` is `"approved"`.
 
+An approval with usable-reviewer evidence may also carry the optional
+`review_packet_sha256` field, omitted on historical and non-review records.
+Reuse requires its exact immutable packet bytes and the current usable-reviewer
+floor; a legacy approval without the digest cannot authorize pending merges.
+
+The version-1 train review packet binds train order/edges, full admitted heads,
+PR identities, live base tips, unique merge bases, tree IDs, changed-path/mode/blob
+inventory, full substantive patches, acceptance and head-bound evidence.
+`--review-material FILE` declares supporting material for every exact node ID;
+local command/disposal evidence is labelled operator-supplied attestation.
+GitHub check runs are fetched by identity and checked against the admitted head.
+Optional explicit whole-subtree disposal certificates bind full inventories and
+unabridged diff hashes; they certify deletion mechanics, not generatedness.
+Operator-only removal sidecars never enter reviewer scratch.
+
+`run-train --governed --review-only --review-material FILE --preview-review DIR`
+prepares identical review material before broker construction, leases, recovery,
+admission or models. A ready receipt is not approval. The rendered prompt,
+including framing and instructions, must fit 512 KiB; the separate 1 MiB packet
+parser limit does not establish readiness. There is no truncation fallback.
+
+Production stores read-back packets under `review-packets/<sha256>/` beside the
+ledger. Missing/corrupt packet storage holds. Explicit fresh material invalidates
+changed approvals; omitted material retains stored snapshots without asserting
+checks were refreshed. Native fills retain artifact/brief/composition validation.
+Partial resumes keep original merged-node sections only after validating their
+admitted heads and live merge outcomes; unavailable history holds rather than
+reconstructing scope from current main. Observed pending base/head drift before
+approval and each merge requires a fresh packet. GitHub's existing head pin
+remains independent; these reads do not atomically pin the base.
+
 Idempotent resume: re-running `run_train` reads the ledger to skip nodes that
 are already `pr_open` (confirmed via a live `_pr_is_open` check) or already
 `merged`. A `blocked` node in the ledger is retried on resume.

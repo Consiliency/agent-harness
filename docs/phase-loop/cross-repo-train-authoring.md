@@ -67,11 +67,11 @@ committed work. The coordinator:
    the publish fails closed (`broker_required`); a prebuilt node never does a
    direct push.
 
-Prebuilt nodes stop at `drafts_open` like execute nodes. **P4 governed merge for
-prebuilt nodes is not yet supported**: running a train that contains a prebuilt
-node with `--governed` is rejected up front (zero PRs). Open the drafts without
-`--governed`, then merge the prebuilt PRs manually. (Follow-up: a prebuilt-aware
-P4 re-verify that checks the committed branch against the merged upstream pin.)
+Prebuilt nodes stop at `drafts_open` like execute nodes. A prebuilt root with no
+upstream edge supports governed review and merge, pinned to its admitted head.
+A prebuilt node with any upstream edge, including `order-only`, is refused under
+`--governed`: downstream re-verification still requires phase-loop state. Keep
+that node at `drafts_open`; a prebuilt-aware downstream verifier is separate work.
 
 Example prebuilt train (each node's branch already carries verified commits):
 
@@ -93,6 +93,86 @@ Example prebuilt train (each node's branch already carries verified commits):
 **Mode:** prebuilt
 **Workspace:** /mnt/workspace/checkouts/app-service
 ```
+
+## Review material and zero-model preview
+
+For each new governed review, supply `--review-material material.json`. The
+coordinator derives the full PR patch from the unique merge base of the live
+base tip and the ledger-admitted head. A `CHANGELOG.md` node label does not limit
+that scope. Source comes from isolated readers of Git objects, never dirty
+working files, external diff drivers, textconv, hooks, or implicit fetches.
+
+Once every node is admitted, prepare and inspect the packet before reviewing:
+
+```sh
+phase-loop run-train --train train.md --governed --review-only \
+  --review-material material.json --preview-review /absolute/empty/preview --json
+phase-loop run-train --train train.md --governed --review-only \
+  --review-material material.json
+phase-loop run-train --train train.md --governed
+```
+
+Use `--ledger-dir DIR` consistently for a nondefault coordinator ledger. Preview
+reads existing admission state and GitHub metadata before any broker, lease,
+recovery, admission, or model call. It writes `packet.md`, `packet.json`, optional
+operator-only `removals.json`, and `receipt.json` into a fresh/empty directory
+outside node checkouts, the ledger, and `.phase-loop`. Output components may not
+be symlinks. `ready=true` means material preparation, not source approval.
+
+The version-1 JSON manifest has exactly `schema_version: 1` and `nodes`, an
+object keyed by every exact train node ID. Each node requires:
+
+- `head_sha`: full admitted Git OID.
+- `acceptance`: nonempty records `{id, text, provenance: {path, sha256}}`.
+- `verification`: nonempty records, either `{id, kind: "github_check_run",
+  check_run_id, expected_name?, expected_app_slug?}` or
+  `{id, kind: "attested_command", head_sha, argv, exit_code, result,
+  attested_by, observed_at, evidence: {path, sha256}}`.
+- Optional `context`: Git paths at the admitted head; missing context is an
+  explicit review dissent. Optional `generated_removals`: declarations below.
+
+Evidence paths are relative to the manifest directory, cannot contain `..`,
+and every component is opened without following symlinks. Evidence must be a
+regular file with its declared lowercase SHA-256. Bytes are captured once and
+included in the packet. IDs are unique within each record list; unknown fields
+and stale heads hold. `observed_at` is RFC3339. A passed command requires integer
+exit code 0; failed requires a nonzero integer; skipped/unknown require null.
+Local records are **operator-supplied attestations**, not authenticated runtime
+executions. GitHub check-run identity, repository, head, app and raw status are
+bound; optional expected name/app pins are reported when absent. Failed, skipped,
+unavailable and unknown outcomes cannot be promoted to passed.
+
+An optional removal declaration is `{path, base_tree_oid, rationale,
+attestation: {path, sha256}}`. Its attestation file is JSON containing
+`attested_by`, `observed_at`, `base_tip_sha`, `merge_base_sha`, `head_sha`, `path`,
+`base_tree_oid`, and nonempty `disposal_scope`. All identities must match.
+The subtree must exist unchanged at both merge base and live base tip and be
+entirely absent at head. Root groups, top-level `.github`, CODEOWNERS-containing
+subtrees, overlaps, and new outside exact-blob copies (including empty blobs)
+are refused. This proves mechanical whole-tree deletion, **not generatedness**
+or absence of semantic copies. The board sees an explicit disposal assertion,
+counts, bounded histograms, full inventory/diff digests and attestation text;
+deleted bodies and individual rows are represented by the certificate and are
+not claimed model-read. The complete inventory remains operator-only. Moving
+the base requires refreshed base-bound attestations and another review, even
+if that subtree is unchanged. Other binary/submodule changes hold.
+
+The text escapes literal backslashes, CR and transport-disallowed Unicode
+reversibly while preserving raw-byte hashes. Forbidden broker frame replicas
+hold. The 1 MiB parser limit is not transport readiness: the **complete rendered
+prompt** must fit 512 KiB with its real brief/framing and a conservative sandbox
+path bound. Oversized input requires separately reviewed scope decomposition;
+the runtime never truncates or silently spends extra rounds.
+
+Approval records optionally carry `review_packet_sha256`. Cached approval needs
+that digest, intact immutable packet storage, current live identities and the
+current usable-reviewer floor. Legacy count-only approvals re-review. Explicit
+new material is compared; omitting it retains stored evidence snapshots, not
+newly refreshed checks. Partial merge resume retains original reviewed sections
+for already merged nodes after checking admitted heads and live merge outcomes.
+Without valid historical material it holds as `historical_packet_unavailable`.
+Observed base/head drift before approval or each merge holds remaining work;
+this is not an atomic base pin or a promise against concurrent GitHub changes.
 
 ## Channel types
 

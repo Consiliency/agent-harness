@@ -915,6 +915,8 @@ def build_parser() -> argparse.ArgumentParser:
             "(per-repo governed panel review before merge)."
         ),
     )
+    run_train_sub.add_argument("--review-material", metavar="FILE", help="Version-1 head-bound train review evidence manifest.")
+    run_train_sub.add_argument("--preview-review", metavar="DIR", help="With --governed --review-only: prepare a packet without broker, lease, ledger mutation or models.")
     run_train_sub.add_argument(
         "--emit-native-request", dest="emit_native_request", action="store_true", default=False,
         help=("With --governed --review-only: stage the train bundle and the claude seat's native-fill "
@@ -4381,6 +4383,10 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
         return 1  # unreachable
     emit_native_request = bool(getattr(args, "emit_native_request", False))
     native_leg_specs = list(getattr(args, "native_legs", []) or [])
+    preview_output = getattr(args, "preview_review", None)
+    review_material = getattr(args, "review_material", None)
+    if preview_output and (not review_only or run_mode != "governed" or emit_native_request or native_leg_specs):
+        parser.error("--preview-review requires --governed --review-only and cannot combine with native emission/fill")
     if (emit_native_request or native_leg_specs) and not review_only:
         parser.error("--emit-native-request / --native-leg require --governed --review-only")
         return 1  # unreachable
@@ -4427,6 +4433,19 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     ledger_path = default_ledger_path(ledger_dir, train_path.stem)
 
     as_json = bool(getattr(args, "json", False))
+
+    if preview_output:
+        import hashlib
+        from .train_review_packet import preview_review_packet
+        receipt = preview_review_packet(
+            roadmap, ledger_path, _resolve_workspace, review_material, Path(preview_output),
+            train_digest=hashlib.sha256(train_path.read_bytes()).hexdigest(),
+        )
+        result = {"status": "review_packet_ready" if receipt["ready"] else "review_halted", **receipt}
+        print(json.dumps(result, sort_keys=True) if as_json else
+              (f"Review packet prepared at {preview_output}; no review approval recorded." if receipt["ready"] else
+               "Review packet held: " + "; ".join(receipt["errors"])))
+        return 0 if receipt["ready"] else 1
 
     # Build a broker-authoritative coordinator runtime so publish actually opens PRs.
     # Without a broker_client, publish_from_worktree fail-closes `broker_required` and
@@ -4500,6 +4519,7 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             review_only=review_only,
             emit_native_request=emit_native_request,
             native_leg_fills=native_leg_fills,
+            review_material=review_material,
         )
     finally:
         try:

@@ -25,6 +25,11 @@ from unittest.mock import patch
 
 import pytest
 
+from test_train_review_packet import synthetic_train_packet, seed_synthetic_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 from phase_loop_runtime.train_ledger import read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
 from phase_loop_runtime.train_runner import (

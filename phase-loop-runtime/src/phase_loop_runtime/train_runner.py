@@ -2337,7 +2337,7 @@ def _default_train_review(
     FAB (Consiliency/agent-harness#191) design §4.4 note (activation
     milestone, piece 1): this call deliberately forwards
     ``fab_promotion_check=None`` (the default — never set here). ``artifact``
-    here is `_build_train_review_bundle`'s multi-node, multi-repo BUNDLE
+    here is the immutable train review packet's multi-node, multi-repo BUNDLE
     text, reviewed as one logical cross-repo change — there is no single
     ``EquivalenceBinding`` (one repo_slug/base/head tuple) it could bind to.
     The load-bearing per-PR re-assertion instead lives at
@@ -2434,49 +2434,6 @@ def _train_canonical_repo_authority(
     return None
 
 
-def _build_train_review_bundle(
-    roadmap: "TrainRoadmap",
-    completed_nodes: Dict[str, Dict],
-    topo_order: "List[TrainNode]",
-) -> str:
-    """Build the artifact text for the train-level review panel.
-
-    Summarises all draft PRs in merge order so the panel can review the
-    cross-repo change as one logical unit.
-    """
-    # design-model-tier-taxonomy.md item 7 (CR round-3 correction): the train
-    # coordinator is a SUPERVISE-tier role, but there is NO programmatic coordinator
-    # launch that sets a model (the coordinator is the CLI/ambient session; per-node
-    # run_loop launches its own phase executors). So this does NOT bind a launch —
-    # it records the supervise tier on the coordinator's review artifact as ADVISORY
-    # PROVENANCE (the operator running the supervisor session should be on the heavy
-    # model, Opus 5).
-    from .profiles import supervise_selection
-
-    supervise = supervise_selection()
-    lines: List[str] = [
-        "# Train-level bundle review\n\n",
-        f"**Train:** `{roadmap.title}`\n\n",
-        (
-            f"_Coordinator supervise tier: `{supervise.tier}` "
-            f"(model `{supervise.model_id}`, effort `{supervise.effort}`)._\n\n"
-        ),
-        "## Draft PRs (merge order)\n\n",
-        "Review the following PRs as **one logical cross-repo change**.\n",
-        "Approve (AGREE) only if the change is correct as a unit.\n\n",
-    ]
-    for i, node in enumerate(topo_order, 1):
-        nid = node.node_id
-        info = completed_nodes.get(nid, {})
-        pr_url = info.get("pr_url", "(unknown)")
-        head_sha = info.get("head_sha") or "?"
-        short_sha = head_sha[:8] if len(head_sha) >= 8 else head_sha
-        lines.append(f"{i}. **`{nid}`** — [PR]({pr_url}) (draft `{short_sha}`)\n")
-    lines.append(
-        "\n---\n"
-        "Reject (DISAGREE) with specific blocking concerns if not ready.\n"
-    )
-    return "".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -2557,6 +2514,7 @@ def _run_train_unfenced(
     emit_native_request: bool = False,
     native_leg_fills: "Sequence[object] | None" = None,
     _emit_native_fill_request_fn: Optional[Callable] = None,
+    review_material: "Path | str | None" = None,
     # P4 seams — unused when _merge_phase_enabled is False.
     _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
@@ -3631,12 +3589,9 @@ def _run_train_unfenced(
     # `_MIN_USABLE_REVIEWERS`, so a floor raised later (#375) auto-invalidates a
     # stored count that no longer clears it (no old-floor snapshot is trusted).
     # Pre-#358 records have `usable_reviewers is None` → re-review.
-    if review_only:
-        # agent-harness#906 D5 (review-only): do not spend a board on a bundle whose
-        # admitted head is no longer the live PR head; the merge-time
-        # `--match-head-commit` pin could never honour the approval. Governed merge
-        # runs keep today's behaviour (pinned by test_train_merge: an out-of-band open
-        # PR proceeds and fails closed at the merge pin), recorded as a plan deviation.
+    if out_of_band_upstreams:
+        # Both governed paths refuse stale admitted heads before models. The
+        # merge-time --match-head-commit remains an independent second guard.
         _stale = [
             {
                 "node_id": _nid_s,
@@ -3659,19 +3614,43 @@ def _run_train_unfenced(
                     )
                 ),
             }
+    from .train_review_packet import (
+        PacketError, build_review_packet, load_review_packet, recheck_packet_identities,
+        store_review_packet,
+    )
+    train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
+    packet_root = ledger_path.parent / "review-packets"
+    try:
+        historical = None
+        if train_review_rec is not None and train_review_rec.review_packet_sha256 is not None:
+            historical = load_review_packet(packet_root, train_review_rec.review_packet_sha256)
+        if merged_shas and historical is None:
+            raise PacketError("historical_packet_unavailable: partial train has no bound historical packet")
+        # Recovery discovered a real merge without a ledger append. Its original
+        # admitted identity still has to match the retained historical section.
+        packet_state = dict(p4_ledger_state)
+        from dataclasses import replace as _replace_record
+        for nid, merged_sha in merged_shas.items():
+            if nid in packet_state:
+                packet_state[nid] = _replace_record(packet_state[nid], status="merged", upstream_merge_sha=merged_sha)
+        packet = build_review_packet(
+            roadmap, packet_state, resolve_workspace, review_material, historical=historical,
+            train_digest=coordinator_runtime.roadmap_digest if coordinator_runtime else None,
+        )
+        stored_packet = store_review_packet(packet, packet_root)
+        # Never authorize from mutable external material after this read-back.
+        packet = load_review_packet(packet_root, packet.sha256)
+        bundle_text = packet.artifact
+    except (OSError, ValueError) as exc:
+        return {"status": "review_halted", "nodes": completed_nodes,
+                "reason": str(exc).split(":", 1)[0], "detail": str(exc),
+                "terminal_blocker": _non_human_train_blocker(str(exc))}
+
     # REVIEWTRUTH early slice (D3, train): a supplied fill that does not match the bundle the
     # CURRENT ledger produces is refused typed BEFORE the approval short-circuit and before any
     # review seam — an approval recorded for an earlier bundle never launders a stale fill.
     if native_leg_fills:
-        _current_bundle = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
-        # stale request — refused here, before ANY review seam is reached (never applied to
-        # new bytes, never spending a seat).
-        from .panel_invoker import content_sha256 as _content_sha256
-
-        # Digest the bundle as it would be READ BACK from disk (universal newlines), exactly as the
-        # emit arm digested the staged artifact — a CR in a roadmap title must not false-refuse.
-        _current = _content_sha256(_current_bundle.replace("\r\n", "\n").replace("\r", "\n"))
-        _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != _current]
+        _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != packet.sha256]
         if _stale:
             return {
                 "status": "review_halted",
@@ -3683,16 +3662,46 @@ def _run_train_unfenced(
                 "terminal_blocker": {"human_required": False, "blocker_class": "review_gate_block",
                                      "blocker_summary": "native fill stale: re-emit with --emit-native-request"},
             }
-    train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
     already_approved = (
         train_review_rec is not None
         and train_review_rec.status == "approved"
         and train_review_rec.usable_reviewers is not None
         and train_review_rec.usable_reviewers >= _MIN_USABLE_REVIEWERS
+        and train_review_rec.review_packet_sha256 == packet.sha256
     )
 
+    if already_approved and native_leg_fills:
+        # Cache reuse still validates all native request bindings against current
+        # composition. This creates no isolation authorization or reviewer seat.
+        from dataclasses import replace as _replace_board
+        from . import panel_invoker as _pi
+        from .advisor_board import backing as _backing
+        from .advisor_board.composition import FLOOR_SEATS, compose_review_board, composition_digest
+        from .governed_review import author_vendor_for_executor
+        from .train_review_packet import preflight_packet
+        try:
+            _backing.prepare_review_composition_authorization()
+            try:
+                board = compose_review_board()
+            finally:
+                _backing.clear_review_composition_authorization()
+            author = author_vendor_for_executor("train-coordinator")
+            board = _replace_board(board, seats=tuple(s for s in board.seats if s.harness != author))
+            if len(board.seats) < FLOOR_SEATS:
+                raise PacketError("native_fill_refused: composed board below floor")
+            brief = _pi._resolve_brief("review", None)
+            preflight_packet(bundle_text, instructions=brief, board=board)
+            refusal = _pi.preflight_native_leg_fills(
+                board, tuple(native_leg_fills), artifact_sha256=packet.sha256,
+                brief_sha256=_pi.content_sha256(brief), composition_sha256=composition_digest(board),
+            )
+            if refusal is not None:
+                raise PacketError(f"native_fill_refused: {refusal.reason}: {refusal.detail}")
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            return {"status": "review_halted", "reason": "native_fill_refused", "detail": str(exc),
+                    "terminal_blocker": _non_human_train_blocker(str(exc))}
+
     if not already_approved:
-        bundle_text = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
         if emit_native_request:
             # D3 emit arm: stage the exact bundle and the fill request; spend nothing.
             emit_fn = _emit_native_fill_request_fn if _emit_native_fill_request_fn is not None else _default_emit_native_fill_request
@@ -3725,6 +3734,13 @@ def _run_train_unfenced(
                 ],
             }
 
+        try:
+            recheck_packet_identities(packet, roadmap, packet_state, resolve_workspace)
+        except (OSError, ValueError) as exc:
+            return {"status": "review_halted", "nodes": completed_nodes,
+                    "reason": "observed_identity_drift", "detail": str(exc),
+                    "terminal_blocker": _non_human_train_blocker(str(exc))}
+
         # Record approval (synthetic node_id — never a real roadmap node) WITH
         # durable floor evidence (agent-harness#358). The count is the SAME measure
         # the floor enforces — `len(panel.usable_legs)` — so a resume-accept can
@@ -3748,6 +3764,7 @@ def _run_train_unfenced(
                 status="approved",
                 usable_reviewers=_usable_reviewers,
                 review_policy_version=_review_policy_version,
+                review_packet_sha256=packet.sha256 if _usable_reviewers is not None and _usable_reviewers >= _MIN_USABLE_REVIEWERS else None,
             ),
         )
     else:
@@ -3762,6 +3779,8 @@ def _run_train_unfenced(
             "nodes": completed_nodes,
             "usable_reviewers": _usable_reviewers,
             "review_policy_version": _review_policy_version,
+            "review_packet_sha256": packet.sha256,
+            "review_packet_path": str(stored_packet / "packet.md"),
         }
 
     # --- Sequential merge in topo order with downstream re-verify -----------
@@ -4000,6 +4019,14 @@ def _run_train_unfenced(
                     f"(agent-harness#250 N7 CR follow-up, defect 1 hardening)"
                 ),
             }
+        try:
+            recheck_packet_identities(
+                packet, roadmap, read_ledger(ledger_path), resolve_workspace, node_ids={_nid_m},
+            )
+        except (OSError, ValueError) as exc:
+            return {"status": "review_halted", "node_id": _nid_m,
+                    "reason": "observed_identity_drift", "detail": str(exc),
+                    "terminal_blocker": _non_human_train_blocker(str(exc))}
         try:
             # agent-harness#250 (N7): pass the SAME base the broker's owned-scope
             # check validated at publish time (the module-wide _DEFAULT_BASE; no

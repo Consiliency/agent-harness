@@ -14,6 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from test_train_review_packet import synthetic_train_packet, seed_synthetic_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 from phase_loop_runtime import governed_review as gr
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import train_runner as tr
@@ -620,12 +625,14 @@ class TestReviewOnly:
 
     def test_later_governed_run_merges_without_re_review(self, tmp_path):
         ledger = _ledger(tmp_path, approved=3)
+        seed_synthetic_packet(ledger, parse_train_roadmap(PREBUILT_1NODE_MD))
         result, merged = _run_review(tmp_path, ledger, review_only=False, review_fn=_Never("train_review_fn"))
         assert result["status"] == "merged", result
         assert merged == [("repo-a", ADMITTED)], "merge pinned to the admitted head, no re-board"
 
     def test_review_only_on_an_approved_train_returns_without_re_board(self, tmp_path):
         ledger = _ledger(tmp_path, approved=3)
+        seed_synthetic_packet(ledger, parse_train_roadmap(PREBUILT_1NODE_MD))
         result, merged = _run_review(tmp_path, ledger, review_only=True, review_fn=_Never("train_review_fn"))
         assert result["status"] == "review_approved" and result["usable_reviewers"] == 3
         assert merged == []
