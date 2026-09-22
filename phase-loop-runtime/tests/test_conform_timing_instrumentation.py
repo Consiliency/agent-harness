@@ -9,7 +9,6 @@ CONFORM ``-k outside_agent`` lifecycle corpus is unchanged.
 from __future__ import annotations
 
 import contextlib
-import os
 import shutil
 import subprocess
 import sys
