@@ -7,7 +7,7 @@ canonical pair into the exact invocation token shared by launcher and board path
     claude  -> effort flag        ``--effort max``
     codex   -> config override    ``-c model_reasoning_effort=xhigh``
     gemini  -> model-name embed   ``gemini-3.8-flash-high``
-    grok    -> effort flag        ``--reasoning-effort high``
+    grok    -> effort flag        ``--reasoning-effort xhigh``
 
 Legacy Gemini Pro display names remain supported for explicit boards.
 """
@@ -56,12 +56,23 @@ _CODEX_EFFORT: dict[str, str] = {
     "max": "xhigh",
 }
 
-# canonical effort -> grok ``--reasoning-effort`` token. The grok CLI accepts ONLY
-# ``high | medium | low`` (verified via an out-of-range probe: ``--reasoning-effort max``
-# -> ``unknown effort level 'max'; use one of: high, medium, low``). So canonical ``max``
-# CLAMPS to grok's own ``high`` ceiling — the panel's grok seat runs at grok-4.6's maximum
-# reasoning. (ah#222: a prior literal ``max`` made the grok leg ERROR on every default panel
-# run.) The grokexec/launcher grok effort path is separate (capability_registry) — not fixed here.
+# canonical effort -> grok ``--reasoning-effort`` token. The grok CLI's accepted set is
+# established by an out-of-range probe, NOT by assumption. Re-probed 2026-09-22:
+# ``--reasoning-effort max`` -> ``unknown effort level 'max'; use one of: xhigh, high,
+# medium, low``. So the ceiling is ``xhigh``, and canonical ``max`` clamps to it.
+#
+# THE CEILING MOVED AND THE CLAMP DID NOT FOLLOW. The previous probe (ah#222) returned
+# ``use one of: high, medium, low``, so the map clamped both ``max`` and ``xhigh`` down to
+# ``high`` and a comment here asserted "grok has no 'max'/'xhigh'; its ceiling is 'high'"
+# as a standing fact. The CLI later gained ``xhigh``; the assertion was never re-probed, so
+# every panel and CR round ran the grok seat ONE NOTCH BELOW what was available. Verified on
+# both the pinned model and the newer one: ``grok -m grok-4.6 --reasoning-effort xhigh`` and
+# ``-m grok-4.7 --reasoning-effort xhigh`` both succeed, so this is a CLI-level ceiling and
+# not model-specific. (ah#222: a prior literal ``max`` made the grok leg ERROR on every
+# default panel run — that hazard is unchanged, ``max`` is still not a valid CLI token.)
+#
+# A probe result is a MEASUREMENT WITH A DATE, not a property. Re-probe before trusting this
+# comment; the accepted set is the vendor's to change and it has changed once already.
 #
 # ah#231: kept as an OVERRIDES map (only the entries that don't pass through unchanged) plus a
 # ``.get``-with-clamp lookup below, matching ``launcher._GROK_CLI_EFFORT_OVERRIDES`` /
@@ -74,17 +85,19 @@ _CODEX_EFFORT: dict[str, str] = {
 # token through unchanged) so the grok leg never KeyErrors and never emits an invalid CLI token.
 _GROK_EFFORT_OVERRIDES: dict[str, str] = {
     "minimal": "low",   # matches launcher._GROK_CLI_EFFORT_OVERRIDES verbatim
-    "xhigh": "high",
-    "max": "high",  # grok has no 'max'/'xhigh'; its ceiling is 'high'
+    # ``xhigh`` is NOT listed: the CLI now accepts it, so it passes through unchanged via
+    # the ``.get`` default below. Listing it would re-introduce the stale down-clamp.
+    "max": "xhigh",  # 'max' is not a CLI token; 'xhigh' is the CLI's current ceiling
 }
 
 
 def _grok_panel_effort(effort: str) -> str:
     """Map a canonical panel effort to a grok-CLI-supported token (ah#231, robust lookup).
 
-    Low/medium/high pass through unchanged. minimal/xhigh/max clamp to a valid grok CLI
-    token via ``_GROK_EFFORT_OVERRIDES`` (identical to ``launcher._grok_cli_effort``'s
-    map, for panel/launcher parity). Any other, genuinely unrecognized effort passes
+    Low/medium/high/xhigh pass through unchanged (all are valid CLI tokens as of the
+    2026-09-22 probe). minimal and max clamp to a valid grok CLI token via
+    ``_GROK_EFFORT_OVERRIDES`` (identical to ``launcher._grok_cli_effort``'s map, for
+    panel/launcher parity). Any other, genuinely unrecognized effort passes
     through unchanged via the ``.get`` default, so this can never ``KeyError`` — unlike
     the direct-index form it replaces.
     """

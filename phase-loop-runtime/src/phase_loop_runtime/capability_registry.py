@@ -511,16 +511,18 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         supported_efforts=_ALL_EFFORTS,
         unsupported_policy_behavior=_FAIL_CLOSED,
         default_effort="medium",
-        # ah#224: grok's `--reasoning-effort` accepts ONLY high/medium/low (a SUBSET of
-        # NORMALIZED_EFFORT_LEVELS). The live clamp is at the CLI boundary
+        # grok's `--reasoning-effort` accepted set is established by PROBE. Re-probed
+        # 2026-09-22: xhigh/high/medium/low (it was high/medium/low at ah#224 — the set
+        # GREW and the clamp did not follow, under-driving every grok seat until caught).
+        # Still a SUBSET of NORMALIZED_EFFORT_LEVELS (`max` is not a CLI token). The live clamp is at the CLI boundary
         # (`launcher._grok_cli_effort`, mirroring codex's `max->xhigh`), which keeps grok
         # effort-eligible in this layer (all normalized levels remain valid REQUESTS,
         # translated at emit time). This map is defense-in-depth for the policy-layer
         # fallback path; it is kept accurate (not identity) rather than lying.
-        effort_map={"minimal": "low", "xhigh": "high", "max": "high"},
+        effort_map={"minimal": "low", "max": "xhigh"},  # xhigh passes through: valid CLI token
         # ah#231 (REPRESENTATIONAL honesty, DECIDED — decouple eligibility from effort
-        # translation): grok's real reasoning ceiling is `high` (its `--reasoning-effort`
-        # CLI rejects `max`, ah#222/#224), so it must NOT be represented as a max-effort
+        # translation): grok's real reasoning ceiling is `xhigh` (its `--reasoning-effort`
+        # CLI still rejects `max`, ah#222/#224), so it must NOT be represented as a max-effort
         # PLANNER OF RECORD — the same stance gemini/pi take. But UNLIKE gemini/pi we do
         # NOT narrow `supported_efforts` to express that: grok deliberately keeps the broad
         # set so an explicit `max` request stays a VALID request that the CLI-emit layer
@@ -535,7 +537,7 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         # planner-of-record, a role it is never AUTOSEL-selected for anyway (ah#231).
         planner_max_class=False,
         notes=(
-            "grok's `--reasoning-effort` CLI flag accepts ONLY high/medium/low (a subset of NORMALIZED_EFFORT_LEVELS); minimal/xhigh/max are clamped to a valid token at the CLI boundary by launcher._grok_cli_effort (like codex's max->xhigh).",
+            "grok's `--reasoning-effort` CLI flag accepts xhigh/high/medium/low (a subset of NORMALIZED_EFFORT_LEVELS; probed 2026-09-22, previously high/medium/low); minimal and max are clamped to a valid token at the CLI boundary by launcher._grok_cli_effort (like codex's max->xhigh), while xhigh passes through unchanged.",
             "grok is NOT max-effort planner-of-record eligible (ah#231, planner_max_class=False, matching gemini/pi's stance) — but unlike them it keeps the broad supported_efforts so an explicit `max` stays a valid, CLI-clamped request; the flag decouples eligibility from run-level effort translation and does not reduce grok's effort anywhere.",
         ),
     ),

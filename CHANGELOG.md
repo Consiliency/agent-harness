@@ -31,6 +31,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   packets and deeply nested JSON return diagnostic receipts. Initial Claude
   native request and fill instructions both supply the required material.
 
+### grok effort clamp follows the CLI ceiling, which MOVED to `xhigh` (agent-harness#973)
+
+- The grok CLI's accepted `--reasoning-effort` set is established by PROBE, and it grew:
+  ah#222 measured `high | medium | low`, so ah#224/ah#231 clamped both `max` and `xhigh`
+  down to `high`. A 2026-09-22 re-probe measures `xhigh | high | medium | low` on both
+  `grok-4.6` and `grok-4.7`, so the ceiling is CLI-level, not model-specific, and the
+  clamp had been pinning every grok run one tier BELOW what the CLI would accept.
+- Both clamp maps now read `{"minimal": "low", "max": "xhigh"}` and stay
+  verbatim-identical (the ah#231 parity requirement): `launcher._GROK_CLI_EFFORT_OVERRIDES`
+  and `advisor_board.harness_mapping._GROK_EFFORT_OVERRIDES`. `xhigh` is deliberately
+  ABSENT from both — it is now a valid CLI token and passes through unchanged; listing it
+  is what re-introduced the stale down-clamp. `capability_registry`'s grok `effort_map`
+  and user-facing `notes` follow.
+- User-visible effect: the default review board's grok seat has `effort="max"` and was
+  rendering `--reasoning-effort high` on every round, so it was under-driven. It now
+  renders `--reasoning-effort xhigh`. The golden fixture that pins this
+  (`advisor_board.fixtures.DEFAULT_SEAT_EFFORT_ARGS["grok"]`) is updated with it.
+- Other vendors' `"xhigh": "high"` entries (gemini, command, pi) are UNTOUCHED: each was
+  probed against its own CLI and this change carries no evidence about them.
+- The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
+  standing property of grok, which is what let the original clamp outlive its evidence.
 ### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
 
 - Align the governed-pipeline issue-state and package-pin probes with its closed

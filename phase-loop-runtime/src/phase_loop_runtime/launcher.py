@@ -566,26 +566,34 @@ def _codex_cli_effort(effort: str) -> str:
     return _CODEX_CLI_EFFORT_OVERRIDES.get(effort, effort)
 
 
-# ah#224: the grok CLI `--reasoning-effort` accepts ONLY 'high | medium | low' (verified
-# in ah#222: 'max' -> "unknown effort level 'max'; use one of: high, medium, low"). The
-# internal `minimal`/`xhigh`/`max` tiers (in NORMALIZED_EFFORT_LEVELS) crash grok if emitted
+# ah#224: the grok CLI `--reasoning-effort` accepts a SUBSET of our internal tiers. That
+# subset is established by probe and has MOVED: ah#222 measured 'high | medium | low'; a
+# 2026-09-22 re-probe measures 'xhigh | high | medium | low' ('max' -> "unknown effort
+# level 'max'; use one of: xhigh, high, medium, low"). The internal `minimal`/`max`
+# tiers (in NORMALIZED_EFFORT_LEVELS) still crash grok if emitted
 # verbatim, so translate them to grok's floor/ceiling HERE at the CLI boundary — same pattern
 # as `_codex_cli_effort` (max->xhigh) and the panel path's `_grok_panel_effort`/
-# `_GROK_EFFORT_OVERRIDES` (max->high, kept verbatim-identical to this map for parity, ah#231).
-# This keeps a 'max' request for grok honored at its real ceiling ('high') at the CLI-emit
+# `_GROK_EFFORT_OVERRIDES` (max->xhigh, kept verbatim-identical to this map for parity, ah#231).
+# This keeps a 'max' request for grok honored at its real ceiling ('xhigh' as of the 2026-09-22
+# probe; see harness_mapping for the probe output and why the ceiling moved) at the CLI-emit
 # boundary rather than rejected — deliberately independent of ah#231's eligibility decoupling
 # (`profiles.max_effort_planner_eligible` / the `planner_max_class` capability flag), which
 # governs only whether grok is represented as the max-effort PLANNER OF RECORD, not whether a
 # 'max' request reaching this layer gets clamped. grok keeps a broad `supported_efforts` so a
 # 'max' request stays valid at the policy layer and is clamped HERE, exactly as before ah#231.
-_GROK_CLI_EFFORT_OVERRIDES = {"minimal": "low", "xhigh": "high", "max": "high"}
+# ``xhigh`` is deliberately ABSENT: the CLI accepts it now, so it passes through unchanged.
+# Kept verbatim-identical to ``harness_mapping._GROK_EFFORT_OVERRIDES`` (ah#231 parity).
+_GROK_CLI_EFFORT_OVERRIDES = {"minimal": "low", "max": "xhigh"}
 
 
 def _grok_cli_effort(effort: str) -> str:
     """Map an internal effort tier to a grok-CLI-supported value (ah#224).
 
-    The grok CLI accepts only high/medium/low; 'minimal' clamps to 'low', and both
-    'xhigh' and 'max' clamp to 'high' (grok's ceiling). Every valid tier passes through.
+    The grok CLI's accepted set is established by probe, not assumption. As of 2026-09-22 it
+    is xhigh/high/medium/low: 'minimal' clamps to 'low', 'max' clamps to 'xhigh' (the current
+    ceiling), and every valid tier including 'xhigh' passes through unchanged. The set grew
+    once already (it was high/medium/low at ah#224), which silently under-drove every grok
+    seat until re-probed — re-probe before trusting this docstring.
     """
     return _GROK_CLI_EFFORT_OVERRIDES.get(effort, effort)
 
@@ -1016,10 +1024,11 @@ def build_grok_command(
     # grok's `--output-format plain` output.
     #
     # Effort is CLAMPED to a grok-CLI-supported value via `_grok_cli_effort` (ah#224).
-    # grok's `--reasoning-effort` accepts ONLY high/medium/low — it is a SUBSET of
-    # NORMALIZED_EFFORT_LEVELS, not a superset — so `minimal`/`xhigh`/`max` are translated
-    # at this CLI boundary (minimal->low, xhigh/max->high), exactly like codex's
-    # `max -> xhigh`. The model is passed verbatim via `-m`.
+    # grok's `--reasoning-effort` accepts xhigh/high/medium/low (probed 2026-09-22; it was
+    # high/medium/low at ah#224) — still a SUBSET of NORMALIZED_EFFORT_LEVELS, not a
+    # superset — so `minimal` and `max` are translated at this CLI boundary
+    # (minimal->low, max->xhigh), exactly like codex's `max -> xhigh`, while `xhigh`
+    # now passes through unchanged. The model is passed verbatim via `-m`.
     #
     # Permission posture (CR: verified empirically against grok 0.2.x). Headless
     # `grok -p` AUTO-APPROVES writes regardless of `--permission-mode`/`--sandbox`
