@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Roadmap validation: reject silently missing phases (agent-harness#729)
+
+- `validate-roadmap` now reports malformed phase headings and phase bodies without
+  a distinct valid heading, instead of silently accepting an incomplete roadmap.
+- Fenced Markdown examples are excluded from phase parsing and lint checks, while
+  diagnostics retain their original source line numbers.
+
 ### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
 
 - `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2400 (40 min) instead of
