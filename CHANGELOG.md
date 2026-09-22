@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Qualified Gemini heartbeat reviews (agent-harness#905)
+
+- Brokered Linux subscription Gemini reviews can use heartbeat-only with the
+  measured executable digest and sealed memfd/pidfd support. Literal native
+  timeout zero, one attempt, deny-all settings and a namespace-owned private HOME
+  preserve the no-thinking-deadline policy. Unknown capability refuses the whole
+  requested board before auth; unsupported routes remain refused.
+- Fixed stream-rejection and native-failure diagnostics survive the broker into
+  retained results. Invalid or empty responses cannot become review votes, and
+  private stdout/stderr is not used as a diagnostic or review substitute.
+- Qualification separately binds real completion, cancellation and owner-loss
+  evidence to source/image/profile/helper hashes and local cleanup observations.
+  Sealed image/settings and credential references leave no host profile copy;
+  failed quiescence cannot yield a usable vote. Historical agent-harness#892
+  scope and the bounded-success verifier remain unchanged.
+
 ### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
 
 - `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2400 (40 min) instead of

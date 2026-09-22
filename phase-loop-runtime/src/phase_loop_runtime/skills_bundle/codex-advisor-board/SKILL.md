@@ -42,11 +42,15 @@ There are THREE DISTINCT ways to give the panel material. The #114 fix names the
 `timeouts_by_leg` still imposes a hard backstop. Do not substitute giant
 timeouts, bypass the broker, or silently replace reviewers.
 
-Heartbeat-only supports the brokered subscription TUI and codex/grok routes on
-Linux. The gemini/agy route, API/gateway routes, capture, and legacy `invoke_panel` are
-unsupported. The CLI's default four-vendor board refuses
-`--monitoring-policy heartbeat_only` before auth; explicitly supported boards
-use `invoke_board`. Refuse the whole incompatible board; do not drop a seat.
+Heartbeat-only supports brokered subscription `claude` TUI, `codex` and `grok`
+on Linux. The gemini/agy route requires the qualified executable digest and sealed
+memfd/pidfd support in the running Python/kernel. It uses the CLI's literal
+`--print-timeout 0`, one attempt and a private namespace-owned HOME. See
+`docs/advisor-board-capabilities-card.md` for the measured image and limitations.
+API/gateway, capture, research, native host fill and legacy `invoke_panel` remain
+unsupported. The CLI preserves its requested four-vendor membership and refuses
+the whole board before auth when the required capability is missing or changed;
+never drop a seat or backfill a reviewer to satisfy heartbeat-only.
 No automatic retries or model/silence deadlines apply. Silence or flat CPU is
 `progress_unobserved`, never remote-health proof. Explicit cancellation,
 native failure/completion, and owner loss still end an operation and require
