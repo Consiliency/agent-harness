@@ -531,18 +531,25 @@ def _conform_timing_sweep() -> None:
     """Unbind any wrapper a fixture teardown resurrected after `restore()`.
 
     It installs the IMPORT-TIME value, not the predecessor captured at install.
-    By the time this runs, every fixture teardown for the test has already gone,
-    so a predecessor that belonged to an independent fixture has expired; putting
-    it back would leak that fixture's object into every later test.
+    For a FUNCTION-scoped fixture that is sound: its teardown has already run by
+    the time this executes, so its predecessor has expired and putting it back
+    would leak that fixture's object into every later test.
 
-    The precise limit (codex, round 6): this is a property of THIS sweep's
-    restoration policy, not an impossibility. A live predecessor is not erased --
-    `bindings` still holds it as `real` -- so it is recoverable by a sweep that
-    knows the predecessor is still live. This sweep keeps no fixture-lifetime
-    information, so it cannot tell a live predecessor from the expired per-test
-    one, and it restores the import-time value rather than guess. Displacing a
-    live fixture patch is therefore possible in principle here; it is ruled out
-    by the opt-in flag and the recorded retirement, not by the restore target.
+    What is NOT established (codex, rounds 6 and 7) -- stated as limits, because
+    each was first written here as something stronger than the evidence:
+
+    * A module- or session-scoped predecessor has NOT expired when this runs.
+      "Every independent fixture predecessor has expired" is true per-function
+      and false for the wider scopes.
+    * A live predecessor is not erased -- `bindings` still holds it as `real` --
+      so it is recoverable by a sweep that knows it is still live. This sweep
+      keeps no fixture-lifetime information, so it cannot tell a live predecessor
+      from an expired one and installs the import-time value rather than guess.
+      That is a limit of THIS restoration policy, not an impossibility.
+    * Displacing a live fixture patch is therefore possible here, and nothing in
+      this function prevents it. The opt-in flag confines the exposure to runs
+      that set it, and each retirement is recorded so a displacement is traceable
+      afterwards -- neither is a runtime guarantee, and the residual is open.
     """
     while _CONFORM_RETIRED_BINDINGS:
         for name, get, set_value, wrapper, real in _CONFORM_RETIRED_BINDINGS.pop():
