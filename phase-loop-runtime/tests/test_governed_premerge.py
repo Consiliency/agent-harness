@@ -214,7 +214,6 @@ def test_reloading_governed_premerge_restores_its_class_identity():
 
 def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
     """governed_premerge readiness interlock for FABREADMIT."""
-    import importlib
     import unittest.mock as _mock
     from pytest import skip
 
