@@ -1173,13 +1173,47 @@ def test_readmission_result_never_substitutes_for_durable_authority(candidate, m
         return head if failure == "fake" else None
     monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
     result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _train_review_fn=never)
-    assert result["status"] in {"review_halted", "merge_halted"}, result
+    assert result["status"] == "merge_halted", result
     rec = read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")[c["node"].node_id]
     assert rec.head_sha == (head if failure == "after_append" else c["head"])
     assert rec.fab_run_id == "packet-fab" and rec.merge_order == 3
     if failure == "after_append":
         monkeypatch.setattr(tr, "_fab_delta_readmit", never)
         assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+
+
+@pytest.mark.parametrize("boundary", ["finalize_identity", "post_finalize_revocation"])
+def test_readmitted_head_finalization_refusal_reports_prior_effects(candidate, monkeypatch, boundary):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    namespace = enable_fab(c, monkeypatch)
+    head = proposed_candidate(c)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    appended = []
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)
+    def readmit(ws, path, **kwargs):
+        # Inject only successful admission; finalization/store replay remain real.
+        assert kwargs["evidence_store"].root == namespace
+        append_record(path, replace(read_ledger(path)[c["node"].node_id], head_sha=head), durable=True)
+        appended.append(path.read_bytes())
+        if boundary == "finalize_identity":
+            c["live"]["baseRefOid"] = head
+        else:
+            revoke(namespace)
+        return head
+    monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True,
+        _train_review_fn=never, _merge_pr_fn=never)
+    state = read_ledger(ledger)
+    rec = state[c["node"].node_id]
+    assert packet.admission_binding(rec) == packet.admission_binding(
+        replace(c["state"][c["node"].node_id], head_sha=head))
+    assert rec.status == "pr_open" and rec.merge_order == 3
+    assert ledger.read_bytes() == appended[0] and "_train_review_" not in state
+    assert result["reason"] == {"finalize_identity": "observed_identity_drift",
+        "post_finalize_revocation": "readmission_revoked"}[boundary]
+    assert result["status"] == "merge_halted", result
 
 
 def test_whole_train_valid_material_reaches_every_effect(candidate, monkeypatch):
@@ -1221,6 +1255,14 @@ def test_revoke_after_recovery_reaches_real_helper_entry_before_delta(candidate,
     c = candidate
     namespace = enable_fab(c, monkeypatch)
     proposed_candidate(c)
+    git_effects = []
+    real_run = tr.subprocess.run
+    def checked_run(argv, *args, **kwargs):
+        if argv[0] == "git" and any(command in argv for command in ("fetch", "rev-list")):
+            git_effects.append(argv)
+            raise AssertionError("Git effect reached after recovery revocation")
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(tr.subprocess, "run", checked_run)
     after_recovery = []
     def recover(*a, **k):
         revoke(namespace)
@@ -1231,6 +1273,7 @@ def test_revoke_after_recovery_reaches_real_helper_entry_before_delta(candidate,
     result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _delta_review_fn=never, _train_review_fn=never)
     assert result["status"] == "merge_halted", result
     assert after_recovery == [(c["repo"] / "code.py").read_bytes()]
+    assert git_effects == []
 
 
 def test_revoke_sibling_after_barrier_before_its_recovery(candidate, monkeypatch):
