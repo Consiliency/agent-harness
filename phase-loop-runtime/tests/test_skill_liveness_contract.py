@@ -282,7 +282,10 @@ def test_explicit_no_deadline_requires_supported_policy(site: Path) -> None:
     for claim in (
         'monitoring_policy="heartbeat_only"',
         "Omitting `timeouts_by_leg` still imposes a hard backstop",
-        "The gemini/agy route, API/gateway routes, capture, and legacy `invoke_panel` are unsupported",
+        "`claude` TUI", "`codex`", "`grok`",
+        "The gemini/agy route requires the qualified executable digest",
+        "API/gateway, capture, research, native host fill and legacy `invoke_panel` remain unsupported",
         "bounded mode only", "progress_unobserved", "No automatic retries",
     ):
         assert claim in text, f"{site}: missing policy contract {claim}"
+    assert "Harness TUI" not in text and "Harness capability" not in text

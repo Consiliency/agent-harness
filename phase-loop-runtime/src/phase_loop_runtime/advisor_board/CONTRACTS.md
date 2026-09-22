@@ -489,10 +489,12 @@ a landing decision. `tests/test_president_wiring.py`.
 ## Review monitoring policy v1 (agent-harness#892)
 
 The opt-in policy vocabulary is `bounded | heartbeat_only`; omission is bounded.
-Heartbeat-only permits only brokered subscription/homebrew Claude TUI, Codex,
-and Grok, with no timeout overrides, capture, research, API fallback, gateway,
-or native host seat. Whole-board capability preflight precedes availability,
-auth, session creation, and provider dispatch. Gemini/agy remains unsupported.
+Heartbeat-only permits brokered subscription/homebrew Claude TUI, Codex and
+Grok, plus the qualified Gemini extension below. It permits no timeout overrides,
+capture, research, API fallback, gateway or native host seat. Whole-board
+capability preflight precedes availability, auth, session creation and provider
+dispatch. Missing or changed Gemini capability refuses the requested whole board;
+its membership is never reduced or backfilled to satisfy this policy.
 
 The requested/effective policy is bound to the operation lease and minted leg.
 Heartbeat-only admission expires 10 seconds after minting and is single-use;
@@ -523,3 +525,49 @@ PID ownership is established after network entry but before the capability bound
 set is emptied. Every launch retains the common provider launch seam and broker
 threads inherit its ContextVar prefix. EgressUnavailable stays DEGRADED with empty
 review text and the exception in detail; sandbox facts describe actual enforcement.
+
+### Qualified Gemini extension (agent-harness#905)
+
+The Linux subscription `agy` entry image must match SHA256
+`9991515b6d5307bcf701069622b0537b6b206e605f3c891c0cf3a3d208dea8b0`.
+The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;
+Python version alone is not a capability check. Unknown images or missing
+capabilities refuse before availability/auth effects. Required bwrap mount/gate
+flags are checked at admission, before inference. The measured help defines
+literal `--print-timeout 0` as waiting for completion. A quick real completion
+establishes compatibility; clock controls establish that old runtime deadlines
+and silence cannot terminate a healthy heartbeat-only operation.
+
+The sealed image and deny-all settings are read-only mounts inside a private
+HOME owned by the existing PID/mount namespace. A private symlink references the
+subscription credential; no credential payload is copied, logged or restored.
+Heartbeat credential lookup uses the supplied scrubbed HOME, recording a process
+HOME fallback truthfully if HOME is absent. Legitimate refresh writes survive.
+The real qualification driver requires an explicit HOME and checks target
+presence before and after, without reading its contents.
+
+The broker transports same-session acknowledged input over stdin, with no tree
+attachment, `--add-dir`, permission bypass, retry or native thinking timer. Empty,
+rejected and nonzero-exit streams remain non-votes with fixed diagnostics;
+provider stdout/stderr and arbitrary exception strings are not substituted for
+review prose. Native timeout under zero has a distinct diagnostic. Bounded
+retry timing and supported positive deadline argv remain unchanged; accepted
+Gemini review prose excludes stderr.
+
+Namespace init identity is held before execution is released. Cancellation
+reaps before closing a blocked execution gate; abrupt owner death can release
+its EOF gate shortly before the parent-death signal takes effect. There is no
+strict zero-exec claim for abrupt loss. Cleanup requires namespace-init exit
+and corroborating observations, including detached/nested descendants. Failed
+quiescence cannot yield a usable vote. No receipt proves remote billing settlement.
+
+`phase-loop-runtime/scripts/qualify_gemini_heartbeat.py` separately qualifies
+completion, cancellation after observed progress, and abrupt owner loss. Its
+receipts bind package source, image/help/profile/helper hashes, inputs, argv,
+monitoring, broker records and local cleanup observations. Helper evidence is
+sampled, not a complete exec audit; the entry image pin does not freeze helper
+images. Directory validation accounts for every attempt in the declared series
+root, rejecting failures, omissions and terminal/admission mismatches. Preserve
+failed series; diagnose a changed candidate before another attempt. Validation
+uses that host's measured helper images. These receipts do not replace the
+historical bounded-success evidence verifier.
