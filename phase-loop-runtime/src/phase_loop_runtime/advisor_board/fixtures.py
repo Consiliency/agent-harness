@@ -30,7 +30,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 #   codex  gpt-6-astra           + effort max  -> ``-c model_reasoning_effort=xhigh``
 #   gemini gemini-3.8-flash   + effort high -> model ``gemini-3.8-flash-high``
 #   claude claude-fable-5-1  + effort max  -> ``--effort max``
-#   grok   grok-4.6           + effort max  -> ``--reasoning-effort high``
+#   grok   grok-4.6           + effort max  -> ``--reasoning-effort xhigh``
 #
 # The claude seat runs Fable (``claude-fable-5-1``): pre-merge review is a mid-tier
 # decision where being wrong is expensive, so the default review board reviews on
@@ -66,7 +66,7 @@ DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
     "codex": ("-c", "model_reasoning_effort=xhigh"),
     "gemini": (),
     "claude": ("--effort", "max"),
-    "grok": ("--reasoning-effort", "high"),
+    "grok": ("--reasoning-effort", "xhigh"),
 }
 
 # Canonical (model x harness) pairs ABDREG's matrix + ABDRESOLVE's validation test

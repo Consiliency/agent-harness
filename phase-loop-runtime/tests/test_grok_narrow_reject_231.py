@@ -2,7 +2,8 @@
 
 DECIDED design (REPRESENTATIONAL honesty, rescoped from the original
 "narrow-reject" framing after a cross-vendor CR): grok's real reasoning ceiling
-is ``high`` (its ``--reasoning-effort`` CLI rejects ``max``, ah#222/#224), so it
+is ``xhigh`` (its ``--reasoning-effort`` CLI rejects ``max``, ah#222/#224; ceiling
+re-probed 2026-09-22 and it had RISEN from ``high``), so it
 must not be REPRESENTED as a max-effort PLANNER OF RECORD — the same stance
 gemini/pi take. But the mechanism is decoupled from run-level effort translation:
 
@@ -13,7 +14,7 @@ gemini/pi take. But the mechanism is decoupled from run-level effort translation
   * UNLIKE gemini/pi, grok deliberately KEEPS its broad ``supported_efforts`` (it
     still includes ``max``). So an explicit ``max`` request for grok stays a VALID
     request at the policy layer (resolves to ``max``, not the fallback ``high``)
-    and is clamped to grok's real ``high`` ceiling only at the CLI-emit boundary
+    and is clamped to grok's real ``xhigh`` ceiling only at the CLI-emit boundary
     (``launcher._grok_cli_effort``, ah#224 — untouched here, pinned in
     ``test_grokexec.py``). This is exactly the pre-ah#231 effort-translation
     behavior; only the eligibility signal changed.
@@ -23,7 +24,7 @@ eligibility, and grok is never AUTOSEL-selected as the planner of record anyway
 (ah#231). It is a representational guard so grok's reasoning ceiling is honest for
 planner-selection purposes. It does not reduce grok's effort anywhere it runs —
 grok stays fully usable as a panel/CR reviewer leg and as a planner for non-max
-efforts, at its real ``high`` ceiling.
+efforts, at its real ``xhigh`` ceiling.
 
 Also covers part 2 of ah#231: hardening the panel effort lookup (formerly the
 direct-index ``_GROK_EFFORT`` dict, now ``_grok_panel_effort``/
@@ -84,8 +85,9 @@ def _resolve(action, executor, *, model_policy=False):
 @pytest.mark.parametrize(
     ("operator_effort", "expected_cli_effort"),
     [
-        ("max", "high"),
-        ("xhigh", "high"),
+        # ceiling re-probed 2026-09-22: use one of xhigh, high, medium, low.
+        ("max", "xhigh"),
+        ("xhigh", "xhigh"),   # valid CLI token now; passes through
         ("minimal", "low"),
     ],
 )
@@ -148,16 +150,16 @@ class GrokMaxEffortPlannerEligibilityTest(unittest.TestCase):
     # 2 — grok resolves cleanly under the shipped review policy. Review is now an
     # ULTRA-tier role → max effort (design-model-tier-taxonomy.md blocker 1f), and
     # grok (broad supported_efforts + planner_max_class=False) HONORS `max` at the
-    # policy layer, translating it to grok's real `high` ceiling only at CLI-emit.
+    # policy layer, translating it to grok's real `xhigh` ceiling only at CLI-emit.
     def test_grok_still_usable_as_review_planner(self):
         model, effort = _resolve("review", "grok", model_policy=True)
         self.assertEqual(effort, "max")  # shipped review = max; grok honors it at policy layer
         self.assertTrue(model)  # resolves to a concrete grok model, no exception
-        self.assertEqual(launcher._grok_cli_effort(effort), "high")  # real ceiling at CLI emit
+        self.assertEqual(launcher._grok_cli_effort(effort), "xhigh")  # real ceiling at CLI emit
 
     # 3 — an explicit `max` request for grok is HONORED at the policy layer (stays
     # `max`, never crashes, because grok keeps a broad supported_efforts) and is
-    # translated to grok's real `high` ceiling at the CLI-emit boundary (ah#224).
+    # translated to grok's real `xhigh` ceiling at the CLI-emit boundary (ah#224, re-probed).
     # This is the pre-ah#231 effort behavior, deliberately preserved by the decoupling.
     def test_explicit_max_request_for_grok_honored_then_cli_clamped(self):
         self.assertEqual(SHIPPED_MODEL_POLICY["plan"]["effort"], "max")
@@ -165,8 +167,8 @@ class GrokMaxEffortPlannerEligibilityTest(unittest.TestCase):
             model, effort = _resolve(action, "grok", model_policy=True)
             self.assertEqual(effort, "max", f"{action}: max stays valid at policy layer, not clamped")
             self.assertTrue(model)
-        # ...and the real delivered ceiling is grok's `high`, clamped at CLI emit (unchanged).
-        self.assertEqual(launcher._grok_cli_effort("max"), "high")
+        # ...and the real delivered ceiling is grok's `xhigh`, clamped at CLI emit.
+        self.assertEqual(launcher._grok_cli_effort("max"), "xhigh")
 
     # gemini/pi (narrow supported_efforts) clamp `max` to `high` at the POLICY layer;
     # grok (broad supported_efforts + planner_max_class=False) keeps `max` at the policy
@@ -191,9 +193,13 @@ class GrokPanelUsabilityTest(unittest.TestCase):
         self.assertEqual(seat.mechanism, MECH_FLAG)
         self.assertEqual(seat.effort_args, ("--reasoning-effort", "high"))
 
-    def test_grok_panel_seat_clamps_max_to_high(self):
+    def test_grok_panel_seat_clamps_max_to_the_probed_ceiling(self):
+        # Renamed: the old name encoded the ceiling ("..._to_high") as part of the
+        # contract, so when the CLI gained "xhigh" the NAME asserted something false
+        # even after the value was fixed. The ceiling is a probed fact, not an identity.
         seat = render_seat_invocation("grok", "grok-4.5", "max")
-        self.assertEqual(seat.effort_args, ("--reasoning-effort", "high"))
+        self.assertEqual(seat.effort_args, ("--reasoning-effort", "xhigh"))
+
 
     def test_grok_panel_seat_low_medium_pass_through(self):
         for effort in ("low", "medium"):
@@ -208,7 +214,8 @@ class GrokEffortLookupHardeningTest(unittest.TestCase):
         self.assertEqual(_grok_panel_effort("low"), "low")
         self.assertEqual(_grok_panel_effort("medium"), "medium")
         self.assertEqual(_grok_panel_effort("high"), "high")
-        self.assertEqual(_grok_panel_effort("max"), "high")
+        self.assertEqual(_grok_panel_effort("xhigh"), "xhigh")  # valid CLI token, passes through
+        self.assertEqual(_grok_panel_effort("max"), "xhigh")   # clamps to the current ceiling
 
     def test_growing_vocabulary_still_clamps_to_a_valid_grok_token(self):
         # Simulates the panel effort vocabulary growing past today's 4-key
@@ -216,10 +223,11 @@ class GrokEffortLookupHardeningTest(unittest.TestCase):
         # normalize_provider_effort's NORMALIZED_EFFORT_LEVELS already knows
         # about but the panel doesn't yet). The old `_GROK_EFFORT[effort]` direct
         # index would KeyError here; parity with `launcher._grok_cli_effort`
-        # requires these to clamp to a CLI-valid token, not merely avoid crashing
-        # (an unclamped "xhigh"/"minimal" would still error the grok CLI, trading
-        # a KeyError for a CLI rejection).
-        self.assertEqual(_grok_panel_effort("xhigh"), "high")
+        # requires these to resolve to a CLI-valid token, not merely avoid crashing
+        # (an unclamped "minimal" would still error the grok CLI, trading a KeyError
+        # for a CLI rejection). "xhigh" needs no clamp any more: the 2026-09-22 probe
+        # shows the CLI accepts it, so it passes through and is still CLI-valid.
+        self.assertEqual(_grok_panel_effort("xhigh"), "xhigh")
         self.assertEqual(_grok_panel_effort("minimal"), "low")
 
     def test_truly_unknown_effort_passes_through_instead_of_keyerror(self):
@@ -236,7 +244,10 @@ class GrokEffortLookupHardeningTest(unittest.TestCase):
         from phase_loop_runtime.launcher import _GROK_CLI_EFFORT_OVERRIDES
 
         self.assertEqual(_GROK_EFFORT_OVERRIDES, _GROK_CLI_EFFORT_OVERRIDES)
-        self.assertEqual(_GROK_EFFORT_OVERRIDES, {"minimal": "low", "xhigh": "high", "max": "high"})
+        # Pinned exactly: the ceiling is a PROBED fact with a date, and this assertion is
+        # what makes a silent drift (the CLI growing a level, as it did between ah#224 and
+        # 2026-09-22) fail loudly here instead of quietly under-driving every grok seat.
+        self.assertEqual(_GROK_EFFORT_OVERRIDES, {"minimal": "low", "max": "xhigh"})
 
 
 if __name__ == "__main__":
