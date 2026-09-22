@@ -2509,6 +2509,85 @@ def test_an_interrupt_at_any_mutating_call_unwinds_every_change(request, monkeyp
     evidence._end_lease_signal_guard(guard)
 
 
+def test_a_sigio_arriving_during_entry_is_refused_not_absorbed(request, monkeypatch):
+    """Regression guard: the entry region must not swallow the ambiguity check.
+
+    `_lease_sigio_handler` DISCARDS every SIGIO it receives. So if SIGIO is
+    unblocked at any point between the admission check and `sigpending()`, a
+    signal arriving there is absorbed and the lease is admitted over a state the
+    block-and-check would have refused. Introduced by masking-then-unmasking
+    inside entry, and caught by codex in round 5.
+
+    The stub sends a real SIGIO at the moment the old ordering left it
+    deliverable. With SIGIO blocked throughout, it stays pending and is seen.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    entry = signal.getsignal(signal.SIGIO)
+    before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    real_signal = signal.signal
+    fired = {"n": 0}
+
+    def install_then_raise_sigio(signum, handler):
+        displaced = real_signal(signum, handler)
+        if handler is evidence._lease_sigio_handler and not fired["n"]:
+            fired["n"] += 1
+            os.kill(os.getpid(), signal.SIGIO)
+        return displaced
+
+    monkeypatch.setattr(evidence.signal, "signal", install_then_raise_sigio)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="SIGIO state is ambiguous"
+        ):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+        real_signal(signal.SIGIO, entry)
+    assert fired["n"] == 1, "the stub never reached the installation"
+    # Drain the signal this test raised, and prove entry left nothing behind.
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+    while signal.sigtimedwait({signal.SIGIO}, 0) is not None:
+        pass
+    signal.pthread_sigmask(signal.SIG_SETMASK, before_mask)
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before_mask
+
+
+def test_the_blockable_signal_set_does_not_need_a_posix_signal_module():
+    """Regression guard: this module must still IMPORT where signals differ.
+
+    Windows imports it too and has neither `valid_signals` nor `SIGKILL`, so
+    referencing them at module scope raised `AttributeError` at import -- an
+    import-time crash standing in front of the graceful non-Linux refusal that
+    was supposed to handle exactly this. Computed defensively now, so the
+    constant is simply empty where the concept does not apply.
+    """
+    class _NoValidSignals:
+        SIGINT = 2  # present; `valid_signals` and the POSIX-only names are not
+
+    assert evidence._compute_blockable_signals(_NoValidSignals) == frozenset()
+
+    # The `getattr` on SIGKILL/SIGSTOP guards a DIFFERENT case from the early
+    # return above, and needs its own: a module that HAS `valid_signals` but not
+    # those names. Without this the guard is unfalsifiable -- removing it leaves
+    # every test passing, which is how a decorative check survives.
+    class _PartialPosix:
+        SIGINT = 2
+
+        @staticmethod
+        def valid_signals():
+            return {2, 15}
+
+    assert evidence._compute_blockable_signals(_PartialPosix) == frozenset({2, 15})
+
+    # And it still produces a real set on this platform, so neither case above
+    # passes merely because the function always returns empty.
+    assert signal.SIGINT in evidence._compute_blockable_signals(signal)
+    assert signal.SIGKILL not in evidence._compute_blockable_signals(signal)
+
+
 def test_a_nested_entry_leaves_the_outer_guards_disposition_and_mask_intact(request):
     """Surface created by the masked region: nesting and re-entrancy.
 
@@ -2618,11 +2697,18 @@ def test_an_owner_installed_during_the_window_is_restored_not_lost(request, monk
 
     Modelled faithfully rather than approximated. The stub installs F and lets
     the real displacement happen, then sends this process a REAL SIGINT at
-    exactly the moment the value exists and is unrecorded. If that region is
-    uninterruptible the signal stays pending, the record completes, and the
-    KeyboardInterrupt arrives afterwards against a correct record; if it is not,
+    exactly the moment the value exists and is unrecorded. With the mask in
+    place the signal stays pending, the record completes, and the
+    KeyboardInterrupt arrives afterwards against a correct record; without it,
     the interrupt lands in the gap and F is lost. The assertion is that F is
     RESTORED, not merely that something was.
+
+    SCOPE, stated because this test cannot check it: the mask is per-thread, so
+    this covers a process whose threads all block the signal -- which is this
+    guard's admitted case. A thread created between the inventory sample and the
+    region can still receive the signal and have CPython run the callback on the
+    main thread anyway, reopening the window. That residual is documented on
+    `_install_lease_disposition` and is not closed by anything here.
     """
     if not sys.platform.startswith("linux"):
         pytest.skip("signal masks are a POSIX path")
@@ -2650,17 +2736,38 @@ def test_an_owner_installed_during_the_window_is_restored_not_lost(request, monk
         return displaced
 
     monkeypatch.setattr(evidence.signal, "signal", install_owner_then_interrupt)
+    observed = None
+    raised = None
     try:
-        with pytest.raises(KeyboardInterrupt):
+        try:
             evidence._begin_lease_signal_guard()
+        except BaseException as exc:  # noqa: BLE001 - either outcome is correct
+            raised = exc
+        observed = signal.getsignal(signal.SIGIO)
     finally:
+        # ALWAYS put the disposition back, whatever happened above. An earlier
+        # version restored it only on the success path, so when the assertion
+        # failed the foreign handler leaked into the process and every later
+        # lease-taking test refused with "will not displace an existing SIGIO
+        # owner" -- one failure became fifty-one.
         monkeypatch.undo()
+        real_signal(signal.SIGIO, entry)
+        try:
+            for _ in range(10000):  # surface any interrupt still pending
+                pass
+        except KeyboardInterrupt:
+            pass
     assert fired["n"] == 1, "the stub never reached the guard's installation"
-    assert signal.getsignal(signal.SIGIO) is foreign, (
-        "the foreign owner installed during the window was LOST: unwind restored "
-        f"{signal.getsignal(signal.SIGIO)!r} from a stale record instead of it"
+    # WHICH exception wins is a race between the interrupt surfacing and the
+    # ownership check rejecting the foreign handler, and both are correct
+    # refusals. The property under test is the same either way: F is restored.
+    assert isinstance(raised, (KeyboardInterrupt, evidence.AgyCanaryEvidenceError)), (
+        f"entry neither refused nor was interrupted: {raised!r}"
     )
-    signal.signal(signal.SIGIO, entry)
+    assert observed is foreign, (
+        "the foreign owner installed during the window was LOST: unwind restored "
+        f"{observed!r} from a stale record instead of it"
+    )
 
 
 def test_an_interrupted_nested_entry_preserves_the_outer_guards_disposition(request, monkeypatch):
