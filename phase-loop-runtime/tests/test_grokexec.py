@@ -89,24 +89,33 @@ def test_grok_provider_policy_capability_present():
 
 
 def test_grok_cli_effort_clamps_invalid_levels():
-    # ah#224: grok's --reasoning-effort accepts ONLY high/medium/low; the internal
-    # minimal/xhigh/max tiers are clamped at the CLI boundary (never emitted verbatim).
-    assert launcher._grok_cli_effort("max") == "high"
-    assert launcher._grok_cli_effort("xhigh") == "high"
+    # The accepted set is established by PROBE, not assumption. Re-probed 2026-09-22:
+    #   grok --reasoning-effort max
+    #   -> unknown effort level 'max'; use one of: xhigh, high, medium, low
+    # So the ceiling is 'xhigh'. It was high/medium/low at ah#224; the set GREW and the
+    # clamp did not follow, so every grok seat ran one notch below what was available
+    # until this was re-probed. Verified CLI-level, not model-specific: xhigh succeeds on
+    # both grok-4.6 (the pinned model) and grok-4.7.
+    assert launcher._grok_cli_effort("max") == "xhigh"
     assert launcher._grok_cli_effort("minimal") == "low"
-    # valid grok tokens pass through unchanged
+    # every valid CLI token passes through unchanged, xhigh INCLUDED
+    assert launcher._grok_cli_effort("xhigh") == "xhigh"
     assert launcher._grok_cli_effort("low") == "low"
     assert launcher._grok_cli_effort("medium") == "medium"
     assert launcher._grok_cli_effort("high") == "high"
+    # 'max' must never reach the CLI verbatim (ah#222: it ERRORed every panel run)
+    assert launcher._grok_cli_effort("max") != "max"
 
 
 def test_build_grok_command_clamps_explicit_effort():
-    # An EXPLICIT high-effort grok run must emit a VALID grok token, never max/xhigh/minimal
+    # An EXPLICIT high-effort grok run must emit a VALID grok token, never max/minimal
     # (which crash the grok CLI). Exercises the load-bearing clamp at command build.
     import dataclasses
 
     base = resolve_profile_for_executor(action="review", executor="grok")
-    for requested, expected in (("max", "high"), ("xhigh", "high"), ("minimal", "low"), ("high", "high")):
+    # ceiling re-probed 2026-09-22: xhigh/high/medium/low. "xhigh" is now a VALID token
+    # and must be emitted verbatim, not down-clamped.
+    for requested, expected in (("max", "xhigh"), ("xhigh", "xhigh"), ("minimal", "low"), ("high", "high")):
         selection = dataclasses.replace(base, effort=requested)
         cmd = launcher.build_grok_command(
             _REPO, selection, action="review", context_file="ctx"

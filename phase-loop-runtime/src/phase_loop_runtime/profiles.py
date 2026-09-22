@@ -608,7 +608,8 @@ def max_effort_planner_eligible(executor: str) -> bool:
     (`"max" in supported_efforts`), so gemini/pi/codex/claude/... are unchanged.
     A provider sets it explicitly to break the coupling: grok keeps a broad
     `supported_efforts` — so an explicit `max` request stays VALID and is clamped
-    to grok's real `high` ceiling only at the CLI-emit boundary
+    to grok's `xhigh` ceiling -- the 2026-09-22 probe measurement, `high` before that --
+    only at the CLI-emit boundary
     (`launcher._grok_cli_effort`, ah#224), never at the policy layer — yet declares
     `planner_max_class=False` so it is not represented as a max-effort planner.
 
