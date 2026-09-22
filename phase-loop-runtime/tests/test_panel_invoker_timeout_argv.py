@@ -126,13 +126,20 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     assert "-p" in cmd  # single-turn headless prompt
     # plain headless output (stdout IS the review; no --output-last-message file)
     assert cmd[cmd.index("--output-format") + 1] == "plain"
-    # runs the grok-4.6 default model at grok's MAX reasoning. The effort-absent default
+    # runs the grok default model at grok's MAX reasoning. The effort-absent default
     # renders through the SAME map as an explicit seat effort (ah#222): canonical ``max``
-    # CLAMPS to grok's ``high`` ceiling (grok has no ``max``/``xhigh``), so the token the
-    # CLI receives is a valid ``high`` — NOT the literal ``max`` that the grok CLI rejects
+    # CLAMPS to grok's ``xhigh`` ceiling (grok has no ``max``), so the token the CLI
+    # receives is a valid ``xhigh`` — NOT the literal ``max`` that the grok CLI rejects
     # ("unknown effort level 'max'"), which used to ERROR the grok leg on every default run.
-    assert cmd[cmd.index("-m") + 1] == "grok-4.6"
-    assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
+    # The ceiling is a DATED PROBE, not a property: it was ``high`` when ah#222/ah#224 were
+    # written and is ``xhigh`` as of the 2026-09-22 re-probe (ah#973). Read it off the
+    # clamp rather than restating the token, so the next ceiling move cannot leave this
+    # assertion asserting an expired measurement.
+    from phase_loop_runtime.launcher import _grok_cli_effort
+    from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS
+
+    assert cmd[cmd.index("-m") + 1] == DEFAULT_LEG_MODELS["grok"]
+    assert cmd[cmd.index("--reasoning-effort") + 1] == _grok_cli_effort("max") == "xhigh"
     # regression guard: the invalid literal must never reach the CLI on the default path.
     assert "max" not in cmd
     # HARD READ-ONLY (GROKEXEC, agent-harness#147): headless `grok -p` auto-approves
