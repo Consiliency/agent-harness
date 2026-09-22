@@ -538,9 +538,12 @@ def _conform_timing_sweep() -> None:
     What is NOT established (codex, rounds 6 and 7) -- stated as limits, because
     each was first written here as something stronger than the evidence:
 
-    * A module- or session-scoped predecessor has NOT expired when this runs.
-      "Every independent fixture predecessor has expired" is true per-function
-      and false for the wider scopes.
+    * "Every independent fixture predecessor has expired" is true per-function
+      and NOT true for module/session scope -- in both directions. Such a
+      predecessor MAY still be live, and it may equally have finalized already
+      when this sweep follows the final test in its scope. This function applies
+      the same restoration policy either way; what differs is whether the
+      displaced predecessor was still valid.
     * A live predecessor is not erased -- `bindings` still holds it as `real` --
       so it is recoverable by a sweep that knows it is still live. This sweep
       keeps no fixture-lifetime information, so it cannot tell a live predecessor
@@ -548,8 +551,9 @@ def _conform_timing_sweep() -> None:
       That is a limit of THIS restoration policy, not an impossibility.
     * Displacing a live fixture patch is therefore possible here, and nothing in
       this function prevents it. The opt-in flag confines the exposure to runs
-      that set it, and each retirement is recorded so a displacement is traceable
-      afterwards -- neither is a runtime guarantee, and the residual is open.
+      that set it; that is all it does. There is NO record: this list is a work
+      QUEUE, appended at install and `pop`ped here, and nothing logs or persists
+      a retirement -- so a displacement would be silent. The residual is open.
     """
     while _CONFORM_RETIRED_BINDINGS:
         for name, get, set_value, wrapper, real in _CONFORM_RETIRED_BINDINGS.pop():
