@@ -27,6 +27,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   before effects. Preview rejects traversal into protected paths; malformed
   check identities hold. File/directory and symlink transitions retain complete
   patches, and merge-stage refusals preserve their specific reason.
+- Readmission pre-effect refusals leave node rows untouched; malformed stored
+  packets and deeply nested JSON return diagnostic receipts. Initial Claude
+  native request and fill instructions both supply the required material.
 
 ### Roadmap validation: reject silently missing phases (agent-harness#729)
 

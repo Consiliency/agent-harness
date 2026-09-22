@@ -119,7 +119,7 @@ def _pairs(pairs):
 def _parse(data, label):
     try:
         return json.loads(data, object_pairs_hook=_pairs)
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         _fail("invalid_json", f"{label}: {exc}")
 
 
@@ -762,7 +762,20 @@ def load_review_packet(root, digest):
     try:
         data = _read_relative(directory, "packet.md")
         metadata = _parse(_read_relative(directory, "packet.json"), "stored packet")
-        if _sha(data) != digest or _render(metadata).encode() != data or metadata["schema_version"] != 1:
+        if (not isinstance(metadata, dict) or type(metadata.get("schema_version")) is not int
+                or metadata["schema_version"] != 1 or not isinstance(metadata.get("train"), dict)
+                or not isinstance(metadata.get("nodes"), list)):
+            _fail("stored_packet_corrupt", digest + " metadata shape")
+        for node in metadata["nodes"]:
+            shapes = {"identity": dict, "material": dict, "patch": dict,
+                      "inventory": list, "context": list, "certificates": list}
+            if not isinstance(node, dict) or any(not isinstance(node.get(k), kind) for k, kind in shapes.items()):
+                _fail("stored_packet_corrupt", digest + " node shape")
+        try:
+            rendered = _render(metadata).encode()
+        except RecursionError:
+            _fail("stored_packet_corrupt", digest + " metadata nesting")
+        if _sha(data) != digest or rendered != data:
             _fail("stored_packet_corrupt", digest)
         removals = _parse(_read_relative(directory, "removals.json"), "removals") if (directory / "removals.json").exists() else []
         if _sha(_json(removals).encode()) != metadata["removals_sha256"]:

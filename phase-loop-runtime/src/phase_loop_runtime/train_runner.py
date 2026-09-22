@@ -3676,9 +3676,11 @@ def _run_train_unfenced(
             _train_revocation_store(resolve_workspace(node), packet_state[node.node_id])
         if not review_only and not emit_native_request:
             prior_bindings = {n.node_id: admission_binding(packet_state[n.node_id]) for n in pending_nodes}
+            admission_effects_started = False
             for node in pending_nodes:
                 nid = node.node_id
                 workspace = resolve_workspace(node)
+                node_effects_started = False
                 try:
                     current = read_ledger(ledger_path)
                     rec = current[nid]
@@ -3691,6 +3693,7 @@ def _run_train_unfenced(
                         return {"status": "review_halted", "node_id": nid, "nodes": completed_nodes,
                                 "reason": "stale_head", "detail": "readmission opt-in changed before recovery"}
                     if store is not None:
+                        node_effects_started = admission_effects_started = True
                         _fab_recover_torn_to_admitted(workspace, rec.fab_run_id, admitted_head_sha=rec.head_sha)
                     if nid in proposed_heads:
                         if not fab_delta_shortcut_enabled(fab_delta_shortcut) or store is None:
@@ -3698,6 +3701,7 @@ def _run_train_unfenced(
                         recheck_packet_identities(packet, roadmap, read_ledger(ledger_path), resolve_workspace,
                             node_ids={nid}, prior_bindings=prior_bindings)
                         owned = list(resolve_owned_paths(node)) if resolve_owned_paths is not None else getattr(node, "owned_paths", None)
+                        node_effects_started = admission_effects_started = True
                         admitted = _fab_delta_readmit(workspace, ledger_path, node_id=nid, run_id=rec.fab_run_id,
                             branch=rec.branch, pr_url=rec.pr_url, merge_order=rec.merge_order,
                             admitted_head_sha=rec.head_sha, live_head_sha=proposed_heads[nid],
@@ -3709,14 +3713,17 @@ def _run_train_unfenced(
                 except Exception as exc:
                     # The helper may have durably appended and then raised.
                     # Preserve that latest binding, never stale caller fields.
-                    try:
-                        latest = read_ledger(ledger_path).get(nid)
-                        if latest is not None:
-                            append_record(ledger_path, _replace_record(latest, status="blocked"))
-                    except (OSError, ValueError) as preserve_exc:
-                        exc = PacketError(f"{exc}; durable failure evidence unavailable: {preserve_exc}")
-                    return {"status": "merge_halted", "node_id": nid,
-                            "reason": "readmission_revoked" if str(exc).startswith("readmission_revoked:") else "fab_readmit_failed",
+                    reason = str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else (
+                        "readmission_revoked" if str(exc).startswith("readmission_revoked:") else "fab_readmit_failed")
+                    if node_effects_started:
+                        try:
+                            latest = read_ledger(ledger_path).get(nid)
+                            if latest is not None:
+                                append_record(ledger_path, _replace_record(latest, status="blocked"))
+                        except (OSError, ValueError) as preserve_exc:
+                            exc = PacketError(f"{exc}; durable failure evidence unavailable: {preserve_exc}")
+                    return {"status": "merge_halted" if admission_effects_started else "review_halted", "node_id": nid,
+                            "reason": reason,
                             "detail": str(exc)}
         fresh = read_ledger(ledger_path)
         for nid, merged_sha in merged_shas.items():

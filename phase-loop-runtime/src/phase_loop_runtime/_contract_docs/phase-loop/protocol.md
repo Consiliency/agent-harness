@@ -2703,12 +2703,18 @@ remains independent; these reads do not atomically pin the base.
 
 Direct patch text preserves LF/TAB and reversibly escapes backslashes, CR and
 disallowed Unicode. JSON sections decode as outer escapes, JSON, then nested
-`content.text` escapes. `raw_sha256` hashes original bytes; `escaped_sha256`
+`content.text` escapes, including four-digit `\u` and supplementary eight-digit
+`\U` escapes (the latter are not standard JSON escapes).
+`raw_sha256` hashes original bytes; `escaped_sha256`
 hashes intermediate escaped text; preview `presentation_sha256` hashes the
 final rendered section. Readback integrity is not a power-loss durability
 guarantee; that recovery work is tracked in agent-harness#977.
-Pre-review packet refusals use `review_halted`; merge-stage refusals use
-`merge_halted`, retain the typed reason and preserve prior merges.
+Pre-review packet refusals use `review_halted`. The recovery/readmission-loop
+handler uses `review_halted` before its first effect and `merge_halted` afterward,
+appending a blocked row only for a node whose recovery/readmission began.
+Merge-loop refusals use `merge_halted`; both handlers retain the typed reason
+and preserve prior merges. Malformed
+stored metadata and excessive JSON nesting yield a typed hold and preview receipt.
 
 Idempotent resume: re-running `run_train` reads the ledger to skip nodes that
 are already `pr_open` (confirmed via a live `_pr_is_open` check) or already

@@ -1379,7 +1379,7 @@ def test_later_readmission_failure_preserves_earlier_durable_binding(candidate, 
     monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
     result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _train_review_fn=never,
         _live_pr_head_sha_fn=lambda ws, br: first_head if ws == c["repo"] else second_head)
-    assert result["reason"] == "fab_readmit_failed" and seen == [c["node"].node_id, second.node_id], result
+    assert result["reason"] == "readmission_refused" and seen == [c["node"].node_id, second.node_id], result
     state = read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
     assert state[c["node"].node_id].head_sha == first_head
     assert state[second.node_id].head_sha == c["head"]
@@ -1832,3 +1832,50 @@ def test_claude_native_workflow_supplies_initial_material(candidate, monkeypatch
     assert result["status"] == ("native_fill_requested" if mode == "emit" else "review_approved"), result
     if mode == "emit":
         assert "_train_review_" not in read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
+
+
+def test_sibling_pre_recovery_drift_after_prior_recovery_preserves_ledger(candidate, monkeypatch):
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    c = candidate
+    enable_fab(c, monkeypatch)
+    second, repo = add_sibling(c)
+    repository_broker_namespace(repo).mkdir(parents=True, exist_ok=True)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    for row in c["state"].values():
+        append_record(ledger, row)
+    before, effects = ledger.read_bytes(), []
+    def recover(ws, *args, **kwargs):
+        effects.append(ws)
+        c["lives"][c["state"][second.node_id].pr_url]["baseRefName"] = "retargeted"
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+    monkeypatch.setattr(tr, "_fab_delta_readmit", never)
+    result = run_candidate(c, monkeypatch, review_only=False, _train_review_fn=never, _merge_pr_fn=never)
+    assert result["status"] == "merge_halted" and result["reason"] == "retargeted_base", result
+    assert result["node_id"] == second.node_id and effects == [c["repo"]]
+    assert ledger.read_bytes() == before
+
+
+def test_near_recursion_limit_stored_json_always_yields_preview_receipt(candidate):
+    import sys
+    c = candidate
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    append_record(ledger, c["state"][c["node"].node_id])
+    built = c["build"]()
+    stored = packet.store_review_packet(built, ledger.parent / "review-packets")
+    append_record(ledger, LedgerRecord("_train_review_", "approved", usable_reviewers=4, review_packet_sha256=built.sha256))
+    metadata = json.loads((stored / "packet.json").read_text())
+    metadata["nodes"][0]["material"]["acceptance"][0]["text"] = "DEPTH_SENTINEL"
+    template = json.dumps(metadata)
+    before = ledger.read_bytes()
+    # Decoder and renderer have different stack depths. Exercise that boundary
+    # without constructing or encoding the nested Python object in this fixture.
+    for depth in range(sys.getrecursionlimit() - 100, sys.getrecursionlimit() + 5):
+        raw = template.replace('"DEPTH_SENTINEL"', "[" * depth + "0" + "]" * depth)
+        (stored / "packet.json").write_text(raw)
+        output = c["tmp"] / ("preview-depth-" + str(depth))
+        receipt = packet.preview_review_packet(c["roadmap"], ledger, lambda _: c["repo"], c["material_path"], output,
+            _pr_metadata_fn=never)
+        assert receipt["ready"] is False and receipt["errors"], (depth, receipt)
+        assert json.loads((output / "receipt.json").read_text()) == receipt
+        assert ledger.read_bytes() == before

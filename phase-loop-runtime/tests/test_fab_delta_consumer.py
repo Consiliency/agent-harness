@@ -2315,7 +2315,7 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path, monkeypatch)
                         fab_fetch_origin="fetchsrc",
                         fab_delta_shortcut=True,
                     )
-            assert result_b["status"] == "merge_halted" and result_b["reason"] == "fab_readmit_failed"
+            assert result_b["status"] == "merge_halted" and result_b["reason"] == "readmission_refused"
             assert commit_calls_b == [], "resolver kill must not enter the broker helper"
             assert read_ledger(ledger_b)[node_id].head_sha == cand_b
             assert len(LinearizableAdmissionStore(seeded_b["store_root"], lambda _: True).replay()) == 1, (

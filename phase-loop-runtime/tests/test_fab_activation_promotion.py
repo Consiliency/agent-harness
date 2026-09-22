@@ -1367,7 +1367,7 @@ class TestPiece3bRecoveryWiring:
         merged = {}
         result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged, merged)
         assert engaged and all(str(h).startswith("advanced-") for h in engaged), engaged
-        assert result["status"] == "merge_halted" and result["reason"] == "fab_readmit_failed", result
+        assert result["status"] == "merge_halted" and result["reason"] == "readmission_refused", result
         assert merged == {}
 
 

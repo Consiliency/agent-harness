@@ -160,7 +160,10 @@ if that subtree is unchanged. Other binary/submodule changes hold.
 Direct patch text escapes literal backslashes, CR and transport-disallowed
 Unicode reversibly, preserving LF/TAB separators. JSON sections require outer
 escape decoding, JSON parsing, then decoding nested `content.text` to recover
-original evidence/source bytes. `raw_sha256` hashes those original bytes;
+original evidence/source bytes. Unicode escapes use four hex digits after `\u`
+or eight after `\U` for supplementary characters; the latter requires the packet
+escape grammar to be decoded before JSON parsing, because standard JSON string
+decoders do not accept `\U`. `raw_sha256` hashes those original bytes;
 `escaped_sha256` hashes intermediate escaped text before JSON/outer encoding.
 Preview `presentation_sha256` hashes the final rendered section. Forbidden broker frame replicas
 hold. The 1 MiB parser limit is not transport readiness: the **complete rendered
@@ -194,11 +197,15 @@ current heads. Read-only review and native emission never readmit or recover;
 native fills requiring a new admission hold, and request emission returns even
 when approval is cached. Preview never reads broker evidence.
 
-Packet identity/material refusals before review report `review_halted`; a refusal
-after merging begins reports `merge_halted`, with the specific reason retained
-(for example `admission_identity_drift`). Earlier merges remain recorded. Missing
+Packet identity/material refusals before review report `review_halted`. In the
+recovery/readmission loop, refusals before its first effect use `review_halted`;
+after an effect they use `merge_halted`. This handler appends a blocked row only
+for a node whose recovery/readmission began. Merge-loop refusals also use
+`merge_halted`. Both handlers retain the specific reason (for example
+`admission_identity_drift`). Earlier merges remain recorded. Missing
 historical node bindings hold explicitly. Packet readback detects missing/corrupt
-files; power-loss durability and recovery are tracked separately in agent-harness#977.
+files; malformed stored shapes and excessive JSON nesting produce a hold receipt.
+Power-loss durability and recovery are tracked separately in agent-harness#977.
 
 The configured coordinator supervise tier is advisory provenance only. Preview
 readiness proves Git coverage and harness transport fit; it does not prove that
