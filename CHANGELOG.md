@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
+
+- Align the governed-pipeline issue-state and package-pin probes with its closed
+  issue and 0.7.14 pin, retaining opposite-state and single-field failure controls.
+- Refresh the related roadmap/probe seals and append current plan authority while
+  preserving historical grounding metadata and prior authority records.
+
 ### Roadmap validation: reject silently missing phases (agent-harness#729)
 
 - `validate-roadmap` now reports malformed phase headings and phase bodies without
