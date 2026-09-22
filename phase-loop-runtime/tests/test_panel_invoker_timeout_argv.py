@@ -132,9 +132,12 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     # receives is a valid ``xhigh`` — NOT the literal ``max`` that the grok CLI rejects
     # ("unknown effort level 'max'"), which used to ERROR the grok leg on every default run.
     # The ceiling is a DATED PROBE, not a property: it was ``high`` when ah#222/ah#224 were
-    # written and is ``xhigh`` as of the 2026-09-22 re-probe (ah#973). Read it off the
-    # clamp rather than restating the token, so the next ceiling move cannot leave this
-    # assertion asserting an expired measurement.
+    # written and is ``xhigh`` as of the 2026-09-22 re-probe (ah#973). Both halves of the
+    # effort assertion below are therefore deliberate: reading it off the clamp proves the
+    # argv travelled through the clamp, and the trailing literal makes the NEXT ceiling move
+    # fail here on purpose rather than silently following the clamp to a new value.
+    # (An earlier draft of this comment said to read it off the clamp INSTEAD of restating
+    # the token; that was the version that dropped the model pin -- gemini, round 2.)
     from phase_loop_runtime.launcher import _grok_cli_effort
     from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS
 
