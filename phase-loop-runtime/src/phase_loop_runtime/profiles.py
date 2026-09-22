@@ -53,7 +53,7 @@ GEMINI_IMPLEMENTER_MODEL = "gemini-3.8-flash"
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
-GROK_DEFAULT_MODEL = "grok-4.6"  # model-id-source: SSOT constant definition (can't reference itself)
+GROK_DEFAULT_MODEL = "grok-4.7"  # model-id-source: SSOT constant definition (can't reference itself)
 
 DEFAULT_PROFILES = {
     "roadmap": (OPENAI_HEAVY_MODEL, "high"),
@@ -230,7 +230,7 @@ GEMINI_REGULAR_MODEL = "gemini-3.8-flash"
 GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
 
 # grok/xAI per-tier ids. heavy reuses the existing GROK_DEFAULT_MODEL SSOT.
-# VOLATILE: xAI publishes NO dated snapshot for these — a bare `grok-4.6`/`grok-4.3`
+# VOLATILE: xAI publishes NO dated snapshot for these — a bare `grok-4.7`/`grok-4.3`
 # id tracks the latest stable build per xAI docs, so these are NOT immutable pins.
 # All grok tier cells are marked volatile below; repin to dated ids when xAI ships
 # them (design-model-tier-taxonomy.md CR, blocker 2).
@@ -281,7 +281,7 @@ TIER_MODELS: dict[str, dict[str, TierModel]] = {
     },
     # grok: ALL cells volatile — xAI publishes no dated snapshot, bare ids float to
     # latest stable (blocker 2). NOTE: grok's LIVE class/executor routing stays
-    # single-model (GROK_DEFAULT_MODEL = grok-4.6) by grok's documented design; these
+    # single-model (GROK_DEFAULT_MODEL = grok-4.7) by grok's documented design; these
     # per-tier ids are the taxonomy target, consulted via resolve(), not yet the live
     # grok class path (deferred — see CLASS_MODEL_OVERRIDES: claude+codex derived).
     "grok": {
@@ -395,7 +395,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     degrades to the real agy 3.5 Flash (gemini-3.5-flash-high). This is a genuine
 #     version/family divergence (like grok-4.3), NOT representational — repin the lite cell
 #     when agy ships a flash-lite id.
-#   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.6) for every
+#   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.7) for every
 #     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
 #   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
@@ -451,10 +451,10 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # REPRESENTATIONAL (aliases / display labels / provider-prefixes that are tier-consistent but
 # not literally the matrix ids), or the named no-tier seams (command, maintenance) and the
 # transport carve-out (channel). EXCEPT grok: grok's intentional SINGLE-MODEL routing runs
-# implementation on grok-4.6 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
+# implementation on grok-4.7 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
 # target is not yet live. There are TWO named model disagreements (grok single-model; gemini
 # LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
-# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / gpt-6-astra / 3.8-flash-high / grok-4.6) are a SEPARATE
+# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / gpt-6-astra / 3.8-flash-high / grok-4.7) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
 # are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
 # Effort is bound by shipped action policy and recorded at requested, policy,

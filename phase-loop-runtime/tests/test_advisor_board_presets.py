@@ -57,7 +57,7 @@ class PresetTests(unittest.TestCase):
                 ("gpt-6-astra", "max", "codex"),
                 ("gemini-3.8-flash", "high", "gemini"),
                 ("claude-fable-5-1", "max", "claude"),
-                ("grok-4.6", "max", "grok"),
+                ("grok-4.7", "max", "grok"),
             ),
         )
         self.assertEqual(
@@ -79,7 +79,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
-                ("grok-4.6", "max", "grok", "adversarial"),
+                ("grok-4.7", "max", "grok", "adversarial"),
                 ("claude-fable-5-1", "max", "claude", "correctness"),
                 ("gpt-6-astra", "max", "codex", "red-team"),
                 ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),

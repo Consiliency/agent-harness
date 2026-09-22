@@ -86,6 +86,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `gemini-3.8-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.7-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.6-flash` | gemini      | `gemini`     | gemini            | high           |
+| `grok-4.7`       | grok          | `grok`       | grok              | max            |
 | `grok-4.6`       | grok          | `grok`       | grok              | max            |
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
 
@@ -123,7 +124,7 @@ on any host other than Claude Code through the subscription TUI adapter. No cell
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.6`) |
+| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -145,8 +146,8 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.6 · max · grok · adversarial |
-| `code-review`           | code-review           | grok-4.6 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
+| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
 | `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-6-astra · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-6-astra · medium · codex · structure |
 | `legal-review`          | legal-review          | gpt-6-astra · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-fable-5-1 · max · claude · authority-verification |

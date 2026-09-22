@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### grok-4.7 is registered and becomes the grok default (agent-harness#971)
+
+- `grok-4.7` shipped 2026-09-21. The advisor-board model registry did not know it, so a
+  downstream fleet could not adopt it by **any** supported means: `load_boards()` is
+  fail-closed and rejected the whole config file, `compose_review_board()` exposes no
+  model override, and `GROK_DEFAULT_MODEL` is upstream. It is now a registered model in
+  `advisor_board.registries` and `panel_invoker`'s model->vendor map.
+- The three independent grok defaults move to it: `profiles.GROK_DEFAULT_MODEL` (executor
+  path SSOT), `panel_invoker.DEFAULT_LEG_MODELS["grok"]` (board seat path), and
+  `panel_invoker.PRESIDENT_LADDER`. `advisor_board.composition` and the golden fixtures in
+  `advisor_board.fixtures` follow. There are three of these, not one -- a "simple default
+  change" touches all of them or the paths silently disagree.
+- `grok-4.6` and `grok-4.5` remain REGISTERED and valid as explicit seats; only the
+  defaults moved. `CANONICAL_VALID_PAIRS` gains `grok-4.7` and keeps `grok-4.6`.
+- Launch-falsified per consumer (the ah#777 rule: a bumped id must be LAUNCHED by every
+  consumer, never assumed). The argv was taken from the production builders, not
+  hand-written, and executed: executor path at `high` (roadmap/plan/review) and `medium`
+  (execute/repair) via `build_grok_command`, and the panel seat at `xhigh` via
+  `DEFAULT_LEG_MODELS` + `render_seat_invocation`. All three returned rc=0 with the
+  expected output.
+- Skill prose regenerated through the canonical pipeline (`skills-src/` ->
+  `regenerate_skills_bundle.py` -> `phase-loop-skills/` -> `sync_skills_bundle.py` ->
+  `skills_bundle/`), so the committed bundle stays byte-identical to a fresh regenerate
+  and the CI parity gate holds. The docs capabilities card gains a `grok-4.7` row.
+- This is the concrete instance of agent-harness#648 (layered resolution + provider-catalog
+  refresh); it is a tactical unblock, not a substitute for it. Second such hand-bump in
+  three days -- `profiles.py` already flags this family VOLATILE ("xAI publishes NO dated
+  snapshot for these").
+
 ### grok effort clamp follows the CLI ceiling, which MOVED to `xhigh` (agent-harness#973)
 
 - The grok CLI's accepted `--reasoning-effort` set is established by PROBE, and it grew:
