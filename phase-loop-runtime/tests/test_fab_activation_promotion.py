@@ -56,7 +56,7 @@ from typing import List, Optional
 from unittest.mock import patch
 
 import pytest
-from test_train_review_packet import synthetic_train_packet, seed_synthetic_packet, prepare_synthetic_fab_workspaces
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet, seed_synthetic_packet, prepare_synthetic_fab_workspaces
 
 from phase_loop_runtime import fab_canonical as fc
 from phase_loop_runtime import fab_gate as fg

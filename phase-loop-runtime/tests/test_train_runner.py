@@ -3493,7 +3493,6 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, LoopResult
     from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass
     from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
-    from test_train_merge import _approval_review_fn
 
     def _capturing_head_merge_stub(cap: dict, node_for_workspace: dict[Path, str]):
         def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):

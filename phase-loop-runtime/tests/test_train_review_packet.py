@@ -739,7 +739,7 @@ def test_git_reader_isolation_patch_inventory_crosscheck_catches_wrong_path(cand
 
 def test_packet_delivery_real_gate_and_invoker_preserve_inline_material(candidate, monkeypatch):
     """Sanctioned hermetic delivery proof, not an actual provider approval."""
-    from phase_loop_runtime import governed_premerge as gp, governed_review as gr, panel_invoker as pi
+    from phase_loop_runtime import governed_review as gr, panel_invoker as pi
     from phase_loop_runtime.advisor_board import backing, composition
     from phase_loop_runtime.advisor_board.matrix import default_matrix
     from test_train_review_authorization import _board

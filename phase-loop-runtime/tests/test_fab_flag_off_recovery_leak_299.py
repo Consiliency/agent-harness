@@ -34,7 +34,7 @@ Deliberately in an UNMARKED module so CI runs it.
 from __future__ import annotations
 
 from pathlib import Path
-from test_train_review_packet import synthetic_train_packet
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet
 
 from phase_loop_runtime import governed_premerge as gp
 from phase_loop_runtime import train_runner
