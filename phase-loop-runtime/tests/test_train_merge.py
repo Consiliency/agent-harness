@@ -421,21 +421,18 @@ class TestSequentialMerge:
 # (the ledger record written at pr_open publish time), NEVER the live-
 # preferring resume value. A push landing on a branch AFTER its draft PR was
 # admitted (out-of-band) must not let the coordinator pin --match-head-commit
-# to that unchecked tip: the node itself is left `pr_open` and proceeds
-# straight to P4 merge (out_of_band_upstreams only blocks DOWNSTREAM
-# dependents, never the OOB node's own merge), so the merge-time pin is the
-# only remaining guard.
+# to that unchecked tip. Packet preparation now holds this stale admission
+# before review or merge. The real-Git race control in test_train_review_packet
+# separately verifies the admitted merge pin when live state changes after the
+# final packet identity recheck.
 
 class TestOOBResumeAdmittedHeadPin:
     def test_oob_push_after_admission_merge_pinned_to_admitted_not_live(self, tmp_path: Path):
-        """repo-b's branch received a push after its draft PR was admitted
-        (ledger head_sha='sha-admitted-b'); the live PR head now reads
-        'sha-live-oob-b'. repo-b has no downstream dependent, so
-        out_of_band_upstreams (which only blocks a STALE DOWNSTREAM) never
-        blocks repo-b's own merge — it proceeds straight to P4 merge. The
-        merge call for repo-b must receive head_sha='sha-admitted-b' — NEVER
-        the live OOB tip. FAILS at HEAD 1fc23ea (currently threads the live
-        value via completed_nodes[...]['head_sha'])."""
+        """An out-of-band push cannot reach merge on stale admitted material.
+
+        This legacy synthetic flow now terminates at the earlier packet gate;
+        it is not evidence that the later merge pin was exercised.
+        """
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
         ledger = _setup_p3_done(

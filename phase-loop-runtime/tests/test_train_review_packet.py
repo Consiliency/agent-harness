@@ -115,10 +115,50 @@ def test_observed_identity_drift_before_build(candidate, field, value, reason):
         candidate["build"]()
 
 
-def test_git_reader_isolation_missing_object_never_fetches(candidate):
+def test_git_reader_isolation_missing_object_refused(candidate):
     candidate["live"]["baseRefOid"] = "f" * 40
     with pytest.raises(packet.PacketError, match="missing_git_object"):
         candidate["build"]()
+
+
+def test_real_partial_clone_missing_blob_never_fetches(candidate):
+    import shlex
+    c = candidate
+    origin = c["tmp"] / "origin.git"
+    git(c["tmp"], "clone", "--bare", "-q", str(c["repo"]), str(origin))
+    git(origin, "config", "uploadpack.allowFilter", "true")
+    partial = c["tmp"] / "partial"
+    git(c["tmp"], "clone", "-q", "--filter=blob:none", "--no-checkout", origin.as_uri(), str(partial))
+    blob = git(c["repo"], "rev-parse", c["head"] + ":code.py")
+    assert "?" + blob in git(partial, "rev-list", "--objects", "--missing=print", c["head"])
+    marker = c["tmp"] / "upload-pack-called"
+    helper = c["tmp"] / "upload-pack-observer"
+    helper.write_text("#!/bin/sh\nprintf 'called\\n' >> " + shlex.quote(str(marker)) + "\nexec git-upload-pack \"$@\"\n")
+    helper.chmod(0o755)
+    git(partial, "config", "remote.origin.uploadpack", str(helper))
+    def objects():
+        root = partial / ".git/objects"
+        return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*") if p.is_file()}
+    before = objects()
+    with pytest.raises(packet.PacketError, match="missing_git_object"):
+        packet.build_review_packet(c["roadmap"], c["state"], lambda _: partial, c["material_path"],
+            _pr_metadata_fn=lambda *_: dict(c["live"]))
+    assert not marker.exists() and objects() == before
+    # Same repository and observer really do fetch for an ordinary Git read.
+    assert "actual_changed_code" in git(partial, "show", c["head"] + ":code.py")
+    assert marker.exists() and objects() != before
+
+
+def test_replacement_refs_cannot_change_bound_packet(candidate):
+    c = candidate
+    expected = c["build"]().artifact
+    original = git(c["repo"], "rev-parse", c["head"] + ":code.py")
+    replacement = c["tmp"] / "replacement.txt"
+    replacement.write_text("hostile replacement sentinel\n")
+    fake = git(c["repo"], "hash-object", "-w", str(replacement))
+    git(c["repo"], "replace", original, fake)
+    assert "hostile replacement" in git(c["repo"], "show", c["head"] + ":code.py")
+    assert c["build"]().artifact == expected
 
 
 def test_material_provenance_changed_acceptance_changes_identity(candidate):
@@ -209,10 +249,14 @@ def test_preview_output_deterministic_zero_ledger_effects(candidate):
 
 def test_preview_output_nonempty_refuses(candidate):
     c = candidate
-    receipt = packet.preview_review_packet(c["roadmap"], c["tmp"] / "ledger", lambda n: c["repo"],
-        c["material_path"], c["repo"], _pr_metadata_fn=lambda *_: dict(c["live"]))
-    assert receipt["ready"] is False
-    assert not (c["repo"] / "receipt.json").exists()
+    output = c["tmp"] / "external-preview"
+    output.mkdir()
+    (output / "retained").write_bytes(b"operator data")
+    receipt = packet.preview_review_packet(c["roadmap"], c["tmp"] / "ledger/train.ledger.jsonl", lambda n: c["repo"],
+        c["material_path"], output, _pr_metadata_fn=never)
+    assert not receipt["ready"] and "preview_output_nonempty" in receipt["errors"][0]
+    assert list(output.iterdir()) == [output / "retained"]
+    assert (output / "retained").read_bytes() == b"operator data"
 
 
 def test_historical_packet_immutable_store_corruption_holds(candidate):
@@ -374,7 +418,7 @@ def test_preview_output_torn_ledger_is_not_repaired(candidate):
     append_record(ledger, c["state"][c["node"].node_id])
     ledger.write_bytes(ledger.read_bytes() + b'{"node_id":')
     before = ledger.read_bytes()
-    receipt = packet.preview_review_packet(c["roadmap"], ledger, lambda n: c["repo"], c["material_path"], c["tmp"] / "preview")
+    receipt = packet.preview_review_packet(c["roadmap"], ledger, lambda n: c["repo"], c["material_path"], c["tmp"] / "preview", _pr_metadata_fn=never)
     assert not receipt["ready"] and "torn_ledger" in receipt["errors"][0]
     assert ledger.read_bytes() == before
     assert not (c["tmp"] / "preview/packet.md").exists()
@@ -502,13 +546,6 @@ def synthetic_packet_for_flow_tests(roadmap, state, *_args, **_kwargs):
     nodes = []
     for node in roadmap.topo_order():
         record = state[node.node_id]
-        if record.fab_run_id and _args:
-            from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
-            workspace = Path(_args[0](node))
-            workspace.mkdir(parents=True, exist_ok=True)
-            if not (workspace / ".git").exists():
-                git(workspace, "init", "-q")
-            repository_broker_namespace(workspace).mkdir(parents=True, exist_ok=True)
         nodes.append({"identity": {"node_id": node.node_id, "head_sha": record.head_sha, "pr_url": record.pr_url,
                                   "admission": packet.admission_binding(record)},
             "material": {"declaration_sha256": "0" * 64, "acceptance": [], "verification": []},
@@ -522,6 +559,11 @@ def synthetic_packet_for_flow_tests(roadmap, state, *_args, **_kwargs):
 
 @pytest.fixture
 def synthetic_train_packet(monkeypatch):
+    """Legacy fake-SHA plumbing only: substitute packet snapshots and identity rechecks.
+
+    This makes no workspace/store and supplies no Git/admission-binding evidence.
+    Real packet, cache, revocation and readmission boundaries use unpatched tests.
+    """
     monkeypatch.setattr(packet, "build_review_packet", synthetic_packet_for_flow_tests)
     monkeypatch.setattr(packet, "recheck_packet_identities", lambda *a, **k: None)
     def prepare(roadmap, state, *args, proposed_heads, **kwargs):
@@ -533,6 +575,17 @@ def synthetic_train_packet(monkeypatch):
         return packet.PreparedReviewPacket(packet._render(built.metadata), built.metadata, [],
             {nid: packet.admission_binding(rec) for nid, rec in state.items()})
     monkeypatch.setattr(packet, "prepare_review_packet", prepare)
+
+
+def prepare_synthetic_fab_workspaces(workspaces):
+    """Explicit environment setup for legacy FAB plumbing, before run_train."""
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    for workspace in workspaces:
+        workspace = Path(workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+        if not (workspace / ".git").exists():
+            git(workspace, "init", "-q")
+        repository_broker_namespace(workspace).mkdir(parents=True, exist_ok=True)
 
 
 def seed_synthetic_packet(ledger, roadmap):
@@ -577,7 +630,7 @@ def test_observed_identity_drift_same_repo_after_first_merge_holds_second(candid
         _live_pr_head_sha_fn=lambda *_: c["head"], _merge_phase_enabled=True,
         _pr_merged_sha_fn=lambda *a, **k: None, _train_review_fn=approved, _merge_pr_fn=merge, _post_merge_hook=lambda *_: None)
     result = tr.run_train(c["roadmap"], ledger, **options)
-    assert result["status"] == "review_halted" and result["reason"] == "observed_identity_drift"
+    assert result["status"] == "merge_halted" and result["reason"] == "observed_identity_drift"
     assert merges == ["candidate"]
     state = read_ledger(ledger)
     assert state[first.node_id].status == "merged" and state[second.node_id].status == "pr_open"
@@ -810,7 +863,7 @@ def test_preview_output_symlink_component_refused(candidate):
     link = c["tmp"] / "output-link"
     link.symlink_to(c["tmp"], target_is_directory=True)
     result = packet.preview_review_packet(c["roadmap"], c["tmp"] / "ledger/train.ledger.jsonl", lambda _: c["repo"],
-        c["material_path"], link / "preview")
+        c["material_path"], link / "preview", _pr_metadata_fn=never)
     assert not result["ready"] and "preview_output_symlink" in result["errors"][0]
     assert not (c["tmp"] / "preview").exists()
 
@@ -937,17 +990,26 @@ def test_real_revocation_store_before_sink(candidate, monkeypatch, mode, store):
     elif store == "absent":
         namespace.rmdir()
     before = sorted(str(p) for p in namespace.rglob("*"))
+    namespace_existed = namespace.exists()
+    sinks = []
+    def sink(name, result):
+        def call(*args, **kwargs):
+            sinks.append(name)
+            return result(*args, **kwargs)
+        return call
     monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)
     result = run_candidate(c, monkeypatch, review_only=mode == "review", emit_native_request=mode == "native",
-        _emit_native_fill_request_fn=lambda *a, **k: {"status": "native_fill_required"},
-        _train_review_fn=approved if store == "empty" else never,
-        _merge_pr_fn=(lambda *a, **k: c["head"]) if store == "empty" else never)
+        _emit_native_fill_request_fn=sink("native", lambda *a, **k: {"status": "native_fill_required"}),
+        _train_review_fn=sink("review", approved),
+        _merge_pr_fn=sink("merge", lambda *a, **k: c["head"]))
     if store == "empty":
         assert result["status"] == {"review": "review_approved", "native": "native_fill_required", "merge": "merged"}[mode], result
     else:
         assert result["status"] in {"review_halted", "merge_halted"}, result
         assert "_train_review_" not in read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
+        assert sinks == []
     assert sorted(str(p) for p in namespace.rglob("*")) == before
+    assert namespace.exists() == namespace_existed
 
 
 def test_live_read_failure_preserves_fab_binding_then_resume(candidate, monkeypatch):
@@ -1039,14 +1101,25 @@ def test_whole_train_material_barrier_precedes_all_fab_effects(candidate, monkey
         c["state"][second.node_id].fab_run_id = None
         c["lives"][c["state"][second.node_id].pr_url]["headRefOid"] = "f" * 40
     update_material(c)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    for row in c["state"].values():
+        append_record(ledger, row)
+    before = ledger.read_bytes(), git(c["repo"], "rev-parse", "HEAD"), git(c["repo"], "status", "--porcelain"), (c["repo"] / "code.py").read_bytes()
+    effects = []
+    def effect(*args, **kwargs):
+        effects.append("called")
+        raise AssertionError("material barrier permitted an effect")
     for name in ("_train_revocation_store", "_fab_recover_torn_to_admitted", "_fab_delta_readmit"):
-        monkeypatch.setattr(tr, name, never)
+        monkeypatch.setattr(tr, name, effect)
     result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _train_review_fn=never,
         native_leg_fills=[object()] if failure == "native_fill" else None,
         _live_pr_head_sha_fn=lambda ws, br: c["live"]["headRefOid"] if ws == c["repo"] else c["lives"][c["state"][second.node_id].pr_url]["headRefOid"])
     assert result["status"] == "review_halted", result
-    if failure == "native_fill":
-        assert result["reason"] == "native_fill_stale_request"
+    assert result["reason"] == {"old_evidence": "unbound_verification", "missing_object": "missing_git_object",
+        "binary": "binary_source", "oversized": "brokered review input exceeds sealed transport bound",
+        "mixed_stale": "stale_head", "native_fill": "native_fill_stale_request"}[failure], result
+    assert effects == []
+    assert before == (ledger.read_bytes(), git(c["repo"], "rev-parse", "HEAD"), git(c["repo"], "status", "--porcelain"), (c["repo"] / "code.py").read_bytes())
 
 
 @pytest.mark.parametrize("failure", ["none", "fake", "before_append", "after_append"])
@@ -1058,6 +1131,7 @@ def test_readmission_result_never_substitutes_for_durable_authority(candidate, m
     head = proposed_candidate(c)
     monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)
     def readmit(ws, ledger, **kwargs):
+        # Explicit injected failure seam; real broker grant/routing has separate controls.
         assert kwargs["evidence_store"].root.is_dir()
         if failure == "after_append":
             append_record(ledger, replace(read_ledger(ledger)[c["node"].node_id], head_sha=head))
@@ -1073,6 +1147,40 @@ def test_readmission_result_never_substitutes_for_durable_authority(candidate, m
     if failure == "after_append":
         monkeypatch.setattr(tr, "_fab_delta_readmit", never)
         assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+
+
+def test_whole_train_valid_material_reaches_every_effect(candidate, monkeypatch):
+    """Positive barrier control; admission append is an explicit injected seam."""
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    c = candidate
+    enable_fab(c, monkeypatch)
+    second, repo = add_sibling(c)
+    repository_broker_namespace(repo).mkdir(parents=True, exist_ok=True)
+    head = proposed_candidate(c)
+    effects = []
+    def recover(ws, *args, **kwargs):
+        effects.append(("recover", ws))
+    def readmit(ws, ledger, **kwargs):
+        effects.append(("readmit", ws))
+        append_record(ledger, replace(read_ledger(ledger)[c["node"].node_id], head_sha=head))
+        return head
+    def review(*args, **kwargs):
+        effects.append(("review", None))
+        return approved(*args, **kwargs)
+    def merge(ws, *args, **kwargs):
+        effects.append(("merge", ws))
+        return kwargs["head_sha"]
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+    monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True,
+        _train_review_fn=review, _merge_pr_fn=merge,
+        _live_pr_head_sha_fn=lambda ws, br: head if ws == c["repo"] else c["head"])
+    assert result["status"] == "merged", result
+    assert ("readmit", c["repo"]) in effects and ("review", None) in effects
+    assert {ws for effect, ws in effects if effect == "recover"} == {c["repo"], repo}
+    assert [ws for effect, ws in effects if effect == "merge"] == [c["repo"], repo]
 
 
 def test_revoke_after_recovery_reaches_real_helper_entry_before_delta(candidate, monkeypatch):
@@ -1197,8 +1305,12 @@ def test_real_broker_crash_seams_resume_exact_durable_binding(tmp_path, monkeypa
         admissions = seeded["store"].replay()
         assert len(admissions) == 2 and admissions[-1].epoch == 2
         authority_digest = admissions[-1].binding.authority_digest
-        result = _run_fabreadmit_two_node_resume(tr, fixture, seeded, live_head_sha=seeded["delta_head"], captured={})
+        captured = {}
+        result = _run_fabreadmit_two_node_resume(tr, fixture, seeded, live_head_sha=seeded["delta_head"], captured=captured)
         assert result["status"] == "merged", result
+        assert captured[seeded["node_id"]] == [{"branch": seeded["branch"],
+            "head_sha": seeded["delta_head"], "run_id": fixture.RUN}]
+        assert read_ledger(seeded["ledger_path"])[seeded["node_id"]].head_sha == seeded["delta_head"]
         assert len(reviews) == (2 if crash == "exit_before_append" else 1)
         assert len(seeded["store"].replay()) == 2
         assert seeded["store"].replay()[-1].binding.authority_digest == authority_digest
@@ -1234,7 +1346,8 @@ def test_durable_only_drift_between_merges_holds_remaining_node(candidate, monke
         append_record(ledger, replace(read_ledger(ledger)[second.node_id], branch="rebound"))
         return c["head"]
     result = run_candidate(c, monkeypatch, review_only=False, _merge_pr_fn=merge)
-    assert result["reason"] == "observed_identity_drift" and seen == [c["repo"]], result
+    assert result["status"] == "merge_halted" and result["reason"] == "admission_identity_drift", result
+    assert seen == [c["repo"]], result
     assert read_ledger(ledger)[c["node"].node_id].status == "merged"
 
 
@@ -1284,3 +1397,310 @@ def test_external_merge_recovery_preserves_historical_fab_identity(candidate, mo
         _pr_merged_sha_fn=lambda *a, **k: c["head"], _train_review_fn=never)
     assert result["status"] == "merged", result
     assert read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")[c["node"].node_id].fab_run_id == "packet-fab"
+
+
+@pytest.mark.parametrize("target", ["node", "ledger"])
+def test_preview_output_dotdot_cannot_enter_forbidden_directory(candidate, target):
+    c = candidate
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    append_record(ledger, c["state"][c["node"].node_id])
+    (c["tmp"] / "outside").mkdir()
+    output = c["tmp"] / "outside" / ".." / target / "preview-output"
+    before = ledger.read_bytes(), git(c["repo"], "status", "--porcelain")
+    receipt = packet.preview_review_packet(c["roadmap"], ledger, lambda _: c["repo"],
+        c["material_path"], output, _pr_metadata_fn=lambda *_: dict(c["live"]))
+    assert not receipt["ready"] and "preview_output_forbidden" in receipt["errors"][0]
+    assert not output.exists()
+    assert before == (ledger.read_bytes(), git(c["repo"], "status", "--porcelain"))
+
+
+def seed_partial_history(c):
+    second, workspace = add_sibling(c)
+    historical = packet.build_review_packet(c["roadmap"], c["state"], lambda n: c["workspaces"][n.node_id],
+        c["material_path"], _pr_metadata_fn=lambda ws, url: dict(c["lives"][url]))
+    record = c["state"][c["node"].node_id]
+    record.status = "merged"
+    record.upstream_merge_sha = c["head"]
+    c["live"].update(state="MERGED", mergeCommit={"oid": c["head"]})
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    for row in c["state"].values():
+        append_record(ledger, row)
+    packet.store_review_packet(historical, ledger.parent / "review-packets")
+    append_record(ledger, LedgerRecord("_train_review_", "approved", usable_reviewers=4,
+                                      review_packet_sha256=historical.sha256))
+    return second, workspace, ledger
+
+
+@pytest.mark.parametrize("field", ["branch", "fab_run_id"])
+def test_historical_full_binding_refused_before_pending_effects(candidate, monkeypatch, field):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    c = candidate
+    enable_fab(c, monkeypatch)
+    _, workspace, ledger = seed_partial_history(c)
+    repository_broker_namespace(workspace).mkdir(parents=True, exist_ok=True)
+    append_record(ledger, replace(read_ledger(ledger)[c["node"].node_id], **{field: "changed-binding"}))
+    before = ledger.read_bytes()
+    effects = []
+    def effect(*args, **kwargs):
+        effects.append("called")
+        raise AssertionError("historical binding must fail before effects")
+    monkeypatch.setattr(tr, "_train_revocation_store", effect)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", effect)
+    monkeypatch.setattr(tr, "_fab_delta_readmit", effect)
+    result = run_candidate(c, monkeypatch, review_only=False, _train_review_fn=effect, _merge_pr_fn=effect)
+    assert result["reason"] == "historical_packet_identity_mismatch", result
+    assert effects == [] and ledger.read_bytes() == before
+
+
+@pytest.mark.parametrize("flip_at", ["prepared", "recovery_store"])
+def test_proposed_readiness_reversal_precedes_recovery(candidate, monkeypatch, flip_at):
+    from phase_loop_runtime import train_runner as tr, governed_premerge as gp
+    c = candidate
+    enable_fab(c, monkeypatch)
+    proposed_candidate(c)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    append_record(ledger, c["state"][c["node"].node_id])
+    before = ledger.read_bytes()
+    prepare, store = packet.prepare_review_packet, tr._train_revocation_store
+    calls, reads = [], []
+    def prepared(*args, **kwargs):
+        result = prepare(*args, **kwargs)
+        if flip_at == "prepared":
+            monkeypatch.setattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", False)
+        return result
+    def resolved(*args, **kwargs):
+        result = store(*args, **kwargs)
+        reads.append(1)
+        if flip_at == "recovery_store" and len(reads) == 2:
+            monkeypatch.setattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", False)
+        return result
+    monkeypatch.setattr(packet, "prepare_review_packet", prepared)
+    monkeypatch.setattr(tr, "_train_revocation_store", resolved)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: calls.append("recovery"))
+    monkeypatch.setattr(tr, "_fab_delta_readmit", lambda *a, **k: calls.append("readmission"))
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True,
+        _train_review_fn=never, _merge_pr_fn=never)
+    assert result["reason"] == "stale_head", result
+    assert calls == [] and ledger.read_bytes() == before
+
+
+@pytest.mark.parametrize("locus", ["check_suite", "root"])
+@pytest.mark.parametrize("value", [[], "", False, None, 0])
+def test_malformed_falsey_check_repository_is_refused(candidate, locus, value):
+    c = candidate
+    check = {"id": 1, "head_sha": c["head"], "name": "test", "status": "completed", "conclusion": "success",
+        "url": "https://api.github.com/repos/org/repo/check-runs/1", "app": {"id": 1, "slug": "actions"},
+        "check_suite": {"id": 2}, "output": {"summary": "evidence"}}
+    (check["check_suite"] if locus == "check_suite" else check)["repository"] = value
+    c["material"]["nodes"][c["node"].node_id]["verification"] = [{"id": "ci", "kind": "github_check_run", "check_run_id": 1}]
+    update_material(c)
+    with pytest.raises(packet.PacketError, match="malformed_check_run"):
+        c["build"](_check_run_fn=lambda *_: check)
+
+
+def test_check_response_bool_id_is_not_integer_identity(candidate):
+    c = candidate
+    check = {"id": True, "head_sha": c["head"], "name": "test", "status": "completed", "conclusion": "success",
+        "url": "https://api.github.com/repos/org/repo/check-runs/1", "app": {"id": 1, "slug": "actions"},
+        "check_suite": {"id": 2}, "output": {"summary": "evidence"}}
+    c["material"]["nodes"][c["node"].node_id]["verification"] = [{"id": "ci", "kind": "github_check_run", "check_run_id": 1}]
+    update_material(c)
+    with pytest.raises(packet.PacketError, match="check_run_identity_mismatch"):
+        c["build"](_check_run_fn=lambda *_: check)
+
+
+def test_missing_historical_binding_during_review_is_typed_hold(candidate, monkeypatch):
+    c = candidate
+    second, _, ledger = seed_partial_history(c)
+    c["material"]["nodes"][second.node_id]["acceptance"][0]["text"] += " amended pending scope"
+    update_material(c)
+    def review(*args):
+        # Simulated corruption of the external durable ledger, not an append-only transition.
+        lines = [line for line in ledger.read_text().splitlines()
+                 if json.loads(line)["node_id"] != c["node"].node_id]
+        ledger.write_text("\n".join(lines) + "\n")
+        return approved(*args)
+    result = run_candidate(c, monkeypatch, _train_review_fn=review)
+    assert result["status"] == "review_halted" and result["reason"] == "admission_identity_drift", result
+
+
+def test_admitted_pin_survives_live_change_after_final_recheck(candidate, monkeypatch):
+    c = candidate
+    recheck = packet.recheck_packet_identities
+    def advance(*args, **kwargs):
+        result = recheck(*args, **kwargs)
+        if kwargs.get("node_ids") and "prior_bindings" not in kwargs:
+            c["live"]["headRefOid"] = "f" * 40
+        return result
+    monkeypatch.setattr(packet, "recheck_packet_identities", advance)
+    calls = []
+    def merge(ws, branch, *, base, head_sha):
+        calls.append(head_sha)
+        assert head_sha == c["head"] != c["live"]["headRefOid"]
+        return c["head"]
+    assert run_candidate(c, monkeypatch, review_only=False, _merge_pr_fn=merge)["status"] == "merged"
+    assert calls == [c["head"]]
+
+
+@pytest.mark.parametrize("transition", ["file_to_directory", "directory_to_file", "file_to_symlink", "symlink_to_file"])
+def test_complete_patch_type_transitions(candidate, transition):
+    c = candidate
+    path = c["repo"] / "code.py"
+    if transition.startswith("directory_"):
+        path.unlink()
+        path.mkdir()
+        (path / "nested.py").write_text("before_child = 3\n")
+        c["base"] = c["live"]["baseRefOid"] = commit(c["repo"], "directory base")
+        (path / "nested.py").unlink()
+        path.rmdir()
+        path.write_text("after_file = 4\n")
+    elif transition.startswith("symlink_"):
+        path.unlink()
+        path.symlink_to("renamed.py")
+        c["base"] = c["live"]["baseRefOid"] = commit(c["repo"], "symlink base")
+        path.unlink()
+        path.write_text("after_file = 4\n")
+    elif transition.endswith("directory"):
+        path.unlink()
+        path.mkdir()
+        (path / "nested.py").write_text("after_child = 3\n")
+    else:
+        path.unlink()
+        path.symlink_to("renamed.py")
+    head = commit(c["repo"], transition)
+    c["state"][c["node"].node_id].head_sha = c["live"]["headRefOid"] = head
+    raw = c["material"]["nodes"][c["node"].node_id]
+    raw["head_sha"] = raw["verification"][0]["head_sha"] = head
+    update_material(c)
+    built = c["build"]()
+    expected = subprocess.run(["git", "-C", str(c["repo"]), "diff-tree", "--no-commit-id", "-r", "-p",
+        *packet._DIFF, c["base"], head], capture_output=True, check=True).stdout
+    section = built.metadata["nodes"][0]["patch"]
+    assert section["raw_sha256"] == hashlib.sha256(expected).hexdigest()
+    assert section["raw_bytes"] == len(expected)
+    assert section["text"] == packet.escape_text(expected.decode())
+    if "symlink" in transition:
+        assert "120000" in section["text"]
+
+
+def test_layered_material_context_certificate_roundtrip(candidate):
+    c = candidate
+    raw = 'line one\n\t"quoted" literal\\r café\x01\r\u2028end'.encode()
+    (c["repo"] / "context.txt").write_bytes(raw)
+    commit(c["repo"], "selected context")
+    certify(c)
+    material = c["material"]["nodes"][c["node"].node_id]
+    material["context"] = ["context.txt"]
+    for name, target in (("acceptance.txt", material["acceptance"][0]["provenance"]),
+                         ("evidence.txt", material["verification"][0]["evidence"])):
+        (c["tmp"] / name).write_bytes(raw)
+        target["sha256"] = hashlib.sha256(raw).hexdigest()
+    attestation_path = c["tmp"] / "disposal.json"
+    attestation = json.loads(attestation_path.read_text())
+    attestation["disposal_scope"] = raw.decode()
+    attestation_raw = json.dumps(attestation, ensure_ascii=False, indent="\t").encode()
+    attestation_path.write_bytes(attestation_raw)
+    material["generated_removals"][0]["attestation"]["sha256"] = hashlib.sha256(attestation_raw).hexdigest()
+    update_material(c)
+    built = c["build"]()
+    assert "JSON sections: decode outer escapes, parse JSON, then decode nested content.text escapes" in built.artifact
+    assert "escaped_sha256 hashes intermediate escaped text" in built.artifact
+    def unescape(text):
+        # Independent standard JSON decoder for the declared fixed-width grammar.
+        return json.loads('"' + text.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') + '"')
+    def section(title):
+        rendered = built.artifact.split("### " + title + "\n", 1)[1].split("\n### ", 1)[0].rstrip("\n")
+        return json.loads(unescape(rendered))
+    evidence = section("Acceptance and evidence")
+    context = section("Selected head context")
+    certificate = section("Explicit subtree disposal certificates")
+    samples = [(evidence["acceptance"][0]["provenance"]["content"], raw),
+               (evidence["verification"][0]["evidence"]["content"], raw),
+               (context[0]["content"], raw),
+               (certificate[0]["attestation"]["content"], attestation_raw)]
+    for content, expected in samples:
+        assert unescape(content["text"]).encode() == expected
+        assert content["raw_sha256"] == hashlib.sha256(expected).hexdigest()
+        assert content["escaped_sha256"] == hashlib.sha256(content["text"].encode()).hexdigest()
+    assert certificate[0]["assertion"]["disposal_scope"] == raw.decode()
+
+
+@pytest.mark.parametrize("mutation,reason", [("old_mode", "mode"), ("new_mode", "mode"), ("index", "object"), ("header", None)])
+def test_type_transition_patch_must_match_inventory(candidate, monkeypatch, mutation, reason):
+    c = candidate
+    path = c["repo"] / "code.py"
+    path.unlink()
+    path.symlink_to("renamed.py")
+    head = commit(c["repo"], "symlink transition")
+    c["state"][c["node"].node_id].head_sha = c["live"]["headRefOid"] = head
+    raw = c["material"]["nodes"][c["node"].node_id]
+    raw["head_sha"] = raw["verification"][0]["head_sha"] = head
+    update_material(c)
+    original = packet._GitReader.patch
+    def corrupt(self, base, head, paths):
+        patch_bytes = original(self, base, head, paths)
+        if paths == ["code.py"]:
+            if mutation == "old_mode":
+                patch_bytes = patch_bytes.replace(b"deleted file mode 100644", b"deleted file mode 100755")
+            elif mutation == "new_mode":
+                patch_bytes = patch_bytes.replace(b"new file mode 120000", b"new file mode 100644")
+            elif mutation == "index":
+                patch_bytes = patch_bytes.replace(b"index ", b"index f", 1)
+            else:
+                patch_bytes = patch_bytes.replace(b"diff --git a/code.py b/code.py", b"diff --git a/alien b/alien", 1)
+        return patch_bytes
+    monkeypatch.setattr(packet._GitReader, "patch", corrupt)
+    with pytest.raises(packet.PacketError, match="patch_inventory_" + (reason + "_" if reason else "") + "mismatch"):
+        c["build"]()
+
+
+@pytest.mark.parametrize("mode", ["review", "native"])
+def test_proposed_head_readonly_modes_have_zero_admission_effects(candidate, monkeypatch, mode):
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    enable_fab(c, monkeypatch)
+    proposed_candidate(c)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    for row in c["state"].values():
+        append_record(ledger, row)
+    before = ledger.read_bytes(), git(c["repo"], "rev-parse", "HEAD"), git(c["repo"], "status", "--porcelain")
+    effects = []
+    def effect(*args, **kwargs):
+        effects.append("called")
+        raise AssertionError("readonly proposed head permitted an effect")
+    for name in ("_train_revocation_store", "_fab_recover_torn_to_admitted", "_fab_delta_readmit"):
+        monkeypatch.setattr(tr, name, effect)
+    result = run_candidate(c, monkeypatch, review_only=mode == "review", emit_native_request=mode == "native",
+        fab_delta_shortcut=True, _train_review_fn=effect, _emit_native_fill_request_fn=effect, _merge_pr_fn=effect)
+    assert result["status"] == "review_halted" and result["reason"] == "stale_head", result
+    assert effects == []
+    assert before == (ledger.read_bytes(), git(c["repo"], "rev-parse", "HEAD"), git(c["repo"], "status", "--porcelain"))
+
+
+def test_material_duplicate_json_keys_are_refused(candidate):
+    c = candidate
+    c["material_path"].write_text(c["material_path"].read_text().replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1'))
+    with pytest.raises(packet.PacketError, match="duplicate_material_field"):
+        c["build"]()
+
+
+def test_top_level_github_cannot_be_disposal_certificate(candidate):
+    c = candidate
+    (c["repo"] / "generated").rename(c["repo"] / ".github")
+    c["base"] = c["live"]["baseRefOid"] = commit(c["repo"], "sensitive subtree base")
+    tree = git(c["repo"], "rev-parse", c["base"] + ":.github")
+    (c["repo"] / ".github/source.py").unlink()
+    head = commit(c["repo"], "remove sensitive subtree")
+    c["state"][c["node"].node_id].head_sha = c["live"]["headRefOid"] = head
+    material = c["material"]["nodes"][c["node"].node_id]
+    material["head_sha"] = material["verification"][0]["head_sha"] = head
+    att = dump(c["tmp"] / "disposal.json", {"attested_by": "operator", "observed_at": "2026-09-22T00:00:00Z",
+        "base_tip_sha": c["base"], "merge_base_sha": c["base"], "head_sha": head,
+        "path": ".github", "base_tree_oid": tree, "disposal_scope": "explicit but forbidden"})
+    material["generated_removals"] = [{"path": ".github", "base_tree_oid": tree,
+        "rationale": "explicit disposal assertion", "attestation": att}]
+    update_material(c)
+    with pytest.raises(packet.PacketError, match="governance_removal_group"):
+        c["build"]()

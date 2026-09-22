@@ -56,7 +56,7 @@ from typing import List, Optional
 from unittest.mock import patch
 
 import pytest
-from test_train_review_packet import synthetic_train_packet, seed_synthetic_packet
+from test_train_review_packet import synthetic_train_packet, seed_synthetic_packet, prepare_synthetic_fab_workspaces
 
 from phase_loop_runtime import fab_canonical as fc
 from phase_loop_runtime import fab_gate as fg
@@ -1088,6 +1088,7 @@ def _p3a_two_fab_nodes(tmp_path: Path):
 
 
 def _p3a_run_train(roadmap, ledger, ws_map, *, run_loop, publish, merge_fn):
+    prepare_synthetic_fab_workspaces(ws_map.values())
     return run_train(
         roadmap,
         ledger,
@@ -1107,8 +1108,8 @@ def _p3a_run_train(roadmap, ledger, ws_map, *, run_loop, publish, merge_fn):
     )
 
 
-@pytest.mark.usefixtures("synthetic_train_packet")
 class TestPiece3aAdmissionBridgeIntegration:
+    @pytest.mark.usefixtures("synthetic_train_packet")
     def test_fresh_admission_binds_and_threads_run_id(self, tmp_path: Path, monkeypatch):
         """A6: a fresh FAB build binds the plumbed fab_run_id in the pr_open
         ledger record AND threads it to the merge fn — the re-gate now runs for
@@ -1145,6 +1146,7 @@ class TestPiece3aAdmissionBridgeIntegration:
         assert ("repo-a/specs/plan-a.md", "run-repo-a") in pr_open
         assert ("repo-b/specs/plan-b.md", "run-repo-b") in pr_open
 
+    @pytest.mark.usefixtures("synthetic_train_packet")
     def test_flag_off_admission_is_byte_neutral(self, tmp_path: Path, monkeypatch):
         """A7: flag OFF ⇒ even a snapshot that leaks a fab_run_id binds NOTHING;
         the ledger record carries no fab_run_id key and no run_id threads."""
@@ -1173,6 +1175,7 @@ class TestPiece3aAdmissionBridgeIntegration:
         raw = ledger.read_text(encoding="utf-8")
         assert "fab_run_id" not in raw
 
+    @pytest.mark.usefixtures("synthetic_train_packet")
     def test_resume_recovers_fab_run_id_from_ledger(self, tmp_path: Path, monkeypatch):
         """A8: on RESUME there is no fresh snapshot — the fab_run_id bound at
         first admission is recovered from the durable ledger and threaded to the
@@ -1301,7 +1304,7 @@ class TestPiece3bRecoveryWiring:
         "### Node: repo-a / specs/plan-a.md\n\n**Depends on:** (none)\n**Channel:** (none)\n"
     )
 
-    def _run_with_advanced_head(self, tmp_path, monkeypatch, engaged):
+    def _run_with_advanced_head(self, tmp_path, monkeypatch, engaged, merged):
         """Drive the merge loop for a SINGLE admitted FAB node whose live PR head has
         ADVANCED (live != admitted), with the coordinator opt-in ON, spying on
         `_fab_delta_readmit` so the ENGAGE decision is observable without running the
@@ -1313,6 +1316,7 @@ class TestPiece3bRecoveryWiring:
         monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "1")
         roadmap = parse_train_roadmap(self._SOLO_MD)
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        prepare_synthetic_fab_workspaces(ws_map.values())
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
         append_record(ledger, LedgerRecord(
             node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
@@ -1333,7 +1337,7 @@ class TestPiece3bRecoveryWiring:
             _pr_is_open=_p3a_pr_open,
             _live_pr_head_sha_fn=lambda ws, br: f"advanced-{br}",  # live != admitted
             _merge_phase_enabled=True,
-            _merge_pr_fn=_capturing_merge_stub({}),
+            _merge_pr_fn=_capturing_merge_stub(merged),
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
             _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
@@ -1348,9 +1352,11 @@ class TestPiece3bRecoveryWiring:
         construction."""
         monkeypatch.setattr("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", False)
         engaged: list = []
-        result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
+        merged = {}
+        result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged, merged)
         assert engaged == [], "the ENGAGE path must be fenced off while _FAB_DELTA_BROKER_READMIT_READY is False"
         assert result["status"] == "review_halted" and result["reason"] == "stale_head", result
+        assert merged == {}
 
 
     def test_interlock_on_re_enables_engage(self, tmp_path: Path, monkeypatch):
@@ -1358,9 +1364,11 @@ class TestPiece3bRecoveryWiring:
         switch + proof: `_fab_delta_readmit` IS invoked for the advanced head."""
         monkeypatch.setattr("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", True)
         engaged: list = []
-        result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
+        merged = {}
+        result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged, merged)
         assert engaged and all(str(h).startswith("advanced-") for h in engaged), engaged
-        assert result["status"] == "merge_halted", result
+        assert result["status"] == "merge_halted" and result["reason"] == "fab_readmit_failed", result
+        assert merged == {}
 
 
 @pytest.mark.usefixtures("synthetic_train_packet")
@@ -1368,6 +1376,7 @@ class TestPiece3aRegateEndToEnd:
     """A10/11 — the REAL `_live_merge_pr` re-gate fires for an admitted node."""
 
     def _one_node_resume(self, tmp_path: Path, repo: Path, head: str, run_id: str):
+        prepare_synthetic_fab_workspaces([repo])
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         # Only repo-a participates; make repo-b a merged no-op so the merge loop
         # reaches repo-a's REAL _live_merge_pr with the ledger-bound run_id.
@@ -1689,6 +1698,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path, monkeypatch)
         )
 
         captured_f = {}
+        material_f = real_fab_packet_inputs(fix_false, seeded_false, roadmap, monkeypatch)
         commit_calls_f = []
 
         def _observe_false_commit(*args, **kwargs):
@@ -1703,15 +1713,16 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path, monkeypatch)
                 with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_false_commit):
                     res_false = tr.run_train(
                         roadmap, ledger_false, run_mode="governed",
+                        review_material=material_f,
                         resolve_workspace=lambda n: fix_false.repo,
                         coordinator_runtime=coord_f,
                         resolve_owned_paths=None,
                         _run_loop=lambda *a, **kw: (None, []),
-                        _publish=_make_publish_stub({}),
+                        _publish=_make_publish_stub({str(fix_false.repo): {"status": "published", "branch": "feat/repo-b", "head_sha": cand_f, "pr_url": "https://github.com/org/repo-b/pull/1"}}),
                         _set_upstream_ref_fn=lambda *a, **kw: [],
                         _preflight_fn=lambda *a, **kw: None,
                         _pr_is_open=lambda ws, br: True,
-                        _live_pr_head_sha_fn=lambda ws, br: delta_f,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_f if br == seeded_false["branch"] else cand_f,
                         _merge_phase_enabled=True,
                         _reverify_fn=_reverify_pass,
                         _train_review_fn=_approval_review_fn,
@@ -1723,6 +1734,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path, monkeypatch)
                     )
 
         assert res_false["status"] == "review_halted" and res_false["reason"] == "stale_head"
+        assert [row["node_id"] for row in res_false["detail"]["stale"]] == [node_id]
         assert commit_calls_f == [], "disabled shortcut must not enter the broker helper"
         assert len(LinearizableAdmissionStore(seeded_false["store_root"], lambda _: True).replay()) == 1
         assert captured_f == {}

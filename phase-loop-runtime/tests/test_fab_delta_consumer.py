@@ -2223,6 +2223,7 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path, monkeypatch)
                 workspace_id=str(fix_a.repo), broker_client=build_routing_broker_client(),
             )
             captured_a = {}
+            material_a = real_fab_packet_inputs(fix_a, seeded_a, roadmap, monkeypatch)
             commit_calls_a = []
 
             def _observe_readiness_kill_commit(*args, **kwargs):
@@ -2236,15 +2237,16 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path, monkeypatch)
                     ):
                         result_a = tr.run_train(
                             roadmap, ledger_a, run_mode="governed",
+                            review_material=material_a,
                             resolve_workspace=lambda n: fix_a.repo,
                             coordinator_runtime=runtime_a,
                             resolve_owned_paths=None,
                             _run_loop=lambda *a, **kw: (None, []),
-                            _publish=_make_publish_stub({}),
+                            _publish=_make_publish_stub({str(fix_a.repo): {"status": "published", "branch": "feat/repo-b", "head_sha": cand_a, "pr_url": "https://github.com/org/repo-b/pull/1"}}),
                             _set_upstream_ref_fn=lambda *a, **kw: [],
                             _preflight_fn=lambda *a, **kw: None,
                             _pr_is_open=lambda ws, br: True,
-                            _live_pr_head_sha_fn=lambda ws, br: delta_a,
+                            _live_pr_head_sha_fn=lambda ws, br: delta_a if br == seeded_a["branch"] else cand_a,
                             _merge_phase_enabled=True,
                             _reverify_fn=_reverify_pass,
                             _train_review_fn=_approval_review_fn,
@@ -2255,6 +2257,7 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path, monkeypatch)
                             fab_delta_shortcut=True,
                         )
             assert result_a["status"] == "review_halted" and result_a["reason"] == "stale_head"
+            assert [row["node_id"] for row in result_a["detail"]["stale"]] == [node_id]
             assert commit_calls_a == [], "readiness kill must not enter the broker helper"
             assert read_ledger(ledger_a)[node_id].head_sha == cand_a
             assert len(LinearizableAdmissionStore(seeded_a["store_root"], lambda _: True).replay()) == 1, (

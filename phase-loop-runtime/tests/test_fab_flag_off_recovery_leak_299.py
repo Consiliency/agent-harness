@@ -38,7 +38,7 @@ from test_train_review_packet import synthetic_train_packet
 
 from phase_loop_runtime import governed_premerge as gp
 from phase_loop_runtime import train_runner
-from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
 
 # Reuse the piece-3a integration harness rather than rebuilding a train fixture; the repo
@@ -151,6 +151,7 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
     from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
     from phase_loop_runtime.train_runner import CoordinatorRuntime
     from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
+    from test_train_review_packet import real_fab_packet_inputs
 
     monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
     fixture = DeltaReadmitTransactionTest()
@@ -163,6 +164,8 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
             branch="feat/repo-a",
         )
         store_before = seeded["store"].replay()
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        material = real_fab_packet_inputs(fixture, seeded, roadmap, monkeypatch)
         commit_calls = []
         merge_calls = []
         real_commit = train_runner._commit_broker_readmitted_head
@@ -185,18 +188,19 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
             broker_client=build_routing_broker_client(),
         )
         result = train_runner.run_train(
-            parse_train_roadmap(TRAIN_2NODE_MD),
+            roadmap,
             seeded["ledger_path"],
             run_mode="governed",
+            review_material=material,
             resolve_workspace=lambda _node: fixture.repo,
             coordinator_runtime=coordinator_runtime,
             resolve_owned_paths=None,
             _run_loop=lambda *args, **kwargs: (None, []),
-            _publish=_make_publish_stub({}),
+            _publish=_make_publish_stub({str(fixture.repo): {"status": "published", "branch": "feat/repo-b", "head_sha": seeded["candidate_head"], "pr_url": "https://github.com/org/repo-b/pull/1"}}),
             _set_upstream_ref_fn=lambda *args, **kwargs: [],
             _preflight_fn=lambda *args, **kwargs: None,
             _pr_is_open=lambda _workspace, _branch: True,
-            _live_pr_head_sha_fn=lambda _workspace, _branch: seeded["delta_head"],
+            _live_pr_head_sha_fn=lambda _workspace, branch: seeded["delta_head"] if branch == seeded["branch"] else seeded["candidate_head"],
             _merge_phase_enabled=True,
             _reverify_fn=_reverify_pass,
             _train_review_fn=_approval_review_fn,
@@ -212,5 +216,7 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
         assert canonical_store.replay() == store_before, "flag-off resume must leave canonical admission unchanged"
         assert merge_calls == [], "flag-off stale head must hold before merge"
         assert result.get("status") == "review_halted" and result["reason"] == "stale_head"
+        assert [row["node_id"] for row in result["detail"]["stale"]] == [node_id]
+        assert read_ledger(seeded["ledger_path"])[node_id].head_sha == seeded["candidate_head"]
     finally:
         fixture.tearDown()
