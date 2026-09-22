@@ -194,12 +194,12 @@ _FROZEN_ROADMAP_EXCERPT = """\
    `contract_git_sha="b862f977…"` (superseding `c1085483`) plus per-schema `submission_schema_sha256`
    / `verdict_schema_sha256`. CONFORM's pin work is therefore NO LONGER externally gated and is
    satisfiable against merged sources; EC-CONFORM-5/6/7 are re-derived accordingly below. (Swept
-   the other four assumptions against current `main`: #2 re-verified LIVE — `governed-pipeline#128`
-   still OPEN, we still ship `0.7.16`; #3 holds — `tui_adapter_required` still present in
+   the other four assumptions against current `main`: #2 subsequently reconciled — `governed-pipeline#128`
+   CLOSED, we still ship `0.7.16`; #3 holds — `tui_adapter_required` still present in
 
-   stale.)
-2. `governed-pipeline` continues to pin agent-harness 0.5.0 while we ship 0.7.16 until it acts on
-   `governed-pipeline#128`. No phase here depends on that being resolved.
+   stale; #2's later drift is reconciled below.)
+2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.16; it has acted on
+   `governed-pipeline#128`, which is CLOSED. No phase here depends on that being resolved.
 3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
 
    runtime-internal 3-of-4 result remains evidence of a degraded board but does not satisfy this
@@ -1402,18 +1402,18 @@ ASSUMPTION_PROBES: tuple[dict[str, object], ...] = (
         "assumption": 2,
         "kind": "github_issue",
         "anchor": "`governed-pipeline#128`",
-        "mutation_id": "observe-closed",
-        "positive_control_id": "current-open-payload",
+        "mutation_id": "observe-open",
+        "positive_control_id": "current-closed-payload",
         "subject": {"repository": "Consiliency/governed-pipeline", "number": 128},
-        "expected": {"state": "OPEN"},
-        "observation": {"state": "OPEN"},
-        "mutation": {"state": "CLOSED"},
+        "expected": {"state": "CLOSED"},
+        "observation": {"state": "CLOSED"},
+        "mutation": {"state": "OPEN"},
     },
     {
         "id": "LEGIBLE-A2-GP-PIN",
         "assumption": 2,
         "kind": "remote_json_field",
-        "anchor": "pin agent-harness 0.5.0",
+        "anchor": "pins agent-harness 0.7.14",
         "mutation_id": "change-expected-version-field-alone",
         "positive_control_id": "current-remote-json",
         "subject": {
@@ -1424,23 +1424,23 @@ ASSUMPTION_PROBES: tuple[dict[str, object], ...] = (
         "expected": {
             "fields": {
                 "package": "phase-loop-runtime",
-                "expected_version": "0.5.0",
-                "pip_spec": "phase-loop-runtime==0.5.0",
+                "expected_version": "0.7.14",
+                "pip_spec": "phase-loop-runtime==0.7.14",
             }
         },
         "observation": {
             "fields": {
                 "package": "phase-loop-runtime",
-                "expected_version": "0.5.0",
-                "pip_spec": "phase-loop-runtime==0.5.0",
+                "expected_version": "0.7.14",
+                "pip_spec": "phase-loop-runtime==0.7.14",
             }
         },
         # Exactly one field changed, independently of the other two.
         "mutation": {
             "fields": {
                 "package": "phase-loop-runtime",
-                "expected_version": "0.6.0",
-                "pip_spec": "phase-loop-runtime==0.5.0",
+                "expected_version": "0.5.0",
+                "pip_spec": "phase-loop-runtime==0.7.14",
             }
         },
     },
