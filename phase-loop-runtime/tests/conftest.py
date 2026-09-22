@@ -750,7 +750,10 @@ def _conform_timing_install(recorder: "_ConformTimingRecorder"):
         if current is None or not seam.owns:
             return data
         current.bump("path_read_calls")
-        current.bump("path_read_bytes", len(data))
+        # `read_text` returns str, so `len` counts CHARACTERS. Recording those
+        # under `path_read_bytes` conflated two units in one counter, which is
+        # the same defect as the child-output one and one seam away from it.
+        current.bump("path_read_chars", len(data))
         return data
 
     bindings = [

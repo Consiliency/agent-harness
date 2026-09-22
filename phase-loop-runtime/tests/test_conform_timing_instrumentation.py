@@ -772,3 +772,32 @@ def test_zzd_a_later_test_sees_clean_symbols_in_its_setup_phase(
         # cascade through the rest of the module.
         for name, value in PRISTINE_AT_IMPORT.items():
             SYMBOL_SETTERS[name](value)
+
+
+def test_read_seams_do_not_conflate_characters_with_bytes(timing, tmp_path):
+    """A ten-byte, five-character file, read once through each seam.
+
+    `read_bytes` returns bytes and `read_text` returns str, so `len` means a
+    different thing at each seam. Recording both under one `path_read_bytes`
+    counter conflated them: this file would report 15 there, ten real bytes plus
+    five mislabelled characters. The counters must separate, and this fails if
+    the split is not actually installed -- which is the point, because an edit
+    tool reporting success is not evidence that a file changed.
+    """
+    target = tmp_path / "multibyte.txt"
+    target.write_text("é" * 5, encoding="utf-8")
+    assert len(target.read_bytes()) == 10, "fixture must be 10 bytes"
+    assert len(target.read_text(encoding="utf-8")) == 5, "fixture must be 5 characters"
+
+    recorder = timing._ConformTimingRecorder("probe::read_units")
+    restore = timing._conform_timing_install(recorder)
+    try:
+        target.read_bytes()
+        target.read_text(encoding="utf-8")
+    finally:
+        restore()
+
+    assert recorder.counters["path_read_calls"] == 2
+    assert recorder.counters["path_read_bytes"] == 10, recorder.counters
+    assert recorder.counters["path_read_chars"] == 5, recorder.counters
+    assert recorder.counters["path_read_bytes"] != 15, "the seams are still conflated"
