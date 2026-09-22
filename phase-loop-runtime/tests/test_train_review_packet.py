@@ -1411,6 +1411,58 @@ def test_revocation_after_packet_storage_precedes_sink(candidate, monkeypatch, s
     assert result["status"] == "review_halted" and result["reason"] == "readmission_revoked", result
 
 
+@pytest.mark.parametrize("checkpoint", ["post_storage", "post_review"])
+@pytest.mark.parametrize("prior_effects", [False, True])
+def test_later_packet_refusal_preserves_admission_effect_status(candidate, monkeypatch, checkpoint, prior_effects):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    namespace = enable_fab(c, monkeypatch)
+    head = proposed_candidate(c) if prior_effects else c["head"]
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    for row in c["state"].values():
+        append_record(ledger, row)
+    before = ledger.read_bytes()
+    effects, appended = [], []
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: effects.append("recover"))
+    def readmit(ws, path, **kwargs):
+        # Inject admission success; append, packet checks and store replay stay real.
+        assert kwargs["evidence_store"].root == namespace
+        append_record(path, replace(read_ledger(path)[c["node"].node_id], head_sha=head), durable=True)
+        appended.append(path.read_bytes())
+        effects.append("durable_append")
+        return head
+    monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
+    real_store = packet.store_review_packet
+    def store(*args, **kwargs):
+        result = real_store(*args, **kwargs)
+        effects.append("storage")
+        if checkpoint == "post_storage":
+            revoke(namespace)
+        return result
+    monkeypatch.setattr(packet, "store_review_packet", store)
+    def review(*args):
+        assert checkpoint == "post_review"
+        effects.append("injected_review")
+        revoke(namespace)
+        return approved(*args)
+    result = run_candidate(c, monkeypatch, review_only=not prior_effects, fab_delta_shortcut=True,
+        _train_review_fn=review if checkpoint == "post_review" else never,
+        _merge_pr_fn=never, _emit_native_fill_request_fn=never)
+    state = read_ledger(ledger)
+    rec = state[c["node"].node_id]
+    assert packet.admission_binding(rec) == packet.admission_binding(
+        replace(c["state"][c["node"].node_id], head_sha=head))
+    assert rec.status == "pr_open" and rec.merge_order == 3 and "_train_review_" not in state
+    expected = (["recover", "durable_append"] if prior_effects else []) + ["storage"]
+    if checkpoint == "post_review":
+        expected.append("injected_review")
+    assert effects == expected
+    assert ledger.read_bytes() == (appended[0] if prior_effects else before)
+    assert result["reason"] == "readmission_revoked", result
+    assert result["status"] == ("merge_halted" if prior_effects else "review_halted"), result
+
+
 def test_durable_only_drift_between_merges_holds_remaining_node(candidate, monkeypatch):
     from dataclasses import replace
     c = candidate
