@@ -8579,6 +8579,34 @@
             "run_id": "legible-797-execution-20260922"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T10:14:50Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "automation_summary": "296 passed, 2 skipped, 1 explicitly A3-deselected; exit 0 at505c852f",
+            "diagnostic": "verification failed; ten retained baseline causes and one independently reproduced source-layout metadata refusal. Implementation review, required CI and landing remain pending.",
+            "dirty_path_classification": {
+              "non_plan_output": [],
+              "plan_owned": [
+                "plans/manifest.json",
+                "plans/decision-interim-president-ratification-20260904.md"
+              ],
+              "pre_existing_unrelated": []
+            },
+            "evidence_scope": "The full suite is bound to505c before this metadata append or any later integration; no completed or passing-full-suite claim.",
+            "failure_disposition_path": "/mnt/workspace/archives/agent-harness-train-review-packet-20260922/legible-797-implementation-evidence/snapshot-505c852f-post-full/evidence/full-suite-disposition-v2.json",
+            "failure_disposition_sha256": "0814c6e839d02b6c612843e1337c59a23d8529c740d81b015b919d3aaabc3388",
+            "plan": "plans/detailed-legible-assumption-797-20260922-0822.md",
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/7d177fde/codex-legible-392-797-20260922/legible-797-execution-20260922.md",
+            "run_id": "legible-797-execution-20260922",
+            "verification_artifact_path": "/mnt/workspace/archives/agent-harness-train-review-packet-20260922/legible-797-implementation-evidence/snapshot-505c852f-post-full/native/full-suite/verification.json",
+            "verification_artifact_sha256": "c194e840b9158fc8376d054076c20c2322ff73065f9f105d604c12f4ff952062",
+            "verification_source_head": "505c852fff551bc10544214cc2305a1884531f7c",
+            "verification_status": "failed",
+            "verification_summary": "11 failed, 6698 passed, 721 skipped; full suite exit 1"
+          },
+          "transition": "failed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -8586,10 +8614,10 @@
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/7d177fde/codex-legible-392-797-20260922/20260922T082211Z-legible-797.md",
       "roadmap_ref": null,
       "slug": "detailed-legible-assumption-797-20260922",
-      "status": "executing",
+      "status": "failed",
       "task_summary": "Reconcile agent-harness#797 A2 assumptions with observed upstream and preserve sealed history.",
       "type": "detailed",
-      "updated_at": "2026-09-22T09:11:47Z"
+      "updated_at": "2026-09-22T10:14:50Z"
     }
   ],
   "schema_version": 1
