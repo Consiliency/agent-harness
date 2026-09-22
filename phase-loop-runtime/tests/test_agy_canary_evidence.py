@@ -2911,22 +2911,32 @@ def test_an_exception_at_the_pre_read_leaves_nothing_to_undo(request, monkeypatc
         pytest.skip("signal masks are a POSIX path")
     before_handler = signal.getsignal(signal.SIGIO)
     before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
-    reached = {"where": None}
+    calls = {"n": 0}
     real_mask = signal.pthread_sigmask
 
-    def raise_at_the_first_call(how, mask=None):
-        reached["where"] = "pre-read" if (mask is not None and not mask) else "block"
-        raise KeyboardInterrupt("interrupted at the pre-read")
+    def call_through_then_raise(how, mask=None):
+        # CALL THROUGH FIRST, then raise. An earlier version raised immediately,
+        # which meant the real mask never changed no matter what the pre-read
+        # did -- so the assertion below could not fail and the test was vacuous
+        # for the second time. Letting the call happen is what makes a mutating
+        # pre-read observable here.
+        calls["n"] += 1
+        result = real_mask(how, mask) if mask is not None else real_mask(how, set())
+        if calls["n"] == 1:
+            raise KeyboardInterrupt("interrupted at the first call, the pre-read")
+        return result
 
-    monkeypatch.setattr(evidence.signal, "pthread_sigmask", raise_at_the_first_call)
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", call_through_then_raise)
     try:
         with pytest.raises(KeyboardInterrupt):
             evidence._begin_lease_signal_guard()
     finally:
         monkeypatch.undo()
-    assert reached["where"] == "pre-read", (
-        "this test no longer interrupts at the pre-read, so it is testing a "
-        f"different window than it documents: reached {reached['where']}"
+    # Identified by ORDER, not by argument: the pre-read is the first such call.
+    # Classifying by the empty-set argument would make a mutated pre-read look
+    # like a different call and red this on its premise instead of its property.
+    assert calls["n"] == 1, (
+        f"the interrupt did not land on the first pthread_sigmask call: {calls['n']}"
     )
     assert real_mask(signal.SIG_BLOCK, set()) == before_mask, (
         "the pre-read changed the signal mask; it sits outside the protected "
