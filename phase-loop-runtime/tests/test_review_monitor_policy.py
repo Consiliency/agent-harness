@@ -676,26 +676,42 @@ def test_real_output_is_observed_then_silence_is_unknown(tmp_path, monkeypatch, 
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
     snapshots = []
     observe = monitor.observe
+    release = tmp_path / "silence-observed"
+    progress_seen = False
 
     def capture(*args, **kwargs):
+        nonlocal progress_seen
         observe(*args, **kwargs)
-        snapshots.append(json.loads(monitor.path.read_text()))
+        row = json.loads(monitor.path.read_text())
+        snapshots.append(row)
+        if row["observation_state"] == "progress_observed":
+            progress_seen = True
+        elif (progress_seen and row["last_genuine_progress_age_s"] is not None
+              and row["last_genuine_progress_age_s"] > .05):
+            release.touch()
 
     monkeypatch.setattr(monitor, "observe", capture)
     command = [sys.executable, "-c",
-               "import time\n"
-               "for word in ('alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot'):\n"
-               " print('Reviewing substantive section', word, flush=True)\n"
-               " time.sleep(.03)\n"
-               "time.sleep(.3)\n"]
-    if tui:
-        panel._run_claude_tui_session(command=command, cwd=tmp_path, prompt="input",
-            output_file=tmp_path / "absent", timeout_s=1, backstop_s=1,
-            env=os.environ, review_monitor=monitor)
-    else:
-        result = panel._run_leg_with_liveness(command, cwd=tmp_path, env=os.environ,
-                                             deadline_s=1, review_monitor=monitor)
-        assert result.returncode == 0
+               "import time\nfrom pathlib import Path\n"
+               "print('Reviewing substantive section alpha', flush=True)\n"
+               f"while not Path({str(release)!r}).exists():\n"
+               " time.sleep(.01)\n"]
+    # Keep the real child alive until both observations exist. A fixed sleep can
+    # end before a loaded runner observes silence after draining the final output.
+    emergency = threading.Timer(5, monitor.cancel.set)
+    emergency.start()
+    result = None
+    try:
+        if tui:
+            panel._run_claude_tui_session(command=command, cwd=tmp_path, prompt="input",
+                output_file=tmp_path / "absent", timeout_s=1, backstop_s=1,
+                env=os.environ, review_monitor=monitor)
+        else:
+            result = panel._run_leg_with_liveness(command, cwd=tmp_path, env=os.environ,
+                                                 deadline_s=1, review_monitor=monitor)
+    finally:
+        emergency.cancel()
+        emergency.join()
     observed = [i for i, row in enumerate(snapshots) if row["observation_state"] == "progress_observed"]
     assert observed, "real genuine output was never reported as observed"
     assert any(snapshots[i]["last_genuine_progress_age_s"] > 0 for i in observed)
@@ -703,6 +719,9 @@ def test_real_output_is_observed_then_silence_is_unknown(tmp_path, monkeypatch, 
                and row["last_genuine_progress_age_s"] is not None
                and row["last_genuine_progress_age_s"] > .05
                for row in snapshots[observed[-1] + 1:]), "silence stayed labelled as progress"
+    assert not monitor.cancel.is_set(), "test fixture's emergency cancellation fired"
+    if result is not None:
+        assert result.returncode == 0
 
 
 def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
