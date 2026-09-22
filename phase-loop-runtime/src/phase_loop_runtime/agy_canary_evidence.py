@@ -2832,31 +2832,6 @@ def _lease_sigio_handler(signum: int, frame: Any) -> None:
     return None
 
 
-def _compute_blockable_signals(signal_module: Any) -> frozenset:
-    """Signals this process can block, computed without assuming a POSIX module.
-
-    Windows imports this module too, and has neither `valid_signals` nor
-    `SIGKILL`/`SIGSTOP`. Referencing them at import time raised `AttributeError`
-    before the intended non-Linux refusal could ever run -- an import-time crash
-    standing in front of a graceful platform message. Everything is fetched
-    defensively so the constant is simply empty where the concept does not apply.
-
-    SIGKILL and SIGSTOP are excluded because they are unblockable by definition.
-    POSIX ignores them in a mask, but naming the exclusion says the omission is
-    deliberate rather than overlooked.
-    """
-    valid_signals = getattr(signal_module, "valid_signals", None)
-    if valid_signals is None:
-        return frozenset()
-    unblockable = {
-        getattr(signal_module, name, None) for name in ("SIGKILL", "SIGSTOP")
-    }
-    return frozenset(valid_signals()) - unblockable
-
-
-_BLOCKABLE_SIGNALS = _compute_blockable_signals(signal)
-
-
 def _sigio_is_unowned(handler: Any) -> bool:
     """True when nothing but us is relying on SIGIO delivery.
 
@@ -2918,46 +2893,6 @@ def _unwind_failed_lease_entry(previous_mask: Any, previous_handler: Any) -> Non
         pass
 
 
-def _install_lease_disposition(record: list) -> None:
-    """Displace SIGIO's disposition and record what was displaced, as narrowly as possible.
-
-    The authoritative previous handler exists only as `signal.signal`'s return
-    value, and storing it is a separate step. Python runs signal callbacks
-    between bytecodes, so an interrupt arriving in that gap loses the value: a
-    callback that installed a foreign handler F in the window would have F
-    displaced by us and then, on unwind, replaced with the stale pre-captured
-    disposition. The value is therefore stored INTO `record` here rather than
-    returned, because returning and assigning is itself a bytecode boundary.
-
-    WHAT THIS DOES NOT DO, measured rather than assumed: it does not make the
-    region uninterruptible. `pthread_sigmask` is PER-THREAD, and CPython runs
-    signal callbacks on the MAIN thread no matter which thread the kernel
-    delivered to -- verified on 3.10 and 3.12, a callback runs on a main thread
-    that has the signal blocked when a second thread can receive it. The mask
-    closes the window only for a process whose threads all block the signal,
-    which under this guard's single-thread admission is the ordinary case. A
-    thread created between the inventory sample and this region reopens it.
-
-    See `_unwind_failed_lease_entry` for what happens then: restoration is best
-    effort, and this residual is documented rather than claimed closed. There is
-    no Python-level primitive that would close it -- suppressing callbacks
-    process-wide means displacing every handler's disposition, which is the very
-    operation whose displaced value cannot be recorded atomically.
-    """
-    held = signal.pthread_sigmask(signal.SIG_BLOCK, _BLOCKABLE_SIGNALS)
-    try:
-        record[0] = signal.signal(signal.SIGIO, _lease_sigio_handler)
-    finally:
-        try:
-            signal.pthread_sigmask(signal.SIG_SETMASK, held)
-        except BaseException:  # noqa: BLE001
-            # A failure here must not REPLACE an exception already propagating
-            # from the installation: the caller has to learn why the install
-            # failed, and the outer rollback cannot recover an original it never
-            # saw. The mask is restored again by that rollback.
-            pass
-
-
 def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     # ADMISSION IS UNCHANGED BY agent-harness#950: exactly one thread, main
     # thread, Linux, no SIGIO already pending. What changed is the INSTRUMENT --
@@ -2998,7 +2933,7 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     # Recovery state is captured BEFORE every mutation: the disposition here, the
     # mask as the return of the block below. There is therefore no interval in
     # which a change is live and unrecorded. The record can still go STALE in one
-    # documented residual -- see `_install_lease_disposition` -- which is why
+    # documented residual -- see the installation below -- which is why
     # restoration is best effort rather than guaranteed.
     recovery = [signal.getsignal(signal.SIGIO)]
     # SIGIO IS BLOCKED FIRST AND STAYS BLOCKED THROUGH THE WHOLE DECISION. The
@@ -3021,7 +2956,23 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
                 "settings write lease cannot block SIGIO"
             ) from exc
         try:
-            _install_lease_disposition(recovery)
+            # RESIDUAL, stated rather than closed: the displaced handler exists
+            # only as this call's return value, and storing it is a separate
+            # step. An interrupt arriving between the two leaves `recovery`
+            # holding the PRE-capture, so a foreign handler installed in that
+            # window would be restored as the earlier disposition instead of
+            # itself. Restoration is therefore BEST EFFORT.
+            #
+            # An earlier revision blocked every blockable signal across both
+            # steps to narrow that window. It was removed: `pthread_sigmask` is
+            # per-thread and CPython runs signal callbacks on the MAIN thread
+            # whichever thread the kernel delivered to, so the region was never
+            # uninterruptible -- it helped only a process whose threads all
+            # block the signal. A mechanism whose stated purpose is a guarantee
+            # that is not available reads to a later maintainer as if the window
+            # were closed. See the issue filed for agent-harness#950's residual;
+            # closing it needs a C-level primitive this codebase does not have.
+            recovery[0] = signal.signal(signal.SIGIO, _lease_sigio_handler)
         except (OSError, ValueError) as exc:
             raise AgyCanaryEvidenceError(
                 "settings write lease cannot install its SIGIO handler"
