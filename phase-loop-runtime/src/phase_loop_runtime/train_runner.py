@@ -3690,8 +3690,7 @@ def _run_train_unfenced(
                         node_ids={nid}, prior_bindings=prior_bindings)
                     store = _train_revocation_store(workspace, rec)
                     if nid in proposed_heads and (store is None or not fab_delta_shortcut_enabled(fab_delta_shortcut)):
-                        return {"status": "review_halted", "node_id": nid, "nodes": completed_nodes,
-                                "reason": "stale_head", "detail": "readmission opt-in changed before recovery"}
+                        raise PacketError("stale_head: readmission opt-in changed before recovery")
                     if store is not None:
                         node_effects_started = admission_effects_started = True
                         _fab_recover_torn_to_admitted(workspace, rec.fab_run_id, admitted_head_sha=rec.head_sha)

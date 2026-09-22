@@ -1816,10 +1816,11 @@ def test_preview_external_json_boundary_always_returns_receipt(candidate, corrup
 @pytest.mark.parametrize("mode", ["emit", "fill"])
 def test_claude_native_workflow_supplies_initial_material(candidate, monkeypatch, mode):
     """Exercise the documented arguments; native/provider outcomes remain injected seams."""
+    from importlib.resources import files
     import re
     from types import SimpleNamespace
     c = candidate
-    skill = Path(__file__).resolve().parents[2] / "skills-src/claude/claude-run-train/SKILL.md"
+    skill = files("phase_loop_runtime").joinpath("skills_bundle/claude-run-train/SKILL.md")
     text = skill.read_text().split("Under Claude Code", 1)[1].split("- The train-level review", 1)[0]
     flag = "--emit-native-request" if mode == "emit" else "--native-leg"
     command = next(s for s in re.findall(r"`([^`]+)`", text) if flag in s)
