@@ -185,7 +185,7 @@ citation-verification treatment is a documented deep-seat follow-on
 The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
-The president availability ladder is Fable → Sol → Grok 4.6 → Gemini 3.8 Flash
+The president availability ladder is Fable → Sol → Grok 4.7 → Gemini 3.8 Flash
 (`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
