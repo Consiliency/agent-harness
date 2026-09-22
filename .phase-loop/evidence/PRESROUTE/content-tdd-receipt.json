@@ -1,0 +1,88 @@
+{
+  "base_commit": "d31ec550167cae9199d4f1e0cf8fcddaacfb5a22",
+  "base_tree_digest": "a3dee8850a39701c4c9ff56a9f96b3b058c1cdf9",
+  "landing_commit": "d31ec550167cae9199d4f1e0cf8fcddaacfb5a22",
+  "landing_ref": "HEAD",
+  "landing_tree_digest": "a3dee8850a39701c4c9ff56a9f96b3b058c1cdf9",
+  "red_argv": [
+    "python3",
+    "-m",
+    "pytest",
+    "-q",
+    "--tb=short",
+    "-p",
+    "no:cacheprovider",
+    "phase-loop-runtime/tests/test_president_wiring.py",
+    "phase-loop-runtime/tests/test_govlean_panel_policy.py"
+  ],
+  "red_command": "python3 -m pytest -q --tb=short -p no:cacheprovider phase-loop-runtime/tests/test_president_wiring.py phase-loop-runtime/tests/test_govlean_panel_policy.py",
+  "red_environment": {
+    "PHASE_LOOP_TDD_EXPECT_GOVLEAN": "1"
+  },
+  "red_exit_status": 1,
+  "red_nodeids": [
+    "tests/test_president_wiring.py::test_production_board_invokes_president_after_all_seats_and_before_return",
+    "tests/test_president_wiring.py::test_president_tier_without_seam_is_refused_before_any_seat_runs",
+    "tests/test_president_wiring.py::test_exhausted_ladder_refuses_every_leg_with_a_typed_reason",
+    "tests/test_president_wiring.py::test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent",
+    "tests/test_president_wiring.py::test_degraded_president_deferring_validation_is_refused",
+    "tests/test_president_wiring.py::test_caller_contract_error_is_not_a_board_refusal",
+    "tests/test_president_wiring.py::test_invalid_grammar_gets_one_reask_then_fails_closed",
+    "tests/test_president_wiring.py::test_tests_only_tier_needs_no_seam_and_carries_no_ruling",
+    "tests/test_president_wiring.py::test_findings_are_positional_and_verdict_free",
+    "tests/test_president_wiring.py::test_duplicate_findings_merge_deterministically",
+    "tests/test_president_wiring.py::test_ruling_parsers",
+    "tests/test_president_wiring.py::test_blocking_president_refuses_nothing_at_board_level_but_marks_the_ruling",
+    "tests/test_president_wiring.py::test_adapter_reports_unseated_rung_as_typed_unavailable",
+    "tests/test_president_wiring.py::test_president_operation_routes_seated_rung_through_public_board_president",
+    "tests/test_president_wiring.py::test_president_authorization_identity_minted_like_review_isolation",
+    "tests/test_president_wiring.py::test_president_operation_refuses_a_review_authorization",
+    "tests/test_president_wiring.py::test_non_native_rung_launches_only_through_launch_provider",
+    "tests/test_president_wiring.py::test_native_fable_rung_filled_under_claude_code_without_second_tui",
+    "tests/test_president_wiring.py::test_native_president_fill_refused_under_heartbeat_only",
+    "tests/test_president_wiring.py::test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control",
+    "tests/test_president_wiring.py::test_ruling_record_written_to_review_stream_with_identity",
+    "tests/test_president_wiring.py::test_findings_digest_recomputes_from_prompt_findings",
+    "tests/test_president_wiring.py::test_ruling_record_matches_frozen_contract",
+    "tests/test_president_wiring.py::test_runner_blocking_ruling_fails_landing_and_persists_ruling",
+    "tests/test_president_wiring.py::test_runner_missing_ruling_fails_landing",
+    "tests/test_president_wiring.py::test_runner_president_refusal_names_the_reason",
+    "tests/test_president_wiring.py::test_runner_rerun_in_the_same_run_dir_invalidates_the_prior_landing",
+    "tests/test_president_wiring.py::test_runner_board_records_are_published_atomically",
+    "tests/test_president_wiring.py::test_runner_declares_the_tier_and_a_live_seam",
+    "tests/test_president_wiring.py::test_runner_pre_switch_repo_is_byte_neutral",
+    "tests/test_president_wiring.py::test_adapter_route_failure_is_not_a_ladder_descent",
+    "tests/test_president_wiring.py::test_every_president_rung_resolves_on_the_code_review_board",
+    "tests/test_president_wiring.py::test_native_fable_auto_wiring_keys_on_passed_env_not_process_env",
+    "tests/test_govlean_panel_policy.py::test_review_policy_uses_full_board_and_president_only_for_plan_or_production_code",
+    "tests/test_govlean_panel_policy.py::test_president_reasks_once_for_missing_terminal_grammar_without_consuming_a_substantive_round",
+    "tests/test_govlean_panel_policy.py::test_president_descends_only_through_typed_availability_failures_and_never_on_a_blocking_ruling",
+    "tests/test_govlean_panel_policy.py::test_president_does_not_descend_on_an_untyped_or_nonavailability_failure",
+    "tests/test_govlean_panel_policy.py::test_degraded_read_only_president_cannot_defer_validation_it_identified_as_necessary",
+    "tests/test_govlean_panel_policy.py::test_president_ladder_is_the_ec_presroute_3_seat_alias_order",
+    "tests/test_govlean_panel_policy.py::test_plan_or_production_requires_president_false_refused"
+  ],
+  "red_stderr_path": "content-tdd-receipt.red.stderr.log",
+  "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "red_stdout_path": "content-tdd-receipt.red.stdout.log",
+  "red_stdout_sha256": "0a914d985d26ae782732afa59134ff3118d78536ad110a7b1650ee1814b31903",
+  "schema": "content_tdd_receipt.v1",
+  "test_files": [
+    {
+      "path": "phase-loop-runtime/tests/data/president_ruling_v1.golden.json",
+      "sha256": "3eca8a928d75bb6df5939025e67d6d96f9ff0a8548ac221047f5790f018922ea"
+    },
+    {
+      "path": "phase-loop-runtime/tests/presroute_content_tdd_adapter.py",
+      "sha256": "300232b5b16f1881a5dbb83eda16257df9a758514aef0e4cd1d110db4112061f"
+    },
+    {
+      "path": "phase-loop-runtime/tests/test_govlean_panel_policy.py",
+      "sha256": "932190bf4b9fcf2b7ae2cd2fa690a6e5b662fe8fdb4e592e6bf560b92a62f9d2"
+    },
+    {
+      "path": "phase-loop-runtime/tests/test_president_wiring.py",
+      "sha256": "5e1de4832ffffddf05fa522deb3676f1a4b67a2729b8f2e34edf08b36d5defdb"
+    }
+  ]
+}
