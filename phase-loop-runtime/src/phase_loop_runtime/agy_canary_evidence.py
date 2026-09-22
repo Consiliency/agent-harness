@@ -2941,9 +2941,10 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
         )
     # Recovery state is captured BEFORE every mutation: the disposition here, the
     # mask as the return of the block below. There is therefore no interval in
-    # which a change is live and unrecorded. The record can still go STALE in one
-    # documented residual -- see the installation below -- which is why
-    # restoration is best effort rather than guaranteed.
+    # which a change is live and unrecorded. A record can still be STALE, for the
+    # disposition and for the mask alike, whenever an interrupt lands between a
+    # mutating call returning and its result being stored -- the documented
+    # residual, which is why restoration is best effort rather than guaranteed.
     recovery = [signal.getsignal(signal.SIGIO)]
     # SIGIO IS BLOCKED FIRST AND STAYS BLOCKED THROUGH THE WHOLE DECISION. The
     # previous order installed the disposition and blocked afterwards, which
@@ -2952,13 +2953,17 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     # the lease was admitted over a signal the old block-and-check would have
     # refused. Blocking first means such a signal stays pending and is seen, and
     # nothing unblocks it again before the check.
-    # A pre-read FALLBACK, used only if the mutating call below never runs.
-    # Blocking nothing is not a mutation, so this cannot leave a change live and
-    # unrecorded -- but it can go STALE, which is a different failure and the one
-    # that matters here: a Python callback running between this query and the
-    # mutation can block a signal of its own, and restoring this snapshot on the
-    # way out would then silently UNBLOCK it. So the authoritative mask is the
-    # one the mutating call returns, and that is what the token carries.
+    # A pre-read FALLBACK, used whenever the mutating call below does not reach
+    # its assignment: it never ran, or it raised, or an interrupt landed between
+    # its return and the store. Blocking nothing is not a mutation, so this
+    # cannot leave a change live and unrecorded -- but it CAN go stale, which is
+    # a different failure and the one that matters: a Python callback running
+    # between this query and the mutation can block a signal of its own, and
+    # restoring this snapshot on the way out would then silently UNBLOCK it. So
+    # the authoritative mask is the one the mutating call returns, and that is
+    # what the token carries on every path where the store completes. Where it
+    # does not, the fallback is used and may be stale -- the same return-capture
+    # window disclosed for the disposition, applying to the mask too.
     recovery_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
     try:
         try:

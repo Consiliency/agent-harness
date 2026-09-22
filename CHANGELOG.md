@@ -51,8 +51,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   threads the `threading` module created and so answered 1 for a process
   carrying a `_thread`- or C-spawned thread. An unreadable inventory refuses the
   lease rather than assuming one thread.
-- A process-wide SIGIO disposition is installed for the lifetime of the lease
-  and the previous handler is restored on every exit path, exceptions included.
+- A process-wide SIGIO disposition is installed for the lifetime of the lease,
+  and every exit path attempts to restore the previous handler, exceptions
+  included -- attempts, because restoration is best effort; see below.
   This is defence in depth for the case the precondition cannot cover: a thread
   that appears after admission and unblocks SIGIO for itself. A `pthread_sigmask`
   block is per-thread and cannot reach such a thread; the disposition is
@@ -79,7 +80,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   hands no token to `clean_settings`, so the exit path never runs; without
   rollback the process would discard every SIGIO, or leave it blocked, for the
   rest of its life. Unwinding releases the mask and then restores the
-  disposition, the reverse of acquisition, and a failure in either step neither
+  disposition -- NOT the reverse of acquisition, which would restore the
+  disposition first -- and a failure in either step neither
   aborts the other nor replaces the exception that caused the unwind -- which is
   why it is best effort: attempting both and preserving the original exception is
   chosen over guaranteeing either. The mask is released BEFORE the disposition is
@@ -87,15 +89,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   hands a pending SIGIO a default disposition and then unblocks it, terminating
   the process. Recovery state is captured before every mutation, and taken from
   the mutating call where that call reports it, so no change is ever live without
-  a recorded way to undo it and no record is stale before it is used. SIGIO stays blocked across the whole admission
+  a recorded way to undo it. A record can still be stale -- see the residual
+  below. SIGIO stays blocked across the whole admission
   decision, so a signal arriving inside it remains pending and is seen rather
   than absorbed by this guard's own discarding handler.
-- **Residual, stated as a residual**: the recovery record of the DISPOSITION can
-  go stale. The displaced handler exists only as `signal.signal`'s return value
-  and storing it is a separate step, so an interrupt arriving between the two
-  leaves the pre-capture in place, and a foreign handler installed in that window
-  would be restored as the earlier disposition instead of itself. Restoration is
-  therefore best effort.
+- **Residual, stated as a residual**: a recovery record can go stale, for the
+  DISPOSITION and for the MASK alike. Each is the return value of a mutating
+  call, and storing it is a separate step, so an interrupt arriving between the
+  two leaves the pre-capture in place. For the disposition, a foreign handler
+  installed in that window is restored as the earlier disposition instead of
+  itself. For the mask, a signal a callback blocked in that window is silently
+  unblocked on the way out. The mask case is additionally reachable when the
+  mutating call raises before its result is assigned. Restoration is therefore
+  best effort in both cases. This is one structural window, not two problems:
+  the successful path takes the authoritative value from the call, and only an
+  interrupted or failed capture falls back to the earlier reading.
 
   Its width, stated exactly: under this guard's single-thread admission the
   interrupt that matters is another Python signal callback, so a single-threaded
