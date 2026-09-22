@@ -225,7 +225,7 @@ def resolve_review_monitoring_policy(
             raise ValueError("review_monitoring_unsupported_api_fallback")
         for seat in getattr(board, "seats", ()):
             lane = str(seat.harness or "").lower()
-            if (lane not in ("claude", "codex", "grok")
+            if (lane not in ("claude", "codex", "grok", "gemini")
                 or seat.auth != AUTH_SUBSCRIPTION or seat.backing != BACKING_HOMEBREW
                 or seat.host_leg):
                 raise ValueError(f"review_monitoring_unsupported_route:{lane or 'unresolved'}")

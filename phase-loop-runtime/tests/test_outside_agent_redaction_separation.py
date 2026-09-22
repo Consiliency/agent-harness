@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import importlib
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict, is_dataclass
@@ -573,6 +575,50 @@ def _assert_cli_channel_control(
             )
 
 
+def _run_channel_controls(cases, *, sentinel: str, tmp_path: Path) -> None:
+    """Exercise independent per-channel CLI controls concurrently.
+
+    `_assert_cli_channel_control` spawns four `python -m phase_loop_runtime.cli`
+    children per channel, and roughly 0.3 s of each child's 0.34 s is importing
+    the package. Across ~50 channels that is 200 cold interpreters and ~70 s of
+    the node's wall clock, all of it spent waiting in `select.poll`.
+
+    Every case is self-contained: each writes only files named for its own
+    channel and command under `tmp_path`, and reads fixtures read-only, so the
+    cases share no mutable state. Running them concurrently changes only the
+    order in which INDEPENDENT channels are exercised; the assertions, the
+    commands, the processes and the per-channel ordering are untouched. The
+    first failure in channel order is re-raised so a red stays reproducible.
+    """
+    if not cases:
+        return
+    workers = min(len(cases), (os.cpu_count() or 2) * 2, 12)
+    submitted = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for channel, payload, expected_success in cases:
+            submitted.append(
+                (
+                    channel,
+                    pool.submit(
+                        _assert_cli_channel_control,
+                        payload,
+                        sentinel=sentinel,
+                        channel=channel,
+                        tmp_path=tmp_path,
+                        expected_success=expected_success,
+                    ),
+                )
+            )
+        failures = []
+        for channel, future in submitted:
+            try:
+                future.result()
+            except BaseException as error:  # re-raised below in channel order
+                failures.append(error)
+    if failures:
+        raise failures[0]
+
+
 def _assert_final_serializer_guard() -> None:
     """Prove the final sink omits a raw submission-file locator."""
     from phase_loop_runtime.conformance import EXPECTED_OUTSIDE_AGENT_CONTRACT_PIN
@@ -635,6 +681,9 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
         "submission_file_locator_never_serializes_and_digest_tracks_only_captured_bytes"
     )
     assignment = redaction_channel_assignment()
+    # Collected across all three channel loops and exercised together below, so
+    # the ~50 independent CLI controls overlap instead of running back to back.
+    channel_control_cases: list[tuple[str, dict, bool]] = []
     canonical_channels = {
         channel: classification
         for channel, classification in assignment.items()
@@ -764,15 +813,13 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
                 sort_keys=True,
             )
             assert sentinel not in rendered, channel
-            _assert_cli_channel_control(
-                payload,
-                sentinel=sentinel,
-                channel=channel,
-                tmp_path=tmp_path,
-                expected_success=(
+            channel_control_cases.append(
+                (
+                    channel,
+                    payload,
                     channel.startswith("submission.")
-                    and classification == "forbidden_free_text"
-                ),
+                    and classification == "forbidden_free_text",
+                )
             )
 
     for channel in sorted(CANONICAL_DYNAMIC_INPUTS):
@@ -797,12 +844,7 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
                 sort_keys=True,
             )
             assert sentinel not in rendered, channel
-            _assert_cli_channel_control(
-                payload,
-                sentinel=sentinel,
-                channel=channel,
-                tmp_path=tmp_path,
-            )
+            channel_control_cases.append((channel, payload, False))
 
     legacy = _legacy_builder_payloads()[0]
     for channel, classification in assignment.items():
@@ -831,12 +873,9 @@ def _assert_sentinel_never_reaches_serialized_sinks(tmp_path: Path) -> None:
             sort_keys=True,
         )
         assert sentinel not in rendered, channel
-        _assert_cli_channel_control(
-            payload,
-            sentinel=sentinel,
-            channel=channel,
-            tmp_path=tmp_path,
-        )
+        channel_control_cases.append((channel, payload, False))
+
+    _run_channel_controls(channel_control_cases, sentinel=sentinel, tmp_path=tmp_path)
 
     safe = clean_canonical_submission()
     validation = serialize_outside_agent_validation_verdict(

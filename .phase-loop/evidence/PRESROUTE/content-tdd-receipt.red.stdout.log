@@ -1,0 +1,228 @@
+.............FFFFFFFFFF.......F.......FF                                 [100%]
+=================================== FAILURES ===================================
+__ test_president_operation_routes_seated_rung_through_public_board_president __
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:185: in require_module
+    return importlib.import_module(modname)
+/usr/lib/python3.10/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+E   ModuleNotFoundError: No module named 'phase_loop_runtime.president_operation'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:430: in contract
+    po = require_module("phase_loop_runtime.president_operation")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:188: in require_module
+    raise PresrouteMissingCapabilityError(f"module {modname!r} absent") from exc
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: module 'phase_loop_runtime.president_operation' absent
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:444: in test_president_operation_routes_seated_rung_through_public_board_president
+    run_presroute_contract("operation", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::operation
+______ test_president_authorization_identity_minted_like_review_isolation ______
+phase-loop-runtime/tests/test_president_wiring.py:452: in contract
+    mint = require_attr(backing, "prepare_president_isolation_authorization")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:194: in require_attr
+    raise PresrouteMissingCapabilityError(
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: 'phase_loop_runtime.advisor_board.backing' has no attribute 'prepare_president_isolation_authorization'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:470: in test_president_authorization_identity_minted_like_review_isolation
+    run_presroute_contract("authorization", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::authorization
+___________ test_president_operation_refuses_a_review_authorization ____________
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:185: in require_module
+    return importlib.import_module(modname)
+/usr/lib/python3.10/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+E   ModuleNotFoundError: No module named 'phase_loop_runtime.president_operation'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:493: in contract
+    po = require_module("phase_loop_runtime.president_operation")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:188: in require_module
+    raise PresrouteMissingCapabilityError(f"module {modname!r} absent") from exc
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: module 'phase_loop_runtime.president_operation' absent
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:546: in test_president_operation_refuses_a_review_authorization
+    run_presroute_contract("review_authorization_refused", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::review_authorization_refused
+__________ test_non_native_rung_launches_only_through_launch_provider __________
+phase-loop-runtime/tests/test_president_wiring.py:585: in contract
+    require_capability(
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:202: in require_capability
+    raise PresrouteMissingCapabilityError(detail)
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: the seated 'sol' rung is not yet routed through launch_provider
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:625: in test_non_native_rung_launches_only_through_launch_provider
+    run_presroute_contract("launch_provider", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::launch_provider
+______ test_native_fable_rung_filled_under_claude_code_without_second_tui ______
+phase-loop-runtime/tests/test_president_wiring.py:649: in contract
+    require_capability(
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:202: in require_capability
+    raise PresrouteMissingCapabilityError(detail)
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: the fable rung is not yet filled natively (route-unavailable)
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:660: in test_native_fable_rung_filled_under_claude_code_without_second_tui
+    run_presroute_contract("native_fable", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::native_fable
+___________ test_native_president_fill_refused_under_heartbeat_only ____________
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:185: in require_module
+    return importlib.import_module(modname)
+/usr/lib/python3.10/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+E   ModuleNotFoundError: No module named 'phase_loop_runtime.president_operation'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:670: in contract
+    po = require_module("phase_loop_runtime.president_operation")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:188: in require_module
+    raise PresrouteMissingCapabilityError(f"module {modname!r} absent") from exc
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: module 'phase_loop_runtime.president_operation' absent
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:687: in test_native_president_fill_refused_under_heartbeat_only
+    run_presroute_contract("heartbeat", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::heartbeat
+____ test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control ____
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:185: in require_module
+    return importlib.import_module(modname)
+/usr/lib/python3.10/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+E   ModuleNotFoundError: No module named 'phase_loop_runtime.president_operation'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:702: in contract
+    po = require_module("phase_loop_runtime.president_operation")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:188: in require_module
+    raise PresrouteMissingCapabilityError(f"module {modname!r} absent") from exc
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: module 'phase_loop_runtime.president_operation' absent
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:796: in test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control
+    run_presroute_contract("brief_binding", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::brief_binding
+__________ test_ruling_record_written_to_review_stream_with_identity ___________
+phase-loop-runtime/tests/test_president_wiring.py:816: in contract
+    require_capability(
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:202: in require_capability
+    raise PresrouteMissingCapabilityError(detail)
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: production dispatch did not persist president.ruling.json to the review stream
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:843: in test_ruling_record_written_to_review_stream_with_identity
+    run_presroute_contract("ruling_record", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::ruling_record
+_____________ test_findings_digest_recomputes_from_prompt_findings _____________
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:185: in require_module
+    return importlib.import_module(modname)
+/usr/lib/python3.10/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+E   ModuleNotFoundError: No module named 'phase_loop_runtime.president_operation'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:850: in contract
+    po = require_module("phase_loop_runtime.president_operation")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:188: in require_module
+    raise PresrouteMissingCapabilityError(f"module {modname!r} absent") from exc
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: module 'phase_loop_runtime.president_operation' absent
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:873: in test_findings_digest_recomputes_from_prompt_findings
+    run_presroute_contract("findings_digest", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::findings_digest
+__________________ test_ruling_record_matches_frozen_contract __________________
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:185: in require_module
+    return importlib.import_module(modname)
+/usr/lib/python3.10/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+E   ModuleNotFoundError: No module named 'phase_loop_runtime.president_operation'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:880: in contract
+    po = require_module("phase_loop_runtime.president_operation")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:188: in require_module
+    raise PresrouteMissingCapabilityError(f"module {modname!r} absent") from exc
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: module 'phase_loop_runtime.president_operation' absent
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:912: in test_ruling_record_matches_frozen_contract
+    run_presroute_contract("ruling_record_matches_frozen_contract", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::ruling_record_matches_frozen_contract
+______________ test_adapter_route_failure_is_not_a_ladder_descent ______________
+phase-loop-runtime/tests/test_president_wiring.py:1183: in contract
+    require_capability(
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:202: in require_capability
+    raise PresrouteMissingCapabilityError(detail)
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: the seated rung did not reach the launch route (route not wired)
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_president_wiring.py:1190: in test_adapter_route_failure_is_not_a_ladder_descent
+    run_presroute_contract("route_failure", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::route_failure
+_________ test_president_ladder_is_the_ec_presroute_3_seat_alias_order _________
+phase-loop-runtime/tests/test_govlean_panel_policy.py:183: in contract
+    require_capability(
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:202: in require_capability
+    raise PresrouteMissingCapabilityError(detail)
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: PRESIDENT_LADDER is not yet the EC-PRESROUTE-3 seat-alias order
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_govlean_panel_policy.py:219: in test_president_ladder_is_the_ec_presroute_3_seat_alias_order
+    run_presroute_contract("ladder", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::ladder
+___________ test_plan_or_production_requires_president_false_refused ___________
+phase-loop-runtime/tests/test_govlean_panel_policy.py:237: in contract
+    enforce = require_attr(panel, "enforce_requires_president")
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:194: in require_attr
+    raise PresrouteMissingCapabilityError(
+E   presroute_content_tdd_adapter.PresrouteMissingCapabilityError: 'phase_loop_runtime.panel_invoker' has no attribute 'enforce_requires_president'
+
+The above exception was the direct cause of the following exception:
+phase-loop-runtime/tests/test_govlean_panel_policy.py:287: in test_plan_or_production_requires_president_false_refused
+    run_presroute_contract("requires_president_false_refused", contract)
+phase-loop-runtime/tests/presroute_content_tdd_adapter.py:234: in run_presroute_contract
+    raise AssertionError(presroute_red_message(case_id)) from exc
+E   AssertionError: GOVLEAN deliberate RED anchor PRESROUTE_RED::requires_president_false_refused
+=========================== short test summary info ============================
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_president_operation_routes_seated_rung_through_public_board_president
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_president_authorization_identity_minted_like_review_isolation
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_president_operation_refuses_a_review_authorization
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_non_native_rung_launches_only_through_launch_provider
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_native_fable_rung_filled_under_claude_code_without_second_tui
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_native_president_fill_refused_under_heartbeat_only
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_ruling_record_written_to_review_stream_with_identity
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_findings_digest_recomputes_from_prompt_findings
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_ruling_record_matches_frozen_contract
+FAILED phase-loop-runtime/tests/test_president_wiring.py::test_adapter_route_failure_is_not_a_ladder_descent
+FAILED phase-loop-runtime/tests/test_govlean_panel_policy.py::test_president_ladder_is_the_ec_presroute_3_seat_alias_order
+FAILED phase-loop-runtime/tests/test_govlean_panel_policy.py::test_plan_or_production_requires_president_false_refused
+13 failed, 27 passed in 3.40s

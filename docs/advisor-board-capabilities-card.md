@@ -377,10 +377,28 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | Brokered homebrew/subscription Claude TUI | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
-| Gemini / agy | Existing internal print timer | Unsupported |
+| Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |
 | Gateway, API-key, capture, research, native host fill | Existing route restrictions | Unsupported |
 | Legacy invoke_panel | Existing behavior | Unsupported |
-| CLI default four-vendor board | Existing behavior | Whole board refused before auth |
+| CLI default four-vendor board | Existing behavior | Preserves four vendors; refuses before auth if Gemini capability is missing or changed |
+
+The Gemini extension (agent-harness#905) admits only entry image SHA256
+`9991515b6d5307bcf701069622b0537b6b206e605f3c891c0cf3a3d208dea8b0`
+and requires sealed memfd/pidfd support in the running Python/kernel. It uses
+literal `--print-timeout 0`, acknowledged stdin input, deny-all settings and no
+staged-tree attachment. The executable/settings are immutable mounts in a private
+namespace-owned HOME. Credential targets are referenced, never copied or restored;
+legitimate refresh writes survive. Required bwrap flags are checked at admission.
+An image update needs qualification before the supported digest changes.
+
+Rejected, empty and native-failed streams retain fixed diagnostics and remain
+non-votes. The qualification driver records distinct completion, cancellation
+and owner-loss receipts with namespace/process/fd observations. Helper image
+checks are sampled; the entry pin does not freeze every helper. Abrupt owner
+loss may briefly release the blocked execution gate before parent-death cleanup.
+See the qualified Gemini extension in the advisor-board contracts for the full
+scope and the repository's qualification script. These receipts are separate
+from the historical bounded-success verifier.
 
 Only admission has a finite 10-second window. Once admitted, the broker waits
 for completion, terminal failure, cancellation, or owner loss. Provider PID
