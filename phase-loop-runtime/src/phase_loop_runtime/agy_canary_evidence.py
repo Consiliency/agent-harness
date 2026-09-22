@@ -2857,13 +2857,22 @@ def _sigio_is_unowned(handler: Any) -> bool:
 
 
 def _unwind_failed_lease_entry(previous_mask: Any, previous_handler: Any) -> None:
-    """Undo a failed entry, in reverse order, without masking the original error.
+    """Undo a failed entry, mask first, without masking the original error.
 
-    Acquisition installs the disposition and then blocks the signal, so unwinding
-    releases the mask first and restores the disposition second. Leaving SIGIO
-    blocked is not a lesser failure than leaving the disposition installed: both
-    are permanent for the life of the process, because entry failed and so no
-    caller ever receives a token for `_end_lease_signal_guard` to act on.
+    THE ORDER IS NOT "reverse of acquisition" AND MUST NOT BE MADE SO. Entry
+    blocks SIGIO and then installs the disposition, so the reverse would restore
+    the disposition first -- and if a SIGIO is pending at that moment, handing it
+    back a default disposition and then unblocking TERMINATES THE PROCESS.
+    Measured: exit 157, which is 128 + SIGIO, on 3.10 and 3.12. A pending SIGIO
+    is reachable here, because the ambiguity check raises precisely when one is.
+
+    Releasing the mask first is therefore deliberate: while our discarding
+    handler is still installed, any pending SIGIO is absorbed harmlessly, and
+    only then is the caller's disposition put back.
+
+    Leaving SIGIO blocked is not a lesser failure than leaving the disposition
+    installed: both are permanent for the life of the process, because entry
+    failed and so no caller ever receives a token for `_end_lease_signal_guard`.
 
     Each step is protected independently. A failure in one must not abort the
     other, and NEITHER may replace the exception already propagating: the caller
@@ -2941,16 +2950,19 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
     # regressed the ambiguity check: a SIGIO arriving in between was delivered to
     # our own handler, which DISCARDS it, so `sigpending()` then saw nothing and
     # the lease was admitted over a signal the old block-and-check would have
-    # refused. Blocking first means such a signal stays pending and is seen. The
-    # inner region below blocks a superset and restores to THIS mask, so SIGIO is
-    # never unblocked in between.
-    # Pre-read only; blocking nothing is not a mutation, so this cannot leave a
-    # change live and unrecorded. Every actual mutation is inside the try below,
-    # where the unwind can reach it.
+    # refused. Blocking first means such a signal stays pending and is seen, and
+    # nothing unblocks it again before the check.
+    # A pre-read FALLBACK, used only if the mutating call below never runs.
+    # Blocking nothing is not a mutation, so this cannot leave a change live and
+    # unrecorded -- but it can go STALE, which is a different failure and the one
+    # that matters here: a Python callback running between this query and the
+    # mutation can block a signal of its own, and restoring this snapshot on the
+    # way out would then silently UNBLOCK it. So the authoritative mask is the
+    # one the mutating call returns, and that is what the token carries.
     recovery_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
     try:
         try:
-            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+            recovery_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
         except OSError as exc:
             raise AgyCanaryEvidenceError(
                 "settings write lease cannot block SIGIO"
@@ -2992,14 +3004,28 @@ def _begin_lease_signal_guard() -> _LeaseSignalGuard:
 
 
 def _end_lease_signal_guard(guard: _LeaseSignalGuard) -> None:
+    """Release the guard: drain, then restore the mask, then the disposition.
+
+    Both restorations are attempted even if draining raises. An earlier version
+    put only the disposition in the `finally` and left the mask restore in the
+    body, so a failed drain returned SIGIO's disposition to the caller while
+    leaving the signal BLOCKED for the life of the process -- reproduced on 3.10
+    and 3.12. The comment there claimed a failure "cannot leave this process's
+    SIGIO handling rewritten", which was true of the disposition and silent
+    about the mask.
+
+    Mask before disposition, for the same reason as `_unwind_failed_lease_entry`:
+    restoring a default disposition while a SIGIO is still pending and then
+    unblocking terminates the process.
+    """
     try:
         while signal.sigtimedwait({signal.SIGIO}, 0) is not None:
             pass
-        signal.pthread_sigmask(signal.SIG_SETMASK, guard.mask)
     finally:
-        # Restore the disposition even if draining or unmasking raised, so a
-        # failure here cannot leave this process's SIGIO handling rewritten.
-        signal.signal(signal.SIGIO, guard.previous_handler)
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, guard.mask)
+        finally:
+            signal.signal(signal.SIGIO, guard.previous_handler)
 
 
 def _acquire_write_lease(fd: int, *, label: str) -> None:

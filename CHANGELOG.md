@@ -74,27 +74,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   raw `sigaction` still reads as the default disposition here. Such an owner
   cannot be detected from Python, would be clobbered, and could not be restored
   on the way out. No kernel-aware check is attempted; the limit is documented.
-- A failed entry can no longer leave either resource behind. An exception raised
+- A failed entry unwinds both resources on a best-effort basis. An exception raised
   after SIGIO is blocked or the handler installed, but before the guard returns,
   hands no token to `clean_settings`, so the exit path never runs; without
   rollback the process would discard every SIGIO, or leave it blocked, for the
   rest of its life. Unwinding releases the mask and then restores the
   disposition, the reverse of acquisition, and a failure in either step neither
-  aborts the other nor replaces the exception that caused the unwind. Recovery
-  state is captured BEFORE every mutation, so no change is ever live without a
-  recorded way to undo it. SIGIO stays blocked across the whole admission
+  aborts the other nor replaces the exception that caused the unwind -- which is
+  why it is best effort: attempting both and preserving the original exception is
+  chosen over guaranteeing either. The mask is released BEFORE the disposition is
+  restored, and that order is deliberate rather than incidental: reversing it
+  hands a pending SIGIO a default disposition and then unblocks it, terminating
+  the process. Recovery state is captured before every mutation, and taken from
+  the mutating call where that call reports it, so no change is ever live without
+  a recorded way to undo it and no record is stale before it is used. SIGIO stays blocked across the whole admission
   decision, so a signal arriving inside it remains pending and is seen rather
   than absorbed by this guard's own discarding handler.
-- **Residual, stated as a residual**: the recovery record can go STALE. The
-  displaced handler exists only as `signal.signal`'s return value and storing it
-  is a separate step, so an interrupt arriving between the two leaves the
-  pre-capture in place and a foreign handler installed in that window would be
-  restored as the earlier disposition instead of itself. Restoration is
-  therefore best effort. This is not closable at the Python level: masking is
-  per-thread while CPython runs signal callbacks on the main thread whichever
-  thread the kernel delivered to, measured on 3.10 and 3.12. Closing it needs a
-  C-level primitive this codebase does not have; the question is filed as its
-  own issue rather than attempted again here.
+- **Residual, stated as a residual**: the recovery record of the DISPOSITION can
+  go stale. The displaced handler exists only as `signal.signal`'s return value
+  and storing it is a separate step, so an interrupt arriving between the two
+  leaves the pre-capture in place, and a foreign handler installed in that window
+  would be restored as the earlier disposition instead of itself. Restoration is
+  therefore best effort.
+
+  Its width, stated exactly: under this guard's single-thread admission the
+  interrupt that matters is another Python signal callback, so a single-threaded
+  process is exposed too. This is not a second residual, it is this one at its
+  true width; an earlier draft described it as needing a second thread, which
+  was the reach only while the removed masking region existed.
+
+  Why it is not closed, without flattering us. The general case is not closable
+  at the Python level: masking is per-thread while CPython runs signal callbacks
+  on the main thread whichever thread the kernel delivered to, measured on 3.10
+  and 3.12, and suppressing callbacks by disposition instead means displacing
+  every handler, which is the same unrecordable operation. But the
+  single-threaded case WAS closable by masking. We had it closed, and we removed
+  that mechanism deliberately, because it read as shutting a window it did not
+  shut, it protected a subset of the residual, and it introduced two regressions
+  of its own. Closing the general case needs a C-level primitive this codebase
+  does not have; the question is filed as its own issue rather than attempted
+  again here.
 - **Residual, stated as a residual**: ownership refusal is complete only for
   PYTHON-VISIBLE ownership. `getsignal` reports Python's signal table rather than
   a fresh kernel query, so a native extension that installed a SIGIO handler

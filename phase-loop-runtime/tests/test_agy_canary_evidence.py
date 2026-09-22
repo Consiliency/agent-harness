@@ -2179,6 +2179,40 @@ def test_write_lease_guard_installs_a_process_wide_sigio_disposition_and_restore
     assert signal.SIGIO not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
 
 
+def test_release_restores_the_mask_too_when_draining_raises(request, monkeypatch):
+    """A failed drain must not leave SIGIO blocked for the life of the process.
+
+    Found by re-reading what the exit path's comment ASSERTED rather than by
+    searching for a keyword: it said a failure there "cannot leave this process's
+    SIGIO handling rewritten", which was true of the disposition and silent about
+    the mask. Reproduced on 3.10 and 3.12 -- the disposition came back and SIGIO
+    stayed blocked.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    guard = evidence._begin_lease_signal_guard()
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("drain failed")
+
+    monkeypatch.setattr(evidence.signal, "sigtimedwait", _boom)
+    try:
+        with pytest.raises(OSError, match="drain failed"):
+            evidence._end_lease_signal_guard(guard)
+    finally:
+        monkeypatch.undo()
+        after = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        signal.pthread_sigmask(signal.SIG_SETMASK, before)
+    assert after == before, (
+        "a failed drain left the signal mask changed; SIGIO would stay blocked "
+        f"for the life of this process (extra: {sorted(after - before)})"
+    )
+    assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler
+
+
 def test_write_lease_guard_restores_the_disposition_even_when_draining_raises(request, monkeypatch):
     """Every exit path restores it, exceptions included."""
     if _delegate_to_a_single_threaded_child(request):
@@ -2610,6 +2644,105 @@ def test_a_failed_installation_still_restores_the_callers_mask(request, monkeypa
         monkeypatch.undo()
     assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before, (
         "a failed installation left the caller's signal mask changed"
+    )
+
+
+def test_entry_records_the_mask_the_mutating_call_returned_not_the_pre_read(request, monkeypatch):
+    """Codex round 6: the pre-read snapshot can be STALE before it is ever used.
+
+    Entry queries the mask, then blocks SIGIO. A Python callback running between
+    those two can block a signal of its own. If the token carries the earlier
+    query rather than what the mutating call returned, release restores the
+    earlier snapshot and SILENTLY UNBLOCKS the caller's signal -- reproduced
+    before this fix on 3.10 and 3.12.
+
+    This needs neither a second thread nor an interrupted assignment, so it is
+    NOT covered by the disclosed best-effort residual. Same save-then-mutate
+    shape as that residual, one call earlier, and this one is reachable in pure
+    Python and therefore fixable.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    real_mask = signal.pthread_sigmask
+    assert signal.SIGUSR1 not in real_mask(signal.SIG_BLOCK, set()), (
+        "SIGUSR1 was already blocked before this test"
+    )
+    fired = {"n": 0}
+
+    def block_sigusr1_in_the_window(how, mask=None):
+        if how == signal.SIG_BLOCK and mask and signal.SIGIO in mask and not fired["n"]:
+            fired["n"] += 1
+            # A callback lands between the pre-read and the mutation.
+            real_mask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        return real_mask(how, mask) if mask is not None else real_mask(how, set())
+
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", block_sigusr1_in_the_window)
+    try:
+        guard = evidence._begin_lease_signal_guard()
+        evidence._end_lease_signal_guard(guard)
+    finally:
+        monkeypatch.undo()
+        still_blocked = signal.SIGUSR1 in real_mask(signal.SIG_BLOCK, set())
+        real_mask(signal.SIG_UNBLOCK, {signal.SIGUSR1})
+    assert fired["n"] == 1, "the callback never landed in the window"
+    assert still_blocked, (
+        "the guard restored a stale mask snapshot and silently unblocked a signal "
+        "the caller had blocked while the lease was being taken"
+    )
+
+
+def test_unwind_releases_the_mask_before_restoring_the_disposition(request, monkeypatch):
+    """The unwind order is deliberate and reversing it KILLS the process.
+
+    Entry blocks SIGIO and then installs the disposition, so "reverse of
+    acquisition" would restore the disposition first. With a SIGIO pending -- and
+    the ambiguity check raises precisely when one is -- that hands the signal a
+    default disposition and then unblocks it: measured exit 157, 128 + SIGIO, on
+    3.10 and 3.12.
+
+    This pins the order against a future tidy-up that reads the two steps as
+    interchangeable. It observes the SEQUENCE rather than the outcome, because
+    the outcome of getting it wrong is that there is no process left to assert in.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    order = []
+    real_mask = signal.pthread_sigmask
+    real_signal = signal.signal
+
+    def note_mask(how, mask=None):
+        if how == signal.SIG_SETMASK:
+            order.append("mask")
+        return real_mask(how, mask) if mask is not None else real_mask(how, set())
+
+    def note_signal(signum, handler):
+        if handler is not evidence._lease_sigio_handler:
+            order.append("disposition")
+        return real_signal(signum, handler)
+
+    entry_handler = signal.getsignal(signal.SIGIO)
+    entry_mask = real_mask(signal.SIG_BLOCK, set())
+    # The disposition branch only runs when OUR handler is installed. Without
+    # this the unwind skips it, only the mask step is recorded, and the order
+    # assertion below passes no matter what order the code uses.
+    real_signal(signal.SIGIO, evidence._lease_sigio_handler)
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", note_mask)
+    monkeypatch.setattr(evidence.signal, "signal", note_signal)
+    try:
+        evidence._unwind_failed_lease_entry(entry_mask, entry_handler)
+    finally:
+        monkeypatch.undo()
+        real_signal(signal.SIGIO, entry_handler)
+    assert set(order) == {"mask", "disposition"}, (
+        f"the unwind did not attempt both steps: order={order}"
+    )
+    assert order[0] == "mask", (
+        "unwind restored the disposition before releasing the mask; a pending "
+        f"SIGIO would terminate the process here. order={order}"
     )
 
 
