@@ -163,16 +163,16 @@
       "assumption": 2,
       "expected": {
         "fields": {
-          "expected_version": "0.5.0",
+          "expected_version": "0.7.14",
           "package": "phase-loop-runtime",
-          "pip_spec": "phase-loop-runtime==0.5.0"
+          "pip_spec": "phase-loop-runtime==0.7.14"
         }
       },
       "id": "LEGIBLE-A2-GP-PIN",
       "kind": "remote_json_field",
       "mutation_id": "change-expected-version-field-alone",
       "positive_control_id": "current-remote-json",
-      "source_anchor": "pin agent-harness 0.5.0",
+      "source_anchor": "pins agent-harness 0.7.14",
       "subject": {
         "path": "tools/agent-harness.pin.json",
         "ref": "default-branch",
@@ -182,12 +182,12 @@
     {
       "assumption": 2,
       "expected": {
-        "state": "OPEN"
+        "state": "CLOSED"
       },
       "id": "LEGIBLE-A2-I128",
       "kind": "github_issue",
-      "mutation_id": "observe-closed",
-      "positive_control_id": "current-open-payload",
+      "mutation_id": "observe-open",
+      "positive_control_id": "current-closed-payload",
       "source_anchor": "`governed-pipeline#128`",
       "subject": {
         "number": 128,
@@ -453,6 +453,6 @@
     }
   ],
   "roadmap": "specs/phase-plans-v10.md",
-  "roadmap_sha256": "19b9c36311c93d0534c4cab1187cfda59ee589ee2c904aa0b71b581d09daf87e",
+  "roadmap_sha256": "af53a90951c1bcae1fa08ba937eba61a4ed632047f5a37d27393943667aadd94",
   "schema": "roadmap_assumption_probe.v1"
 }
