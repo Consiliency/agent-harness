@@ -465,7 +465,10 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         import ctypes, json, os, subprocess, sys, time
         from pathlib import Path
 
-        phase, marker_path = sys.argv[1:]
+        args = sys.argv[1:]
+        if args[:1] == ["--output-last-message"]:
+            args = args[2:]
+        phase, marker_path = args
         if phase != "A":
             raise SystemExit(0)
         lease_fd = int(os.environ["SCHED_TEST_LEASE_FD"])

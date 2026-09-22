@@ -58,6 +58,109 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   copy can drift, and a value the lookup cannot find is a failure rather than a skip, so
   a rename or a deleted line cannot make the check vacuous.
 
+### Settings write-lease signal guard (agent-harness#950)
+
+- **The admission contract is unchanged**: the settings write lease is still
+  granted only to a single-threaded main thread on Linux. What changed is the
+  INSTRUMENT. The precondition is now read from `/proc/self/task`, the kernel's
+  own task inventory, instead of `threading.active_count()`, which counts only
+  threads the `threading` module created and so answered 1 for a process
+  carrying a `_thread`- or C-spawned thread. An unreadable inventory refuses the
+  lease rather than assuming one thread.
+- A process-wide SIGIO disposition is installed for the lifetime of the lease,
+  and every exit path attempts to restore the previous handler, exceptions
+  included -- attempts, because restoration is best effort; see below.
+  This is defence in depth for the case the precondition cannot cover: a thread
+  that appears after admission and unblocks SIGIO for itself. A `pthread_sigmask`
+  block is per-thread and cannot reach such a thread; the disposition is
+  process-wide and can. A thread that merely appears inherits the mask and was
+  already covered, so this is not a licence to admit multi-threaded callers.
+- The lease is refused when another component already owns SIGIO, that is when
+  the existing disposition is neither the default, nor ignore, nor this guard's
+  own handler. While the lease is held every SIGIO is discarded, and restoring
+  the handler afterwards cannot replay what was dropped: measured at one
+  delivery with no guard, zero inside the lease window, and still zero after the
+  guard restores it. Refusing is the same fail-closed direction as an unreadable
+  inventory, and it applies to a single-threaded caller too. Ownership is decided
+  by identity, never by equality, so a callable that merely compares equal to the
+  default disposition cannot pass; and the handler the installation actually
+  displaced, rather than an earlier reading, is what the decision rests on.
+- **Known limit**: the ownership check covers Python-visible handlers only.
+  `getsignal` reports Python's signal table rather than a fresh query of the
+  kernel disposition, so a native extension that installs a SIGIO handler through
+  raw `sigaction` still reads as the default disposition here. Such an owner
+  cannot be detected from Python, would be clobbered, and could not be restored
+  on the way out. No kernel-aware check is attempted; the limit is documented.
+- A failed entry unwinds both resources on a best-effort basis. An exception raised
+  after SIGIO is blocked or the handler installed, but before the guard returns,
+  hands no token to `clean_settings`, so the exit path never runs; without
+  rollback the process would discard every SIGIO, or leave it blocked, for the
+  rest of its life. Unwinding releases the mask and then restores the
+  disposition -- NOT the reverse of acquisition, which would restore the
+  disposition first -- and a failure in either step neither
+  aborts the other nor replaces the exception that caused the unwind -- which is
+  why it is best effort: attempting both and preserving the original exception is
+  chosen over guaranteeing either. The mask is released BEFORE the disposition is
+  restored, and that order is deliberate rather than incidental: reversing it
+  hands a pending SIGIO a default disposition and then unblocks it, terminating
+  the process. Recovery state is captured before every mutation, and taken from
+  the mutating call where that call reports it, so no change is ever live without
+  a recorded way to undo it. A record can still be stale -- see the residual
+  below. SIGIO stays blocked across the whole admission
+  decision, so a signal arriving inside it remains pending and is seen rather
+  than absorbed by this guard's own discarding handler.
+- **Residual, stated as a residual**: a recovery record can go stale, for the
+  DISPOSITION and for the MASK alike. Each is the return value of a mutating
+  call, and storing it is a separate step, so an interrupt arriving between the
+  two leaves the pre-capture in place. For the disposition, a foreign handler
+  installed in that window is restored as the earlier disposition instead of
+  itself. For the mask, the entry snapshot is the one that gets restored. The
+  mask case is additionally reachable when the mutating call raises before its
+  result is assigned. Restoration is therefore best effort in both cases. This
+  is one structural window, not two problems: the successful path takes the
+  authoritative value from the call, and only an interrupted or failed capture
+  falls back to the earlier reading.
+
+  **Separately, and wider than that window**: release sets the mask to the entry
+  snapshot, so ANY mask change made at ANY point while the lease is held is
+  reverted, not only one made during the capture window above. A callback for
+  some unrelated handled signal, running at any moment of the hold and blocking
+  a signal of its own, has that blocking silently undone on release. Measured on
+  3.10 and 3.12: a signal blocked mid-hold, well clear of capture, is unblocked
+  by release.
+
+  This is the ordinary contract of a scoped save-and-restore rather than a
+  correctness break, and it is not a stale record -- the snapshot is exactly
+  right, it is the SCOPE of the restore that is wide. It is written here because
+  an earlier draft scoped the consequence to the capture window, which is
+  narrower than the code, and because the effect on a caller is the same either
+  way: a signal it blocked is unblocked without notice.
+
+  Its width, stated exactly: under this guard's single-thread admission the
+  interrupt that matters is another Python signal callback, so a single-threaded
+  process is exposed too. This is not a second residual, it is this one at its
+  true width; an earlier draft described it as needing a second thread, which
+  was the reach only while the removed masking region existed.
+
+  Why it is not closed, without flattering us. The general case is not closable
+  at the Python level: masking is per-thread while CPython runs signal callbacks
+  on the main thread whichever thread the kernel delivered to, measured on 3.10
+  and 3.12, and suppressing callbacks by disposition instead means displacing
+  every handler, which is the same unrecordable operation. But the
+  single-threaded case WAS closable by masking. We had it closed, and we removed
+  that mechanism deliberately, because it read as shutting a window it did not
+  shut, it protected a subset of the residual, and it introduced two regressions
+  of its own. Closing the general case needs a C-level primitive this codebase
+  does not have; the question is filed as its own issue rather than attempted
+  again here.
+- **Residual, stated as a residual**: ownership refusal is complete only for
+  PYTHON-VISIBLE ownership. `getsignal` reports Python's signal table rather than
+  a fresh kernel query, so a native extension that installed a SIGIO handler
+  through raw `sigaction` still reads as the default disposition and would be
+  overwritten and not restored. No kernel-aware check is attempted.
+- Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
+  through signal delivery.
+
 ## [0.7.16] - 2026-09-21
 ### Claude native review task delivery (agent-harness#937)
 

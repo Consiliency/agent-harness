@@ -8331,56 +8331,56 @@
         {
           "at": "2026-09-20T10:58:24Z",
           "by": "claude-plan-detailed",
+          "transition": "committed",
           "metadata": {
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "planning_artifact_only": true,
             "recorded_as": "proposed",
             "repair_note": "original event used a non-vocabulary literal under a `status` key; rewritten to the runtime vocabulary by Consiliency/agent-harness#922"
-          },
-          "transition": "committed"
+          }
         },
         {
           "at": "2026-09-20T12:37:03Z",
           "by": "claude-execute-detailed",
+          "transition": "executing",
           "metadata": {
-            "implementation_pr": "Consiliency/agent-harness#921",
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
             "maintainer_ratified_at": "2026-09-20T12:02:56Z",
-            "plan_pr": "Consiliency/agent-harness#918",
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
-            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
-            "record_pr": "Consiliency/agent-harness#919",
             "recorded_as": "ratified",
+            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
+            "plan_pr": "Consiliency/agent-harness#918",
+            "record_pr": "Consiliency/agent-harness#919",
             "red_lane_pr": "Consiliency/agent-harness#920",
+            "implementation_pr": "Consiliency/agent-harness#921",
             "repair_note": "the ratification was recorded under a `status` key with a non-vocabulary literal; execution began when PR 921 was opened"
-          },
-          "transition": "executing"
+          }
         },
         {
           "at": "2026-09-20T16:39:04Z",
           "by": "claude-execute-detailed",
+          "transition": "completed",
           "metadata": {
-            "final_review_four_vendor_agree": true,
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
             "landed": {
-              "commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
               "pr": "Consiliency/agent-harness#921",
+              "commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
               "record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a"
             },
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "final_review_four_vendor_agree": true,
             "residuals": "Consiliency/agent-harness#915 items 3-7"
-          },
-          "transition": "completed"
+          }
         }
       ],
       "owner_skill": "claude-plan-detailed",
@@ -8392,6 +8392,37 @@
       "task_summary": "REVIEWTRUTH early slice (maintainer-ratified 2026-09-20): native claude seat under Claude Code, counted (EC-REVIEWTRUTH-14)",
       "type": "detailed",
       "updated_at": "2026-09-20T16:39:04Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-09-21T00:00:00Z",
+      "file": "plans/phase-plan-v10-EXECFIND.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-phase/20260921-execfind-plan.md",
+      "if_gates_produced": [
+        "IF-0-EXECFIND-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "EXECFIND",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v10-EXECFIND",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-09-21T00:00:00Z"
     },
     {
       "acceptance_criteria_count": 5,
