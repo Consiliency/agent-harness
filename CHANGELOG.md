@@ -27,6 +27,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   probed against its own CLI and this change carries no evidence about them.
 - The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
   standing property of grok, which is what let the original clamp outlive its evidence.
+### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
+
+- Align the governed-pipeline issue-state and package-pin probes with its closed
+  issue and 0.7.14 pin, retaining opposite-state and single-field failure controls.
+- Refresh the related roadmap/probe seals and append current plan authority while
+  preserving historical grounding metadata and prior authority records.
+
+### Roadmap validation: reject silently missing phases (agent-harness#729)
+
+- `validate-roadmap` now reports malformed phase headings and phase bodies without
+  a distinct valid heading, instead of silently accepting an incomplete roadmap.
+- Top-level fenced Markdown examples (up to three leading spaces) are excluded
+  from parsed fields and lint checks; direct parser consumers retain raw phase
+  bodies. A repeated `**Key files**` block requires a distinct valid phase heading.
+- Heading recognition and fence masking use consistent LF-delimited source lines
+  with CRLF support. Split headings report diagnostics instead of crashing the
+  standalone validator; other line separators cannot silently hide a phase.
 
 ### Qualified Gemini heartbeat reviews (agent-harness#905)
 
