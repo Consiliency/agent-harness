@@ -6253,7 +6253,8 @@ def _exec_leg(
         # here (the allow-list is) and is intentionally left off.
         # effort-absent defaults to grok's MAX reasoning, rendered through the SAME map as an
         # explicit seat effort (ah#222) — so the default path emits a token the grok CLI actually
-        # accepts (canonical ``max`` CLAMPS to grok's ``xhigh`` ceiling; grok has no ``max``). A prior
+        # accepts (canonical ``max`` CLAMPS to grok's ``xhigh`` ceiling as measured by the
+        # 2026-09-22 probe -- it was ``high`` when ah#222 measured it; grok has no ``max``). A prior
         # literal ``--reasoning-effort max`` was rejected by the CLI and ERRORed the grok leg every run.
         grok_effort_args = render_seat_invocation(
             "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "max"

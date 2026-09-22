@@ -185,8 +185,10 @@ class GrokMaxEffortPlannerEligibilityTest(unittest.TestCase):
 
 
 class GrokPanelUsabilityTest(unittest.TestCase):
-    # grok remains a fully usable panel/CR reviewer leg at its real `high`
-    # ceiling — this path never consults `supported_efforts`/eligibility at all.
+    # grok remains a fully usable panel/CR reviewer leg at its real ceiling
+    # (`xhigh` as of the 2026-09-22 probe; `high` when ah#231 was written) — this
+    # path never consults `supported_efforts`/eligibility at all. The seat below
+    # renders `high`, which is PASS-THROUGH, not the ceiling.
     def test_grok_panel_seat_renders_at_high(self):
         seat = render_seat_invocation("grok", "grok-4.5", "high")
         self.assertEqual(seat.harness, "grok")
@@ -217,7 +219,12 @@ class GrokEffortLookupHardeningTest(unittest.TestCase):
         self.assertEqual(_grok_panel_effort("xhigh"), "xhigh")  # valid CLI token, passes through
         self.assertEqual(_grok_panel_effort("max"), "xhigh")   # clamps to the current ceiling
 
-    def test_growing_vocabulary_still_clamps_to_a_valid_grok_token(self):
+    def test_growing_vocabulary_still_resolves_to_a_valid_grok_token(self):
+        # RESOLVES, not "clamps" (grok, round 1): `xhigh` no longer clamps -- the
+        # 2026-09-22 probe made it a valid CLI token, so it passes through. The
+        # property is that a token beyond today's EFFORT_LEVELS still lands on
+        # something the CLI accepts, by clamp OR pass-through. Only `minimal`
+        # still illustrates an actual clamp here.
         # Simulates the panel effort vocabulary growing past today's 4-key
         # EFFORT_LEVELS to include "minimal"/"xhigh" (which
         # normalize_provider_effort's NORMALIZED_EFFORT_LEVELS already knows
