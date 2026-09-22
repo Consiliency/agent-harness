@@ -811,3 +811,158 @@ def test_real_runner_native_binding_before_unchanged_cache(candidate, monkeypatc
         composition_sha256="f" * 64 if mutation == "composition" else composition.composition_digest(board))
     cached = run_candidate(c, monkeypatch, native_leg_fills=[fill], _train_review_fn=never)
     assert cached["status"] == ("review_approved" if mutation is None else "review_halted"), cached
+
+
+@pytest.mark.parametrize("field", ["check_suite", "app", "repository", "status", "conclusion"])
+def test_malformed_check_run_is_typed_hold(candidate, field):
+    c = candidate
+    check = {"id": 9, "head_sha": c["head"], "name": "test", "status": "completed", "conclusion": "success",
+        "url": "https://api.github.com/repos/org/repo/check-runs/9", "app": {"id": 1, "slug": "actions"},
+        "check_suite": {"id": 2, "repository": {"full_name": "org/repo"}}, "output": {"summary": "evidence"}}
+    if field == "repository":
+        check["check_suite"][field] = ["malformed"]
+    else:
+        check[field] = ["malformed"]
+    c["material"]["nodes"][c["node"].node_id]["verification"] = [{"id": "ci", "kind": "github_check_run", "check_run_id": 9}]
+    update_material(c)
+    with pytest.raises(packet.PacketError):
+        c["build"](_check_run_fn=lambda *_: check)
+
+
+def test_malformed_attested_result_is_typed_hold(candidate):
+    c = candidate
+    c["material"]["nodes"][c["node"].node_id]["verification"][0]["result"] = []
+    update_material(c)
+    with pytest.raises(packet.PacketError):
+        c["build"]()
+
+
+def test_missing_workspace_precedes_pr_subprocess(candidate):
+    c = candidate
+    with pytest.raises(packet.PacketError, match="missing_workspace"):
+        packet.build_review_packet(c["roadmap"], c["state"], lambda _: c["tmp"] / "absent", c["material_path"], _pr_metadata_fn=never)
+
+
+@pytest.mark.parametrize("count", ["4", 4.0, True])
+def test_cached_count_requires_exact_integer(candidate, monkeypatch, count):
+    from dataclasses import replace
+    c = candidate
+    run_candidate(c, monkeypatch)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    append_record(ledger, replace(read_ledger(ledger)["_train_review_"], usable_reviewers=count))
+    seen = []
+    def review(*args):
+        seen.append(args)
+        return approved(*args)
+    assert run_candidate(c, monkeypatch, _train_review_fn=review)["status"] == "review_approved"
+    assert len(seen) == 1
+
+
+def test_native_request_cache_hit_emits_and_returns(candidate, monkeypatch):
+    c = candidate
+    run_candidate(c, monkeypatch)
+    seen = []
+    def emit(artifact, **kwargs):
+        seen.append(artifact)
+        return {"status": "native_fill_required"}
+    result = run_candidate(c, monkeypatch, review_only=False, emit_native_request=True,
+                           _emit_native_fill_request_fn=emit, _train_review_fn=never, _merge_pr_fn=never)
+    assert result["status"] == "native_fill_required" and len(seen) == 1
+
+
+@pytest.mark.parametrize("field,value", [("head_sha", "f" * 40), ("fab_run_id", "other-run"), ("branch", "other-branch")])
+def test_durable_only_drift_during_review_refuses_approval(candidate, monkeypatch, field, value):
+    from dataclasses import replace
+    c = candidate
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    def review(*args):
+        append_record(ledger, replace(read_ledger(ledger)[c["node"].node_id], **{field: value}))
+        return approved(*args)
+    result = run_candidate(c, monkeypatch, _train_review_fn=review)
+    assert result["status"] == "review_halted", result
+    assert "_train_review_" not in read_ledger(ledger)
+
+
+def enable_fab(c, monkeypatch):
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    monkeypatch.setenv(FAB_PROMOTION_ENV, "1")
+    c["state"][c["node"].node_id].fab_run_id = "packet-fab"
+    c["state"][c["node"].node_id].merge_order = 3
+    namespace = repository_broker_namespace(c["repo"])
+    namespace.mkdir(parents=True, exist_ok=True)
+    return namespace
+
+
+def revoke(namespace):
+    # A real durable store row: gates use production namespace derivation/replay.
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    path = namespace / "evidence.jsonl"
+    path.write_text(json.dumps({"idempotency_key": "packet-test-revoke", "state": "outcome_ambiguous_blocked", "evidence_reference": "test"}) + "\n")
+    assert BrokerEvidenceStore(namespace).epoch_blocked
+
+
+@pytest.mark.parametrize("mode", ["review", "native", "merge"])
+@pytest.mark.parametrize("store", ["revoked", "malformed", "absent", "empty"])
+def test_real_revocation_store_before_sink(candidate, monkeypatch, mode, store):
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    namespace = enable_fab(c, monkeypatch)
+    if store == "revoked":
+        revoke(namespace)
+    elif store == "malformed":
+        (namespace / "evidence.jsonl").write_text('{"broken": true}\n')
+    elif store == "absent":
+        namespace.rmdir()
+    before = sorted(str(p) for p in namespace.rglob("*"))
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)
+    result = run_candidate(c, monkeypatch, review_only=mode == "review", emit_native_request=mode == "native",
+        _emit_native_fill_request_fn=lambda *a, **k: {"status": "native_fill_required"},
+        _train_review_fn=approved if store == "empty" else never,
+        _merge_pr_fn=(lambda *a, **k: c["head"]) if store == "empty" else never)
+    if store == "empty":
+        assert result["status"] == {"review": "review_approved", "native": "native_fill_required", "merge": "merged"}[mode], result
+    else:
+        assert result["status"] in {"review_halted", "merge_halted"}, result
+        assert "_train_review_" not in read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
+    assert sorted(str(p) for p in namespace.rglob("*")) == before
+
+
+def test_live_read_failure_preserves_fab_binding_then_resume(candidate, monkeypatch):
+    c = candidate
+    namespace = enable_fab(c, monkeypatch)
+    def failed(*_):
+        raise OSError("transient live read")
+    result = run_candidate(c, monkeypatch, _live_pr_head_sha_fn=failed)
+    assert result["status"] == "blocked"
+    rec = read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")[c["node"].node_id]
+    assert (rec.fab_run_id, rec.merge_order, rec.head_sha, rec.pr_url) == ("packet-fab", 3, c["head"], c["live"]["url"])
+    assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+    revoke(namespace)
+    assert run_candidate(c, monkeypatch, _train_review_fn=never)["reason"] == "readmission_revoked"
+
+
+def test_complete_blocked_admission_accepted_incomplete_refused(candidate):
+    c = candidate
+    c["state"][c["node"].node_id].status = "blocked"
+    assert "actual_changed_code" in c["build"]().artifact
+    c["state"][c["node"].node_id].branch = None
+    with pytest.raises(packet.PacketError, match="unadmitted_node"):
+        c["build"]()
+
+
+def test_prepared_snapshot_has_no_authority_and_promotes_identical_bytes(candidate, monkeypatch):
+    from dataclasses import replace
+    c = candidate
+    prior = replace(c["state"][c["node"].node_id], head_sha=c["base"], fab_run_id="packet-fab")
+    prepared = packet.prepare_review_packet(c["roadmap"], {prior.node_id: prior}, lambda _: c["repo"], c["material_path"],
+        proposed_heads={prior.node_id: c["head"]}, _pr_metadata_fn=lambda *_: dict(c["live"]))
+    with pytest.raises(packet.PacketError, match="unfinalized_packet"):
+        packet.store_review_packet(prepared, c["tmp"] / "packets")
+    assert not (c["tmp"] / "packets").exists()
+    with pytest.raises(packet.PacketError, match="admission_identity_drift"):
+        packet.finalize_review_packet(prepared, c["roadmap"], {prior.node_id: prior}, lambda _: c["repo"], _pr_metadata_fn=lambda *_: dict(c["live"]))
+    monkeypatch.setattr(packet, "_read_relative", never)
+    monkeypatch.setattr(packet, "_GitReader", never)
+    finalized = packet.finalize_review_packet(prepared, c["roadmap"], {prior.node_id: replace(prior, head_sha=c["head"])}, lambda _: c["repo"], _pr_metadata_fn=lambda *_: dict(c["live"]))
+    assert finalized.artifact == prepared.artifact and finalized.sha256 == prepared.sha256

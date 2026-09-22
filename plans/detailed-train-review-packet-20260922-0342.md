@@ -1,7 +1,7 @@
 ---
 type: detailed
 status: committed
-review_status: pending_round_2
+review_status: qualified_plan_and_ordering_convergence
 owner_skill: codex-plan-detailed
 input_base_commit: cd33474856551a6645ac4db33253922a1db2e442
 issues: [agent-harness#906]
@@ -14,12 +14,23 @@ automation:
 
 # Detailed plan: give governed train reviewers the admitted changes
 
-Revision 2 reconciles round 1: Gemini AGREE; Codex, Claude and Grok PARTIALLY
-AGREE. All four accepted explicit compact disposal scope, three conditionally.
-Reconciliation: `.dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-r1-reconciliation.md`.
-`committed` is the plan-registry state; no Git commit or plan ratification is
-claimed. The amended contract requires a fresh four-vendor round, capped at
-three rounds total.
+Original plan revision 2 converged with Codex/Opus/Gemini round 2 and fresh
+Grok round 3 after excluding Grok's truncated round 2 input. The original
+reviewed SHA256 is `ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e`.
+Archive evidence: `/mnt/workspace/archives/agent-harness-train-review-packet-20260922/CONVERGENCE.json`.
+
+The accepted ordering amendment is preserved verbatim in
+`train-review-packet-ordering-r3.md`, with `train-review-packet-advisory-provenance.md`
+and `train-review-packet-input-binding-corrections.md`. It supersedes the original
+P4 ordering below. Four-vendor plan convergence is recorded in the same archive's
+`ORDERING-CONVERGENCE.json`; `ORDERING-INPUT-BINDING-EXCEPTION.md` records the
+bounded input-binding reconciliation beyond three rounds. These approve the
+implementation contract, not implementation source or supplier delivery.
+
+The automation removes only the deleted `test_launch_seam_coverage.py` path,
+retaining `test_the_real_launch_carries_the_prefix.py`; the original exit 4 and
+deletion commit `7112c79aa1bb6a9a1dac931467cdf6d9f197f167` remain evidence.
+That verification-input correction is included for implementation-board ratification.
 
 ## Task and boundary
 
@@ -29,9 +40,9 @@ and bind approval reuse to those exact bytes. This standalone repair does not
 claim completion of a v10 goal. The coordinator's publication, merge, authority,
 isolation, reviewer floor and forward-only recovery rules remain authoritative.
 
-Plan only: Default mode was active; implementation starts after cross-vendor
-plan review and reconciliation. No supplier review, merge, release, install,
-checkpoint change, ledger edit or additional consumer round is authorized here.
+Implementation is authorized after the recorded plan convergence. The parent
+owns implementation review and publication; no worker supplier review, merge,
+release, install, checkpoint change or additional consumer round is authorized.
 
 ## Research summary
 
@@ -43,7 +54,7 @@ separate authorized sandbox is staged for tool-capable seats. Native-fill
 checks bind the text, but `already_approved` only checks status/reviewer count.
 The repair therefore needs a shared packet identity before both paths.
 
-Live read-only observation on 2026-09-22: treesitter-chunker#97 remains at
+Historical planning read-only observation on 2026-09-22: treesitter-chunker#97 was at
 `f82bb81198316356c142b96baae4fb4b91746ffa`, base
 `fb70922076c773d1865176329a03f67ff893fd90`. Its node is `CHANGELOG.md`, but its
 scope is **4,778 changed paths**, including 4,696 deleted generated environment
@@ -51,6 +62,10 @@ entries. The remaining 82 paths include application source, tests, workflows,
 lockfile and docs; their complete ordinary unified diff is 347,098 bytes.
 Reading all 82 head files would add 1,563,400 bytes. A node label or an S27-only
 cleanup diff cannot substitute for this full admitted candidate.
+
+The parent's later 2026-09-22 actual-consumer preview measured 352,346 raw
+substantive patch bytes for its then-current candidate. This is a separate
+dated receipt, not a correction of the historical 347,098-byte observation.
 
 Input reports: [agent-harness#906 handoff](https://github.com/Consiliency/agent-harness/issues/906#issuecomment-5759905350)
 and [agent-harness#915 approval residual](https://github.com/Consiliency/agent-harness/issues/915#issuecomment-5749922654).

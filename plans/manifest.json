@@ -8570,6 +8570,23 @@
             "review_status": "pending_implementation_board_ratification"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T12:00:00Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "event": "ordering_contract_converged_tests_first",
+            "ordering_proposal_sha256": "fa4b7f3832b32bc499eecb1c86eff4fc17e1297710aa285268e73cebbb661786",
+            "input_binding_corrections_sha256": "65e97eef3cad9236326e5c17f59e449a26d773db34fa1819e7391eaa52712a66",
+            "evidence_root": "/mnt/workspace/archives/agent-harness-train-review-packet-20260922",
+            "convergence_ref": "ORDERING-CONVERGENCE.json",
+            "round_exception_ref": "ORDERING-INPUT-BINDING-EXCEPTION.md",
+            "implementation_approved": false,
+            "red_receipt": ".phase-loop/train-review-packet/implementation/ordering-red.log",
+            "red_summary": "25 failed, 4 passed; includes 24 behavioral failures and one missing prepared API",
+            "dependency": "3703355c2afe5185098747e430a3b20df057ba3a"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-detailed",
