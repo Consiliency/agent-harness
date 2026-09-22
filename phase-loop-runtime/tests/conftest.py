@@ -257,8 +257,12 @@ def _pin_claude_print_route_by_default():
 #
 # The CONFORM chronology node
 # `test_mutation_definitions_are_frozen_but_not_executed_preimplementation`
-# dominates the CI wall clock (47.5 min on the py3.10 lane, 66.2 min on Gate A)
-# even though its source bytes are unchanged between v0.7.14 and v0.7.15. The
+# is the single longest node in CI even though its source bytes are unchanged
+# between v0.7.14 and v0.7.15. Earlier revisions of this header quoted 47.5 min
+# (py3.10) and 66.2 min (Gate A); those came from ONE main run (35583021739) and
+# are WITHDRAWN -- superseded by the nine-point main-push series on
+# agent-harness#945, which is measured across content-inert and optimisation
+# commits and revises the cost DOWNWARD. Do not re-quote the single-run pair. The
 # block below attributes that wall clock to call sites and records the counters
 # that could couple it to repo size (child processes, bytes hashed, tree copies,
 # tar members extracted, files read).
@@ -529,9 +533,16 @@ def _conform_timing_sweep() -> None:
     It installs the IMPORT-TIME value, not the predecessor captured at install.
     By the time this runs, every fixture teardown for the test has already gone,
     so a predecessor that belonged to an independent fixture has expired; putting
-    it back would leak that fixture's object into every later test. Reaching this
-    branch at all means our own wrapper is the live value, so no live fixture
-    patch can be displaced by restoring the session's original.
+    it back would leak that fixture's object into every later test.
+
+    The precise limit (codex, round 6): this is a property of THIS sweep's
+    restoration policy, not an impossibility. A live predecessor is not erased --
+    `bindings` still holds it as `real` -- so it is recoverable by a sweep that
+    knows the predecessor is still live. This sweep keeps no fixture-lifetime
+    information, so it cannot tell a live predecessor from the expired per-test
+    one, and it restores the import-time value rather than guess. Displacing a
+    live fixture patch is therefore possible in principle here; it is ruled out
+    by the opt-in flag and the recorded retirement, not by the restore target.
     """
     while _CONFORM_RETIRED_BINDINGS:
         for name, get, set_value, wrapper, real in _CONFORM_RETIRED_BINDINGS.pop():
