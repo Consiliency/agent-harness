@@ -24,10 +24,9 @@ import pytest
 # TESTDECOUPLE SL-1 (overlay-dependent): builds a skill/adoption bundle or runs the
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
-# conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
+# conftest hook skips this class when no dotfiles tree is reachable. The pure
+# roadmap-lint tests below must also run in standalone CI.
+@pytest.mark.dotfiles_integration
 class PhaseLoopRoadmapValidateTest(unittest.TestCase):
     def test_validator_accepts_integer_and_decimal_phase_headings(self):
         with tempfile.TemporaryDirectory() as td:
@@ -228,6 +227,216 @@ class RoadmapLintModuleTest(unittest.TestCase):
             self.assertEqual(main(["validate-roadmap", str(good)]), 0)
             self.assertEqual(main(["validate-roadmap", "--roadmap", str(good)]), 0)
             self.assertEqual(main(["validate-roadmap", str(bad)]), 1)
+
+
+_SECOND_PHASE = """### Phase 2 — Delivery (DELIVERY)
+**Objective**
+Ship the change.
+
+**Exit criteria**
+- [ ] it ships
+
+**Scope notes**
+Single lane.
+
+**Key files**
+- src/delivery.py
+
+**Depends on**
+- FOUND
+
+**Produces**
+- (none)
+
+"""
+
+
+@pytest.mark.parametrize(
+    "heading,prefix",
+    [
+        ("### phase 2 — Delivery (DELIVERY)", ""),
+        ("## Phase 2 — Delivery (DELIVERY)", ""),
+        ("### Phase2 — Delivery (DELIVERY)", ""),
+        ("### Phase 2 — Delivery (DELIVERY)", " "),
+        ("### Phase 2 — Delivery (DELIVERY)", "\u00a0"),
+        ("### Phase 2 — Delivery (DELIVERY)", "\ufeff"),
+    ],
+    ids=["case", "level", "spacing", "space-indent", "nbsp-indent", "bom-indent"],
+)
+def test_malformed_phase_cannot_silently_disappear(heading, prefix):
+    from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+    clean = _VALID_ROADMAP.replace("## Top Interface-Freeze Gates", _SECOND_PHASE + "## Top Interface-Freeze Gates")
+    assert lint_roadmap_text(clean) == []
+    altered = _SECOND_PHASE.replace(_SECOND_PHASE.splitlines()[0], heading, 1)
+    altered = "".join(prefix + line for line in altered.splitlines(keepends=True))
+    text = clean.replace(_SECOND_PHASE, altered)
+    line_number = text[:text.index(prefix + heading)].count("\n") + 1
+    errors = lint_roadmap_text(text)
+    assert any(f"(B) line {line_number}:" in error for error in errors), errors
+
+
+def test_unrecognized_phase_heading_leaves_an_unclaimed_body_error():
+    from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+    altered = _SECOND_PHASE.replace("### Phase 2 — Delivery (DELIVERY)", "### Delivery")
+    text = _VALID_ROADMAP.replace("## Top Interface-Freeze Gates", altered + "## Top Interface-Freeze Gates")
+    body_line = text[:text.index("**Key files**", text.index("### Delivery"))].count("\n") + 1
+    errors = lint_roadmap_text(text)
+    assert any(f"(B) line {body_line}:" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "opening,inside,closing",
+    [
+        ("```markdown", "", "```"),
+        ("~~~markdown", "", "~~~"),
+        ("   ```markdown", "", "   ```"),
+        ("  ~~~~markdown", "~~~\n", "~~~~~"),
+        ("````markdown", "```\n", "`````"),
+        ("```markdown", "~~~\n", "```"),
+        ("~~~markdown", "```\n", "~~~"),
+        ("```markdown", "``` not-a-closing-fence\n", "```"),
+    ],
+)
+def test_fenced_phase_examples_are_not_parsed_or_linted(opening, inside, closing):
+    from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
+
+    example = f"{opening}\n{inside}{_SECOND_PHASE}### phase 3 — Example (EXAMPLE)\n{closing}\n\n"
+    text = _VALID_ROADMAP.replace("## Phases", example + "## Phases")
+    assert lint_roadmap_text(text) == []
+    assert [phase.alias for phase in _extract_phases(text)] == ["FOUND"]
+
+
+def test_unclosed_fence_hides_examples_through_end_of_document():
+    from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
+
+    text = _VALID_ROADMAP + "\n~~~markdown\n" + _SECOND_PHASE
+    assert lint_roadmap_text(text) == []
+    assert [phase.alias for phase in _extract_phases(text)] == ["FOUND"]
+
+
+def test_phase_keeps_raw_fenced_source_immediately_after_heading():
+    from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
+
+    example = "```markdown\n### Phase 99 — Example (EXAMPLE)\n```\n"
+    text = _VALID_ROADMAP.replace("**Objective**", example + "**Objective**", 1)
+    assert lint_roadmap_text(text) == []
+    phases = _extract_phases(text)
+    assert len(phases) == 1
+    assert example in phases[0].raw_body
+    assert phases[0].objective == "Do the thing."
+
+
+def test_heading_error_line_number_survives_fenced_example():
+    from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+    heading = "### phase 2 — Delivery (DELIVERY)"
+    text = _VALID_ROADMAP.replace("## Phases", "```\n### Phase 99 — Example (EXAMPLE)\n```\n\n## Phases")
+    text = text.replace("## Top Interface-Freeze Gates", _SECOND_PHASE.replace(_SECOND_PHASE.splitlines()[0], heading) + "## Top Interface-Freeze Gates")
+    line_number = text[:text.index(heading)].count("\n") + 1
+    assert any(f"(B) line {line_number}:" in error for error in lint_roadmap_text(text))
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "### Phase 2 —\n```markdown\nexample\n```\nDelivery (DELIVERY)\n",
+        "### Phase 2\n```\n```\n— Delivery (DELIVERY)\n",
+        "### Phase 2 — Delivery (DELIVERY,\nannotation)\n",
+    ],
+    ids=["fence-after-dash", "fence-before-dash", "multiline-annotation"],
+)
+def test_phase_heading_cannot_span_source_lines(heading):
+    from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
+
+    assert _extract_phases(heading) == []
+    assert any(error.startswith("(B) line 1:") for error in lint_roadmap_text(heading))
+
+
+@pytest.mark.parametrize("separator", ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_non_lf_separator_cannot_silently_drop_a_phase(separator, side):
+    from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+    text = _VALID_ROADMAP.replace("## Top Interface-Freeze Gates", _SECOND_PHASE + "## Top Interface-Freeze Gates")
+    heading = "### Phase 2 — Delivery (DELIVERY)"
+    if side == "before":
+        text = text.replace("\n" + heading, separator + heading, 1)
+    else:
+        text = text.replace(heading + "\n", heading + separator, 1)
+    line_number = text[:text.index(heading)].count("\n") + 1
+    assert any(f"(B) line {line_number}:" in error for error in lint_roadmap_text(text))
+
+
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\x0c"])
+def test_non_lf_separator_cannot_create_a_fence(separator):
+    from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
+
+    text = f"Prose{separator}```markdown\n" + _VALID_ROADMAP
+    assert [phase.alias for phase in _extract_phases(text)] == ["FOUND"]
+    assert lint_roadmap_text(text) == []
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_lf_and_crlf_keep_phase_and_raw_fenced_body(newline):
+    from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
+
+    example = "~~~markdown\n### Phase 99 — Example (EXAMPLE)\n~~~\n"
+    text = _VALID_ROADMAP.replace("**Objective**", example + "**Objective**", 1)
+    text = text.replace("## Top Interface-Freeze Gates", _SECOND_PHASE + "## Top Interface-Freeze Gates")
+    text = text.replace("\n", newline)
+    phases = _extract_phases(text)
+    assert [phase.alias for phase in phases] == ["FOUND", "DELIVERY"]
+    assert example.replace("\n", newline) in phases[0].raw_body
+    assert lint_roadmap_text(text) == []
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "### Phase 2 —\n```markdown\nexample\n```\nDelivery (DELIVERY)",
+        "### Phase 2\n```\n```\n— Delivery (DELIVERY)",
+        "\u2028### Phase 2 — Delivery (DELIVERY)",
+        "### Phase 2 — Delivery (DELIVERY)\u2028",
+    ],
+    ids=["fence-after-dash", "fence-before-dash", "separator-before", "separator-after"],
+)
+def test_standalone_validator_reports_heading_errors_without_traceback(tmp_path, heading):
+    from phase_loop_runtime import roadmap_lint
+
+    phase = _SECOND_PHASE.replace("### Phase 2 — Delivery (DELIVERY)", heading)
+    text = _VALID_ROADMAP.replace("## Top Interface-Freeze Gates", phase + "## Top Interface-Freeze Gates")
+    if heading.endswith("\u2028"):
+        text = text.replace("\u2028\n", "\u2028", 1)
+    path = tmp_path / "roadmap.md"
+    path.write_bytes(text.encode("utf-8"))
+    result = subprocess.run([sys.executable, roadmap_lint.__file__, str(path)], capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "(B) line " in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_standalone_validator_normalizes_bare_cr_file_lines(tmp_path):
+    from phase_loop_runtime import roadmap_lint
+
+    text = _VALID_ROADMAP.replace("## Top Interface-Freeze Gates", _SECOND_PHASE + "## Top Interface-Freeze Gates")
+    text = text.replace("\n### Phase 2", "\r### Phase 2", 1)
+    path = tmp_path / "roadmap.md"
+    path.write_bytes(text.encode("utf-8"))
+    result = subprocess.run([sys.executable, roadmap_lint.__file__, str(path)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "2 phase(s)" in result.stdout
+
+
+def test_versioned_roadmaps_still_lint_clean():
+    from phase_loop_runtime.roadmap_lint import lint_roadmap_text
+
+    repo = Path(__file__).resolve().parents[2]
+    paths = sorted((repo / "specs").glob("phase-plans-v*.md"))
+    assert paths
+    findings = {str(path.relative_to(repo)): lint_roadmap_text(path.read_text(encoding="utf-8")) for path in paths}
+    assert not {path: errors for path, errors in findings.items() if errors}
 
 
 if __name__ == "__main__":
