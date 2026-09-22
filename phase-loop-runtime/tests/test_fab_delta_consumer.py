@@ -98,6 +98,10 @@ def _seed_fabreadmit_two_node_resume(ledger_path: Path, candidate_head: str) -> 
     """Make repo-b and the train approval durable before a repo-a-only replay."""
     from phase_loop_runtime.train_ledger import LedgerRecord, append_record
     from phase_loop_runtime.train_runner import _MIN_USABLE_REVIEWERS, _TRAIN_REVIEW_NODE_ID
+    from dataclasses import replace
+    from phase_loop_runtime.train_ledger import read_ledger
+    rec = read_ledger(ledger_path)["repo-a/specs/plan-a.md"]
+    append_record(ledger_path, replace(rec, pr_url="https://github.com/org/repo-a/pull/1"))
 
     append_record(
         ledger_path,
@@ -106,7 +110,7 @@ def _seed_fabreadmit_two_node_resume(ledger_path: Path, candidate_head: str) -> 
             status="pr_open",
             branch="feat/repo-b",
             head_sha=candidate_head,
-            pr_url="u-repo-b",
+            pr_url="https://github.com/org/repo-b/pull/1",
             merge_order=1,
         ),
     )
@@ -141,37 +145,43 @@ def _run_fabreadmit_two_node_resume(runner, fixture, seeded: dict, *, live_head_
         workspace_id=str(fixture.repo),
         broker_client=build_routing_broker_client(),
     )
-    return runner.run_train(
-        # Keep the existing two-node topology, but make its dependency order-only:
-        # repo-b has no upstream-content comparison that can pre-empt repo-a P4.
-        parse_train_roadmap(TRAIN_2NODE_MD.replace(
-            "**Channel:** submodule path=vendor/repo-a", "**Channel:** order-only"
-        )),
-        seeded["ledger_path"],
-        run_mode="governed",
-        resolve_workspace=lambda node: ws_map[node.node_id],
-        coordinator_runtime=coordinator_runtime,
-        resolve_owned_paths=None,
-        _run_loop=lambda *args, **kwargs: (None, []),
-        _publish=_make_publish_stub({}),
-        _set_upstream_ref_fn=lambda *args, **kwargs: [],
-        _preflight_fn=lambda *args, **kwargs: None,
-        _pr_is_open=lambda *args, **kwargs: True,
-        _live_pr_head_sha_fn=lambda workspace, branch: (
-            live_head_sha if Path(workspace) == fixture.repo else None
-        ),
-        _merge_phase_enabled=True,
-        _reverify_fn=_reverify_pass,
-        _train_review_fn=_approval_review_fn,
-        _pr_merged_sha_fn=lambda *args, **kwargs: None,
-        _delta_review_fn=fixture._review_fn,
-        _merge_pr_fn=_fabreadmit_node_scoped_merge_stub(captured, {
-            fixture.repo: node_id,
-            repo_b: "repo-b/specs/plan-b.md",
-        }),
-        fab_fetch_origin="fetchsrc",
-        fab_delta_shortcut=True,
-    )
+    from test_train_review_packet import real_fab_packet_inputs
+    roadmap = parse_train_roadmap(TRAIN_2NODE_MD.replace(
+        "**Channel:** submodule path=vendor/repo-a", "**Channel:** order-only"))
+    with pytest.MonkeyPatch.context() as packet_patch:
+        material = real_fab_packet_inputs(fixture, seeded, roadmap, packet_patch, ws_map)
+        return runner.run_train(
+            # Keep the existing two-node topology, but make its dependency order-only:
+            # repo-b has no upstream-content comparison that can pre-empt repo-a P4.
+            parse_train_roadmap(TRAIN_2NODE_MD.replace(
+                "**Channel:** submodule path=vendor/repo-a", "**Channel:** order-only"
+            )),
+            seeded["ledger_path"],
+            run_mode="governed",
+            review_material=material,
+            resolve_workspace=lambda node: ws_map[node.node_id],
+            coordinator_runtime=coordinator_runtime,
+            resolve_owned_paths=None,
+            _run_loop=lambda *args, **kwargs: (None, []),
+            _publish=_make_publish_stub({}),
+            _set_upstream_ref_fn=lambda *args, **kwargs: [],
+            _preflight_fn=lambda *args, **kwargs: None,
+            _pr_is_open=lambda *args, **kwargs: True,
+            _live_pr_head_sha_fn=lambda workspace, branch: (
+                live_head_sha if Path(workspace) == fixture.repo else None
+            ),
+            _merge_phase_enabled=True,
+            _reverify_fn=_reverify_pass,
+            _train_review_fn=_approval_review_fn,
+            _pr_merged_sha_fn=lambda *args, **kwargs: None,
+            _delta_review_fn=fixture._review_fn,
+            _merge_pr_fn=_fabreadmit_node_scoped_merge_stub(captured, {
+                fixture.repo: node_id,
+                repo_b: "repo-b/specs/plan-b.md",
+            }),
+            fab_fetch_origin="fetchsrc",
+            fab_delta_shortcut=True,
+        )
 
 
 class DeltaConsumerRoundTripTest(GitRepoTestCase):
@@ -2061,7 +2071,7 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         fixture_revoked.tearDown()
 
 
-def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
+def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path, monkeypatch):
     """Real-Git end-to-end delta shortcut with broker readmission."""
     import os
     import unittest.mock as _mock
@@ -2136,6 +2146,8 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
             "repo-a/specs/plan-a.md": fixture.repo,
             "repo-b/specs/plan-b.md": repo_b,
         }
+        from test_train_review_packet import real_fab_packet_inputs
+        material = real_fab_packet_inputs(fixture, seeded, roadmap, monkeypatch, ws_map)
 
         captured = {}
         commit_calls = []
@@ -2153,15 +2165,16 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                     roadmap,
                     ledger_path,
                     run_mode="governed",
+                    review_material=material,
                     resolve_workspace=lambda n: ws_map[n.node_id],
                     coordinator_runtime=coord_runtime,
                     resolve_owned_paths=None,
                     _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
+                    _publish=_make_publish_stub({str(repo_b): {"status": "published", "branch": "feat/repo-b", "head_sha": candidate_head, "pr_url": "https://github.com/org/repo-b/pull/1"}}),
                     _set_upstream_ref_fn=lambda *a, **kw: [],
                     _preflight_fn=lambda *a, **kw: None,
                     _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head if ws == fixture.repo else candidate_head,
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
                     _train_review_fn=_approval_review_fn,
@@ -2241,13 +2254,13 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                             fab_fetch_origin="fetchsrc",
                             fab_delta_shortcut=True,
                         )
-            assert result_a["status"] == "merged"
+            assert result_a["status"] == "review_halted" and result_a["reason"] == "stale_head"
             assert commit_calls_a == [], "readiness kill must not enter the broker helper"
-            assert read_ledger(ledger_a)[node_id].head_sha == delta_a
+            assert read_ledger(ledger_a)[node_id].head_sha == cand_a
             assert len(LinearizableAdmissionStore(seeded_a["store_root"], lambda _: True).replay()) == 1, (
                 "readiness kill must retain only the candidate admission"
             )
-            assert captured_a[str(fix_a.repo)][0]["head_sha"] == cand_a
+            assert captured_a == {}
         finally:
             fix_a.tearDown()
 
@@ -2267,6 +2280,7 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                 workspace_id=str(fix_b.repo), broker_client=build_routing_broker_client(),
             )
             captured_b = {}
+            material_b = real_fab_packet_inputs(fix_b, seeded_b, roadmap, monkeypatch)
             commit_calls_b = []
 
             def _observe_resolver_kill_commit(*args, **kwargs):
@@ -2279,15 +2293,16 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                 ):
                     result_b = tr.run_train(
                         roadmap, ledger_b, run_mode="governed",
+                        review_material=material_b,
                         resolve_workspace=lambda n: fix_b.repo,
                         coordinator_runtime=runtime_b,
                         resolve_owned_paths=lambda _n: ("pkg/a.py", "pkg/c.py"),
                         _run_loop=lambda *a, **kw: (None, []),
-                        _publish=_make_publish_stub({}),
+                        _publish=_make_publish_stub({str(fix_b.repo): {"status": "published", "branch": "feat/repo-b", "head_sha": cand_b, "pr_url": "https://github.com/org/repo-b/pull/1"}}),
                         _set_upstream_ref_fn=lambda *a, **kw: [],
                         _preflight_fn=lambda *a, **kw: None,
                         _pr_is_open=lambda ws, br: True,
-                        _live_pr_head_sha_fn=lambda ws, br: delta_b,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_b if br == seeded_b["branch"] else cand_b,
                         _merge_phase_enabled=True,
                         _reverify_fn=_reverify_pass,
                         _train_review_fn=_approval_review_fn,
@@ -2297,13 +2312,13 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                         fab_fetch_origin="fetchsrc",
                         fab_delta_shortcut=True,
                     )
-            assert result_b["status"] == "merged"
+            assert result_b["status"] == "merge_halted" and result_b["reason"] == "fab_readmit_failed"
             assert commit_calls_b == [], "resolver kill must not enter the broker helper"
-            assert read_ledger(ledger_b)[node_id].head_sha == delta_b
+            assert read_ledger(ledger_b)[node_id].head_sha == cand_b
             assert len(LinearizableAdmissionStore(seeded_b["store_root"], lambda _: True).replay()) == 1, (
                 "resolver kill must retain only the candidate admission"
             )
-            assert captured_b[str(fix_b.repo)][0]["head_sha"] == cand_b
+            assert captured_b == {}
         finally:
             fix_b.tearDown()
 

@@ -70,6 +70,13 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   files and a ready/hold receipt in a fresh empty directory without models or writes
   to broker, admission, lease or ledger state.
 
+Trusted FAB readmission in ordinary governed execution freezes all proposed-head
+material before recovery or delta review, then requires matching durable broker
+admission before using those same bytes. Preview, review-only and native request
+emission never readmit. Missing Git objects require separate caller preparation;
+the packet builder never fetches. Ready proves harness transport fit, not actual
+provider consumption or permission for another supplier review round.
+
 ## Workflow
 
 1. Resolve the train roadmap path (explicit arg or the user-supplied path).

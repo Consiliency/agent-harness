@@ -251,10 +251,11 @@ def run_candidate(c, monkeypatch, **kwargs):
     from phase_loop_runtime import train_runner as tr
     ledger = c["tmp"] / "ledger" / "train.ledger.jsonl"
     if not ledger.exists():
-        append_record(ledger, c["state"][c["node"].node_id])
-    monkeypatch.setattr(packet, "read_pr_metadata", lambda *_: dict(c["live"]))
+        for record in c["state"].values():
+            append_record(ledger, record)
+    monkeypatch.setattr(packet, "read_pr_metadata", lambda ws, url: dict(c.get("lives", {}).get(url, c["live"])))
     options = dict(run_mode="governed", review_only=True, review_material=c["material_path"],
-        resolve_workspace=lambda _: c["repo"], _run_loop=never, _publish=never,
+        resolve_workspace=lambda n: c.get("workspaces", {}).get(n.node_id, c["repo"]), _run_loop=never, _publish=never,
         _preflight_fn=lambda *_: [], _pr_is_open=lambda *_: True,
         _live_pr_head_sha_fn=lambda *_: c["live"]["headRefOid"], _merge_phase_enabled=True,
         _pr_merged_sha_fn=lambda *a, **k: None, _train_review_fn=approved,
@@ -501,7 +502,15 @@ def synthetic_packet_for_flow_tests(roadmap, state, *_args, **_kwargs):
     nodes = []
     for node in roadmap.topo_order():
         record = state[node.node_id]
-        nodes.append({"identity": {"node_id": node.node_id, "head_sha": record.head_sha, "pr_url": record.pr_url},
+        if record.fab_run_id and _args:
+            from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+            workspace = Path(_args[0](node))
+            workspace.mkdir(parents=True, exist_ok=True)
+            if not (workspace / ".git").exists():
+                git(workspace, "init", "-q")
+            repository_broker_namespace(workspace).mkdir(parents=True, exist_ok=True)
+        nodes.append({"identity": {"node_id": node.node_id, "head_sha": record.head_sha, "pr_url": record.pr_url,
+                                  "admission": packet.admission_binding(record)},
             "material": {"declaration_sha256": "0" * 64, "acceptance": [], "verification": []},
             "inventory": [], "inventory_sha256": "0" * 64, "changed_paths": 0,
             "git_version": "SYNTHETIC FLOW FIXTURE - NOT GIT EVIDENCE", "diff_argv": [], "inventory_argv": [],
@@ -515,6 +524,15 @@ def synthetic_packet_for_flow_tests(roadmap, state, *_args, **_kwargs):
 def synthetic_train_packet(monkeypatch):
     monkeypatch.setattr(packet, "build_review_packet", synthetic_packet_for_flow_tests)
     monkeypatch.setattr(packet, "recheck_packet_identities", lambda *a, **k: None)
+    def prepare(roadmap, state, *args, proposed_heads, **kwargs):
+        built = synthetic_packet_for_flow_tests(roadmap, state, *args, **kwargs)
+        for node in built.metadata["nodes"]:
+            ident = node["identity"]
+            ident["head_sha"] = proposed_heads.get(ident["node_id"], ident["head_sha"])
+            ident["admission"]["head_sha"] = ident["head_sha"]
+        return packet.PreparedReviewPacket(packet._render(built.metadata), built.metadata, [],
+            {nid: packet.admission_binding(rec) for nid, rec in state.items()})
+    monkeypatch.setattr(packet, "prepare_review_packet", prepare)
 
 
 def seed_synthetic_packet(ledger, roadmap):
@@ -526,6 +544,8 @@ def seed_synthetic_packet(ledger, roadmap):
     approval = state.get("_train_review_")
     if approval is not None:
         append_record(ledger, replace(approval, review_packet_sha256=built.sha256))
+    else:
+        append_record(ledger, LedgerRecord("_train_review_", "approved", review_packet_sha256=built.sha256))
 
 
 def test_observed_identity_drift_same_repo_after_first_merge_holds_second(candidate, monkeypatch):
@@ -903,7 +923,7 @@ def revoke(namespace):
 
 
 @pytest.mark.parametrize("mode", ["review", "native", "merge"])
-@pytest.mark.parametrize("store", ["revoked", "malformed", "absent", "empty"])
+@pytest.mark.parametrize("store", ["revoked", "malformed", "unreadable", "absent", "empty"])
 def test_real_revocation_store_before_sink(candidate, monkeypatch, mode, store):
     from phase_loop_runtime import train_runner as tr
     c = candidate
@@ -912,6 +932,8 @@ def test_real_revocation_store_before_sink(candidate, monkeypatch, mode, store):
         revoke(namespace)
     elif store == "malformed":
         (namespace / "evidence.jsonl").write_text('{"broken": true}\n')
+    elif store == "unreadable":
+        (namespace / "evidence.jsonl").mkdir()
     elif store == "absent":
         namespace.rmdir()
     before = sorted(str(p) for p in namespace.rglob("*"))
@@ -966,3 +988,299 @@ def test_prepared_snapshot_has_no_authority_and_promotes_identical_bytes(candida
     monkeypatch.setattr(packet, "_GitReader", never)
     finalized = packet.finalize_review_packet(prepared, c["roadmap"], {prior.node_id: replace(prior, head_sha=c["head"])}, lambda _: c["repo"], _pr_metadata_fn=lambda *_: dict(c["live"]))
     assert finalized.artifact == prepared.artifact and finalized.sha256 == prepared.sha256
+
+
+def proposed_candidate(c):
+    (c["repo"] / "code.py").write_text("prospective_delta = 3\n")
+    head = commit(c["repo"], "delta")
+    c["live"]["headRefOid"] = head
+    raw = c["material"]["nodes"][c["node"].node_id]
+    raw["head_sha"] = raw["verification"][0]["head_sha"] = head
+    update_material(c)
+    return head
+
+
+def add_sibling(c):
+    from dataclasses import replace
+    second = TrainNode("repo-b", "NEXT.md")
+    repo = c["tmp"] / "sibling"
+    git(c["tmp"], "clone", "-q", str(c["repo"]), str(repo))
+    rec = replace(c["state"][c["node"].node_id], node_id=second.node_id, pr_url="https://github.com/org/repo-b/pull/8")
+    c["state"][second.node_id] = rec
+    c["roadmap"].nodes.append(second)
+    c["material"]["nodes"][second.node_id] = json.loads(json.dumps(c["material"]["nodes"][c["node"].node_id]))
+    c["workspaces"] = {c["node"].node_id: c["repo"], second.node_id: repo}
+    c["lives"] = {c["live"]["url"]: c["live"], rec.pr_url: {**c["live"], "url": rec.pr_url}}
+    update_material(c)
+    return second, repo
+
+
+@pytest.mark.parametrize("failure", ["old_evidence", "missing_object", "binary", "oversized", "mixed_stale", "native_fill"])
+def test_whole_train_material_barrier_precedes_all_fab_effects(candidate, monkeypatch, failure):
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    enable_fab(c, monkeypatch)
+    second, repo = add_sibling(c)
+    proposed_candidate(c)
+    raw = c["material"]["nodes"][second.node_id]
+    if failure == "old_evidence":
+        c["material"]["nodes"][c["node"].node_id]["verification"][0]["head_sha"] = c["head"]
+    elif failure == "missing_object":
+        c["lives"][c["state"][second.node_id].pr_url]["baseRefOid"] = "f" * 40
+    elif failure == "binary":
+        (repo / "code.py").write_bytes(b"binary\x00value")
+        head = commit(repo, "binary")
+        c["state"][second.node_id].head_sha = head
+        raw["head_sha"] = raw["verification"][0]["head_sha"] = head
+        c["lives"][c["state"][second.node_id].pr_url]["headRefOid"] = head
+    elif failure == "oversized":
+        raw["acceptance"][0]["text"] = "x" * (600 * 1024)
+    elif failure == "mixed_stale":
+        c["state"][second.node_id].fab_run_id = None
+        c["lives"][c["state"][second.node_id].pr_url]["headRefOid"] = "f" * 40
+    update_material(c)
+    for name in ("_train_revocation_store", "_fab_recover_torn_to_admitted", "_fab_delta_readmit"):
+        monkeypatch.setattr(tr, name, never)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _train_review_fn=never,
+        native_leg_fills=[object()] if failure == "native_fill" else None,
+        _live_pr_head_sha_fn=lambda ws, br: c["live"]["headRefOid"] if ws == c["repo"] else c["lives"][c["state"][second.node_id].pr_url]["headRefOid"])
+    assert result["status"] == "review_halted", result
+    if failure == "native_fill":
+        assert result["reason"] == "native_fill_stale_request"
+
+
+@pytest.mark.parametrize("failure", ["none", "fake", "before_append", "after_append"])
+def test_readmission_result_never_substitutes_for_durable_authority(candidate, monkeypatch, failure):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    enable_fab(c, monkeypatch)
+    head = proposed_candidate(c)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)
+    def readmit(ws, ledger, **kwargs):
+        assert kwargs["evidence_store"].root.is_dir()
+        if failure == "after_append":
+            append_record(ledger, replace(read_ledger(ledger)[c["node"].node_id], head_sha=head))
+        if failure.endswith("append"):
+            raise RuntimeError("crash seam")
+        return head if failure == "fake" else None
+    monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _train_review_fn=never)
+    assert result["status"] in {"review_halted", "merge_halted"}, result
+    rec = read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")[c["node"].node_id]
+    assert rec.head_sha == (head if failure == "after_append" else c["head"])
+    assert rec.fab_run_id == "packet-fab" and rec.merge_order == 3
+    if failure == "after_append":
+        monkeypatch.setattr(tr, "_fab_delta_readmit", never)
+        assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+
+
+def test_revoke_after_recovery_reaches_real_helper_entry_before_delta(candidate, monkeypatch):
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    namespace = enable_fab(c, monkeypatch)
+    proposed_candidate(c)
+    after_recovery = []
+    def recover(*a, **k):
+        revoke(namespace)
+        after_recovery.append((c["repo"] / "code.py").read_bytes())
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+    monkeypatch.setattr(tr, "_scope_run_to_admitted_prefix", never)
+    monkeypatch.setattr(tr, "_commit_broker_readmitted_head", never)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _delta_review_fn=never, _train_review_fn=never)
+    assert result["status"] == "merge_halted", result
+    assert after_recovery == [(c["repo"] / "code.py").read_bytes()]
+
+
+def test_revoke_sibling_after_barrier_before_its_recovery(candidate, monkeypatch):
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    c = candidate
+    enable_fab(c, monkeypatch)
+    second, repo = add_sibling(c)
+    namespace = repository_broker_namespace(repo)
+    namespace.mkdir(parents=True, exist_ok=True)
+    seen = []
+    before = git(repo, "rev-parse", "HEAD")
+    def recover(ws, *a, **k):
+        seen.append(ws)
+        revoke(namespace)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+    result = run_candidate(c, monkeypatch, review_only=False, _train_review_fn=never)
+    assert result["reason"] == "readmission_revoked", result
+    assert seen == [c["repo"]] and git(repo, "rev-parse", "HEAD") == before
+
+
+def test_approval_mapping_preserves_every_admission(candidate, monkeypatch):
+    c = candidate
+    enable_fab(c, monkeypatch)
+    before = packet.admission_binding(c["state"][c["node"].node_id])
+    assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+    state = read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
+    assert packet.admission_binding(state[c["node"].node_id]) == before
+    assert state["_train_review_"].fab_run_id is None
+
+
+def real_fab_packet_inputs(fixture, seeded, roadmap, monkeypatch, ws_map=None):
+    """Real Git/material fixture for broker controls; only GitHub reads injected."""
+    from dataclasses import replace
+    state = read_ledger(seeded["ledger_path"])
+    ws_map = ws_map or {n.node_id: fixture.repo for n in roadmap.nodes}
+    root = seeded["ledger_path"].parent
+    evidence = dump(root / "packet-evidence.json", {"attribution": "test fixture execution only"})
+    material = {"schema_version": 1, "nodes": {}}
+    live = {}
+    for node in roadmap.nodes:
+        ws = ws_map[node.node_id]
+        if ws != fixture.repo and not (ws / ".git").exists():
+            git(root, "clone", "-q", str(fixture.repo), str(ws))
+        rec = state.get(node.node_id)
+        existed = rec is not None
+        if rec is None:
+            rec = LedgerRecord(node.node_id, "pr_open", branch="feat/repo-b", head_sha=seeded["candidate_head"])
+        url = f"https://github.com/org/{node.repo}/pull/1"
+        if rec.pr_url != url:
+            rec = replace(rec, pr_url=url)
+            if existed:
+                append_record(seeded["ledger_path"], rec)
+        head = seeded["delta_head"] if node.node_id == seeded["node_id"] else rec.head_sha
+        live[url] = {"url": url, "state": "OPEN", "baseRefName": "main", "baseRefOid": seeded["base"], "headRefOid": head}
+        material["nodes"][node.node_id] = {"head_sha": head,
+            "acceptance": [{"id": "scope", "text": "Complete candidate and delta content", "provenance": evidence}],
+            "verification": [{"id": "fixture", "kind": "attested_command", "head_sha": head,
+                "argv": ["fixture"], "exit_code": 0, "result": "passed", "attested_by": "test fixture",
+                "observed_at": "2026-09-22T00:00:00Z", "evidence": evidence}]}
+    path = root / "packet-material.json"
+    dump(path, material)
+    monkeypatch.setattr(packet, "read_pr_metadata", lambda ws, url: dict(live[url]))
+    return path
+
+
+@pytest.mark.parametrize("crash", ["exception_after_append", "exit_after_append", "exit_before_append"])
+def test_real_broker_crash_seams_resume_exact_durable_binding(tmp_path, monkeypatch, crash):
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest, _seed_fabreadmit_two_node_resume, _run_fabreadmit_two_node_resume
+    fixture = DeltaReadmitTransactionTest()
+    fixture.tmp_path = tmp_path
+    fixture.setUp()
+    try:
+        seeded = fixture._setup_broker_readmit_candidate(node_id="repo-a/specs/plan-a.md", branch="feat/repo-a")
+        _seed_fabreadmit_two_node_resume(seeded["ledger_path"], seeded["candidate_head"])
+        monkeypatch.setenv(FAB_PROMOTION_ENV, "1")
+        real_append = tr.append_record
+        reviews = []
+        real_review = fixture._review_fn
+        def review(*a, **k):
+            reviews.append(1)
+            return real_review(*a, **k)
+        fixture._review_fn = review
+        def interrupt(path, record, **kwargs):
+            if record.status == "pr_open" and record.head_sha == seeded["delta_head"]:
+                if crash != "exit_before_append":
+                    real_append(path, record, **kwargs)
+                if crash == "exception_after_append":
+                    raise OSError("after durable append")
+                raise SystemExit("durable crash seam")
+            return real_append(path, record, **kwargs)
+        with monkeypatch.context() as seam:
+            seam.setattr(tr, "append_record", interrupt)
+            if crash == "exception_after_append":
+                result = _run_fabreadmit_two_node_resume(tr, fixture, seeded, live_head_sha=seeded["delta_head"], captured={})
+                assert result["reason"] == "fab_readmit_failed"
+            else:
+                with pytest.raises(SystemExit, match="durable crash seam"):
+                    _run_fabreadmit_two_node_resume(tr, fixture, seeded, live_head_sha=seeded["delta_head"], captured={})
+        durable = read_ledger(seeded["ledger_path"])[seeded["node_id"]]
+        assert durable.fab_run_id == fixture.RUN and durable.merge_order == 0
+        assert durable.head_sha == seeded["candidate_head" if crash == "exit_before_append" else "delta_head"]
+        admissions = seeded["store"].replay()
+        assert len(admissions) == 2 and admissions[-1].epoch == 2
+        authority_digest = admissions[-1].binding.authority_digest
+        result = _run_fabreadmit_two_node_resume(tr, fixture, seeded, live_head_sha=seeded["delta_head"], captured={})
+        assert result["status"] == "merged", result
+        assert len(reviews) == (2 if crash == "exit_before_append" else 1)
+        assert len(seeded["store"].replay()) == 2
+        assert seeded["store"].replay()[-1].binding.authority_digest == authority_digest
+    finally:
+        fixture.tearDown()
+
+
+@pytest.mark.parametrize("sink", ["review", "cache", "native"])
+def test_revocation_after_packet_storage_precedes_sink(candidate, monkeypatch, sink):
+    c = candidate
+    namespace = enable_fab(c, monkeypatch)
+    if sink == "cache":
+        assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+    store = packet.store_review_packet
+    def mutate(*a, **k):
+        result = store(*a, **k)
+        revoke(namespace)
+        return result
+    monkeypatch.setattr(packet, "store_review_packet", mutate)
+    result = run_candidate(c, monkeypatch, emit_native_request=sink == "native",
+        _emit_native_fill_request_fn=never, _train_review_fn=never)
+    assert result["status"] == "review_halted" and result["reason"] == "readmission_revoked", result
+
+
+def test_durable_only_drift_between_merges_holds_remaining_node(candidate, monkeypatch):
+    from dataclasses import replace
+    c = candidate
+    second, _ = add_sibling(c)
+    seen = []
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    def merge(ws, branch, **kwargs):
+        seen.append(ws)
+        append_record(ledger, replace(read_ledger(ledger)[second.node_id], branch="rebound"))
+        return c["head"]
+    result = run_candidate(c, monkeypatch, review_only=False, _merge_pr_fn=merge)
+    assert result["reason"] == "observed_identity_drift" and seen == [c["repo"]], result
+    assert read_ledger(ledger)[c["node"].node_id].status == "merged"
+
+
+def test_later_readmission_failure_preserves_earlier_durable_binding(candidate, monkeypatch):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    c = candidate
+    enable_fab(c, monkeypatch)
+    second, repo = add_sibling(c)
+    repository_broker_namespace(repo).mkdir(parents=True, exist_ok=True)
+    first_head = proposed_candidate(c)
+    (repo / "code.py").write_text("second delta\n")
+    second_head = commit(repo, "second delta")
+    raw = c["material"]["nodes"][second.node_id]
+    raw["head_sha"] = raw["verification"][0]["head_sha"] = second_head
+    c["lives"][c["state"][second.node_id].pr_url]["headRefOid"] = second_head
+    update_material(c)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: None)
+    seen = []
+    def readmit(ws, ledger, **kwargs):
+        # Inject only the admission outcome for this partial-failure boundary.
+        # Real routing/grant authority is exercised by the controls above.
+        seen.append(kwargs["node_id"])
+        if kwargs["node_id"] == second.node_id:
+            return None
+        append_record(ledger, replace(read_ledger(ledger)[kwargs["node_id"]], head_sha=first_head))
+        return first_head
+    monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True, _train_review_fn=never,
+        _live_pr_head_sha_fn=lambda ws, br: first_head if ws == c["repo"] else second_head)
+    assert result["reason"] == "fab_readmit_failed" and seen == [c["node"].node_id, second.node_id], result
+    state = read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
+    assert state[c["node"].node_id].head_sha == first_head
+    assert state[second.node_id].head_sha == c["head"]
+    assert "_train_review_" not in state
+
+
+def test_external_merge_recovery_preserves_historical_fab_identity(candidate, monkeypatch):
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    enable_fab(c, monkeypatch)
+    assert run_candidate(c, monkeypatch)["status"] == "review_approved"
+    c["live"].update(state="MERGED", mergeCommit={"oid": c["head"]})
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", never)
+    result = run_candidate(c, monkeypatch, review_only=False, _pr_is_open=lambda *_: False,
+        _pr_merged_sha_fn=lambda *a, **k: c["head"], _train_review_fn=never)
+    assert result["status"] == "merged", result
+    assert read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")[c["node"].node_id].fab_run_id == "packet-fab"

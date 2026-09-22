@@ -34,6 +34,7 @@ Deliberately in an UNMARKED module so CI runs it.
 from __future__ import annotations
 
 from pathlib import Path
+from test_train_review_packet import synthetic_train_packet
 
 from phase_loop_runtime import governed_premerge as gp
 from phase_loop_runtime import train_runner
@@ -87,7 +88,7 @@ def _resume_train(tmp_path: Path, monkeypatch, *, recovery_calls: list):
     )
 
 
-def test_flag_off_resume_does_not_run_torn_recovery(tmp_path: Path, monkeypatch):
+def test_flag_off_resume_does_not_run_torn_recovery(tmp_path: Path, monkeypatch, synthetic_train_packet):
     """THE ah#299 REGRESSION. Flag OFF + a stale ledger-persisted `fab_run_id` must NOT
     reach torn-recovery, and the train must still complete by the ordinary merge path.
 
@@ -109,7 +110,7 @@ def test_flag_off_resume_does_not_run_torn_recovery(tmp_path: Path, monkeypatch)
     )
 
 
-def test_flag_on_resume_still_runs_torn_recovery(tmp_path: Path, monkeypatch):
+def test_flag_on_resume_still_runs_torn_recovery(tmp_path: Path, monkeypatch, synthetic_train_packet):
     """NEGATIVE CONTROL. Without this, gating the block to a constant `False` — or
     deleting it outright — would satisfy the test above while silently disabling FAB
     recovery for real flag-ON runs."""
@@ -209,9 +210,7 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
         assert commit_calls == [], "flag-off resume must execute zero broker readmission commits"
         canonical_store = LinearizableAdmissionStore(seeded["store_root"], lambda _: True)
         assert canonical_store.replay() == store_before, "flag-off resume must leave canonical admission unchanged"
-        assert [head_sha for branch, head_sha in merge_calls if branch == seeded["branch"]] == [
-            seeded["candidate_head"]
-        ], "flag-off resume must merge the admitted candidate head"
-        assert result.get("status") == "merged"
+        assert merge_calls == [], "flag-off stale head must hold before merge"
+        assert result.get("status") == "review_halted" and result["reason"] == "stale_head"
     finally:
         fixture.tearDown()

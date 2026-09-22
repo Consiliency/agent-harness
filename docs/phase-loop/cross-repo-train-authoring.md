@@ -174,6 +174,25 @@ Without valid historical material it holds as `historical_packet_unavailable`.
 Observed base/head drift before approval or each merge holds remaining work;
 this is not an atomic base pin or a promise against concurrent GitHub changes.
 
+Ordinary governed merge execution may use the existing trusted FAB readmission
+opt-in. It first classifies every pending node and freezes the full prospective
+packet, requiring all evidence to bind the proposed head and all Git objects to
+exist locally. Invalid material anywhere holds before recovery or delta review.
+Existing broker readmission then establishes durable authority; only matching
+fresh ledger bindings can promote those identical frozen bytes for train review.
+The coordinator never advances a head after reviewing its packet. Recovery and
+every later approval/merge gate recheck actual repository revocation evidence;
+absent or unreadable evidence namespaces hold while FAB promotion is active.
+Promotion-off retains the existing flag semantics and still requires admitted,
+current heads. Read-only review and native emission never readmit or recover;
+native fills requiring a new admission hold, and request emission returns even
+when approval is cached. Preview never reads broker evidence.
+
+The configured coordinator supervise tier is advisory provenance only. Preview
+readiness proves Git coverage and harness transport fit; it does not prove that
+a provider consumed all material. Reported truncation is not a usable approval,
+and this workflow grants no extra supplier review round.
+
 ## Channel types
 
 A channel tells the coordinator how to update the downstream workspace's

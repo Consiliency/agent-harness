@@ -56,6 +56,7 @@ from typing import List, Optional
 from unittest.mock import patch
 
 import pytest
+from test_train_review_packet import synthetic_train_packet, seed_synthetic_packet
 
 from phase_loop_runtime import fab_canonical as fc
 from phase_loop_runtime import fab_gate as fg
@@ -420,6 +421,7 @@ class TestByteNeutralDefault:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.usefixtures("synthetic_train_packet")
 class TestP4LoopThreadingNeutral:
     @pytest.mark.parametrize("fab_flag", [None, "1"])
     def test_no_run_id_kwarg_leaks_to_merge_pr_fn(self, tmp_path: Path, monkeypatch, fab_flag):
@@ -1105,6 +1107,7 @@ def _p3a_run_train(roadmap, ledger, ws_map, *, run_loop, publish, merge_fn):
     )
 
 
+@pytest.mark.usefixtures("synthetic_train_packet")
 class TestPiece3aAdmissionBridgeIntegration:
     def test_fresh_admission_binds_and_threads_run_id(self, tmp_path: Path, monkeypatch):
         """A6: a fresh FAB build binds the plumbed fab_run_id in the pr_open
@@ -1222,6 +1225,7 @@ class TestPiece3aAdmissionBridgeIntegration:
         assert captured == {}, "no node may merge once admission fails closed"
 
 
+@pytest.mark.usefixtures("synthetic_train_packet")
 class TestPiece3bRecoveryWiring:
     """Round 4 1a/1b — the FAB torn-state recovery / re-admission wiring in the P4
     merge loop."""
@@ -1346,7 +1350,7 @@ class TestPiece3bRecoveryWiring:
         engaged: list = []
         result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
         assert engaged == [], "the ENGAGE path must be fenced off while _FAB_DELTA_BROKER_READMIT_READY is False"
-        assert result["status"] == "merged", result
+        assert result["status"] == "review_halted" and result["reason"] == "stale_head", result
 
 
     def test_interlock_on_re_enables_engage(self, tmp_path: Path, monkeypatch):
@@ -1354,10 +1358,12 @@ class TestPiece3bRecoveryWiring:
         switch + proof: `_fab_delta_readmit` IS invoked for the advanced head."""
         monkeypatch.setattr("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", True)
         engaged: list = []
-        self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
+        result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
         assert engaged and all(str(h).startswith("advanced-") for h in engaged), engaged
+        assert result["status"] == "merge_halted", result
 
 
+@pytest.mark.usefixtures("synthetic_train_packet")
 class TestPiece3aRegateEndToEnd:
     """A10/11 — the REAL `_live_merge_pr` re-gate fires for an admitted node."""
 
@@ -1373,6 +1379,7 @@ class TestPiece3aRegateEndToEnd:
         append_record(ledger, LedgerRecord(
             node_id="repo-b/specs/plan-b.md", status="merged", branch="feat/repo-b",
             head_sha="sha-b", pr_url="https://gh/b/1", upstream_merge_sha="sha-b-merged", merge_order=1))
+        seed_synthetic_packet(ledger, roadmap)
         return roadmap, ws_map, ledger
 
     def test_regate_passes_legit_admitted_head(self, tmp_path: Path, monkeypatch):
@@ -1547,7 +1554,7 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     assert _has_no_hardcoded_epoch_publishers() is True
 
 
-def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
+def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path, monkeypatch):
     """Reverting readiness interlock kills real-git shortcut."""
     import os
     import unittest.mock as _mock
@@ -1625,6 +1632,8 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
 
         captured_t = {}
+        from test_train_review_packet import real_fab_packet_inputs
+        material = real_fab_packet_inputs(fix_true, seeded_true, roadmap, monkeypatch)
         commit_calls_t = []
         real_commit = tr._commit_broker_readmitted_head
 
@@ -1636,15 +1645,16 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
             with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_true_commit):
                 res_true = tr.run_train(
                     roadmap, ledger_true, run_mode="governed",
+                    review_material=material,
                     resolve_workspace=lambda n: fix_true.repo,
                     coordinator_runtime=coord_t,
                     resolve_owned_paths=None,
                     _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
+                    _publish=_make_publish_stub({str(fix_true.repo): {"status": "published", "branch": "feat/repo-b", "head_sha": cand_t, "pr_url": "https://github.com/org/repo-b/pull/1"}}),
                     _set_upstream_ref_fn=lambda *a, **kw: [],
                     _preflight_fn=lambda *a, **kw: None,
                     _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_t,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_t if br == seeded_true["branch"] else cand_t,
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
                     _train_review_fn=_approval_review_fn,
@@ -1712,10 +1722,10 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
                         fab_delta_shortcut=True,
                     )
 
-        assert res_false["status"] == "merged"
+        assert res_false["status"] == "review_halted" and res_false["reason"] == "stale_head"
         assert commit_calls_f == [], "disabled shortcut must not enter the broker helper"
         assert len(LinearizableAdmissionStore(seeded_false["store_root"], lambda _: True).replay()) == 1
-        assert captured_f["calls"][0]["head_sha"] == cand_f
-        assert read_ledger(ledger_false)[node_id].head_sha == delta_f
+        assert captured_f == {}
+        assert read_ledger(ledger_false)[node_id].head_sha == cand_f
     finally:
         fix_false.tearDown()

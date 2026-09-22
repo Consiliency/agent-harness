@@ -3459,7 +3459,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
     assert PreAdmissionEnvelope is not None and _fabpub_hashlib is not None
 
 
-def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, tmp_path):
+def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, tmp_path, monkeypatch):
     """run_train routes readmission through real repository routing broker client."""
     import os
     import unittest.mock as _mock
@@ -3536,6 +3536,9 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
             "repo-a/specs/plan-a.md": repo_dir,
             "repo-b/specs/plan-b.md": repo_b,
         }
+        from test_train_review_packet import real_fab_packet_inputs, approved
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        material = real_fab_packet_inputs(fixture, seeded, roadmap, monkeypatch, ws_map)
 
         routing_spy_calls = []
         real_commit_helper = tr._commit_broker_readmitted_head
@@ -3554,18 +3557,19 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
                     parse_train_roadmap(TRAIN_2NODE_MD),
                     seeded["ledger_path"],
                     run_mode="governed",
+                    review_material=material,
                     resolve_workspace=lambda n: ws_map[n.node_id],
                     coordinator_runtime=coord_runtime,
                     resolve_owned_paths=None,
                     _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
+                    _publish=_make_publish_stub({str(repo_b): {"status": "published", "branch": "feat/repo-b", "head_sha": candidate_head, "pr_url": "https://github.com/org/repo-b/pull/1"}}),
                     _set_upstream_ref_fn=lambda *a, **kw: [],
                     _preflight_fn=lambda *a, **kw: None,
                     _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head if ws == repo_dir else candidate_head,
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
-                    _train_review_fn=_approval_review_fn,
+                    _train_review_fn=approved,
                     _pr_merged_sha_fn=lambda *a, **kw: None,
                     _delta_review_fn=_mergeable_delta_review,
                     _merge_pr_fn=_capturing_head_merge_stub(captured, {
@@ -3577,7 +3581,7 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
                 )
 
         assert len(routing_spy_calls) == 1, (
-            "_commit_broker_readmitted_head must be reached exactly once via CoordinatorRuntime"
+            f"_commit_broker_readmitted_head must be reached exactly once via CoordinatorRuntime: {result}"
         )
         assert result.get("status") == "merged"
         assert captured["repo-a/specs/plan-a.md"] == [{
@@ -3606,5 +3610,10 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
         assert replayed[-1].binding.proposed_head_sha == receipt.proposed_head_sha
         assert replayed[-1].binding.authority_digest == receipt.authority_digest
         assert candidate_head != delta_head
+        from phase_loop_runtime.train_review_packet import load_review_packet
+        state = read_ledger(seeded["ledger_path"])
+        reviewed = load_review_packet(seeded["ledger_path"].parent / "review-packets", state["_train_review_"].review_packet_sha256)
+        assert "+disjoint delta advance" in reviewed.artifact and "+candidate content" in reviewed.artifact
+        assert state[seeded["node_id"]].fab_run_id == fixture.RUN
     finally:
         fixture.tearDown()

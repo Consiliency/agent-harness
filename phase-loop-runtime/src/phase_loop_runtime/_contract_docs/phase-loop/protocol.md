@@ -2680,6 +2680,15 @@ admission or models. A ready receipt is not approval. The rendered prompt,
 including framing and instructions, must fit 512 KiB; the separate 1 MiB packet
 parser limit does not establish readiness. There is no truncation fallback.
 
+Trusted-opt-in FAB readmission during ordinary governed merging first freezes
+the entire prospective packet against proposed-head evidence without granting
+authority. Existing broker readmission and fresh complete durable bindings must
+then match before those identical bytes enter review/cache/native sinks. Real
+repository revocation is replayed before recovery, sinks, approval and each
+merge. Review-only/native emission perform no recovery/readmission; preview
+does not consult broker evidence. No late head advancement follows train review.
+Transport readiness does not attest actual provider consumption of all content.
+
 Production stores read-back packets under `review-packets/<sha256>/` beside the
 ledger. Missing/corrupt packet storage holds. Explicit fresh material invalidates
 changed approvals; omitted material retains stored snapshots without asserting

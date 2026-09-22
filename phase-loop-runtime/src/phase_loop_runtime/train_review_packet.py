@@ -267,17 +267,21 @@ def _check_snapshot(record, data, head, repo):
     if not isinstance(data, dict) or data.get("id") != record["check_run_id"] or data.get("head_sha") != head:
         _fail("check_run_identity_mismatch", record["id"])
     suite = data.get("check_suite") or {}
+    if not isinstance(suite, dict):
+        _fail("malformed_check_run", record["id"])
     repository = suite.get("repository") or data.get("repository") or {}
+    if not isinstance(repository, dict) or not isinstance(repository.get("full_name", repo), str):
+        _fail("malformed_check_run", record["id"])
     api_url = data.get("url", "")
     if repository.get("full_name", repo).lower() != repo.lower() or api_url != f"https://api.github.com/repos/{repo}/check-runs/{record['check_run_id']}":
         _fail("check_run_repository_mismatch", record["id"])
     app = data.get("app") or {}
-    if type(app.get("id")) is not int or not isinstance(app.get("slug"), str) or not app["slug"] or type(suite.get("id")) is not int:
+    if not isinstance(app, dict) or type(app.get("id")) is not int or not isinstance(app.get("slug"), str) or not app["slug"] or type(suite.get("id")) is not int:
         _fail("malformed_check_run", record["id"])
     if record.get("expected_name", data.get("name")) != data.get("name") or record.get("expected_app_slug", app["slug"]) != app["slug"]:
         _fail("check_run_expectation_mismatch", record["id"])
     status, conclusion = data.get("status"), data.get("conclusion")
-    if status not in {"queued", "in_progress", "completed", "waiting", "pending", "requested"} or not isinstance(data.get("name"), str):
+    if not isinstance(status, str) or status not in {"queued", "in_progress", "completed", "waiting", "pending", "requested"} or not isinstance(data.get("name"), str) or (conclusion is not None and not isinstance(conclusion, str)):
         _fail("malformed_check_run", record["id"])
     result = "unknown"
     if status == "completed":
@@ -324,7 +328,7 @@ def _material_snapshot(raw, root, head, length, workspace, repo, check_fn):
                 if not isinstance(argv, list) or not argv or any(not isinstance(a, str) or not a for a in argv):
                     _fail("invalid_command", record["id"])
                 result, code = record["result"], record["exit_code"]
-                valid = ((result == "passed" and type(code) is int and code == 0) or
+                valid = isinstance(result, str) and ((result == "passed" and type(code) is int and code == 0) or
                          (result == "failed" and type(code) is int and code != 0) or
                          (result in {"skipped", "unknown"} and code is None))
                 if not valid:
@@ -425,8 +429,14 @@ def _certificates(reader, identity, inventory, groups):
     return certified, certificates, sidecar
 
 
-def _live_identity(node, record, workspace, pr_fn, *, merged=False):
-    if record is None or not record.head_sha or not record.pr_url:
+def admission_binding(record):
+    return {key: getattr(record, key) for key in ("node_id", "branch", "pr_url", "head_sha", "fab_run_id")}
+
+
+def _live_identity(node, record, workspace, pr_fn, *, merged=False, proposed_head=None):
+    if not Path(workspace).is_dir():
+        _fail("missing_workspace", str(workspace))
+    if record is None or not record.head_sha or not record.pr_url or not record.branch:
         _fail("unadmitted_node", node.node_id)
     live = pr_fn(workspace, record.pr_url)
     if not isinstance(live, dict) or live.get("url") != record.pr_url:
@@ -435,20 +445,20 @@ def _live_identity(node, record, workspace, pr_fn, *, merged=False):
     from .train_runner import _DEFAULT_BASE
     if live.get("baseRefName") != _DEFAULT_BASE:
         _fail("retargeted_base", node.node_id)
-    if live.get("headRefOid") != record.head_sha:
+    if live.get("headRefOid") != (proposed_head or record.head_sha):
         _fail("stale_head", node.node_id)
     if merged:
         if live.get("state") != "MERGED" or not record.upstream_merge_sha or (live.get("mergeCommit") or {}).get("oid") != record.upstream_merge_sha:
             _fail("historical_merge_outcome_mismatch", node.node_id)
-    elif record.status not in {"pr_open", "approved"} or live.get("state") != "OPEN":
+    elif record.status not in {"pr_open", "approved", "blocked"} or live.get("state") != "OPEN":
         _fail("pr_not_open", node.node_id)
     return live, repo
 
 
-def _node_snapshot(node, record, workspace, material, raw, material_root, pr_fn, check_fn, scratch):
-    live, repo = _live_identity(node, record, workspace, pr_fn)
+def _node_snapshot(node, record, workspace, material, raw, material_root, pr_fn, check_fn, scratch, proposed_head=None):
+    live, repo = _live_identity(node, record, workspace, pr_fn, proposed_head=proposed_head)
     reader = _GitReader(workspace, scratch)
-    head = _oid(record.head_sha, reader.length, "admitted head")
+    head = _oid(proposed_head or record.head_sha, reader.length, "review head")
     base = _oid(live.get("baseRefOid"), reader.length, "base tip")
     for oid in (base, head):
         reader.run("cat-file", "-e", oid + "^{commit}")
@@ -460,7 +470,8 @@ def _node_snapshot(node, record, workspace, material, raw, material_root, pr_fn,
                     base_ref=live["baseRefName"], base_tip_sha=base, merge_base_sha=merge_base, head_sha=head,
                     base_tree_oid=reader.resolve(base + "^{tree}"),
                     comparison_tree_oid=reader.resolve(merge_base + "^{tree}"), head_tree_oid=reader.resolve(head + "^{tree}"),
-                    object_format=reader.object_format)
+                    object_format=reader.object_format,
+                    admission={**admission_binding(record), "head_sha": head})
     if material is None:
         material = _material_snapshot(raw, material_root, head, reader.length, workspace, repo, check_fn)
     if material["head_sha"] != head:
@@ -514,6 +525,8 @@ def _render(metadata):
         "", "Packet snapshot SHA-256: " + _sha(_json(metadata).encode()),
         "Train binding: " + escape_text(_json(metadata["train"])),
         "Material-manifest SHA-256: " + metadata["material_manifest_sha256"], ""]
+    if "coordinator_supervise" in metadata:
+        lines.append("Coordinator supervise tier (advisory provenance only; ambient session, not a launch binding): " + escape_text(_json(metadata["coordinator_supervise"])))
     for node in metadata["nodes"]:
         lines.extend(["## Node " + escape_text(node["identity"]["node_id"]),
             "Identities: " + escape_text(_json(node["identity"])),
@@ -547,8 +560,43 @@ class ReviewPacket:
         return _sha(self.artifact.encode("utf-8"))
 
 
+@dataclass(frozen=True)
+class PreparedReviewPacket:
+    """Prospective review data. It grants no admission or sink authority."""
+    artifact: str
+    metadata: dict
+    removals: list
+    prior_bindings: dict
+
+    @property
+    def sha256(self):
+        return _sha(self.artifact.encode("utf-8"))
+
+
 def build_review_packet(roadmap, ledger_state, resolve_workspace, material_path, *, train_digest=None,
                         historical=None, _pr_metadata_fn=None, _check_run_fn=None):
+    return _snapshot_review_packet(roadmap, ledger_state, resolve_workspace, material_path,
+        train_digest=train_digest, historical=historical, _pr_metadata_fn=_pr_metadata_fn, _check_run_fn=_check_run_fn)
+
+
+def prepare_review_packet(roadmap, ledger_state, resolve_workspace, material_path, *, proposed_heads, **kwargs):
+    if set(proposed_heads) - {n.node_id for n in roadmap.topo_order()}:
+        _fail("unknown_proposed_node")
+    result = _snapshot_review_packet(roadmap, ledger_state, resolve_workspace, material_path,
+                                    proposed_heads=proposed_heads, **kwargs)
+    return PreparedReviewPacket(result.artifact, result.metadata, result.removals,
+        {n.node_id: admission_binding(ledger_state[n.node_id]) for n in roadmap.topo_order()})
+
+
+def finalize_review_packet(prepared, roadmap, ledger_state, resolve_workspace, **kwargs):
+    if type(prepared) is not PreparedReviewPacket:
+        _fail("invalid_prepared_packet")
+    recheck_packet_identities(prepared, roadmap, ledger_state, resolve_workspace, **kwargs)
+    return ReviewPacket(prepared.artifact, prepared.metadata, prepared.removals)
+
+
+def _snapshot_review_packet(roadmap, ledger_state, resolve_workspace, material_path, *, train_digest=None,
+                           historical=None, _pr_metadata_fn=None, _check_run_fn=None, proposed_heads=None):
     pr_fn = _pr_metadata_fn or read_pr_metadata
     check_fn = _check_run_fn or read_check_run
     order = roadmap.topo_order()
@@ -596,10 +644,13 @@ def build_review_packet(roadmap, ledger_state, resolve_workspace, material_path,
             work.mkdir()
             node_data, sidecar = _node_snapshot(node, record, workspace,
                 old["material"] if raw is None and old else None,
-                raw["nodes"][node.node_id] if raw else None, root, pr_fn, check_fn, work)
+                raw["nodes"][node.node_id] if raw else None, root, pr_fn, check_fn, work,
+                (proposed_heads or {}).get(node.node_id))
             nodes.append(node_data)
             removals.extend(sidecar)
+    from .profiles import supervise_selection
     metadata = {"schema_version": 1, "train": train, "material_manifest_sha256": material_digest, "nodes": nodes,
+                "coordinator_supervise": asdict(supervise_selection("claude")),
                 "removals_sha256": _sha(_json(removals).encode())}
     artifact = _render(metadata)
     if len(artifact.encode()) > 1024 * 1024:
@@ -629,7 +680,7 @@ def preflight_packet(artifact, *, instructions=None, board=None):
             "sandbox_path_bytes_bound": 4096, "sandbox_path_validated": False}
 
 
-def recheck_packet_identities(packet, roadmap, ledger_state, resolve_workspace, *, node_ids=None, _pr_metadata_fn=None):
+def recheck_packet_identities(packet, roadmap, ledger_state, resolve_workspace, *, node_ids=None, _pr_metadata_fn=None, prior_bindings=None):
     pr_fn = _pr_metadata_fn or read_pr_metadata
     for stored in packet.metadata["nodes"]:
         ident = stored["identity"]
@@ -637,10 +688,15 @@ def recheck_packet_identities(packet, roadmap, ledger_state, resolve_workspace, 
         if node_ids is not None and nid not in node_ids:
             continue
         record = ledger_state.get(nid)
+        expected = prior_bindings[nid] if prior_bindings is not None else ident.get("admission")
+        if record is None or expected != admission_binding(record):
+            _fail("admission_identity_drift", nid)
         if record is not None and record.status == "merged":
+            _live_identity(roadmap.node_by_id(nid), record, resolve_workspace(roadmap.node_by_id(nid)), pr_fn, merged=True)
             continue
         node = roadmap.node_by_id(nid)
-        live, _ = _live_identity(node, record, resolve_workspace(node), pr_fn)
+        live, _ = _live_identity(node, record, resolve_workspace(node), pr_fn,
+                                 proposed_head=ident["head_sha"] if prior_bindings is not None else None)
         if live.get("baseRefOid") != ident["base_tip_sha"] or live.get("headRefOid") != ident["head_sha"]:
             _fail("observed_identity_drift", nid)
 
@@ -653,6 +709,8 @@ def _files(packet):
 
 
 def store_review_packet(packet, root):
+    if type(packet) is not ReviewPacket:
+        _fail("unfinalized_packet")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     dest = root / packet.sha256

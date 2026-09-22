@@ -15,6 +15,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Approval reuse requires the exact stored packet digest and current reviewer
   floor. Legacy approvals re-review; partial trains without historical packets
   hold. Native-fill and merge checks use the same packet identity.
+- Trusted FAB readmission freezes all proposed-head material before recovery or
+  delta review, then requires fresh durable admission and repository revocation
+  checks before using the identical packet. Native request emission returns on
+  cache hits; failure/resume records preserve complete admission identity.
 - Whole deleted subtrees may use explicit, bound operator disposal attestations.
   Certificates prove deletion mechanics, not generatedness; other substantive
   changes stay inline. Invalid, missing or oversized material holds without
