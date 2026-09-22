@@ -1585,9 +1585,11 @@ def test_complete_patch_type_transitions(candidate, transition):
         assert "120000" in section["text"]
 
 
-def test_layered_material_context_certificate_roundtrip(candidate):
+@pytest.mark.parametrize("supplementary", ["", "\U000e0001\U000e0020 literal\\U000e0001"])
+def test_layered_material_context_certificate_roundtrip(candidate, supplementary):
+    import re
     c = candidate
-    raw = 'line one\n\t"quoted" literal\\r café\x01\r\u2028end'.encode()
+    raw = ('line one\n\t"quoted" literal\\r café\x01\r\u2028end' + supplementary).encode()
     (c["repo"] / "context.txt").write_bytes(raw)
     commit(c["repo"], "selected context")
     certify(c)
@@ -1608,8 +1610,11 @@ def test_layered_material_context_certificate_roundtrip(candidate):
     assert "JSON sections: decode outer escapes, parse JSON, then decode nested content.text escapes" in built.artifact
     assert "escaped_sha256 hashes intermediate escaped text" in built.artifact
     def unescape(text):
-        # Independent standard JSON decoder for the declared fixed-width grammar.
-        return json.loads('"' + text.replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') + '"')
+        # Independent lexer for the declared grammar, including non-JSON \U escapes.
+        def token(match):
+            value = match.group()
+            return chr(int(value[2:], 16)) if value[1] in "uU" else {"\\\\": "\\", "\\r": "\r"}[value]
+        return re.sub(r"\\(?:\\|r|u[0-9a-f]{4}|U[0-9a-f]{8})", token, text)
     def section(title):
         rendered = built.artifact.split("### " + title + "\n", 1)[1].split("\n### ", 1)[0].rstrip("\n")
         return json.loads(unescape(rendered))
@@ -1625,6 +1630,9 @@ def test_layered_material_context_certificate_roundtrip(candidate):
         assert content["raw_sha256"] == hashlib.sha256(expected).hexdigest()
         assert content["escaped_sha256"] == hashlib.sha256(content["text"].encode()).hexdigest()
     assert certificate[0]["assertion"]["disposal_scope"] == raw.decode()
+    if supplementary:
+        assert "\\U000e0001" in context[0]["content"]["text"]
+        assert "\\U000e0020" in built.metadata["nodes"][0]["patch"]["text"]
 
 
 @pytest.mark.parametrize("mutation,reason", [("old_mode", "mode"), ("new_mode", "mode"), ("index", "object"), ("header", None)])
@@ -1704,3 +1712,123 @@ def test_top_level_github_cannot_be_disposal_certificate(candidate):
     update_material(c)
     with pytest.raises(packet.PacketError, match="governance_removal_group"):
         c["build"]()
+
+
+@pytest.mark.parametrize("drift,reason", [("base", "retargeted_base"), ("admission", "admission_identity_drift")])
+@pytest.mark.parametrize("after_recovery", [False, True])
+def test_readmission_identity_refusal_preserves_reason_and_effect_boundary(candidate, monkeypatch, drift, reason, after_recovery):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    enable_fab(c, monkeypatch)
+    proposed_candidate(c)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    append_record(ledger, c["state"][c["node"].node_id])
+    prepare = packet.prepare_review_packet
+    effects, snapshots = [], []
+    def change_identity():
+        if drift == "base":
+            c["live"]["baseRefName"] = "retargeted"
+        else:
+            append_record(ledger, replace(read_ledger(ledger)[c["node"].node_id], fab_run_id="new-durable-binding"))
+        snapshots.append(ledger.read_bytes())
+    def prepared(*args, **kwargs):
+        result = prepare(*args, **kwargs)
+        if not after_recovery:
+            change_identity()
+        return result
+    def recover(*args, **kwargs):
+        effects.append("recovery")
+        if after_recovery:
+            change_identity()
+    monkeypatch.setattr(packet, "prepare_review_packet", prepared)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+    monkeypatch.setattr(tr, "_fab_delta_readmit", never)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True,
+        _train_review_fn=never, _merge_pr_fn=never)
+    latest = read_ledger(ledger)[c["node"].node_id]
+    observed = dict(result=result, effects=effects, ledger_changed=ledger.read_bytes() != snapshots[-1], latest=latest.to_dict())
+    assert result["reason"] == reason, observed
+    assert result["status"] == ("merge_halted" if after_recovery else "review_halted"), result
+    assert effects == (["recovery"] if after_recovery else [])
+    if after_recovery:
+        assert ledger.read_bytes().startswith(snapshots[-1])
+        assert latest.status == "blocked"
+        assert latest.fab_run_id == ("new-durable-binding" if drift == "admission" else "packet-fab")
+    else:
+        assert ledger.read_bytes() == snapshots[-1]
+        assert latest.status == "pr_open"
+
+
+@pytest.mark.parametrize("live_head,metadata_matches", [(None, False), ("admitted", True), ("malformed", False), ("malformed", True), (True, True)])
+def test_real_caller_missing_or_malformed_live_head_before_readmission(candidate, monkeypatch, live_head, metadata_matches):
+    from phase_loop_runtime import train_runner as tr
+    c = candidate
+    enable_fab(c, monkeypatch)
+    effects = []
+    if live_head not in (None, "admitted") and metadata_matches:
+        c["live"]["headRefOid"] = live_head
+    monkeypatch.setattr(packet, "prepare_review_packet", never if live_head in (None, "admitted") else packet.prepare_review_packet)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", lambda *a, **k: effects.append("recovery"))
+    monkeypatch.setattr(tr, "_fab_delta_readmit", never)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True,
+        _live_pr_head_sha_fn=lambda *_: c["head"] if live_head == "admitted" else live_head,
+        _merge_pr_fn=lambda *a, **kw: kw["head_sha"])
+    if live_head in (None, "admitted"):
+        assert result["status"] == "merged", result
+        assert effects == ["recovery"]  # Existing admission recovery, never proposed readmission.
+    else:
+        assert result["status"] == "review_halted", result
+        assert result["reason"] == ("invalid_git_oid" if metadata_matches else "stale_head"), result
+        assert effects == []
+
+
+@pytest.mark.parametrize("corruption", ["patch_null", "nodes_object", "deep_material", "deep_stored", "valid"])
+def test_preview_external_json_boundary_always_returns_receipt(candidate, corruption):
+    c = candidate
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    append_record(ledger, c["state"][c["node"].node_id])
+    built = c["build"]()
+    stored = packet.store_review_packet(built, ledger.parent / "review-packets")
+    append_record(ledger, LedgerRecord("_train_review_", "approved", usable_reviewers=4, review_packet_sha256=built.sha256))
+    metadata = json.loads((stored / "packet.json").read_text())
+    if corruption == "patch_null":
+        metadata["nodes"][0]["patch"] = None
+        (stored / "packet.json").write_text(json.dumps(metadata))
+    elif corruption == "nodes_object":
+        metadata["nodes"] = {"unexpected": "object"}
+        (stored / "packet.json").write_text(json.dumps(metadata))
+    elif corruption.startswith("deep_"):
+        path = c["material_path"] if corruption == "deep_material" else stored / "packet.json"
+        path.write_text("[" * 2000 + "0" + "]" * 2000)
+    before = ledger.read_bytes()
+    assert hashlib.sha256((stored / "packet.md").read_bytes()).hexdigest() == built.sha256
+    output = c["tmp"] / "preview"
+    receipt = packet.preview_review_packet(c["roadmap"], ledger, lambda _: c["repo"], c["material_path"], output,
+        _pr_metadata_fn=lambda *_: dict(c["live"]))
+    assert receipt["ready"] is (corruption == "valid"), receipt
+    assert receipt["model_calls"] == 0 and ledger.read_bytes() == before
+    assert json.loads((output / "receipt.json").read_text()) == receipt
+    if corruption != "valid":
+        assert receipt["errors"] and not (output / "packet.md").exists()
+
+
+@pytest.mark.parametrize("mode", ["emit", "fill"])
+def test_claude_native_workflow_supplies_initial_material(candidate, monkeypatch, mode):
+    """Exercise the documented arguments; native/provider outcomes remain injected seams."""
+    import re
+    from types import SimpleNamespace
+    c = candidate
+    skill = Path(__file__).resolve().parents[2] / "skills-src/claude/claude-run-train/SKILL.md"
+    text = skill.read_text().split("Under Claude Code", 1)[1].split("- The train-level review", 1)[0]
+    flag = "--emit-native-request" if mode == "emit" else "--native-leg"
+    command = next(s for s in re.findall(r"`([^`]+)`", text) if flag in s)
+    built = c["build"]()
+    result = run_candidate(c, monkeypatch,
+        review_material=c["material_path"] if "--review-material material.json" in command else None,
+        emit_native_request=mode == "emit",
+        native_leg_fills=[SimpleNamespace(artifact_sha256=built.sha256)] if mode == "fill" else None,
+        _emit_native_fill_request_fn=lambda *a, **kw: {"status": "native_fill_requested"})
+    assert result["status"] == ("native_fill_requested" if mode == "emit" else "review_approved"), result
+    if mode == "emit":
+        assert "_train_review_" not in read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
