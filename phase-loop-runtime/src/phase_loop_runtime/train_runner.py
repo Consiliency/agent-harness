@@ -3642,6 +3642,8 @@ def _run_train_unfenced(
     def fresh_packet_state():
         state = read_ledger(ledger_path)
         for nid, merged_sha in merged_shas.items():
+            if nid not in state:
+                raise PacketError("admission_identity_drift: " + nid)
             if state[nid].status != "merged":
                 state[nid] = _replace_record(state[nid], status="merged", upstream_merge_sha=merged_sha)
         recheck_packet_identities(packet, roadmap, state, resolve_workspace)
@@ -3685,6 +3687,9 @@ def _run_train_unfenced(
                     recheck_packet_identities(packet, roadmap, current, resolve_workspace,
                         node_ids={nid}, prior_bindings=prior_bindings)
                     store = _train_revocation_store(workspace, rec)
+                    if nid in proposed_heads and (store is None or not fab_delta_shortcut_enabled(fab_delta_shortcut)):
+                        return {"status": "review_halted", "node_id": nid, "nodes": completed_nodes,
+                                "reason": "stale_head", "detail": "readmission opt-in changed before recovery"}
                     if store is not None:
                         _fab_recover_torn_to_admitted(workspace, rec.fab_run_id, admitted_head_sha=rec.head_sha)
                     if nid in proposed_heads:
@@ -3715,6 +3720,8 @@ def _run_train_unfenced(
                             "detail": str(exc)}
         fresh = read_ledger(ledger_path)
         for nid, merged_sha in merged_shas.items():
+            if nid not in fresh:
+                raise PacketError("admission_identity_drift: " + nid)
             if fresh[nid].status != "merged":
                 fresh[nid] = _replace_record(fresh[nid], status="merged", upstream_merge_sha=merged_sha)
         if proposed_heads:
@@ -3830,7 +3837,7 @@ def _run_train_unfenced(
             fresh_packet_state()
         except (OSError, ValueError) as exc:
             return {"status": "review_halted", "nodes": completed_nodes,
-                    "reason": "observed_identity_drift", "detail": str(exc),
+                    "reason": str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else "packet_recheck_unavailable", "detail": str(exc),
                     "terminal_blocker": _non_human_train_blocker(str(exc))}
 
         # Record approval (synthetic node_id — never a real roadmap node) WITH
@@ -4016,8 +4023,8 @@ def _run_train_unfenced(
             )
             _train_revocation_store(_ws_m, fresh[_nid_m])
         except (OSError, ValueError) as exc:
-            return {"status": "review_halted", "node_id": _nid_m,
-                    "reason": "observed_identity_drift", "detail": str(exc),
+            return {"status": "merge_halted", "node_id": _nid_m,
+                    "reason": str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else "packet_recheck_unavailable", "detail": str(exc),
                     "terminal_blocker": _non_human_train_blocker(str(exc))}
         try:
             # agent-harness#250 (N7): pass the SAME base the broker's owned-scope

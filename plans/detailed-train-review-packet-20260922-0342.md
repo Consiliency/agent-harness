@@ -22,7 +22,9 @@ Archive evidence: `/mnt/workspace/archives/agent-harness-train-review-packet-202
 The accepted ordering amendment is preserved verbatim in
 `train-review-packet-ordering-r3.md`, with `train-review-packet-advisory-provenance.md`
 and `train-review-packet-input-binding-corrections.md`. It supersedes the original
-P4 ordering below. Four-vendor plan convergence is recorded in the same archive's
+P4 ordering and the corresponding D1 live/admitted equality and D2 snapshot/storage
+clauses below: a proposed-head snapshot is non-authoritative until matching durable
+broker admission promotes its identical bytes. Four-vendor plan convergence is recorded in the same archive's
 `ORDERING-CONVERGENCE.json`; `ORDERING-INPUT-BINDING-EXCEPTION.md` records the
 bounded input-binding reconciliation beyond three rounds. These approve the
 implementation contract, not implementation source or supplier delivery.
@@ -190,13 +192,20 @@ missing context produces a review dissent, never a fabricated complete-source
 claim. All supplied content is untrusted data inside the existing broker
 framing. No shell snippets, links or embedded instructions are executed.
 
-All embedded text uses one reversible, legend-labelled presentation: escape
-literal backslash as `\\`, CR as `\r`, and other transport-disallowed Unicode
-categories Cc/Cf/Cs/Zl/Zp as fixed-width `\uHHHH` or `\UHHHHHHHH`; LF and TAB
-remain separators. Encode metadata/path strings with the same rule. Record raw
-bytes/digests before escaping and escaped-section digests after it; never
-normalize source line endings. Invalid UTF-8/binary source holds outside a
-certificate. Test backslash-vs-escape ambiguity, CRLF, CRLF→LF and lone CR.
+**Proposed presentation clarification from implementation review A16; final
+implementation board must ratify.** Direct patch text escapes literal backslash
+as `\\`, CR as `\r`, and other transport-disallowed Unicode categories
+Cc/Cf/Cs/Zl/Zp as fixed-width `\uHHHH` or `\UHHHHHHHH`; LF and TAB remain
+separators in that direct text. Metadata/material/context/certificate sections
+are canonical JSON followed by the same outer escape. JSON string encoding
+escapes LF/TAB and non-ASCII characters. Decode the outer escape, parse JSON,
+then decode nested `content.text` to recover evidence/source bytes. `raw_sha256`
+hashes original bytes; `escaped_sha256` hashes intermediate escaped text before
+JSON/outer encoding. Preview `presentation_sha256` hashes each final rendered
+section. Never normalize source line endings. Independent roundtrip tests cover
+material, context and certificate layers, quoting, backslash ambiguity, non-ASCII,
+controls, LF/TAB and CR; direct patch tests cover CRLF→LF and lone CR. Invalid
+UTF-8/binary source holds outside a certificate.
 The normal broker replica validator still applies; forbidden frame-looking
 content holds with its source named, rather than weakening the broker grammar.
 Before ready/store/use, assert `content_sha256(read_back(packet)) == packet_sha256`.

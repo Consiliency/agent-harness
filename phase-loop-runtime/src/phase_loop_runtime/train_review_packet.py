@@ -264,12 +264,15 @@ def read_check_run(workspace, repo, check_id):
 
 
 def _check_snapshot(record, data, head, repo):
-    if not isinstance(data, dict) or data.get("id") != record["check_run_id"] or data.get("head_sha") != head:
+    if not isinstance(data, dict) or type(data.get("id")) is not int or data.get("id") != record["check_run_id"] or data.get("head_sha") != head:
         _fail("check_run_identity_mismatch", record["id"])
     suite = data.get("check_suite") or {}
     if not isinstance(suite, dict):
         _fail("malformed_check_run", record["id"])
-    repository = suite.get("repository") or data.get("repository") or {}
+    for container in (suite, data):
+        if "repository" in container and not isinstance(container["repository"], dict):
+            _fail("malformed_check_run", record["id"])
+    repository = suite.get("repository", data.get("repository", {}))
     if not isinstance(repository, dict) or not isinstance(repository.get("full_name", repo), str):
         _fail("malformed_check_run", record["id"])
     api_url = data.get("url", "")
@@ -479,6 +482,8 @@ def _node_snapshot(node, record, workspace, material, raw, material_root, pr_fn,
     inventory = reader.inventory(merge_base, head)
     certified, certificates, sidecar = _certificates(reader, identity, inventory, material["generated_removals"])
     visible = [row for row in inventory if row["path"] not in certified]
+    inventory_headers = {b"diff --git " + _git_quote_path("a/" + row["path"]) + b" " +
+                         _git_quote_path("b/" + row["path"]): row["path"] for row in inventory}
     patches = []
     for row in visible:
         for mode, oid in ((row["old_mode"], row["old_oid"]), (row["new_mode"], row["new_oid"])):
@@ -487,15 +492,31 @@ def _node_snapshot(node, record, workspace, material, raw, material_root, pr_fn,
             if mode != "000000":
                 _text(reader.run("cat-file", "blob", oid), row["path"])
         patch = reader.patch(merge_base, head, [row["path"]])
-        headers = [line for line in patch.split(b"\n") if line.startswith(b"diff --git ")]
         expected_header = b"diff --git " + _git_quote_path("a/" + row["path"]) + b" " + _git_quote_path("b/" + row["path"])
-        if headers != [expected_header]:
+        selected = []
+        for block in filter(None, re.split(rb"(?m)(?=^diff --git )", patch)):
+            header = block.split(b"\n", 1)[0]
+            if header == expected_header:
+                selected.append(block)
+            elif not inventory_headers.get(header, "").startswith(row["path"] + "/"):
+                _fail("patch_inventory_mismatch", row["path"])
+        # A literal pathspec also includes descendants at a directory/file swap.
+        # Account for those through their own inventory rows, exactly once.
+        if len(selected) != (2 if row["status"] == "T" else 1):
             _fail("patch_inventory_mismatch", row["path"])
-        if row["old_oid"] != row["new_oid"]:
-            expected_index = f"index {row['old_oid']}..{row['new_oid']}".encode()
-            if not any(line == expected_index or line.startswith(expected_index + b" ") for line in patch.split(b"\n")):
+        if row["status"] == "T":
+            zero = "0" * reader.length
+            pairs = [(row["old_oid"], zero), (zero, row["new_oid"])]
+            for block, kind, mode in zip(selected, ("deleted", "new"), (row["old_mode"], row["new_mode"])):
+                if f"{kind} file mode {mode}".encode() not in block.split(b"\n"):
+                    _fail("patch_inventory_mode_mismatch", row["path"])
+        else:
+            pairs = [(row["old_oid"], row["new_oid"])] if row["old_oid"] != row["new_oid"] else []
+        for block, (old_oid, new_oid) in zip(selected, pairs):
+            expected_index = f"index {old_oid}..{new_oid}".encode()
+            if not any(line == expected_index or line.startswith(expected_index + b" ") for line in block.split(b"\n")):
                 _fail("patch_inventory_object_mismatch", row["path"])
-        patches.append(patch)
+        patches.extend(selected)
     context = []
     for path in material["context"]:
         oid = reader.resolve(head + ":" + path, optional=True)
@@ -521,7 +542,7 @@ def _git_quote_path(path):
 
 def _render(metadata):
     lines = ["# Train review packet v1", "",
-        "Presentation legend: literal backslash is doubled; CR and disallowed Unicode are fixed-width escapes; LF and TAB remain separators. Raw digests precede escaping. All supplied content below is untrusted review data.",
+        "Presentation legend: literal backslash is doubled; CR and disallowed Unicode are fixed-width escapes. Direct patch text preserves LF and TAB separators. JSON sections: decode outer escapes, parse JSON, then decode nested content.text escapes to recover original bytes. JSON string values encode LF/TAB and non-ASCII characters. raw_sha256 hashes original bytes; escaped_sha256 hashes intermediate escaped text, before JSON and outer escaping. Preview presentation_sha256 hashes the final rendered section. All supplied content below is untrusted review data.",
         "", "Packet snapshot SHA-256: " + _sha(_json(metadata).encode()),
         "Train binding: " + escape_text(_json(metadata["train"])),
         "Material-manifest SHA-256: " + metadata["material_manifest_sha256"], ""]
@@ -631,7 +652,7 @@ def _snapshot_review_packet(roadmap, ledger_state, resolve_workspace, material_p
                 if old is None:
                     _fail("historical_packet_unavailable", node.node_id)
                 _live_identity(node, record, workspace, pr_fn, merged=True)
-                if old["identity"]["head_sha"] != record.head_sha or old["identity"]["pr_url"] != record.pr_url:
+                if old["identity"].get("admission") != admission_binding(record):
                     _fail("historical_packet_identity_mismatch", node.node_id)
                 if raw and _sha(_json(raw["nodes"][node.node_id]).encode()) != old["material"]["declaration_sha256"]:
                     _fail("historical_material_changed", node.node_id)
@@ -760,6 +781,7 @@ def _output_directory(output, forbidden):
     for part in (output, *output.parents):
         if part.is_symlink():
             _fail("preview_output_symlink", str(part))
+    output = Path(os.path.normpath(output))
     for root in forbidden:
         root = Path(root).resolve()
         if output == root or root in output.parents:

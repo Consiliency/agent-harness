@@ -2683,9 +2683,10 @@ parser limit does not establish readiness. There is no truncation fallback.
 Trusted-opt-in FAB readmission during ordinary governed merging first freezes
 the entire prospective packet against proposed-head evidence without granting
 authority. Existing broker readmission and fresh complete durable bindings must
-then match before those identical bytes enter review/cache/native sinks. Real
-repository revocation is replayed before recovery, sinks, approval and each
-merge. Review-only/native emission perform no recovery/readmission; preview
+then match before those identical bytes enter review/cache/native sinks. Current
+readmission eligibility is checked immediately before recovery. While FAB promotion
+is active, real repository revocation is replayed before recovery, sinks, approval
+and each merge. Review-only/native emission perform no recovery/readmission; preview
 does not consult broker evidence. No late head advancement follows train review.
 Transport readiness does not attest actual provider consumption of all content.
 
@@ -2694,10 +2695,20 @@ ledger. Missing/corrupt packet storage holds. Explicit fresh material invalidate
 changed approvals; omitted material retains stored snapshots without asserting
 checks were refreshed. Native fills retain artifact/brief/composition validation.
 Partial resumes keep original merged-node sections only after validating their
-admitted heads and live merge outcomes; unavailable history holds rather than
+complete admission bindings (node, branch, PR, head and FAB run) and live merge
+outcomes; unavailable history holds rather than
 reconstructing scope from current main. Observed pending base/head drift before
 approval and each merge requires a fresh packet. GitHub's existing head pin
 remains independent; these reads do not atomically pin the base.
+
+Direct patch text preserves LF/TAB and reversibly escapes backslashes, CR and
+disallowed Unicode. JSON sections decode as outer escapes, JSON, then nested
+`content.text` escapes. `raw_sha256` hashes original bytes; `escaped_sha256`
+hashes intermediate escaped text; preview `presentation_sha256` hashes the
+final rendered section. Readback integrity is not a power-loss durability
+guarantee; that recovery work is tracked in agent-harness#977.
+Pre-review packet refusals use `review_halted`; merge-stage refusals use
+`merge_halted`, retain the typed reason and preserve prior merges.
 
 Idempotent resume: re-running `run_train` reads the ledger to skip nodes that
 are already `pr_open` (confirmed via a live `_pr_is_open` check) or already

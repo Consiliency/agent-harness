@@ -103,12 +103,12 @@ provider consumption or permission for another supplier review round.
   (a node lacks an admitted open PR, or a prebuilt workspace HEAD is not its admitted head).
   Bounded-mode note: for a prebuilt node with upstream edges this is the terminal
   status under the coordinator today.
-- `review_halted`: the train-level panel did not approve; `terminal_blocker`
-  carries `human_required=False` (the block is a non-human review terminal).
-  No nodes were merged. Re-run after addressing review findings.
-- `merge_halted`: upstream node(s) merged but a downstream re-verify failed;
-  the failed node and all its dependents are blocked. The forward-only guard
-  means already-merged nodes stay merged. Fix the integration issue and resume.
+- `review_halted`: material, admission identity, current eligibility or review
+  refused before merging. Inspect `reason` and `detail`; stale/unavailable
+  evidence requires a fresh bound packet. This invocation merged no nodes.
+- `merge_halted`: a recovery, re-verify or merge-stage identity gate refused.
+  Inspect the specific reason (such as `admission_identity_drift`). Earlier
+  merges remain recorded; fix the reported issue before resuming.
 - `merge_failed`: a merge call returned an error (e.g. conflict, branch
   protection). The ledger records the failed node as `blocked`. Fix and resume.
 

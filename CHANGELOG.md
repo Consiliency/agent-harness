@@ -23,6 +23,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Certificates prove deletion mechanics, not generatedness; other substantive
   changes stay inline. Invalid, missing or oversized material holds without
   truncation or extra review rounds.
+- Full historical admission bindings and fresh readmission eligibility hold
+  before effects. Preview rejects traversal into protected paths; malformed
+  check identities hold. File/directory and symlink transitions retain complete
+  patches, and merge-stage refusals preserve their specific reason.
 
 ### Qualified Gemini heartbeat reviews (agent-harness#905)
 

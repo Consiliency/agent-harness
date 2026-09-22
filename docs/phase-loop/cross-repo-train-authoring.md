@@ -157,8 +157,12 @@ not claimed model-read. The complete inventory remains operator-only. Moving
 the base requires refreshed base-bound attestations and another review, even
 if that subtree is unchanged. Other binary/submodule changes hold.
 
-The text escapes literal backslashes, CR and transport-disallowed Unicode
-reversibly while preserving raw-byte hashes. Forbidden broker frame replicas
+Direct patch text escapes literal backslashes, CR and transport-disallowed
+Unicode reversibly, preserving LF/TAB separators. JSON sections require outer
+escape decoding, JSON parsing, then decoding nested `content.text` to recover
+original evidence/source bytes. `raw_sha256` hashes those original bytes;
+`escaped_sha256` hashes intermediate escaped text before JSON/outer encoding.
+Preview `presentation_sha256` hashes the final rendered section. Forbidden broker frame replicas
 hold. The 1 MiB parser limit is not transport readiness: the **complete rendered
 prompt** must fit 512 KiB with its real brief/framing and a conservative sandbox
 path bound. Oversized input requires separately reviewed scope decomposition;
@@ -169,7 +173,8 @@ that digest, intact immutable packet storage, current live identities and the
 current usable-reviewer floor. Legacy count-only approvals re-review. Explicit
 new material is compared; omitting it retains stored evidence snapshots, not
 newly refreshed checks. Partial merge resume retains original reviewed sections
-for already merged nodes after checking admitted heads and live merge outcomes.
+for already merged nodes after checking full admission identity (node, branch,
+PR, head and FAB run) and live merge outcomes.
 Without valid historical material it holds as `historical_packet_unavailable`.
 Observed base/head drift before approval or each merge holds remaining work;
 this is not an atomic base pin or a promise against concurrent GitHub changes.
@@ -180,13 +185,20 @@ packet, requiring all evidence to bind the proposed head and all Git objects to
 exist locally. Invalid material anywhere holds before recovery or delta review.
 Existing broker readmission then establishes durable authority; only matching
 fresh ledger bindings can promote those identical frozen bytes for train review.
-The coordinator never advances a head after reviewing its packet. Recovery and
-every later approval/merge gate recheck actual repository revocation evidence;
+The coordinator never advances a head after reviewing its packet. Current
+readmission eligibility is checked again immediately before recovery. While FAB
+promotion is active, recovery and every later approval/merge gate recheck actual repository revocation evidence;
 absent or unreadable evidence namespaces hold while FAB promotion is active.
 Promotion-off retains the existing flag semantics and still requires admitted,
 current heads. Read-only review and native emission never readmit or recover;
 native fills requiring a new admission hold, and request emission returns even
 when approval is cached. Preview never reads broker evidence.
+
+Packet identity/material refusals before review report `review_halted`; a refusal
+after merging begins reports `merge_halted`, with the specific reason retained
+(for example `admission_identity_drift`). Earlier merges remain recorded. Missing
+historical node bindings hold explicitly. Packet readback detects missing/corrupt
+files; power-loss durability and recovery are tracked separately in agent-harness#977.
 
 The configured coordinator supervise tier is advisory provenance only. Preview
 readiness proves Git coverage and harness transport fit; it does not prove that
