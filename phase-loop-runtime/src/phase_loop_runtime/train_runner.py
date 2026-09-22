@@ -3807,7 +3807,8 @@ def _run_train_unfenced(
     try:
         fresh_packet_state()
     except (OSError, ValueError) as exc:
-        return {"status": "review_halted", "reason": str(exc).split(":", 1)[0], "detail": str(exc),
+        return {"status": "merge_halted" if admission_effects_started else "review_halted",
+                "reason": str(exc).split(":", 1)[0], "detail": str(exc),
                 "terminal_blocker": _non_human_train_blocker(str(exc))}
     if emit_native_request:
         emit_fn = _emit_native_fill_request_fn if _emit_native_fill_request_fn is not None else _default_emit_native_fill_request
@@ -3842,7 +3843,7 @@ def _run_train_unfenced(
         try:
             fresh_packet_state()
         except (OSError, ValueError) as exc:
-            return {"status": "review_halted", "nodes": completed_nodes,
+            return {"status": "merge_halted" if admission_effects_started else "review_halted", "nodes": completed_nodes,
                     "reason": str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else "packet_recheck_unavailable", "detail": str(exc),
                     "terminal_blocker": _non_human_train_blocker(str(exc))}
 

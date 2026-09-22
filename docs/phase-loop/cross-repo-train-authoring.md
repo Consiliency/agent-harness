@@ -197,12 +197,15 @@ current heads. Read-only review and native emission never readmit or recover;
 native fills requiring a new admission hold, and request emission returns even
 when approval is cached. Preview never reads broker evidence.
 
-Packet identity/material refusals before review report `review_halted`. In the
-recovery/readmission loop, refusals before its first effect use `review_halted`;
-after an effect they use `merge_halted`. This handler appends a blocked row only
-for a node whose recovery/readmission began. Merge-loop refusals also use
-`merge_halted`. Both handlers retain the specific reason (for example
-`admission_identity_drift`). Earlier merges remain recorded. Missing
+Packet identity, material and revocation checkpoints—including finalization,
+storage, and checks immediately before review and approval—report `review_halted`
+before this packet's recovery/readmission begins and `merge_halted` after it begins.
+The recovery/readmission loop uses the same effect boundary. Only its per-node
+failure handler appends a blocked row, and only after that node's helper entry;
+later packet holds retain the latest durable binding without appending a row.
+Normal panel rejections and native-fill refusals remain `review_halted`.
+Merge-loop refusals remain `merge_halted`. Specific reasons (for example
+`admission_identity_drift`) survive, and earlier merges remain recorded. Missing
 historical node bindings hold explicitly. Packet readback detects missing/corrupt
 files; malformed stored shapes and excessive JSON nesting produce a hold receipt.
 Power-loss durability and recovery are tracked separately in agent-harness#977.
