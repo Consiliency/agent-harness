@@ -72,7 +72,12 @@ PHASE_HEADING_RE = re.compile(
     r"\(\s*(?P<alias>[A-Za-z0-9]+)(?:\s*,[^)]*)?\s*\)\s*$",
     re.MULTILINE,
 )
-ANY_PHASE_HEADING_RE = re.compile(r"^### +Phase\s+\d+(?:\.\d+)?[A-Z]?\b.*$", re.MULTILINE)
+ANY_PHASE_HEADING_RE = re.compile(
+    r"^(?:[^\S\n]|\ufeff)*#+[^\S\n]*phase[^\S\n]*\d[^\n]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+PHASE_BODY_FIELD_RE = re.compile(r"^(?:[^\S\n]|\ufeff)*\*\*Key files\*\*[^\n]*$")
+CODE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\n]*)$")
 FIELD_RE_TEMPLATE = r"^\*\*{label}\*\*\s*\n(?P<body>(?:(?!^\*\*|^### |^## ).*\n?)+)"
 ALIAS_TOKEN_RE = re.compile(r"`([A-Za-z][A-Za-z0-9]*)`|\b([A-Z][A-Z0-9]{1,40}|[Pp]\d+[A-Za-z]?)\b")
 
@@ -93,6 +98,29 @@ EC_ID_LEADING_RE = re.compile(r"^EC-([A-Za-z0-9]+)-(\d+)\b")
 PREAMBLE_MARKER_RE = re.compile(r"preamble\s*/\s*interface-only|interface-freeze-only|preamble phase", re.IGNORECASE)
 
 
+def _without_fenced_code(text: str) -> str:
+    """Blank fenced examples without changing source offsets or line numbers."""
+    fence = ""
+    lines: List[str] = []
+    for line in text.splitlines(keepends=True):
+        match = CODE_FENCE_RE.match(line.rstrip("\r\n"))
+        if fence:
+            if (
+                match
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= len(fence)
+                and not match.group(2).strip(" \t")
+            ):
+                fence = ""
+        elif match and (match.group(1)[0] != "`" or "`" not in match.group(2)):
+            fence = match.group(1)
+        else:
+            lines.append(line)
+            continue
+        lines.append("".join(char if char in "\r\n" else " " for char in line))
+    return "".join(lines)
+
+
 def _extract_top_sections(text: str) -> Dict[str, str]:
     sections: Dict[str, str] = {}
     matches = list(TOP_HEADING_RE.finditer(text))
@@ -110,16 +138,19 @@ def _next_top_heading(text: str, start: int) -> int:
 
 def _extract_phases(text: str) -> List[Phase]:
     phases: List[Phase] = []
-    matches = list(PHASE_HEADING_RE.finditer(text))
+    prose = _without_fenced_code(text)
+    matches = list(PHASE_HEADING_RE.finditer(prose))
     for i, m in enumerate(matches):
-        body_start = m.end()
-        body_end = matches[i + 1].start() if i + 1 < len(matches) else _next_top_heading(text, body_start)
-        body = text[body_start:body_end]
+        source_heading = PHASE_HEADING_RE.match(text, m.start())
+        assert source_heading is not None
+        body_start = source_heading.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else _next_top_heading(prose, body_start)
+        body = prose[body_start:body_end]
         phase = Phase(
             number=int(m.group("num")),
             name=m.group("name").strip(),
             alias=m.group("alias").strip(),
-            raw_body=body,
+            raw_body=text[body_start:body_end],
         )
         phase.objective = _field(body, "Objective")
         phase.exit_criteria = _checkbox_items(_field(body, "Exit criteria"))
@@ -197,15 +228,26 @@ def _leading_ec_id(criterion_text: str) -> Optional[str]:
 # Checks
 
 def check_phase_heading_format(text: str, errors: List[str]) -> None:
-    for m in ANY_PHASE_HEADING_RE.finditer(text):
-        heading = m.group(0).strip()
-        if PHASE_HEADING_RE.match(heading):
+    in_phase = False
+    body_seen = False
+    for line_no, heading in enumerate(_without_fenced_code(text).splitlines(), 1):
+        if PHASE_HEADING_RE.fullmatch(heading):
+            in_phase = True
+            body_seen = False
             continue
-        line_no = text.count("\n", 0, m.start()) + 1
-        errors.append(
-            f"(B) line {line_no}: invalid phase heading `{heading}`; "
-            "expected `### Phase N — <Name> (<ALIAS>)`"
-        )
+        if ANY_PHASE_HEADING_RE.fullmatch(heading):
+            errors.append(
+                f"(B) line {line_no}: invalid phase heading `{heading}`; "
+                "expected `### Phase N — <Name> (<ALIAS>)`"
+            )
+        if TOP_HEADING_RE.fullmatch(heading):
+            in_phase = False
+        if PHASE_BODY_FIELD_RE.fullmatch(heading):
+            if not in_phase or body_seen:
+                errors.append(
+                    f"(B) line {line_no}: phase body has no distinct valid phase heading"
+                )
+            body_seen = True
 
 
 def check_required_headings(sections: Dict[str, str], errors: List[str]) -> None:
@@ -396,6 +438,7 @@ def check_lane_count_hint(phases: List[Phase], errors: List[str]) -> None:
 
 def lint_roadmap_text(text: str) -> List[str]:
     """Return a list of human-readable issues for roadmap markdown ``text``."""
+    text = _without_fenced_code(text)
     errors: List[str] = []
     sections = _extract_top_sections(text)
     phases = _extract_phases(text)
