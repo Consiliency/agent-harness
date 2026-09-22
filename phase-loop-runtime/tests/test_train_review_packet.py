@@ -1879,3 +1879,61 @@ def test_near_recursion_limit_stored_json_always_yields_preview_receipt(candidat
         assert receipt["ready"] is False and receipt["errors"], (depth, receipt)
         assert json.loads((output / "receipt.json").read_text()) == receipt
         assert ledger.read_bytes() == before
+
+
+@pytest.mark.parametrize("first_readmitted", [False, True])
+@pytest.mark.parametrize("reversal", ["readiness", "promotion_store"])
+def test_later_proposed_eligibility_reversal_preserves_prior_effects(candidate, monkeypatch, first_readmitted, reversal):
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr, governed_premerge as gp
+    from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+    c = candidate
+    enable_fab(c, monkeypatch)
+    second, repo = add_sibling(c)
+    repository_broker_namespace(repo).mkdir(parents=True, exist_ok=True)
+    first_head = proposed_candidate(c) if first_readmitted else c["head"]
+    (repo / "code.py").write_text("second_proposed_delta = 4\n")
+    second_head = commit(repo, "second proposed delta")
+    material = c["material"]["nodes"][second.node_id]
+    material["head_sha"] = material["verification"][0]["head_sha"] = second_head
+    c["lives"][c["state"][second.node_id].pr_url]["headRefOid"] = second_head
+    update_material(c)
+    ledger = c["tmp"] / "ledger/train.ledger.jsonl"
+    for row in c["state"].values():
+        append_record(ledger, row)
+    original_store = tr._train_revocation_store
+    effects, second_reads, before_refusal = [], [], []
+    def store(workspace, record):
+        if workspace == repo:
+            second_reads.append(1)
+            if len(second_reads) == 2:
+                before_refusal.append(ledger.read_bytes())
+                if reversal == "readiness":
+                    monkeypatch.setattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", False)
+                else:
+                    # Real resolver returns None under the existing promotion-off policy.
+                    monkeypatch.setenv(gp.FAB_PROMOTION_ENV, "0")
+        return original_store(workspace, record)
+    def recover(workspace, *args, **kwargs):
+        effects.append(("recover", workspace))
+        assert workspace == c["repo"], "second node must not begin recovery"
+    def readmit(workspace, path, **kwargs):
+        # Inject only the first admission outcome; Git snapshot and fresh store/identity checks are real.
+        effects.append(("readmit", workspace))
+        assert first_readmitted and workspace == c["repo"]
+        append_record(path, replace(read_ledger(path)[c["node"].node_id], head_sha=first_head))
+        return first_head
+    monkeypatch.setattr(tr, "_train_revocation_store", store)
+    monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+    monkeypatch.setattr(tr, "_fab_delta_readmit", readmit)
+    result = run_candidate(c, monkeypatch, review_only=False, fab_delta_shortcut=True,
+        _live_pr_head_sha_fn=lambda ws, br: first_head if ws == c["repo"] else second_head,
+        _delta_review_fn=never, _train_review_fn=never, _merge_pr_fn=never)
+    assert result["reason"] == "stale_head", result
+    assert result["node_id"] == second.node_id, result
+    assert effects == [("recover", c["repo"])] + ([("readmit", c["repo"])] if first_readmitted else [])
+    state = read_ledger(ledger)
+    assert state[c["node"].node_id].head_sha == first_head
+    assert state[second.node_id].head_sha == c["head"] and state[second.node_id].status == "pr_open"
+    assert len(before_refusal) == 1 and ledger.read_bytes() == before_refusal[0]
+    assert result["status"] == "merge_halted", result
