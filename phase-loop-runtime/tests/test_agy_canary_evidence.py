@@ -2447,6 +2447,9 @@ def test_write_lease_trusts_what_signal_signal_actually_displaced(request, monke
 # wherever the previous review had pointed. Enumerating the mutations is what
 # stops the next one hiding one call further along.
 _LEASE_ENTRY_MUTATIONS = ("signal", "pthread_sigmask")
+# NOTE: enumerating the mutations covers each one ALONE. The composition of
+# two separately-covered arrangements is a different thing and needs its own
+# case -- see test_an_owner_installed_during_the_window_is_restored_not_lost.
 
 
 @pytest.mark.parametrize("mutating_call", _LEASE_ENTRY_MUTATIONS)
@@ -2504,6 +2507,64 @@ def test_an_interrupt_at_any_mutating_call_unwinds_every_change(request, monkeyp
     # And the process is still usable.
     guard = evidence._begin_lease_signal_guard()
     evidence._end_lease_signal_guard(guard)
+
+
+def test_an_owner_installed_during_the_window_is_restored_not_lost(request, monkeypatch):
+    """The COMBINATION, which each part alone passes (codex, round 4).
+
+    The ownership-race tests and the change-then-raise tests each cover one
+    arrangement. The defect lives in their composition: the pre-check sees
+    SIG_DFL, a Python signal callback installs foreign handler F, our
+    installation displaces F, and an interrupt lands before the displaced value
+    is recorded. Unwind then sees our handler, restores the STALE pre-captured
+    SIG_DFL, and F is permanently lost -- with both cleanup calls reporting
+    success, which is why nothing red.
+
+    Modelled faithfully rather than approximated. The stub installs F and lets
+    the real displacement happen, then sends this process a REAL SIGINT at
+    exactly the moment the value exists and is unrecorded. If that region is
+    uninterruptible the signal stays pending, the record completes, and the
+    KeyboardInterrupt arrives afterwards against a correct record; if it is not,
+    the interrupt lands in the gap and F is lost. The assertion is that F is
+    RESTORED, not merely that something was.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+
+    def foreign(_signum, _frame):
+        return None
+
+    entry = signal.getsignal(signal.SIGIO)
+    assert evidence._sigio_is_unowned(entry), "this test needs an unowned starting disposition"
+    real_signal = signal.signal
+    fired = {"n": 0}
+
+    def install_owner_then_interrupt(signum, handler):
+        if handler is not evidence._lease_sigio_handler or fired["n"]:
+            return real_signal(signum, handler)
+        fired["n"] += 1
+        # The window: a callback installs F after the guard's pre-check passed.
+        real_signal(signal.SIGIO, foreign)
+        displaced = real_signal(signal.SIGIO, handler)
+        assert displaced is foreign
+        # The interrupt arrives while the displaced value exists and is unrecorded.
+        os.kill(os.getpid(), signal.SIGINT)
+        return displaced
+
+    monkeypatch.setattr(evidence.signal, "signal", install_owner_then_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    assert fired["n"] == 1, "the stub never reached the guard's installation"
+    assert signal.getsignal(signal.SIGIO) is foreign, (
+        "the foreign owner installed during the window was LOST: unwind restored "
+        f"{signal.getsignal(signal.SIGIO)!r} from a stale record instead of it"
+    )
+    signal.signal(signal.SIGIO, entry)
 
 
 def test_an_interrupted_nested_entry_preserves_the_outer_guards_disposition(request, monkeypatch):

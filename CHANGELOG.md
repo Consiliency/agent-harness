@@ -82,10 +82,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   acquisition, and a failure in either step neither aborts the other nor replaces
   the exception that caused the unwind. Recovery state is captured BEFORE every
   mutation rather than from a mutating call's result, so there is no interval in
-  which a change is live without a recorded way to undo it; an interrupt that
-  lands between a call completing and its result being assigned would otherwise
-  leave the change un-undoable, and would restore the default disposition over a
-  `SIG_IGN` or an outer guard's handler. Restoration is nonetheless BEST EFFORT:
+  which a change is live without a recorded way to undo it. The disposition's
+  displacement and the recording of what it displaced are additionally made
+  INDIVISIBLE, by blocking every blockable signal across both: the displaced
+  handler exists only as a return value, Python runs signal callbacks between
+  bytecodes, and an interrupt in that gap would leave the record stale rather
+  than merely unset -- losing a foreign handler installed during the window
+  while both cleanup calls report success. Restoration is nonetheless BEST EFFORT:
   preserving the original exception and attempting both steps is chosen over
   guaranteeing either.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
