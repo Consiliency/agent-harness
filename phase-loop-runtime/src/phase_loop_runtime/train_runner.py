@@ -3651,6 +3651,7 @@ def _run_train_unfenced(
             if node.node_id not in merged_shas:
                 _train_revocation_store(resolve_workspace(node), state[node.node_id])
         return state
+    admission_effects_started = False
     try:
         historical = None
         if train_review_rec is not None and train_review_rec.review_packet_sha256 is not None:
@@ -3676,7 +3677,6 @@ def _run_train_unfenced(
             _train_revocation_store(resolve_workspace(node), packet_state[node.node_id])
         if not review_only and not emit_native_request:
             prior_bindings = {n.node_id: admission_binding(packet_state[n.node_id]) for n in pending_nodes}
-            admission_effects_started = False
             for node in pending_nodes:
                 nid = node.node_id
                 workspace = resolve_workspace(node)
@@ -3745,7 +3745,7 @@ def _run_train_unfenced(
         packet = load_review_packet(packet_root, packet.sha256)
         bundle_text = packet.artifact
     except (OSError, ValueError) as exc:
-        return {"status": "review_halted", "nodes": completed_nodes,
+        return {"status": "merge_halted" if admission_effects_started else "review_halted", "nodes": completed_nodes,
                 "reason": str(exc).split(":", 1)[0], "detail": str(exc),
                 "terminal_blocker": _non_human_train_blocker(str(exc))}
 
