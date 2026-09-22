@@ -2882,33 +2882,57 @@ def test_unwinding_never_aborts_after_its_own_failure(request, monkeypatch):
         signal.signal(signal.SIGIO, entry)
 
 
-def test_a_failed_entry_never_leaves_this_guards_disposition_installed(request, monkeypatch):
-    """Falsifier for the entry-rollback window (agent-harness#950 round 1).
+def test_an_exception_at_the_pre_read_leaves_nothing_to_undo(request, monkeypatch):
+    """The pre-read sits OUTSIDE the protected region, so it must not mutate.
 
-    An exception raised AFTER the disposition is installed but BEFORE the guard
-    returns hands no token to `clean_settings`, so `_end_lease_signal_guard`
-    never runs and its `finally` cannot repair it. Without rollback the process
-    discards every SIGIO for the rest of its life -- a failure mode the pre-#950
-    code could not have, since it installed no disposition at all.
+    Renamed and re-documented after grok found the old prose false. It claimed to
+    raise "AFTER the disposition is installed", but patching `pthread_sigmask` to
+    raise fires at the FIRST such call, which is the empty-set pre-read -- before
+    the mask is blocked and before the disposition is installed. The assertion
+    that the disposition is unchanged then held trivially, because nothing had
+    installed one.
 
-    `BaseException` is used deliberately: `KeyboardInterrupt` is the realistic
-    arrival, and an `except Exception` rollback would not catch it.
+    That prose was a deletion hazard rather than a coverage hole. The post-install
+    window it named is genuinely covered by
+    `test_an_interrupt_at_any_mutating_call_unwinds_every_change`, which skips the
+    pre-read and injects a change-then-raise at each real mutation. A maintainer
+    trimming duplicates would have read this docstring, believed this one covered
+    that window, and could have deleted the test that actually does.
+
+    What this pins instead is the design decision that makes the pre-read safe to
+    leave outside the try: it queries the mask and changes nothing, so an
+    exception there has nothing to unwind. Both resources are asserted, which is
+    what gives the test something that can fail -- making the pre-read mutating
+    reds it.
     """
     if _delegate_to_a_single_threaded_child(request):
         return
-    before = signal.getsignal(signal.SIGIO)
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    before_handler = signal.getsignal(signal.SIGIO)
+    before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    reached = {"where": None}
+    real_mask = signal.pthread_sigmask
 
-    def _interrupt(*_args, **_kwargs):
-        raise KeyboardInterrupt("interrupted inside the entry window")
+    def raise_at_the_first_call(how, mask=None):
+        reached["where"] = "pre-read" if (mask is not None and not mask) else "block"
+        raise KeyboardInterrupt("interrupted at the pre-read")
 
-    monkeypatch.setattr(evidence.signal, "pthread_sigmask", _interrupt)
-    with pytest.raises(KeyboardInterrupt):
-        evidence._begin_lease_signal_guard()
-    monkeypatch.undo()
-    assert signal.getsignal(signal.SIGIO) == before, (
-        "a failed entry leaked this guard's SIGIO disposition; the process now "
-        "silently discards every SIGIO it receives"
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", raise_at_the_first_call)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    assert reached["where"] == "pre-read", (
+        "this test no longer interrupts at the pre-read, so it is testing a "
+        f"different window than it documents: reached {reached['where']}"
     )
+    assert real_mask(signal.SIG_BLOCK, set()) == before_mask, (
+        "the pre-read changed the signal mask; it sits outside the protected "
+        "region, so there is no unwind to put that back"
+    )
+    assert signal.getsignal(signal.SIGIO) == before_handler
     # And the process is still usable: a later entry still succeeds.
     guard = evidence._begin_lease_signal_guard()
     evidence._end_lease_signal_guard(guard)

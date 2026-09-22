@@ -98,12 +98,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   call, and storing it is a separate step, so an interrupt arriving between the
   two leaves the pre-capture in place. For the disposition, a foreign handler
   installed in that window is restored as the earlier disposition instead of
-  itself. For the mask, a signal a callback blocked in that window is silently
-  unblocked on the way out. The mask case is additionally reachable when the
-  mutating call raises before its result is assigned. Restoration is therefore
-  best effort in both cases. This is one structural window, not two problems:
-  the successful path takes the authoritative value from the call, and only an
-  interrupted or failed capture falls back to the earlier reading.
+  itself. For the mask, the entry snapshot is the one that gets restored. The
+  mask case is additionally reachable when the mutating call raises before its
+  result is assigned. Restoration is therefore best effort in both cases. This
+  is one structural window, not two problems: the successful path takes the
+  authoritative value from the call, and only an interrupted or failed capture
+  falls back to the earlier reading.
+
+  **Separately, and wider than that window**: release sets the mask to the entry
+  snapshot, so ANY mask change made at ANY point while the lease is held is
+  reverted, not only one made during the capture window above. A callback for
+  some unrelated handled signal, running at any moment of the hold and blocking
+  a signal of its own, has that blocking silently undone on release. Measured on
+  3.10 and 3.12: a signal blocked mid-hold, well clear of capture, is unblocked
+  by release.
+
+  This is the ordinary contract of a scoped save-and-restore rather than a
+  correctness break, and it is not a stale record -- the snapshot is exactly
+  right, it is the SCOPE of the restore that is wide. It is written here because
+  an earlier draft scoped the consequence to the capture window, which is
+  narrower than the code, and because the effect on a caller is the same either
+  way: a signal it blocked is unblocked without notice.
 
   Its width, stated exactly: under this guard's single-thread admission the
   interrupt that matters is another Python signal callback, so a single-threaded
