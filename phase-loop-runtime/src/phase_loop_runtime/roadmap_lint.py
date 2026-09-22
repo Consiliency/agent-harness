@@ -68,8 +68,9 @@ class Phase:
 
 TOP_HEADING_RE = re.compile(r"^## +(?P<name>[^\n]+?)\s*$", re.MULTILINE)
 PHASE_HEADING_RE = re.compile(
-    r"^### +Phase\s+(?P<num>\d+)(?P<decimal>\.\d+)?(?P<letter>[A-Z]?)\s*[—\-]\s*(?P<name>.+?)\s*"
-    r"\(\s*(?P<alias>[A-Za-z0-9]+)(?:\s*,[^)]*)?\s*\)\s*$",
+    r"^### +Phase[^\S\r\n]+(?P<num>\d+)(?P<decimal>\.\d+)?(?P<letter>[A-Z]?)[^\S\r\n]*"
+    r"[—\-][^\S\r\n]*(?P<name>[^\r\n]+?)[^\S\r\n]*"
+    r"\([^\S\r\n]*(?P<alias>[A-Za-z0-9]+)(?:[^\S\r\n]*,[^)\r\n]*)?[^\S\r\n]*\)[^\S\r\n]*\r?$",
     re.MULTILINE,
 )
 ANY_PHASE_HEADING_RE = re.compile(
@@ -102,8 +103,8 @@ def _without_fenced_code(text: str) -> str:
     """Blank fenced examples without changing source offsets or line numbers."""
     fence = ""
     lines: List[str] = []
-    for line in text.splitlines(keepends=True):
-        match = CODE_FENCE_RE.match(line.rstrip("\r\n"))
+    for line in text.split("\n"):
+        match = CODE_FENCE_RE.match(line.removesuffix("\r"))
         if fence:
             if (
                 match
@@ -118,7 +119,7 @@ def _without_fenced_code(text: str) -> str:
             lines.append(line)
             continue
         lines.append("".join(char if char in "\r\n" else " " for char in line))
-    return "".join(lines)
+    return "\n".join(lines)
 
 
 def _extract_top_sections(text: str) -> Dict[str, str]:
@@ -141,9 +142,7 @@ def _extract_phases(text: str) -> List[Phase]:
     prose = _without_fenced_code(text)
     matches = list(PHASE_HEADING_RE.finditer(prose))
     for i, m in enumerate(matches):
-        source_heading = PHASE_HEADING_RE.match(text, m.start())
-        assert source_heading is not None
-        body_start = source_heading.end()
+        body_start = m.end()
         body_end = matches[i + 1].start() if i + 1 < len(matches) else _next_top_heading(prose, body_start)
         body = prose[body_start:body_end]
         phase = Phase(
@@ -230,7 +229,7 @@ def _leading_ec_id(criterion_text: str) -> Optional[str]:
 def check_phase_heading_format(text: str, errors: List[str]) -> None:
     in_phase = False
     body_seen = False
-    for line_no, heading in enumerate(_without_fenced_code(text).splitlines(), 1):
+    for line_no, heading in enumerate(_without_fenced_code(text).split("\n"), 1):
         if PHASE_HEADING_RE.fullmatch(heading):
             in_phase = True
             body_seen = False
