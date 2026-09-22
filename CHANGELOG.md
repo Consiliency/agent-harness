@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the pytest suite runs under xdist in both consumers (agent-harness#945)
+
+- Both suite consumers -- the GitHub-hosted lane in `.github/workflows/test.yml` and the
+  Dagger offload in `ci/dagger/src/agent_harness_ci/main.py` -- now run
+  `-n auto --dist loadfile --max-worker-restart=0`, with `pytest-xdist==3.8.0` pinned in
+  each install step. Both were changed together: a parallelism flag on one consumer and
+  not the other silently measures a different suite than it runs.
+- `--max-worker-restart=0` is load-bearing, not tidiness. xdist's default is to REPLACE a
+  dead worker; on this suite that left the controller waiting on its queue with every
+  worker idle, so a crash became a job that hangs to the timeout instead of failing. Zero
+  converts any such crash into an immediate red that names the node.
+- `--dist loadfile` keeps a file's tests on one worker -- the conservative distribution,
+  chosen so per-file module state cannot be split across workers.
+- `tests/test_ci_xdist_adoption.py` asserts both consumers carry the flags, so the two
+  cannot drift apart again.
+- This was blocked by the lease-guard SIGIO production bug (agent-harness#950): under
+  parallelism `test_clean_settings_detects_a_conflicting_open_lease_break` crashed its
+  worker. That fix landed separately (agent-harness#953); this change depends on it.
+- The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
+  unchanged and is invoked as its own shell command with no `-n auto`.
+
 ### Qualified Gemini heartbeat reviews (agent-harness#905)
 
 - Brokered Linux subscription Gemini reviews can use heartbeat-only with the
