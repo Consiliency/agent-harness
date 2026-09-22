@@ -8,7 +8,7 @@ issues: [agent-harness#906]
 related_issues: [agent-harness#915, treesitter-chunker#97]
 automation:
   suite_command: "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests .venv/bin/python -m pytest -q phase-loop-runtime/tests/test_train_review_packet.py phase-loop-runtime/tests/test_fab_activation_promotion.py phase-loop-runtime/tests/test_fab_delta_consumer.py phase-loop-runtime/tests/test_fab_flag_off_recovery_leak_299.py phase-loop-runtime/tests/test_model_tier_taxonomy.py phase-loop-runtime/tests/test_train_review_authorization.py phase-loop-runtime/tests/test_train_merge.py phase-loop-runtime/tests/test_train_prebuilt.py phase-loop-runtime/tests/test_train_runner.py phase-loop-runtime/tests/test_train_e2e.py phase-loop-runtime/tests/test_train_invariants.py phase-loop-runtime/tests/test_native_claude_seat_fill.py phase-loop-runtime/tests/test_native_claude_seat_fill_green.py phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py phase-loop-runtime/tests/test_review_staged_tree_authorization.py phase-loop-runtime/tests/test_the_real_launch_carries_the_prefix.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_sandbox_preamble.py phase-loop-runtime/tests/test_skills_canon_parity.py"
-  verification_status: not_run
+  verification_status: failed
   human_required: false
 ---
 
@@ -39,6 +39,12 @@ and model-tier test modules: `test_fab_activation_promotion.py`,
 `test_model_tier_taxonomy.py`. This adds explicit adjacent coverage; it does not
 change acceptance criteria. Retain the earlier 15-module receipts separately
 from the integrated 19-module run.
+
+Execution evidence is imported by `train-review-packet-operational-evidence-20260922.md`
+and its appended manifest lifecycle record. The verification status retains the
+failed local full-package run; the declared 19-module automation passed. Baseline
+matching does not turn that failure green. Final implementation review and
+exact-candidate required CI remain separate landing gates.
 
 ## Task and boundary
 

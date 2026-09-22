@@ -8588,6 +8588,25 @@
             "dependency": "3703355c2afe5185098747e430a3b20df057ba3a"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T08:51:06Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "event": "operational_evidence_imported",
+            "amendment_ref": "plans/train-review-packet-operational-evidence-20260922.md",
+            "amendment_sha256": "c829c03f43355e515769ba0c6de58f4b4ed49c5dc1ec6a21c9ae5f8d0ff74bcd",
+            "import_receipt_ref": "phase-loop-runtime/.phase-loop/train-review-packet/implementation/operational-import-stamp/verification.json",
+            "import_receipt_sha256": "437e28d6fbd3dd0548d0cd55ae6fe7356f5661602844cb42c86594eddd614d15",
+            "operational_source_head": "c7cdbaca30b0a7eacd1e9086c66b2e3c8d48a9bb",
+            "import_source_head": "635232bf773496fdd367d479e3c06a062934e283",
+            "verification_status": "failed",
+            "automation_summary": "622 passed, 1 skipped",
+            "full_summary": "16 failed, 6861 passed, 720 skipped; 16 per-node causes match retained baselines; skip set not compared",
+            "disposition": "Evidence imported; verification/format clarifications and implementation pending four-vendor ratification. Exact-candidate CI required; no historical verdict replaced.",
+            "pr_url": "https://github.com/Consiliency/agent-harness/pull/978"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -8604,7 +8623,7 @@
       "status": "executing",
       "task_summary": "Coordinator-owned admitted train review packet, zero-model preview and content-bound approval for agent-harness#906 and agent-harness#915.",
       "type": "detailed",
-      "updated_at": "2026-09-22T04:21:00Z"
+      "updated_at": "2026-09-22T08:51:06Z"
     }
   ],
   "schema_version": 1
