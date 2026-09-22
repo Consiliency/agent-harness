@@ -4388,7 +4388,9 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     native_leg_specs = list(getattr(args, "native_legs", []) or [])
     preview_output = getattr(args, "preview_review", None)
     review_material = getattr(args, "review_material", None)
-    if preview_output and (not review_only or run_mode != "governed" or emit_native_request or native_leg_specs):
+    if preview_output == "":
+        parser.error("--preview-review requires a non-empty directory")
+    if preview_output is not None and (not review_only or run_mode != "governed" or emit_native_request or native_leg_specs):
         parser.error("--preview-review requires --governed --review-only and cannot combine with native emission/fill")
     if (emit_native_request or native_leg_specs) and not review_only:
         parser.error("--emit-native-request / --native-leg require --governed --review-only")
@@ -4437,7 +4439,7 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
 
     as_json = bool(getattr(args, "json", False))
 
-    if preview_output:
+    if preview_output is not None:
         import hashlib
         from .train_review_packet import preview_review_packet
         receipt = preview_review_packet(
