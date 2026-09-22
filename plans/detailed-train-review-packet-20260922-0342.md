@@ -7,7 +7,7 @@ input_base_commit: cd33474856551a6645ac4db33253922a1db2e442
 issues: [agent-harness#906]
 related_issues: [agent-harness#915, treesitter-chunker#97]
 automation:
-  suite_command: "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests .venv/bin/python -m pytest -q phase-loop-runtime/tests/test_train_review_packet.py phase-loop-runtime/tests/test_train_review_authorization.py phase-loop-runtime/tests/test_train_merge.py phase-loop-runtime/tests/test_train_prebuilt.py phase-loop-runtime/tests/test_train_runner.py phase-loop-runtime/tests/test_train_e2e.py phase-loop-runtime/tests/test_train_invariants.py phase-loop-runtime/tests/test_native_claude_seat_fill.py phase-loop-runtime/tests/test_native_claude_seat_fill_green.py phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py phase-loop-runtime/tests/test_review_staged_tree_authorization.py phase-loop-runtime/tests/test_the_real_launch_carries_the_prefix.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_sandbox_preamble.py phase-loop-runtime/tests/test_skills_canon_parity.py"
+  suite_command: "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests .venv/bin/python -m pytest -q phase-loop-runtime/tests/test_train_review_packet.py phase-loop-runtime/tests/test_fab_activation_promotion.py phase-loop-runtime/tests/test_fab_delta_consumer.py phase-loop-runtime/tests/test_fab_flag_off_recovery_leak_299.py phase-loop-runtime/tests/test_model_tier_taxonomy.py phase-loop-runtime/tests/test_train_review_authorization.py phase-loop-runtime/tests/test_train_merge.py phase-loop-runtime/tests/test_train_prebuilt.py phase-loop-runtime/tests/test_train_runner.py phase-loop-runtime/tests/test_train_e2e.py phase-loop-runtime/tests/test_train_invariants.py phase-loop-runtime/tests/test_native_claude_seat_fill.py phase-loop-runtime/tests/test_native_claude_seat_fill_green.py phase-loop-runtime/tests/test_governed_cross_vendor_floor_358.py phase-loop-runtime/tests/test_review_staged_tree_authorization.py phase-loop-runtime/tests/test_the_real_launch_carries_the_prefix.py phase-loop-runtime/tests/test_broker_staged_tree_delivery.py phase-loop-runtime/tests/test_sandbox_preamble.py phase-loop-runtime/tests/test_skills_canon_parity.py"
   verification_status: not_run
   human_required: false
 ---
@@ -32,7 +32,13 @@ implementation contract, not implementation source or supplier delivery.
 The automation removes only the deleted `test_launch_seam_coverage.py` path,
 retaining `test_the_real_launch_carries_the_prefix.py`; the original exit 4 and
 deletion commit `7112c79aa1bb6a9a1dac931467cdf6d9f197f167` remain evidence.
-That verification-input correction is included for implementation-board ratification.
+These verification-input corrections are included for implementation-board ratification.
+After implementation review, the command additionally covers the four changed FAB
+and model-tier test modules: `test_fab_activation_promotion.py`,
+`test_fab_delta_consumer.py`, `test_fab_flag_off_recovery_leak_299.py`, and
+`test_model_tier_taxonomy.py`. This adds explicit adjacent coverage; it does not
+change acceptance criteria. Retain the earlier 15-module receipts separately
+from the integrated 19-module run.
 
 ## Task and boundary
 
