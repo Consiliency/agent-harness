@@ -10,8 +10,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - `validate-roadmap` now reports malformed phase headings and phase bodies without
   a distinct valid heading, instead of silently accepting an incomplete roadmap.
-- Fenced Markdown examples are excluded from phase parsing and lint checks, while
-  diagnostics retain their original source line numbers.
+- Top-level fenced Markdown examples (up to three leading spaces) are excluded
+  from parsed fields and lint checks; direct parser consumers retain raw phase
+  bodies. A repeated `**Key files**` block requires a distinct valid phase heading.
+- Heading recognition and fence masking use consistent LF-delimited source lines
+  with CRLF support. Split headings report diagnostics instead of crashing the
+  standalone validator; other line separators cannot silently hide a phase.
 
 ### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
 
