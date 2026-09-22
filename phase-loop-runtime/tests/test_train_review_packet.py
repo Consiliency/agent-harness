@@ -394,6 +394,7 @@ def test_historical_packet_valid_retains_original_base_after_merge(candidate):
 def test_preview_output_cli_never_constructs_broker_or_runs_train(candidate, monkeypatch, capsys):
     from phase_loop_runtime import cli, train_runner
     from phase_loop_runtime.convergence import broker
+    from phase_loop_runtime.convergence.broker import live
     c = candidate
     train = c["tmp"] / "train.md"
     train.write_text("# Release Train: packet boundary\n\n## Nodes\n\n### Node: repo-a / CHANGELOG.md\n\n**Depends on:** (none)\n**Channel:** (none)\n")
@@ -401,6 +402,8 @@ def test_preview_output_cli_never_constructs_broker_or_runs_train(candidate, mon
     append_record(ledger, c["state"][c["node"].node_id])
     before = ledger.read_bytes()
     monkeypatch.setattr(packet, "read_pr_metadata", lambda *_: dict(c["live"]))
+    monkeypatch.setattr(live, "fabpub_capability_active", never)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", never)
     monkeypatch.setattr(broker, "build_routing_broker_client", never)
     monkeypatch.setattr(train_runner, "run_train", never)
     args = ["run-train", "--train", str(train), "--governed", "--review-only", "--review-material", str(c["material_path"]),
@@ -409,6 +412,36 @@ def test_preview_output_cli_never_constructs_broker_or_runs_train(candidate, mon
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["ready"] and receipt["model_calls"] == 0
     assert ledger.read_bytes() == before
+    assert not (ledger.parent / "broker").exists()
+
+
+@pytest.mark.parametrize("governed_review", [False, True])
+@pytest.mark.parametrize("fabpub_active", [False, True])
+def test_preview_output_cli_empty_argument_refuses_before_effects(candidate, monkeypatch, capsys, governed_review, fabpub_active):
+    from phase_loop_runtime import cli, train_runner
+    from phase_loop_runtime.convergence import broker
+    from phase_loop_runtime.convergence.broker import live
+    c = candidate
+    train = c["tmp"] / "train.md"
+    train.write_text("# Release Train: packet boundary\n\n## Nodes\n\n### Node: repo-a / CHANGELOG.md\n\n**Depends on:** (none)\n**Channel:** (none)\n")
+    ledger = c["tmp"] / "ledger/train-train.ledger.jsonl"
+    append_record(ledger, c["state"][c["node"].node_id])
+    before = ledger.read_bytes()
+    paths_before = sorted(str(p.relative_to(c["tmp"])) for p in c["tmp"].rglob("*"))
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: fabpub_active)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", never)
+    monkeypatch.setattr(broker, "build_routing_broker_client", never)
+    monkeypatch.setattr(train_runner, "run_train", never)
+    args = ["run-train", "--train", str(train), "--preview-review", "",
+            "--workspace", "repo-a=" + str(c["repo"]), "--ledger-dir", str(ledger.parent), "--json"]
+    if governed_review:
+        args += ["--governed", "--review-only"]
+    with pytest.raises(SystemExit) as error:
+        cli.main(args)
+    assert error.value.code == 2
+    assert "--preview-review requires a non-empty directory" in capsys.readouterr().err
+    assert ledger.read_bytes() == before
+    assert sorted(str(p.relative_to(c["tmp"])) for p in c["tmp"].rglob("*")) == paths_before
     assert not (ledger.parent / "broker").exists()
 
 
