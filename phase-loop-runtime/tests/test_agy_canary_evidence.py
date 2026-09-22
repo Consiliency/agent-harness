@@ -12,14 +12,19 @@ import py_compile
 import shutil
 import socket
 import stat
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
+from _pytest.outcomes import Skipped
 
 from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import cli
@@ -1196,8 +1201,11 @@ def test_uv_registry_receipt_binds_normal_tool_install_requirement(tmp_path):
 
 
 def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(
+    request,
     tmp_path, capsys, monkeypatch,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         _use_empty_process_inventory(monkeypatch, tmp_path)
@@ -1248,7 +1256,9 @@ def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(
         root.rmdir()
 
 
-def test_clean_settings_cli_records_already_absent(tmp_path, capsys, monkeypatch):
+def test_clean_settings_cli_records_already_absent(request, tmp_path, capsys, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         _use_empty_process_inventory(monkeypatch, tmp_path)
@@ -1324,7 +1334,9 @@ def test_clean_settings_rejects_symlinked_evidence_root(tmp_path):
         target.rmdir()
 
 
-def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch):
+def test_clean_settings_rolls_back_after_exchange_failure(request, tmp_path, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         _use_empty_process_inventory(monkeypatch, tmp_path)
@@ -1360,8 +1372,11 @@ def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("failed_parent_fsync", (1, 2))
 def test_clean_settings_fsync_failures_name_only_the_durable_recovery_path(
+    request,
     tmp_path, monkeypatch, failed_parent_fsync,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1433,8 +1448,11 @@ def test_clean_settings_fsync_failures_name_only_the_durable_recovery_path(
 
 
 def test_clean_settings_final_scan_rename_cannot_commit_or_delete_original(
+    request,
     tmp_path, monkeypatch,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
     original = settings.read_bytes()
@@ -1470,8 +1488,11 @@ def test_clean_settings_final_scan_rename_cannot_commit_or_delete_original(
 
 
 def test_clean_settings_already_absent_final_scan_revalidates_canonical_path(
+    request,
     tmp_path, monkeypatch,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, [])
     original = settings.read_bytes()
@@ -1504,7 +1525,9 @@ def test_clean_settings_already_absent_final_scan_revalidates_canonical_path(
         shutil.rmtree(root)
 
 
-def test_clean_settings_rejects_a_preexisting_open_handle(tmp_path, monkeypatch):
+def test_clean_settings_rejects_a_preexisting_open_handle(request, tmp_path, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1523,7 +1546,144 @@ def test_clean_settings_rejects_a_preexisting_open_handle(tmp_path, monkeypatch)
         shutil.rmtree(root)
 
 
-def test_clean_settings_detects_a_conflicting_open_lease_break(tmp_path, monkeypatch):
+_LEASE_CHILD_ENV = "PHASE_LOOP_AGY_LEASE_CHILD"
+# pytest's JUnit writer reports 0 for a clean run and 1 when some node failed.
+# Anything else -- a usage error, an internal error, a signal death -- means the
+# rows that DID get written came from an abnormal run and must not be trusted.
+_CHILD_EXIT_CODES_WITH_TRUSTWORTHY_ROWS = (0, 1)
+
+
+def _run_one_node_in_a_single_threaded_child(nodeid, expected_key=None):
+    """Run exactly ONE node in an interpreter that satisfies the guard.
+
+    Deliberately not the whole module in one batch. A batch re-runs every OTHER
+    test here as a side effect, and this module has a fixture that binds a fixed
+    loopback port: running it twice in quick succession fails the second bind
+    with EADDRINUSE while the first is still in TIME_WAIT. Measured -- the
+    batched version red two nodes under `-n 2` for that reason alone.
+
+    One node also makes the result unambiguous: exactly one row is expected, so
+    there is no name-to-node mapping left to get wrong.
+    """
+    if expected_key is None:
+        expected_key = _child_key_for_nodeid(nodeid)
+    out_dir = tempfile.mkdtemp(prefix="agy-lease-child-")
+    junit = os.path.join(out_dir, "child.xml")
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "--no-header", nodeid, f"--junitxml={junit}"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        capture_output=True, text=True, check=False,
+        env={**os.environ, _LEASE_CHILD_ENV: "1",
+             "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    assert completed.returncode in _CHILD_EXIT_CODES_WITH_TRUSTWORTHY_ROWS, (
+        f"the delegated child exited {completed.returncode}, which is neither a "
+        "clean run nor a run with test failures; its JUnit rows describe an "
+        f"abnormal run and are not evidence:\n{completed.stdout}\n{completed.stderr}"
+    )
+    assert os.path.exists(junit), (
+        f"the delegated child wrote no JUnit file, so nothing ran:\n"
+        f"{completed.stdout}\n{completed.stderr}"
+    )
+    rows = list(ElementTree.parse(junit).iter("testcase"))
+    assert len(rows) == 1, (
+        f"expected exactly one row for {nodeid}, got {len(rows)}: "
+        f"{[(r.get('classname'), r.get('name')) for r in rows]}"
+    )
+    case = rows[0]
+    # PRECEDENCE, not last-match-wins. A row can carry both <skipped> and
+    # <error>: a test that skips and whose fixture teardown then fails. Letting
+    # <skipped> overwrite <error> would turn a teardown failure into a parent
+    # skip, which is silent. Failure and error dominate.
+    outcome = "passed"
+    for tag, label in (("error", "error"), ("failure", "failed"), ("skipped", "skipped")):
+        if case.find(tag) is not None:
+            outcome = label
+            break
+    if outcome in ("passed", "skipped"):
+        # An accepted outcome must come from a run pytest itself called clean.
+        # Exit 1 means something in that run failed; the row may look fine while
+        # the run it came from did not.
+        assert completed.returncode == 0, (
+            f"the child reported {outcome} for {nodeid} but exited "
+            f"{completed.returncode}; a non-clean run cannot evidence an accepted "
+            f"outcome:\n{completed.stdout}\n{completed.stderr}"
+        )
+    assert (case.get("classname"), case.get("name")) == expected_key, (
+        f"the child ran {(case.get('classname'), case.get('name'))}, not {nodeid}"
+    )
+    return completed, outcome
+
+
+def _child_key_for_nodeid(nodeid, name=None):
+    """The (classname, name) a JUnit row would carry for this node id.
+
+    Derived from the FULL node id, not the bare test name: two classes in one
+    module may define the same method name, and a bare-name key would silently
+    accept one class's row for the other's node.
+
+    `name` is STRIPPED as a known suffix rather than found by splitting, because
+    a parameter id may itself contain `::` -- `test_x[a::b]` splits into four
+    pieces and the naive last-segment rule yields `b]`. Class and module
+    segments cannot contain `::`, so splitting what remains is safe.
+    """
+    if name is None:
+        # No authoritative name available: fall back to the last segment, which
+        # is correct for every id whose parameters contain no `::`.
+        name = nodeid.split("::")[-1]
+    suffix = "::" + name
+    assert nodeid.endswith(suffix), f"{nodeid!r} does not end with {suffix!r}"
+    head = nodeid[: -len(suffix)]
+    parts = head.split("::")
+    module_dotted = parts[0][:-3].replace("/", ".") if parts[0].endswith(".py") else parts[0]
+    return (".".join([module_dotted, *parts[1:]]), name)
+
+
+def _child_key_for(node):
+    """Prefer the node's own name: pytest knows it exactly, parameters included."""
+    return _child_key_for_nodeid(node.nodeid, getattr(node, "name", None))
+
+
+def _delegate_to_a_single_threaded_child(request):
+    """Run this node in a single-threaded child when this process cannot hold a lease.
+
+    `clean_settings` takes a kernel write lease, and the guard admits only a
+    process with exactly one kernel thread (agent-harness#950, maintainer ruling
+    2026-09-21). A pytest-xdist worker carries execnet's receiver thread, so
+    every lease-taking node here is refused in-worker -- by CONTRACT, not by
+    accident. The guard is not weakened and nothing is marked serial-only: the
+    work is handed to an interpreter that genuinely satisfies the precondition,
+    which is what a real caller must be. Serially the count is already 1 and
+    nothing is delegated.
+
+    Returns True when the child has already run this node, so the caller returns.
+    """
+    if os.environ.get(_LEASE_CHILD_ENV) == "1":
+        # We ARE the child. Prove the premise rather than assume it, so a future
+        # runtime that starts threads of its own cannot make this delegation
+        # silently pointless.
+        assert evidence._live_thread_count() == 1, (
+            "the delegated child is not single-threaded; this node would be "
+            "exercising the refusal path, not the lease path"
+        )
+        return False
+    if evidence._live_thread_count() == 1:
+        return False
+    _completed, outcome = _run_one_node_in_a_single_threaded_child(
+        request.node.nodeid, _child_key_for(request.node)
+    )
+    if outcome == "skipped":
+        # Carry the child's skip THROUGH. Reporting it as a pass would claim
+        # coverage the child explicitly declined to provide.
+        pytest.skip(f"skipped in the delegated single-threaded child: {request.node.name}")
+    assert outcome == "passed", f"{request.node.name} {outcome} in the single-threaded child"
+    return True
+
+
+def test_clean_settings_detects_a_conflicting_open_lease_break(request, tmp_path, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1569,8 +1729,10 @@ def test_clean_settings_detects_a_conflicting_open_lease_break(tmp_path, monkeyp
 
 
 def test_clean_settings_reacquires_after_post_exchange_lease_break(
-    tmp_path, monkeypatch,
+    request, tmp_path, monkeypatch,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1620,8 +1782,10 @@ def test_clean_settings_reacquires_after_post_exchange_lease_break(
 
 
 def test_clean_settings_retains_recovery_when_post_exchange_opener_persists(
-    tmp_path, monkeypatch,
+    request, tmp_path, monkeypatch,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1712,7 +1876,9 @@ def test_clean_settings_retains_recovery_when_post_exchange_opener_persists(
         shutil.rmtree(root)
 
 
-def test_clean_settings_rejects_replacement_ownership_drift(tmp_path, monkeypatch):
+def test_clean_settings_rejects_replacement_ownership_drift(request, tmp_path, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1739,9 +1905,12 @@ def test_clean_settings_rejects_replacement_ownership_drift(tmp_path, monkeypatc
 
 
 def test_write_lease_contract_detects_persistent_rename_only_drift(
+    request,
     tmp_path, monkeypatch,
 ):
     """Transient hostile same-UID rename-and-restore remains outside the contract."""
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
@@ -1815,13 +1984,1135 @@ def test_root_test_runner_acquires_real_lease_as_synthetic_owner(tmp_path):
         os.close(fd)
 
 
-def test_write_lease_requires_one_signal_clean_main_thread(monkeypatch):
-    monkeypatch.setattr(evidence.threading, "active_count", lambda: 2)
+def _join_kernel_thread_exit(expected=1, timeout=10):
+    """Wait until the kernel task count is back to `expected`.
+
+    Releasing the event only tells the thread it MAY exit; the task is still in
+    `/proc/self/task` until the kernel reaps it. A test that returns in that
+    window leaves the next one to fail the exact-one-thread assertion -- an
+    order-dependent flake, which is precisely what the sibling isolation PR
+    exists to remove.
+    """
+    deadline = time.monotonic() + timeout
+    while evidence._live_thread_count() != expected:
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"kernel task count is {evidence._live_thread_count()}, not "
+                f"{expected}, after {timeout}s; a leaked thread would make every "
+                "later single-thread assertion order-dependent"
+            )
+        time.sleep(0.005)
+
+
+def test_join_kernel_thread_exit_refuses_to_return_while_the_thread_is_alive(request):
+    """The join must actually WAIT, not just look like it does (codex, round 2).
+
+    Releasing the event only tells a thread it may exit; it is still in
+    `/proc/self/task` until the kernel reaps it. Measured: immediately after
+    `release.set()` the count is still 2. A test that returns in that window
+    leaves the next one to fail its exact-one-thread assertion, which is the
+    order-dependent flake the sibling isolation PR exists to remove.
+
+    Asserting the REFUSAL is what makes this deterministic. Asserting that the
+    count is eventually 1 would pass even with the join removed, because the
+    kernel usually reaps quickly enough -- a guard that only fails on an unlucky
+    schedule is not a guard.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    import _thread
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _body():
+        started.set()
+        release.wait(30)
+
+    assert evidence._live_thread_count() == 1
+    _thread.start_new_thread(_body, ())
+    try:
+        assert started.wait(10)
+        with pytest.raises(AssertionError, match="kernel task count"):
+            _join_kernel_thread_exit(expected=1, timeout=0.3)
+    finally:
+        release.set()
+        _join_kernel_thread_exit()
+    assert evidence._live_thread_count() == 1
+
+
+def _sigio_disposition_is_default():
+    return signal.getsignal(signal.SIGIO) in (signal.SIG_DFL, signal.SIG_IGN)
+
+
+def test_write_lease_requires_one_signal_clean_main_thread(request):
+    """The guarantee this guard has always carried, now measured truthfully.
+
+    The previous version of this test stubbed `threading.active_count()` to 2.
+    That instrument was the defect being fixed -- it counts only threads the
+    `threading` module created -- so stubbing it asserted nothing about the
+    process. This uses a REAL second kernel thread and lets the guard read the
+    kernel's own inventory.
+
+    Admission is unchanged by agent-harness#950 (maintainer ruling 2026-09-21):
+    a multi-threaded caller is refused, because while the lease is held this
+    guard discards every SIGIO and a second thread is exactly where another
+    SIGIO consumer is likely to live.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    import _thread
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _body():
+        started.set()
+        release.wait(30)
+
+    assert evidence._live_thread_count() == 1, "this process was not single-threaded to begin with"
+    _thread.start_new_thread(_body, ())
+    try:
+        assert started.wait(10)
+        assert evidence._live_thread_count() == 2
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="one signal-clean main thread"
+        ):
+            evidence._begin_lease_signal_guard()
+    finally:
+        release.set()
+        _join_kernel_thread_exit()
+    assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler, (
+        "a refused entry still left this guard's disposition installed"
+    )
+
+
+def test_write_lease_refuses_when_the_thread_inventory_is_unknown(monkeypatch):
+    """An unreadable inventory must REFUSE, never read as one thread."""
+    monkeypatch.setattr(evidence, "_live_thread_count", lambda: None)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="one signal-clean main thread"):
         evidence._begin_lease_signal_guard()
 
 
-def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch):
+def test_write_lease_refuses_to_displace_an_existing_sigio_owner(request):
+    """Refuse when another component already relies on SIGIO delivery.
+
+    While the lease is held this guard's disposition DISCARDS every SIGIO, and
+    restoring the previous handler afterwards cannot replay what was dropped.
+    Measured: with a pre-existing Python SIGIO handler, one delivery reaches it
+    with no guard, zero inside the lease window, and still zero after the guard
+    restores it. Taking the lease would therefore silently rob that component.
+
+    The single-threaded positive control is what makes this test about OWNERSHIP
+    rather than about something incidental to installing a handler at all.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    received = []
+    previous = signal.getsignal(signal.SIGIO)
+    signal.signal(signal.SIGIO, lambda _s, _f: received.append(1))
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="displace an existing SIGIO owner"
+        ):
+            evidence._begin_lease_signal_guard()
+        # Refused, so the foreign handler is still the one installed.
+        assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler
+    finally:
+        signal.signal(signal.SIGIO, previous)
+
+    # Positive control: the SAME single-threaded process is granted the lease
+    # once no one owns SIGIO, so the refusal above keys on ownership alone.
+    assert _sigio_disposition_is_default(), "test left a non-default SIGIO disposition"
+    guard = evidence._begin_lease_signal_guard()
+    evidence._end_lease_signal_guard(guard)
+
+
+def test_live_thread_count_sees_threads_that_threading_cannot(tmp_path):
+    """The kernel inventory counts a `_thread`-spawned thread; `threading` does not.
+
+    This is the exact blind spot that killed pytest-xdist workers: execnet
+    spawns its receiver with the low-level `_thread` module.
+    """
+    import _thread
+
+    before = evidence._live_thread_count()
+    assert before is not None and before >= 1
+    started = threading.Event()
+    release = threading.Event()
+
+    def _body():
+        started.set()
+        release.wait(30)
+
+    _thread.start_new_thread(_body, ())
+    try:
+        assert started.wait(10)
+        # `threading` is blind to it; only the kernel inventory grows.
+        assert threading.active_count() == 1
+        after = evidence._live_thread_count()
+        assert after is not None and after > before
+    finally:
+        release.set()
+        _join_kernel_thread_exit(expected=before)
+
+
+def test_write_lease_guard_installs_a_process_wide_sigio_disposition_and_restores_it(request):
+    """Positive control: a genuinely single-threaded caller still takes the lease.
+
+    It must also leave the process exactly as it found it -- the SIGIO
+    disposition is process-wide state, so failing to put it back would be a
+    durable side effect on the caller.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before = signal.getsignal(signal.SIGIO)
+    guard = evidence._begin_lease_signal_guard()
+    try:
+        # Process-wide disposition is ours for the duration; that is what stops a
+        # sibling thread from taking SIGIO's default Term action.
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler
+        assert signal.SIGIO in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    finally:
+        evidence._end_lease_signal_guard(guard)
+    assert signal.getsignal(signal.SIGIO) == before
+    assert signal.SIGIO not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+
+def test_release_restores_the_mask_too_when_draining_raises(request, monkeypatch):
+    """A failed drain must not leave SIGIO blocked for the life of the process.
+
+    Found by re-reading what the exit path's comment ASSERTED rather than by
+    searching for a keyword: it said a failure there "cannot leave this process's
+    SIGIO handling rewritten", which was true of the disposition and silent about
+    the mask. Reproduced on 3.10 and 3.12 -- the disposition came back and SIGIO
+    stayed blocked.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    guard = evidence._begin_lease_signal_guard()
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("drain failed")
+
+    monkeypatch.setattr(evidence.signal, "sigtimedwait", _boom)
+    try:
+        with pytest.raises(OSError, match="drain failed"):
+            evidence._end_lease_signal_guard(guard)
+    finally:
+        monkeypatch.undo()
+        after = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        signal.pthread_sigmask(signal.SIG_SETMASK, before)
+    assert after == before, (
+        "a failed drain left the signal mask changed; SIGIO would stay blocked "
+        f"for the life of this process (extra: {sorted(after - before)})"
+    )
+    assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler
+
+
+def test_write_lease_guard_restores_the_disposition_even_when_draining_raises(request, monkeypatch):
+    """Every exit path restores it, exceptions included."""
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before = signal.getsignal(signal.SIGIO)
+    guard = evidence._begin_lease_signal_guard()
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("drain failed")
+
+    monkeypatch.setattr(evidence.signal, "sigtimedwait", _boom)
+    with pytest.raises(OSError, match="drain failed"):
+        evidence._end_lease_signal_guard(guard)
+    assert signal.getsignal(signal.SIGIO) == before
+    # The mask is this thread's own state; put it back so later tests are unaffected.
+    signal.pthread_sigmask(signal.SIG_SETMASK, guard.mask)
+
+
+class _FakeNode:
+    def __init__(self, nodeid, name=None):
+        self.nodeid = nodeid
+        self.name = name if name is not None else nodeid.split("::")[-1]
+
+
+def test_delegation_keys_on_the_full_node_id_not_the_bare_test_name():
+    """Two classes may define the same method name (codex, round 2).
+
+    A bare-name key would hand one class's node the other's outcome. The live
+    mapping is proven by the 46 delegating nodes resolving under `-n 2`; this
+    pins the collision case that does not exist in this module today.
+    """
+    a = _child_key_for(_FakeNode("tests/test_agy_canary_evidence.py::TestA::test_same"))
+    b = _child_key_for(_FakeNode("tests/test_agy_canary_evidence.py::TestB::test_same"))
+    assert a != b, "two classes defining the same method name share one key"
+    assert a == ("tests.test_agy_canary_evidence.TestA", "test_same")
+    assert _child_key_for(
+        _FakeNode("tests/test_agy_canary_evidence.py::test_x[1]")
+    ) == ("tests.test_agy_canary_evidence", "test_x[1]")
+
+
+def test_delegation_refuses_rows_from_an_abnormally_exited_child(monkeypatch):
+    """Rows written by a crashed or misinvoked child are not evidence.
+
+    pytest exits 0 for a clean run and 1 when nodes failed. Anything else means
+    the run itself went wrong, and whatever rows reached the file describe a run
+    that did not finish -- accepting them would report a pass nobody earned.
+    """
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=4,
+                                            stdout="usage error", stderr="")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: completed)
+    with pytest.raises(AssertionError, match="neither a clean run nor a run with test failures"):
+        _run_one_node_in_a_single_threaded_child(
+            "tests/test_agy_canary_evidence.py::test_anything"
+        )
+
+
+def test_delegation_carries_a_child_skip_through_as_a_skip(monkeypatch, request):
+    """A child skip must stay a skip.
+
+    Reporting it as a pass would claim coverage the child explicitly declined to
+    provide -- the exact misreport this delegation exists to avoid.
+    """
+    monkeypatch.setattr(evidence, "_live_thread_count", lambda: 2)
+    monkeypatch.delenv(_LEASE_CHILD_ENV, raising=False)
+    monkeypatch.setattr(
+        sys.modules[__name__], "_run_one_node_in_a_single_threaded_child",
+        lambda nodeid, expected_key=None: (None, "skipped"),
+    )
+    with pytest.raises(Skipped):
+        _delegate_to_a_single_threaded_child(request)
+
+
+def _fake_child_junit(tmp_path, monkeypatch, body, returncode=0):
+    (tmp_path / "child.xml").write_text(
+        '<testsuites><testsuite name="pytest" tests="1">' + body + "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kw: str(tmp_path))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=["pytest"], returncode=returncode,
+                                                    stdout="", stderr=""),
+    )
+
+
+def test_delegation_lets_an_error_dominate_a_skip_on_the_same_row(tmp_path, monkeypatch):
+    """A row can carry BOTH <skipped> and <error> (codex, round 3).
+
+    That is a test which skipped and whose fixture teardown then failed. Taking
+    the last matching tag turned the teardown error into a parent SKIP, which is
+    silent -- strictly worse than the skip-to-failure direction fixed last round,
+    because nothing is red to investigate.
+    """
+    _fake_child_junit(
+        tmp_path, monkeypatch,
+        '<testcase classname="tests.test_agy_canary_evidence" name="test_x">'
+        '<skipped message="no leases here"/><error message="teardown blew up"/>'
+        "</testcase>",
+        returncode=1,
+    )
+    _completed, outcome = _run_one_node_in_a_single_threaded_child(
+        "tests/test_agy_canary_evidence.py::test_x"
+    )
+    assert outcome == "error", f"an error was reported as {outcome!r}"
+
+
+def test_delegation_requires_a_clean_exit_before_accepting_a_pass_or_skip(tmp_path, monkeypatch):
+    """An accepted outcome must come from a run pytest itself called clean.
+
+    Exit 1 means something in that run failed. The row can look fine while the
+    run it came from did not, so a pass or skip read out of it is not evidence.
+    """
+    _fake_child_junit(
+        tmp_path, monkeypatch,
+        '<testcase classname="tests.test_agy_canary_evidence" name="test_x"/>',
+        returncode=1,
+    )
+    with pytest.raises(AssertionError, match="cannot evidence an accepted"):
+        _run_one_node_in_a_single_threaded_child(
+            "tests/test_agy_canary_evidence.py::test_x"
+        )
+
+
+def test_delegation_key_survives_a_parameter_id_containing_a_double_colon():
+    """`test_x[a::b]` splits into four pieces; the naive last segment is `b]`."""
+    nodeid = "tests/test_agy_canary_evidence.py::TestK::test_x[a::b]"
+    assert _child_key_for_nodeid(nodeid, "test_x[a::b]") == (
+        "tests.test_agy_canary_evidence.TestK", "test_x[a::b]"
+    )
+    assert _child_key_for(_FakeNode(nodeid, "test_x[a::b]")) == (
+        "tests.test_agy_canary_evidence.TestK", "test_x[a::b]"
+    )
+
+
+def test_delegation_rejects_a_child_row_for_a_different_node(tmp_path, monkeypatch):
+    """The row must be the node that was ASKED for, not whatever pytest collected.
+
+    A renamed node, a collection change, or a mis-built command would otherwise
+    let one node's result be accepted as another's.
+    """
+    junit = tmp_path / "child.xml"
+    junit.write_text(
+        '<testsuites><testsuite name="pytest" tests="1">'
+        '<testcase classname="tests.test_other" name="test_elsewhere"/>'
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kw: str(tmp_path))
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=["pytest"], returncode=0,
+                                                    stdout="", stderr=""),
+    )
+    with pytest.raises(AssertionError, match="the child ran"):
+        _run_one_node_in_a_single_threaded_child(
+            "tests/test_agy_canary_evidence.py::test_asked_for"
+        )
+
+
+def test_write_lease_refuses_a_foreign_owner_that_merely_compares_equal(request):
+    """Ownership is decided by IDENTITY, never by equality (codex, round 2).
+
+    A membership test (`handler in (...)`) uses `==`, so a real SIGIO consumer
+    whose `__eq__` returns True for anything would pass it and be displaced
+    silently -- reproduced before this fix: `_sigio_is_unowned` answered True and
+    the guard took the lease over a live owner.
+
+    The predicate half below runs on every interpreter and is the regression
+    guard. The end-to-end half CHECKS ITS OWN PREMISE first, because the
+    adversary cannot be constructed everywhere: measured, CPython 3.10's
+    `signal.signal` coerces a lying-`__eq__` callable to SIG_DFL, so no foreign
+    owner is ever installed, the guard correctly admits, and an unconditional
+    "expect refusal" reds the 3.10 lane while the production code is right on
+    both. 3.12 retains the object and the half runs.
+
+    Skipped on the MEASURED premise rather than on a version number: a version
+    guard would hide that the adversary is neutralisable by the platform, and
+    would stay stale if a later interpreter restored retention. A test that
+    cannot establish its own precondition is asserting, not testing.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+
+    class _PermissiveOwner:
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return 0
+
+        def __call__(self, signum, frame):
+            pass
+
+    owner = _PermissiveOwner()
+    # Version-independent, and the half the identity fix actually protects.
+    assert owner == signal.SIG_DFL, "this owner no longer exercises the equality path"
+    assert not evidence._sigio_is_unowned(owner), (
+        "a callable that merely compares equal to SIG_DFL is treated as unowned"
+    )
+
+    previous = signal.getsignal(signal.SIGIO)
+    signal.signal(signal.SIGIO, owner)
+    try:
+        if signal.getsignal(signal.SIGIO) is not owner:
+            pytest.skip(
+                "this interpreter did not retain the foreign owner "
+                f"(getsignal returned {signal.getsignal(signal.SIGIO)!r}), so "
+                "there is no owner present for the guard to refuse; the "
+                "predicate assertion above still covers the fix"
+            )
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="displace an existing SIGIO owner"
+        ):
+            evidence._begin_lease_signal_guard()
+        assert signal.getsignal(signal.SIGIO) is owner, (
+            "the refused entry displaced the owner it was refusing to displace"
+        )
+    finally:
+        signal.signal(signal.SIGIO, previous)
+
+
+def test_write_lease_trusts_what_signal_signal_actually_displaced(request, monkeypatch):
+    """The authoritative previous handler is `signal.signal`'s RETURN value.
+
+    `getsignal` is read before installation, so a Python signal callback can
+    install an owner in between and the pre-check would pass on stale
+    information. Only the value the installation hands back says what was really
+    displaced. Simulated by making the installation report an owner the
+    pre-check never saw.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    def foreign(_s, _f):
+        return None
+    real_signal = signal.signal
+    calls = {"n": 0}
+
+    def install(signum, handler):
+        calls["n"] += 1
+        real_signal(signum, handler)
+        return foreign if calls["n"] == 1 else signal.SIG_DFL
+
+    entry = signal.getsignal(signal.SIGIO)
+    monkeypatch.setattr(evidence.signal, "signal", install)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="displace an existing SIGIO owner"
+        ):
+            evidence._begin_lease_signal_guard()
+        monkeypatch.undo()
+        assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler, (
+            "the guard kept its disposition after refusing on the displaced value"
+        )
+    finally:
+        # The guard restored the handler this stub CLAIMED it displaced, which is
+        # correct behaviour and a fake object. Put the real disposition back so
+        # the leak does not become the next test's foreign owner.
+        monkeypatch.undo()
+        real_signal(signal.SIGIO, entry)
+
+
+# Every call inside `_begin_lease_signal_guard` that CHANGES process signal
+# state. The interrupt falsifier below is parametrised over this list rather
+# than over a window someone named after the fact: three rounds of the rollback
+# defect were each found at a different call, because each falsifier injected
+# wherever the previous review had pointed. Enumerating the mutations is what
+# stops the next one hiding one call further along.
+_LEASE_ENTRY_MUTATIONS = ("signal", "pthread_sigmask")
+# NOTE: enumerating the mutations covers each one ALONE. A composition of two
+# separately-covered arrangements is a different thing and needs its own case;
+# the composition that mattered here -- a foreign handler installed between the
+# displacement and its recording -- is now a DOCUMENTED RESIDUAL rather than a
+# behaviour, because no Python-level mechanism closes it.
+
+
+@pytest.mark.parametrize("mutating_call", _LEASE_ENTRY_MUTATIONS)
+def test_an_interrupt_at_any_mutating_call_unwinds_every_change(request, monkeypatch, mutating_call):
+    """A change-then-raise at EACH mutation must leave the process as it was.
+
+    The failure being pinned is not a single window. It is recovery state that is
+    recorded from a mutating call's RESULT: if the call changes state and then
+    raises -- a signal lands between the C call returning and the assignment --
+    the variable is never set and the change cannot be undone. Rollback then
+    leaves SIGIO blocked, or restores SIG_DFL over an outer guard's handler.
+
+    Each stub performs the real mutation and only then raises, which is exactly
+    that shape. `KeyboardInterrupt` because it is the realistic arrival and an
+    `except Exception` rollback would not catch it.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before_handler = signal.getsignal(signal.SIGIO)
+    before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    assert signal.SIGIO not in before_mask, "SIGIO was already blocked"
+    real = getattr(signal, mutating_call)
+    fired = {"n": 0}
+
+    def change_then_raise(*args, **kwargs):
+        result = real(*args, **kwargs)
+        # Only sabotage a call that actually CHANGES state: the guard also
+        # pre-READS the mask with an empty set, and interrupting that would test
+        # nothing because nothing has changed yet.
+        if mutating_call == "pthread_sigmask" and not args[1]:
+            return result
+        # Inject exactly once. Rollback calls these same functions to undo the
+        # change, and sabotaging those too would test the unwind's own error
+        # handling rather than whether the recovery state was recorded in time.
+        if fired["n"]:
+            return result
+        fired["n"] += 1
+        raise KeyboardInterrupt(f"interrupted just after {mutating_call} mutated")
+
+    monkeypatch.setattr(evidence.signal, mutating_call, change_then_raise)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    assert fired["n"] == 1, f"{mutating_call} was never reached as a mutation"
+    assert signal.getsignal(signal.SIGIO) == before_handler, (
+        f"an interrupt at {mutating_call} leaked this guard's SIGIO disposition"
+    )
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before_mask, (
+        f"an interrupt at {mutating_call} left the signal mask changed"
+    )
+    # And the process is still usable.
+    guard = evidence._begin_lease_signal_guard()
+    evidence._end_lease_signal_guard(guard)
+
+
+def test_a_sigio_arriving_during_entry_is_refused_not_absorbed(request, monkeypatch):
+    """Regression guard: the entry region must not swallow the ambiguity check.
+
+    `_lease_sigio_handler` DISCARDS every SIGIO it receives. So if SIGIO is
+    unblocked at any point between the admission check and `sigpending()`, a
+    signal arriving there is absorbed and the lease is admitted over a state the
+    block-and-check would have refused. Introduced by masking-then-unmasking
+    inside entry, and caught by codex in round 5.
+
+    The stub sends a real SIGIO at the moment the old ordering left it
+    deliverable. With SIGIO blocked throughout, it stays pending and is seen.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    entry = signal.getsignal(signal.SIGIO)
+    before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    real_signal = signal.signal
+    fired = {"n": 0}
+
+    def install_then_raise_sigio(signum, handler):
+        displaced = real_signal(signum, handler)
+        if handler is evidence._lease_sigio_handler and not fired["n"]:
+            fired["n"] += 1
+            os.kill(os.getpid(), signal.SIGIO)
+        return displaced
+
+    monkeypatch.setattr(evidence.signal, "signal", install_then_raise_sigio)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="SIGIO state is ambiguous"
+        ):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+        real_signal(signal.SIGIO, entry)
+    assert fired["n"] == 1, "the stub never reached the installation"
+    # Drain the signal this test raised, and prove entry left nothing behind.
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+    while signal.sigtimedwait({signal.SIGIO}, 0) is not None:
+        pass
+    signal.pthread_sigmask(signal.SIG_SETMASK, before_mask)
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before_mask
+
+
+def test_a_nested_entry_leaves_the_outer_guards_disposition_and_mask_intact(request):
+    """Nesting and re-entrancy of the held disposition.
+
+    An inner acquisition runs entirely inside the outer one's held disposition.
+    Releasing the inner must not hand the process back to SIG_DFL while the
+    OUTER lease is still running, and the outer release must still clean up.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    entry_handler = signal.getsignal(signal.SIGIO)
+    entry_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    outer = evidence._begin_lease_signal_guard()
+    try:
+        inner = evidence._begin_lease_signal_guard()
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler
+        evidence._end_lease_signal_guard(inner)
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler, (
+            "releasing the inner guard dropped the disposition while the OUTER "
+            "lease was still held"
+        )
+    finally:
+        evidence._end_lease_signal_guard(outer)
+    assert signal.getsignal(signal.SIGIO) == entry_handler
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == entry_mask
+
+
+def test_a_failed_installation_still_restores_the_callers_mask(request, monkeypatch):
+    """A failed installation must not leave the caller unable to receive SIGIO.
+
+    Entry blocks SIGIO before installing, so an installation that raises has a
+    live mask change behind it. The unwind is what puts it back; without that a
+    failed install hands the caller a process that cannot receive the signal,
+    which is worse than the failure itself.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+    def failing_install(*_args, **_kwargs):
+        raise OSError("install failed after SIGIO was blocked")
+
+    monkeypatch.setattr(evidence.signal, "signal", failing_install)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="cannot install"):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before, (
+        "a failed installation left the caller's signal mask changed"
+    )
+
+
+def test_entry_records_the_mask_the_mutating_call_returned_not_the_pre_read(request, monkeypatch):
+    """Codex round 6: the pre-read snapshot can be STALE before it is ever used.
+
+    Entry queries the mask, then blocks SIGIO. A Python callback running between
+    those two can block a signal of its own. If the token carries the earlier
+    query rather than what the mutating call returned, release restores the
+    earlier snapshot and SILENTLY UNBLOCKS the caller's signal -- reproduced
+    before this fix on 3.10 and 3.12.
+
+    This needs neither a second thread nor an interrupted assignment, so it is
+    NOT covered by the disclosed best-effort residual. Same save-then-mutate
+    shape as that residual, one call earlier, and this one is reachable in pure
+    Python and therefore fixable.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    real_mask = signal.pthread_sigmask
+    assert signal.SIGUSR1 not in real_mask(signal.SIG_BLOCK, set()), (
+        "SIGUSR1 was already blocked before this test"
+    )
+    fired = {"n": 0}
+
+    def block_sigusr1_in_the_window(how, mask=None):
+        if how == signal.SIG_BLOCK and mask and signal.SIGIO in mask and not fired["n"]:
+            fired["n"] += 1
+            # A callback lands between the pre-read and the mutation.
+            real_mask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        return real_mask(how, mask) if mask is not None else real_mask(how, set())
+
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", block_sigusr1_in_the_window)
+    try:
+        guard = evidence._begin_lease_signal_guard()
+        evidence._end_lease_signal_guard(guard)
+    finally:
+        monkeypatch.undo()
+        still_blocked = signal.SIGUSR1 in real_mask(signal.SIG_BLOCK, set())
+        real_mask(signal.SIG_UNBLOCK, {signal.SIGUSR1})
+    assert fired["n"] == 1, "the callback never landed in the window"
+    assert still_blocked, (
+        "the guard restored a stale mask snapshot and silently unblocked a signal "
+        "the caller had blocked while the lease was being taken"
+    )
+
+
+def test_unwind_releases_the_mask_before_restoring_the_disposition(request, monkeypatch):
+    """The unwind order is deliberate and reversing it KILLS the process.
+
+    Entry blocks SIGIO and then installs the disposition, so "reverse of
+    acquisition" would restore the disposition first. With a SIGIO pending -- and
+    the ambiguity check raises precisely when one is -- that hands the signal a
+    default disposition and then unblocks it: measured exit 157, 128 + SIGIO, on
+    3.10 and 3.12.
+
+    This pins the order against a future tidy-up that reads the two steps as
+    interchangeable. It observes the SEQUENCE rather than the outcome, because
+    the outcome of getting it wrong is that there is no process left to assert in.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    order = []
+    real_mask = signal.pthread_sigmask
+    real_signal = signal.signal
+
+    def note_mask(how, mask=None):
+        if how == signal.SIG_SETMASK:
+            order.append("mask")
+        return real_mask(how, mask) if mask is not None else real_mask(how, set())
+
+    def note_signal(signum, handler):
+        if handler is not evidence._lease_sigio_handler:
+            order.append("disposition")
+        return real_signal(signum, handler)
+
+    entry_handler = signal.getsignal(signal.SIGIO)
+    entry_mask = real_mask(signal.SIG_BLOCK, set())
+    # The disposition branch only runs when OUR handler is installed. Without
+    # this the unwind skips it, only the mask step is recorded, and the order
+    # assertion below passes no matter what order the code uses.
+    real_signal(signal.SIGIO, evidence._lease_sigio_handler)
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", note_mask)
+    monkeypatch.setattr(evidence.signal, "signal", note_signal)
+    try:
+        evidence._unwind_failed_lease_entry(entry_mask, entry_handler)
+    finally:
+        monkeypatch.undo()
+        real_signal(signal.SIGIO, entry_handler)
+    assert set(order) == {"mask", "disposition"}, (
+        f"the unwind did not attempt both steps: order={order}"
+    )
+    assert order[0] == "mask", (
+        "unwind restored the disposition before releasing the mask; a pending "
+        f"SIGIO would terminate the process here. order={order}"
+    )
+
+
+def test_entry_adds_to_the_callers_mask_rather_than_replacing_it(request):
+    """A caller who ALREADY blocked signals must get its own mask back.
+
+    Entry captures the mask with `SIG_BLOCK` and the exit restores it with
+    `SIG_SETMASK` to that captured value, so it ADDS SIGIO to whatever the caller
+    had rather than replacing it. A plausible simplification -- restoring by
+    unblocking what was blocked -- would silently unblock a signal the caller had
+    deliberately blocked before ever calling in. This fails if someone does that.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+    # `pthread_sigmask` returns the PREVIOUS mask, so the caller's mask for the
+    # rest of this test is that plus SIGUSR1, not `held` itself.
+    caller_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    try:
+        assert signal.SIGUSR1 not in held, "SIGUSR1 was already blocked before this test"
+        assert signal.SIGUSR1 in caller_mask
+        guard = evidence._begin_lease_signal_guard()
+        during = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGUSR1 in during, (
+            "the guard unblocked a signal the caller had blocked before calling in"
+        )
+        # Exactly SIGIO is added for the duration of the hold, nothing wider.
+        assert during == caller_mask | {signal.SIGIO}, (
+            "the masked entry region leaked into the held lease: the process is "
+            f"holding {len(during)} blocked signals instead of the caller's plus SIGIO"
+        )
+        evidence._end_lease_signal_guard(guard)
+        assert signal.SIGUSR1 in signal.pthread_sigmask(signal.SIG_BLOCK, set()), (
+            "releasing the guard unblocked a signal the caller had blocked"
+        )
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
+def test_an_interrupted_nested_entry_preserves_the_outer_guards_disposition(request, monkeypatch):
+    """Nesting: an interrupted inner entry must not disable the outer disposition.
+
+    Restoring SIG_DFL here would leave the OUTER lease running with no
+    process-wide protection, which is the state the guard exists to prevent.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    outer = evidence._begin_lease_signal_guard()
+    try:
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler
+        real = signal.signal
+
+        def change_then_raise(*args, **kwargs):
+            real(*args, **kwargs)
+            raise KeyboardInterrupt("interrupted inside the nested entry")
+
+        monkeypatch.setattr(evidence.signal, "signal", change_then_raise)
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                evidence._begin_lease_signal_guard()
+        finally:
+            monkeypatch.undo()
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler, (
+            "the interrupted inner entry restored SIG_DFL over the outer guard's "
+            "disposition, leaving the outer lease unprotected"
+        )
+    finally:
+        evidence._end_lease_signal_guard(outer)
+
+
+def test_an_interrupted_entry_restores_sig_ign_rather_than_sig_dfl(request, monkeypatch):
+    """SIG_IGN is unowned but is NOT the default; restoring SIG_DFL would change it."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    entry = signal.getsignal(signal.SIGIO)
+    signal.signal(signal.SIGIO, signal.SIG_IGN)
+    try:
+        real = signal.signal
+
+        def change_then_raise(*args, **kwargs):
+            real(*args, **kwargs)
+            raise KeyboardInterrupt("interrupted after installing over SIG_IGN")
+
+        monkeypatch.setattr(evidence.signal, "signal", change_then_raise)
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                evidence._begin_lease_signal_guard()
+        finally:
+            monkeypatch.undo()
+        assert signal.getsignal(signal.SIGIO) is signal.SIG_IGN, (
+            "the interrupted entry restored SIG_DFL over a SIG_IGN disposition"
+        )
+    finally:
+        signal.signal(signal.SIGIO, entry)
+
+
+def test_unwinding_never_aborts_after_its_own_failure(request, monkeypatch):
+    """A failure in one unwind step must not abort the next, nor mask the original."""
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    real_sigpending = signal.sigpending
+    real_mask = signal.pthread_sigmask
+    calls = {"n": 0}
+
+    def counted():
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise KeyboardInterrupt("the original failure")
+        return real_sigpending()
+
+    def mask(how, mask_set=None):
+        if calls["n"] >= 2:  # we are unwinding
+            raise OSError("rollback itself failed")
+        return real_mask(how, mask_set) if mask_set is not None else real_mask(how, set())
+
+    entry = signal.getsignal(signal.SIGIO)
+    monkeypatch.setattr(evidence.signal, "sigpending", counted)
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", mask)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="the original failure"):
+            evidence._begin_lease_signal_guard()
+        monkeypatch.undo()
+        assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler, (
+            "a failing mask restore aborted the disposition restore that follows it"
+        )
+    finally:
+        # This test deliberately sabotages the mask restore, so undo both the
+        # patches and the state they prevented the guard from undoing.
+        monkeypatch.undo()
+        real_mask(signal.SIG_UNBLOCK, {signal.SIGIO})
+        signal.signal(signal.SIGIO, entry)
+
+
+def test_an_exception_at_the_pre_read_leaves_nothing_to_undo(request, monkeypatch):
+    """The pre-read sits OUTSIDE the protected region, so it must not mutate.
+
+    Renamed and re-documented after grok found the old prose false. It claimed to
+    raise "AFTER the disposition is installed", but patching `pthread_sigmask` to
+    raise fires at the FIRST such call, which is the empty-set pre-read -- before
+    the mask is blocked and before the disposition is installed. The assertion
+    that the disposition is unchanged then held trivially, because nothing had
+    installed one.
+
+    That prose was a deletion hazard rather than a coverage hole. The post-install
+    window it named is genuinely covered by
+    `test_an_interrupt_at_any_mutating_call_unwinds_every_change`, which skips the
+    pre-read and injects a change-then-raise at each real mutation. A maintainer
+    trimming duplicates would have read this docstring, believed this one covered
+    that window, and could have deleted the test that actually does.
+
+    What this pins instead is the design decision that makes the pre-read safe to
+    leave outside the try: it queries the mask and changes nothing, so an
+    exception there has nothing to unwind. Both resources are asserted, which is
+    what gives the test something that can fail -- making the pre-read mutating
+    reds it.
+    """
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    before_handler = signal.getsignal(signal.SIGIO)
+    before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    calls = {"n": 0}
+    real_mask = signal.pthread_sigmask
+
+    def call_through_then_raise(how, mask=None):
+        # CALL THROUGH FIRST, then raise. An earlier version raised immediately,
+        # which meant the real mask never changed no matter what the pre-read
+        # did -- so the assertion below could not fail and the test was vacuous
+        # for the second time. Letting the call happen is what makes a mutating
+        # pre-read observable here.
+        calls["n"] += 1
+        result = real_mask(how, mask) if mask is not None else real_mask(how, set())
+        if calls["n"] == 1:
+            raise KeyboardInterrupt("interrupted at the first call, the pre-read")
+        return result
+
+    monkeypatch.setattr(evidence.signal, "pthread_sigmask", call_through_then_raise)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    # Identified by ORDER, not by argument: the pre-read is the first such call.
+    # Classifying by the empty-set argument would make a mutated pre-read look
+    # like a different call and red this on its premise instead of its property.
+    assert calls["n"] == 1, (
+        f"the interrupt did not land on the first pthread_sigmask call: {calls['n']}"
+    )
+    assert real_mask(signal.SIG_BLOCK, set()) == before_mask, (
+        "the pre-read changed the signal mask; it sits outside the protected "
+        "region, so there is no unwind to put that back"
+    )
+    assert signal.getsignal(signal.SIGIO) == before_handler
+    # And the process is still usable: a later entry still succeeds.
+    guard = evidence._begin_lease_signal_guard()
+    evidence._end_lease_signal_guard(guard)
+
+
+def test_write_lease_refuses_when_the_existing_sigio_handler_cannot_be_restored(request, monkeypatch):
+    """A handler installed outside Python reads as None and could not be put back."""
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    monkeypatch.setattr(evidence.signal, "getsignal", lambda _signum: None)
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError, match="cannot restore the existing SIGIO handler"
+    ):
+        evidence._begin_lease_signal_guard()
+    assert signal.getsignal(signal.SIGIO) is not evidence._lease_sigio_handler
+
+
+_LEASE_CHILD_PRELUDE = [
+    "import _thread, fcntl, os, sys, time",
+    "from phase_loop_runtime import agy_canary_evidence as ev",
+    "path = sys.argv[1]",
+    "def tasks():",
+    "    with os.scandir('/proc/self/task') as e: return sum(1 for _ in e)",
+    "def spawn_invisible_thread():",
+    "    # Started through the LOW-LEVEL module, so `threading` never sees it --",
+    "    # exactly the shape of pytest-xdist's execnet receiver.",
+    "    _thread.start_new_thread(time.sleep, (30,))",
+    "    deadline = time.monotonic() + 10",
+    "    while tasks() < 2:",
+    "        if time.monotonic() > deadline: raise SystemExit('thread never appeared')",
+    "        time.sleep(0.01)",
+]
+
+
+def _write_lease_child(tmp_path, name, lines):
+    child = tmp_path / name
+    child.write_text("\n".join(_LEASE_CHILD_PRELUDE + lines), encoding="utf-8")
+    (tmp_path / "breaker.py").write_text(
+        "\n".join(
+            [
+                "import os, sys",
+                "try:",
+                "    os.close(os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK))",
+                "except OSError:",
+                "    pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return child
+
+
+def _run_lease_child(child, target):
+    return subprocess.run(
+        [sys.executable, str(child), str(target)],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+
+
+def _require_not_killed_by_sigio(completed):
+    assert completed.returncode not in (-signal.SIGIO, 128 + signal.SIGIO), (
+        "the lease break killed the child with SIGIO: "
+        f"rc={completed.returncode} stderr={completed.stderr}"
+    )
+    assert completed.returncode == 0, (
+        f"rc={completed.returncode} stdout={completed.stdout} stderr={completed.stderr}"
+    )
+
+
+def test_a_multi_threaded_caller_is_refused_the_write_lease(tmp_path):
+    """The restored guarantee, end to end in a child that really has two threads.
+
+    Admission is unchanged by agent-harness#950 (maintainer ruling 2026-09-21).
+    The thread count is load-bearing in the decision, not merely checked for
+    `None`, and the counts are asserted as exact integers rather than matched as
+    text, sampled BEFORE the attempt.
+    """
+    if not sys.platform.startswith("linux") or evidence.fcntl is None:
+        pytest.skip("write leases are a Linux-only path")
+    target = tmp_path / "leased.txt"
+    target.write_text("x", encoding="utf-8")
+    child = _write_lease_child(tmp_path, "refused_child.py", [
+        "assert tasks() == 1, 'child did not start single-threaded: %d' % tasks()",
+        "spawn_invisible_thread()",
+        "before = tasks()",
+        "assert before == 2, 'expected exactly 2 kernel tasks, got %d' % before",
+        "try:",
+        "    ev._begin_lease_signal_guard()",
+        "except ev.AgyCanaryEvidenceError as exc:",
+        "    assert 'one signal-clean main thread' in str(exc), str(exc)",
+        "    print('REFUSED before=%d' % before)",
+        "else:",
+        "    raise SystemExit('a two-thread caller was ADMITTED to the write lease')",
+    ])
+    completed = _run_lease_child(child, target)
+    assert completed.returncode == 0, (
+        f"rc={completed.returncode} stdout={completed.stdout} stderr={completed.stderr}"
+    )
+    assert "REFUSED before=2" in completed.stdout, completed.stdout
+
+
+def test_a_thread_that_unblocks_sigio_after_admission_cannot_kill_the_process(request, tmp_path):
+    """What the process-wide disposition actually covers, measured rather than assumed.
+
+    Admission proves the process had ONE thread at that instant; it cannot
+    promise the process still has one when the lease breaks. But a thread
+    created after `pthread_sigmask` INHERITS the creating thread's mask, so a
+    merely-new thread is already covered and a test built that way passes with
+    the disposition removed -- it would prove nothing. Verified: that shape does
+    not red under mutation.
+
+    The case the disposition does cover is a thread that UNBLOCKS SIGIO for
+    itself after admission. `pthread_sigmask` is per-thread and cannot reach it;
+    the DISPOSITION is process-wide and can. C extensions and runtimes that
+    manage their own signal masks are the realistic source.
+
+    The child must SURVIVE and still DETECT the break through `F_GETLEASE` --
+    being safe must not cost detection. Removing only the disposition install
+    reds this with rc=-29 (128 + SIGIO).
+    """
+    # PLATFORM SKIP FIRST. Delegation reads `/proc/self/task`, which does not
+    # exist off Linux, so delegating before this skip starts a child whose
+    # thread-count assertion fails before it can reach the skip at all -- the
+    # platform guard would be bypassed by the machinery meant to serve it.
+    if not sys.platform.startswith("linux") or evidence.fcntl is None:
+        pytest.skip("write leases are a Linux-only path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    target = tmp_path / "leased.txt"
+    target.write_text("x", encoding="utf-8")
+    child = _write_lease_child(tmp_path, "unblocker_child.py", [
+        "import signal",
+        "before = tasks()",
+        "assert before == 1, 'child was not single-threaded at admission: %d' % before",
+        "guard = ev._begin_lease_signal_guard()",
+        "fd = os.open(path, os.O_RDWR)",
+        "try:",
+        "    fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+        "except OSError:",
+        "    print('LEASE-UNAVAILABLE'); raise SystemExit(0)",
+        "ready = _thread.allocate_lock(); ready.acquire()",
+        "def unblocker():",
+        "    # Per-thread: undoes the guard's mask for THIS thread only, which is",
+        "    # exactly what the process-wide disposition has to survive.",
+        "    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGIO})",
+        "    ready.release()",
+        "    time.sleep(30)",
+        "_thread.start_new_thread(unblocker, ())",
+        "ready.acquire()",
+        "during = tasks()",
+        "assert during == 2, 'expected exactly 2 kernel tasks at the break, got %d' % during",
+        "breaker = os.path.join(os.path.dirname(path), 'breaker.py')",
+        "os.spawnv(os.P_WAIT, sys.executable, [sys.executable, breaker, path])",
+        "time.sleep(0.5)",
+        "after = tasks()",
+        "broke = fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_WRLCK",
+        "ev._end_lease_signal_guard(guard)",
+        "print('SURVIVED before=%d during=%d after=%d broke=%s' % (before, during, after, broke))",
+    ])
+    completed = _run_lease_child(child, target)
+    _require_not_killed_by_sigio(completed)
+    if "LEASE-UNAVAILABLE" in completed.stdout:
+        pytest.skip("kernel refused the write lease in this environment")
+    assert "SURVIVED before=1 during=2 after=2 broke=True" in completed.stdout, completed.stdout
+
+
+def test_clean_settings_blocks_when_agy_process_is_active(request, tmp_path, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, ["command(pwd)"])
@@ -1849,8 +3140,11 @@ def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch)
     ((2, "prepared"), (3, "rolled_back")),
 )
 def test_clean_settings_blocks_agy_relaunch_before_commit(
+    request,
     tmp_path, monkeypatch, blocked_scan, last_state,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
     original = settings.read_bytes()
@@ -1889,8 +3183,11 @@ def test_clean_settings_blocks_agy_relaunch_before_commit(
     ],
 )
 def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
+    request,
     tmp_path, monkeypatch, surface, message,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, ["command(pwd)"])
     original = settings.read_bytes()
@@ -2009,7 +3306,9 @@ def test_quiescence_ignores_unreadable_fd_inventory_for_real_sd_pam(tmp_path):
         os.close(settings.parent_fd)
 
 
-def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_path):
+def test_capture_reducer_requires_complete_sealed_staged_reads(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
@@ -2090,7 +3389,9 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
         shutil.rmtree(root)
 
 
-def test_capture_reducer_rejects_missing_or_swapped_private_board(monkeypatch, tmp_path):
+def test_capture_reducer_rejects_missing_or_swapped_private_board(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
@@ -2436,8 +3737,11 @@ def _sealed_retry_capture(monkeypatch, tmp_path: Path, *, first_stream: str, sec
 
 @pytest.mark.parametrize("timeout_attempt", [1, 2])
 def test_gemini_timeout_attempt_stays_one_to_one_through_capture_summary(
+    request,
     monkeypatch, tmp_path, timeout_attempt,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     from phase_loop_runtime import panel_invoker
 
     root = _private_root(tmp_path)
@@ -2553,7 +3857,9 @@ def test_gemini_timeout_attempt_stays_one_to_one_through_capture_summary(
         shutil.rmtree(root)
 
 
-def test_capture_reducer_accepts_ordered_retry_and_binds_final_provider_text(monkeypatch, tmp_path):
+def test_capture_reducer_accepts_ordered_retry_and_binds_final_provider_text(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     first = _review_stream(instructions="", bundle="", terminal="retry exhausted", terminal_only=True)
     second = _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE attempt two")
     root, capture = _sealed_retry_capture(
@@ -2569,7 +3875,9 @@ def test_capture_reducer_accepts_ordered_retry_and_binds_final_provider_text(mon
 
 
 @pytest.mark.parametrize("attempt_ids", [["gemini-2", "gemini-1"], ["gemini-2"]])
-def test_capture_reducer_rejects_reordered_or_skipped_authorized_attempts(monkeypatch, tmp_path, attempt_ids):
+def test_capture_reducer_rejects_reordered_or_skipped_authorized_attempts(request, monkeypatch, tmp_path, attempt_ids):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     stream = _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE")
     root, capture = _sealed_retry_capture(
         monkeypatch, tmp_path, first_stream=_review_stream(instructions="", bundle="", terminal="retry", terminal_only=True),
@@ -2597,7 +3905,9 @@ def test_capture_reducer_rejects_reordered_or_skipped_authorized_attempts(monkey
         (_review_stream(instructions="", bundle="", terminal="retry", terminal_only=True), _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE"), "different provider text", "does not match accepted terminal"),
     ],
 )
-def test_capture_reducer_rejects_retry_or_final_evidence_mismatch(monkeypatch, tmp_path, first_stream, second_stream, provider_text, message):
+def test_capture_reducer_rejects_retry_or_final_evidence_mismatch(request, monkeypatch, tmp_path, first_stream, second_stream, provider_text, message):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root, capture = _sealed_retry_capture(
         monkeypatch, tmp_path, first_stream=first_stream, second_stream=second_stream, provider_text=provider_text,
     )
@@ -2609,7 +3919,9 @@ def test_capture_reducer_rejects_retry_or_final_evidence_mismatch(monkeypatch, t
         shutil.rmtree(root)
 
 
-def test_duplicate_cross_provider_seat_keys_are_rejected_at_every_evidence_boundary(monkeypatch, tmp_path):
+def test_duplicate_cross_provider_seat_keys_are_rejected_at_every_evidence_boundary(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     capture = _prepare_production_capture(
         monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=_settings(tmp_path, []), seat_key="gemini-primary",
@@ -2676,7 +3988,9 @@ def _mock_trusted_agy_runtime(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
 
 
-def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
+def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     _mock_trusted_agy_runtime(monkeypatch, tmp_path)
     root = _private_root(tmp_path)
@@ -2727,7 +4041,9 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
         shutil.rmtree(root)
 
 
-def test_prepare_and_capture_namespace_reject_replaced_probed_agy(monkeypatch, tmp_path):
+def test_prepare_and_capture_namespace_reject_replaced_probed_agy(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     source = tmp_path / "agy"
     source.write_bytes(b"probed-agy")
@@ -2818,7 +4134,9 @@ def test_synthetic_bwrap_resolver_covers_an_absent_host_tool(monkeypatch):
     assert evidence._canonical_bwrap() == Path("/usr/bin/bwrap")
 
 
-def test_capture_reducer_rejects_unpaired_tool_evidence(monkeypatch, tmp_path):
+def test_capture_reducer_rejects_unpaired_tool_evidence(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
@@ -2849,7 +4167,9 @@ def test_capture_reducer_rejects_unpaired_tool_evidence(monkeypatch, tmp_path):
         root.rmdir()
 
 
-def test_capture_reducer_rejects_denied_command_and_alias_stage_read(monkeypatch, tmp_path):
+def test_capture_reducer_rejects_denied_command_and_alias_stage_read(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
@@ -2886,7 +4206,9 @@ def test_capture_reducer_rejects_denied_command_and_alias_stage_read(monkeypatch
         root.rmdir()
 
 
-def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(monkeypatch, tmp_path):
+def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         settings = _settings(tmp_path, [])
@@ -3110,7 +4432,9 @@ def test_probe_rejects_each_missing_aliased_unpaired_or_wrong_capability_class(m
                 shutil.rmtree(tmp_path / "home")
 
 
-def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatch):
+def test_prepare_requires_bootstrap_and_binds_selected_mode(request, tmp_path, monkeypatch):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     try:
         _use_empty_process_inventory(monkeypatch, tmp_path)
@@ -3176,8 +4500,11 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
     ],
 )
 def test_prepare_rejects_hand_authored_or_semantically_mutated_bootstrap_receipt(
+    request,
     tmp_path, monkeypatch, mutation, match,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, [])
 
@@ -4256,7 +5583,9 @@ def test_provider_authority_factory_reclaims_output_when_projection_fails(monkey
     assert not output.exists()
 
 
-def test_detached_provider_auth_reduction_binds_rows_and_owner_modes(monkeypatch, tmp_path):
+def test_detached_provider_auth_reduction_binds_rows_and_owner_modes(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     review = tmp_path / "review"; review.mkdir()
     for name in ("review-bundle.md", "review-instructions.md"):
@@ -4730,8 +6059,11 @@ def _prepared_provider_factory_capture(monkeypatch, tmp_path, *, auth_paths=()):
 
 
 def test_provider_factory_rejects_minimal_home_customization_added_after_prepare(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
     )
@@ -4751,8 +6083,11 @@ def test_provider_factory_rejects_minimal_home_customization_added_after_prepare
 
 
 def test_provider_factory_rejects_instruction_active_stage_file_added_after_prepare(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
     )
@@ -4778,8 +6113,11 @@ def test_provider_factory_rejects_instruction_active_stage_file_added_after_prep
     ],
 )
 def test_provider_launch_revalidates_complete_stage_and_home_inventory(
+    request,
     monkeypatch, tmp_path, mutation,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
@@ -4826,8 +6164,11 @@ def test_provider_launch_revalidates_complete_stage_and_home_inventory(
 
 
 def test_provider_retry_revalidates_stage_bytes_before_second_attempt(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
     )
@@ -4862,8 +6203,11 @@ def test_provider_retry_revalidates_stage_bytes_before_second_attempt(
 
 
 def test_provider_retry_revalidates_real_source_inventory_after_preflight(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
@@ -4909,8 +6253,11 @@ def test_provider_retry_revalidates_real_source_inventory_after_preflight(
 
 
 def test_provider_command_rejects_post_factory_minimal_home_customization(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
@@ -4937,8 +6284,11 @@ def test_provider_command_rejects_post_factory_minimal_home_customization(
 
 
 def test_provider_authority_rejects_matching_in_memory_and_filesystem_mutation(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     root, capture, stage, minimal_home = _prepared_provider_factory_capture(
         monkeypatch, tmp_path,
@@ -4964,7 +6314,9 @@ def test_provider_authority_rejects_matching_in_memory_and_filesystem_mutation(
         shutil.rmtree(root)
 
 
-def test_provider_command_rejects_replaced_auth_placeholder(monkeypatch, tmp_path):
+def test_provider_command_rejects_replaced_auth_placeholder(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     _mock_canonical_bwrap(monkeypatch)
     auth = tmp_path / "auth.json"
     auth.write_text("auth")
@@ -4994,7 +6346,9 @@ def test_provider_command_rejects_replaced_auth_placeholder(monkeypatch, tmp_pat
         shutil.rmtree(root)
 
 
-def test_stage_binding_rejects_swapped_plan_or_parent_instruction(monkeypatch, tmp_path):
+def test_stage_binding_rejects_swapped_plan_or_parent_instruction(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -5023,7 +6377,9 @@ def test_stage_binding_rejects_swapped_plan_or_parent_instruction(monkeypatch, t
 
 
 @pytest.mark.parametrize("size", [evidence._MAX_FULL_STAGED_READ_BYTES, evidence._MAX_FULL_STAGED_READ_BYTES + 1])
-def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, size):
+def test_stage_binding_enforces_exact_full_read_limit(request, monkeypatch, tmp_path, size):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     root = _private_root(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -5091,8 +6447,10 @@ def test_provider_launch_authority_rejects_legacy_prepare_without_immutable_auth
         shutil.rmtree(root)
 
 
-def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_path):
+def test_advisor_board_cli_seals_and_verifies_capture_summary(request, monkeypatch, tmp_path):
     """The public command, not its sink helper, must bind the private payload."""
+    if _delegate_to_a_single_threaded_child(request):
+        return
     from phase_loop_runtime.advisor_board.schema import Board, Seat
     from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
     from phase_loop_runtime.advisor_board import composition
@@ -5179,7 +6537,9 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
     shutil.rmtree(root)
 
 
-def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(monkeypatch, tmp_path):
+def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(request, monkeypatch, tmp_path):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     from phase_loop_runtime.advisor_board.schema import Board, Seat
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime import panel_invoker
@@ -5228,8 +6588,11 @@ def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(m
 
 
 def test_advisor_board_capture_uses_metadata_board_before_any_provider_probe(
+    request,
     monkeypatch, tmp_path,
 ):
+    if _delegate_to_a_single_threaded_child(request):
+        return
     from phase_loop_runtime import panel_invoker
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
