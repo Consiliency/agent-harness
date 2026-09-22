@@ -2509,6 +2509,102 @@ def test_an_interrupt_at_any_mutating_call_unwinds_every_change(request, monkeyp
     evidence._end_lease_signal_guard(guard)
 
 
+def test_a_nested_entry_leaves_the_outer_guards_disposition_and_mask_intact(request):
+    """Surface created by the masked region: nesting and re-entrancy.
+
+    An inner acquisition runs entirely inside the outer one's held disposition.
+    Releasing the inner must not hand the process back to SIG_DFL while the
+    OUTER lease is still running, and the outer release must still clean up.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    entry_handler = signal.getsignal(signal.SIGIO)
+    entry_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    outer = evidence._begin_lease_signal_guard()
+    try:
+        inner = evidence._begin_lease_signal_guard()
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler
+        evidence._end_lease_signal_guard(inner)
+        assert signal.getsignal(signal.SIGIO) is evidence._lease_sigio_handler, (
+            "releasing the inner guard dropped the disposition while the OUTER "
+            "lease was still held"
+        )
+    finally:
+        evidence._end_lease_signal_guard(outer)
+    assert signal.getsignal(signal.SIGIO) == entry_handler
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == entry_mask
+
+
+def test_an_exception_raised_while_masked_still_restores_the_callers_mask(request, monkeypatch):
+    """Surface created by the masked region: an exception inside it.
+
+    The installation runs with every blockable signal masked. If it raises
+    there, the mask must be restored before the exception leaves the region --
+    otherwise a failed install hands the caller back a process that cannot
+    receive signals, which is a worse outcome than the failure itself.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+
+    def failing_install(*_args, **_kwargs):
+        raise OSError("install failed inside the masked region")
+
+    monkeypatch.setattr(evidence.signal, "signal", failing_install)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="cannot install"):
+            evidence._begin_lease_signal_guard()
+    finally:
+        monkeypatch.undo()
+    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == before, (
+        "a failure inside the masked region left the caller's signal mask changed"
+    )
+
+
+def test_the_masked_region_adds_to_the_callers_mask_rather_than_replacing_it(request):
+    """Surface created by the masked region: a caller who ALREADY blocked signals.
+
+    The mask is captured with `SIG_BLOCK` and restored with `SIG_SETMASK` to that
+    captured value, so the region ADDS to whatever the caller had and gives the
+    caller's own mask back afterwards. A plausible simplification -- restoring by
+    unblocking what was blocked -- would silently unblock a signal the caller had
+    deliberately blocked before ever calling in. This fails if someone does that.
+    """
+    if not sys.platform.startswith("linux"):
+        pytest.skip("signal masks are a POSIX path")
+    if _delegate_to_a_single_threaded_child(request):
+        return
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+    # `pthread_sigmask` returns the PREVIOUS mask, so the caller's mask for the
+    # rest of this test is that plus SIGUSR1, not `held` itself.
+    caller_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    try:
+        assert signal.SIGUSR1 not in held, "SIGUSR1 was already blocked before this test"
+        assert signal.SIGUSR1 in caller_mask
+        guard = evidence._begin_lease_signal_guard()
+        during = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        assert signal.SIGUSR1 in during, (
+            "the guard unblocked a signal the caller had blocked before calling in"
+        )
+        # And the entry region's own mask must NOT leak into the hold: while the
+        # lease is held exactly SIGIO is added, not the 60 signals blocked for the
+        # handful of instructions that make the displacement indivisible.
+        assert during == caller_mask | {signal.SIGIO}, (
+            "the masked entry region leaked into the held lease: the process is "
+            f"holding {len(during)} blocked signals instead of the caller's plus SIGIO"
+        )
+        evidence._end_lease_signal_guard(guard)
+        assert signal.SIGUSR1 in signal.pthread_sigmask(signal.SIG_BLOCK, set()), (
+            "releasing the guard unblocked a signal the caller had blocked"
+        )
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
 def test_an_owner_installed_during_the_window_is_restored_not_lost(request, monkeypatch):
     """The COMBINATION, which each part alone passes (codex, round 4).
 

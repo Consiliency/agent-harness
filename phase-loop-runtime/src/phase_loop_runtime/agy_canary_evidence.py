@@ -2919,6 +2919,19 @@ def _install_lease_disposition_atomically(record: list) -> None:
 
     Anything raised inside is raised with the mask already restored, and a signal
     that arrived while blocked is delivered then -- after `record` is correct.
+    The mask ADDS to the caller's rather than replacing it: it is captured with
+    `SIG_BLOCK` and restored with `SIG_SETMASK` to that captured value, so a
+    caller who had blocked something before calling in still has it blocked after.
+
+    DISCLOSED COST, accepted deliberately: standard signals do not queue, so
+    several identical signals arriving inside this region are delivered as ONE on
+    the way out -- measured at five sent, one delivered, on 3.10 and 3.12. That is
+    POSIX semantics for any masked region rather than anything introduced here,
+    and the region is a handful of instructions. Blocking everything blockable is
+    chosen over narrowing to "signals that can run a Python callback": that list
+    would have to be justified now and maintained forever, and one signal omitted
+    from it reintroduces exactly the window this exists to close. A disclosed
+    bounded cost beats an undisclosed narrow gap.
     """
     held = signal.pthread_sigmask(signal.SIG_BLOCK, _BLOCKABLE_SIGNALS)
     try:

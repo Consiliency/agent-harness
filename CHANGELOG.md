@@ -88,7 +88,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   handler exists only as a return value, Python runs signal callbacks between
   bytecodes, and an interrupt in that gap would leave the record stale rather
   than merely unset -- losing a foreign handler installed during the window
-  while both cleanup calls report success. Restoration is nonetheless BEST EFFORT:
+  while both cleanup calls report success. That mask ADDS to the caller's rather
+  than replacing it, so a caller who had already blocked a signal still has it
+  blocked afterwards.
+- **Disclosed cost of that region**: standard signals do not queue, so several
+  identical signals arriving inside it are delivered as one on the way out,
+  measured at five sent and one delivered on both 3.10 and 3.12. This is POSIX
+  behaviour for any masked region rather than something introduced here, and the
+  region is a handful of instructions. Blocking everything blockable is chosen
+  over narrowing to the signals that can run a Python callback, because that list
+  would need justifying now and maintaining forever, and one omission reopens the
+  window it exists to close.
+- Restoration is nonetheless BEST EFFORT:
   preserving the original exception and attempting both steps is chosen over
   guaranteeing either.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
