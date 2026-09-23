@@ -2088,7 +2088,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     usable = usable_count >= FLOOR_SEATS
     exit_code = 0 if usable else 1
     # #183 / ABDNATIVE: LOUD requested-vs-delivered shortfall. A floor-satisfying
-    # board can still be SHORT an explicitly-requested seat (the claude/Fable seat
+    # board can still be SHORT an explicitly-requested seat (the claude seat
     # deferred to a native Agent), and a bare `usable:true` masks that. Report
     # requested (every composed seat), delivered (usable OK+text), and — the
     # affordance — the seats a native harness can FILL itself (each carries the
@@ -2141,7 +2141,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                     "status": leg.status,
                     "detail": leg.detail,
                     "text": leg.text,
-                    # ABDNATIVE (#183): a deferred claude/Fable seat carries the
+                    # ABDNATIVE (#183): a deferred claude seat carries the
                     # typed native-fill request the harness must run; None otherwise.
                     "needs_native_agent": _native_agent_request_json(leg),
                 }
@@ -2204,7 +2204,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         for leg in unfilled_legs:
-            fill = " → run a native Fable Agent to fill this seat" if leg.needs_native_agent else ""
+            # Name the seat's own model from its fill request: a hard-coded brand went
+            # stale when the claude seat default moved off Fable (agent-harness#991).
+            request = leg.needs_native_agent
+            fill = f" → run a native {request.model} Agent to fill this seat" if request else ""
             print(f"advisor-board:   [{leg.status}] {leg.seat_key}{fill}", file=sys.stderr)
     if not usable:
         print(
