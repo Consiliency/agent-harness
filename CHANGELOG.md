@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Small fixes: a host-PID flake, skill effort prose, witness hardening
+
+- `test_observed_launch_closes_stdin_when_no_payload` (in `test_launcher_liveness.py` and its
+  duplicate in `test_phase_loop_launcher.py`) faked pid 12345 while the global `Popen` was
+  patched; on a runner where a real process held 12345 the heartbeat shelled out to `ps` through
+  the fake and errored. Both now stub `observability._pid_is_live` (agent-harness#932).
+  Reproduced deterministically by forcing 12345 "alive": the originals error, the fixed pass.
+- The Claude plan-phase skill said action effort defaults are `high` / `medium`; the runtime
+  resolves `max` for plan/roadmap/review and `high` for execute/repair. The prose now states
+  those and names `EXECUTOR_EFFORT_OVERRIDES` as the source (agent-harness#993).
+- The xdist witness compares the scheduler CLASS (identity with xdist's `LoadFileScheduling`,
+  not its name) and checks the nested run's return code before its record, so a crash shows
+  its own output (agent-harness#996).
+
 ### CI: the pytest suite runs under xdist in both consumers (agent-harness#945)
 
 - Both suite consumers -- the GitHub-hosted lane in `.github/workflows/test.yml` and the

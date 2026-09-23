@@ -96,7 +96,10 @@ def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
         "    path = os.environ['AGENT_HARNESS_XDIST_WITNESS_OUT']\n"
         "    with open(path) as fh:\n"
         "        rec = json.load(fh)\n"
-        "    rec['sched'] = type(ds.sched).__name__\n"
+        "    from xdist.scheduler import LoadFileScheduling\n"
+        "    cls = type(ds.sched)\n"
+        "    rec['sched'] = cls.__module__ + '.' + cls.__qualname__\n"
+        "    rec['sched_is_loadfile'] = cls is LoadFileScheduling\n"
         "    rec['effective_restart'] = ds._max_worker_restart\n"
         "    with open(path, 'w') as fh:\n"
         "        json.dump(rec, fh)\n",
@@ -120,11 +123,20 @@ def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
         timeout=600,
     )
     out = proc.stdout + proc.stderr
+    # The return code FIRST: a nested run that crashed (say inside the recording hook)
+    # must report its own output, not a misleading `schedules via None` (agent-harness#996).
+    assert proc.returncode == 0, f"the witness re-run itself failed (rc={proc.returncode}):\n{out[-3000:]}"
     assert record.is_file(), f"xdist never set up worker nodes for the lane's own argv:\n{out[-3000:]}"
     seen = json.loads(record.read_text(encoding="utf-8"))
     assert seen["workers"] >= _expected_min_workers(), f"the lane's own argv runs {seen['workers']} worker(s): {seen}"
     assert seen["dist"] == "loadfile", f"the lane's own argv schedules by {seen['dist']!r}, not loadfile: {seen}"
-    assert seen.get("sched") == "LoadFileScheduling", f"the lane's own argv schedules via {seen.get('sched')!r}: {seen}"
+    # Class IDENTITY, not the name: a subclass called LoadFileScheduling is a different
+    # scheduler (agent-harness#996).
+    assert seen.get("sched_is_loadfile") is True, f"the lane's own argv schedules via {seen.get('sched')!r}: {seen}"
+    # And the qualified NAME of xdist's own class: a conftest that rebinds the module
+    # attributes to a subclass passes the identity check but not this one.
+    assert seen.get("sched") == "xdist.scheduler.loadfile.LoadFileScheduling", (
+        f"the lane's own argv schedules via {seen.get('sched')!r}: {seen}"
+    )
     assert seen.get("effective_restart") == 0, f"xdist's controller restart cap is {seen.get('effective_restart')!r}: {seen}"
     assert str(seen["maxworkerrestart"]) == "0", f"the lane's own argv has restart cap {seen['maxworkerrestart']!r}: {seen}"
-    assert proc.returncode == 0, f"the witness re-run itself failed (rc={proc.returncode}):\n{out[-3000:]}"

@@ -608,6 +608,8 @@ def test_launch_scrubs_and_stamps_child_env_popen(monkeypatch, tmp_path):
 
     monkeypatch.setattr(launcher.subprocess, "Popen", _FakeProc)
     monkeypatch.setattr(launcher, "_process_group_id", lambda _pid: None)
+    # 4321 is a FAKE pid: never ask the real host whether it is alive (agent-harness#932).
+    monkeypatch.setattr("phase_loop_runtime.observability._pid_is_live", lambda _pid: False)
     try:
         launcher.launch(
             ["true"],
