@@ -422,6 +422,13 @@ def test_restore_leaves_a_fixture_patch_that_was_installed_first(timing):
     assert subprocess.Popen is original
 
 
+# ORDER-DEPENDENT PAIRS. `test_zz_leak_a`->`test_zz_leak_b` and
+# `test_zzc_*`->`test_zzd_*` only have teeth when the follower runs AFTER its
+# leader in the same process. Under `--dist loadfile` (what CI pins,
+# agent-harness#956) the whole module stays on one worker in file order, so they
+# do. Under `--dist load` they still PASS but the followers can land on another
+# worker and become vacuous. Do not change the distribution mode without grouping
+# this module (e.g. an `xdist_group` marker).
 def test_zz_leak_a_monkeypatches_a_wrapped_symbol(monkeypatch):
     """Saves the wrapper under a flag-set session and reinstalls it at teardown."""
     monkeypatch.setattr(subprocess, "Popen", subprocess.Popen)

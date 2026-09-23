@@ -273,12 +273,17 @@ def _pin_claude_print_route_by_default():
 # `subprocess.Popen`, `shutil.copytree`, `shutil.rmtree`,
 # `tarfile.TarFile.extractall`, `Path.read_bytes` and `Path.read_text` keep their
 # original identities. With the flag set the wrappers are installed for the
-# duration of one measured test call and restored in a `finally`, so no wrapper
-# survives collection, fixtures, teardown or the next test.
+# duration of one measured test call and restored in a `finally` at the end of
+# that call. That alone does NOT keep a wrapper out of teardown: a fixture that
+# captured the wrapper during the call can reinstall it on teardown (the
+# resurrection documented at `_conform_timing_sweep`). It is the teardown SWEEP
+# that unbinds such a wrapper before the next test runs.
 #
 # The mutation and EC probes build an explicit child environment from a fixed
-# whitelist, so the flag never reaches a nested pytest run and probe output bytes
-# are unchanged.
+# whitelist, so the flag never reaches THOSE nested pytest runs and probe output
+# bytes are unchanged. This is scoped to the probes: other nested pytest runs in
+# the suite may inherit `os.environ`, and with the flag set would print their own
+# timing reports into their own stdout.
 # ---------------------------------------------------------------------------
 
 _CONFORM_TIMING_ENV = "PHASE_LOOP_CONFORM_TIMING"
