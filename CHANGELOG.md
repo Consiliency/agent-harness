@@ -24,9 +24,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   chosen so per-file module state cannot be split across workers.
 - `tests/test_ci_xdist_adoption.py` PINS the reviewed configuration instead of
   interpreting it: the sha256 of the hosted suite block (`suite_args=()` through the suite
-  pytest run, comment lines included), the sha256 of the Dagger `_suite` builder, the hosted
-  install line verbatim, and the Dagger install argv's xdist pin (read with `ast`). The
-  auto-worker cap must be set exactly once in the Dagger module, in `_base`, to `8`, and
+  pytest run, comment lines included), the sha256 of the Dagger `_suite` builder and of
+  `_sandbox_exec` (which prepends a preflight and runs both through one `bash -c`), the
+  hosted install line verbatim, and `pytest-xdist` installed exactly once in each consumer
+  (every Dagger list literal is scanned with `ast`). No `pytest.toml` / `pytest.ini` /
+  `tox.ini` / `setup.cfg` may shadow `pyproject.toml`'s pytest section. The auto-worker cap
+  must appear exactly once in the Dagger module (by text, so an `export` inside a script
+  string counts), set in `_base` to `8`, and
   `PYTEST_ADDOPTS` / `PYTEST_PLUGINS` / `PYTEST_DISABLE_PLUGIN_AUTOLOAD` (plus the cap
   variable, on the hosted side) may not appear in either consumer. Why pins: three review
   rounds each defeated the previous INTERPRETER of the command (a file-wide search, a token

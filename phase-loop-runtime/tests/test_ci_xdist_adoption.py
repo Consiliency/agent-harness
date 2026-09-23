@@ -53,6 +53,9 @@ HOSTED_INSTALL_LINE = (
 
 # sha256 of the reviewed blocks (see `hosted_suite_block` / `dagger_suite_source`).
 # Changing either block is allowed; doing it WITHOUT touching this pin is not.
+# `_sandbox_exec` is pinned too: it prepends a preflight to the suite script and runs
+# both through one `bash -c`, so it is on the suite's execution path.
+SANDBOX_EXEC_SHA256 = "8a6bcabbf6db690741c06bf94131b1132d62066300416d434d8d121dca74a353"
 HOSTED_SUITE_SHA256 = "89e14f69d867bcf5b49b6f98fb151b8c9017149a9d5f712b024e8061fce765d0"
 DAGGER_SUITE_SHA256 = "4f25fe45b21ebd14da522e338953e66fb14ca6ade0c633267f28571bb956fde7"
 
@@ -62,6 +65,10 @@ AUTO_WORKERS_CAP = "8"
 
 # Ambient pytest configuration that would reach the suite without touching its argv.
 AMBIENT_PYTEST_ENV = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
+
+# pytest reads the FIRST of these it finds in the rootdir, BEFORE pyproject.toml, so a
+# new one would shadow the pyproject check below (and could carry `addopts = -n0`).
+SHADOWING_INI_FILES = ("pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg")
 
 # Workflows and the Dagger module are repository source, not package data, so
 # Gate A's copied standalone tree cannot evaluate these assertions.
@@ -106,13 +113,18 @@ def hosted_suite_block(text: str) -> str | None:
     return "\n".join(line.rstrip() for line in lines[starts[0]: i + 1])
 
 
+def dagger_function_source(source: str, name: str) -> str | None:
+    """The exact source of one builder method, or None unless there is exactly one."""
+    tree = ast.parse(source)
+    found = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name]
+    if len(found) != 1:
+        return None
+    return ast.get_source_segment(source, found[0])
+
+
 def dagger_suite_source(source: str) -> str | None:
     """The exact source of the `_suite` builder (its argv, script and suite_args)."""
-    tree = ast.parse(source)
-    suites = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_suite"]
-    if len(suites) != 1:
-        return None
-    return ast.get_source_segment(source, suites[0])
+    return dagger_function_source(source, "_suite")
 
 
 def auto_worker_cap_sites(source: str) -> list[tuple[str, str | None]]:
@@ -152,6 +164,8 @@ def dagger_install_pins(source: str) -> list[str]:
 
     Parsed with `ast`, so only string literals that are elements of the real
     argv list count -- a comment or docstring mentioning the pin does not.
+    Every list literal in the module is scanned, not just the suite install: a second
+    `with_exec([... "pip", "install", "pytest-xdist==X"])` would upgrade it.
     """
     pins: list[str] = []
     installs = 0
@@ -160,7 +174,7 @@ def dagger_install_pins(source: str) -> list[str]:
             elts = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
             if "pip" in elts and "install" in elts and "./phase-loop-runtime[visual]" in elts:
                 installs += 1
-                pins.extend(e for e in elts if e.startswith("pytest-xdist"))
+            pins.extend(e for e in elts if e.startswith("pytest-xdist"))
     assert installs == 1, f"expected one suite-environment install argv, found {installs}"
     return pins
 
@@ -174,6 +188,9 @@ def hosted_problems(text: str) -> list[str]:
         problems.append(f"the suite block changed (sha256 {_sha(block)}):\n{block}")
     if [line for line in text.splitlines() if line == HOSTED_INSTALL_LINE] == []:
         problems.append(f"the install line is no longer exactly: {HOSTED_INSTALL_LINE.strip()}")
+    xdist_lines = [line for line in text.splitlines() if "pytest-xdist" in line]
+    if xdist_lines != [HOSTED_INSTALL_LINE]:
+        problems.append(f"pytest-xdist must be installed on exactly the pinned line; found {xdist_lines}")
     for name in (*AMBIENT_PYTEST_ENV, AUTO_WORKERS_VAR):
         if name in text:
             problems.append(f"{name} appears in the workflow; it reaches the suite without its argv")
@@ -187,8 +204,18 @@ def dagger_problems(source: str) -> list[str]:
         problems.append("expected exactly one `_suite` builder")
     elif _sha(suite) != DAGGER_SUITE_SHA256:
         problems.append(f"`_suite` changed (sha256 {_sha(suite)}):\n{suite}")
+    sandbox = dagger_function_source(source, "_sandbox_exec")
+    if sandbox is None:
+        problems.append("expected exactly one `_sandbox_exec`")
+    elif _sha(sandbox) != SANDBOX_EXEC_SHA256:
+        problems.append(f"`_sandbox_exec` changed (sha256 {_sha(sandbox)}):\n{sandbox}")
+    pins = dagger_install_pins(source)
+    if pins != [XDIST_PIN]:
+        problems.append(f"pytest-xdist must be pinned exactly once, to {XDIST_PIN}; found {pins}")
     sites = auto_worker_cap_sites(source)
-    if sites != [("_base", AUTO_WORKERS_CAP)]:
+    # TEXT count too: an `export {AUTO_WORKERS_VAR}=1` inside a script string is not
+    # a constant equal to the name, so the ast site list alone would miss it.
+    if source.count(AUTO_WORKERS_VAR) != 1 or sites != [("_base", AUTO_WORKERS_CAP)]:
         problems.append(f"{AUTO_WORKERS_VAR} must be set exactly once, in `_base`, to "
                         f"{AUTO_WORKERS_CAP!r}; found {sites}")
     for name in AMBIENT_PYTEST_ENV:
@@ -204,7 +231,6 @@ _UPDATE_HINT = (
 
 
 def test_both_ci_consumers_pin_the_same_pytest_xdist() -> None:
-    assert XDIST_PIN in HOSTED_INSTALL_LINE
     assert HOSTED_INSTALL_LINE in _workflow().splitlines(), "hosted install line changed"
     dagger = dagger_install_pins(_dagger())
     assert dagger == [XDIST_PIN], f"dagger install argv pins {dagger}"
@@ -256,6 +282,15 @@ def test_parallelism_is_not_moved_into_addopts() -> None:
     )
 
 
+def test_no_ini_file_shadows_the_pyproject_pytest_config() -> None:
+    runtime = REPO_ROOT / "phase-loop-runtime"
+    present = [name for name in SHADOWING_INI_FILES if (runtime / name).exists()]
+    assert not present, (
+        f"{present} would be read INSTEAD of pyproject.toml's [tool.pytest.ini_options]; "
+        "it could carry addopts the addopts check never sees"
+    )
+
+
 # --- Every mutation review found against an earlier guard must red this one. ---
 # Each is applied to the REAL file text; `old` must occur, so a mutation whose
 # anchor drifts fails loudly instead of passing vacuously.
@@ -301,6 +336,10 @@ HOSTED_MUTATIONS = (
      "        working-directory: phase-loop-runtime\n        env:\n"
      "          CHRONOLOGY: ${{ steps.scope.outputs.chronology }}\n          PYTEST_ADDOPTS: -n0\n"),
     ("install line: xdist pin dropped", ' "pytest-xdist==3.8.0"', ""),
+    ("advisor: a second install upgrades xdist",
+     "        run: python -m pip install \"./phase-loop-runtime[visual]\"",
+     "        run: python -m pip install \"pytest-xdist==3.9.0\"\n      - name: x\n"
+     "        run: python -m pip install \"./phase-loop-runtime[visual]\""),
 )
 
 DAGGER_MUTATIONS = (
@@ -317,6 +356,13 @@ DAGGER_MUTATIONS = (
      "        return self._sandbox_exec(self._base(source, python_version), script)\n",
      "        return self._sandbox_exec(self._base(source, python_version)"
      '.with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", "1"), script)\n'),
+    ("advisor: a second install upgrades xdist",
+     '"--no-new-privs", "/bin/bash", "-c", preflight + script],',
+     '"--no-new-privs", "/bin/bash", "-c", preflight + script],\n'
+     '            ).with_exec(["python", "-m", "pip", "install", "pytest-xdist==3.9.0"],'),
+    ("advisor: an export inside the sandbox preflight",
+     "set -euo pipefail\npython - <<'PY_CHECK'\n",
+     "set -euo pipefail\nexport PYTEST_XDIST_AUTO_NUM_WORKERS=1\npython - <<'PY_CHECK'\n"),
     ("the cap moved out of _base",
      '            .with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", "8")\n', ""),
 )
