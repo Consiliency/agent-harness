@@ -21,10 +21,11 @@ THE PINS ARE NOT THE WHOLE GUARD. Pin-round 1 found edits OUTSIDE any pinned tex
 that still changed the real run: a conftest `pytest_xdist_auto_num_workers` hook, a
 `[tool.pytest] addopts`, a worker cap sourced from an env file above the block, a
 second `pip install` through a requirements file. So in the CI suite lanes
-`test_the_ci_lane_actually_runs_the_pinned_parallelism` WITNESSES the run itself: the
+`tests/test_ci_xdist_witness.py` WITNESSES the run itself: the
 installed xdist version, that this test is on an xdist worker with >=2 workers and
 restart cap 0, and -- re-running the lane's own post-bash argv on one node in the same
-cwd and environment -- that xdist reports >=2 workers and LoadFileScheduling. The
+cwd and environment, with a one-hook plugin recording what xdist's controller settled
+on -- that it uses >=2 workers, the loadfile scheduler and restart cap 0. The
 pins keep the reviewed text reviewable; the witness keeps the behaviour true.
 
 Threat model, stated so it is not over-read: this catches plausible edits (careless
@@ -40,11 +41,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import os
 import re
-import subprocess
-import sys
-from importlib.metadata import version as installed_version
 from pathlib import Path
 
 import pytest
@@ -307,66 +304,6 @@ def test_parallelism_is_not_moved_into_addopts() -> None:
     # `[tool.pytest]` table are the same config to pytest (native r3/p1, codex p1).
     found = [k for k in ("addopts",) if k in pytest_tables or k in pytest_tables.get("ini_options", {})]
     assert not found, "pytest addopts now exists; -n must never live there (nested pytest runs)"
-
-
-def _in_ci_suite_lane() -> bool:
-    # Hosted: GitHub sets GITHUB_ACTIONS. Dagger: the container env carries the cap.
-    return os.environ.get("GITHUB_ACTIONS") == "true" or AUTO_WORKERS_VAR in os.environ
-
-
-_WITNESS_MARKER = "AGENT_HARNESS_XDIST_WITNESS"
-
-# One fast node whose file has no module state; the witness re-runs ONLY it.
-_WITNESS_NODE = "tests/test_proc_cpu.py::test_unknown_group_is_zero"
-
-
-def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
-    """WITNESS the real run, not the text: the pins above cannot see a conftest hook,
-    a pytest config table, or a second install path, and each of those changed the
-    real behaviour in review (native p1: `pytest_xdist_auto_num_workers` -> 1 worker;
-    `[tool.pytest] addopts = ["-d"]` -> LoadScheduling; codex p1: a `pip install
-    pytest-xdist==3.7.0` through `sh -c` or a requirements file).
-
-    In a CI suite lane this test must itself be running on an xdist worker, and the
-    lane's REAL argv -- `workerinput["mainargv"]`, i.e. after bash expansion -- is
-    re-run by pytest on one node in the same cwd and environment (so the same
-    conftest, pyproject and installed xdist). xdist's own report must say it created
-    at least two workers and scheduled by LoadFileScheduling. Nothing is parsed by
-    this file. Outside CI it is skipped: developers may run the suite any way they like.
-    """
-    if not _in_ci_suite_lane():
-        pytest.skip("witnesses the CI suite lanes only")
-    if os.environ.get(_WITNESS_MARKER):
-        pytest.skip("this IS the witness's nested run")
-    assert installed_version("pytest-xdist") == XDIST_PIN.split("==")[1], (
-        f"installed pytest-xdist is {installed_version('pytest-xdist')}, not the pinned one"
-    )
-    workerinput = getattr(request.config, "workerinput", None)
-    assert workerinput is not None, "the CI suite is not running under xdist workers"
-    assert workerinput["workercount"] >= 2, f"only {workerinput['workercount']} worker(s)"
-    assert str(request.config.option.maxworkerrestart) == "0", (
-        f"--max-worker-restart is {request.config.option.maxworkerrestart!r}, not 0"
-    )
-    argv = list(workerinput["mainargv"][1:])
-    witness_junit = request.getfixturevalue("tmp_path") / "witness.xml"
-    # The lane's environment, minus this WORKER's own identity (the nested run must be
-    # a controller, not believe it is gw0) and the running test's marker.
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith("PYTEST_XDIST_WORKER") and k not in ("PYTEST_XDIST_TESTRUNUID", "PYTEST_CURRENT_TEST")}
-    env[_WITNESS_MARKER] = "1"
-    proc = subprocess.run(
-        # `-vv`: xdist names its scheduler only when verbose, and one `-q` in the
-        # lane's argv would cancel a single `-v`.
-        [sys.executable, "-m", "pytest", *argv, "-vv", f"--junitxml={witness_junit}", _WITNESS_NODE],
-        cwd=request.config.invocation_params.dir, env=env, capture_output=True, text=True, check=False,
-    )
-    out = proc.stdout + proc.stderr
-    created = re.search(r"created: (\d+)/(\d+) workers", out)
-    assert created and int(created.group(1)) >= 2, (
-        f"re-running the lane's own argv did not create >=2 workers:\n{out[-3000:]}"
-    )
-    assert "LoadFileScheduling" in out, f"the lane's own argv does not schedule by file:\n{out[-3000:]}"
-    assert proc.returncode == 0, f"the witness re-run itself failed (rc={proc.returncode}):\n{out[-3000:]}"
 
 
 def test_no_ini_file_shadows_the_pyproject_pytest_config() -> None:

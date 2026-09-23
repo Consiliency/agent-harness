@@ -40,11 +40,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Changing the suite is allowed; doing it without updating the pin in the same diff is not.
   Threat model: plausible (careless or accidental) edits, not deliberate obfuscation
   elsewhere in the workflow, which code review covers.
-- The pins are not the whole guard: in the CI suite lanes a WITNESS test checks the run
-  itself -- the installed `pytest-xdist` version, that it is executing on an xdist worker
-  with at least two workers and `--max-worker-restart=0`, and, re-running the lane's own
-  post-bash argv on one node in the same cwd and environment, that xdist reports at least
-  two workers and `LoadFileScheduling`. Review showed edits outside every pinned text that
+- The pins are not the whole guard: in the CI suite lanes `tests/test_ci_xdist_witness.py`
+  checks the run itself -- the installed `pytest-xdist` version, that it is executing on an
+  xdist worker with `--max-worker-restart=0` and at least two workers (exactly the capped 8
+  on Dagger), and, re-running the lane's own post-bash argv on one node in the same cwd and
+  environment with a one-hook plugin that records what xdist's controller settled on, that
+  it uses those workers, the `loadfile` scheduler and restart cap 0. It is its own module so
+  a renamed CI file cannot skip it together with the pins. Review showed edits outside every pinned text that
   still changed the real run (a conftest `pytest_xdist_auto_num_workers` hook, a
   `[tool.pytest] addopts`, a worker cap sourced from an env file, a second install via a
   requirements file); each makes the witness red. The `addopts` check now parses
