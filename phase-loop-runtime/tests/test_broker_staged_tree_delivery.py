@@ -615,3 +615,36 @@ def test_the_opt_out_lets_that_same_host_proceed(tmp_path, monkeypatch):
         )
 
     assert launched == ["leg"], "the opt-out must let an unfilterable host still review"
+
+
+def test_only_a_sandboxed_codex_seat_keeps_setfcap_at_launch(tmp_path, monkeypatch):
+    """agent-harness#1003: the retained capability is scoped to the ONE seat that needs it.
+
+    A sandboxed codex seat runs commands in codex's own bubblewrap, which needs CAP_SETFCAP
+    to start inside the egress namespace. The sealed codex seat and every other seat keep
+    an empty bounding set.
+    """
+    seen: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_liveness(cmd, **kwargs):
+        seen.append((cmd[0], tuple(kwargs.get("retain_caps", ()))))
+        return panel_invoker._LegRun(0, "AGREE", "")
+
+    monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", fake_liveness)
+    monkeypatch.setattr(panel_invoker, "_leg_auth_ok", lambda *a, **k: (True, ""))
+
+    tree = _sandbox(tmp_path)
+    boxed_review = tree.parent
+    sealed_review = tmp_path / "sealed-review"
+    sealed_review.mkdir()
+    for leg, review_dir in (("codex", boxed_review), ("codex", sealed_review), ("grok", boxed_review)):
+        out = tmp_path / f"out-{leg}-{review_dir.name}"
+        out.mkdir()
+        panel_invoker._exec_leg(leg, review_dir, out, broker_prompt="P", broker_evidence={})
+
+    # Distinct launches, in order: the leg may retry a soft-empty attempt, and every
+    # attempt must carry the same decision, so dedupe rather than pin the retry count.
+    assert list(dict.fromkeys(seen)) == [("codex", ("setfcap",)), ("codex", ()), ("grok", ())], seen
+    assert panel_invoker._BROKER_CODEX_SANDBOX_RETAINED_CAPS == ("setfcap",)
+    assert "bounding-set-setfcap-only" in panel_invoker._broker_tool_controls("codex", tree)
+    assert "bounding-set-setfcap-only" not in panel_invoker._broker_tool_controls("codex", None)

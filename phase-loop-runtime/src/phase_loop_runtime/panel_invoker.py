@@ -1836,6 +1836,11 @@ _BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_m
 # itself stays writable because it is the sandbox root. READS are NOT confined: the seat
 # can read any file the invoking user can (credentials included). What bounds that is the
 # egress policy (private networks denied) and the seat's report being the only output.
+# The one capability a sandboxed codex seat keeps in its bounding set, so codex's own
+# bubblewrap sandbox can start inside the egress namespace (agent-harness#1003; the
+# allowlist and the argument that it cannot restore the firewall live in
+# `sandbox_egress.SEAT_RETAINABLE_CAPS`). Every other seat keeps an EMPTY bounding set.
+_BROKER_CODEX_SANDBOX_RETAINED_CAPS: tuple[str, ...] = ("setfcap",)
 _BROKER_CODEX_SANDBOX_CONFIG: tuple[str, ...] = (
     "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
     "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
@@ -1942,8 +1947,8 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
-def _provider_launch_prefix(cwd):
-    prefix = list(_EGRESS_LAUNCH_PREFIX.get())
+def _provider_launch_prefix(cwd, retain_caps=()):
+    prefix = list(_sandbox_egress.retain_bounding_caps(_EGRESS_LAUNCH_PREFIX.get(), retain_caps))
     if prefix and prefix[0] == "nsenter":
         # Entering the holder's mount namespace otherwise resets cwd to its root, so the
         # requested cwd is re-established INSIDE the namespace, and by PATH. `nsenter --wd`
@@ -1965,7 +1970,7 @@ def _provider_launch_prefix(cwd):
     return prefix
 
 
-def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[bytes]":
+def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -1985,7 +1990,7 @@ def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[by
     that read call sites was defeated on spelling five times and removed. A raw spawn of a
     provider added elsewhere is a review finding.
     """
-    prefix = _provider_launch_prefix(kwargs.get("cwd"))
+    prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
         # Enter the network namespace before creating the ownership PID namespace,
         # but drop capabilities only AFTER both namespaces exist.
@@ -2102,7 +2107,8 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
         return ("ignore-user-config", "ignore-rules", "ephemeral",
                 *(f for f in _BROKER_CODEX_DISABLED_FEATURES
                   if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES),
-                "stdin-sealed-input", "workspace-write-sandbox-only", "tmp-not-writable")
+                "stdin-sealed-input", "workspace-write-sandbox-only", "tmp-not-writable",
+                "bounding-set-setfcap-only")
     if leg == "grok":
         if staged_tree is None:
             return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
@@ -3874,6 +3880,7 @@ def _run_leg_with_liveness(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
     gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
+    retain_caps: "Sequence[str]" = (),
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -3904,6 +3911,7 @@ def _run_leg_with_liveness(
         proc = launch_provider(
             cmd,
             process_owner=() if review_monitor is None else review_monitor.owned_command((), gemini_profile=gemini_profile),
+            retain_caps=retain_caps,
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -5832,9 +5840,12 @@ def _exec_leg(
             str(out_file),
             "-",
         ]
+        codex_retain_caps: tuple[str, ...] = ()
         if brokered:
-            # One sandbox decision, read by both the argv and the recorded controls.
+            # One sandbox decision, read by the argv, the recorded controls, and the launch.
             staged_tree = _sandbox_in(review_dir)
+            if staged_tree is not None:
+                codex_retain_caps = _BROKER_CODEX_SANDBOX_RETAINED_CAPS
             cmd = _brokered_codex_command(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
@@ -5891,6 +5902,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
+                    retain_caps=codex_retain_caps,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
