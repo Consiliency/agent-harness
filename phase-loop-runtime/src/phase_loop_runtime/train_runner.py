@@ -1352,7 +1352,9 @@ def _fab_delta_readmit(
     roadmap_digest = tx_roadmap_digest
 
     prior_committed_head = active_pub.get("committed_head_sha") or active_pub.get("expected_commit_oid") or active_pub.get("parent_head_sha")
-    if not prior_committed_head or prior_committed_head != admitted_head_sha:
+    # The publish transaction anchors C0; later admissions extend its validated
+    # provenance chain without rewriting that original transaction.
+    if not prior_committed_head or prior_committed_head != artifact.candidate.head_sha:
         _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
         return None
 

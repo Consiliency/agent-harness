@@ -4572,17 +4572,18 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     if result["status"] == "native_fill_requested":
         # REVIEWTRUTH early slice: the emit arm staged the bundle + request; nothing was spent.
         if not as_json:
+            native_leg = shlex.quote(f"claude={Path(result['request_path']).parent}")
+            material_arg = f" --review-material {shlex.quote(str(review_material))}" if review_material is not None else ""
+            print("Keep the original --train, --workspace-root/--workspace and --ledger-dir arguments.")
             print(
                 f"run-train: native fill requested for seat {result.get('seat_key')} — write the review to "
                 f"{Path(result['request_path']).parent / 'review.md'} and re-run with "
-                f"--governed --review-only --native-leg claude={Path(result['request_path']).parent}"
+                f"--governed --review-only --native-leg {native_leg}{material_arg}"
             )
         return 0
     if result["status"] == "review_approved":
         # agent-harness#906: --review-only terminal — approval recorded, ZERO merges.
         nodes = result.get("nodes", {})
-        if not as_json and emit_native_request:
-            print("run-train: the train review is already approved on the ledger; no native fill request was emitted.")
         if not as_json:
             print(
                 f"run-train: train-level review APPROVED — {len(nodes)} admitted PR(s), "
