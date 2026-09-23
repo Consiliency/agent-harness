@@ -1821,6 +1821,13 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "view_image",
     "workspace_dependencies",
 )
+# Re-enabled ONLY when a sandbox (a disposable staged review tree) is authorized, so a
+# seat can run the code it reviews. codex >= 0.156 executes commands through the
+# code-mode host, not the bare shell tool: lifting `shell_tool` alone left every
+# sandboxed codex seat answering "code-mode host is disabled". Both stay disabled on
+# the sealed (no-tree) path. Confinement is still the `workspace-write` sandbox, which
+# confines writes to the disposable tree whichever of the two runs the command.
+_BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_mode_host")
 
 
 def _require_staged_tree(staged_tree: Path | None) -> Path | None:
@@ -2081,7 +2088,8 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
             return ("ignore-user-config", "ignore-rules", "ephemeral",
                     *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only")
         return ("ignore-user-config", "ignore-rules", "ephemeral",
-                *(f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"),
+                *(f for f in _BROKER_CODEX_DISABLED_FEATURES
+                  if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES),
                 "stdin-sealed-input", "workspace-write-sandbox-only")
     if leg == "grok":
         if staged_tree is None:
@@ -2112,7 +2120,8 @@ def _brokered_codex_command(
     # runaway seat can only damage a directory that is deleted at the end of the round.
     # Without one: byte-for-byte the historical posture.
     disabled = _BROKER_CODEX_DISABLED_FEATURES if tree is None else tuple(
-        f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"
+        f for f in _BROKER_CODEX_DISABLED_FEATURES
+        if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES
     )
     return [
         "codex",

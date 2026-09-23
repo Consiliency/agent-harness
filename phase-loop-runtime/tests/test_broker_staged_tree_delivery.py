@@ -60,8 +60,16 @@ def test_brokered_codex_works_in_the_sandbox_when_one_is_authorized(tmp_path):
     )
     # The seat lands IN the code, not in an empty output folder.
     assert cmd[cmd.index("--cd") + 1] == str(tree)
-    # It can run things: that is the entire point.
+    # It can run things: that is the entire point. codex runs commands through the
+    # code-mode host, so enabling the bare shell alone is not enough ("code-mode host
+    # is disabled" on every sandboxed seat before this was lifted too).
     assert "shell_tool" not in _disabled_features(cmd)
+    assert "code_mode_host" not in _disabled_features(cmd)
+    # Everything else stays disabled: only the sandbox pair is lifted.
+    assert set(_disabled_features(cmd)) == (
+        set(panel_invoker._BROKER_CODEX_DISABLED_FEATURES)
+        - set(panel_invoker._BROKER_CODEX_SANDBOX_ENABLED_FEATURES)
+    )
     assert cmd[cmd.index("--sandbox") + 1] != "read-only", (
         "a read-only sandbox cannot host a test run"
     )
@@ -411,6 +419,8 @@ def test_the_evidence_records_the_controls_actually_in_force(tmp_path):
     assert "read-only" in codex_plain and "shell_tool" in codex_plain
     assert "read-only" not in codex_boxed, "it is workspace-write with a sandbox"
     assert "shell_tool" not in codex_boxed, "the shell is enabled with a sandbox"
+    assert "code_mode_host" in codex_plain
+    assert "code_mode_host" not in codex_boxed, "command execution is enabled with a sandbox"
 
     grok_plain = panel_invoker._broker_tool_controls("grok", None)
     grok_boxed = panel_invoker._broker_tool_controls("grok", tree)
