@@ -185,11 +185,13 @@ def _parse_board(raw: Mapping[str, Any], index: int) -> Board:
 def _load_toml(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    with open(path, "rb") as fh:
-        try:
+    try:
+        with open(path, "rb") as fh:
             return tomllib.load(fh)
-        except tomllib.TOMLDecodeError as exc:
-            raise BoardConfigError(f"{path} is not valid TOML: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise BoardConfigError(f"{path} is not valid TOML: {exc}") from exc
+    except (OSError, UnicodeError) as exc:
+        raise BoardConfigError(f"{path} is unreadable: {exc}") from exc
 
 
 def _parse_president(data: Mapping[str, Any], where: str) -> tuple[str, ...] | None:
@@ -210,6 +212,22 @@ def _parse_president(data: Mapping[str, Any], where: str) -> tuple[str, ...] | N
         raise BoardConfigError(f"{where} [president] ladder: {exc}") from exc
 
 
+def _user_config_path(env: Mapping[str, str] | None) -> Path | None:
+    """The user file for ``env``: resolved from the GIVEN environment only.
+
+    ``env=None`` means this process (``board_config_path()``). A passed environment is
+    authoritative -- its ``XDG_CONFIG_HOME``, else its ``HOME`` -- and one that names
+    neither has no user layer; the process HOME is never consulted for it.
+    """
+    if env is None:
+        return board_config_path(None)
+    if env.get("XDG_CONFIG_HOME"):
+        return board_config_path(dict(env))
+    if env.get("HOME"):
+        return Path(env["HOME"]) / ".config" / "agent-harness" / "advisor-boards.toml"
+    return None
+
+
 def repo_board_config_path(repo_dir: Path | str) -> Path:
     return Path(repo_dir) / REPO_CONFIG_RELATIVE_PATH
 
@@ -223,7 +241,8 @@ def load_president_ladder(
     """The effective president fallback order, first rung first.
 
     Layers, lowest to highest: the built-in ``PRESIDENT_LADDER``; the user file's
-    ``[president] ladder`` (``path``, default ``board_config_path(env)``); the
+    ``[president] ladder`` (``path``, default: resolved from ``env`` only -- see
+    ``_user_config_path``); the
     repository's ``<repo_dir>/.agent-harness/advisor-boards.toml``. A layer that sets
     no ladder leaves the one below it in force. A malformed ladder or an unknown key
     is a ``BoardConfigError`` -- never a silent fallback to the built-in order.
@@ -231,8 +250,8 @@ def load_president_ladder(
     from ..panel_invoker import PRESIDENT_LADDER
 
     ladder: tuple[str, ...] = PRESIDENT_LADDER
-    user_path = path if path is not None else board_config_path(env)  # type: ignore[arg-type]
-    user = _load_toml(user_path)
+    user_path = path if path is not None else _user_config_path(env)
+    user = _load_toml(user_path) if user_path is not None else None
     if user is not None:
         _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
         ladder = _parse_president(user, str(user_path)) or ladder

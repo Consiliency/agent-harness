@@ -535,7 +535,9 @@ def validate_president_ladder(ladder: object) -> tuple[str, ...]:
                 PRESIDENT_LADDER_INVALID,
                 f"unknown president rung {rung!r}; expected one of {sorted(set(DEFAULT_REVIEW_SEAT_ALIASES.values()))}",
             )
-    if len(set(rungs)) != len(rungs):
+    # A model id and its alias name the SAME seat: compare canonical aliases.
+    canonical = [DEFAULT_REVIEW_SEAT_ALIASES.get(rung, rung) for rung in rungs]
+    if len(set(canonical)) != len(canonical):
         raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, f"the president ladder repeats a rung: {list(rungs)}")
     return rungs
 
@@ -547,7 +549,11 @@ def effective_president_ladder(invoke: object) -> tuple[str, ...]:
     auto-wired adapter -- walks the built-in EC-PRESROUTE-3 order.
     """
     ladder = getattr(invoke, "ladder", None)
-    return PRESIDENT_LADDER if ladder is None else validate_president_ladder(ladder)
+    # Only a real sequence is a configured ladder; an absent attribute -- or one a test
+    # double synthesises (e.g. a Mock attribute) -- is "not configured".
+    if not isinstance(ladder, (list, tuple)):
+        return PRESIDENT_LADDER
+    return validate_president_ladder(ladder)
 
 
 @dataclass(frozen=True)
@@ -766,16 +772,23 @@ def _persist_president_ruling(
     ruling: PresidentRuling,
     findings: Sequence[str],
     ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
 ) -> None:
-    """EC-PRESROUTE-5: write ``president.ruling.json`` (``president.ruling.v1``) to the stream."""
+    """EC-PRESROUTE-5: write ``president.ruling.json`` (``president.ruling.v1``) to the stream.
+
+    A ruling answers the stream: any pending native request an earlier run left there is
+    removed, so it can never later resume over this ruling.
+    """
     if stream_dir is None:
         return
     from .president_operation import PRESIDENT_RULING_FILENAME, board_president_ruling_record
 
     record = board_president_ruling_record(
-        ruling, findings, board, brief=_president_prompt(findings), ladder=ladder
+        ruling, findings, board, brief=_president_prompt(findings), ladder=ladder,
+        seat_aliases=seat_aliases,
     )
     _write_json_atomically(Path(stream_dir) / PRESIDENT_RULING_FILENAME, record)
+    (Path(stream_dir) / PRESIDENT_PENDING_FILENAME).unlink(missing_ok=True)
 
 
 def _president_legs_record(legs: Sequence[PanelLegResult]) -> list[dict[str, object]]:
@@ -801,7 +814,7 @@ def _president_run_binding(
     mode: str | None,
     policy: "ReviewLandingPolicy | None",
     landing_tier: "ReviewLandingTier | str | None",
-    brief_ref: str | None = None,
+    brief_sha256: str | None = None,
     ladder: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """What a native president deferral is bound to: the exact run it belongs to.
@@ -822,12 +835,23 @@ def _president_run_binding(
         "landing_tier": tier,
         "required_seats": list(policy.required_seats) if policy is not None else None,
         "requires_president": bool(policy.requires_president) if policy is not None else None,
-        "brief_sha256": (
-            sha256(_resolve_brief(mode, brief_ref).encode("utf-8")).hexdigest()
-            if mode is not None else None
-        ),
+        # Captured ONCE, before any seat ran (``_president_brief_digest``): a brief file
+        # edited after the seats read it cannot re-bind their verdicts.
+        "brief_sha256": brief_sha256,
         "ladder": list(PRESIDENT_LADDER if ladder is None else ladder),
     }
+
+
+def _president_brief_digest(mode: str, brief_ref: str | None) -> str:
+    """The digest of the review brief the seats are about to answer.
+
+    An unreadable brief yields a marker, never an exception: the run fails on the brief
+    where it always did, and a marker can never equal a real digest at resume.
+    """
+    try:
+        return sha256(_resolve_brief(mode, brief_ref).encode("utf-8")).hexdigest()
+    except (OSError, UnicodeError, ValueError) as exc:
+        return f"unresolvable:{type(exc).__name__}"
 
 
 def _resolve_native_president(
@@ -855,11 +879,6 @@ def _resolve_native_president(
             "a natively filled president rung requires stream_dir for its pending request and ruling record",
         )
     pending = {**request, "prompt": _president_prompt(findings)}
-    # A ruling left in a reused stream by an EARLIER run must not stand beside this
-    # run's pending request as if it answered it.
-    from .president_operation import PRESIDENT_RULING_FILENAME
-
-    (Path(stream_dir) / PRESIDENT_RULING_FILENAME).unlink(missing_ok=True)
     _write_json_atomically(
         Path(stream_dir) / PRESIDENT_PENDING_FILENAME,
         {
@@ -871,6 +890,11 @@ def _resolve_native_president(
             "legs_digest": _president_legs_digest(_president_legs_record(legs)),
         },
     )
+    # A ruling left in a reused stream by an EARLIER run must not stand beside this
+    # run's pending request as if it answered it (removed only once the request exists).
+    from .president_operation import PRESIDENT_RULING_FILENAME
+
+    (Path(stream_dir) / PRESIDENT_RULING_FILENAME).unlink(missing_ok=True)
     result = PanelResult(legs=tuple(legs), president_findings=tuple(findings))
     object.__setattr__(result, "_needs_native_president", pending)
     return result
@@ -935,7 +959,7 @@ def _resume_native_president(
     # Bound to THIS run: same artifact bytes, board, mode and landing policy.
     if pending.get("binding") != dict(binding or {}):
         raise refuse("the pending native president request belongs to a different run "
-                     "(artifact, board, mode or landing policy differs)")
+                     "(artifact, review brief, board, mode, landing policy or president ladder differs)")
     # The deferred verdicts must be this board's seats, in order.
     if [item.get("seat_key") for item in legs_raw] != [seat.seat_key for seat in board.seats]:
         raise refuse("the pending seat verdicts do not match this board's seats")
@@ -974,9 +998,8 @@ def _resume_native_president(
     if president_findings_from_legs(board.seats, legs) != findings:
         raise refuse("the pending findings do not derive from the pending seat verdicts")
     ruling = PresidentRuling(model=rung, text=text, substantive_rounds=1, format_reasks=0)
-    _persist_president_ruling(stream_dir, board, ruling, findings, ladder)
-    # Consumed: a pending request answers exactly once.
-    (Path(stream_dir) / PRESIDENT_PENDING_FILENAME).unlink(missing_ok=True)
+    # Persisting the ruling also consumes the pending request: it answers exactly once.
+    _persist_president_ruling(stream_dir, board, ruling, findings, ladder, seat_aliases)
     # The resumed board's seat verdicts ARE the deferred board's: republish them to the
     # stream through the same per-seat publisher the live pool uses.
     for index, leg in enumerate(legs):
@@ -8179,6 +8202,10 @@ def invoke_board(
         artifact, context_refs, soft_warn=context_refs_soft_warn
     )
     authorization_artifact = artifact
+    president_brief_sha256 = (
+        _president_brief_digest(mode, brief_ref)
+        if policy is not None and policy.requires_president else None
+    )
     review_instruction_token: object | None = None
     def review_exit(result: PanelResult) -> PanelResult:
         # Every exit after the instruction digest is bound -- refusal, typed
@@ -8215,7 +8242,7 @@ def invoke_board(
                     stream_dir=stream_dir, fill=native_president_fill,
                     binding=_president_run_binding(
                         board, authorization_artifact, mode=mode, policy=policy,
-                        landing_tier=landing_tier, brief_ref=brief_ref,
+                        landing_tier=landing_tier, brief_sha256=president_brief_sha256,
                         ladder=effective_president_ladder(president_invoke),
                     ),
                 )
@@ -8225,7 +8252,8 @@ def invoke_board(
                 return replace(review_refusal(f"president_ruling_missing:{exc.code}"), president_findings=findings_)
             panel_ = PanelResult(legs=tuple(results_), president=ruling_, president_findings=findings_)
             _persist_president_ruling(
-                stream_dir, board, ruling_, findings_, effective_president_ladder(president_invoke)
+                stream_dir, board, ruling_, findings_, effective_president_ladder(president_invoke),
+                review_seat_aliases,
             )
         return panel_
 
@@ -8433,7 +8461,7 @@ def invoke_board(
                         board, stream_dir=stream_dir, fill=native_president_fill,
                         binding=_president_run_binding(
                             board, authorization_artifact, mode=mode, policy=policy,
-                            landing_tier=landing_tier, brief_ref=brief_ref,
+                            landing_tier=landing_tier, brief_sha256=president_brief_sha256,
                             ladder=effective_president_ladder(president_invoke),
                         ),
                         ladder=effective_president_ladder(president_invoke),
@@ -9067,7 +9095,7 @@ def invoke_board(
                     stream_dir=stream_dir, fill=native_president_fill,
                     binding=_president_run_binding(
                         board, authorization_artifact, mode=mode, policy=policy,
-                        landing_tier=landing_tier, brief_ref=brief_ref,
+                        landing_tier=landing_tier, brief_sha256=president_brief_sha256,
                         ladder=effective_president_ladder(president_invoke),
                     ),
                 )
@@ -9085,7 +9113,8 @@ def invoke_board(
                 legs=tuple(results), president=ruling, president_findings=findings
             )
             _persist_president_ruling(
-                stream_dir, board, ruling, findings, effective_president_ladder(president_invoke)
+                stream_dir, board, ruling, findings, effective_president_ladder(president_invoke),
+                review_seat_aliases,
             )
         if agy_canary_capture is not None:
             object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))

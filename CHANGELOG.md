@@ -20,6 +20,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `review_seat_aliases`, and a new deferral removes a stale `president.ruling.json` from a
   reused stream.
 - The credential-less gemini president HOME now carries the broker's deny-all agy profile.
+- A `president.pending.json` written before this change has no brief or ladder binding and
+  is refused on resume (fail-closed): re-run the board to defer again.
 
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 

@@ -139,11 +139,13 @@ def board_president_ruling_record(
     *,
     brief: str,
     ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The record for a ruling a landing board obtained, with the rung's registry PIN."""
+    """The record for a ruling a landing board obtained, with the rung's registry PIN
+    (resolved through the run's ``seat_aliases``, exactly as the ruling rung was)."""
     from .president_adapter import seat_for_rung
 
-    seat = seat_for_rung(board, ruling.model)  # type: ignore[arg-type]
+    seat = seat_for_rung(board, ruling.model, seat_aliases=seat_aliases)  # type: ignore[arg-type]
     result = PresidentOperationResult(
         ruling=ruling,
         authorization_identity=PRESIDENT_OPERATION,

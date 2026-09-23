@@ -402,3 +402,150 @@ def test_the_auto_wired_seam_refuses_a_malformed_ladder_before_any_seat(tmp_path
         )
     assert excinfo.value.code == PRESIDENT_LADDER_INVALID
     assert ran == []
+
+
+# --- agent-harness#1004 round-1 board findings ---------------------------------------
+
+
+def test_the_runner_seam_carries_the_repositorys_ladder(tmp_path, monkeypatch):
+    # native seat B1: the phase-loop runner built its seam without the configured ladder.
+    from test_president_wiring import _ruling, _runner_fixture, _stub_board_result
+
+    from phase_loop_runtime import runner
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    repo, run_dir, bundle = _runner_fixture(tmp_path)
+    (repo / ".agent-harness").mkdir()
+    (repo / ".agent-harness" / "advisor-boards.toml").write_text(
+        '[president]\nladder = ["fable", "sol", "grok", "gemini"]\n', encoding="utf-8"
+    )
+    seen: dict[str, object] = {}
+
+    def capture(*_a, **kw):
+        seen.update(kw)
+        return _stub_board_result(_ruling("FINDING F001: DEFERRED — ok\nFORCING DECISION: LAND"))
+
+    monkeypatch.setattr(panel_invoker, "invoke_board", capture)
+    runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    assert seen["president_invoke"].ladder == OUR_LADDER
+
+
+def test_a_passed_environment_never_reads_the_process_home(tmp_path, monkeypatch):
+    # native seat B2: the user layer follows the PASSED env, never the process HOME.
+    process_home = tmp_path / "process-home"
+    cfg = process_home / ".config" / "agent-harness" / "advisor-boards.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('[president]\nladder = ["fable", "fable"]\n', encoding="utf-8")  # malformed
+    monkeypatch.setenv("HOME", str(process_home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert load_president_ladder(None, env={}) == PRESIDENT_LADDER
+    other = tmp_path / "other-home"
+    ocfg = other / ".config" / "agent-harness" / "advisor-boards.toml"
+    ocfg.parent.mkdir(parents=True)
+    ocfg.write_text('[president]\nladder = ["grok"]\n', encoding="utf-8")
+    assert load_president_ladder(None, env={"HOME": str(other)}) == ("grok",)
+    # and the auto-wired seam (base_env without HOME) is unaffected by the bad process file
+    deferred = _dispatch(tmp_path / "stream")
+    assert deferred.needs_native_president["rung"] == "fable"
+
+
+def test_a_brief_edited_after_the_seats_read_it_cannot_rebind_their_verdicts(tmp_path):
+    # codex B2: the brief digest is captured before any seat runs.
+    brief = tmp_path / "brief.md"
+    brief.write_text("Review brief ONE.", encoding="utf-8")
+    stream = tmp_path / "stream"
+
+    def editing_spawn(leg, artifact):
+        brief.write_text("Review brief TWO.", encoding="utf-8")  # changed mid-run
+        return _ok_spawn(leg, artifact)
+
+    deferred = invoke_sanctioned_board_control(
+        _fable_board(), "artifact", spawn=editing_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+        base_env={"CLAUDECODE": "1"}, stream_dir=stream, brief_ref=str(brief),
+    )
+    fill = _fill_for(deferred)
+    with pytest.raises(PresidentPolicyError) as excinfo:  # brief now reads TWO
+        _dispatch(stream, brief_ref=str(brief), native_president_fill=fill)
+    assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
+    brief.write_text("Review brief ONE.", encoding="utf-8")
+    assert _dispatch(stream, brief_ref=str(brief), native_president_fill=fill).president is not None
+
+
+def test_a_brief_that_vanishes_before_resume_is_a_typed_refusal(tmp_path):
+    brief = tmp_path / "brief.md"
+    brief.write_text("Review brief ONE.", encoding="utf-8")
+    stream = tmp_path / "stream"
+    fill = _fill_for(_dispatch(stream, brief_ref=str(brief)))
+    brief.unlink()
+    with pytest.raises(PresidentPolicyError):
+        _dispatch(stream, brief_ref=str(brief), native_president_fill=fill)
+
+
+def test_an_aliased_ruling_is_recorded_with_the_aliased_seats_model(tmp_path):
+    # codex B1: persistence resolves the rung through the same aliases as the resume.
+    from dataclasses import replace
+
+    model = "claude-sonnet-5"
+    board = Board(
+        name="aliased", purpose="premerge-review",
+        seats=tuple(
+            replace(seat, model=model) if seat.harness == "claude" else seat
+            for seat in DEFAULT_SEATS if seat.harness != "codex"
+        ),
+    )
+    stream = tmp_path / "stream"
+
+    def dispatch(**extra):
+        return invoke_sanctioned_board_control(
+            board, "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            base_env={"CLAUDECODE": "1"}, stream_dir=stream,
+            review_seat_aliases={model: "fable"}, **extra,
+        )
+
+    dispatch(native_president_fill=_fill_for(dispatch()))
+    record = json.loads((stream / "president.ruling.json").read_text())
+    assert record["model_id"] == model
+
+
+def test_a_model_id_and_its_alias_are_the_same_rung():
+    claude_model = next(s.model for s in DEFAULT_SEATS if s.harness == "claude")
+    with pytest.raises(PresidentPolicyError) as excinfo:
+        validate_president_ladder([claude_model, "fable"])
+    assert excinfo.value.code == PRESIDENT_LADDER_INVALID
+
+
+def test_a_synthesised_ladder_attribute_is_not_a_configured_ladder():
+    from unittest.mock import MagicMock
+
+    assert panel_invoker.effective_president_ladder(MagicMock()) == PRESIDENT_LADDER
+
+
+def test_a_ruling_consumes_any_pending_request_left_in_the_stream(tmp_path):
+    # native seat F4: an older pending request must not later resume over a newer ruling.
+    from phase_loop_runtime.panel_invoker import PresidentRuling
+
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    pending = stream / panel_invoker.PRESIDENT_PENDING_FILENAME
+    pending.write_text("{}", encoding="utf-8")
+    ruling = PresidentRuling(
+        model="grok", text="FINDING F001: DEFERRED — ok\nFORCING DECISION: LAND",
+        substantive_rounds=1, format_reasks=0,
+    )
+    panel_invoker._persist_president_ruling(stream, DEFAULT_BOARD, ruling, ("F001: [x] y",))
+    assert (stream / "president.ruling.json").is_file() and not pending.exists()
+
+
+@pytest.mark.parametrize("kind", ["directory", "binary"])
+def test_an_unreadable_config_is_a_typed_error(tmp_path, kind):
+    repo = _repo(tmp_path, None)
+    target = repo / ".agent-harness" / "advisor-boards.toml"
+    if kind == "directory":
+        target.mkdir()
+    else:
+        target.write_bytes(b"\xff\xfe[president]\n")
+    with pytest.raises(BoardConfigError):
+        load_president_ladder(repo, path=tmp_path / "absent.toml")

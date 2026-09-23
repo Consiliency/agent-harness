@@ -8535,8 +8535,17 @@ def _run_legible_panel(
     president_invoke = None
     if _govlean_authority_switched(repo):
         landing_policy = review_policy_for_tier(ReviewLandingTier.PRODUCTION_CODE)
+        from .advisor_board.config import BoardConfigError, load_president_ladder
+        from .panel_invoker import PRESIDENT_LADDER_INVALID, PresidentPolicyError
+
+        # The configured president order (built-in < user < repo), refused -- never
+        # silently replaced by the built-in order -- when malformed.
+        try:
+            president_ladder = load_president_ladder(repo)
+        except BoardConfigError as exc:
+            raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, str(exc)) from exc
         president_invoke = build_president_invoke(
-            CODE_REVIEW_BOARD, repo_dir=repo, stream_dir=stream_dir
+            CODE_REVIEW_BOARD, repo_dir=repo, stream_dir=stream_dir, ladder=president_ladder,
         )
         invoke_kwargs["landing_tier"] = ReviewLandingTier.PRODUCTION_CODE
         invoke_kwargs["president_invoke"] = president_invoke
