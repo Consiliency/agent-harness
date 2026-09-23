@@ -8232,7 +8232,7 @@ def invoke_board(
             president_invoke = build_president_invoke(
                 board, repo_dir=repo_dir, stream_dir=stream_dir, base_env=base_env,
                 seat_aliases=review_seat_aliases, monitoring_policy=monitoring_policy,
-                ladder=configured_ladder,
+                ladder=configured_ladder, cancel_event=operation_cancel,
             )
         # ah#736: a president-requiring tier without a president seam is a policy
         # misconfiguration, refused BEFORE any seat runs (same class as the tier

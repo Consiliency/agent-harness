@@ -537,6 +537,19 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
 - **Ladder** (EC-PRESROUTE-3). `PRESIDENT_LADDER` is the seat-alias tuple; each alias
   resolves to its vendor's registry PIN through `DEFAULT_REVIEW_SEAT_ALIASES` (where the
   `model-id-source:` markers live). No model id is spelled in the ladder.
+- **Brokered, monitored launch** (agent-harness#1001). Every non-native rung launch runs
+  under the isolation a review seat gets: `isolated_network` egress (no retained
+  capabilities), a single-use broker capability minted by
+  `backing.derive_president_leg_authorization` from the operation's lease
+  (`prepare_president_isolation_authorization(..., monitoring_policy=)` registers it;
+  `activate_/close_president_isolation_authorization` bracket each launch) carrying the
+  PRESIDENT operation identity, and the `ParentUnixBroker` over read-only staged bytes (the
+  brief and a fixed president instruction marker). Under `heartbeat_only` the transport runs
+  with a `_ReviewMonitor` -- no model-thinking deadline, no silence kill; cancellation (the
+  board's `cancel_event`) and owner loss are the only stops -- and the gemini rung uses the
+  owned heartbeat agy profile. A missing canonical repository or unavailable egress is a typed
+  refusal before any provider starts. A patched transport or launch site is the in-process
+  control seam and is not brokered (never evidence), as for review seats.
 - **Configured ladder** (agent-harness#998 follow-up). `PRESIDENT_LADDER` is the BUILT-IN
   order; the effective order is `advisor_board.config.load_president_ladder(repo_dir, *,
   env, path)`: built-in < the user file's `[president] ladder`
