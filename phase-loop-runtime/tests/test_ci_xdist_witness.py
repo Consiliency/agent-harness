@@ -133,5 +133,10 @@ def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
     # Class IDENTITY, not the name: a subclass called LoadFileScheduling is a different
     # scheduler (agent-harness#996).
     assert seen.get("sched_is_loadfile") is True, f"the lane's own argv schedules via {seen.get('sched')!r}: {seen}"
+    # And the qualified NAME of xdist's own class: a conftest that rebinds the module
+    # attributes to a subclass passes the identity check but not this one.
+    assert seen.get("sched") == "xdist.scheduler.loadfile.LoadFileScheduling", (
+        f"the lane's own argv schedules via {seen.get('sched')!r}: {seen}"
+    )
     assert seen.get("effective_restart") == 0, f"xdist's controller restart cap is {seen.get('effective_restart')!r}: {seen}"
     assert str(seen["maxworkerrestart"]) == "0", f"the lane's own argv has restart cap {seen['maxworkerrestart']!r}: {seen}"
