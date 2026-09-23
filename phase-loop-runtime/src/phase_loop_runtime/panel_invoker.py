@@ -683,6 +683,7 @@ REQUIRES_PRESIDENT_OVERRIDE_REFUSED = "requires_president_override_refused"
 PRESIDENT_NATIVE_FILL_DEFERRED_STATUS = "native_fill_deferred"
 PRESIDENT_NATIVE_FILL_DEFERRED = "president_native_fill_deferred"
 PRESIDENT_PENDING_FILENAME = "president.pending.json"
+PRESIDENT_NATIVE_FILL_STREAM_REQUIRED = "president_native_fill_stream_required"
 
 
 def enforce_requires_president(
@@ -763,27 +764,37 @@ def _resolve_native_president(
     from .president_operation import PRESIDENT_FILL_DIGEST_MISMATCH
 
     request = dict(deferred.request)
-    pending_path = None if stream_dir is None else Path(stream_dir) / PRESIDENT_PENDING_FILENAME
+    if stream_dir is None:
+        # A native fill is a DURABLE defer -> resume: without a stream there is nowhere
+        # to persist the pending request, nothing a resume can be checked against, and
+        # nowhere to write the ruling record -- refuse both halves.
+        raise PresidentPolicyError(
+            PRESIDENT_NATIVE_FILL_STREAM_REQUIRED,
+            "a natively filled president rung requires stream_dir for its pending request and ruling record",
+        )
+    pending_path = Path(stream_dir) / PRESIDENT_PENDING_FILENAME
     if fill is None:
         # The native session needs the exact prompt it is to rule on, not only digests.
         pending = {**request, "prompt": _president_prompt(findings)}
-        if pending_path is not None:
-            _write_json_atomically(pending_path, {"schema": "president.pending.v1", **pending})
+        _write_json_atomically(pending_path, {"schema": "president.pending.v1", **pending})
         result = PanelResult(legs=tuple(legs), president_findings=tuple(findings))
         object.__setattr__(result, "_needs_native_president", pending)
         return result
-    expected = [request]
-    if pending_path is not None:
-        try:
-            persisted = json.loads(pending_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PresidentPolicyError(
-                PRESIDENT_FILL_DIGEST_MISMATCH,
-                "no pending native president request to resume against",
-            ) from exc
-        expected.append(
-            {key: str(persisted.get(key, "")) for key in ("rung", "brief_digest", "findings_digest")}
+    try:
+        persisted = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PresidentPolicyError(
+            PRESIDENT_FILL_DIGEST_MISMATCH,
+            "no pending native president request to resume against",
+        ) from exc
+    if not isinstance(persisted, dict):
+        raise PresidentPolicyError(
+            PRESIDENT_FILL_DIGEST_MISMATCH, "the pending native president request is malformed"
         )
+    expected = [
+        request,
+        {key: str(persisted.get(key, "")) for key in ("rung", "brief_digest", "findings_digest")},
+    ]
     for want in expected:
         for key in ("rung", "brief_digest", "findings_digest"):
             if str(fill.get(key, "")) != want[key]:

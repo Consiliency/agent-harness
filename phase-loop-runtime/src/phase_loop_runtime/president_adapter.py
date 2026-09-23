@@ -183,16 +183,19 @@ class PresidentInvoke:
             authorization, self.board, prompt, canonical_repo_authority=self.repo_dir
         )
         routes = dict(authorization.routes)
+        # Every launch -- the Claude self-PTY session included -- uses the route the
+        # revalidated authorization carries, never a fallback to the seat's own model: a
+        # seat the authorization did not route is refused without launching.
+        if harness not in routes:
+            raise ValueError(f"no authorized president route for {harness!r}")
         with tempfile.TemporaryDirectory(prefix="phase-loop-president-") as scratch:
             president_dir = Path(scratch) / "president"
             out_dir = Path(scratch) / "out"
             president_dir.mkdir()
             out_dir.mkdir()
             if harness == "claude":
-                rc, text, log = self._launch_claude(seat, routes.get("claude"), prompt, out_dir)
+                rc, text, log = self._launch_claude(routes["claude"], prompt, out_dir)
             else:
-                if harness not in routes:
-                    raise ValueError(f"no authorized president route for {harness!r}")
                 rc, text, log = panel_invoker._exec_leg(
                     harness,
                     president_dir,
@@ -212,9 +215,7 @@ class PresidentInvoke:
         self._record(rung, seat, "ok", None, None, len(text))
         return {"status": "ok", "text": text}
 
-    def _launch_claude(
-        self, seat: Seat, route_model: str | None, prompt: str, out_dir: Path
-    ) -> tuple[int, str, str]:
+    def _launch_claude(self, route_model: str, prompt: str, out_dir: Path) -> tuple[int, str, str]:
         # The brokered self-PTY session: tools off, no directory grant, answer read from
         # the session transcript. Called directly (not through the review wrapper) so a
         # host without a supported, logged-in Claude still fails closed on the session
@@ -223,7 +224,7 @@ class PresidentInvoke:
         cwd = out_dir.resolve()
         transcript = panel_invoker._claude_project_dir_for_cwd(str(cwd)) / f"{session_id}.jsonl"
         command = panel_invoker._broker_claude_tui_command(
-            model=route_model or seat.model, effort=None, session_id=session_id
+            model=route_model, effort=None, session_id=session_id
         )
         timeout_s = panel_invoker._leg_timeout_for(out_dir)
         backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
