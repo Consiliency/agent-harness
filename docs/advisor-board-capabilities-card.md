@@ -385,14 +385,18 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | Legacy invoke_panel | Existing behavior | Unsupported |
 | CLI default four-vendor board | Existing behavior | Preserves four vendors; refuses before auth if Gemini capability is missing or changed |
 
-The Gemini extension (agent-harness#905) admits only entry image SHA256
-`9991515b6d5307bcf701069622b0537b6b206e605f3c891c0cf3a3d208dea8b0`
+The Gemini extension (agent-harness#905) admits only the qualified `agy` 1.2.9
+Linux x64 entry image SHA256
+`1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711`
 and requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, acknowledged stdin input, deny-all settings and no
 staged-tree attachment. The executable/settings are immutable mounts in a private
 namespace-owned HOME. Credential targets are referenced, never copied or restored;
 legitimate refresh writes survive. Required bwrap flags are checked at admission.
-An image update needs qualification before the supported digest changes.
+An image update needs qualification before the supported digest changes. The
+runtime does not select an older installed image when the latest available
+release is unqualified; it refuses the changed executable. A durable image
+catalog and fleet updater coordination are tracked by agent-harness#1008.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation
