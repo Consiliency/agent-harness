@@ -3896,28 +3896,55 @@ def _assistant_text_from_jsonl(path: Path) -> str:
 
 
 def _final_assistant_text_from_jsonl(path: Path) -> str:
-    """Return only the final structured assistant message, never TUI chrome/input."""
-    final = ""
+    """Collect the final assistant message's blocks, never earlier turns or tools."""
+    message_id: str | None = None
+    blocks: dict[str | int, str] = {}
+    incomplete = False
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
     for line in lines:
+        if not line.strip():
+            continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            continue
+            # A writer may still be appending the next turn. Do not approve the
+            # previous verdict while the latest record cannot be interpreted.
+            return ""
         message = payload.get("message") if isinstance(payload, dict) else None
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        if not isinstance(message, dict):
             continue
+        if message.get("role") == "user":
+            message_id, blocks, incomplete = None, {}, False
+            continue
+        if message.get("role") != "assistant":
+            continue
+        current_id = message.get("id")
+        if not isinstance(current_id, str) or not current_id:
+            current_id = None
+        # Claude can journal several content blocks under one API message id.
+        # Identity-less legacy records remain independent, not guessed joins.
+        if current_id is None or current_id != message_id:
+            message_id, blocks, incomplete = current_id, {}, False
+        content = message.get("content")
+        if not isinstance(content, list):
+            return ""
+        incomplete |= message.get("stop_reason") not in (None, "end_turn", "stop_sequence")
+        incomplete |= any(
+            isinstance(item, dict) and item.get("type") == "tool_use"
+            for item in content
+        )
         text = "\n".join(
-            item["text"] for item in (message.get("content") or [])
+            item["text"] for item in content
             if isinstance(item, dict) and item.get("type") == "text"
             and isinstance(item.get("text"), str)
         ).strip()
-        if text:
-            final = text
-    return final
+        record_id = payload.get("uuid")
+        key = record_id if isinstance(record_id, str) and record_id else len(blocks)
+        blocks[key] = text
+    return "" if incomplete else "\n".join(text for text in blocks.values() if text).strip()
 
 
 def _cleanup_broker_claude_transcript(
