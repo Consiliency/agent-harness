@@ -241,7 +241,15 @@ CLAUDE_DIRECT_REVIEW_REQUEST = (
 ARGV_ABSOLUTE_PATH = re.compile(r"^/[^\0]+$")
 ARGV_CODEX_EFFORT = re.compile(r"^model_reasoning_effort=(low|medium|high|xhigh)$")
 ARGV_CLAUDE_EFFORT = re.compile(r"^(low|medium|high|max)$")
-ARGV_GROK_EFFORT = re.compile(r"^(low|medium|high)$")
+# grok's accepted `--reasoning-effort` set is a PROBE RESULT WITH A DATE, not a
+# property: ah#222 measured `high|medium|low`; the 2026-09-22 re-probe (ah#973)
+# measures `xhigh|high|medium|low` on both grok-4.6 and grok-4.7. This grammar is
+# fail-closed on the live HARDEN broker path, so leaving `xhigh` out REJECTED the
+# token the default `max` grok seat actually emits. Deliberately NOT derived from
+# `launcher._grok_cli_effort`: this verifier imports nothing from the runtime, and a
+# verifier that derives its expectation from the code under test verifies nothing.
+# It still refuses `max`, which must never reach the CLI (ah#222).
+ARGV_GROK_EFFORT = re.compile(r"^(low|medium|high|xhigh)$")
 ARGV_AGY_DEADLINE = re.compile(r"^[1-9][0-9]*s$")
 STDIN_PROMPT_MARKER = "<STDIN_SEALED_INLINE_PROMPT>"
 
@@ -2887,7 +2895,7 @@ SELF_TEST_ROUTES = {
     "claude": ("claude-fable-5-1", "claude-fable-5-1"),
     "codex": ("gpt-6-astra", "gpt-6-astra"),
     "gemini": ("gemini-3.8-flash-high", "gemini-3.8-flash-high"),
-    "grok": ("grok-4.6", "grok-4.6"),
+    "grok": ("grok-4.7", "grok-4.7"),
 }
 
 
@@ -3084,7 +3092,11 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "grok", "--disable-web-search", "--no-memory", "--no-subagents",
                 "--permission-mode", "plan", "--prompt-file", "<STDIN_SEALED_INLINE_PROMPT>",
                 "--output-format", "plain", "--cwd", "/tmp/owned-empty-scratch",
-                "-m", resolved, "--reasoning-effort", "high", "--tools", "",
+                # The real default grok seat is effort="max", which the clamp renders as
+                # `xhigh` (2026-09-22 probe). This producer previously hardcoded `high`
+                # while the grammar above accepted only `high` -- mutually consistent and
+                # both wrong, so the self-test passed while a real run would be rejected.
+                "-m", resolved, "--reasoning-effort", "xhigh", "--tools", "",
             ],
         }[harness]
         common: dict[str, Any] = {

@@ -102,7 +102,7 @@ equivalence is proven by a test (not asserted in prose).
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
   `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Fable, and
-  Grok 4.6. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
+  Grok 4.7. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
   ABDRESOLVE; this contract only *states* the invariant.
@@ -198,10 +198,10 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   byte-pinned to this Fable `invoke_panel` panel by the golden proof
   (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.6;
+  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.7;
   `code-review` preserves availability-aware backfill and distinct lenses.
 - **President availability ladder.** Review findings go first to Fable, then
-  Sol, Grok 4.6, and Gemini 3.8 Flash. Descent occurs only for a typed
+  Sol, Grok 4.7, and Gemini 3.8 Flash. Descent occurs only for a typed
   `president_unavailable` result, never because a president dissents. The ladder
   is EXECUTED (not merely declared) by every `requires_president` landing policy —
   see ABDPRES below.

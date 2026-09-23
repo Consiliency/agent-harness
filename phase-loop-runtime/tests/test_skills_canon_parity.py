@@ -139,8 +139,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                     "claude-fable-5-1",
                     "GPT-6 Astra",
                     "gpt-6-astra",
-                    "Grok 4.6",
-                    "grok-4.6",
+                    "Grok 4.7",
+                    "grok-4.7",
                     "Gemini 3.8 Flash",
                     "gemini-3.8-flash",
                 ):

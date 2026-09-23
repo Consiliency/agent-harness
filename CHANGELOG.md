@@ -26,6 +26,73 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   worker. That fix landed separately (agent-harness#953); this change depends on it.
 - The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
   unchanged and is invoked as its own shell command with no `-n auto`.
+### grok-4.7 is registered and becomes the grok default (agent-harness#971)
+
+- `grok-4.7` shipped 2026-09-21. The advisor-board model registry did not know it, so a
+  downstream fleet could not adopt it by **any** supported means: `load_boards()` is
+  fail-closed and rejected the whole config file, `compose_review_board()` exposes no
+  model override, and `GROK_DEFAULT_MODEL` is upstream. It is now a registered model in
+  `advisor_board.registries` and `panel_invoker`'s model->vendor map.
+- The three independent grok defaults move to it: `profiles.GROK_DEFAULT_MODEL` (executor
+  path SSOT), `panel_invoker.DEFAULT_LEG_MODELS["grok"]` (board seat path), and
+  `panel_invoker.PRESIDENT_LADDER`. `advisor_board.composition` and the golden fixtures in
+  `advisor_board.fixtures` follow. There are three of these, not one -- a "simple default
+  change" touches all of them or the paths silently disagree.
+- `grok-4.6` and `grok-4.5` remain REGISTERED and valid as explicit seats; only the
+  defaults moved. `CANONICAL_VALID_PAIRS` gains `grok-4.7` and keeps `grok-4.6`.
+- Launch-falsified per consumer (the ah#777 rule: a bumped id must be LAUNCHED by every
+  consumer, never assumed). The argv was taken from the production builders, not
+  hand-written, and executed: executor path at `high` (roadmap/plan/review) and `medium`
+  (execute/repair) via `build_grok_command`, and the panel seat at `xhigh` via
+  `DEFAULT_LEG_MODELS` + `render_seat_invocation`. All three returned rc=0 with the
+  expected output.
+- Skill prose regenerated through the canonical pipeline (`skills-src/` ->
+  `regenerate_skills_bundle.py` -> `phase-loop-skills/` -> `sync_skills_bundle.py` ->
+  `skills_bundle/`), so the committed bundle stays byte-identical to a fresh regenerate
+  and the CI parity gate holds. The docs capabilities card gains a `grok-4.7` row.
+- This is the concrete instance of agent-harness#648 (layered resolution + provider-catalog
+  refresh); it is a tactical unblock, not a substitute for it. Second such hand-bump in
+  three days -- `profiles.py` already flags this family VOLATILE ("xAI publishes NO dated
+  snapshot for these").
+
+### grok effort clamp follows the CLI ceiling, which MOVED to `xhigh` (agent-harness#973)
+
+- The grok CLI's accepted `--reasoning-effort` set is established by PROBE, and it grew:
+  ah#222 measured `high | medium | low`, so ah#224/ah#231 clamped both `max` and `xhigh`
+  down to `high`. A 2026-09-22 re-probe measures `xhigh | high | medium | low` on both
+  `grok-4.6` and `grok-4.7`, so the ceiling is CLI-level, not model-specific, and the
+  clamp had been pinning every grok run one tier BELOW what the CLI would accept.
+- Both clamp maps now read `{"minimal": "low", "max": "xhigh"}` and stay
+  verbatim-identical (the ah#231 parity requirement): `launcher._GROK_CLI_EFFORT_OVERRIDES`
+  and `advisor_board.harness_mapping._GROK_EFFORT_OVERRIDES`. `xhigh` is deliberately
+  ABSENT from both — it is now a valid CLI token and passes through unchanged; listing it
+  is what re-introduced the stale down-clamp. `capability_registry`'s grok `effort_map`
+  and user-facing `notes` follow.
+- User-visible effect: the default review board's grok seat has `effort="max"` and was
+  rendering `--reasoning-effort high` on every round, so it was under-driven. It now
+  renders `--reasoning-effort xhigh`. The golden fixture that pins this
+  (`advisor_board.fixtures.DEFAULT_SEAT_EFFORT_ARGS["grok"]`) is updated with it.
+- Other vendors' `"xhigh": "high"` entries (gemini, command, pi) are UNTOUCHED: each was
+  probed against its own CLI and this change carries no evidence about them.
+- The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
+  standing property of grok, which is what let the original clamp outlive its evidence.
+### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
+
+- Align the governed-pipeline issue-state and package-pin probes with its closed
+  issue and 0.7.14 pin, retaining opposite-state and single-field failure controls.
+- Refresh the related roadmap/probe seals and append current plan authority while
+  preserving historical grounding metadata and prior authority records.
+
+### Roadmap validation: reject silently missing phases (agent-harness#729)
+
+- `validate-roadmap` now reports malformed phase headings and phase bodies without
+  a distinct valid heading, instead of silently accepting an incomplete roadmap.
+- Top-level fenced Markdown examples (up to three leading spaces) are excluded
+  from parsed fields and lint checks; direct parser consumers retain raw phase
+  bodies. A repeated `**Key files**` block requires a distinct valid phase heading.
+- Heading recognition and fence masking use consistent LF-delimited source lines
+  with CRLF support. Split headings report diagnostics instead of crashing the
+  standalone validator; other line separators cannot silently hide a phase.
 
 ### Qualified Gemini heartbeat reviews (agent-harness#905)
 

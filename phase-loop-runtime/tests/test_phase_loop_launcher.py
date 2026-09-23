@@ -1535,7 +1535,11 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         roadmap = Path("/repo/specs/phase-plans-v1.md")
         for executor, model, effective, argv_token in (
             ("codex", "gpt-5.6-sol", "xhigh", 'model_reasoning_effort="xhigh"'),
-            ("grok", "grok-4.5", "high", "high"),
+            # grok's `max` now clamps to `xhigh` (2026-09-22 probe, ah#973), exactly as
+            # the codex row above already does. This row is skip-gated here by
+            # `dotfiles_integration` and so stayed green while being wrong; it would
+            # fail where that marker IS selected. Found by the grok seat, round 3.
+            ("grok", "grok-4.5", "xhigh", "xhigh"),
         ):
             selection = ModelSelection(
                 profile="plan",

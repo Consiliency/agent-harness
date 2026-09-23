@@ -178,6 +178,60 @@ def _load_harden_evidence_verifier() -> Any:
     return module
 
 
+def test_argv_effort_grammars_accept_what_each_vendor_actually_emits() -> None:
+    """The verifier's effort allow-lists must not lag the clamps that feed them.
+
+    The verifier deliberately imports NOTHING from ``phase_loop_runtime``: it is a
+    fail-closed allow-list applied to the REAL recorded broker argv, and one that
+    derived its expectation from the code under test would accept whatever the clamp
+    emits, including a future wrong token. That independence is the point of it.
+
+    The cost of that independence is a SYNC gap -- the grammar can silently fall
+    behind the clamp, which is exactly what agent-harness#973 was: the grok ceiling
+    moved to ``xhigh`` and the grammar still capped at ``high``, so a real max-grok
+    HARDEN review was rejected by its own verifier while every unit test stayed green
+    (the producer fixture and the grammar both hardcoded ``high`` and agreed with
+    each other).
+
+    This test is where the two are allowed to meet. It lives in the TEST suite, not
+    in the verifier, so the verifier stays standalone while drift still reds at unit
+    time rather than on a live review. Suggested by the native review seat, ah#973 r3.
+    """
+    verifier = _load_harden_evidence_verifier()
+    from phase_loop_runtime.advisor_board import CODE_REVIEW_BOARD
+    from phase_loop_runtime.advisor_board.harness_mapping import render_seat_invocation
+
+    grammars = {
+        "codex": verifier.ARGV_CODEX_EFFORT,
+        "claude": verifier.ARGV_CLAUDE_EFFORT,
+        "grok": verifier.ARGV_GROK_EFFORT,
+    }
+    checked = 0
+    for seat in CODE_REVIEW_BOARD.seats:
+        grammar = grammars.get(seat.harness)
+        if grammar is None:
+            continue  # gemini embeds effort in the model name; no effort argv slot
+        args = render_seat_invocation(seat.harness, seat.model, seat.effort).effort_args
+        assert args, f"{seat.harness}: expected an effort argv pair"
+        # Match the LAST arg verbatim: codex's grammar spans the whole
+        # ``model_reasoning_effort=xhigh`` string, grok's and claude's just the token.
+        # Splitting on "=" first made codex fail spuriously -- this guard caught that
+        # while being written, which is the behaviour it exists to provide.
+        token = args[-1]
+        assert grammar.match(token), (
+            f"{seat.harness}: the verifier grammar {grammar.pattern!r} REJECTS the token "
+            f"{token!r} that the default board seat actually emits -- the grammar has "
+            f"fallen behind the clamp, and a real HARDEN review would fail its own "
+            f"verifier (this is agent-harness#973)"
+        )
+        checked += 1
+    assert checked == 3, f"expected 3 effort-carrying vendors, checked {checked}"
+
+    # The ah#222 property, asserted directly rather than assumed: the canonical
+    # ``max`` literal must never be accepted as a grok CLI token.
+    assert not verifier.ARGV_GROK_EFFORT.match("max")
+
+
 def _verifier_fixture(verifier: Any, root: Path) -> dict[str, Any]:
     """Use the verifier's retained-artifact fixture as its public self-test does."""
     root.mkdir()

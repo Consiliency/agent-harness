@@ -454,7 +454,7 @@ def _operational_fixture(
         "claude": "claude-fable-5-1",
         "codex": "gpt-6-astra",
         "gemini": "gemini-3.8-flash",
-        "grok": "grok-4.6",
+        "grok": "grok-4.7",
     }
     leg_records = []
     leg_paths: list[Path] = []
