@@ -21,6 +21,7 @@ and the worker-killing lease guard fixed in Consiliency/agent-harness#950.
 from __future__ import annotations
 
 import ast
+import re
 import shlex
 from pathlib import Path
 
@@ -55,6 +56,10 @@ def _dagger() -> str:
 
 def _is_comment(line: str) -> bool:
     return line.lstrip().startswith("#")
+
+
+def _commands_only(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not _is_comment(line))
 
 
 def _logical_commands(text: str) -> list[tuple[int, str]]:
@@ -93,7 +98,8 @@ def suite_command(text: str) -> tuple[int, str]:
     """
     matches = [
         (start, cmd) for start, cmd in _logical_commands(text)
-        if "PYTHONPATH=src:tests python -m pytest" in cmd and "--collect-only" not in cmd
+        if "PYTHONPATH=src:tests" in cmd and "python -m pytest" in cmd
+        and "--collect-only" not in cmd
     ]
     assert len(matches) == 1, (
         f"expected exactly one suite invocation, found {len(matches)}: "
@@ -108,10 +114,88 @@ def _tokens(command: str) -> list[str]:
     return shlex.split(command, comments=False, posix=True)
 
 
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# The options that decide parallelism, and the value each must EFFECTIVELY have.
+# pytest/argparse is last-wins, so the LAST occurrence is the one that counts.
+_EFFECTIVE = {"-n": "auto", "--dist": "loadfile", "--max-worker-restart": "0"}
+_ALIASES = {"--numprocesses": "-n"}
+
+
+def pytest_argv(command: str) -> list[str] | None:
+    """The argv handed to pytest, or None if this command does not RUN pytest.
+
+    Leading `VAR=value` assignments are skipped; the executable must then be
+    exactly `python -m pytest`. `echo PYTHONPATH=... python -m pytest ...` prints
+    the invocation instead of running it, and is therefore not a suite run.
+    """
+    toks = _tokens(command)
+    i = 0
+    while i < len(toks) and _ENV_ASSIGNMENT.match(toks[i]):
+        i += 1
+    if toks[i:i + 3] != ["python", "-m", "pytest"]:
+        return None
+    return toks[i + 3:]
+
+
+def effective_parallelism(argv: list[str]) -> dict[str, str | None]:
+    """Last-wins value of each parallelism option, plus whether xdist is disabled."""
+    seen: dict[str, str | None] = {k: None for k in _EFFECTIVE}
+    disabled = False
+    k = 0
+    while k < len(argv):
+        tok = argv[k]
+        name, _, inline = tok.partition("=")
+        name = _ALIASES.get(name, name)
+        if name in _EFFECTIVE:
+            if inline:
+                seen[name] = inline
+            elif k + 1 < len(argv):
+                seen[name] = argv[k + 1]
+                k += 1
+        elif tok == "-p" and k + 1 < len(argv) and argv[k + 1].startswith("no:xdist"):
+            disabled = True
+            k += 1
+        elif tok.startswith("-pno:xdist") or tok.startswith("-p=no:xdist"):
+            disabled = True
+        k += 1
+    seen["xdist_disabled"] = "yes" if disabled else None
+    return seen
+
+
 def carries_suite_args(command: str) -> bool:
-    """The parallel args appear as one contiguous, ordered token run."""
-    toks, want = _tokens(command), list(REQUIRED_SUITE_ARGS)
-    return any(toks[k:k + len(want)] == want for k in range(len(toks) - len(want) + 1))
+    """The command RUNS pytest and its EFFECTIVE parallelism is the required one."""
+    argv = pytest_argv(command)
+    if argv is None:
+        return False
+    eff = effective_parallelism(argv)
+    return eff.pop("xdist_disabled") is None and eff == _EFFECTIVE
+
+
+# `"${suite_args[@]}"` is expanded into the suite command, so anything appended
+# to it is part of the effective argv. Only these may be.
+_SUITE_ARGS_ALLOWED = ("--junitxml=", "--deselect=")
+
+
+def workflow_suite_args_additions(text: str) -> list[str]:
+    return [m.group(1) for m in re.finditer(r'suite_args\+=\("([^"]*)"\)', _commands_only(text))]
+
+
+def dagger_suite_args_additions(source: str) -> list[str]:
+    """Leading literal text of each `suite_args.append(...)` argument (via ast)."""
+    out: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "suite_args" and node.args):
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant):
+                out.append(str(arg.value))
+            elif isinstance(arg, ast.JoinedStr) and arg.values and isinstance(arg.values[0], ast.Constant):
+                out.append(str(arg.values[0].value))
+            else:
+                out.append("<non-literal>")
+    return out
 
 
 def explains_restart_cap(text: str, command_start: int) -> bool:
@@ -251,6 +335,40 @@ def test_an_explanation_elsewhere_in_the_file_is_rejected() -> None:
     mutated = "\n".join(mutated_lines)
     new_start, _ = suite_command(mutated)
     assert not explains_restart_cap(mutated, new_start)
+
+
+@pytest.mark.parametrize("label,additions", (
+    ("test.yml", lambda: workflow_suite_args_additions(_workflow())),
+    ("ci/dagger main.py", lambda: dagger_suite_args_additions(_dagger())),
+))
+def test_nothing_but_junit_and_deselect_is_smuggled_through_suite_args(label, additions) -> None:
+    found = additions()
+    assert found, f"{label}: no suite_args additions found -- the scan is not seeing the script"
+    bad = [a for a in found if not a.startswith(_SUITE_ARGS_ALLOWED)]
+    assert not bad, f"{label}: suite_args carries {bad}, which reaches the suite argv"
+
+
+def test_a_later_overriding_worker_count_is_rejected() -> None:
+    """codex r2: `-n 0` AFTER the required flags wins (last-wins) and disables xdist."""
+    _, command = suite_command(_workflow())
+    assert carries_suite_args(command)
+    assert not carries_suite_args(command + " -n 0")
+    assert not carries_suite_args(command + " --numprocesses=0")
+    assert not carries_suite_args(command + " --dist load")
+    assert not carries_suite_args(command + " -p no:xdist")
+
+
+def test_a_command_that_does_not_run_pytest_is_rejected() -> None:
+    """codex r2: `echo PYTHONPATH=... python -m pytest ...` prints, it does not run."""
+    _, command = suite_command(_workflow())
+    assert not carries_suite_args("echo " + command)
+    assert pytest_argv("echo " + command) is None
+
+
+def test_an_override_smuggled_through_suite_args_is_rejected() -> None:
+    mutated = _workflow().replace('suite_args=()', 'suite_args=()\n          suite_args+=("-n")', 1)
+    bad = [a for a in workflow_suite_args_additions(mutated) if not a.startswith(_SUITE_ARGS_ALLOWED)]
+    assert bad == ["-n"]
 
 
 def test_parallelism_is_not_moved_into_addopts() -> None:
