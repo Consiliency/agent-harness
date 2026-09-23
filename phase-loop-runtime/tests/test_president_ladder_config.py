@@ -549,3 +549,37 @@ def test_an_unreadable_config_is_a_typed_error(tmp_path, kind):
         target.write_bytes(b"\xff\xfe[president]\n")
     with pytest.raises(BoardConfigError):
         load_president_ladder(repo, path=tmp_path / "absent.toml")
+
+
+def test_a_resume_under_a_different_alias_resolution_is_refused(tmp_path):
+    # agent-harness#1004 r2 codex B1: swapping the alias map between deferral and resume
+    # re-points the rung at another seat; the resolution is bound, so it is refused.
+    from dataclasses import replace
+
+    claude = next(s for s in DEFAULT_SEATS if s.harness == "claude")
+    board = Board(
+        name="alias-switch", purpose="premerge-review",
+        seats=_fable_board().seats + (replace(claude, model="claude-sonnet-5"),),
+    )
+    repo = _repo(tmp_path, '[president]\nladder = ["fable"]\n')
+    stream = tmp_path / "stream"
+    policy = panel_invoker.ReviewLandingPolicy(
+        required_seats=("fable", "gemini", "grok", "sol"), requires_president=True
+    )
+
+    def dispatch(aliases, **extra):
+        return invoke_sanctioned_board_control(
+            board, "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=policy,
+            base_env={"CLAUDECODE": "1"}, repo_dir=str(repo), stream_dir=stream,
+            review_seat_aliases=aliases, **extra,
+        )
+
+    first = {claude.model: "fable", "claude-sonnet-5": "sol"}
+    deferred = dispatch(first)
+    fill = _fill_for(deferred)
+    with pytest.raises(PresidentPolicyError) as excinfo:
+        dispatch({claude.model: "sol", "claude-sonnet-5": "fable"}, native_president_fill=fill)
+    assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
+    assert not (stream / "president.ruling.json").exists()
+    assert dispatch(first, native_president_fill=fill).president is not None

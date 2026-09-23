@@ -816,6 +816,7 @@ def _president_run_binding(
     landing_tier: "ReviewLandingTier | str | None",
     brief_sha256: str | None = None,
     ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """What a native president deferral is bound to: the exact run it belongs to.
 
@@ -825,9 +826,12 @@ def _president_run_binding(
     so a pending request left in a reused stream directory can never answer for a
     different artifact, brief, board or rung order.
     """
+    from .president_adapter import seat_for_rung
+
     tier = None
     if landing_tier is not None:
         tier = _coerce_review_landing_tier(landing_tier).value
+    effective_ladder = tuple(PRESIDENT_LADDER if ladder is None else ladder)
     return {
         "artifact_sha256": sha256(artifact.encode("utf-8")).hexdigest(),
         "seat_keys": [seat.seat_key for seat in board.seats],
@@ -838,7 +842,16 @@ def _president_run_binding(
         # Captured ONCE, before any seat ran (``_president_brief_digest``): a brief file
         # edited after the seats read it cannot re-bind their verdicts.
         "brief_sha256": brief_sha256,
-        "ladder": list(PRESIDENT_LADDER if ladder is None else ladder),
+        "ladder": list(effective_ladder),
+        # How each rung RESOLVED on this board under this run's ``review_seat_aliases``:
+        # an alias map changed between deferral and resume re-points a rung at another
+        # seat (another model), so the resolution itself is bound.
+        "ladder_seats": [
+            None if seat is None else seat.seat_key
+            for seat in (
+                seat_for_rung(board, rung, seat_aliases=seat_aliases) for rung in effective_ladder
+            )
+        ],
     }
 
 
@@ -846,12 +859,13 @@ def _president_brief_digest(mode: str, brief_ref: str | None) -> str:
     """The digest of the review brief the seats are about to answer.
 
     An unreadable brief yields a marker, never an exception: the run fails on the brief
-    where it always did, and a marker can never equal a real digest at resume.
+    where it always did. The marker is unique per call, so it can equal neither a real
+    digest nor another run's marker at resume.
     """
     try:
         return sha256(_resolve_brief(mode, brief_ref).encode("utf-8")).hexdigest()
     except (OSError, UnicodeError, ValueError) as exc:
-        return f"unresolvable:{type(exc).__name__}"
+        return f"unresolvable:{type(exc).__name__}:{uuid.uuid4().hex}"
 
 
 def _resolve_native_president(
@@ -8243,6 +8257,7 @@ def invoke_board(
                     binding=_president_run_binding(
                         board, authorization_artifact, mode=mode, policy=policy,
                         landing_tier=landing_tier, brief_sha256=president_brief_sha256,
+                        seat_aliases=review_seat_aliases,
                         ladder=effective_president_ladder(president_invoke),
                     ),
                 )
@@ -8462,6 +8477,7 @@ def invoke_board(
                         binding=_president_run_binding(
                             board, authorization_artifact, mode=mode, policy=policy,
                             landing_tier=landing_tier, brief_sha256=president_brief_sha256,
+                            seat_aliases=review_seat_aliases,
                             ladder=effective_president_ladder(president_invoke),
                         ),
                         ladder=effective_president_ladder(president_invoke),
@@ -9096,6 +9112,7 @@ def invoke_board(
                     binding=_president_run_binding(
                         board, authorization_artifact, mode=mode, policy=policy,
                         landing_tier=landing_tier, brief_sha256=president_brief_sha256,
+                        seat_aliases=review_seat_aliases,
                         ladder=effective_president_ladder(president_invoke),
                     ),
                 )

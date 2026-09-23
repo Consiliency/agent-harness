@@ -562,7 +562,8 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   revalidation gate and before any seat launches -- no seat is re-run, so seats that would
   word things differently cannot strand the route. The pending request is BOUND to its run
   (resolved-artifact digest, the review-brief digest captured ONCE before any seat runs,
-  the board's ordered seat keys, mode, landing policy, president ladder) and the resume
+  the board's ordered seat keys, mode, landing policy, president ladder and the seat each
+  rung resolves to under the run's `review_seat_aliases`) and the resume
   refuses any difference. A new deferral removes any `president.ruling.json` an earlier
   run left in the stream (after its pending request is written); every persisted ruling
   removes any pending request (so an older request cannot later resume over it). The
