@@ -1292,8 +1292,38 @@ CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
 )
 
 
+# API-key variables of a SUBSCRIPTION-ONLY harness (agent-harness#864). They are removed
+# from every subscription child environment but are deliberately NOT in
+# ``VENDOR_API_KEY_VARS``: that map is also the api-key INJECTION map, and grok has no
+# api-key lane (``registries``), so no opt-in may ever inject one. Names from the grok
+# CLI's own documentation: ``XAI_API_KEY`` (Bearer API key) and ``GROK_CODE_XAI_API_KEY``
+# (its backward-compatible alias).
+SUBSCRIPTION_SCRUB_ONLY_VARS: tuple[str, ...] = ("XAI_API_KEY", "GROK_CODE_XAI_API_KEY")
+
+# Endpoint selectors that redirect a grok child's inference traffic away from the
+# subscription service -- the grok counterpart of ``ANTHROPIC_BASE_URL`` in
+# ``CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS``. Documented by the grok CLI (1.0.41):
+# ``GROK_CLI_CHAT_PROXY_BASE_URL`` (override the cli-chat-proxy URL),
+# ``GROK_XAI_API_BASE_URL`` (public xAI API base) and ``GROK_MODELS_BASE_URL`` (custom
+# inference base URL). ``XAI_API_BASE_URL`` is NOT shown to be read by the CLI; it is
+# removed defensively (an xAI SDK-style endpoint name; removing it is harmless).
+# Not exhaustive: other grok configuration (e.g. its config-file endpoints) is out of
+# an environment scrub's reach.
+GROK_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
+    "GROK_CLI_CHAT_PROXY_BASE_URL",
+    "GROK_XAI_API_BASE_URL",
+    "GROK_MODELS_BASE_URL",
+    "XAI_API_BASE_URL",
+)
+
+
 def all_vendor_key_vars() -> tuple[str, ...]:
-    """Every vendor API-key var (scrub set for a subscription seat)."""
+    """Every INJECTABLE vendor API-key var (``VENDOR_API_KEY_VARS``).
+
+    A subset of what a subscription seat loses: ``scrub_subscription_env`` also removes
+    ``SUBSCRIPTION_SCRUB_ONLY_VARS`` and the per-harness blocked selectors. Filter with
+    ``scrub_subscription_env``, never with this alone.
+    """
     seen: list[str] = []
     for vars_ in VENDOR_API_KEY_VARS.values():
         for var in vars_:
@@ -1305,12 +1335,19 @@ def all_vendor_key_vars() -> tuple[str, ...]:
 def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
     """Return a subscription-only child environment.
 
-    All vendor API keys are removed. Claude-specific credential helpers,
+    All vendor API keys are removed -- including the api-key variables of the
+    subscription-only grok harness (``SUBSCRIPTION_SCRUB_ONLY_VARS``) and grok's
+    endpoint redirects (``GROK_SUBSCRIPTION_BLOCKED_ENV_VARS``). Claude-specific credential helpers,
     custom request headers, alternate endpoints, and cloud-provider selectors
     are removed as well so a Claude seat cannot silently escape the first-party
     subscription lane.
     """
-    blocked = set(all_vendor_key_vars()) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    blocked = (
+        set(all_vendor_key_vars())
+        | set(SUBSCRIPTION_SCRUB_ONLY_VARS)
+        | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+        | set(GROK_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    )
     return {key: value for key, value in base_env.items() if key not in blocked}
 
 
@@ -1530,6 +1567,8 @@ __all__ = [
     "PresidentIsolationAuthorization",
     "prepare_president_isolation_authorization",
     "revalidate_president_isolation_authorization",
+    "GROK_SUBSCRIPTION_BLOCKED_ENV_VARS",
+    "SUBSCRIPTION_SCRUB_ONLY_VARS",
     "VENDOR_API_KEY_VARS",
     "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",
