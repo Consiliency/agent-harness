@@ -49,7 +49,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from . import panel_invoker
 from .advisor_board import backing
@@ -130,6 +130,9 @@ class PresidentInvoke:
     base_env: Mapping[str, str] | None = None
     seat_aliases: Mapping[str, str] | None = None
     monitoring_policy: str = "bounded"
+    # The configured rung order (``load_president_ladder``); ``None`` walks the
+    # built-in ``PRESIDENT_LADDER``.
+    ladder: tuple[str, ...] | None = None
     attempts: list[PresidentAttempt] = field(default_factory=list)
 
     def _record(
@@ -324,6 +327,13 @@ def _president_agy_environment(env: Mapping[str, str]):
             profile.__exit__(None, None, None)
         return
     with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-") as empty_home:
+        # Same fixed deny-all action profile the broker profile carries, so an agy that
+        # runs at all under the credential-less HOME still cannot act.
+        config_dir = Path(empty_home) / ".gemini" / "antigravity-cli"
+        config_dir.mkdir(parents=True, mode=0o700)
+        settings_path = config_dir / "settings.json"
+        settings_path.write_bytes(panel_invoker._broker_agy_settings_bytes())
+        settings_path.chmod(0o400)
         bare = dict(env)
         bare["HOME"] = empty_home
         bare["XDG_CONFIG_HOME"] = str(Path(empty_home) / ".config")
@@ -338,7 +348,10 @@ def build_president_invoke(
     base_env: Mapping[str, str] | None = None,
     seat_aliases: Mapping[str, str] | None = None,
     monitoring_policy: str = "bounded",
+    ladder: Sequence[str] | None = None,
 ) -> PresidentInvoke:
+    from .panel_invoker import validate_president_ladder
+
     return PresidentInvoke(
         board=board,
         repo_dir=repo_dir,
@@ -346,4 +359,5 @@ def build_president_invoke(
         base_env=base_env,
         seat_aliases=seat_aliases,
         monitoring_policy=monitoring_policy,
+        ladder=None if ladder is None else validate_president_ladder(ladder),
     )

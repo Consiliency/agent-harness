@@ -35,6 +35,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .advisor_board.backing import PRESIDENT_OPERATION_V1
 from .panel_invoker import (
     PRESIDENT_LADDER,
+    effective_president_ladder,
     PresidentPolicyError,
     PresidentRuling,
     invoke_president,
@@ -100,7 +101,7 @@ def run_president_operation(
     return PresidentOperationResult(
         ruling=ruling,
         authorization_identity=identity,
-        rung_index=list(PRESIDENT_LADDER).index(ruling.model),
+        rung_index=list(effective_president_ladder(invoke)).index(ruling.model),
         brief_digest=brief_digest(brief),
         findings_digest=findings_digest(findings),
     )
@@ -132,16 +133,23 @@ def president_ruling_record(
 
 
 def board_president_ruling_record(
-    ruling: PresidentRuling, findings: Sequence[str], board: object, *, brief: str
+    ruling: PresidentRuling,
+    findings: Sequence[str],
+    board: object,
+    *,
+    brief: str,
+    ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The record for a ruling a landing board obtained, with the rung's registry PIN."""
+    """The record for a ruling a landing board obtained, with the rung's registry PIN
+    (resolved through the run's ``seat_aliases``, exactly as the ruling rung was)."""
     from .president_adapter import seat_for_rung
 
-    seat = seat_for_rung(board, ruling.model)  # type: ignore[arg-type]
+    seat = seat_for_rung(board, ruling.model, seat_aliases=seat_aliases)  # type: ignore[arg-type]
     result = PresidentOperationResult(
         ruling=ruling,
         authorization_identity=PRESIDENT_OPERATION,
-        rung_index=list(PRESIDENT_LADDER).index(ruling.model),
+        rung_index=list(PRESIDENT_LADDER if ladder is None else ladder).index(ruling.model),
         brief_digest=brief_digest(brief),
         findings_digest=findings_digest(tuple(findings)),
     )

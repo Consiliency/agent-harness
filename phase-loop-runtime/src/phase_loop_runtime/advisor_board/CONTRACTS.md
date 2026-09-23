@@ -537,6 +537,21 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
 - **Ladder** (EC-PRESROUTE-3). `PRESIDENT_LADDER` is the seat-alias tuple; each alias
   resolves to its vendor's registry PIN through `DEFAULT_REVIEW_SEAT_ALIASES` (where the
   `model-id-source:` markers live). No model id is spelled in the ladder.
+- **Configured ladder** (agent-harness#998 follow-up). `PRESIDENT_LADDER` is the BUILT-IN
+  order; the effective order is `advisor_board.config.load_president_ladder(repo_dir, *,
+  env, path)`: built-in < the user file's `[president] ladder`
+  (`$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`) < the repository's
+  `<repo>/.agent-harness/advisor-boards.toml` (`[president]` only; `[[boards]]` there is
+  refused). A ladder is a non-empty list of distinct seat aliases or alias-table model ids
+  (`validate_president_ladder`); a malformed one or an unknown key is `BoardConfigError`,
+  never a silent fall-back. The seam carries it (`build_president_invoke(..., ladder=)`,
+  `PresidentInvoke.ladder`); `invoke_president` walks `effective_president_ladder(invoke)`
+  (the seam's ladder, else the built-in), and `rung_index` is the rung's position in THAT
+  ladder. The phase-loop runner (`_run_legible_panel`), `advisor-board --landing-tier` and
+  `invoke_board`'s auto-wired seam load it; a malformed ladder is refused before any seat
+  (`president_ladder_invalid` / CLI exit 2). The user layer follows the environment it is
+  given: the auto-wired seam reads it from the passed `base_env` (its `XDG_CONFIG_HOME`,
+  else its `HOME`; neither ⇒ no user layer), never from the process HOME.
 - **Defer → resume** (EC-PRESROUTE-2). A deferred Fable rung makes `invoke_board` return
   the seats with `PanelResult.needs_native_president` = `{rung, brief_digest,
   findings_digest, prompt}` and no ruling, persisting `president.pending.json`
@@ -546,8 +561,13 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   {rung, brief_digest, findings_digest, text})` RESUMES after the same factory /
   revalidation gate and before any seat launches -- no seat is re-run, so seats that would
   word things differently cannot strand the route. The pending request is BOUND to its run
-  (resolved-artifact digest, the board's ordered seat keys, mode, landing policy) and the
-  resume refuses any difference. The fill is accepted only when that binding matches, the
+  (resolved-artifact digest, the review-brief digest captured ONCE before any seat runs,
+  the board's ordered seat keys, mode, landing policy, president ladder and the seat each
+  rung resolves to under the run's `review_seat_aliases`) and the resume
+  refuses any difference. A new deferral removes any `president.ruling.json` an earlier
+  run left in the stream (after its pending request is written); every persisted ruling
+  removes any pending request (so an older request cannot later resume over it). The
+  resume and the ruling record resolve the rung through the run's `review_seat_aliases`. The fill is accepted only when that binding matches, the
   stored verdicts are this board's seats in order and re-derive the stored findings, the
   pending rung is this board's natively filled (Claude) rung, the persisted digests
   recompute from the stored findings, the fill's rung and BOTH digests equal them, and the
