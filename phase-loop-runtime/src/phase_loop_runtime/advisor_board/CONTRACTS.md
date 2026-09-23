@@ -453,7 +453,9 @@ a landing decision. `tests/test_president_wiring.py`.
   seated rung with it: the governed caller must receive that as a board result it
   persists, not as an error it never records. Only a caller-contract error
   (`president_round_limit`) propagates as `PresidentPolicyError`.
-- **Execution route (fail-closed by design).** `president_adapter.build_president_invoke`
+- **Execution route — SUPERSEDED by ABDPRESROUTE below** (agent-harness#952): a seated
+  rung now runs through `public_board_president.v1`. The text of this bullet records the
+  pre-PRESROUTE route. `president_adapter.build_president_invoke`
   binds the ladder to a board's seats (`seat_for_rung`: rung alias → seat model →
   harness). An UNSEATED rung answers typed `president_unavailable` (the ladder
   descends). A SEATED rung answers `failed` / `president_execution_route_unavailable`
@@ -488,6 +490,73 @@ a landing decision. `tests/test_president_wiring.py`.
 - **Standalone launchers.** A caller that wants the four-seat board without a
   president passes an explicit `review_policy=ReviewLandingPolicy(required_seats=...,
   requires_president=False)` rather than a president-requiring tier.
+
+## ABDPRESROUTE — The president operation · `president_operation.py`, `president_adapter.py`, `advisor_board/backing.py`, `panel_invoker.invoke_board` (IF-0-PRESROUTE-1, Consiliency/agent-harness#952)
+
+The president's OWN HARDEN-authorized operation, `public_board_president.v1`, beside —
+never through — the review operation `public_board_review.v1`. Frozen falsifiers:
+`tests/test_president_wiring.py`, `tests/test_govlean_panel_policy.py` (SL-0,
+`content_tdd_receipt.v1`), golden `tests/data/president_ruling_v1.golden.json`.
+
+- **Callable.** `president_operation.run_president_operation(*, brief, findings,
+  authorization, invoke, max_substantive_rounds) -> PresidentOperationResult(ruling,
+  authorization_identity, rung_index, brief_digest, findings_digest)`. It refuses an
+  authorization whose `operation` is not exactly `public_board_president.v1`
+  (`PresidentPolicyError("president_operation_authorization_mismatch")`) BEFORE any rung
+  is invoked, then walks `PRESIDENT_LADDER` through `invoke` with the president prompt
+  built from the findings; the brief is digested, not sent.
+- **Digests.** `brief_digest = sha256(brief)`; `findings_digest =
+  sha256("\n".join(findings))` in prompt order; lowercase hex. On a board, the brief is
+  the composed president prompt `_president_prompt(findings)`.
+- **Completion grammar.** Per-finding `FINDING <id>: BLOCKING|DEFERRED — <reason>`,
+  terminal `FORCING DECISION: <decision>` (`_valid_president_grammar`); a launched rung's
+  turn is complete when its last line is a non-empty `FORCING DECISION:`
+  (`_completion_ok(text, "president")`), never a review verdict.
+- **Authorization.** `backing.prepare_president_isolation_authorization(board, brief)`
+  mints `PresidentIsolationAuthorization` (same seal as review isolation;
+  `child_credentialless=True`, `child_network_egress=False`, `live_tree_exposed=False`,
+  `api_fallback=False`; subscription routes; brief digest; repository identity when the
+  launch has one — the operation reads no tree). The adapter revalidates it
+  (`revalidate_president_isolation_authorization`) immediately before a rung launches and
+  launches that authorization's route.
+- **Rung routes** (`president_adapter.build_president_invoke(..., monitoring_policy=)`).
+  Unseated rung → typed `president_unavailable` (descend). `sol` / `grok` / `gemini` →
+  the brokered `_exec_leg` in a throwaway directory, whose only launch is
+  `launch_provider`. `fable` under Claude Code (from the passed `base_env`; the adapter
+  falls back to the process environment only when none is passed, so it never spawns a
+  second TUI) → a deferred native fill `{"status": "native_fill_deferred", rung,
+  brief_digest, findings_digest}`, refused with `president_fill_heartbeat_refused` under
+  `heartbeat_only`. `fable` elsewhere → the brokered self-PTY session
+  (`_run_claude_tui_session`, tools off, no directory grant). A failed launch is a typed
+  `failed` (`president_invocation_failed`, no descent).
+- **Ladder** (EC-PRESROUTE-3). `PRESIDENT_LADDER` is the seat-alias tuple; each alias
+  resolves to its vendor's registry PIN through `DEFAULT_REVIEW_SEAT_ALIASES` (where the
+  `model-id-source:` markers live). No model id is spelled in the ladder.
+- **Defer → resume** (EC-PRESROUTE-2). A deferred Fable rung makes `invoke_board` return
+  the seats with `PanelResult.needs_native_president` = `{rung, brief_digest,
+  findings_digest, prompt}` and no ruling, persisting `president.pending.json`
+  (`president.pending.v1`) to `stream_dir`. `invoke_board(..., native_president_fill=
+  {rung, brief_digest, findings_digest, text})` resumes: the fill is accepted only when
+  its rung and BOTH digests equal the persisted pending request AND the request the
+  resumed run derives, and its text passes the ruling grammar; otherwise
+  `president_fill_digest_mismatch` (or `president_ruling_format_missing`) and nothing is
+  persisted. Under Claude Code, `invoke_board` wires the adapter itself when no seam is
+  passed — keyed on the PASSED `base_env` only, never the process environment.
+- **Ruling record** (EC-PRESROUTE-5). Every president ruling a board obtains is written
+  atomically to `<stream_dir>/president.ruling.json`, schema `president.ruling.v1`:
+  `schema`, `authorization_identity` (`public_board_president.v1`), `rung_index`,
+  `model_id` (the ruling rung's registry PIN on the board), `format_reask_count`,
+  `brief_digest`, `findings_digest`, `forcing_decision`, `finding_rulings`
+  (`[{id, disposition, reason}]`). `president_operation.president_ruling_record(result)`
+  builds the same shape from a `PresidentOperationResult`.
+- **Override expiry** (EC-PRESROUTE-4). `panel_invoker.enforce_requires_president(tier,
+  *, requires_president)` refuses a `plan`/`production_code` landing carrying
+  `requires_president=False` (`requires_president_override_refused`); `invoke_board`
+  calls it whenever a `landing_tier` is given. The interim ratification note is EXPIRED.
+- **CLI.** `advisor-board --landing-tier <tier>` runs the board under a tier (a president
+  tier binds the seam to the driving process's environment);
+  `--native-president FILL.json` resumes a deferred rung against the pending request
+  under `--native-fill-dir`/`native-fill/president/`.
 
 ## Review monitoring policy v1 (agent-harness#892)
 
