@@ -71,6 +71,37 @@ def test_record_update_replaces_only_its_own_block(tmp_path):
     ]) == "Corrected\nAGREE"
 
 
+def test_replayed_uuid_from_earlier_message_cannot_restore_old_verdict(tmp_path):
+    old = _assistant("Old review\nAGREE", message_id="old", uuid="old", stop_reason="end_turn")
+    assert _extract(tmp_path, [
+        old,
+        _assistant("Current review\nDISAGREE", message_id="new", uuid="new", stop_reason="end_turn"),
+        old,
+    ]) == "Current review\nDISAGREE"
+
+
+def test_replayed_uuid_after_user_boundary_cannot_restore_old_verdict(tmp_path):
+    old = _assistant("Old review\nAGREE", uuid="old", stop_reason="end_turn")
+    assert _extract(tmp_path, [
+        old,
+        {"type": "user", "message": {"role": "user", "content": "New request"}},
+        old,
+    ]) == ""
+
+
+def test_replayed_null_block_does_not_undo_terminal_record(tmp_path):
+    first = _assistant("Finding", uuid="first", stop_reason=None)
+    terminal = _assistant("REVIEW END\nDISAGREE", uuid="last", stop_reason="end_turn")
+    assert _extract(tmp_path, [first, terminal, first]) == "Finding\nREVIEW END\nDISAGREE"
+
+
+def test_changed_record_with_same_uuid_can_reopen_completion(tmp_path):
+    first = _assistant("Finding", uuid="first", stop_reason=None)
+    terminal = _assistant("REVIEW END\nDISAGREE", uuid="last", stop_reason="end_turn")
+    revised = _assistant("Revised finding", uuid="first", stop_reason=None)
+    assert _extract(tmp_path, [first, terminal, revised]) == ""
+
+
 @pytest.mark.parametrize("boundary", [
     {"type": "user", "message": {"role": "user", "content": "New request"}},
     {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "AGREE"}]}},

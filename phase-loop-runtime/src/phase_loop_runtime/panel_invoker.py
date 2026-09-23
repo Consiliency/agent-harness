@@ -3899,6 +3899,9 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     """Collect the final assistant message's blocks, never earlier turns or tools."""
     message_id: str | None = None
     blocks: dict[str | int, str] = {}
+    seen_record_uuids: set[str] = set()
+    seen_record_versions: set[tuple[str, bytes]] = set()
+    current_group_uuids: set[str] = set()
     incomplete = False
     pending_terminal = False
     try:
@@ -3919,6 +3922,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             continue
         if message.get("role") == "user":
             message_id, blocks, incomplete = None, {}, False
+            current_group_uuids.clear()
             pending_terminal = False
             continue
         if message.get("role") != "assistant":
@@ -3926,10 +3930,25 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         current_id = message.get("id")
         if not isinstance(current_id, str) or not current_id:
             current_id = None
+        record_id = payload.get("uuid")
+        if not isinstance(record_id, str) or not record_id:
+            record_id = None
+        record_version = (
+            record_id,
+            sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).digest(),
+        ) if record_id is not None else None
+        if record_id in seen_record_uuids and (
+            current_id is None or current_id != message_id
+            or record_id not in current_group_uuids
+        ):
+            continue
+        if record_version in seen_record_versions:
+            continue
         # Claude can journal several content blocks under one API message id.
         # Identity-less legacy records remain independent, not guessed joins.
         if current_id is None or current_id != message_id:
             message_id, blocks, incomplete = current_id, {}, False
+            current_group_uuids.clear()
             pending_terminal = False
         content = message.get("content")
         if not isinstance(content, list):
@@ -3947,9 +3966,12 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             if isinstance(item, dict) and item.get("type") == "text"
             and isinstance(item.get("text"), str)
         ).strip()
-        record_id = payload.get("uuid")
-        key = record_id if isinstance(record_id, str) and record_id else len(blocks)
+        key = record_id if record_id is not None else len(blocks)
         blocks[key] = text
+        if record_id is not None:
+            seen_record_uuids.add(record_id)
+            current_group_uuids.add(record_id)
+            seen_record_versions.add(record_version)
     return "" if incomplete or pending_terminal else "\n".join(text for text in blocks.values() if text).strip()
 
 
