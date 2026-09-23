@@ -146,6 +146,7 @@ class SkillsCanonParityTest(unittest.TestCase):
                 ):
                     self.assertIn(literal, text, f"{packaged}: lost concrete model {literal}")
                 self.assertNotIn("Harness Fable", text)
+                self.assertNotIn("Harness Opus", text)
                 self.assertNotIn("Harness 3.8 Flash", text)
                 self.assertNotIn("<harness>-3.8-flash", text)
 

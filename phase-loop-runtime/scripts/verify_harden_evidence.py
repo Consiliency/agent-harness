@@ -2892,7 +2892,7 @@ def _self_git(
 # the time of writing.  The verifier never compares against this table -- a
 # retained request carrying any other registry-derived routes verifies alike.
 SELF_TEST_ROUTES = {
-    "claude": ("claude-fable-5-1", "claude-fable-5-1"),
+    "claude": ("claude-opus-5-5", "claude-opus-5-5"),
     "codex": ("gpt-6-astra", "gpt-6-astra"),
     "gemini": ("gemini-3.8-flash-high", "gemini-3.8-flash-high"),
     "grok": ("grok-4.7", "grok-4.7"),

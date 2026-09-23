@@ -48,7 +48,7 @@ class PresetTests(unittest.TestCase):
 
     def test_default_preset_is_the_shared_default_board_fixture(self) -> None:
         # Identity, not equality: the preset is the canonical four-vendor default.
-        # The claude seat runs Fable (review-path model), not the implementer.
+        # The claude seat runs Opus 5.5 (review-path model), not the implementer.
         self.assertIs(PRESETS["default"], DEFAULT_BOARD)
         self.assertIs(get_preset("default"), DEFAULT_BOARD)
         self.assertEqual(

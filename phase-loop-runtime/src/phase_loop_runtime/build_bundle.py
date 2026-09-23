@@ -52,8 +52,10 @@ PRESERVE_LITERALS: tuple[str, ...] = (
     # replaced Fable as every default 2026-09-23, Fable remaining an explicit id). The
     # install-output gate requires every entry here to actually appear in the bundle,
     # so a retired id must leave this tuple.
-    # LONGEST FIRST: `claude-opus-5` is a prefix of `claude-opus-5-5`; sentinel
-    # substitution runs in tuple order, so the longer id must be matched whole first.
+    # Order between these two is NOT load-bearing (executed over every skills-src
+    # SKILL.md: swapping them is byte-identical, because the `claude-opus-5` sentinel
+    # masks the prefix and no collapse regex touches the trailing `-5`). Dropping BOTH
+    # corrupts output. `claude-opus-5-5` is listed for the presence gate and literal lint.
     "claude-opus-5-5",  # model-id-source: verbatim literal preserved through brand-collapse (ultra tier + review default)
     "claude-opus-5",  # model-id-source: verbatim literal preserved through brand-collapse (heavy tier)
     "claude-fable-5-1",  # model-id-source: verbatim literal preserved through brand-collapse (explicit, non-default id)
