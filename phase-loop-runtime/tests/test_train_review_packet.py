@@ -2267,3 +2267,156 @@ def test_later_proposed_eligibility_reversal_preserves_prior_effects(candidate, 
     assert state[second.node_id].head_sha == c["head"] and state[second.node_id].status == "pr_open"
     assert len(before_refusal) == 1 and ledger.read_bytes() == before_refusal[0]
     assert result["status"] == "merge_halted", result
+
+
+@pytest.fixture
+def fab_downstream_with_upstream(tmp_path, monkeypatch):
+    """Real Git/FABPUB admission; remote reads, executor and merge are test seams."""
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.cross_repo_channel import ChannelDescriptor
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV
+    from phase_loop_runtime.train_roadmap import TrainEdge
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest
+
+    fixture = DeltaReadmitTransactionTest()
+    fixture.tmp_path = tmp_path
+    fixture.setUp()
+    try:
+        upstream, downstream = TrainNode("repo-a", "UP.md"), TrainNode("repo-b", "DOWN.md")
+        seeded = fixture._setup_broker_readmit_candidate(
+            node_id=downstream.node_id, branch="feat/downstream")
+        upstream_repo = tmp_path / "upstream"
+        git(tmp_path, "clone", "-q", str(fixture.repo), str(upstream_repo))
+        git(upstream_repo, "checkout", "-qb", "upstream", seeded["candidate_head"])
+        roadmap = TrainRoadmap("FAB downstream drift", [upstream, downstream], [
+            TrainEdge(upstream, downstream, ChannelDescriptor("submodule", {"path": "vendor/upstream"}))])
+        workspaces = {upstream.node_id: upstream_repo, downstream.node_id: fixture.repo}
+        ledger = seeded["ledger_path"]
+        append_record(ledger, LedgerRecord(upstream.node_id, "pr_open", branch="upstream",
+            head_sha=seeded["candidate_head"], pr_url="https://github.com/org/repo-a/pull/1", merge_order=0))
+        append_record(ledger, replace(read_ledger(ledger)[downstream.node_id], merge_order=3))
+        material = real_fab_packet_inputs(fixture, {**seeded, "delta_head": seeded["candidate_head"]},
+            roadmap, monkeypatch, workspaces)
+        initial = read_ledger(ledger)[downstream.node_id]
+        live_heads = {node.node_id: seeded["candidate_head"] for node in roadmap.nodes}
+        by_workspace = {workspace: node_id for node_id, workspace in workspaces.items()}
+        by_url = {record.pr_url: node_id for node_id, record in read_ledger(ledger).items()}
+        monkeypatch.setenv(FAB_PROMOTION_ENV, "1")
+        monkeypatch.setattr(packet, "read_pr_metadata", lambda ws, url: {
+            "url": url, "state": "OPEN", "baseRefName": "main", "baseRefOid": seeded["base"],
+            "headRefOid": live_heads[by_url[url]]})
+        calls = {name: [] for name in ("execute", "publish", "review", "recover", "merge")}
+        real_recover = tr._fab_recover_torn_to_admitted
+        def recover(workspace, run_id, **kwargs):
+            calls["recover"].append((workspace, run_id, kwargs))
+            return real_recover(workspace, run_id, **kwargs)
+        monkeypatch.setattr(tr, "_fab_recover_torn_to_admitted", recover)
+        def review(*args):
+            calls["review"].append(1)
+            return approved(*args)
+        def merge(workspace, branch, **kwargs):
+            calls["merge"].append((workspace, branch, kwargs))
+            return kwargs["head_sha"]
+        def run(**overrides):
+            options = dict(run_mode="governed", review_material=material,
+                resolve_workspace=lambda node: workspaces[node.node_id],
+                _run_loop=never, _publish=never, _preflight_fn=lambda *_: [],
+                _pr_is_open=lambda *_: True,
+                _live_pr_head_sha_fn=lambda ws, br: live_heads[by_workspace[ws]],
+                _merge_phase_enabled=True, _pr_merged_sha_fn=lambda *a, **k: None,
+                _train_review_fn=review, _merge_pr_fn=merge,
+                _set_upstream_ref_fn=lambda *a, **k: [], _reverify_fn=lambda *a, **k: True,
+                _post_merge_hook=lambda *_: None, fab_fetch_origin="fetchsrc")
+            options.update(overrides)
+            return tr.run_train(roadmap, ledger, **options)
+        yield dict(fixture=fixture, seeded=seeded, upstream=upstream, downstream=downstream,
+            upstream_repo=upstream_repo, ledger=ledger, material=material, initial=initial,
+            live_heads=live_heads, calls=calls, run=run)
+    finally:
+        fixture.tearDown()
+
+
+@pytest.mark.parametrize("drift", ["out_of_band", "rebuilt"])
+@pytest.mark.parametrize("boundary", ["retained_binding", "guarded_resume", "revoked_resume"])
+def test_stale_upstream_refusal_preserves_downstream_fab_route(fab_downstream_with_upstream, drift, boundary):
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+
+    c = fab_downstream_with_upstream
+    upstream, downstream, seeded = c["upstream"], c["downstream"], c["seeded"]
+    calls = c["calls"]
+    c["live_heads"][upstream.node_id] = seeded["delta_head"]
+    def execute(workspace, *args, **kwargs):
+        assert workspace == c["upstream_repo"], "stale downstream must never execute"
+        calls["execute"].append(workspace)
+        return None, []
+    def publish(workspace, *args, **kwargs):
+        assert workspace == c["upstream_repo"], "stale downstream must never publish"
+        calls["publish"].append(workspace)
+        assert kwargs["draft"] is True
+        return dict(status="published", branch="upstream", head_sha=seeded["delta_head"],
+            pr_url="https://github.com/org/repo-a/pull/1")
+    options = {} if drift == "out_of_band" else dict(
+        _pr_is_open=lambda ws, br: ws != c["upstream_repo"], _run_loop=execute, _publish=publish)
+    for _ in range(2):
+        result = c["run"](**options)
+        assert result["status"] == "blocked" and result["node_id"] == downstream.node_id, result
+        assert result["detail"]["reason"] == "upstream_changed_downstream_pr_open", result
+        assert not calls["review"] and not calls["recover"] and not calls["merge"]
+        assert "_train_review_" not in read_ledger(c["ledger"])
+    assert len(calls["publish"]) == len(calls["execute"]) == (2 if drift == "rebuilt" else 0)
+    assert len(seeded["store"].replay()) == 1
+    if boundary == "retained_binding":
+        blocked = read_ledger(c["ledger"])[downstream.node_id]
+        assert {**packet.admission_binding(blocked), "merge_order": blocked.merge_order} == {
+            **packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}
+        return
+
+    # Clear only the upstream condition. Never reconstruct or repair the downstream row.
+    admitted_upstream = read_ledger(c["ledger"])[upstream.node_id].head_sha
+    c["live_heads"][upstream.node_id] = admitted_upstream
+    material = json.loads(c["material"].read_text())
+    material["nodes"][upstream.node_id]["head_sha"] = admitted_upstream
+    material["nodes"][upstream.node_id]["verification"][0]["head_sha"] = admitted_upstream
+    dump(c["material"], material)
+    if boundary == "revoked_resume":
+        # Keep prior evidence and append a real durable revocation before the resume.
+        with (seeded["store_root"] / "evidence.jsonl").open("a") as stream:
+            stream.write(json.dumps({"idempotency_key": "stale-upstream-revoke",
+                "state": "outcome_ambiguous_blocked", "evidence_reference": "test"}) + "\n")
+        assert BrokerEvidenceStore(seeded["store_root"]).epoch_blocked
+    result = c["run"]()
+    if boundary == "revoked_resume":
+        assert result["status"] == "review_halted" and result.get("reason") == "readmission_revoked", result
+        assert not calls["review"] and not calls["recover"] and not calls["merge"]
+    else:
+        assert result["status"] == "merged", result
+        assert calls["recover"] == [(c["fixture"].repo, c["fixture"].RUN,
+            {"admitted_head_sha": seeded["candidate_head"]})]
+        downstream_merge = [row for row in calls["merge"] if row[0] == c["fixture"].repo]
+        assert downstream_merge == [(c["fixture"].repo, seeded["branch"], dict(
+            base="main", head_sha=seeded["candidate_head"], run_id=c["fixture"].RUN, fab_fetch_origin="fetchsrc"))]
+        assert len(calls["review"]) == 1
+    assert len(seeded["store"].replay()) == 1
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_unchanged_upstream_keeps_downstream_fab_guard(fab_downstream_with_upstream, revoked):
+    c = fab_downstream_with_upstream
+    if revoked:
+        with (c["seeded"]["store_root"] / "evidence.jsonl").open("a") as stream:
+            stream.write(json.dumps({"idempotency_key": "unchanged-upstream-revoke",
+                "state": "outcome_ambiguous_blocked", "evidence_reference": "test"}) + "\n")
+    result = c["run"]()
+    if revoked:
+        assert result["status"] == "review_halted" and result.get("reason") == "readmission_revoked", result
+        assert not c["calls"]["review"] and not c["calls"]["recover"] and not c["calls"]["merge"]
+    else:
+        assert result["status"] == "merged", result
+        assert c["calls"]["recover"] == [(c["fixture"].repo, c["fixture"].RUN,
+            {"admitted_head_sha": c["seeded"]["candidate_head"]})]
+        downstream_merge = [row for row in c["calls"]["merge"] if row[0] == c["fixture"].repo]
+        assert downstream_merge[0][2]["run_id"] == c["fixture"].RUN
+        assert len(c["calls"]["review"]) == 1
+    assert not c["calls"]["execute"] and not c["calls"]["publish"]
+    assert len(c["seeded"]["store"].replay()) == 1
