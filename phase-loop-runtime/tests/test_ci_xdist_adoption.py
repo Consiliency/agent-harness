@@ -108,10 +108,28 @@ def suite_command(text: str) -> tuple[int, str]:
     return matches[0]
 
 
+_CONTROL_OPERATORS = {"&&", "||", ";", "|", "&", ";;"}
+
+
 def _tokens(command: str) -> list[str]:
-    # The Dagger script is a Python f-string: `${{suite_args[@]}}` is literal
-    # text here, and shlex would treat nothing specially in it anyway.
-    return shlex.split(command, comments=False, posix=True)
+    """Shell words as bash would see them for ONE simple command.
+
+    `comments=True`: a `#` at word start ends the command, exactly as in bash --
+    including a flag line commented out in the MIDDLE of a backslash
+    continuation, which a comment-blind tokenizer would still count (grok r2).
+    Tokens stop at the first control operator, so flags placed after
+    `&& true` belong to another command, not to pytest (grok r2). The Dagger
+    script is a Python f-string; `${{suite_args[@]}}` is literal text here.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    out: list[str] = []
+    for tok in lexer:
+        if tok in _CONTROL_OPERATORS:
+            break
+        out.append(tok)
+    return out
 
 
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -208,7 +226,10 @@ def explains_restart_cap(text: str, command_start: int) -> bool:
     while i >= 0 and _is_comment(lines[i]):
         block.append(lines[i])
         i -= 1
-    return any("--max-worker-restart=0" in line for line in block)
+    text_block = "\n".join(block)
+    # Both halves: that the cap exists, and that it is COUPLED to loadfile, so a
+    # later switch of distribution mode is not read as making it droppable.
+    return "--max-worker-restart=0" in text_block and "loadfile" in text_block
 
 
 def hosted_install_pins(text: str) -> list[str]:
@@ -369,6 +390,22 @@ def test_an_override_smuggled_through_suite_args_is_rejected() -> None:
     mutated = _workflow().replace('suite_args=()', 'suite_args=()\n          suite_args+=("-n")', 1)
     bad = [a for a in workflow_suite_args_additions(mutated) if not a.startswith(_SUITE_ARGS_ALLOWED)]
     assert bad == ["-n"]
+
+
+def test_flags_commented_out_mid_continuation_are_rejected() -> None:
+    """grok r2: bash drops everything after a word-initial `#`."""
+    _, command = suite_command(_workflow())
+    commented = command.replace("-n auto --dist loadfile --max-worker-restart=0",
+                                "# -n auto --dist loadfile --max-worker-restart=0", 1)
+    assert commented != command
+    assert not carries_suite_args(commented)
+
+
+def test_flags_after_a_second_command_are_rejected() -> None:
+    """grok r2: `... && true -n auto ...` gives those flags to `true`, not pytest."""
+    _, command = suite_command(_workflow())
+    stripped = command.replace("-n auto --dist loadfile --max-worker-restart=0", "", 1)
+    assert not carries_suite_args(stripped + " && true -n auto --dist loadfile --max-worker-restart=0")
 
 
 def test_parallelism_is_not_moved_into_addopts() -> None:
