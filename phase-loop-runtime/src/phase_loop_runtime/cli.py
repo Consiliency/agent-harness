@@ -2144,6 +2144,16 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # expected non-OK), the board is below its independence floor → exit nonzero.
     usable = usable_count >= FLOOR_SEATS
     exit_code = 0 if usable else 1
+    # PRESROUTE: a president-tier board that the president ruled BLOCKING is not a
+    # usable landing; say so and exit nonzero.
+    president_ruling = getattr(result, "president", None)
+    if president_ruling is not None:
+        from .panel_invoker import president_blocks_landing, president_forcing_decision
+
+        print(f"advisor-board: president ({president_ruling.model}) FORCING DECISION: "
+              f"{president_forcing_decision(president_ruling)}", file=sys.stderr)
+        if president_blocks_landing(president_ruling):
+            exit_code = 1
     # #183 / ABDNATIVE: LOUD requested-vs-delivered shortfall. A floor-satisfying
     # board can still be SHORT an explicitly-requested seat (the claude seat
     # deferred to a native Agent), and a bare `usable:true` masks that. Report

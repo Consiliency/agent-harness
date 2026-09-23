@@ -122,3 +122,85 @@ def test_a_fill_without_a_valid_persisted_pending_request_is_refused(tmp_path, p
     assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
     assert not (stream / "president.ruling.json").exists()
     assert json.loads((probe / panel_invoker.PRESIDENT_PENDING_FILENAME).read_text())["rung"] == "fable"
+
+
+# native seat r1 BLOCKING 2: a resume must not require the seats to reproduce their text.
+def test_a_native_resume_succeeds_when_seats_would_word_things_differently(tmp_path):
+    calls: list[str] = []
+
+    def drifting_spawn(leg: str, artifact: str) -> tuple[str, str]:
+        calls.append(leg)
+        return "OK", f"{leg} found: concern worded differently on call {len(calls)}\nAGREE"
+
+    stream = tmp_path / "stream"
+
+    def dispatch(**extra):
+        return invoke_sanctioned_board_control(
+            _fable_president_board(), "artifact", spawn=drifting_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            base_env={"CLAUDECODE": "1"}, stream_dir=stream, **extra,
+        )
+
+    deferred = dispatch()
+    pending = deferred.needs_native_president
+    seats_run = len(calls)
+    ruling_text = "\n".join(
+        f"FINDING {f.split(':', 1)[0]}: DEFERRED — ruled" for f in deferred.president_findings
+    ) + "\nFORCING DECISION: LAND"
+    fill = {"rung": pending["rung"], "brief_digest": pending["brief_digest"],
+            "findings_digest": pending["findings_digest"], "text": ruling_text}
+    resumed = dispatch(native_president_fill=fill)
+    assert resumed.president is not None and resumed.president.text == ruling_text
+    assert resumed.president_findings == deferred.president_findings
+    assert [leg.text for leg in resumed.legs] == [leg.text for leg in deferred.legs]
+    assert len(calls) == seats_run, "a resume re-ran seats"
+    assert (stream / "president.ruling.json").is_file()
+
+
+def test_a_str_subclass_with_a_lying_eq_is_refused_before_use():
+    from types import SimpleNamespace
+
+    from phase_loop_runtime.president_operation import (
+        PRESIDENT_OPERATION_AUTHORIZATION_MISMATCH,
+        run_president_operation,
+    )
+
+    class Liar(str):
+        def __eq__(self, other):
+            return True
+
+        def __ne__(self, other):
+            return False
+
+        __hash__ = str.__hash__
+
+    invoked: list[object] = []
+    with pytest.raises(PresidentPolicyError) as excinfo:
+        run_president_operation(
+            brief="b", findings=("F001: x",),
+            authorization=SimpleNamespace(operation=Liar("public_board_review.v1")),
+            invoke=lambda m, p: invoked.append(m) or {"status": "ok", "text": ""},
+            max_substantive_rounds=3,
+        )
+    assert excinfo.value.code == PRESIDENT_OPERATION_AUTHORIZATION_MISMATCH
+    assert invoked == []
+
+
+@pytest.mark.parametrize("fill", [["not", "a", "mapping"], "text"])
+def test_a_malformed_fill_is_a_typed_refusal(tmp_path, fill):
+    from phase_loop_runtime.president_operation import PRESIDENT_FILL_DIGEST_MISMATCH
+
+    stream = tmp_path / "stream"
+    invoke_sanctioned_board_control(
+        _fable_president_board(), "artifact", spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+        base_env={"CLAUDECODE": "1"}, stream_dir=stream,
+    )
+    with pytest.raises(PresidentPolicyError) as excinfo:
+        invoke_sanctioned_board_control(
+            _fable_president_board(), "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            base_env={"CLAUDECODE": "1"}, stream_dir=stream, native_president_fill=fill,
+        )
+    assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
+    assert not (stream / "president.ruling.json").exists()

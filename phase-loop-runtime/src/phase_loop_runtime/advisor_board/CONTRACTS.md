@@ -518,7 +518,8 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   `api_fallback=False`; subscription routes; brief digest; repository identity when the
   launch has one — the operation reads no tree). The adapter revalidates it
   (`revalidate_president_isolation_authorization`) immediately before a rung launches and
-  launches that authorization's route.
+  launches that authorization's route; a seat the authorization does not route (Claude
+  included) is refused without launching.
 - **Rung routes** (`president_adapter.build_president_invoke(..., monitoring_policy=)`).
   Unseated rung → typed `president_unavailable` (descend). `sol` / `grok` / `gemini` →
   the brokered `_exec_leg` in a throwaway directory, whose only launch is
@@ -535,13 +536,19 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
 - **Defer → resume** (EC-PRESROUTE-2). A deferred Fable rung makes `invoke_board` return
   the seats with `PanelResult.needs_native_president` = `{rung, brief_digest,
   findings_digest, prompt}` and no ruling, persisting `president.pending.json`
-  (`president.pending.v1`) to `stream_dir`. `invoke_board(..., native_president_fill=
-  {rung, brief_digest, findings_digest, text})` resumes: the fill is accepted only when
-  its rung and BOTH digests equal the persisted pending request AND the request the
-  resumed run derives, and its text passes the ruling grammar; otherwise
-  `president_fill_digest_mismatch` (or `president_ruling_format_missing`) and nothing is
-  persisted. Under Claude Code, `invoke_board` wires the adapter itself when no seam is
-  passed — keyed on the PASSED `base_env` only, never the process environment.
+  (`president.pending.v1`: the request plus the findings and seat verdicts it was built
+  from) to `stream_dir`; a deferral without `stream_dir` is refused
+  (`president_native_fill_stream_required`). `invoke_board(..., native_president_fill=
+  {rung, brief_digest, findings_digest, text})` RESUMES after the same factory /
+  revalidation gate and before any seat launches -- no seat is re-run, so seats that would
+  word things differently cannot strand the route. The fill is accepted only when the
+  persisted request is well-formed and its digests recompute from its own findings, the
+  fill's rung and BOTH digests equal it, and the text passes the ruling grammar for those
+  findings; otherwise `president_fill_digest_mismatch` (or
+  `president_ruling_format_missing` / `president_native_fill_stream_required`) and nothing
+  is persisted. The resumed result carries the deferred seats' verdicts (republished to the
+  stream) and the ruling. Under Claude Code, `invoke_board` wires the adapter itself when no
+  seam is passed -- keyed on the PASSED `base_env` only, never the process environment.
 - **Ruling record** (EC-PRESROUTE-5). Every president ruling a board obtains is written
   atomically to `<stream_dir>/president.ruling.json`, schema `president.ruling.v1`:
   `schema`, `authorization_identity` (`public_board_president.v1`), `rung_index`,

@@ -74,7 +74,8 @@ def require_president_authorization(authorization: object) -> str:
     identity = getattr(authorization, "operation", None)
     # Exact equality only: a denylist, a substring, a stem prefix or a full-identity
     # prefix would each admit a foreign operation.
-    if not isinstance(identity, str) or identity != PRESIDENT_OPERATION:
+    # ``type(...) is str``: a str SUBCLASS can override __eq__/__ne__ to pass any check.
+    if type(identity) is not str or identity != PRESIDENT_OPERATION:
         raise PresidentPolicyError(
             PRESIDENT_OPERATION_AUTHORIZATION_MISMATCH,
             f"the president operation requires a {PRESIDENT_OPERATION!r} authorization, "
