@@ -10,17 +10,22 @@ import pytest
 from phase_loop_runtime import panel_invoker as pi
 
 
-def _assistant(text, *, message_id="review", uuid=None, stop_reason=None):
-    return {
+_MISSING = object()
+
+
+def _assistant(text, *, message_id="review", uuid=None, stop_reason=_MISSING):
+    record = {
         "type": "assistant",
         "uuid": uuid,
         "message": {
             "id": message_id,
             "role": "assistant",
-            "stop_reason": stop_reason,
             "content": [{"type": "text", "text": text}],
         },
     }
+    if stop_reason is not _MISSING:
+        record["message"]["stop_reason"] = stop_reason
+    return record
 
 
 def _extract(tmp_path, records):
@@ -87,6 +92,17 @@ def test_user_boundary_prevents_id_reuse_from_joining_turns(tmp_path):
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "tool_use"])
 def test_explicitly_incomplete_message_is_not_a_final_review(tmp_path, stop_reason):
     assert _extract(tmp_path, [_assistant("Unfinished\nAGREE", stop_reason=stop_reason)]) == ""
+
+
+def test_explicit_null_stop_reason_is_not_a_final_review(tmp_path):
+    assert _extract(tmp_path, [_assistant("Unfinished\nAGREE", stop_reason=None)]) == ""
+
+
+def test_null_stop_reason_requires_a_later_terminal_record(tmp_path):
+    first = _assistant("First finding", uuid="one", stop_reason=None)
+    terminal = _assistant("REVIEW END\nPARTIALLY AGREE", uuid="two", stop_reason="end_turn")
+    assert _extract(tmp_path, [first, terminal]) == "First finding\nREVIEW END\nPARTIALLY AGREE"
+    assert _extract(tmp_path, [first, terminal, _assistant("still writing", uuid="three", stop_reason=None)]) == ""
 
 
 def test_thinking_blocks_are_never_returned(tmp_path):
