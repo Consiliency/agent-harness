@@ -165,11 +165,16 @@ class PresidentInvoke:
             self._record(rung, None, "unavailable", "president_unavailable", detail)
             return {"status": "unavailable", "code": "president_unavailable", "detail": detail}
         harness = str(seat.harness or "").lower()
+        # A cancelled operation stops the walk on EVERY route, the native fill included.
+        self._raise_if_cancelled(rung, seat)
         if harness == "claude" and panel_invoker._under_claude_code(self.base_env):
             return self._native_fill(rung, seat, prompt)
-        self._raise_if_cancelled(rung, seat)
         try:
-            return self._launch(rung, seat, harness, prompt)
+            response = self._launch(rung, seat, harness, prompt)
+            if response.get("status") != "ok":
+                # A launch the cancellation ended is a cancellation, not a rung failure.
+                self._raise_if_cancelled(rung, seat)
+            return response
         except PresidentPolicyError:
             raise
         except Exception as exc:  # a broken route is a typed failure, never a descent

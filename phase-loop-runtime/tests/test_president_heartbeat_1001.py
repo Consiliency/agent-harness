@@ -305,3 +305,34 @@ def test_a_cancelled_operation_refuses_before_any_launch_under_either_policy(tmp
         with pytest.raises(panel_invoker.PresidentPolicyError) as excinfo:
             seam("grok", "F001: [x] y")
     assert seen == [] and excinfo.value.code == president_adapter.PRESIDENT_OPERATION_CANCELLED
+
+
+@pytest.mark.parametrize("policy", ["bounded", "heartbeat_only"])
+def test_a_cancelled_operation_refuses_before_a_native_fill(tmp_path, policy):
+    # board r2 codex B1: the native (Claude Code) Claude rung is behind the same guard.
+    cancel = threading.Event()
+    cancel.set()
+    seam = president_adapter.build_president_invoke(
+        DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={"CLAUDECODE": "1"},
+        monitoring_policy=policy, cancel_event=cancel,
+    )
+    with pytest.raises(panel_invoker.PresidentPolicyError) as excinfo:
+        seam("fable", "F001: [x] y")
+    assert excinfo.value.code == president_adapter.PRESIDENT_OPERATION_CANCELLED
+    assert [a.status for a in seam.attempts] == ["cancelled"]
+
+
+def test_a_launch_ended_by_cancellation_is_a_cancellation_not_a_rung_failure(tmp_path):
+    cancel = threading.Event()
+
+    def cancelled_launch(self, rung, seat, harness, prompt):
+        cancel.set()  # the board cancels while the rung runs
+        return {"status": "failed", "code": "president_invocation_failed", "detail": "ended"}
+
+    seam = president_adapter.build_president_invoke(
+        DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={}, cancel_event=cancel,
+    )
+    with patch.object(president_adapter.PresidentInvoke, "_launch", cancelled_launch):
+        with pytest.raises(panel_invoker.PresidentPolicyError) as excinfo:
+            seam("grok", "F001: [x] y")
+    assert excinfo.value.code == president_adapter.PRESIDENT_OPERATION_CANCELLED
