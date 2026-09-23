@@ -1292,6 +1292,15 @@ CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
 )
 
 
+# API-key variables of a SUBSCRIPTION-ONLY harness (agent-harness#864). They are removed
+# from every subscription child environment but are deliberately NOT in
+# ``VENDOR_API_KEY_VARS``: that map is also the api-key INJECTION map, and grok has no
+# api-key lane (``registries``), so no opt-in may ever inject one. Names from the grok
+# CLI's own documentation: ``XAI_API_KEY`` (Bearer API key) and ``GROK_CODE_XAI_API_KEY``
+# (its backward-compatible alias).
+SUBSCRIPTION_SCRUB_ONLY_VARS: tuple[str, ...] = ("XAI_API_KEY", "GROK_CODE_XAI_API_KEY")
+
+
 def all_vendor_key_vars() -> tuple[str, ...]:
     """Every vendor API-key var (scrub set for a subscription seat)."""
     seen: list[str] = []
@@ -1305,12 +1314,17 @@ def all_vendor_key_vars() -> tuple[str, ...]:
 def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
     """Return a subscription-only child environment.
 
-    All vendor API keys are removed. Claude-specific credential helpers,
+    All vendor API keys are removed -- including the api-key variables of the
+    subscription-only grok harness (``SUBSCRIPTION_SCRUB_ONLY_VARS``). Claude-specific credential helpers,
     custom request headers, alternate endpoints, and cloud-provider selectors
     are removed as well so a Claude seat cannot silently escape the first-party
     subscription lane.
     """
-    blocked = set(all_vendor_key_vars()) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    blocked = (
+        set(all_vendor_key_vars())
+        | set(SUBSCRIPTION_SCRUB_ONLY_VARS)
+        | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    )
     return {key: value for key, value in base_env.items() if key not in blocked}
 
 
@@ -1530,6 +1544,7 @@ __all__ = [
     "PresidentIsolationAuthorization",
     "prepare_president_isolation_authorization",
     "revalidate_president_isolation_authorization",
+    "SUBSCRIPTION_SCRUB_ONLY_VARS",
     "VENDOR_API_KEY_VARS",
     "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",
