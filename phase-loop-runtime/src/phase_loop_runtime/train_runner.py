@@ -3109,6 +3109,8 @@ def _run_train_unfenced(
                       branch=completed_nodes[nid].get("branch"),
                       head_sha=completed_nodes[nid].get("admitted_head_sha"),
                       pr_url=completed_nodes[nid].get("pr_url"),
+                      fab_run_id=nid_rec.fab_run_id,
+                      merge_order=nid_rec.merge_order,
                   ),
               )
               return {
