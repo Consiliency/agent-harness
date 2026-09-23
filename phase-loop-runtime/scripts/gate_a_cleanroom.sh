@@ -259,6 +259,7 @@ PYEOF
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
+      /.agent-harness/advisor-boards.toml \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     # PROOFGATE's known-bad agent-harness#358 corpus is pinned to an exact commit
@@ -364,6 +365,9 @@ PYEOF
     # root (tests/../..). Keep those immutable inputs available without exposing
     # the source package tree to the installed-wheel test process.
     cp -r "$PKG_ROOT/../specs" "$WORK/standalone/specs"
+    # The repository-level president ladder is immutable repo data a contract test reads.
+    mkdir -p "$WORK/standalone/.agent-harness"
+    cp -- "$PKG_ROOT/../.agent-harness/advisor-boards.toml" "$WORK/standalone/.agent-harness/"
   else
     echo "GATE-A FAIL: CONFORM capability probe errored ($CONFORM_CAPABILITY_STATUS)" >&2
     exit 1
