@@ -134,8 +134,8 @@ class AgentHarnessCi:
             .with_exec(
                 [
                     "python", "-m", "pip", "install", "--quiet",
-                    "./phase-loop-runtime[visual]", "pytest", "build==1.6.1",
-                    "setuptools>=70.1",
+                    "./phase-loop-runtime[visual]", "pytest", "pytest-xdist==3.8.0",
+                    "build==1.6.1", "setuptools>=70.1",
                 ]
             )
             .with_exec(["chown", "-R", "ci:ci", "/src"])
@@ -152,6 +152,14 @@ class AgentHarnessCi:
             .with_env_variable("HOME", "/home/ci")
             .with_env_variable("USER", "ci")
             .with_env_variable("LOGNAME", "ci")
+            # `-n auto` would resolve to every core on the offload host (32 on `ai`), and
+            # the three suite stages plus Gate A run CONCURRENTLY, so ~96 workers on a
+            # suite whose `--dist loadfile` gain plateaus by n=8. Worker count also scales
+            # the suite's known cross-worker races (a bare tempdir in `/tmp` stat'd with an
+            # mtime-inclusive identity; a live-worktree digest). xdist reads this variable
+            # for `-n auto` (xdist/plugin.py), so the suite COMMAND stays byte-identical to
+            # the hosted lane's and the adoption test's identical-flags contract holds.
+            .with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", "8")
             # Permission-denial acceptance must run with an effective ordinary UID.
             .with_user("ci")
         )
@@ -273,7 +281,13 @@ CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"
 PYTHONPATH=src:tests python -m pytest --collect-only -q \\
   "{CHRONOLOGY_NODE}" >/dev/null
 
+# `--max-worker-restart=0` is load-bearing and COUPLED to `--dist loadfile`: under
+# the loadfile/loadscope schedulers, xdist's default worker replacement leaves the
+# controller waiting with every worker idle -- a hang, not a failure (`--dist load`
+# recovers instead). Zero turns a crash into a red naming the node. Do not drop it
+# without also leaving loadfile. `loadfile` keeps a file's tests on one worker.
 PYTHONPATH=src:tests python -m pytest -m "not dotfiles_integration" \\
+  -n auto --dist loadfile --max-worker-restart=0 \\
   "${{suite_args[@]}}" \\
   --ignore tests/test_legible_roadmap_contract.py \\
   --ignore tests/test_legible_evidence.py

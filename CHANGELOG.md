@@ -6,6 +6,81 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the pytest suite runs under xdist in both consumers (agent-harness#945)
+
+- Both suite consumers -- the GitHub-hosted lane in `.github/workflows/test.yml` and the
+  Dagger offload in `ci/dagger/src/agent_harness_ci/main.py` -- now run
+  `-n auto --dist loadfile --max-worker-restart=0`, with `pytest-xdist==3.8.0` pinned in
+  each install step. Both were changed together: a parallelism flag on one consumer and
+  not the other silently measures a different suite than it runs.
+- `--max-worker-restart=0` is load-bearing and COUPLED to `--dist loadfile`. Under the
+  loadfile/loadscope schedulers, xdist's default of REPLACING a dead worker leaves the
+  controller waiting with every worker idle, so a crash becomes a job that hangs to the
+  timeout (reproduced on a toy tree; `--dist load` recovers instead). Zero gives an
+  immediate red naming the node. Measured caveat: under `loadfile` the remainder of the
+  crashing file is not run and not reported either way -- replacement does not recover it
+  -- so the lane is red but its summary under-counts.
+- `--dist loadfile` keeps a file's tests on one worker -- the conservative distribution,
+  chosen so per-file module state cannot be split across workers.
+- `tests/test_ci_xdist_adoption.py` PINS the reviewed configuration instead of
+  interpreting it: the sha256 of the hosted suite block (`suite_args=()` through the suite
+  pytest run, comment lines included), the sha256 of the Dagger `_suite` builder and of
+  `_sandbox_exec` (which prepends a preflight and runs both through one `bash -c`), the
+  hosted install line verbatim, and `pytest-xdist` installed exactly once in each consumer
+  (every Dagger list literal is scanned with `ast`). No `pytest.toml` / `pytest.ini` /
+  `tox.ini` / `setup.cfg` may shadow `pyproject.toml`'s pytest section. The auto-worker cap
+  must appear exactly once in the Dagger module (by text, so an `export` inside a script
+  string counts), set in `_base` to `8`, and
+  `PYTEST_ADDOPTS` / `PYTEST_PLUGINS` / `PYTEST_DISABLE_PLUGIN_AUTOLOAD` (plus the cap
+  variable, on the hosted side) may not appear in either consumer. Why pins: three review
+  rounds each defeated the previous INTERPRETER of the command (a file-wide search, a token
+  subsequence, a bash-like tokenizer, and pytest's own parser) with a spelling it did not
+  model, from `-n0` and `suite_args+=('-n0')` to `|&`, `--maxprocesses=1` and a second
+  `with_env_variable`. Every such mutation is replayed against the real files and must red.
+  Changing the suite is allowed; doing it without updating the pin in the same diff is not.
+  Threat model: plausible (careless or accidental) edits, not deliberate obfuscation
+  elsewhere in the workflow, which code review covers.
+- The pins are not the whole guard: in the CI suite lanes `tests/test_ci_xdist_witness.py`
+  checks the run itself -- the installed `pytest-xdist` version, that it is executing on an
+  xdist worker with `--max-worker-restart=0` and at least two workers (at least the capped 8
+  on Dagger), and, re-running the lane's own post-bash argv on one node in the same cwd and
+  environment with a one-hook plugin that records what xdist's controller settled on, that
+  it uses those workers, the `LoadFileScheduling` scheduler xdist actually built (a conftest
+  `pytest_xdist_make_scheduler` could otherwise swap it) and an effective restart cap of 0. It is its own module so
+  a renamed CI file cannot skip it together with the pins. Review showed edits outside every pinned text that
+  still changed the real run (a conftest `pytest_xdist_auto_num_workers` hook, a
+  `[tool.pytest] addopts`, a worker cap sourced from an env file, a second install via a
+  requirements file); each makes the witness red. The `addopts` check now parses
+  `pyproject.toml` as TOML (both `[tool.pytest]` and `[tool.pytest.ini_options]`).
+- `tests/test_proc_cpu.py`: the monotonic test sampled its OWN process group, which under
+  xdist also holds the controller, sibling workers and their short-lived children; one
+  exiting between samples lowered the sum (py3.11 CI: 29034 -> 28938). It now samples a
+  one-process private session, and a new test proves the group total is a SUM over members.
+- `tests/phase_loop_test_utils.make_repo` sets `gc.auto=0` and `maintenance.auto=false`
+  before its first commit. Every `git commit` spawns `git maintenance run --auto` detached
+  (verified with `GIT_TRACE`: 3 spawns without the keys, 0 with either), and that child
+  creates and removes `.git/objects/maintenance.lock`. A test that then WALKS the tree races
+  it -- by `shutil.copytree` (this PR's py3.12 red) or by `rmtree`, including
+  `TemporaryDirectory` cleanup (`main`'s last serial red, `Directory not empty: 'objects'`).
+  Parallel workers widen the window. It is the class agent-harness#656 fixed for
+  `test_tdd_chronology.py` only.
+- Scope, stated precisely: this fixes every repository `make_repo` builds (139 test files
+  import it). It does NOT fix the ~61 test files that build their own repositories, about 32
+  of which also walk a tree in-test; those remain exposed exactly as before, tracked as
+  agent-harness#989. The fix must not move into a `GIT_CONFIG_*` environment variable in
+  `conftest.py`: the CONFORM chronology verifier requires a zero-`GIT_*` environment and
+  nested pytest children inherit it.
+- The Dagger offload sets `PYTEST_XDIST_AUTO_NUM_WORKERS=8` in its container env. `-n auto`
+  there would be 32 per container across concurrently-running stages, and worker count
+  scales two known cross-worker races (agent-harness#945 follow-up). The suite command
+  itself stays identical to the hosted lane's. No CI run has yet executed the Dagger
+  suite with these flags; the offload is skipped on pull requests.
+- This was blocked by the lease-guard SIGIO production bug (agent-harness#950): under
+  parallelism `test_clean_settings_detects_a_conflicting_open_lease_break` crashed its
+  worker. That fix landed separately (agent-harness#953); this change depends on it.
+- The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
+  unchanged and is invoked as its own shell command with no `-n auto`.
+
 ### Opus 5.5 replaces every Fable default
 
 - `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the
