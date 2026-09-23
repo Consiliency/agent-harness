@@ -8815,6 +8815,31 @@
             "prior_full_disposition_sha256": "44895946fc3de19b07bad45b729106e12d97e1d9e5e33ee80ab8b142a81eaecf",
             "disposition": "Source fixes retain the immutable publish anchor and actionable quoted native-fill material. Documentation follows the admission-effect boundary. Incomplete reviewer context and ambiguous scope instructions are author-owned packet defects. Fresh integrated-head verification, complete scoped inputs, four-vendor approval and CI remain pending; no prior votes transfer, supplier allowance, install, release or phase completion."
           }
+        },
+        {
+          "at": "2026-09-23T02:57:34Z",
+          "by": "codex-execute-detailed",
+          "transition": "executing",
+          "metadata": {
+            "event": "r9_fable_review_reconciled_stale_upstream_binding_repair",
+            "reviewed_head": "0cefe61a4dabcf1fd5cfe304d6f9d21a079ee45d",
+            "review_status": "not_converged",
+            "review_terminal_manifest_sha256": "5a61c7cae78cfc53747f63014ae1446d95cf70f736dfe778b4e8a840d1df36f7",
+            "review_disposition_url": "https://github.com/Consiliency/agent-harness/pull/978#issuecomment-5788134631",
+            "claude_default": "claude-fable-5-1/max; five completed scope reviews; historical Opus records preserved",
+            "tests_first_commit": "66ae63daa51bf03354011251de9ed503ca611ad6",
+            "repair_source_head": "0fe6446f6e347154551f257e93f3a887ba20d9d3",
+            "red_summary": "6 failed, 6 passed, zero skipped; isolated tests-only worktree at original production bytes",
+            "green_summary": "Same 12 controls passed; 21 existing regressions passed; zero skips; local preintegration evidence",
+            "green_receipt_sha256": "38953028c28e6f351d9970aa22c5a2e694a3e096be37947a4f23e7ad66cfbed8",
+            "repair_index_sha256": "e5a4b5ba04075788cd891708342dd9994d769af264be1bf50881686fad59ad06",
+            "integrated_main_input": "8bb379df24041ecd8f82f6ae4171863939b8ef0e",
+            "verification_status": "failed",
+            "prior_full_head": "0cefe61a4dabcf1fd5cfe304d6f9d21a079ee45d",
+            "prior_full_summary": "16 failed, 6901 passed, 720 skipped; diagnosis retained, not green; no fresh-main, environment-equivalence or skip-set claim",
+            "prior_full_verification_sha256": "674a1e6266c7a817194754601805a2fb0a16e57859ca674a5b6cd74a2e5bdade",
+            "disposition": "The stale-upstream refusal now retains the durable FAB run ID and merge order, with reproduced normal and revoked resume controls. Smaller complete functional packets must repair missing reviewer context and name failure evidence. All twenty old reports remain retained; E/Grok has no usable verdict and no inferred cause. Fresh integrated-head verification, complete-union four-vendor review and required CI remain pending. No votes transfer, supplier allowance, install, release or phase completion."
+          }
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -8831,7 +8856,7 @@
       "status": "executing",
       "task_summary": "Coordinator-owned admitted train review packet, zero-model preview and content-bound approval for agent-harness#906 and agent-harness#915.",
       "type": "detailed",
-      "updated_at": "2026-09-23T00:46:59Z"
+      "updated_at": "2026-09-23T02:57:34Z"
     }
   ],
   "schema_version": 1

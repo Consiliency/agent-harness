@@ -18,7 +18,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Trusted FAB readmission freezes all proposed-head material before recovery or
   delta review, then requires fresh durable admission and repository revocation
   checks before using the identical packet. Native request emission returns on
-  cache hits; failure/resume records preserve complete admission identity.
+  cache hits; readmission failures, live-read failures and stale-upstream
+  refusals preserve the admitted FAB identity needed by their resume guards.
 - Whole deleted subtrees may use explicit, bound operator disposal attestations.
   Certificates prove deletion mechanics, not generatedness; other substantive
   changes stay inline. Invalid, missing or oversized material holds without
