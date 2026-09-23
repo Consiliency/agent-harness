@@ -673,6 +673,7 @@ _PRESIDENT_REFUSAL_CODES: frozenset[str] = frozenset({
     "president_invocation_failed",
     "president_ruling_format_missing",
     "degraded_president_validation_deferred",
+    "president_operation_cancelled",
 })
 
 _PRESIDENT_FORCING_PREFIX = "FORCING DECISION:"
@@ -7427,6 +7428,9 @@ _PRODUCTION_EXEC_LEG = _exec_leg
 _PRODUCTION_EXEC_CLAUDE_TUI_LEG = _exec_claude_tui_leg
 _PRODUCTION_RUN_LEG_WITH_LIVENESS = _run_leg_with_liveness
 _PRODUCTION_RUN_CLAUDE_TUI_SESSION = _run_claude_tui_session
+# The president's control-seam predicate (agent-harness#1001) compares against THIS
+# module-level capture, so it cannot depend on when ``president_adapter`` was imported.
+_PRODUCTION_LAUNCH_PROVIDER = launch_provider
 _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS = _claude_code_support_status
 _PRODUCTION_CLAUDE_SUBSCRIPTION_AUTH_OK = _claude_subscription_auth_ok
 _PRODUCTION_DEFAULT_SPAWN = _default_spawn

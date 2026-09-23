@@ -67,6 +67,8 @@ from .president_operation import (
 # returns it.
 PRESIDENT_ROUTE_UNAVAILABLE = "president_execution_route_unavailable"
 PRESIDENT_NATIVE_FILL_DEFERRED = "native_fill_deferred"
+# agent-harness#1001: a cancelled operation stops the walk (no later rung launches).
+PRESIDENT_OPERATION_CANCELLED = "president_operation_cancelled"
 
 _PROMPT_PREFIX = panel_invoker._president_prompt(())
 _REASK_SUFFIX = panel_invoker._president_prompt((), format_reask=True)[len(_PROMPT_PREFIX):]
@@ -165,14 +167,23 @@ class PresidentInvoke:
         harness = str(seat.harness or "").lower()
         if harness == "claude" and panel_invoker._under_claude_code(self.base_env):
             return self._native_fill(rung, seat, prompt)
+        self._raise_if_cancelled(rung, seat)
         try:
             return self._launch(rung, seat, harness, prompt)
         except PresidentPolicyError:
             raise
         except Exception as exc:  # a broken route is a typed failure, never a descent
+            # A cancelled operation stops the whole walk: no later rung may launch.
+            self._raise_if_cancelled(rung, seat)
             detail = f"president {rung!r} route failed: {type(exc).__name__}: {exc}"
             self._record(rung, seat, "failed", "president_invocation_failed", detail)
             return {"status": "failed", "code": "president_invocation_failed", "detail": detail}
+
+    def _raise_if_cancelled(self, rung: str, seat: Seat) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            detail = "the president operation was cancelled"
+            self._record(rung, seat, "cancelled", PRESIDENT_OPERATION_CANCELLED, detail)
+            raise PresidentPolicyError(PRESIDENT_OPERATION_CANCELLED, detail)
 
     def _native_fill(self, rung: str, seat: Seat, prompt: str) -> Mapping[str, str]:
         if self.monitoring_policy == "heartbeat_only":
@@ -203,9 +214,12 @@ class PresidentInvoke:
             # seat the authorization did not route is refused without launching.
             if harness not in routes:
                 raise ValueError(f"no authorized president route for {harness!r}")
-            if _injected_president_seam():
-                # The in-process control seam (a patched transport or launch site): no
-                # real provider can start, so there is nothing to broker. Never evidence.
+            if self.monitoring_policy != "heartbeat_only" and _injected_president_seam():
+                # The in-process control seam (a patched transport or launch site), under
+                # BOUNDED monitoring only -- the frozen corpus's seam, with the same
+                # identity rule as review seats (``_has_injected_review_execution_seam``).
+                # Never evidence. ``heartbeat_only`` never takes this branch: its guarantee
+                # (monitor, broker, egress) holds whatever the launch site is.
                 with tempfile.TemporaryDirectory(prefix="phase-loop-president-") as scratch:
                     stage = Path(scratch) / "president"
                     out_dir = Path(scratch) / "out"
@@ -237,7 +251,7 @@ class PresidentInvoke:
         latch: "panel_invoker._ProviderQuiescenceLatch | None" = None,
     ) -> tuple[int, str, str]:
         if harness == "claude":
-            return self._launch_claude(route_model, prompt, out_dir, monitor=monitor)
+            return self._launch_claude(route_model, prompt, out_dir, monitor=monitor, latch=latch)
         if harness == "gemini":
             return self._launch_gemini(route_model, prompt, out_dir, monitor=monitor, latch=latch)
         return panel_invoker._exec_leg(
@@ -306,9 +320,12 @@ class PresidentInvoke:
             egress_prefix = egress_stack.enter_context(panel_invoker._sandbox_egress.isolated_network(
                 timeout_s=None if heartbeat else float(panel_invoker._LEG_TIMEOUT_MAX_S) + 300.0,
             ))
-            if panel_invoker._sandbox_egress.egress_required() and not egress_prefix:
+            if not egress_prefix:
+                # Unconditional, unlike the review path's operator opt-out: this
+                # authorization DECLARES child_network_egress=False, and a launch without a
+                # filtered namespace would contradict it.
                 raise panel_invoker._sandbox_egress.EgressUnavailable(
-                    "egress isolation yielded an empty launch prefix"
+                    "egress isolation unavailable: the president launch requires a filtered namespace"
                 )
             token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
             egress_stack.callback(panel_invoker._EGRESS_LAUNCH_PREFIX.reset, token)
@@ -342,9 +359,10 @@ class PresidentInvoke:
                     return ("OK" if rc == 0 and (text or "").strip() else "ERROR"), text
 
                 adapter = backing._make_broker_inference_adapter(infer, latch.cancel, latch.is_quiescent)
+                cancel = monitor.cancel if monitor is not None else self.cancel_event
                 response, _probe = broker.run_credentialless_client(
                     adapter, deadline_s=None if deadline_s is None else float(deadline_s),
-                    **({"cancel_event": monitor.cancel} if monitor is not None else {}),
+                    **({"cancel_event": cancel} if cancel is not None else {}),
                 )
                 latch.raise_if_set()
             finally:
@@ -412,6 +430,7 @@ class PresidentInvoke:
         out_dir: Path,
         *,
         monitor: "panel_invoker._ReviewMonitor | None" = None,
+        latch: "panel_invoker._ProviderQuiescenceLatch | None" = None,
     ) -> tuple[int, str, str]:
         # The brokered self-PTY session: tools off, no directory grant, answer read from
         # the session transcript. Called directly (not through the review wrapper) so a
@@ -439,6 +458,9 @@ class PresidentInvoke:
                 allow_transcript_final=True,
                 broker_transcript_path=transcript,
                 **({"review_monitor": monitor} if monitor is not None else {}),
+                # The broker's stop path reaches the Claude process through the latch,
+                # exactly as for the review TUI seat.
+                **({"quiescence_latch": latch} if latch is not None else {}),
             )
         finally:
             panel_invoker._cleanup_broker_claude_transcript(transcript, None)
@@ -449,9 +471,6 @@ class PresidentInvoke:
 # staged bundle): a fixed marker, so the broker's stage digest identifies the operation.
 _PRESIDENT_STAGE_INSTRUCTIONS = "public_board_president.v1: rule on every finding in the staged brief.\n"
 
-_PRODUCTION_LAUNCH_PROVIDER = panel_invoker.launch_provider
-
-
 def _injected_president_seam() -> bool:
     """True for the in-process control seam: a patched transport or launch site.
 
@@ -460,7 +479,7 @@ def _injected_president_seam() -> bool:
     """
     return (
         panel_invoker._has_injected_review_execution_seam()
-        or panel_invoker.launch_provider is not _PRODUCTION_LAUNCH_PROVIDER
+        or panel_invoker.launch_provider is not panel_invoker._PRODUCTION_LAUNCH_PROVIDER
     )
 
 

@@ -23,7 +23,8 @@ from phase_loop_runtime.advisor_board import backing
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
 RULING = "FINDING F001: DEFERRED — ok\nFORCING DECISION: LAND"
-PROVIDER_RUNGS = ("sol", "grok", "gemini")
+# fable = the Claude rung outside Claude Code (base_env={} here), brokered like the rest.
+PROVIDER_RUNGS = ("sol", "fable", "grok", "gemini")
 
 
 def _git_repo(tmp_path: Path) -> Path:
@@ -148,9 +149,12 @@ def test_a_cancelled_operation_never_launches(tmp_path):
             DEFAULT_BOARD, repo_dir=str(repo), base_env={}, monitoring_policy="heartbeat_only",
         )
         seam.cancel_event = cancel
-        response = seam("grok", "F001: [x] y")
+        with pytest.raises(panel_invoker.PresidentPolicyError) as excinfo:
+            seam("grok", "F001: [x] y")
     assert seen == []
-    assert response["status"] == "failed"
+    # a cancelled operation stops the walk: a typed refusal, never a descent to the next rung
+    assert excinfo.value.code == president_adapter.PRESIDENT_OPERATION_CANCELLED
+    assert excinfo.value.code in panel_invoker._PRESIDENT_REFUSAL_CODES
 
 
 def test_the_president_leg_capability_is_single_use_and_policy_bound(tmp_path):
@@ -208,3 +212,96 @@ def test_invoke_board_binds_its_operation_cancel_to_the_president_seam(tmp_path)
             )
     assert seen.get("cancel_event") is cancel
     assert real is president_adapter.build_president_invoke
+
+
+def test_the_claude_rung_hands_the_broker_latch_to_the_tui_session(tmp_path):
+    # native seat r1 B1: the broker's stop path must reach the Claude process.
+    latch = panel_invoker._ProviderQuiescenceLatch()
+    monitor = panel_invoker._ReviewMonitor(tmp_path / "m.json", "t", 0, threading.Event())
+    seen: dict[str, object] = {}
+
+    def spy_session(**kwargs):
+        seen.update(kwargs)
+        return 0, RULING, "", ""
+
+    seam = president_adapter.build_president_invoke(DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={})
+    with patch.object(panel_invoker, "_run_claude_tui_session", spy_session):
+        seam._launch_claude("claude-opus-5-5", "F001: [x] y", tmp_path, monitor=monitor, latch=latch)
+    assert seen["quiescence_latch"] is latch and seen["review_monitor"] is monitor
+    # and the brokered transport routes the latch to the Claude launch
+    handed: dict[str, object] = {}
+
+    def spy_launch(self, route, prompt, out_dir, *, monitor=None, latch=None):
+        handed.update(monitor=monitor, latch=latch)
+        return 0, RULING, ""
+
+    with patch.object(president_adapter.PresidentInvoke, "_launch_claude", spy_launch):
+        seam._transport("claude", "claude-opus-5-5", "F001: [x] y", tmp_path, tmp_path,
+                        monitor=monitor, latch=latch)
+    assert handed == {"monitor": monitor, "latch": latch}
+
+
+def test_the_seam_predicate_does_not_depend_on_import_order():
+    # native seat r1 F1: the production launch site is captured in panel_invoker itself.
+    assert panel_invoker._PRODUCTION_LAUNCH_PROVIDER is panel_invoker.launch_provider
+    assert not president_adapter._injected_president_seam()
+    with patch.object(panel_invoker, "launch_provider", lambda *a, **k: None):
+        assert president_adapter._injected_president_seam()
+    assert not president_adapter._injected_president_seam()
+
+
+@needs_egress
+@pytest.mark.parametrize("rung", PROVIDER_RUNGS)
+def test_heartbeat_never_bypasses_the_broker_for_a_forwarding_launch_site(tmp_path, rung):
+    # board r1 codex B1 / grok B1: a wrapper around launch_provider must not buy an
+    # unbrokered, unmonitored heartbeat launch.
+    repo = _git_repo(tmp_path)
+    seen: list[dict[str, object]] = []
+    real = panel_invoker.launch_provider
+    with patch.object(president_adapter.PresidentInvoke, "_transport", _observe(seen)), patch.object(
+        panel_invoker, "launch_provider", lambda *a, **k: real(*a, **k)
+    ):
+        assert president_adapter._injected_president_seam()
+        seam = president_adapter.build_president_invoke(
+            DEFAULT_BOARD, repo_dir=str(repo), base_env={}, monitoring_policy="heartbeat_only",
+        )
+        response = seam(rung, "F001: [x] y")
+    assert response["status"] == "ok"
+    assert isinstance(seen[0]["monitor"], panel_invoker._ReviewMonitor) and seen[0]["prefix"]
+
+
+def test_an_empty_egress_prefix_is_refused_even_when_egress_is_optional(tmp_path, monkeypatch):
+    # board r1 codex B2: the authorization declares no network egress.
+    from contextlib import contextmanager
+
+    @contextmanager
+    def no_namespace(*args, **kwargs):
+        yield ()
+
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: False)
+    monkeypatch.setattr(sandbox_egress, "isolated_network", no_namespace)
+    repo = _git_repo(tmp_path)
+    seen: list[dict[str, object]] = []
+    with patch.object(president_adapter.PresidentInvoke, "_transport", _observe(seen)):
+        seam = president_adapter.build_president_invoke(
+            DEFAULT_BOARD, repo_dir=str(repo), base_env={}, monitoring_policy="bounded",
+        )
+        response = seam("grok", "F001: [x] y")
+    assert seen == []
+    assert response["status"] == "failed" and "egress isolation unavailable" in response["detail"]
+
+
+@pytest.mark.parametrize("policy", ["bounded", "heartbeat_only"])
+def test_a_cancelled_operation_refuses_before_any_launch_under_either_policy(tmp_path, policy):
+    # board r1 grok B2: bounded cancellation refuses too, typed, before any effect.
+    seen: list[dict[str, object]] = []
+    cancel = threading.Event()
+    cancel.set()
+    with patch.object(president_adapter.PresidentInvoke, "_transport", _observe(seen)):
+        seam = president_adapter.build_president_invoke(
+            DEFAULT_BOARD, repo_dir=str(_git_repo(tmp_path)), base_env={},
+            monitoring_policy=policy, cancel_event=cancel,
+        )
+        with pytest.raises(panel_invoker.PresidentPolicyError) as excinfo:
+            seam("grok", "F001: [x] y")
+    assert seen == [] and excinfo.value.code == president_adapter.PRESIDENT_OPERATION_CANCELLED

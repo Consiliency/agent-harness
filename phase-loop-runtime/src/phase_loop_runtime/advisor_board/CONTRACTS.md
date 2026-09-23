@@ -550,9 +550,13 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   brief and a fixed president instruction marker). Under `heartbeat_only` the transport runs
   with a `_ReviewMonitor` -- no model-thinking deadline, no silence kill; cancellation (the
   board's `cancel_event`) and owner loss are the only stops -- and the gemini rung uses the
-  owned heartbeat agy profile. A missing canonical repository or unavailable egress is a typed
-  refusal before any provider starts. A patched transport or launch site is the in-process
-  control seam and is not brokered (never evidence), as for review seats.
+  owned heartbeat agy profile, and the Claude rung hands the broker's quiescence latch to its
+  TUI session. A missing canonical repository, an empty egress prefix (always -- the
+  authorization declares no network egress) or a cancelled operation
+  (`president_operation_cancelled`, which stops the walk) is a typed refusal before any provider
+  starts. Under BOUNDED monitoring only, a patched transport or launch site is the in-process
+  control seam and is not brokered (never evidence), as for review seats; `heartbeat_only` is
+  always brokered.
 - **Configured ladder** (agent-harness#998 follow-up). `PRESIDENT_LADDER` is the BUILT-IN
   order; the effective order is `advisor_board.config.load_president_ladder(repo_dir, *,
   env, path)`: built-in < the user file's `[president] ladder`
