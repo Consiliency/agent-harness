@@ -521,9 +521,13 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   launches that authorization's route; a seat the authorization does not route (Claude
   included) is refused without launching.
 - **Rung routes** (`president_adapter.build_president_invoke(..., monitoring_policy=)`).
-  Unseated rung → typed `president_unavailable` (descend). `sol` / `grok` / `gemini` →
-  the brokered `_exec_leg` in a throwaway directory, whose only launch is
-  `launch_provider`. `fable` under Claude Code (from the passed `base_env`; the adapter
+  Unseated rung → typed `president_unavailable` (descend). `sol` / `grok` → the brokered
+  `_exec_leg` in a throwaway directory, whose only launch is `launch_provider`. `gemini` →
+  the broker's acknowledged agy stream with the PRESIDENT's own final instruction (a ruling,
+  not a review verdict), launched through `_run_leg_with_liveness` → `launch_provider` and
+  decoded by `_broker_gemini_stream_result`; with the agy subscription credential it runs in
+  the broker's agy profile, without one in an empty private HOME (no credential of any kind),
+  so the provider itself refuses and the failure is typed. `fable` under Claude Code (from the passed `base_env`; the adapter
   falls back to the process environment only when none is passed, so it never spawns a
   second TUI) → a deferred native fill `{"status": "native_fill_deferred", rung,
   brief_digest, findings_digest}`, refused with `president_fill_heartbeat_refused` under

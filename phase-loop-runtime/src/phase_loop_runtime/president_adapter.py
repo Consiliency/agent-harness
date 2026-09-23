@@ -41,9 +41,13 @@ the ladder walk beside the ruling (or beside the refusal).
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -195,6 +199,8 @@ class PresidentInvoke:
             out_dir.mkdir()
             if harness == "claude":
                 rc, text, log = self._launch_claude(routes["claude"], prompt, out_dir)
+            elif harness == "gemini":
+                rc, text, log = self._launch_gemini(routes["gemini"], prompt, out_dir)
             else:
                 rc, text, log = panel_invoker._exec_leg(
                     harness,
@@ -214,6 +220,31 @@ class PresidentInvoke:
             return {"status": "failed", "code": "president_invocation_failed", "detail": detail}
         self._record(rung, seat, "ok", None, None, len(text))
         return {"status": "ok", "text": text}
+
+    def _launch_gemini(self, route_model: str, prompt: str, out_dir: Path) -> tuple[int, str, str]:
+        # The brokered agy transport with the PRESIDENT's own final instruction (the
+        # review transport asks for "the complete review and its required terminal
+        # verdict"), launched only through ``_run_leg_with_liveness`` ->
+        # ``launch_provider`` and decoded by the same acknowledged-stream reader.
+        protocol = _president_gemini_stream_protocol(prompt)
+        deadline_s = panel_invoker._MAX_LEG_TIMEOUT_S
+        command = panel_invoker._brokered_gemini_command(
+            model=route_model, deadline_s=deadline_s, staged_tree=None, monitoring_policy="bounded",
+        )
+        with _president_agy_environment(panel_invoker._broker_subscription_env(self.base_env)) as env:
+            try:
+                proc = panel_invoker._run_leg_with_liveness(
+                    command, cwd=out_dir, env=env, deadline_s=deadline_s,
+                    input_text=protocol.transport,
+                )
+            except subprocess.TimeoutExpired:
+                return 124, "", "Gemini president deadline exceeded"
+        if proc.returncode != 0:
+            return proc.returncode, "", proc.stderr or ""
+        rc, text, detail, _metadata = panel_invoker._broker_gemini_stream_result(
+            proc.stdout or "", protocol
+        )
+        return rc, text, detail or proc.stderr or ""
 
     def _launch_claude(self, route_model: str, prompt: str, out_dir: Path) -> tuple[int, str, str]:
         # The brokered self-PTY session: tools off, no directory grant, answer read from
@@ -245,6 +276,58 @@ class PresidentInvoke:
         finally:
             panel_invoker._cleanup_broker_claude_transcript(transcript, None)
         return rc, text, log
+
+
+_PRESIDENT_GEMINI_FINAL_INSTRUCTION = (
+    "Rule on every finding in that complete input: one line per finding, exactly "
+    "`FINDING <id>: BLOCKING|DEFERRED — <reason>`, then end with `FORCING DECISION: <decision>`; "
+    "do not mention truncation."
+)
+
+
+def _president_gemini_stream_protocol(prompt: str):
+    """The brokered agy ingestion transcript with the president's final instruction.
+
+    Chunking, per-chunk acknowledgements and sealing are the broker's own; only the
+    final synthesis event is the president's (it asks for a ruling, not a review
+    verdict).
+    """
+    protocol = panel_invoker._broker_gemini_stream_protocol(prompt)
+    events = protocol.transport.rstrip("\n").split("\n")
+    final = json.loads(events[-1])
+    lines = final["message"]["content"].split("\n")
+    lines[-1] = _PRESIDENT_GEMINI_FINAL_INSTRUCTION
+    final["message"]["content"] = "\n".join(lines)
+    final_event = json.dumps(final, separators=(",", ":"), ensure_ascii=False)
+    events[-1] = final_event
+    return replace(
+        protocol,
+        transport="\n".join(events) + "\n",
+        final_event_sha256=hashlib.sha256(final_event.encode("utf-8")).hexdigest(),
+    )
+
+
+@contextmanager
+def _president_agy_environment(env: Mapping[str, str]):
+    """The broker's agy profile when the subscription credential exists; otherwise an
+    empty private HOME with no credential of any kind, so the launch still goes through
+    the single launch site and the provider itself refuses (fail-closed, recorded)."""
+    profile = panel_invoker._brokered_agy_environment(env, None)
+    try:
+        agy_env = profile.__enter__()  # raises ValueError when no credential reference exists
+    except ValueError:
+        profile = None
+    if profile is not None:
+        try:
+            yield agy_env
+        finally:
+            profile.__exit__(None, None, None)
+        return
+    with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-") as empty_home:
+        bare = dict(env)
+        bare["HOME"] = empty_home
+        bare["XDG_CONFIG_HOME"] = str(Path(empty_home) / ".config")
+        yield bare
 
 
 def build_president_invoke(

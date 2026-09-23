@@ -1929,6 +1929,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         else:
             print(f"advisor-board: {exc}", file=sys.stderr)
         return 2
+    # PRESROUTE: a usage error is refused before any availability/auth probe.
+    if getattr(args, "native_president", None) is not None and getattr(args, "landing_tier", None) is None:
+        print("advisor-board: --native-president requires --landing-tier", file=sys.stderr)
+        return 2
     artifact_path = Path(args.artifact)
     # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
     # artifact resolver. Fail closed with a recoverable exit, never a traceback.

@@ -20,14 +20,22 @@ def _artifact(tmp_path: Path) -> Path:
     return artifact
 
 
-def _stub_mint(monkeypatch) -> None:
+def _stub_mint(monkeypatch, tmp_path=None) -> None:
+    """Hermetic: no review mint, no vendor availability/auth probe, no user config."""
+    from phase_loop_runtime.advisor_board import composition
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
     monkeypatch.setattr(
         backing, "prepare_review_isolation_authorization", lambda *a, **k: None
     )
+    monkeypatch.setattr(composition, "compose_review_board", lambda *a, **k: DEFAULT_BOARD)
+    if tmp_path is not None:
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 
 def test_native_president_without_a_landing_tier_is_refused(tmp_path, monkeypatch, capsys):
-    _stub_mint(monkeypatch)
+    _stub_mint(monkeypatch, tmp_path)
     called: list[object] = []
     monkeypatch.setattr(panel_invoker, "invoke_board", lambda *a, **k: called.append(k))
     fill = tmp_path / "fill.json"
@@ -39,7 +47,7 @@ def test_native_president_without_a_landing_tier_is_refused(tmp_path, monkeypatc
 
 
 def test_production_tier_binds_a_president_seam_to_the_driving_env(tmp_path, monkeypatch, capsys):
-    _stub_mint(monkeypatch)
+    _stub_mint(monkeypatch, tmp_path)
     monkeypatch.setenv("CLAUDECODE", "1")
     seen: dict[str, object] = {}
 
@@ -73,7 +81,7 @@ def test_production_tier_binds_a_president_seam_to_the_driving_env(tmp_path, mon
 
 
 def test_native_president_fill_is_passed_through_for_resume(tmp_path, monkeypatch):
-    _stub_mint(monkeypatch)
+    _stub_mint(monkeypatch, tmp_path)
     seen: dict[str, object] = {}
 
     def fake_invoke_board(board, artifact, **kwargs):

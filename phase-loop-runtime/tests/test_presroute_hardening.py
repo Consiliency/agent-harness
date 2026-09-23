@@ -5,6 +5,7 @@ Not part of the SL-0 frozen corpus.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -306,3 +307,35 @@ def test_a_self_inconsistent_pending_record_is_refused(tmp_path, mutation):
     path.write_text(json.dumps(pending))
     _refused(lambda: _resume(stream, fill))
     assert not (stream / "president.ruling.json").exists()
+
+
+# CI (agent-harness#998 on 02450afe): the gemini president rung has its own transport.
+def test_the_gemini_president_transport_asks_for_a_ruling_not_a_review():
+    prompt = panel_invoker._president_prompt(("F001: [grok] a finding", "F002: [sol] another"))
+    review = panel_invoker._broker_gemini_stream_protocol(prompt)
+    president = president_adapter._president_gemini_stream_protocol(prompt)
+    # the broker's chunking, sealing and acknowledgements are unchanged ...
+    assert president.acknowledgements == review.acknowledgements
+    assert president.chunk_sha256 == review.chunk_sha256
+    assert president.transport.split("\n")[:-2] == review.transport.split("\n")[:-2]
+    # ... only the final synthesis instruction is the president's.
+    final = json.loads(president.transport.rstrip("\n").split("\n")[-1])["message"]["content"]
+    assert "FORCING DECISION" in final and "terminal verdict" not in final
+    assert president.final_event_sha256 != review.final_event_sha256
+
+
+def test_the_gemini_rung_without_an_agy_credential_launches_into_an_empty_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "no-credential-home"))
+    launched: list[dict[str, str]] = []
+
+    def capture(argv, **kwargs):
+        launched.append(dict(kwargs.get("env") or {}))
+        raise RuntimeError("no agy here")
+
+    with patch.object(panel_invoker, "launch_provider", capture):
+        seam = president_adapter.build_president_invoke(DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={})
+        response = seam("gemini", "F001: [gemini] x")
+    assert len(launched) == 1
+    home = Path(launched[0]["HOME"])
+    assert home != tmp_path / "no-credential-home" and not any(home.rglob("*oauth*"))
+    assert response["status"] == "failed" and response["code"] == "president_invocation_failed"
