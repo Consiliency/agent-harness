@@ -1302,13 +1302,17 @@ SUBSCRIPTION_SCRUB_ONLY_VARS: tuple[str, ...] = ("XAI_API_KEY", "GROK_CODE_XAI_A
 
 # Endpoint selectors that redirect a grok child's inference traffic away from the
 # subscription service -- the grok counterpart of ``ANTHROPIC_BASE_URL`` in
-# ``CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS``. From the grok CLI's documentation:
-# ``GROK_CLI_CHAT_PROXY_BASE_URL`` (override the cli-chat-proxy URL) and
-# ``GROK_XAI_API_BASE_URL`` (public xAI API base); ``XAI_API_BASE_URL`` is the
-# unprefixed form the CLI also reads.
+# ``CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS``. Documented by the grok CLI (1.0.41):
+# ``GROK_CLI_CHAT_PROXY_BASE_URL`` (override the cli-chat-proxy URL),
+# ``GROK_XAI_API_BASE_URL`` (public xAI API base) and ``GROK_MODELS_BASE_URL`` (custom
+# inference base URL). ``XAI_API_BASE_URL`` is NOT shown to be read by the CLI; it is
+# removed defensively (an xAI SDK-style endpoint name; removing it is harmless).
+# Not exhaustive: other grok configuration (e.g. its config-file endpoints) is out of
+# an environment scrub's reach.
 GROK_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
     "GROK_CLI_CHAT_PROXY_BASE_URL",
     "GROK_XAI_API_BASE_URL",
+    "GROK_MODELS_BASE_URL",
     "XAI_API_BASE_URL",
 )
 

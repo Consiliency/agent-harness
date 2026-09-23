@@ -46,19 +46,29 @@ def test_xai_keys_are_scrub_only_never_injectable():
     assert set(XAI_VARS) <= set(backing.SUBSCRIPTION_SCRUB_ONLY_VARS)
 
 
-@pytest.mark.parametrize("var", backing.GROK_SUBSCRIPTION_BLOCKED_ENV_VARS)
+# Literal, not the tuple under test: deleting a name from the tuple must go red.
+GROK_REDIRECTS = (
+    "GROK_CLI_CHAT_PROXY_BASE_URL", "GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL",
+    "XAI_API_BASE_URL",
+)
+
+
+@pytest.mark.parametrize("var", GROK_REDIRECTS)
 def test_grok_endpoint_redirects_are_scrubbed(var):
     # native seat F1: a subscription grok child must not be redirected off the service.
     seat = next(s for s in DEFAULT_SEATS if s.harness == "grok")
     env = {var: "https://elsewhere.invalid/v1", "PATH": "/usr/bin"}
     assert scrub_subscription_env(env) == {"PATH": "/usr/bin"}
     assert var not in resolve_seat_env(seat, env)
+    assert panel_invoker._subscription_env(env) == {"PATH": "/usr/bin"}
 
 
 def test_the_convergence_child_environment_is_scrubbed(monkeypatch):
     from phase_loop_runtime.convergence.adapters import base
 
-    for var in XAI_VARS:
+    for var in XAI_VARS + GROK_REDIRECTS:
         monkeypatch.setenv(var, "test-only")
+    monkeypatch.setenv("PHASE_LOOP_UNRELATED_864", "kept")
     env = base._child_environment()
-    assert not set(XAI_VARS) & set(env)
+    assert not set(XAI_VARS + GROK_REDIRECTS) & set(env)
+    assert env["PHASE_LOOP_UNRELATED_864"] == "kept"
