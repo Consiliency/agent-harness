@@ -557,7 +557,8 @@ def _conform_timing_sweep() -> None:
     * Displacing a live fixture patch is therefore possible here, and nothing in
       this function prevents it. The opt-in flag confines the exposure to runs
       that set it; that is all it does. There is NO record: this list is a work
-      QUEUE, appended at install and `pop`ped here, and nothing logs or persists
+      QUEUE, appended by `restore()` when a measured call ends and `pop`ped
+      here, and nothing logs or persists
       a retirement -- so a displacement would be silent. The residual is open.
     """
     while _CONFORM_RETIRED_BINDINGS:
