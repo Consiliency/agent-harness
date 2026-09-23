@@ -3900,6 +3900,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     message_id: str | None = None
     blocks: dict[str | int, str] = {}
     incomplete = False
+    pending_terminal = False
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -3918,6 +3919,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             continue
         if message.get("role") == "user":
             message_id, blocks, incomplete = None, {}, False
+            pending_terminal = False
             continue
         if message.get("role") != "assistant":
             continue
@@ -3928,10 +3930,14 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         # Identity-less legacy records remain independent, not guessed joins.
         if current_id is None or current_id != message_id:
             message_id, blocks, incomplete = current_id, {}, False
+            pending_terminal = False
         content = message.get("content")
         if not isinstance(content, list):
             return ""
-        incomplete |= message.get("stop_reason") not in (None, "end_turn", "stop_sequence")
+        if "stop_reason" in message:
+            stop_reason = message["stop_reason"]
+            pending_terminal = stop_reason is None
+            incomplete |= stop_reason not in (None, "end_turn", "stop_sequence")
         incomplete |= any(
             isinstance(item, dict) and item.get("type") == "tool_use"
             for item in content
@@ -3944,7 +3950,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         record_id = payload.get("uuid")
         key = record_id if isinstance(record_id, str) and record_id else len(blocks)
         blocks[key] = text
-    return "" if incomplete else "\n".join(text for text in blocks.values() if text).strip()
+    return "" if incomplete or pending_terminal else "\n".join(text for text in blocks.values() if text).strip()
 
 
 def _cleanup_broker_claude_transcript(
