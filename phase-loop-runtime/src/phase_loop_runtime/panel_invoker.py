@@ -744,6 +744,33 @@ def _persist_president_ruling(
     _write_json_atomically(Path(stream_dir) / PRESIDENT_RULING_FILENAME, record)
 
 
+def _president_run_binding(
+    board: Board,
+    artifact: str,
+    *,
+    mode: str | None,
+    policy: "ReviewLandingPolicy | None",
+    landing_tier: "ReviewLandingTier | str | None",
+) -> dict[str, object]:
+    """What a native president deferral is bound to: the exact run it belongs to.
+
+    A resume is accepted only for the SAME resolved artifact bytes, the same board (its
+    ordered seat keys), the same mode and the same landing policy -- so a pending request
+    left in a reused stream directory can never answer for a different artifact or board.
+    """
+    tier = None
+    if landing_tier is not None:
+        tier = _coerce_review_landing_tier(landing_tier).value
+    return {
+        "artifact_sha256": sha256(artifact.encode("utf-8")).hexdigest(),
+        "seat_keys": [seat.seat_key for seat in board.seats],
+        "mode": mode,
+        "landing_tier": tier,
+        "required_seats": list(policy.required_seats) if policy is not None else None,
+        "requires_president": bool(policy.requires_president) if policy is not None else None,
+    }
+
+
 def _resolve_native_president(
     board: Board,
     legs: Sequence[PanelLegResult],
@@ -752,6 +779,7 @@ def _resolve_native_president(
     *,
     stream_dir: Path | str | None,
     fill: Mapping[str, str] | None,
+    binding: Mapping[str, object] | None = None,
 ) -> "PanelResult":
     """DEFER a natively filled president rung (the resume is ``_resume_native_president``).
 
@@ -773,6 +801,7 @@ def _resolve_native_president(
         {
             "schema": "president.pending.v1",
             **pending,
+            "binding": dict(binding or {}),
             "findings": list(findings),
             "legs": [
                 {"leg": leg.leg, "status": leg.status, "text": leg.text,
@@ -791,6 +820,7 @@ def _resume_native_president(
     *,
     stream_dir: Path | str | None,
     fill: Mapping[str, str],
+    binding: Mapping[str, object] | None = None,
 ) -> "PanelResult":
     """RESUME a deferred native president rung against the persisted pending request.
 
@@ -830,6 +860,21 @@ def _resume_native_president(
     ):
         raise refuse("the pending native president request is malformed")
     findings = tuple(findings)
+    # Bound to THIS run: same artifact bytes, board, mode and landing policy.
+    if pending.get("binding") != dict(binding or {}):
+        raise refuse("the pending native president request belongs to a different run "
+                     "(artifact, board, mode or landing policy differs)")
+    # The deferred verdicts must be this board's seats, in order.
+    if [item.get("seat_key") for item in legs_raw] != [seat.seat_key for seat in board.seats]:
+        raise refuse("the pending seat verdicts do not match this board's seats")
+    rung = pending.get("rung")
+    rung_seat = None
+    if isinstance(rung, str) and rung in PRESIDENT_LADDER:
+        from .president_adapter import seat_for_rung
+
+        rung_seat = seat_for_rung(board, rung)
+    if rung_seat is None or str(rung_seat.harness or "").lower() != "claude":
+        raise refuse(f"the pending rung {rung!r} is not a natively filled rung on this board")
     # The persisted request must be internally consistent: its digests recompute from
     # the findings it carries.
     if (
@@ -846,10 +891,6 @@ def _resume_native_president(
             "president_ruling_format_missing",
             "the native president fill omitted the mandatory ruling grammar",
         )
-    ruling = PresidentRuling(
-        model=str(pending["rung"]), text=text, substantive_rounds=1, format_reasks=0
-    )
-    _persist_president_ruling(stream_dir, board, ruling, findings)
     legs = tuple(
         PanelLegResult(
             leg=str(item.get("leg", "")), status=str(item.get("status", "")),
@@ -858,6 +899,12 @@ def _resume_native_president(
         )
         for item in legs_raw
     )
+    if president_findings_from_legs(board.seats, legs) != findings:
+        raise refuse("the pending findings do not derive from the pending seat verdicts")
+    ruling = PresidentRuling(model=rung, text=text, substantive_rounds=1, format_reasks=0)
+    _persist_president_ruling(stream_dir, board, ruling, findings)
+    # Consumed: a pending request answers exactly once.
+    (Path(stream_dir) / PRESIDENT_PENDING_FILENAME).unlink(missing_ok=True)
     # The resumed board's seat verdicts ARE the deferred board's: republish them to the
     # stream through the same per-seat publisher the live pool uses.
     for index, leg in enumerate(legs):
@@ -8086,6 +8133,10 @@ def invoke_board(
                 return _resolve_native_president(
                     board, results_, findings_, deferred_,
                     stream_dir=stream_dir, fill=native_president_fill,
+                    binding=_president_run_binding(
+                        board, authorization_artifact, mode=mode, policy=policy,
+                        landing_tier=landing_tier,
+                    ),
                 )
             except PresidentPolicyError as exc:
                 if exc.code not in _PRESIDENT_REFUSAL_CODES:
@@ -8295,7 +8346,13 @@ def invoke_board(
             # before any seat launches (no seat is re-run).
             if policy is not None and policy.requires_president and native_president_fill is not None:
                 return review_exit(
-                    _resume_native_president(board, stream_dir=stream_dir, fill=native_president_fill)
+                    _resume_native_president(
+                        board, stream_dir=stream_dir, fill=native_president_fill,
+                        binding=_president_run_binding(
+                            board, authorization_artifact, mode=mode, policy=policy,
+                            landing_tier=landing_tier,
+                        ),
+                    )
                 )
             # Native-host deferral is a typed data result, never a path to host
             # execution. It is reached only after the same factory/revalidation gate.
@@ -8922,6 +8979,10 @@ def invoke_board(
                 return _resolve_native_president(
                     board, results, findings, deferred,
                     stream_dir=stream_dir, fill=native_president_fill,
+                    binding=_president_run_binding(
+                        board, authorization_artifact, mode=mode, policy=policy,
+                        landing_tier=landing_tier,
+                    ),
                 )
             except PresidentPolicyError as exc:
                 if exc.code not in _PRESIDENT_REFUSAL_CODES:

@@ -1909,6 +1909,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         write_private_board,
     )
     from .panel_invoker import _mode_instructions, _preflight_gemini_heartbeat, invoke_board
+    from .panel_invoker import PresidentPolicyError
 
     monitoring_policy = getattr(args, "monitoring_policy", "bounded")
     try:
@@ -2111,6 +2112,12 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority
             invoke_kwargs.update(president_kwargs)
             result = invoke_board(board, artifact_text or "", **invoke_kwargs)
+    except PresidentPolicyError as exc:
+        # PRESROUTE: a refused president path (override, stream, resume) is a typed exit.
+        print(f"advisor-board: president refused [{exc.code}]: {exc}", file=sys.stderr)
+        if capture is not None:
+            capture.close()
+        return 2
     except (OSError, ValueError, AgyCanaryEvidenceError) as exc:
         # Artifact staging / resolution failures fail closed with a recoverable exit,
         # not a traceback.

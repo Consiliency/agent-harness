@@ -204,3 +204,85 @@ def test_a_malformed_fill_is_a_typed_refusal(tmp_path, fill):
         )
     assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
     assert not (stream / "president.ruling.json").exists()
+
+
+# native seat r2 BLOCKING: a resume is bound to the run it resumes.
+def _defer(tmp_path, artifact="artifact", board=None):
+    stream = tmp_path / "stream"
+    deferred = invoke_sanctioned_board_control(
+        board or _fable_president_board(), artifact, spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+        base_env={"CLAUDECODE": "1"}, stream_dir=stream,
+    )
+    pending = deferred.needs_native_president
+    text = "\n".join(
+        f"FINDING {f.split(':', 1)[0]}: DEFERRED — ruled" for f in deferred.president_findings
+    ) + "\nFORCING DECISION: LAND"
+    fill = {"rung": pending["rung"], "brief_digest": pending["brief_digest"],
+            "findings_digest": pending["findings_digest"], "text": text}
+    return stream, fill
+
+
+def _resume(stream, fill, artifact="artifact", board=None, policy=_POLICY):
+    return invoke_sanctioned_board_control(
+        board or _fable_president_board(), artifact, spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=policy,
+        base_env={"CLAUDECODE": "1"}, stream_dir=stream, native_president_fill=fill,
+    )
+
+
+def _refused(fn):
+    from phase_loop_runtime.president_operation import PRESIDENT_FILL_DIGEST_MISMATCH
+
+    with pytest.raises(PresidentPolicyError) as excinfo:
+        fn()
+    assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
+
+
+def test_a_resume_on_a_different_artifact_is_refused(tmp_path):
+    stream, fill = _defer(tmp_path, artifact="HEAD-A bundle")
+    _refused(lambda: _resume(stream, fill, artifact="HEAD-B bundle"))
+    assert not (stream / "president.ruling.json").exists()
+    assert _resume(stream, fill, artifact="HEAD-A bundle").president is not None
+
+
+def test_a_pending_request_from_a_different_board_is_refused(tmp_path):
+    two_seat = Board(
+        name="two", purpose="premerge-review",
+        seats=tuple(s for s in DEFAULT_SEATS if s.harness in {"claude", "grok"}),
+    )
+    policy_two = panel_invoker.ReviewLandingPolicy(required_seats=("fable", "grok"), requires_president=True)
+    stream = tmp_path / "stream"
+    deferred = invoke_sanctioned_board_control(
+        two_seat, "artifact", spawn=_ok_spawn, landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        review_policy=policy_two, base_env={"CLAUDECODE": "1"}, stream_dir=stream,
+    )
+    pending = deferred.needs_native_president
+    text = "\n".join(
+        f"FINDING {f.split(':', 1)[0]}: DEFERRED — ruled" for f in deferred.president_findings
+    ) + "\nFORCING DECISION: LAND"
+    fill = {"rung": pending["rung"], "brief_digest": pending["brief_digest"],
+            "findings_digest": pending["findings_digest"], "text": text}
+    _refused(lambda: _resume(stream, fill))
+
+
+@pytest.mark.parametrize("mutation", ["truncate_legs", "rung_to_sol", "rung_bogus"])
+def test_a_pending_request_that_does_not_fit_this_board_is_refused(tmp_path, mutation):
+    stream, fill = _defer(tmp_path)
+    path = stream / panel_invoker.PRESIDENT_PENDING_FILENAME
+    pending = json.loads(path.read_text())
+    if mutation == "truncate_legs":
+        pending["legs"] = pending["legs"][:1]
+    elif mutation == "rung_to_sol":
+        pending["rung"] = fill["rung"] = "sol"
+    else:
+        pending["rung"] = fill["rung"] = "nobody"
+    path.write_text(json.dumps(pending))
+    _refused(lambda: _resume(stream, fill))
+    assert not (stream / "president.ruling.json").exists()
+
+
+def test_a_pending_request_answers_exactly_once(tmp_path):
+    stream, fill = _defer(tmp_path)
+    assert _resume(stream, fill).president is not None
+    _refused(lambda: _resume(stream, fill))

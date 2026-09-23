@@ -541,10 +541,15 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   (`president_native_fill_stream_required`). `invoke_board(..., native_president_fill=
   {rung, brief_digest, findings_digest, text})` RESUMES after the same factory /
   revalidation gate and before any seat launches -- no seat is re-run, so seats that would
-  word things differently cannot strand the route. The fill is accepted only when the
-  persisted request is well-formed and its digests recompute from its own findings, the
-  fill's rung and BOTH digests equal it, and the text passes the ruling grammar for those
-  findings; otherwise `president_fill_digest_mismatch` (or
+  word things differently cannot strand the route. The pending request is BOUND to its run
+  (resolved-artifact digest, the board's ordered seat keys, mode, landing policy) and the
+  resume refuses any difference. The fill is accepted only when that binding matches, the
+  stored verdicts are this board's seats in order and re-derive the stored findings, the
+  pending rung is this board's natively filled (Claude) rung, the persisted digests
+  recompute from the stored findings, the fill's rung and BOTH digests equal them, and the
+  text passes the ruling grammar for those findings. An accepted request is CONSUMED (it
+  answers once). This guards against a stale or mismatched stream, not a caller who forges
+  its own stream directory (the stream is the caller's durable context); otherwise `president_fill_digest_mismatch` (or
   `president_ruling_format_missing` / `president_native_fill_stream_required`) and nothing
   is persisted. The resumed result carries the deferred seats' verdicts (republished to the
   stream) and the ruling. Under Claude Code, `invoke_board` wires the adapter itself when no
