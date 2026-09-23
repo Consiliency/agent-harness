@@ -335,12 +335,13 @@ jobs:
           # the node is still collectable in THIS lane before relying on either
           # branch above.
           PYTHONPATH=src:tests python -m pytest --collect-only -q "$CHRONOLOGY_NODE" >/dev/null
-          # `--max-worker-restart=0` is load-bearing, not tidiness: when a worker
-          # dies, xdist's default is to replace it, and on this suite that left the
-          # controller waiting on its queue with every worker idle -- a job that
-          # hangs to the timeout instead of failing. Zero turns any such crash into
-          # an immediate red that names the node. `loadfile` keeps a file's tests on
-          # one worker, the conservative distribution.
+          # `--max-worker-restart=0` is load-bearing and COUPLED to `--dist loadfile`:
+          # under the loadfile/loadscope schedulers, xdist's default of replacing a dead
+          # worker leaves the controller waiting on its queue with every worker idle --
+          # a job that hangs to the timeout instead of failing (reproduced on a toy
+          # tree; `--dist load` recovers instead). Zero turns any crash into an
+          # immediate red naming the node. Do not drop it without also leaving
+          # loadfile. `loadfile` keeps a file's tests on one worker.
           PYTHONPATH=src:tests python -m pytest -m "not dotfiles_integration" \
             -n auto --dist loadfile --max-worker-restart=0 \
             "${suite_args[@]}" \

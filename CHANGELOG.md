@@ -13,10 +13,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `-n auto --dist loadfile --max-worker-restart=0`, with `pytest-xdist==3.8.0` pinned in
   each install step. Both were changed together: a parallelism flag on one consumer and
   not the other silently measures a different suite than it runs.
-- `--max-worker-restart=0` is load-bearing, not tidiness. xdist's default is to REPLACE a
-  dead worker; on this suite that left the controller waiting on its queue with every
-  worker idle, so a crash became a job that hangs to the timeout instead of failing. Zero
-  converts any such crash into an immediate red that names the node.
+- `--max-worker-restart=0` is load-bearing and COUPLED to `--dist loadfile`. Under the
+  loadfile/loadscope schedulers, xdist's default of REPLACING a dead worker leaves the
+  controller waiting with every worker idle, so a crash becomes a job that hangs to the
+  timeout (reproduced on a toy tree; `--dist load` recovers instead). Zero gives an
+  immediate red naming the node. Measured caveat: under `loadfile` the remainder of the
+  crashing file is not run and not reported either way -- replacement does not recover it
+  -- so the lane is red but its summary under-counts.
 - `--dist loadfile` keeps a file's tests on one worker -- the conservative distribution,
   chosen so per-file module state cannot be split across workers.
 - `tests/test_ci_xdist_adoption.py` binds the flags to each consumer's actual SUITE
@@ -33,7 +36,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `shutil.Error` in one of 6631 nodes) and is far likelier under parallel workers. It is
   the class agent-harness#656 fixed for `test_tdd_chronology.py` only. The two frozen
   LEGIBLE test files create their own repos and cannot be edited here; they run in the
-  separate serial invocation, not under xdist.
+  separate serial invocation, not under xdist. Two FABPUB-owned private helpers
+  (`test_publishing.py`, `test_train_prebuilt.py`) also commit into temp repos; they sit
+  under FABPUB's immutable test digest and are left for that phase.
+- The Dagger offload sets `PYTEST_XDIST_AUTO_NUM_WORKERS=8` in its container env. `-n auto`
+  there would be 32 per container across concurrently-running stages, and worker count
+  scales two known cross-worker races (agent-harness#945 follow-up). The suite command
+  itself stays identical to the hosted lane's. No CI run has yet executed the Dagger
+  suite with these flags; the offload is skipped on pull requests.
 - This was blocked by the lease-guard SIGIO production bug (agent-harness#950): under
   parallelism `test_clean_settings_detects_a_conflicting_open_lease_break` crashed its
   worker. That fix landed separately (agent-harness#953); this change depends on it.

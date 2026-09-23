@@ -176,8 +176,9 @@ def test_the_suite_invocation_itself_carries_the_parallel_args(label, read) -> N
 def test_the_restart_cap_is_explained_beside_the_command(label, read) -> None:
     """`--max-worker-restart=0` is the flag that makes a crash observable.
 
-    Without it xdist replaces the dead worker and this suite's controller stops
-    dispatching, so the lane burns its whole timeout with no failing node named.
+    Under the loadfile/loadscope schedulers, xdist's default of replacing a dead
+    worker leaves the controller waiting with every worker idle, so the lane burns
+    its whole timeout with no failing node named (`--dist load` recovers instead).
     """
     text = read()
     start, _ = suite_command(text)
@@ -185,6 +186,31 @@ def test_the_restart_cap_is_explained_beside_the_command(label, read) -> None:
         f"{label}: no comment directly above the suite command names "
         "--max-worker-restart=0; a later reader will take it for tidiness and drop it"
     )
+
+
+def dagger_auto_worker_cap(source: str) -> list[str]:
+    """Values passed to `.with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", ...)`.
+
+    Read with `ast`, so a comment or string elsewhere cannot satisfy it.
+    """
+    values: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "with_env_variable" and len(node.args) == 2
+                and all(isinstance(a, ast.Constant) for a in node.args)
+                and node.args[0].value == "PYTEST_XDIST_AUTO_NUM_WORKERS"):
+            values.append(node.args[1].value)
+    return values
+
+
+def test_the_offload_caps_auto_workers_without_changing_the_command() -> None:
+    """`-n auto` on the offload host would be 32 per container, ~96 across the
+    concurrent stages, and worker count scales the suite's cross-worker races.
+    The cap lives in the container ENV so the suite command stays identical to
+    the hosted lane's -- a per-consumer `-n 8` would break that contract.
+    """
+    assert dagger_auto_worker_cap(_dagger()) == ["8"]
+    assert "-n auto" in suite_command(_dagger())[1], "the command must still say -n auto"
 
 
 # --- The binding must reject the mutations review found it accepted. ---------
