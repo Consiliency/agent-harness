@@ -286,3 +286,23 @@ def test_a_pending_request_answers_exactly_once(tmp_path):
     stream, fill = _defer(tmp_path)
     assert _resume(stream, fill).president is not None
     _refused(lambda: _resume(stream, fill))
+
+
+# codex r2 B2 / grok r2: the WHOLE pending record is self-consistent, including edits that
+# finding extraction cannot see (a verdict line) and the prompt the native session ruled on.
+@pytest.mark.parametrize("mutation", ["verdict_line", "prompt", "schema"])
+def test_a_self_inconsistent_pending_record_is_refused(tmp_path, mutation):
+    stream, fill = _defer(tmp_path)
+    path = stream / panel_invoker.PRESIDENT_PENDING_FILENAME
+    pending = json.loads(path.read_text())
+    if mutation == "verdict_line":
+        leg = pending["legs"][0]
+        assert leg["text"].endswith("AGREE")
+        leg["text"] = leg["text"][: -len("AGREE")] + "DISAGREE"
+    elif mutation == "prompt":
+        pending["prompt"] = pending["prompt"] + "\nF999: [x] an extra finding to rule on"
+    else:
+        pending["schema"] = "president.pending.v0"
+    path.write_text(json.dumps(pending))
+    _refused(lambda: _resume(stream, fill))
+    assert not (stream / "president.ruling.json").exists()

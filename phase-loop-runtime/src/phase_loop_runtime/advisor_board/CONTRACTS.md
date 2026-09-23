@@ -554,8 +554,12 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   is persisted. The resumed result carries the deferred seats' verdicts (republished to the
   stream) and the ruling. Under Claude Code, `invoke_board` wires the adapter itself when no
   seam is passed -- keyed on the PASSED `base_env` only, never the process environment.
-- **Ruling record** (EC-PRESROUTE-5). Every president ruling a board obtains is written
-  atomically to `<stream_dir>/president.ruling.json`, schema `president.ruling.v1`:
+- **Ruling record** (EC-PRESROUTE-5). Every president ruling a board obtains on a call that
+  has a review stream (`stream_dir`; the runner and the CLI always pass one, and the native
+  path refuses without one) is written atomically to `<stream_dir>/president.ruling.json`.
+  A stream-less call -- which the frozen SL-0 corpus exercises on several president nodes --
+  returns its ruling unrecorded, since there is no stream to record it in. Schema
+  `president.ruling.v1`:
   `schema`, `authorization_identity` (`public_board_president.v1`), `rung_index`,
   `model_id` (the ruling rung's registry PIN on the board), `format_reask_count`,
   `brief_digest`, `findings_digest`, `forcing_decision`, `finding_rulings`

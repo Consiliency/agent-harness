@@ -19,8 +19,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   route (`launch_provider` only); `fable` is filled natively by the driving Claude Code session
   (deferred, then resumed with `native_president_fill`, both digests checked against the
   persisted pending request) and through the self-PTY session elsewhere.
-- **Durable ruling record** (EC-PRESROUTE-5): every ruling is written to
-  `<stream_dir>/president.ruling.json` (`president.ruling.v1`).
+- **Durable ruling record** (EC-PRESROUTE-5): every ruling on a call with a review stream is
+  written to `<stream_dir>/president.ruling.json` (`president.ruling.v1`); the runner and CLI
+  always pass a stream, and a stream-less call returns its ruling unrecorded.
 - **The interim override is expired** (EC-PRESROUTE-4): a `plan`/`production_code` landing
   that declares its tier and carries `requires_president=False` is refused
   (`requires_president_override_refused`); a tierless explicit policy is not detectable at

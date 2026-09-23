@@ -744,6 +744,22 @@ def _persist_president_ruling(
     _write_json_atomically(Path(stream_dir) / PRESIDENT_RULING_FILENAME, record)
 
 
+def _president_legs_record(legs: Sequence[PanelLegResult]) -> list[dict[str, object]]:
+    return [
+        {"leg": leg.leg, "status": leg.status, "text": leg.text,
+         "detail": leg.detail, "seat_key": leg.seat_key}
+        for leg in legs
+    ]
+
+
+def _president_legs_digest(legs_record: Sequence[Mapping[str, object]]) -> str:
+    """Digest over the deferred seat verdicts in full (status, text INCLUDING the verdict
+    line that finding extraction drops, detail, identity)."""
+    return sha256(
+        json.dumps(list(legs_record), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _president_run_binding(
     board: Board,
     artifact: str,
@@ -803,11 +819,8 @@ def _resolve_native_president(
             **pending,
             "binding": dict(binding or {}),
             "findings": list(findings),
-            "legs": [
-                {"leg": leg.leg, "status": leg.status, "text": leg.text,
-                 "detail": leg.detail, "seat_key": leg.seat_key}
-                for leg in legs
-            ],
+            "legs": _president_legs_record(legs),
+            "legs_digest": _president_legs_digest(_president_legs_record(legs)),
         },
     )
     result = PanelResult(legs=tuple(legs), president_findings=tuple(findings))
@@ -860,6 +873,15 @@ def _resume_native_president(
     ):
         raise refuse("the pending native president request is malformed")
     findings = tuple(findings)
+    # The WHOLE pending record must be self-consistent: its schema, its prompt (the one
+    # the native session ruled on) against its findings, and its seat verdicts in full
+    # against their digest -- a verdict-line edit is invisible to finding extraction.
+    if pending.get("schema") != "president.pending.v1":
+        raise refuse("the pending native president request has an unknown schema")
+    if pending.get("prompt") != _president_prompt(findings):
+        raise refuse("the pending prompt does not match its findings")
+    if pending.get("legs_digest") != _president_legs_digest(legs_raw):
+        raise refuse("the pending seat verdicts do not match their digest")
     # Bound to THIS run: same artifact bytes, board, mode and landing policy.
     if pending.get("binding") != dict(binding or {}):
         raise refuse("the pending native president request belongs to a different run "
