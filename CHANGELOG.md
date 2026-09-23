@@ -34,6 +34,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
   so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
 
+### Claude final-message extraction (agent-harness#960)
+
+- Retain every text block of the final logical assistant message, grouped by API
+  message identity with replayed journal records deduplicated. Exclude thinking
+  and tool content, and reject incomplete or new-turn boundaries instead of
+  reusing a stale verdict. Review and president PTY controls preserve the full
+  message and existing owned-transcript cleanup.
+
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 
 - **A seated president rung now rules.** `plan` / `production_code` landings no longer fail

@@ -115,12 +115,24 @@ def test_incomplete_json_tail_does_not_reuse_stale_verdict(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PTY")
-def test_brokered_tui_returns_complete_split_review(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("mode", "first", "last"), [
+    ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
+    ("president", "FINDING F001: BLOCKING — Preserve the first finding", "FORCING DECISION: Fix F001 before landing"),
+])
+def test_brokered_tui_returns_complete_split_review(tmp_path, monkeypatch, mode, first, last):
     monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 0.1)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", 0.1)
+    completion_inputs = []
+    real_completion_ok = pi._completion_ok
+
+    def record_completion(text, mode="review"):
+        completion_inputs.append((text, mode))
+        return real_completion_ok(text, mode)
+
+    monkeypatch.setattr(pi, "_completion_ok", record_completion)
     records = [
-        _assistant("REVIEW START\n1. Must fix the first blocker", uuid="first"),
-        _assistant("REVIEW END\nPARTIALLY AGREE", uuid="last", stop_reason="end_turn"),
+        _assistant(first, uuid="first"),
+        _assistant(last, uuid="last", stop_reason="end_turn"),
     ]
     script = r'''
 import json, os, sys, tty
@@ -140,12 +152,14 @@ Path("owned.jsonl").write_text("".join(json.dumps(r) + "\n" for r in json.loads(
         timeout_s=15,
         backstop_s=15,
         env={"PATH": "/usr/bin:/bin"},
+        mode=mode,
         allow_transcript_final=True,
         broker_transcript_path=tmp_path / "owned.jsonl",
     )
     assert rc == 0, (status, text)
     assert status == "claude_tui_broker_final_assistant"
-    assert text == "REVIEW START\n1. Must fix the first blocker\nREVIEW END\nPARTIALLY AGREE"
+    assert text == first + "\n" + last
+    assert (text, mode) in completion_inputs
     evidence = {}
     assert pi._cleanup_broker_claude_transcript(tmp_path / "owned.jsonl", evidence)
     assert evidence["claude_transcript_cleanup_verified"]
