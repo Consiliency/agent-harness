@@ -24,7 +24,7 @@ class TierMatrixTest(unittest.TestCase):
         # (tier, vendor) -> (model_id, effort, volatile). Non-claude ultra is the
         # heavy model @ max (no separate ultra catalog id for codex/gemini/grok).
         expected = {
-            ("ultra", "claude"): ("claude-fable-5-1", "max", False),
+            ("ultra", "claude"): ("claude-opus-5-5", "max", False),
             ("heavy", "claude"): ("claude-opus-5", "xhigh", False),
             ("regular", "claude"): ("claude-sonnet-5", "medium", False),
             ("lite", "claude"): ("claude-haiku-4-5-20251001", "low", False),
@@ -102,7 +102,7 @@ class RoleToTierTest(unittest.TestCase):
         for role in ("roadmap", "plan"):
             self.assertEqual(resolve(role, "claude").model_id, "claude-opus-5")
         for role in ("review", "advise", "security"):
-            self.assertEqual(resolve(role, "claude").model_id, "claude-fable-5-1")
+            self.assertEqual(resolve(role, "claude").model_id, "claude-opus-5-5")
 
     def test_execute_target_is_regular_sonnet_on_claude(self):
         # resolve() encodes the taxonomy target end-state for implementation.

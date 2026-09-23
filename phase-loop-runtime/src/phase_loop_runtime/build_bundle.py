@@ -48,19 +48,25 @@ OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
 # identities remain concrete regardless of which harness supplied the base.
 PRESERVE_LITERALS: tuple[str, ...] = (
     # claude-opus-4-8 RETIRED from the skill bundle (design-model-tier-taxonomy.md):
-    # the skills now name claude-opus-5 (frontier) / claude-fable-5-1 (planning). The
+    # the skills now name claude-opus-5 (frontier + planning) / claude-opus-5-5 (review;
+    # replaced Fable as every default 2026-09-23, Fable remaining an explicit id). The
     # install-output gate requires every entry here to actually appear in the bundle,
     # so a retired id must leave this tuple.
+    # Order between these two is NOT load-bearing (executed over every skills-src
+    # SKILL.md: swapping them is byte-identical, because the `claude-opus-5` sentinel
+    # masks the prefix and no collapse regex touches the trailing `-5`). Dropping BOTH
+    # corrupts output. `claude-opus-5-5` is listed for the presence gate and literal lint.
+    "claude-opus-5-5",  # model-id-source: verbatim literal preserved through brand-collapse (ultra tier + review default)
     "claude-opus-5",  # model-id-source: verbatim literal preserved through brand-collapse (heavy tier)
-    "claude-fable-5-1",  # model-id-source: verbatim literal preserved through brand-collapse (ultra tier)
+    "claude-fable-5-1",  # model-id-source: verbatim literal preserved through brand-collapse (explicit, non-default id)
     "claude-sonnet-5",  # model-id-source: verbatim literal preserved through brand-collapse
     "claude-haiku-4-5-20251001",  # model-id-source: verbatim literal preserved through brand-collapse (lite tier, DATED pin)
     "gemini-3.8-flash",  # model-id-source: cross-vendor advisor-board default, never a harness placeholder
     "claude-in-chrome",
     # Cross-vendor advisor-board display names are concrete model identities, not
     # prose about the harness currently installing the skill. Preserve them so a
-    # Claude/Gemini source cannot become the nonexistent "Harness Fable/Flash".
-    "Claude Fable 5",
+    # Claude/Gemini source cannot become the nonexistent "Harness Opus/Flash".
+    "Claude Opus 5.5",
     "Gemini 3.8 Flash",
     # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
     # Without this the brand collapse (`Claude` -> `Harness`) rewrites the trailer

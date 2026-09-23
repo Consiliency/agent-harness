@@ -25,7 +25,9 @@ DEFAULT_LANE_EXECUTOR = "pi"
 # `CLAUDE_HEAVY_MODEL` keeps its historical name (widely imported) but is retargeted
 # from the old opus-4-8 to `claude-opus-5` — the new Claude heavy model, and the
 # ambient default for the supervise tier (see profiles.SUPERVISOR_TIER).
-CLAUDE_ULTRA_MODEL = "claude-fable-5-1"  # model-id-source: SSOT constant definition (ultra tier)
+# Ultra retargeted from Fable (`claude-fable-5-1`) to Opus 5.5 by the maintainer
+# (2026-09-23): "Opus 5.5 should replace all Fable defaults". Fable stays registered.
+CLAUDE_ULTRA_MODEL = "claude-opus-5-5"  # model-id-source: SSOT constant definition (ultra tier)
 CLAUDE_HEAVY_MODEL = "claude-opus-5"  # model-id-source: SSOT constant definition (heavy tier)
 CLAUDE_REGULAR_MODEL = "claude-sonnet-5"  # model-id-source: SSOT constant definition (regular tier)
 CLAUDE_LITE_MODEL = "claude-haiku-4-5-20251001"  # model-id-source: SSOT constant definition (lite tier, dated snapshot)

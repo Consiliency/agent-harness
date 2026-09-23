@@ -294,6 +294,12 @@ def make_fake_launch_result(
     )
 
 
+# Mirrors `_DETACHED_MAINTENANCE_SETTINGS` in `test_tdd_chronology.py` exactly;
+# `gc.auto=0` because `maintenance run --auto` consults it, `maintenance.auto=false`
+# because it gates the launch -- either alone suffices today, both hedge versions.
+DETACHED_MAINTENANCE_SETTINGS = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+
 def make_repo(tmp_path: Path) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     repo = tmp_path / "repo"
@@ -303,6 +309,16 @@ def make_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
     subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True)
     subprocess.run(["git", "config", "tag.gpgsign", "false"], cwd=repo, check=True)
+    # No detached background writer into this `.git`: every `git commit` spawns
+    # `git maintenance run --auto` DETACHED, which creates and removes
+    # `.git/objects/maintenance.lock` even when it does nothing. A test that then
+    # walks the tree (`shutil.copytree`, an rmtree teardown) races it -- red on
+    # the py3.12 lane of Consiliency/agent-harness#956 as a vanished-lock
+    # `shutil.Error`, and far likelier under parallel workers. Same two keys and
+    # rationale as `_DETACHED_MAINTENANCE_SETTINGS` in `test_tdd_chronology.py`
+    # (Consiliency/agent-harness#656), set BEFORE this helper's own first commit.
+    for key, value in DETACHED_MAINTENANCE_SETTINGS:
+        subprocess.run(["git", "config", key, value], cwd=repo, check=True)
     (repo / "specs").mkdir()
     (repo / "plans").mkdir()
     (repo / "README.md").write_text("fixture\n")

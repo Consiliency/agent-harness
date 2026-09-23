@@ -126,11 +126,15 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(spec.runnable_by, ("grok",))  # grok-family runs only on the grok lane
 
     def test_current_default_board_models_resolve_to_their_lanes(self) -> None:
-        # The fleet defaults: claude-fable-5-1 (claude lane) and gemini-3.8-flash
-        # (gemini lane) alongside gpt-5.6-sol above. grok's default is grok-4.7
+        # The fleet defaults: claude-opus-5-5 (claude lane; claude-fable-5-1 is the
+        # retained explicit option) and gemini-3.8-flash (gemini lane) alongside
+        # gpt-5.6-sol above. grok's default is grok-4.7
         # (ah#971); grok-4.6 above is the retained legacy seat, not a default.
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
 
+        opus = DEFAULT_MODEL_REGISTRY.get("claude-opus-5-5")
+        self.assertEqual(opus.default_lane, "claude")
+        self.assertEqual(opus.vendor_family, "claude")
         fable = DEFAULT_MODEL_REGISTRY.get("claude-fable-5-1")
         self.assertEqual(fable.default_lane, "claude")
         self.assertEqual(fable.vendor_family, "claude")

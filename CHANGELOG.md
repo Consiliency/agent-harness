@@ -6,6 +6,120 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Small fixes: a host-PID flake, skill effort prose, witness hardening
+
+- `test_observed_launch_closes_stdin_when_no_payload` (in `test_launcher_liveness.py` and its
+  duplicate in `test_phase_loop_launcher.py`) faked pid 12345 while the global `Popen` was
+  patched; on a runner where a real process held 12345 the heartbeat shelled out to `ps` through
+  the fake and errored. Both now stub `observability._pid_is_live` (agent-harness#932).
+  Reproduced deterministically by forcing 12345 "alive": the originals error, the fixed pass.
+- The Claude plan-phase skill said action effort defaults are `high` / `medium`; the runtime
+  resolves `max` for plan/roadmap/review and `high` for execute/repair. The prose now states
+  those and names `EXECUTOR_EFFORT_OVERRIDES` as the source (agent-harness#993).
+- The xdist witness compares the scheduler CLASS (identity with xdist's `LoadFileScheduling`,
+  not its name) and checks the nested run's return code before its record, so a crash shows
+  its own output (agent-harness#996).
+
+### CI: the pytest suite runs under xdist in both consumers (agent-harness#945)
+
+- Both suite consumers -- the GitHub-hosted lane in `.github/workflows/test.yml` and the
+  Dagger offload in `ci/dagger/src/agent_harness_ci/main.py` -- now run
+  `-n auto --dist loadfile --max-worker-restart=0`, with `pytest-xdist==3.8.0` pinned in
+  each install step. Both were changed together: a parallelism flag on one consumer and
+  not the other silently measures a different suite than it runs.
+- `--max-worker-restart=0` is load-bearing and COUPLED to `--dist loadfile`. Under the
+  loadfile/loadscope schedulers, xdist's default of REPLACING a dead worker leaves the
+  controller waiting with every worker idle, so a crash becomes a job that hangs to the
+  timeout (reproduced on a toy tree; `--dist load` recovers instead). Zero gives an
+  immediate red naming the node. Measured caveat: under `loadfile` the remainder of the
+  crashing file is not run and not reported either way -- replacement does not recover it
+  -- so the lane is red but its summary under-counts.
+- `--dist loadfile` keeps a file's tests on one worker -- the conservative distribution,
+  chosen so per-file module state cannot be split across workers.
+- `tests/test_ci_xdist_adoption.py` PINS the reviewed configuration instead of
+  interpreting it: the sha256 of the hosted suite block (`suite_args=()` through the suite
+  pytest run, comment lines included), the sha256 of the Dagger `_suite` builder and of
+  `_sandbox_exec` (which prepends a preflight and runs both through one `bash -c`), the
+  hosted install line verbatim, and `pytest-xdist` installed exactly once in each consumer
+  (every Dagger list literal is scanned with `ast`). No `pytest.toml` / `pytest.ini` /
+  `tox.ini` / `setup.cfg` may shadow `pyproject.toml`'s pytest section. The auto-worker cap
+  must appear exactly once in the Dagger module (by text, so an `export` inside a script
+  string counts), set in `_base` to `8`, and
+  `PYTEST_ADDOPTS` / `PYTEST_PLUGINS` / `PYTEST_DISABLE_PLUGIN_AUTOLOAD` (plus the cap
+  variable, on the hosted side) may not appear in either consumer. Why pins: three review
+  rounds each defeated the previous INTERPRETER of the command (a file-wide search, a token
+  subsequence, a bash-like tokenizer, and pytest's own parser) with a spelling it did not
+  model, from `-n0` and `suite_args+=('-n0')` to `|&`, `--maxprocesses=1` and a second
+  `with_env_variable`. Every such mutation is replayed against the real files and must red.
+  Changing the suite is allowed; doing it without updating the pin in the same diff is not.
+  Threat model: plausible (careless or accidental) edits, not deliberate obfuscation
+  elsewhere in the workflow, which code review covers.
+- The pins are not the whole guard: in the CI suite lanes `tests/test_ci_xdist_witness.py`
+  checks the run itself -- the installed `pytest-xdist` version, that it is executing on an
+  xdist worker with `--max-worker-restart=0` and at least two workers (at least the capped 8
+  on Dagger), and, re-running the lane's own post-bash argv on one node in the same cwd and
+  environment with a one-hook plugin that records what xdist's controller settled on, that
+  it uses those workers, the `LoadFileScheduling` scheduler xdist actually built (a conftest
+  `pytest_xdist_make_scheduler` could otherwise swap it) and an effective restart cap of 0. It is its own module so
+  a renamed CI file cannot skip it together with the pins. Review showed edits outside every pinned text that
+  still changed the real run (a conftest `pytest_xdist_auto_num_workers` hook, a
+  `[tool.pytest] addopts`, a worker cap sourced from an env file, a second install via a
+  requirements file); each makes the witness red. The `addopts` check now parses
+  `pyproject.toml` as TOML (both `[tool.pytest]` and `[tool.pytest.ini_options]`).
+- `tests/test_proc_cpu.py`: the monotonic test sampled its OWN process group, which under
+  xdist also holds the controller, sibling workers and their short-lived children; one
+  exiting between samples lowered the sum (py3.11 CI: 29034 -> 28938). It now samples a
+  one-process private session, and a new test proves the group total is a SUM over members.
+- `tests/phase_loop_test_utils.make_repo` sets `gc.auto=0` and `maintenance.auto=false`
+  before its first commit. Every `git commit` spawns `git maintenance run --auto` detached
+  (verified with `GIT_TRACE`: 3 spawns without the keys, 0 with either), and that child
+  creates and removes `.git/objects/maintenance.lock`. A test that then WALKS the tree races
+  it -- by `shutil.copytree` (this PR's py3.12 red) or by `rmtree`, including
+  `TemporaryDirectory` cleanup (`main`'s last serial red, `Directory not empty: 'objects'`).
+  Parallel workers widen the window. It is the class agent-harness#656 fixed for
+  `test_tdd_chronology.py` only.
+- Scope, stated precisely: this fixes every repository `make_repo` builds (139 test files
+  import it). It does NOT fix the ~61 test files that build their own repositories, about 32
+  of which also walk a tree in-test; those remain exposed exactly as before, tracked as
+  agent-harness#989. The fix must not move into a `GIT_CONFIG_*` environment variable in
+  `conftest.py`: the CONFORM chronology verifier requires a zero-`GIT_*` environment and
+  nested pytest children inherit it.
+- The Dagger offload sets `PYTEST_XDIST_AUTO_NUM_WORKERS=8` in its container env. `-n auto`
+  there would be 32 per container across concurrently-running stages, and worker count
+  scales two known cross-worker races (agent-harness#945 follow-up). The suite command
+  itself stays identical to the hosted lane's. No CI run has yet executed the Dagger
+  suite with these flags; the offload is skipped on pull requests.
+- This was blocked by the lease-guard SIGIO production bug (agent-harness#950): under
+  parallelism `test_clean_settings_detects_a_conflicting_open_lease_break` crashed its
+  worker. That fix landed separately (agent-harness#953); this change depends on it.
+- The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
+  unchanged and is invoked as its own shell command with no `-n auto`.
+
+### Opus 5.5 replaces every Fable default
+
+- `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the
+  DEFAULT, by maintainer direction (2026-09-23, "for now"): the Claude panel leg
+  (`panel_invoker.DEFAULT_LEG_MODELS["claude"]`, used by both the TUI adapter and the
+  native sub-agent fill), every board that seated Fable (`default`, `code-review`,
+  `legal-review`, `legal-strategy-review`, `general`, `solo`), and the Claude ULTRA tier
+  (`capability_registry.CLAUDE_ULTRA_MODEL`), which also drives the Claude executor's
+  `review` profile.
+- The review-policy seat NAME stays `fable`. `DEFAULT_REVIEW_SEAT_ALIASES` gains
+  `claude-opus-5-5 -> fable`, the same way `gpt-6-astra` still answers to `sol`; without it
+  every board fails the landing policy's seat-name check. Because the president ladder
+  names that seat rather than a model, its first rung now resolves to Opus 5.5 with no
+  ladder change (verified by `seat_for_rung` on both default boards). A seated president
+  rung still has no production execution route today (`president_execution_route_unavailable`,
+  pre-existing and unchanged).
+- Fable is NOT retired: `claude-fable-5-1` stays registered, aliased and selectable per seat.
+- `build_bundle.PRESERVE_LITERALS` gains `claude-opus-5-5` (placed before `claude-opus-5`,
+  a prefix of it, since sentinel substitution runs in order) and `Claude Opus 5.5`, so the
+  bundle's `Claude -> Harness` collapse cannot rewrite them; `Claude Fable 5` leaves the tuple
+  because it no longer appears in any skill and the install gate requires presence.
+- Launch-verified against the real CLI: `claude --model claude-opus-5-5` and
+  `--effort max` both launch and self-identify. NOT witnessed: the self-PTY TUI adapter
+  itself, which cannot be launched from inside Claude Code.
+
 ### Bound train review material (agent-harness#906, agent-harness#915)
 
 - Governed train reviews now receive immutable admitted Git changes, acceptance

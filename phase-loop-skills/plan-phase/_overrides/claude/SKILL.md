@@ -68,14 +68,15 @@ is recorded.
 ## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
 
 The runtime resolves one planning model per executor (`codex` → `gpt-6-astra`,
-`claude` → `claude-fable-5-1`), so **reasoning effort is the primary cost dial.**
+`claude` → `claude-opus-5`), so **reasoning effort is the primary cost dial.**
 The normalized effort ladder, cheapest first, is:
 
 `minimal` < `low` < `medium` < `high` < `xhigh` < `max`
 
-Registry action defaults today are blunt — `plan`/`roadmap`/`review` = `high`,
-`execute`/`repair` = `medium` — applied uniformly regardless of how hard the
-lane actually is. As the planner you have the complexity signal the runtime
+Registry action defaults today are blunt — for this executor `plan`/`roadmap`/`review`
+resolve to `max` and `execute`/`repair` to `high` (`EXECUTOR_EFFORT_OVERRIDES` in
+`profiles.py` is the source; read it rather than trusting this sentence) — applied
+uniformly regardless of how hard the lane actually is. As the planner you have the complexity signal the runtime
 lacks; use it:
 
 - **Default each lane to the cheapest effort you believe will succeed**, not the

@@ -36,7 +36,7 @@ def _resolve(action, executor, **kwargs):
 class ModelClassResolutionTest(unittest.TestCase):
     def test_class_to_model_per_executor(self):
         self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-5")
-        self.assertEqual(resolve_model_class("claude", "reviewer"), "claude-fable-5-1")
+        self.assertEqual(resolve_model_class("claude", "reviewer"), "claude-opus-5-5")
         self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
         # design-model-tier-taxonomy.md: worker class → the lite tier's DATED pin
         # (was the undated claude-haiku-4-5, a floating-alias shape).
@@ -79,10 +79,10 @@ class ShippedPolicyTest(unittest.TestCase):
     def test_execute_claude_becomes_sonnet_high(self):
         self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5", "high"))
 
-    def test_review_claude_uses_reviewer_fable(self):
+    def test_review_claude_uses_reviewer_ultra(self):
         resolved = _resolved("review", "claude", model_policy=True)
         self.assertEqual(resolved.model_class, "reviewer")
-        self.assertEqual((resolved.model, resolved.effort), ("claude-fable-5-1", "max"))
+        self.assertEqual((resolved.model, resolved.effort), ("claude-opus-5-5", "max"))
 
 
 class EffortClampTest(unittest.TestCase):

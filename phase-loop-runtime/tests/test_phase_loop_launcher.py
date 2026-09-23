@@ -994,6 +994,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             with (
                 patch("phase_loop_runtime.launcher.subprocess.Popen", side_effect=fake_popen),
                 patch("phase_loop_runtime.launcher._process_group_id", return_value=12345),
+                # 12345 is a FAKE pid. Without this the heartbeat asks the real host
+                # whether it is alive, and on a runner where some process holds 12345
+                # it shells out to `ps` through the globally patched Popen (agent-harness#932).
+                patch("phase_loop_runtime.observability._pid_is_live", return_value=False),
             ):
                 result = launch(["example-cli"], log_path=log_path)
 
