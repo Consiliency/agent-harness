@@ -79,7 +79,7 @@ class ShippedPolicyTest(unittest.TestCase):
     def test_execute_claude_becomes_sonnet_high(self):
         self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5", "high"))
 
-    def test_review_claude_uses_reviewer_fable(self):
+    def test_review_claude_uses_reviewer_ultra(self):
         resolved = _resolved("review", "claude", model_policy=True)
         self.assertEqual(resolved.model_class, "reviewer")
         self.assertEqual((resolved.model, resolved.effort), ("claude-opus-5-5", "max"))

@@ -48,7 +48,7 @@ OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
 # identities remain concrete regardless of which harness supplied the base.
 PRESERVE_LITERALS: tuple[str, ...] = (
     # claude-opus-4-8 RETIRED from the skill bundle (design-model-tier-taxonomy.md):
-    # the skills now name claude-opus-5 (frontier) / claude-opus-5-5 (planning + review;
+    # the skills now name claude-opus-5 (frontier + planning) / claude-opus-5-5 (review;
     # replaced Fable as every default 2026-09-23, Fable remaining an explicit id). The
     # install-output gate requires every entry here to actually appear in the bundle,
     # so a retired id must leave this tuple.
