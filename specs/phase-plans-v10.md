@@ -966,6 +966,7 @@ recovery. Its advisor-seat criterion is NOT here — it moved to REVIEWTRUTH.
 - [ ] EC-RUNTIME-3 — Codex, Claude, and at least one outside-agent adapter return the frozen envelope shape AND carry expected-version predicates, and NONE of them coordinates the train (the expected-version predicate and "none coordinates" are restored from `convergence-v1:254-255`, which v10's paraphrase had dropped); falsified by an adapter that omits a required envelope field or its version predicate, or one that drives coordination — the observable is the missing envelope field / the absent version predicate / a coordinator call originating from an adapter
 - [ ] EC-RUNTIME-4 — `train-status` reconstructs train state from the ledger with no transcript available; falsified by deleting the transcript and stubbing the cache, then finding `train-status` returns empty or errors instead of reconstructing from the ledger — the observable is the reconstructed state matching the ledger contents with no transcript present
 - [ ] EC-RUNTIME-5 — The `convergence-v1` plan files (`plans/phase-plan-vergence-v1-RUNTIME.md`) are re-grounded against current main before execution, or explicitly superseded — they were authored 2026-07-13 and the runtime has moved considerably; falsified by executing the 2026-07-13 plan file with no re-grounding record against current main — the observable is a re-grounding decision citing the current main SHA (or an explicit supersession), not the stale plan run as-is
+- [ ] EC-RUNTIME-6 — **CURRENT IMPLEMENTATION REQUALIFICATION AFTER PERMANENT EVIDENCE LOSS.** This criterion is a present-state acceptance proof and is not proof or historical equivalence of EC-RUNTIME-0, which remains unchecked and recorded `unproven_evidence_loss`. It passes only when the exact current candidate is bound by a fail-closed `runtime_current_acceptance.v1` receipt; the approved history inventory exhaustively classifies its known roots, authenticated surviving objects, and schema-defined missing or unknowable reference slots, records the actual descendant object set as unknowable, and makes no reconstruction or closure-completeness claim; a pre-reviewed mutation catalog is executed at each named production construction path with loaded-source and entered-symbol evidence; each intended observable fails under mutation and the identical command passes after exact candidate bytes are restored; the unchanged EC-RUNTIME-1 through EC-RUNTIME-5 checks, focused and full required suites, CI, exact-candidate independent source approval, and independent evidence custody/restore verification pass; and the receipt records no downstream or historical claim. EC-RUNTIME-1 through EC-RUNTIME-5 and IF-0-RUNTIME-1 remain independent phase-completion criteria. Missing, extra, stale, unentered, mock-only, pre-import, unbound, unaudited, or non-independently-custodied evidence fails closed.
 
 **Scope notes**
 Decompose into 3 lanes over disjoint files: lane A owns the event log, lane B the reconciliation
@@ -1801,6 +1802,14 @@ that later make the same controls machine-enforceable:
    injection anchor, and land the test change before production code. The implementation change must
    not alter those tests. A docs-only or otherwise non-code lane must record why no unit-test
    falsifier applies and have that exception accepted by the phase-plan panel.
+
+   **RUNTIME-only evidence-loss disposition.** Rule 3 and EC-RUNTIME-0 remain the historical truth.
+   For RUNTIME alone, after final operator approval of this exact policy and after the separately
+   reviewed admission mechanism exists, EC-RUNTIME-6 may supply the phase-admission effect that
+   unavailable EC-RUNTIME-0 evidence cannot supply. EC-RUNTIME-0 remains unchecked and
+   `unproven_evidence_loss`; no other phase, criterion, interface gate, source-review cycle, or
+   downstream claim inherits this disposition. Policy approval, mechanism implementation, and phase
+   acceptance are three separate decisions.
 4. **Implementation rotation.** Rotate whole code-writing phases across Claude Sonnet 5 or Opus 5,
    GPT-5.6 Terra, Gemini 3.6 Flash (3.5 Flash is an allowed compatibility fallback), and Grok 4.5.
    Keep each phase single-author-vendor while the governed closeout excludes every author vendor:
