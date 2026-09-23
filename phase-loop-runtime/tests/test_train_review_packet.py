@@ -128,7 +128,9 @@ def test_real_partial_clone_missing_blob_never_fetches(candidate):
     git(c["tmp"], "clone", "--bare", "-q", str(c["repo"]), str(origin))
     git(origin, "config", "uploadpack.allowFilter", "true")
     partial = c["tmp"] / "partial"
-    git(c["tmp"], "clone", "-q", "--filter=blob:none", "--no-checkout", origin.as_uri(), str(partial))
+    # Keep detached maintenance from racing the post-fetch object snapshot.
+    git(c["tmp"], "clone", "-q", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+        "--filter=blob:none", "--no-checkout", origin.as_uri(), str(partial))
     blob = git(c["repo"], "rev-parse", c["head"] + ":code.py")
     assert "?" + blob in git(partial, "rev-list", "--objects", "--missing=print", c["head"])
     marker = c["tmp"] / "upload-pack-called"
