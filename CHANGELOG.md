@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Configurable president ladder (agent-harness#998 follow-up)
+
+- **The president fallback order is configuration, not code.** `PRESIDENT_LADDER` stays the
+  built-in order; `advisor_board.config.load_president_ladder` layers the user file's
+  `[president] ladder` (`$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`) and then the
+  repository's `.agent-harness/advisor-boards.toml` over it. A malformed ladder is refused,
+  never silently replaced by the built-in. `advisor-board --landing-tier`, the runner's
+  auto-wired president seam and `rung_index` all use the configured order. This repository
+  sets `fable, sol, grok, gemini` (Opus 5.5, Astra, Grok 4.7, Gemini 3.8 Flash).
+- **A native president resume is bound to the review brief** (the agent-harness#998
+  president's BLOCKING F035) and to the ladder. It also resolves its rung through the run's
+  `review_seat_aliases`, and a new deferral removes a stale `president.ruling.json` from a
+  reused stream.
+- The credential-less gemini president HOME now carries the broker's deny-all agy profile.
+- A `president.pending.json` written before this change has no brief or ladder binding and
+  is refused on resume (fail-closed): re-run the board to defer again.
+
 ### Fixed
 
 - **The subscription scrub removes the xAI/Grok API key** (agent-harness#864).
