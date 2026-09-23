@@ -8503,7 +8503,7 @@ def invoke_board(
                 status = "DEGRADED"
             if status == "OK" and not str(text).strip():
                 status = "EMPTY"
-            # ABDNATIVE (#183 companion, Bug 2): when the claude/Fable seat DEFERS (the
+            # ABDNATIVE (#183 companion, Bug 2): when the claude seat DEFERS (the
             # runtime cannot drive the leg here: #92 under Claude Code, or a headless
             # host), surface a typed native-fill request ON THE RESULT so a driving
             # harness sees "YOUR seat to fill" — not a log line + a bare UNAVAILABLE.

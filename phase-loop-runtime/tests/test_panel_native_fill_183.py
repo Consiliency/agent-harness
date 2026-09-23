@@ -239,6 +239,24 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
         grok_leg = [leg for leg in payload["legs"] if leg["leg"] == "grok"][0]
         self.assertIsNone(grok_leg["needs_native_agent"])
 
+    def test_text_shortfall_names_the_requested_seat_model(self):
+        # The stderr fill hint names the model from the seat's own fill request, never
+        # a hard-coded brand (it said "Fable" after the default moved, agent-harness#991).
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            with (
+                unittest.mock.patch.object(comp_mod, "compose_review_board", side_effect=_hermetic_board),
+                unittest.mock.patch.object(pi, "invoke_board", return_value=self._canned_result()),
+            ):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    cli_main(["advisor-board", str(artifact)])
+        hint = [line for line in err.getvalue().splitlines() if "to fill this seat" in line]
+        self.assertEqual(len(hint), 1, err.getvalue())
+        self.assertIn("run a native custom-reviewer Agent to fill this seat", hint[0])
+        self.assertNotIn("Fable", hint[0])
+
     def test_colliding_seat_keys_do_not_hide_a_failed_twin(self):
         # CR F3: schema permits byte-identical seats with the SAME seat_key. A
         # duplicate key where one seat is OK and its twin FAILED must still report
