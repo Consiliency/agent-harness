@@ -10,9 +10,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - **The subscription scrub removes the xAI/Grok API key** (agent-harness#864).
   `scrub_subscription_env` kept `XAI_API_KEY`. It now removes `XAI_API_KEY` and
-  `GROK_CODE_XAI_API_KEY`, the grok CLI's API-key variables, on every non-broker
-  subscription path; the brokered legs were already allowlisted. They are scrub-only:
-  grok stays subscription-only, so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
+  `GROK_CODE_XAI_API_KEY` (the grok CLI's API-key variables) and grok's documented
+  endpoint redirects (`GROK_CLI_CHAT_PROXY_BASE_URL`, `GROK_XAI_API_BASE_URL`,
+  `XAI_API_BASE_URL`) from every environment built through it; the brokered legs were
+  already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
+  so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
 
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 

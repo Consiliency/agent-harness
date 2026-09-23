@@ -1300,9 +1300,26 @@ CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
 # (its backward-compatible alias).
 SUBSCRIPTION_SCRUB_ONLY_VARS: tuple[str, ...] = ("XAI_API_KEY", "GROK_CODE_XAI_API_KEY")
 
+# Endpoint selectors that redirect a grok child's inference traffic away from the
+# subscription service -- the grok counterpart of ``ANTHROPIC_BASE_URL`` in
+# ``CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS``. From the grok CLI's documentation:
+# ``GROK_CLI_CHAT_PROXY_BASE_URL`` (override the cli-chat-proxy URL) and
+# ``GROK_XAI_API_BASE_URL`` (public xAI API base); ``XAI_API_BASE_URL`` is the
+# unprefixed form the CLI also reads.
+GROK_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
+    "GROK_CLI_CHAT_PROXY_BASE_URL",
+    "GROK_XAI_API_BASE_URL",
+    "XAI_API_BASE_URL",
+)
+
 
 def all_vendor_key_vars() -> tuple[str, ...]:
-    """Every vendor API-key var (scrub set for a subscription seat)."""
+    """Every INJECTABLE vendor API-key var (``VENDOR_API_KEY_VARS``).
+
+    A subset of what a subscription seat loses: ``scrub_subscription_env`` also removes
+    ``SUBSCRIPTION_SCRUB_ONLY_VARS`` and the per-harness blocked selectors. Filter with
+    ``scrub_subscription_env``, never with this alone.
+    """
     seen: list[str] = []
     for vars_ in VENDOR_API_KEY_VARS.values():
         for var in vars_:
@@ -1315,7 +1332,8 @@ def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
     """Return a subscription-only child environment.
 
     All vendor API keys are removed -- including the api-key variables of the
-    subscription-only grok harness (``SUBSCRIPTION_SCRUB_ONLY_VARS``). Claude-specific credential helpers,
+    subscription-only grok harness (``SUBSCRIPTION_SCRUB_ONLY_VARS``) and grok's
+    endpoint redirects (``GROK_SUBSCRIPTION_BLOCKED_ENV_VARS``). Claude-specific credential helpers,
     custom request headers, alternate endpoints, and cloud-provider selectors
     are removed as well so a Claude seat cannot silently escape the first-party
     subscription lane.
@@ -1324,6 +1342,7 @@ def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
         set(all_vendor_key_vars())
         | set(SUBSCRIPTION_SCRUB_ONLY_VARS)
         | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+        | set(GROK_SUBSCRIPTION_BLOCKED_ENV_VARS)
     )
     return {key: value for key, value in base_env.items() if key not in blocked}
 
@@ -1544,6 +1563,7 @@ __all__ = [
     "PresidentIsolationAuthorization",
     "prepare_president_isolation_authorization",
     "revalidate_president_isolation_authorization",
+    "GROK_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "SUBSCRIPTION_SCRUB_ONLY_VARS",
     "VENDOR_API_KEY_VARS",
     "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",

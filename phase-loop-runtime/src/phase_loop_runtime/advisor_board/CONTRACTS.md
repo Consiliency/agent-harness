@@ -98,7 +98,8 @@ equivalence is proven by a test (not asserted in prose).
   family; its union equals today's tuple (proven). It is also the api-key INJECTION map.
   `scrub_subscription_env` additionally removes `SUBSCRIPTION_SCRUB_ONLY_VARS`
   (`XAI_API_KEY`, `GROK_CODE_XAI_API_KEY`; agent-harness#864): the api-key variables of the
-  subscription-only grok harness, scrubbed but never injectable.
+  subscription-only grok harness, scrubbed but never injectable -- and
+  `GROK_SUBSCRIPTION_BLOCKED_ENV_VARS`, grok's endpoint redirects.
 
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
