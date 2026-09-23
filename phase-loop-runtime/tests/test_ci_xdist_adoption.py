@@ -137,7 +137,6 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # The options that decide parallelism, and the value each must EFFECTIVELY have.
 # pytest/argparse is last-wins, so the LAST occurrence is the one that counts.
 _EFFECTIVE = {"-n": "auto", "--dist": "loadfile", "--max-worker-restart": "0"}
-_ALIASES = {"--numprocesses": "-n"}
 
 
 def pytest_argv(command: str) -> list[str] | None:
@@ -156,29 +155,33 @@ def pytest_argv(command: str) -> list[str] | None:
     return toks[i + 3:]
 
 
-def effective_parallelism(argv: list[str]) -> dict[str, str | None]:
-    """Last-wins value of each parallelism option, plus whether xdist is disabled."""
-    seen: dict[str, str | None] = {k: None for k in _EFFECTIVE}
-    disabled = False
-    k = 0
-    while k < len(argv):
-        tok = argv[k]
-        name, _, inline = tok.partition("=")
-        name = _ALIASES.get(name, name)
-        if name in _EFFECTIVE:
-            if inline:
-                seen[name] = inline
-            elif k + 1 < len(argv):
-                seen[name] = argv[k + 1]
-                k += 1
-        elif tok == "-p" and k + 1 < len(argv) and argv[k + 1].startswith("no:xdist"):
-            disabled = True
-            k += 1
-        elif tok.startswith("-pno:xdist") or tok.startswith("-p=no:xdist"):
-            disabled = True
-        k += 1
-    seen["xdist_disabled"] = "yes" if disabled else None
-    return seen
+def effective_parallelism(argv: list[str]) -> dict[str, str | None] | None:
+    """The parallelism PYTEST ITSELF would run with for ``argv``, or None if it rejects it.
+
+    A hand-written option scanner was the r2/r3 failure mode: every spelling it did not
+    know (`-n0`, `-n=0`) kept the old value while pytest applied the new one. So ask
+    pytest's own parser, with xdist loaded, for the parsed option values. A usage error
+    (unknown option, `-n` after `-p no:xdist`, ...) returns None: the guard fails closed,
+    and CI would fail loudly on the same argv anyway. `--noconftest` keeps this suite's
+    conftest from being re-registered into a second in-process Config; `_prepareconfig`
+    is private pytest API, acceptable in a test that pins its own pytest-xdist.
+    """
+    from _pytest.config import _prepareconfig
+
+    try:
+        config = _prepareconfig([*argv, "--noconftest"])
+    except (pytest.UsageError, SystemExit):
+        return None
+    try:
+        opt = config.option
+        return {
+            "-n": None if getattr(opt, "numprocesses", None) is None else str(opt.numprocesses),
+            "--dist": getattr(opt, "dist", None),
+            "--max-worker-restart": getattr(opt, "maxworkerrestart", None),
+            "xdist_disabled": "yes" if config.pluginmanager.is_blocked("xdist") else None,
+        }
+    finally:
+        config._ensure_unconfigure()
 
 
 def carries_suite_args(command: str) -> bool:
@@ -187,6 +190,8 @@ def carries_suite_args(command: str) -> bool:
     if argv is None:
         return False
     eff = effective_parallelism(argv)
+    if eff is None:
+        return False
     return eff.pop("xdist_disabled") is None and eff == _EFFECTIVE
 
 
@@ -382,6 +387,12 @@ def test_a_later_overriding_worker_count_is_rejected() -> None:
     assert not carries_suite_args(command + " --numprocesses=0")
     assert not carries_suite_args(command + " --dist load")
     assert not carries_suite_args(command + " -p no:xdist")
+    # r3 (found before the cap round launched): the attached short forms. pytest
+    # parses both as 0 workers; the hand scanner kept `auto` for `-n0`.
+    assert not carries_suite_args(command + " -n0")
+    assert not carries_suite_args(command + " -n=0")
+    assert not carries_suite_args(command + " --dist=load")
+    assert not carries_suite_args(command + " --max-worker-restart 4")
 
 
 def test_a_command_that_does_not_run_pytest_is_rejected() -> None:
