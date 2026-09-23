@@ -1963,6 +1963,207 @@ def test_claude_native_workflow_supplies_initial_material(candidate, monkeypatch
         assert "_train_review_" not in read_ledger(c["tmp"] / "ledger/train.ledger.jsonl")
 
 
+@pytest.mark.parametrize("continuation_source", ["printed", "explicit_control"])
+@pytest.mark.parametrize("quoted_ledger", [False, True])
+def test_cli_native_fill_printed_continuation_retains_material_and_coordinates(candidate, monkeypatch, capsys,
+                                                                              continuation_source, quoted_ledger):
+    """Follow the printed hint through the real parser, packet and native-fill loader."""
+    import shlex
+    from types import SimpleNamespace
+    from phase_loop_runtime import cli, train_runner as tr, governed_review as gr, panel_invoker as pi
+    from phase_loop_runtime.advisor_board import backing, composition
+    from phase_loop_runtime.convergence import broker
+    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.train_ledger import default_ledger_path
+    from test_native_claude_seat_fill import _mixed_board
+
+    c = candidate
+    train = c["tmp"] / "operator's train.md"
+    train.write_text("# Release Train: packet boundary\n\n## Nodes\n\n### Node: repo-a / CHANGELOG.md\n\n"
+                     "**Depends on:** (none)\n**Channel:** (none)\n")
+    c["material_path"] = c["material_path"].rename(c["tmp"] / "operator's material.json")
+    ledger_dir = c["tmp"] / ("operator's ledger" if quoted_ledger else "ledger")
+    workspace_root = c["tmp"] / "unused workspace root"
+    ledger = default_ledger_path(ledger_dir, train.stem)
+    append_record(ledger, c["state"][c["node"].node_id])
+    ledger_before = ledger.read_bytes()
+    board = _mixed_board()
+    monkeypatch.setattr(composition, "compose_review_board", lambda: board)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(backing, "prepare_review_isolation_authorization", never)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: False)
+    # No publication is reached: isolate the CLI's construction seam only.
+    monkeypatch.setattr(broker, "build_routing_broker_client", lambda **kw: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(packet, "read_pr_metadata", lambda *a: dict(c["live"]))
+    real_train = tr.run_train
+    results, coordinates = [], []
+
+    def train_with_remote_seams(roadmap, ledger_path, **kwargs):
+        coordinates.append((ledger_path, kwargs["resolve_workspace"](roadmap.nodes[0]), kwargs["review_material"]))
+        result = real_train(roadmap, ledger_path, **kwargs, _run_loop=never, _publish=never,
+            _preflight_fn=lambda *_: [], _pr_is_open=lambda *_: True,
+            _live_pr_head_sha_fn=lambda *_: c["head"], _pr_merged_sha_fn=lambda *a, **k: None,
+            _merge_pr_fn=never)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(tr, "run_train", train_with_remote_seams)
+    original_coordinates = ["run-train", "--train", str(train), "--workspace-root", str(workspace_root),
+        "--workspace", "repo-a=" + str(c["repo"]), "--workspace", "unused=" + str(c["tmp"] / "other's checkout"),
+        "--ledger-dir", str(ledger_dir)]
+    assert cli.main(original_coordinates + ["--governed", "--review-only", "--review-material",
+        str(c["material_path"]), "--emit-native-request"]) == 0
+    printed = capsys.readouterr().out
+    emitted = results[-1]
+    assert emitted["status"] == "native_fill_requested", emitted
+    assert ledger.read_bytes() == ledger_before and "_train_review_" not in read_ledger(ledger)
+    request_path = Path(emitted["request_path"])
+    (request_path.parent / "review.md").write_text("Reviewed the exact emitted packet.\nAGREE\n")
+    # Accept the existing flags-only form or a complete copyable command. Neither
+    # receives a material argument from this test unless the CLI actually prints it.
+    hint = printed.rsplit("and re-run with ", 1)[1].strip()
+    if continuation_source == "explicit_control":
+        hint = shlex.join(["--governed", "--review-only", "--native-leg", "claude=" + str(request_path.parent),
+                           "--review-material", str(c["material_path"])])
+    continuation = shlex.split(hint)
+    if continuation[:1] == ["phase-loop"]:
+        continuation = continuation[1:]
+    if continuation[:1] != ["run-train"]:
+        continuation = original_coordinates + continuation
+    parsed = cli.build_parser().parse_args(continuation)
+    assert parsed.train_file == str(train)
+    assert parsed.workspace_root == str(workspace_root)
+    assert parsed.workspace_overrides == ["repo-a=" + str(c["repo"]), "unused=" + str(c["tmp"] / "other's checkout")]
+    assert parsed.ledger_dir == str(ledger_dir) and not parsed.emit_native_request
+    gate_calls = []
+
+    def injected_board_result(**kwargs):
+        # Emission was real; only the reviewer outcome at fill is injected.
+        gate_calls.append(kwargs)
+        fills = kwargs["native_leg_fills"]
+        assert len(fills) == 1 and fills[0].request_id == emitted["request_id"]
+        assert fills[0].artifact_sha256 == pi.content_sha256(kwargs["artifact"])
+        assert kwargs["artifact"] == Path(emitted["artifact_path"]).read_text()
+        assert "actual evidence sentinel" in kwargs["artifact"]
+        return gr.GateResult(ran=True, promoted=True, panel=approved(kwargs["artifact"], "governed").panel)
+
+    monkeypatch.setattr(gr, "governed_board_gate", injected_board_result)
+    assert cli.main(continuation) == 0, results[-1]
+    assert results[-1]["status"] == "review_approved" and len(gate_calls) == 1
+    assert coordinates == [(ledger, c["repo"], str(c["material_path"]))] * 2
+    assert read_ledger(ledger)["_train_review_"].review_packet_sha256 == results[-1]["review_packet_sha256"]
+
+
+def test_real_broker_retry_after_review_refusal_retains_original_publish_anchor(tmp_path, monkeypatch):
+    """Two real admissions around a rejected packet review; only reviewer results are injected."""
+    from phase_loop_runtime import train_runner as tr, fab_gate, fab_provenance
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, LoopResult
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest
+
+    fixture = DeltaReadmitTransactionTest()
+    fixture.setUp()
+    client = None
+    try:
+        node = TrainNode("repo-a", "specs/plan-a.md")
+        roadmap = TrainRoadmap("readmission retry", [node])
+        seeded = fixture._setup_broker_readmit_candidate(node_id=node.node_id)
+        ledger = seeded["ledger_path"]
+        transaction_bytes = seeded["transaction"].checkpoint_path.read_bytes()
+        material = real_fab_packet_inputs(fixture, seeded, roadmap, monkeypatch)
+        monkeypatch.setenv(FAB_PROMOTION_ENV, "1")
+        client = build_routing_broker_client()
+        coordinator = tr.CoordinatorRuntime(train_id="train1", coordinator_root=seeded["coordinator_root"],
+            roadmap_path="train.md", roadmap_digest="d" * 64, workspace_id=str(fixture.repo), broker_client=client)
+        reviews = []
+
+        def reject_packet(artifact, mode):
+            state = read_ledger(ledger)
+            assert "_train_review_" not in state
+            assert state[node.node_id].head_sha == seeded["delta_head"]
+            digest = hashlib.sha256(artifact.encode()).hexdigest()
+            assert packet.load_review_packet(ledger.parent / "review-packets", digest).artifact == artifact
+            assert seeded["delta_head"] in artifact and "candidate content" in artifact
+            reviews.append((seeded["delta_head"], digest))
+            return LoopResult(mergeable=False, ran=True, rounds=1, reason="test_review_refused")
+
+        def run(**kwargs):
+            return tr.run_train(roadmap, ledger, run_mode="governed", review_material=material,
+                resolve_workspace=lambda _: fixture.repo, coordinator_runtime=coordinator,
+                _run_loop=never, _publish=never, _preflight_fn=lambda *_: [],
+                _pr_is_open=lambda *_: True, _live_pr_head_sha_fn=lambda *_: seeded["delta_head"],
+                _pr_merged_sha_fn=lambda *a, **k: None, _merge_phase_enabled=True, _merge_pr_fn=never,
+                _delta_review_fn=fixture._review_fn, fab_fetch_origin="fetchsrc", fab_delta_shortcut=True, **kwargs)
+
+        first = run(_train_review_fn=reject_packet)
+        assert first["status"] == "review_halted" and first["reason"] == "test_review_refused", first
+        first_head = seeded["delta_head"]
+        first_grants = LinearizableAdmissionStore(seeded["store_root"], lambda _: True).replay()
+        assert len(first_grants) == 2 and first_grants[-1].binding.prior_head_sha == seeded["candidate_head"]
+        assert first_grants[-1].binding.proposed_head_sha == first_head
+        assert read_ledger(ledger)[node.node_id].head_sha == first_head
+        assert seeded["transaction"].checkpoint_path.read_bytes() == transaction_bytes
+
+        fixture.write("pkg/d.py", "fix after rejected packet review\n")
+        seeded["delta_head"] = fixture._vendor_commit("one supported fix after rejection", vendor="Codex")
+        git(fixture.repo, "push", "-q", "fetchsrc", "HEAD:refs/heads/" + seeded["branch"])
+        material = real_fab_packet_inputs(fixture, seeded, roadmap, monkeypatch)
+        second = run(_train_review_fn=reject_packet)
+        assert second["status"] == "review_halted" and second["reason"] == "test_review_refused", second
+        grants = LinearizableAdmissionStore(seeded["store_root"], lambda _: True).replay()
+        assert len(grants) == 3 and grants[:2] == first_grants
+        assert grants[-1].epoch == 3 and grants[-1].binding.prior_head_sha == first_head
+        assert grants[-1].binding.proposed_head_sha == seeded["delta_head"]
+        assert grants[-1].binding.authority_digest == grants[-1].request.authority_digest
+        assert len(reviews) == 2 and reviews[0][1] != reviews[1][1]
+        assert seeded["transaction"].checkpoint_path.read_bytes() == transaction_bytes
+        state = read_ledger(ledger)
+        assert state[node.node_id].head_sha == seeded["delta_head"] and "_train_review_" not in state
+        provenance = fab_gate.read_provenance(fixture.repo, fixture.RUN)
+        assert provenance.candidate.head_sha == seeded["candidate_head"]
+        assert [round_.delta_head_sha for round_ in provenance.delta_chain] == [first_head, seeded["delta_head"]]
+        gate = fab_gate.compose_gate_status(repo=fixture.repo, run_id=fixture.RUN, live_base_ref_name="main",
+            live_head_sha=seeded["delta_head"], origin="fetchsrc")
+        assert gate.status == fab_provenance.GATE_STATUS_PASS
+        # Same-head retry uses the stored admission; only an explicit successful
+        # review may now create the approval row, and review-only still cannot merge.
+        final = run(review_only=True, _train_review_fn=approved)
+        assert final["status"] == "review_approved" and final["review_packet_sha256"] == reviews[-1][1]
+        assert len(LinearizableAdmissionStore(seeded["store_root"], lambda _: True).replay()) == 3
+    finally:
+        if client is not None:
+            client.close()
+        fixture.doCleanups()
+
+
+def test_real_broker_wrong_original_publish_head_refuses_first_hop(tmp_path):
+    """A valid delta cannot replace the original transaction's candidate binding."""
+    from phase_loop_runtime import train_runner as tr, fab_gate
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest
+
+    fixture = DeltaReadmitTransactionTest()
+    fixture.setUp()
+    try:
+        seeded = fixture._setup_broker_readmit_candidate()
+        checkpoint = seeded["transaction"].checkpoint_path
+        payload = json.loads(checkpoint.read_text())
+        payload["committed_head_sha"] = seeded["base"]
+        checkpoint.write_text(json.dumps(payload))
+        before = seeded["ledger_path"].read_bytes(), tuple(seeded["store"].replay())
+        result = fixture._readmit_with_broker(tr, fixture.repo, seeded["ledger_path"], node_id="n1",
+            run_id=fixture.RUN, branch=seeded["branch"], pr_url="u", merge_order=0,
+            admitted_head_sha=seeded["candidate_head"], live_head_sha=seeded["delta_head"],
+            delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+            broker_store=seeded["store"], evidence_store=seeded["evidence"])
+        assert result is None
+        assert before == (seeded["ledger_path"].read_bytes(), tuple(seeded["store"].replay()))
+        provenance = fab_gate.read_provenance(fixture.repo, fixture.RUN)
+        assert provenance.candidate.head_sha == seeded["candidate_head"] and not provenance.delta_chain
+    finally:
+        fixture.doCleanups()
+
+
 def test_sibling_pre_recovery_drift_after_prior_recovery_preserves_ledger(candidate, monkeypatch):
     from phase_loop_runtime import train_runner as tr
     from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
