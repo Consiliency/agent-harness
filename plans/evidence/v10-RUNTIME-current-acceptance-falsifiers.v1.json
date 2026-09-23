@@ -302,7 +302,7 @@
         "Bypass the non-coordination guard and perform one coordination call."
       ],
       "production_paths": [
-        "phase-loop-runtime/src/phase_loop_runtime/conformance.py",
+        "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py",
         "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py",
         "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/outside_agent.py"
       ],
