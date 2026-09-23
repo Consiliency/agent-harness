@@ -101,7 +101,7 @@ equivalence is proven by a test (not asserted in prose).
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
-  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Fable, and
+  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Opus 5.5, and
   Grok 4.7. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
@@ -184,23 +184,26 @@ The seven built-in presets (`presets.PRESETS`). Every preset self-validates agai
 the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
 `tests/test_advisor_board_integration.py`).
 
-- **Review-class = Fable, decoupled from the implementer.** Pre-merge and legal
-  review are mid-tier decisions where being wrong is expensive, so the review-class
-  boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
-  Fable (`claude-fable-5-1`) on the claude lane — NOT the implementer model
+- **Review-class = Opus 5.5 (for now), decoupled from the implementer.** Pre-merge
+  and legal review are mid-tier decisions where being wrong is expensive, so the
+  review-class boards (`default`, `code-review`, `legal-review`,
+  `legal-strategy-review`) seat Opus 5.5 (`claude-opus-5-5`) on the claude lane — the
+  maintainer's review default "for now" (2026-09-23), Fable (`claude-fable-5-1`)
+  before that and still selectable — NOT the implementer model
   `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
   is the SINGLE source of truth for the panel's default claude model: the claude
   leg builder (`_claude_tui_command`) and the Agent-View attempt both read it, so
   the *legacy* `invoke_panel` path AND the live governed gates
   (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
-  override) review on Fable. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
+  override) review on Opus 5.5. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
   implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
-  byte-pinned to this Fable `invoke_panel` panel by the golden proof
+  byte-pinned to this `invoke_panel` panel by the golden proof
   (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.7;
+  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Opus 5.5, and Grok 4.7;
   `code-review` preserves availability-aware backfill and distinct lenses.
-- **President availability ladder.** Review findings go first to Fable, then
+- **President availability ladder.** Review findings go first to the `fable` seat
+  (Opus 5.5 by default — the rung names the seat, not the model), then
   Sol, Grok 4.7, and Gemini 3.8 Flash. Descent occurs only for a typed
   `president_unavailable` result, never because a president dissents. The ladder
   is EXECUTED (not merely declared) by every `requires_president` landing policy —
@@ -214,8 +217,8 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
   (three frontier vendors — gpt-6-astra/adversarial, gemini-3.8-flash/alternative,
-  claude-fable-5-1/completeness — hand it any task + brief), and `solo` is the
-  single-MEMBER form (one `claude-fable-5-1` seat) for a quick top-end opinion when a
+  claude-opus-5-5/completeness — hand it any task + brief), and `solo` is the
+  single-MEMBER form (one `claude-opus-5-5` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like
   any other (bare/single seats are supported). Both default to TOP-END models: an
   unanticipated task cannot be assumed low-stakes, so the safe default is frontier —

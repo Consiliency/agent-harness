@@ -429,7 +429,10 @@ def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy
 
 
 DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
-    "claude-fable-5-1": "fable",  # model-id-source: frozen review policy default seat
+    # The Anthropic seat keeps the policy NAME "fable" while its default MODEL is
+    # Opus 5.5 -- the same way gpt-6-astra still answers to "sol" below.
+    "claude-opus-5-5": "fable",  # model-id-source: frozen review policy default seat
+    "claude-fable-5-1": "fable",  # model-id-source: explicit review seat (the prior default)
     "claude-fable-5": "fable",  # model-id-source: explicit legacy review seat
     # The codex seat alias stays "sol": alias names are review-policy seat identities
     # (`required_seats`, PRESIDENT_LADDER, the interim-ratification note), not model ids.
@@ -759,8 +762,9 @@ _LEG_CLI: dict[str, str] = {
 # #66: the default model per leg. `invoke_panel(..., models={"claude": "claude-sonnet-5"})`
 # overrides any subset per-leg without an in-process monkeypatch.
 #
-# The claude leg default is `claude-fable-5-1` (Fable): pre-merge review is a mid-tier
-# decision where being wrong is expensive, so the review path runs on Fable, NOT on
+# The claude leg default is `claude-opus-5-5` (Opus 5.5), set as the review default "for
+# now" by the maintainer (2026-09-23); `claude-fable-5-1` (Fable), the prior default,
+# stays registered and selectable per seat. Either way the review path does NOT run on
 # `CLAUDE_IMPLEMENTER_MODEL` (the implementer model, `claude-sonnet-5`). This dict is
 # the SINGLE source of truth for the panel's per-leg default model — the claude leg
 # builder (`_claude_tui_command`) and the Agent-View attempt both read it — so the
@@ -769,7 +773,7 @@ _LEG_CLI: dict[str, str] = {
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "gemini-3.8-flash-high",  # model-id-source: panel per-leg default
-    "claude": "claude-fable-5-1",  # model-id-source: panel per-leg default (single source of truth)
+    "claude": "claude-opus-5-5",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.7",  # model-id-source: panel per-leg default (single source of truth)
 }
 # Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
@@ -4730,7 +4734,7 @@ class NativeAgentLegRequest:
       staged as ``review-instructions.md`` (``_mode_instructions(mode)``).
     * ``verdict_contract`` / ``verdict_required`` — the terminal-verdict contract
       the leg's output must satisfy to reconcile with the real legs.
-    * ``model`` — the intended seat model (Fable by default).
+    * ``model`` — the intended seat model (Opus 5.5 by default).
     * ``reason`` / ``detail`` — WHY the runtime deferred (machine-branchable).
 
     The driver already holds the review bundle/artifact it passed to the panel;
@@ -7254,8 +7258,8 @@ def invoke_panel(
     required — substantial prose is a real leg.
 
     ``models`` (#66): per-leg model override, e.g. ``{"claude": "claude-sonnet-5"}`` — any
-    subset; unset legs use ``DEFAULT_LEG_MODELS`` (the claude leg defaults to Fable,
-    ``claude-fable-5-1`` — the review-path model, decoupled from the implementer
+    subset; unset legs use ``DEFAULT_LEG_MODELS`` (the claude leg defaults to Opus 5.5,
+    ``claude-opus-5-5`` — the review-path model, decoupled from the implementer
     ``CLAUDE_IMPLEMENTER_MODEL``). Replaces the prior need to monkeypatch a leg's model.
 
     ``max_concurrency``: legs run in PARALLEL by default (``None`` → bounded by

@@ -6,6 +6,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Opus 5.5 replaces every Fable default
+
+- `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the
+  DEFAULT, by maintainer direction (2026-09-23, "for now"): the Claude panel leg
+  (`panel_invoker.DEFAULT_LEG_MODELS["claude"]`, used by both the TUI adapter and the
+  native sub-agent fill), every board that seated Fable (`default`, `code-review`,
+  `legal-review`, `legal-strategy-review`, `general`, `solo`), and the Claude ULTRA tier
+  (`capability_registry.CLAUDE_ULTRA_MODEL`), which also drives the Claude executor's
+  `review` profile.
+- The review-policy seat NAME stays `fable`. `DEFAULT_REVIEW_SEAT_ALIASES` gains
+  `claude-opus-5-5 -> fable`, the same way `gpt-6-astra` still answers to `sol`; without it
+  every board fails the landing policy's seat-name check. Because the president ladder
+  names that seat rather than a model, its first rung now resolves to Opus 5.5 with no
+  ladder change (verified by `seat_for_rung` on both default boards). A seated president
+  rung still has no production execution route today (`president_execution_route_unavailable`,
+  pre-existing and unchanged).
+- Fable is NOT retired: `claude-fable-5-1` stays registered, aliased and selectable per seat.
+- `build_bundle.PRESERVE_LITERALS` gains `claude-opus-5-5` (placed before `claude-opus-5`,
+  a prefix of it, since sentinel substitution runs in order) and `Claude Opus 5.5`, so the
+  bundle's `Claude -> Harness` collapse cannot rewrite them; `Claude Fable 5` leaves the tuple
+  because it no longer appears in any skill and the install gate requires presence.
+- Launch-verified against the real CLI: `claude --model claude-opus-5-5` and
+  `--effort max` both launch and self-identify. NOT witnessed: the self-PTY TUI adapter
+  itself, which cannot be launched from inside Claude Code.
+
 ### grok-4.7 is registered and becomes the grok default (agent-harness#971)
 
 - `grok-4.7` shipped 2026-09-21. The advisor-board model registry did not know it, so a

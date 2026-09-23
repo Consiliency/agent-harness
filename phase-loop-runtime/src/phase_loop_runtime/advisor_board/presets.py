@@ -5,7 +5,7 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 * ``default``     — IS ``fixtures.DEFAULT_BOARD`` (imported, not re-declared), so
                     the back-compat keystone holds by construction: the default
                     board defines the canonical four-vendor review seats (the claude seat
-                    on Fable, ``claude-fable-5-1``).
+                    on Opus 5.5, ``claude-opus-5-5``).
 * ``code-review`` — the 4-vendor cross-vendor board (grok / claude / codex /
                     gemini) at max thinking, distinct lenses, composed
                     availability-aware (``composition.compose_review_board``).
@@ -17,8 +17,10 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 **Review-class boards run on frontier models, never the implementer.** Pre-merge
 and legal review are mid-tier decisions where being wrong is expensive, so the
 review-class boards (``default``, ``code-review``, ``legal-review``,
-``legal-strategy-review``) seat Fable (``claude-fable-5-1``) on the claude lane, not
-the implementer ``claude-sonnet-5``. The divergent-thinking boards (``brainstorm``,
+``legal-strategy-review``) seat Opus 5.5 (``claude-opus-5-5``) on the claude lane --
+the maintainer's review default "for now" (2026-09-23; Fable ``claude-fable-5-1``
+before that) -- not the implementer ``claude-sonnet-5``. The catch-all ``general`` and
+``solo`` boards follow the same default. The divergent-thinking boards (``brainstorm``,
 ``doc-edit``, ``legal-brainstorm``) deliberately KEEP Sonnet — a diverse voice / a
 low-stakes copyedit / an aggressive-but-cheap ideation seat — where it is the right
 tool.
@@ -76,7 +78,7 @@ DOC_EDIT_BOARD: Board = Board(
 # Each seat below encodes the PRIMARY review lens per vendor. The richer treatment
 # — four lenses per seat, an apex-Opus seat, a verify-round, and retrieval-grounded
 # citation-verification — is a documented deep-seat FOLLOW-ON (see CONTRACTS.md),
-# intentionally NOT built here. Review-class legal boards seat Fable on claude;
+# intentionally NOT built here. Review-class legal boards seat Opus 5.5 on claude;
 # legal-brainstorm keeps Sonnet as a cheap aggressive ideation voice.
 
 # legal-review: document/contract review. Opposing-counsel adversary, risk/liability
@@ -87,7 +89,7 @@ LEGAL_REVIEW_BOARD: Board = Board(
     seats=(
         Seat(model="gpt-6-astra", effort="max", harness="codex", lens="opposing-counsel"),
         Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="risk-liability"),
-        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="authority-verification"),
+        Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="authority-verification"),
     ),
 )
 
@@ -99,7 +101,7 @@ LEGAL_STRATEGY_REVIEW_BOARD: Board = Board(
     seats=(
         Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team"),
         Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternatives"),
-        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="downside-ethics"),
+        Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="downside-ethics"),
     ),
 )
 
@@ -131,7 +133,7 @@ GENERAL_BOARD: Board = Board(
     seats=(
         Seat(model="gpt-6-astra", effort="max", harness="codex", lens="adversarial"),
         Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative"),
-        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="completeness"),
+        Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="completeness"),
     ),
 )
 
@@ -141,7 +143,7 @@ SOLO_BOARD: Board = Board(
     name="solo",
     purpose="general",
     seats=(
-        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="completeness"),
+        Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="completeness"),
     ),
 )
 
