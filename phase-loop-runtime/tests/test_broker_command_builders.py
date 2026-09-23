@@ -70,6 +70,8 @@ def test_the_read_only_posture_is_still_the_default(tmp_path):
     assert "code_mode_host" in panel_invoker._BROKER_CODEX_DISABLED_FEATURES
     for disabled in ("shell_tool", "code_mode_host"):
         assert codex[codex.index(disabled) - 1] == "--disable"
+    # The sandbox-only /tmp exclusion never reaches the sealed argv.
+    assert not any(a.startswith("sandbox_workspace_write.") for a in codex)
 
     gemini = panel_invoker._brokered_gemini_command(model="m", deadline_s=1.0)
     assert "--add-dir" not in gemini

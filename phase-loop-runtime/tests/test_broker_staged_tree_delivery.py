@@ -65,11 +65,16 @@ def test_brokered_codex_works_in_the_sandbox_when_one_is_authorized(tmp_path):
     # is disabled" on every sandboxed seat before this was lifted too).
     assert "shell_tool" not in _disabled_features(cmd)
     assert "code_mode_host" not in _disabled_features(cmd)
-    # Everything else stays disabled: only the sandbox pair is lifted.
-    assert set(_disabled_features(cmd)) == (
-        set(panel_invoker._BROKER_CODEX_DISABLED_FEATURES)
-        - set(panel_invoker._BROKER_CODEX_SANDBOX_ENABLED_FEATURES)
-    )
+    # Everything else stays disabled: exactly this literal pair is lifted, so widening
+    # the constant later fails here rather than passing by construction.
+    assert set(panel_invoker._BROKER_CODEX_DISABLED_FEATURES) - set(_disabled_features(cmd)) == {
+        "shell_tool", "code_mode_host",
+    }
+    # /tmp and $TMPDIR are NOT writable: the round's scratch dir (every seat's verdict
+    # file) lives under /tmp, and workspace-write leaves both writable by default.
+    for setting in ("sandbox_workspace_write.exclude_slash_tmp=true",
+                    "sandbox_workspace_write.exclude_tmpdir_env_var=true"):
+        assert setting in cmd and cmd[cmd.index(setting) - 1] == "-c", setting
     assert cmd[cmd.index("--sandbox") + 1] != "read-only", (
         "a read-only sandbox cannot host a test run"
     )
@@ -421,6 +426,8 @@ def test_the_evidence_records_the_controls_actually_in_force(tmp_path):
     assert "shell_tool" not in codex_boxed, "the shell is enabled with a sandbox"
     assert "code_mode_host" in codex_plain
     assert "code_mode_host" not in codex_boxed, "command execution is enabled with a sandbox"
+    assert "tmp-not-writable" in codex_boxed, "the /tmp exclusion is a control in force"
+    assert "tmp-not-writable" not in codex_plain, "read-only needs no /tmp exclusion"
 
     grok_plain = panel_invoker._broker_tool_controls("grok", None)
     grok_boxed = panel_invoker._broker_tool_controls("grok", tree)

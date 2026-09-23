@@ -1825,9 +1825,21 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
 # seat can run the code it reviews. codex >= 0.156 executes commands through the
 # code-mode host, not the bare shell tool: lifting `shell_tool` alone left every
 # sandboxed codex seat answering "code-mode host is disabled". Both stay disabled on
-# the sealed (no-tree) path. Confinement is still the `workspace-write` sandbox, which
-# confines writes to the disposable tree whichever of the two runs the command.
+# the sealed (no-tree) path.
 _BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_mode_host")
+# What confines a sandboxed codex seat's WRITES: the `workspace-write` sandbox rooted at
+# the disposable tree, WITH `/tmp` and `$TMPDIR` removed from its writable set. codex's
+# `workspace-write` leaves both writable by default, and the round's scratch directory
+# (`/tmp/pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lives there, so without
+# these a seat that can run commands could overwrite a SIBLING seat's verdict mid-round
+# (reproduced live on codex 0.156.1). With them, writes land only in the tree; the tree
+# itself stays writable because it is the sandbox root. READS are NOT confined: the seat
+# can read any file the invoking user can (credentials included). What bounds that is the
+# egress policy (private networks denied) and the seat's report being the only output.
+_BROKER_CODEX_SANDBOX_CONFIG: tuple[str, ...] = (
+    "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+    "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+)
 
 
 def _require_staged_tree(staged_tree: Path | None) -> Path | None:
@@ -2090,7 +2102,7 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
         return ("ignore-user-config", "ignore-rules", "ephemeral",
                 *(f for f in _BROKER_CODEX_DISABLED_FEATURES
                   if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES),
-                "stdin-sealed-input", "workspace-write-sandbox-only")
+                "stdin-sealed-input", "workspace-write-sandbox-only", "tmp-not-writable")
     if leg == "grok":
         if staged_tree is None:
             return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
@@ -2129,6 +2141,7 @@ def _brokered_codex_command(
         "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
         "--cd", str(out_dir if tree is None else tree), "--skip-git-repo-check",
         "--sandbox", "read-only" if tree is None else "workspace-write",
+        *(() if tree is None else _BROKER_CODEX_SANDBOX_CONFIG),
         "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
         *codex_effort_args, "--output-last-message", str(out_file), "-",
     ]
@@ -5820,17 +5833,19 @@ def _exec_leg(
             "-",
         ]
         if brokered:
+            # One sandbox decision, read by both the argv and the recorded controls.
+            staged_tree = _sandbox_in(review_dir)
             cmd = _brokered_codex_command(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
-                staged_tree=_sandbox_in(review_dir),
+                staged_tree=staged_tree,
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="codex",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("codex", _sandbox_in(review_dir)),
+                no_tool_controls=_broker_tool_controls("codex", staged_tree),
                 stdin_prompt=True,
             )
         if agy_capture is not None:
@@ -6289,16 +6304,18 @@ def _exec_leg(
             grok_tools,
         ]
         if brokered:
+            # One sandbox decision, read by both the argv and the recorded controls.
+            staged_tree = _sandbox_in(review_dir)
             cmd = _brokered_grok_command(
                 model=model, out_dir=out_dir, grok_effort_args=grok_effort_args,
-                staged_tree=_sandbox_in(review_dir),
+                staged_tree=staged_tree,
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="grok",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("grok", _sandbox_in(review_dir)),
+                no_tool_controls=_broker_tool_controls("grok", staged_tree),
                 redacted_argv_values={"/dev/stdin": "<STDIN_SEALED_INLINE_PROMPT>"},
             )
         if agy_capture is not None:
