@@ -294,12 +294,17 @@ def test_the_restart_cap_is_explained_beside_the_command(label, read) -> None:
 
 
 def dagger_auto_worker_cap(source: str) -> list[str]:
-    """Values passed to `.with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", ...)`.
+    """Values `_base` passes to `.with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", ...)`.
 
     Read with `ast`, so a comment or string elsewhere cannot satisfy it.
     """
     values: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+    # Bound to the body of `_base`, the container every suite stage and Gate A
+    # inherit -- a call elsewhere in the module might never reach a suite run.
+    bases = [n for n in ast.walk(ast.parse(source))
+             if isinstance(n, ast.FunctionDef) and n.name == "_base"]
+    assert len(bases) == 1, f"expected one `_base` builder, found {len(bases)}"
+    for node in ast.walk(bases[0]):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "with_env_variable" and len(node.args) == 2
                 and all(isinstance(a, ast.Constant) for a in node.args)

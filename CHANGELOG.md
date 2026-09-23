@@ -30,15 +30,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   when the flags were moved onto the `--collect-only` probe or the pin survived only in
   a comment; the test now replays those mutations against its own checker.
 - `tests/phase_loop_test_utils.make_repo` sets `gc.auto=0` and `maintenance.auto=false`
-  before its first commit. Every `git commit` spawns `git maintenance run --auto`
-  detached, which creates and removes `.git/objects/maintenance.lock`; a test that then
-  walks the tree races it. That raced on this PR's py3.12 lane (a vanished-lock
-  `shutil.Error` in one of 6631 nodes) and is far likelier under parallel workers. It is
-  the class agent-harness#656 fixed for `test_tdd_chronology.py` only. The two frozen
-  LEGIBLE test files create their own repos and cannot be edited here; they run in the
-  separate serial invocation, not under xdist. Two FABPUB-owned private helpers
-  (`test_publishing.py`, `test_train_prebuilt.py`) also commit into temp repos; they sit
-  under FABPUB's immutable test digest and are left for that phase.
+  before its first commit. Every `git commit` spawns `git maintenance run --auto` detached
+  (verified with `GIT_TRACE`: 3 spawns without the keys, 0 with either), and that child
+  creates and removes `.git/objects/maintenance.lock`. A test that then WALKS the tree races
+  it -- by `shutil.copytree` (this PR's py3.12 red) or by `rmtree`, including
+  `TemporaryDirectory` cleanup (`main`'s last serial red, `Directory not empty: 'objects'`).
+  Parallel workers widen the window. It is the class agent-harness#656 fixed for
+  `test_tdd_chronology.py` only.
+- Scope, stated precisely: this fixes every repository `make_repo` builds (139 test files
+  import it). It does NOT fix the ~61 test files that build their own repositories, about 32
+  of which also walk a tree in-test; those remain exposed exactly as before, tracked as
+  agent-harness#989. The fix must not move into a `GIT_CONFIG_*` environment variable in
+  `conftest.py`: the CONFORM chronology verifier requires a zero-`GIT_*` environment and
+  nested pytest children inherit it.
 - The Dagger offload sets `PYTEST_XDIST_AUTO_NUM_WORKERS=8` in its container env. `-n auto`
   there would be 32 per container across concurrently-running stages, and worker count
   scales two known cross-worker races (agent-harness#945 follow-up). The suite command
