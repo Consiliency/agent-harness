@@ -262,6 +262,7 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     # opus-4-8 is retained above — still referenced by tests (advisor_board_schema) —
     # so both are registered during the migration. (The build_bundle PRESERVE_LITERALS
     # referent was retired in CR round 1; the test reference is what keeps this justified.)
+    ("claude-opus-5-5", "claude", "max"),
     ("claude-opus-5", "claude", "max"),
     ("claude-haiku-4-5-20251001", "claude", "max"),
     ("claude-fable-5-1", "claude", "max"),

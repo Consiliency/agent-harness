@@ -76,7 +76,7 @@ ACTION_WORK_UNITS = {
 EXECUTOR_MODEL_OVERRIDES = {
     "claude": {
         # Consiliency/agent-harness#310: authoring/supervision use heavy Opus,
-        # review/advice/security use ultra Fable, and implementation stays regular.
+        # review/advice/security use the ultra model (Opus 5.5), and implementation stays regular.
         "roadmap": CLAUDE_HEAVY_MODEL,
         "plan": CLAUDE_HEAVY_MODEL,
         "execute": CLAUDE_REGULAR_MODEL,
@@ -454,7 +454,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # implementation on grok-4.7 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
 # target is not yet live. There are TWO named model disagreements (grok single-model; gemini
 # LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
-# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / gpt-6-astra / 3.8-flash-high / grok-4.7) are a SEPARATE
+# (panel_invoker.DEFAULT_LEG_MODELS = opus-5-5 / gpt-6-astra / 3.8-flash-high / grok-4.7) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
 # are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
 # Effort is bound by shipped action policy and recorded at requested, policy,

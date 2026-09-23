@@ -135,8 +135,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                 self.assertIn("phase_loop_runtime.panel_invoker", text)
                 self.assertNotIn("run_cli_panels.sh", text)
                 for literal in (
-                    "Claude Fable 5",
-                    "claude-fable-5-1",
+                    "Claude Opus 5.5",
+                    "claude-opus-5-5",
                     "GPT-6 Astra",
                     "gpt-6-astra",
                     "Grok 4.7",
@@ -146,6 +146,7 @@ class SkillsCanonParityTest(unittest.TestCase):
                 ):
                     self.assertIn(literal, text, f"{packaged}: lost concrete model {literal}")
                 self.assertNotIn("Harness Fable", text)
+                self.assertNotIn("Harness Opus", text)
                 self.assertNotIn("Harness 3.8 Flash", text)
                 self.assertNotIn("<harness>-3.8-flash", text)
 

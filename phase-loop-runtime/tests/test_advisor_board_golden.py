@@ -224,7 +224,7 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
             [r.seat_key for r in board.legs],
             ["codex:gpt-6-astra:max:red-team",
              "gemini:gemini-3.8-flash:high:alternative-approach",
-             "claude:claude-fable-5-1:max:correctness",
+             "claude:claude-opus-5-5:max:correctness",
              "grok:grok-4.7:max:adversarial"],
         )
         for p, b in zip(panel.legs, board.legs):
