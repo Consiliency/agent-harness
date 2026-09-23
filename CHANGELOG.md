@@ -22,13 +22,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   -- so the lane is red but its summary under-counts.
 - `--dist loadfile` keeps a file's tests on one worker -- the conservative distribution,
   chosen so per-file module state cannot be split across workers.
-- `tests/test_ci_xdist_adoption.py` binds the flags to each consumer's actual SUITE
-  command (the `PYTHONPATH=src:tests` pytest run that is not `--collect-only`, exactly
-  one per consumer), the xdist pin to each consumer's actual install command (the
-  Dagger argv list is read with `ast`), and the restart-cap explanation to the comment
-  block directly above the command. A first revision searched whole files and passed
-  when the flags were moved onto the `--collect-only` probe or the pin survived only in
-  a comment; the test now replays those mutations against its own checker.
+- `tests/test_ci_xdist_adoption.py` PINS the reviewed configuration instead of
+  interpreting it: the sha256 of the hosted suite block (`suite_args=()` through the suite
+  pytest run, comment lines included), the sha256 of the Dagger `_suite` builder, the hosted
+  install line verbatim, and the Dagger install argv's xdist pin (read with `ast`). The
+  auto-worker cap must be set exactly once in the Dagger module, in `_base`, to `8`, and
+  `PYTEST_ADDOPTS` / `PYTEST_PLUGINS` / `PYTEST_DISABLE_PLUGIN_AUTOLOAD` (plus the cap
+  variable, on the hosted side) may not appear in either consumer. Why pins: three review
+  rounds each defeated the previous INTERPRETER of the command (a file-wide search, a token
+  subsequence, a bash-like tokenizer, and pytest's own parser) with a spelling it did not
+  model, from `-n0` and `suite_args+=('-n0')` to `|&`, `--maxprocesses=1` and a second
+  `with_env_variable`. Every such mutation is replayed against the real files and must red.
+  Changing the suite is allowed; doing it without updating the pin in the same diff is not.
+  Threat model: plausible (careless or accidental) edits, not deliberate obfuscation
+  elsewhere in the workflow, which code review covers.
 - `tests/phase_loop_test_utils.make_repo` sets `gc.auto=0` and `maintenance.auto=false`
   before its first commit. Every `git commit` spawns `git maintenance run --auto` detached
   (verified with `GIT_TRACE`: 3 spawns without the keys, 0 with either), and that child

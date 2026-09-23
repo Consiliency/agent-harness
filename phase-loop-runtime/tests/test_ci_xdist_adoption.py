@@ -6,13 +6,21 @@ in one and not the other silently gives the two lanes different parallelism --
 the class the chronology-node test already guards for the node id
 (`test_ci_chronology_scope.py::test_every_consumer_spells_the_same_node_id`).
 
-These assertions are bound to the actual COMMANDS, not to the files. An earlier
-revision searched each whole file for the flag substring; review
-(Consiliency/agent-harness#956, codex and grok independently) showed it passed
-when the flags were moved from the suite invocation onto the `--collect-only`
-probe, or when the xdist pin survived only in a comment. The
-`*_is_rejected` tests below replay exactly those mutations against the checker
-so that the binding cannot quietly loosen again.
+WHY THIS PINS TEXT INSTEAD OF INTERPRETING IT. Three review rounds of
+Consiliency/agent-harness#956 each defeated the previous interpreter of the suite
+command: a file-wide substring search (flags moved onto `--collect-only`), a token
+subsequence (`-n 0` appended, an `echo` prefix), a bash-like tokenizer (`#` inside
+a word, `suite_args+=('-n0')` in single quotes), and even pytest's own parser
+(`--maxprocesses=1`, `--pdb`, `-d`, an env prefix, a second `with_env_variable`).
+Every interpreter is one unknown spelling behind. So the reviewed configuration is
+PINNED: the exact hosted suite block, the exact Dagger `_suite` builder, and the
+exact install line. Any edit there -- whatever it spells -- fails here and must
+update the pin on purpose, in the same diff a reviewer reads.
+
+Threat model, stated so it is not over-read: this catches plausible edits (careless
+or accidental) that change the suite's parallel configuration. It is not a sandbox
+against deliberate obfuscation elsewhere in the workflow (redefining `python`
+earlier in the step, say); code review covers that.
 
 Adoption measurement and the crash this configuration depends on:
 `/mnt/workspace/archives/ci-audit-20260921/xdist/REPORT.md` (Consiliency/agent-harness#945),
@@ -21,8 +29,7 @@ and the worker-killing lease guard fixed in Consiliency/agent-harness#950.
 from __future__ import annotations
 
 import ast
-import re
-import shlex
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -35,8 +42,26 @@ DAGGER_MODULE = REPO_ROOT / "ci" / "dagger" / "src" / "agent_harness_ci" / "main
 # The version this repository's xdist-cleanliness was actually measured against.
 XDIST_PIN = "pytest-xdist==3.8.0"
 
-# The suite's parallel configuration, as the exact token sequence it must carry.
-REQUIRED_SUITE_ARGS = ("-n", "auto", "--dist", "loadfile", "--max-worker-restart=0")
+# The parallel configuration the pinned blocks carry (named for readable failures).
+PARALLEL_FLAGS = "-n auto --dist loadfile --max-worker-restart=0"
+
+# The hosted lane's suite-environment install line, verbatim.
+HOSTED_INSTALL_LINE = (
+    '        run: python -m pip install "./phase-loop-runtime[visual]" pytest '
+    '"pytest-xdist==3.8.0" "build==1.6.1" "setuptools>=70.1"'
+)
+
+# sha256 of the reviewed blocks (see `hosted_suite_block` / `dagger_suite_source`).
+# Changing either block is allowed; doing it WITHOUT touching this pin is not.
+HOSTED_SUITE_SHA256 = "89e14f69d867bcf5b49b6f98fb151b8c9017149a9d5f712b024e8061fce765d0"
+DAGGER_SUITE_SHA256 = "4f25fe45b21ebd14da522e338953e66fb14ca6ade0c633267f28571bb956fde7"
+
+# The container-env cap for `-n auto` on the offload host: exactly one site, in `_base`.
+AUTO_WORKERS_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+AUTO_WORKERS_CAP = "8"
+
+# Ambient pytest configuration that would reach the suite without touching its argv.
+AMBIENT_PYTEST_ENV = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
 
 # Workflows and the Dagger module are repository source, not package data, so
 # Gate A's copied standalone tree cannot evaluate these assertions.
@@ -54,197 +79,72 @@ def _dagger() -> str:
     return DAGGER_MODULE.read_text(encoding="utf-8")
 
 
-def _is_comment(line: str) -> bool:
-    return line.lstrip().startswith("#")
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _commands_only(text: str) -> str:
-    return "\n".join(line for line in text.splitlines() if not _is_comment(line))
+def hosted_suite_block(text: str) -> str | None:
+    """From `suite_args=()` through the last continued line of the suite pytest run.
 
-
-def _logical_commands(text: str) -> list[tuple[int, str]]:
-    """Join backslash-continued shell lines into (first_line_index, command).
-
-    Handles both the workflow's literal `\\` continuation and the Dagger
-    module's shell script held in a Python string, where each continuation is
-    written `\\\\`. Comment lines are never commands.
+    Comment lines inside the block are INCLUDED: a comment line inserted into a
+    backslash continuation ends the command in bash, so it changes behaviour.
+    None if the block cannot be delimited unambiguously (fails closed).
     """
     lines = text.splitlines()
-    commands: list[tuple[int, str]] = []
-    i = 0
-    while i < len(lines):
-        if _is_comment(lines[i]):
-            i += 1
-            continue
-        start, parts = i, []
-        while True:
-            stripped = lines[i].rstrip()
-            continued = stripped.endswith("\\")
-            parts.append(stripped.rstrip("\\").strip())
-            i += 1
-            if not continued or i >= len(lines):
-                break
-        commands.append((start, " ".join(p for p in parts if p)))
-    return commands
-
-
-def suite_command(text: str) -> tuple[int, str]:
-    """The ONE invocation that runs the suite (not the collect-only probe).
-
-    It is the `PYTHONPATH=src:tests` pytest run without `--collect-only`. The
-    copied-tree LEGIBLE run uses `PYTHONPATH="$suite_root/tests"` and is
-    deliberately not matched. Exactly one match is required: an ambiguity reds
-    rather than letting the check silently bind to whichever came first.
-    """
-    matches = [
-        (start, cmd) for start, cmd in _logical_commands(text)
-        if "PYTHONPATH=src:tests" in cmd and "python -m pytest" in cmd
-        and "--collect-only" not in cmd
-    ]
-    assert len(matches) == 1, (
-        f"expected exactly one suite invocation, found {len(matches)}: "
-        f"{[cmd[:80] for _, cmd in matches]}"
-    )
-    return matches[0]
-
-
-_CONTROL_OPERATORS = {"&&", "||", ";", "|", "&", ";;"}
-
-
-def _tokens(command: str) -> list[str]:
-    """Shell words as bash would see them for ONE simple command.
-
-    `comments=True`: a `#` at word start ends the command, exactly as in bash --
-    including a flag line commented out in the MIDDLE of a backslash
-    continuation, which a comment-blind tokenizer would still count (grok r2).
-    Tokens stop at the first control operator, so flags placed after
-    `&& true` belong to another command, not to pytest (grok r2). The Dagger
-    script is a Python f-string; `${{suite_args[@]}}` is literal text here.
-    """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    lexer.commenters = "#"
-    out: list[str] = []
-    for tok in lexer:
-        if tok in _CONTROL_OPERATORS:
-            break
-        out.append(tok)
-    return out
-
-
-_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-# The options that decide parallelism, and the value each must EFFECTIVELY have.
-# pytest/argparse is last-wins, so the LAST occurrence is the one that counts.
-_EFFECTIVE = {"-n": "auto", "--dist": "loadfile", "--max-worker-restart": "0"}
-
-
-def pytest_argv(command: str) -> list[str] | None:
-    """The argv handed to pytest, or None if this command does not RUN pytest.
-
-    Leading `VAR=value` assignments are skipped; the executable must then be
-    exactly `python -m pytest`. `echo PYTHONPATH=... python -m pytest ...` prints
-    the invocation instead of running it, and is therefore not a suite run.
-    """
-    toks = _tokens(command)
-    i = 0
-    while i < len(toks) and _ENV_ASSIGNMENT.match(toks[i]):
+    starts = [i for i, line in enumerate(lines) if line.strip() == "suite_args=()"]
+    if len(starts) != 1:
+        return None
+    i = starts[0]
+    while i < len(lines) and 'python -m pytest -m "not dotfiles_integration"' not in lines[i]:
         i += 1
-    if toks[i:i + 3] != ["python", "-m", "pytest"]:
+    if i == len(lines):
         return None
-    return toks[i + 3:]
-
-
-def effective_parallelism(argv: list[str]) -> dict[str, str | None] | None:
-    """The parallelism PYTEST ITSELF would run with for ``argv``, or None if it rejects it.
-
-    A hand-written option scanner was the r2/r3 failure mode: every spelling it did not
-    know (`-n0`, `-n=0`) kept the old value while pytest applied the new one. So ask
-    pytest's own parser, with xdist loaded, for the parsed option values. A usage error
-    (unknown option, `-n` after `-p no:xdist`, ...) returns None: the guard fails closed,
-    and CI would fail loudly on the same argv anyway. `--noconftest` keeps this suite's
-    conftest from being re-registered into a second in-process Config; `_prepareconfig`
-    is private pytest API, acceptable in a test that pins its own pytest-xdist.
-    """
-    from _pytest.config import _prepareconfig
-
-    try:
-        config = _prepareconfig([*argv, "--noconftest"])
-    except (pytest.UsageError, SystemExit):
+    while i < len(lines) and lines[i].rstrip().endswith("\\"):
+        i += 1
+    if i == len(lines):
         return None
-    try:
-        opt = config.option
-        return {
-            "-n": None if getattr(opt, "numprocesses", None) is None else str(opt.numprocesses),
-            "--dist": getattr(opt, "dist", None),
-            "--max-worker-restart": getattr(opt, "maxworkerrestart", None),
-            "xdist_disabled": "yes" if config.pluginmanager.is_blocked("xdist") else None,
-        }
-    finally:
-        config._ensure_unconfigure()
+    return "\n".join(line.rstrip() for line in lines[starts[0]: i + 1])
 
 
-def carries_suite_args(command: str) -> bool:
-    """The command RUNS pytest and its EFFECTIVE parallelism is the required one."""
-    argv = pytest_argv(command)
-    if argv is None:
-        return False
-    eff = effective_parallelism(argv)
-    if eff is None:
-        return False
-    return eff.pop("xdist_disabled") is None and eff == _EFFECTIVE
+def dagger_suite_source(source: str) -> str | None:
+    """The exact source of the `_suite` builder (its argv, script and suite_args)."""
+    tree = ast.parse(source)
+    suites = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_suite"]
+    if len(suites) != 1:
+        return None
+    return ast.get_source_segment(source, suites[0])
 
 
-# `"${suite_args[@]}"` is expanded into the suite command, so anything appended
-# to it is part of the effective argv. Only these may be.
-_SUITE_ARGS_ALLOWED = ("--junitxml=", "--deselect=")
+def auto_worker_cap_sites(source: str) -> list[tuple[str, str | None]]:
+    """Every string constant naming the cap variable: (enclosing function, value set).
 
-
-def workflow_suite_args_additions(text: str) -> list[str]:
-    return [m.group(1) for m in re.finditer(r'suite_args\+=\("([^"]*)"\)', _commands_only(text))]
-
-
-def dagger_suite_args_additions(source: str) -> list[str]:
-    """Leading literal text of each `suite_args.append(...)` argument (via ast)."""
-    out: list[str] = []
-    for node in ast.walk(ast.parse(source)):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "suite_args" and node.args):
-            arg = node.args[0]
-            if isinstance(arg, ast.Constant):
-                out.append(str(arg.value))
-            elif isinstance(arg, ast.JoinedStr) and arg.values and isinstance(arg.values[0], ast.Constant):
-                out.append(str(arg.values[0].value))
-            else:
-                out.append("<non-literal>")
-    return out
-
-
-def explains_restart_cap(text: str, command_start: int) -> bool:
-    """The comment block DIRECTLY above the suite command names the restart cap.
-
-    Prose elsewhere in the file does not count: a reader deciding whether to
-    drop the flag looks at the lines above the command, not the rest of the file.
+    The value is the second argument when the constant is the first argument of a
+    `.with_env_variable(...)` call, else None (a mention that is not a setting).
     """
-    lines, i, block = text.splitlines(), command_start - 1, []
-    while i >= 0 and _is_comment(lines[i]):
-        block.append(lines[i])
-        i -= 1
-    text_block = "\n".join(block)
-    # Both halves: that the cap exists, and that it is COUPLED to loadfile, so a
-    # later switch of distribution mode is not read as making it droppable.
-    return "--max-worker-restart=0" in text_block and "loadfile" in text_block
+    tree = ast.parse(source)
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
 
+    def enclosing(node: ast.AST) -> str:
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node.name
+        return "<module>"
 
-def hosted_install_pins(text: str) -> list[str]:
-    """xdist pins in the hosted lane's suite-environment `pip install` COMMAND."""
-    installs = [
-        cmd for _, cmd in _logical_commands(text)
-        if "pip install" in cmd and "./phase-loop-runtime" in cmd
-    ]
-    assert len(installs) == 1, f"expected one suite-environment install, found {len(installs)}"
-    return [t for t in _tokens(installs[0].split("run:", 1)[-1]) if t.startswith("pytest-xdist")]
+    sites: list[tuple[str, str | None]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == AUTO_WORKERS_VAR:
+            call = parents.get(node)
+            value = None
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "with_env_variable" and call.args and call.args[0] is node
+                    and len(call.args) == 2 and isinstance(call.args[1], ast.Constant)):
+                value = str(call.args[1].value)
+            sites.append((enclosing(node), value))
+    return sites
 
 
 def dagger_install_pins(source: str) -> list[str]:
@@ -265,163 +165,81 @@ def dagger_install_pins(source: str) -> list[str]:
     return pins
 
 
-CONSUMERS = (("test.yml", _workflow), ("ci/dagger main.py", _dagger))
+def hosted_problems(text: str) -> list[str]:
+    problems = []
+    block = hosted_suite_block(text)
+    if block is None:
+        problems.append("the suite block (`suite_args=()` .. suite pytest run) cannot be delimited")
+    elif _sha(block) != HOSTED_SUITE_SHA256:
+        problems.append(f"the suite block changed (sha256 {_sha(block)}):\n{block}")
+    if [line for line in text.splitlines() if line == HOSTED_INSTALL_LINE] == []:
+        problems.append(f"the install line is no longer exactly: {HOSTED_INSTALL_LINE.strip()}")
+    for name in (*AMBIENT_PYTEST_ENV, AUTO_WORKERS_VAR):
+        if name in text:
+            problems.append(f"{name} appears in the workflow; it reaches the suite without its argv")
+    return problems
+
+
+def dagger_problems(source: str) -> list[str]:
+    problems = []
+    suite = dagger_suite_source(source)
+    if suite is None:
+        problems.append("expected exactly one `_suite` builder")
+    elif _sha(suite) != DAGGER_SUITE_SHA256:
+        problems.append(f"`_suite` changed (sha256 {_sha(suite)}):\n{suite}")
+    sites = auto_worker_cap_sites(source)
+    if sites != [("_base", AUTO_WORKERS_CAP)]:
+        problems.append(f"{AUTO_WORKERS_VAR} must be set exactly once, in `_base`, to "
+                        f"{AUTO_WORKERS_CAP!r}; found {sites}")
+    for name in AMBIENT_PYTEST_ENV:
+        if name in source:
+            problems.append(f"{name} appears in the Dagger module; it reaches the suite without its argv")
+    return problems
+
+
+_UPDATE_HINT = (
+    "\nIf this change is intentional, the suite must still run `" + PARALLEL_FLAGS + "` "
+    "in BOTH consumers; then update the pinned sha256 in this file in the same diff."
+)
 
 
 def test_both_ci_consumers_pin_the_same_pytest_xdist() -> None:
-    hosted, dagger = hosted_install_pins(_workflow()), dagger_install_pins(_dagger())
-    assert hosted == [XDIST_PIN], f"hosted install command pins {hosted}"
+    assert XDIST_PIN in HOSTED_INSTALL_LINE
+    assert HOSTED_INSTALL_LINE in _workflow().splitlines(), "hosted install line changed"
+    dagger = dagger_install_pins(_dagger())
     assert dagger == [XDIST_PIN], f"dagger install argv pins {dagger}"
 
 
-@pytest.mark.parametrize("label,read", CONSUMERS)
-def test_the_suite_invocation_itself_carries_the_parallel_args(label, read) -> None:
-    _, command = suite_command(read())
-    assert carries_suite_args(command), (
-        f"{label}: the suite command does not carry `{' '.join(REQUIRED_SUITE_ARGS)}`: {command}"
-    )
+def test_the_hosted_suite_is_the_reviewed_one() -> None:
+    problems = hosted_problems(_workflow())
+    assert not problems, "\n".join(problems) + _UPDATE_HINT
 
 
-@pytest.mark.parametrize("label,read", CONSUMERS)
-def test_the_restart_cap_is_explained_beside_the_command(label, read) -> None:
-    """`--max-worker-restart=0` is the flag that makes a crash observable.
-
-    Under the loadfile/loadscope schedulers, xdist's default of replacing a dead
-    worker leaves the controller waiting with every worker idle, so the lane burns
-    its whole timeout with no failing node named (`--dist load` recovers instead).
-    """
-    text = read()
-    start, _ = suite_command(text)
-    assert explains_restart_cap(text, start), (
-        f"{label}: no comment directly above the suite command names "
-        "--max-worker-restart=0; a later reader will take it for tidiness and drop it"
-    )
+def test_the_dagger_suite_is_the_reviewed_one() -> None:
+    problems = dagger_problems(_dagger())
+    assert not problems, "\n".join(problems) + _UPDATE_HINT
 
 
-def dagger_auto_worker_cap(source: str) -> list[str]:
-    """Values `_base` passes to `.with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", ...)`.
-
-    Read with `ast`, so a comment or string elsewhere cannot satisfy it.
-    """
-    values: list[str] = []
-    # Bound to the body of `_base`, the container every suite stage and Gate A
-    # inherit -- a call elsewhere in the module might never reach a suite run.
-    bases = [n for n in ast.walk(ast.parse(source))
-             if isinstance(n, ast.FunctionDef) and n.name == "_base"]
-    assert len(bases) == 1, f"expected one `_base` builder, found {len(bases)}"
-    for node in ast.walk(bases[0]):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "with_env_variable" and len(node.args) == 2
-                and all(isinstance(a, ast.Constant) for a in node.args)
-                and node.args[0].value == "PYTEST_XDIST_AUTO_NUM_WORKERS"):
-            values.append(node.args[1].value)
-    return values
-
-
-def test_the_offload_caps_auto_workers_without_changing_the_command() -> None:
-    """`-n auto` on the offload host would be 32 per container, ~96 across the
-    concurrent stages, and worker count scales the suite's cross-worker races.
-    The cap lives in the container ENV so the suite command stays identical to
-    the hosted lane's -- a per-consumer `-n 8` would break that contract.
-    """
-    assert dagger_auto_worker_cap(_dagger()) == ["8"]
-    assert "-n auto" in suite_command(_dagger())[1], "the command must still say -n auto"
-
-
-# --- The binding must reject the mutations review found it accepted. ---------
-
-def test_moving_the_args_onto_the_collect_only_probe_is_rejected() -> None:
-    """codex r1 counterexample: flags relocated to `--collect-only`, suite bare."""
-    text = _workflow()
-    flags = " ".join(REQUIRED_SUITE_ARGS)
-    mutated = text.replace(f"            {flags} \\\n", "", 1).replace(
-        "python -m pytest --collect-only -q", f"python -m pytest {flags} --collect-only -q", 1
-    )
-    assert mutated != text and flags in mutated
-    _, command = suite_command(mutated)
-    assert not carries_suite_args(command)
-
-
-def test_a_pin_surviving_only_in_a_comment_is_rejected() -> None:
-    text = _workflow()
-    mutated = text.replace(f' "{XDIST_PIN}"', "", 1) + f"\n# formerly installed {XDIST_PIN}\n"
-    assert XDIST_PIN in mutated
-    assert hosted_install_pins(mutated) == []
-
-    source = _dagger()
-    mutated_src = source.replace(f'"{XDIST_PIN}",', "", 1) + f"\n# {XDIST_PIN}\n"
-    assert XDIST_PIN in mutated_src
-    assert dagger_install_pins(mutated_src) == []
-
-
-def test_an_explanation_elsewhere_in_the_file_is_rejected() -> None:
-    text = _workflow()
-    start, _ = suite_command(text)
-    lines = text.splitlines()
-    i = start - 1
-    while i >= 0 and _is_comment(lines[i]):
-        i -= 1
-    # Drop the block above the command, keep a far-away mention of the flag.
-    mutated_lines = lines[: i + 1] + lines[start:] + ["# note: --max-worker-restart=0"]
-    mutated = "\n".join(mutated_lines)
-    new_start, _ = suite_command(mutated)
-    assert not explains_restart_cap(mutated, new_start)
-
-
-@pytest.mark.parametrize("label,additions", (
-    ("test.yml", lambda: workflow_suite_args_additions(_workflow())),
-    ("ci/dagger main.py", lambda: dagger_suite_args_additions(_dagger())),
+@pytest.mark.parametrize("label,block", (
+    ("test.yml", lambda: hosted_suite_block(_workflow())),
+    ("ci/dagger main.py", lambda: dagger_suite_source(_dagger())),
 ))
-def test_nothing_but_junit_and_deselect_is_smuggled_through_suite_args(label, additions) -> None:
-    found = additions()
-    assert found, f"{label}: no suite_args additions found -- the scan is not seeing the script"
-    bad = [a for a in found if not a.startswith(_SUITE_ARGS_ALLOWED)]
-    assert not bad, f"{label}: suite_args carries {bad}, which reaches the suite argv"
+def test_the_pinned_blocks_carry_and_explain_the_parallel_flags(label, block) -> None:
+    """Readable companion to the pins: WHAT the reviewed blocks say.
 
-
-def test_a_later_overriding_worker_count_is_rejected() -> None:
-    """codex r2: `-n 0` AFTER the required flags wins (last-wins) and disables xdist."""
-    _, command = suite_command(_workflow())
-    assert carries_suite_args(command)
-    assert not carries_suite_args(command + " -n 0")
-    assert not carries_suite_args(command + " --numprocesses=0")
-    assert not carries_suite_args(command + " --dist load")
-    assert not carries_suite_args(command + " -p no:xdist")
-    # r3 (found before the cap round launched): the attached short forms. pytest
-    # parses both as 0 workers; the hand scanner kept `auto` for `-n0`.
-    assert not carries_suite_args(command + " -n0")
-    assert not carries_suite_args(command + " -n=0")
-    assert not carries_suite_args(command + " --dist=load")
-    assert not carries_suite_args(command + " --max-worker-restart 4")
-
-
-def test_a_command_that_does_not_run_pytest_is_rejected() -> None:
-    """codex r2: `echo PYTHONPATH=... python -m pytest ...` prints, it does not run."""
-    _, command = suite_command(_workflow())
-    assert not carries_suite_args("echo " + command)
-    assert pytest_argv("echo " + command) is None
-
-
-def test_an_override_smuggled_through_suite_args_is_rejected() -> None:
-    mutated = _workflow().replace('suite_args=()', 'suite_args=()\n          suite_args+=("-n")', 1)
-    bad = [a for a in workflow_suite_args_additions(mutated) if not a.startswith(_SUITE_ARGS_ALLOWED)]
-    assert bad == ["-n"]
-
-
-def test_flags_commented_out_mid_continuation_are_rejected() -> None:
-    """grok r2: bash drops everything after a word-initial `#`."""
-    _, command = suite_command(_workflow())
-    commented = command.replace("-n auto --dist loadfile --max-worker-restart=0",
-                                "# -n auto --dist loadfile --max-worker-restart=0", 1)
-    assert commented != command
-    assert not carries_suite_args(commented)
-
-
-def test_flags_after_a_second_command_are_rejected() -> None:
-    """grok r2: `... && true -n auto ...` gives those flags to `true`, not pytest."""
-    _, command = suite_command(_workflow())
-    stripped = command.replace("-n auto --dist loadfile --max-worker-restart=0", "", 1)
-    assert not carries_suite_args(stripped + " && true -n auto --dist loadfile --max-worker-restart=0")
+    `--max-worker-restart=0` is the flag that makes a crash observable. Under the
+    loadfile/loadscope schedulers, xdist's default of replacing a dead worker leaves
+    the controller waiting with every worker idle, so the lane burns its whole
+    timeout with no failing node named (`--dist load` recovers instead). The
+    explanation lives in a comment inside the pinned block, beside the command.
+    """
+    text = block()
+    assert text is not None
+    assert PARALLEL_FLAGS in text, f"{label}: the suite block does not carry {PARALLEL_FLAGS}"
+    comments = "\n".join(line for line in text.splitlines() if line.lstrip().startswith("#"))
+    assert "--max-worker-restart=0" in comments and "loadfile" in comments, (
+        f"{label}: no comment in the suite block explains the restart cap and its loadfile coupling"
+    )
 
 
 def test_parallelism_is_not_moved_into_addopts() -> None:
@@ -436,3 +254,93 @@ def test_parallelism_is_not_moved_into_addopts() -> None:
     assert "addopts" not in ini, (
         "pytest addopts now exists; -n must never live there (nested pytest runs)"
     )
+
+
+# --- Every mutation review found against an earlier guard must red this one. ---
+# Each is applied to the REAL file text; `old` must occur, so a mutation whose
+# anchor drifts fails loudly instead of passing vacuously.
+
+_FLAG_LINE_HOSTED = "            -n auto --dist loadfile --max-worker-restart=0 \\\n"
+_SUITE_LINE_HOSTED = '          PYTHONPATH=src:tests python -m pytest -m "not dotfiles_integration" \\\n'
+_FLAG_LINE_DAGGER = "  -n auto --dist loadfile --max-worker-restart=0 \\\\\n"
+
+HOSTED_MUTATIONS = (
+    ("r1 codex: flags moved onto the collect-only probe",
+     _FLAG_LINE_HOSTED, ""),
+    ("r2 codex: a later -n 0 wins",
+     _FLAG_LINE_HOSTED, _FLAG_LINE_HOSTED + "            -n 0 \\\n"),
+    ("r2 codex: echo prefix prints instead of running",
+     _SUITE_LINE_HOSTED, _SUITE_LINE_HOSTED.replace("PYTHONPATH=", "echo PYTHONPATH=")),
+    ("r2 grok: flags commented out mid-continuation",
+     _FLAG_LINE_HOSTED, "            # -n auto --dist loadfile --max-worker-restart=0 \\\n"),
+    ("r2 grok: flags handed to a second command",
+     "            --ignore tests/test_legible_evidence.py\n",
+     "            --ignore tests/test_legible_evidence.py && true -n auto\n"),
+    ("r3 self: attached short option -n0",
+     _FLAG_LINE_HOSTED, _FLAG_LINE_HOSTED + "            -n0 \\\n"),
+    ("r3 codex: single-quoted suite_args addition",
+     "          suite_args=()\n", "          suite_args=()\n          suite_args+=('-n0')\n"),
+    ("r3 native B1: a second element in an allowed addition",
+     '            suite_args+=("--deselect=$CHRONOLOGY_NODE")\n            expect=""\n',
+     '            suite_args+=("--deselect=$CHRONOLOGY_NODE" "-n0")\n            expect=""\n'),
+    ("r3 native B2: env prefix caps the auto worker count",
+     _SUITE_LINE_HOSTED, _SUITE_LINE_HOSTED.replace("PYTHONPATH=", "PYTEST_XDIST_AUTO_NUM_WORKERS=1 PYTHONPATH=")),
+    ("r3 native B3: --maxprocesses=1", _FLAG_LINE_HOSTED, _FLAG_LINE_HOSTED + "            --maxprocesses=1 \\\n"),
+    ("r3 native B3: --pdb runs serially", _FLAG_LINE_HOSTED, _FLAG_LINE_HOSTED + "            --pdb \\\n"),
+    ("r3 native B3: -d switches the scheduler", _FLAG_LINE_HOSTED, _FLAG_LINE_HOSTED + "            -d \\\n"),
+    ("r3 native B3: --co runs nothing", _FLAG_LINE_HOSTED, _FLAG_LINE_HOSTED + "            --co \\\n"),
+    ("r3 grok: single-quoted restart-cap override",
+     "          suite_args=()\n", "          suite_args=()\n          suite_args+=('--max-worker-restart=4')\n"),
+    ("r3 grok: two double-quoted words",
+     "          suite_args=()\n", '          suite_args=()\n          suite_args+=("-n" "0")\n'),
+    ("r3 grok: |& hands the flags to a second command",
+     _FLAG_LINE_HOSTED, "            |& true -n auto --dist loadfile --max-worker-restart=0 \\\n"),
+    ("step env: PYTEST_ADDOPTS",
+     "        working-directory: phase-loop-runtime\n        env:\n"
+     "          CHRONOLOGY: ${{ steps.scope.outputs.chronology }}\n",
+     "        working-directory: phase-loop-runtime\n        env:\n"
+     "          CHRONOLOGY: ${{ steps.scope.outputs.chronology }}\n          PYTEST_ADDOPTS: -n0\n"),
+    ("install line: xdist pin dropped", ' "pytest-xdist==3.8.0"', ""),
+)
+
+DAGGER_MUTATIONS = (
+    ("r2 codex: a later -n 0 wins", _FLAG_LINE_DAGGER, _FLAG_LINE_DAGGER + "  -n 0 \\\\\n"),
+    ("r3 codex: '#' inside a word hides -n0 from a tokenizer",
+     _FLAG_LINE_DAGGER, _FLAG_LINE_DAGGER + "  --deselect=unused#marker -n0 \\\\\n"),
+    ("r3 native B1: suite_args assigned wholesale",
+     "        suite_args = []\n", '        suite_args = ["-n0"]\n'),
+    ("r3 native B1: suite_args extended",
+     "        suite_args = []\n", '        suite_args = []\n        suite_args.extend(["-n0"])\n'),
+    ("r3 grok: suite_args += [...]",
+     "        suite_args = []\n", '        suite_args = []\n        suite_args += ["-n0"]\n'),
+    ("r3 native B4: a second env setting after _base",
+     "        return self._sandbox_exec(self._base(source, python_version), script)\n",
+     "        return self._sandbox_exec(self._base(source, python_version)"
+     '.with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", "1"), script)\n'),
+    ("the cap moved out of _base",
+     '            .with_env_variable("PYTEST_XDIST_AUTO_NUM_WORKERS", "8")\n', ""),
+)
+
+
+@pytest.mark.parametrize("label,old,new", HOSTED_MUTATIONS, ids=[m[0] for m in HOSTED_MUTATIONS])
+def test_every_found_hosted_mutation_is_rejected(label, old, new) -> None:
+    text = _workflow()
+    assert text.count(old) == 1, f"{label}: mutation anchor no longer occurs exactly once"
+    assert not hosted_problems(text), "the unmutated workflow must pass first"
+    mutated = text.replace(old, new, 1)
+    assert hosted_problems(mutated), f"{label}: accepted"
+
+
+@pytest.mark.parametrize("label,old,new", DAGGER_MUTATIONS, ids=[m[0] for m in DAGGER_MUTATIONS])
+def test_every_found_dagger_mutation_is_rejected(label, old, new) -> None:
+    source = _dagger()
+    assert source.count(old) == 1, f"{label}: mutation anchor no longer occurs exactly once"
+    assert not dagger_problems(source), "the unmutated module must pass first"
+    assert dagger_problems(source.replace(old, new, 1)), f"{label}: accepted"
+
+
+def test_a_pin_surviving_only_in_a_comment_is_rejected() -> None:
+    source = _dagger()
+    mutated = source.replace(f'"{XDIST_PIN}",', "", 1) + f"\n# {XDIST_PIN}\n"
+    assert XDIST_PIN in mutated
+    assert dagger_install_pins(mutated) == []
