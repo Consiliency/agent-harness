@@ -33,6 +33,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A `president.pending.json` written before this change has no brief or ladder binding and
   is refused on resume (fail-closed): re-run the board to defer again.
 
+### Fixed
+
+- **The subscription scrub removes the xAI/Grok API key** (agent-harness#864).
+  `scrub_subscription_env` kept `XAI_API_KEY`. It now removes `XAI_API_KEY` and
+  `GROK_CODE_XAI_API_KEY` (the grok CLI's API-key variables) and grok's documented
+  endpoint redirects (`GROK_CLI_CHAT_PROXY_BASE_URL`, `GROK_XAI_API_BASE_URL`,
+  `GROK_MODELS_BASE_URL`; plus `XAI_API_BASE_URL`, removed defensively) from every
+  environment built through it -- not an exhaustive list of grok endpoint settings; the brokered legs were
+  already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
+  so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
+
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 
 - **A seated president rung now rules.** `plan` / `production_code` landings no longer fail
