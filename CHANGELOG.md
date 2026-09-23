@@ -19,8 +19,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   converts any such crash into an immediate red that names the node.
 - `--dist loadfile` keeps a file's tests on one worker -- the conservative distribution,
   chosen so per-file module state cannot be split across workers.
-- `tests/test_ci_xdist_adoption.py` asserts both consumers carry the flags, so the two
-  cannot drift apart again.
+- `tests/test_ci_xdist_adoption.py` binds the flags to each consumer's actual SUITE
+  command (the `PYTHONPATH=src:tests` pytest run that is not `--collect-only`, exactly
+  one per consumer), the xdist pin to each consumer's actual install command (the
+  Dagger argv list is read with `ast`), and the restart-cap explanation to the comment
+  block directly above the command. A first revision searched whole files and passed
+  when the flags were moved onto the `--collect-only` probe or the pin survived only in
+  a comment; the test now replays those mutations against its own checker.
+- `tests/phase_loop_test_utils.make_repo` sets `gc.auto=0` and `maintenance.auto=false`
+  before its first commit. Every `git commit` spawns `git maintenance run --auto`
+  detached, which creates and removes `.git/objects/maintenance.lock`; a test that then
+  walks the tree races it. That raced on this PR's py3.12 lane (a vanished-lock
+  `shutil.Error` in one of 6631 nodes) and is far likelier under parallel workers. It is
+  the class agent-harness#656 fixed for `test_tdd_chronology.py` only. The two frozen
+  LEGIBLE test files create their own repos and cannot be edited here; they run in the
+  separate serial invocation, not under xdist.
 - This was blocked by the lease-guard SIGIO production bug (agent-harness#950): under
   parallelism `test_clean_settings_detects_a_conflicting_open_lease_break` crashed its
   worker. That fix landed separately (agent-harness#953); this change depends on it.
