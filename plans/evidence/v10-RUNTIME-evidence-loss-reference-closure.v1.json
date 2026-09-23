@@ -1,0 +1,169 @@
+{
+  "actual_descendant_object_set": "unknowable",
+  "audit_contract": {
+    "closure_complete_must_equal": false,
+    "known_classification_row_count": 14,
+    "required_classifications": [
+      "authenticated",
+      "missing",
+      "unknowable"
+    ],
+    "schema_defined_unknowable_slot_count": 11,
+    "scope": "Validate every known root, authenticated survivor, and schema-defined slot in this artifact. Do not infer, enumerate, reconstruct, or claim completeness for descendants hidden by either missing root."
+  },
+  "authenticated_survivors": {
+    "git_objects": [
+      {
+        "classification": "authenticated",
+        "commit": "2f75797695ed58cbb0f8026b655d5068b23f2e88",
+        "limit": "Historical reporting calls this the original tests-parent; the missing roots do not authenticate it as their declared landing.",
+        "object": "reported original tests-parent commit",
+        "parent": "d184ea635cdaf1ee36a80c4a6bf0e37c501d3493",
+        "tree": "ddc42a678b32727b32b4de802f05029f6514a491"
+      },
+      {
+        "classification": "authenticated",
+        "commit": "7262e5de8653371c41ba4afaf9f139997e0cd8ec",
+        "limit": "The Git parent relation survives independently; whether the missing companion bound it is unknowable.",
+        "object": "first surviving production commit touching mapped production files",
+        "parent": "2f75797695ed58cbb0f8026b655d5068b23f2e88",
+        "tree": "750beb1071dfb07845904b2a84b433fe7e62fd1e"
+      }
+    ],
+    "legacy_failure": {
+      "classification": "authenticated",
+      "diagnostic_class": "missing content-tdd-receipt.json",
+      "exit_status": 1,
+      "record_path": "review-evidence/decision-review-r1-attempt2/bundle.md",
+      "record_sha256": "44ebdf11ce30b65a415bee51c8cfb9fb2f284c76cf72ac66083d9b61266fb1f3"
+    },
+    "policy_recovery": {
+      "commit": "13e7dcbb5157401d102d6aaa4f10471a68b29861",
+      "plaintext_tar_sha256": "98d90843a0e73cad1179f5ce6226e6d32b37de647657b0cb4953ebcc6908195b",
+      "proposal": {
+        "path": "previous-disposition/evidence-loss-decision-brief.md",
+        "sha256": "e4e78f25774f2c0a8491243973708fbb8f37140695451a1aaf3e5c4aa9ea70bd"
+      },
+      "repository": "Consiliency/agent-harness-recovery",
+      "review_artifacts": [
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/brief.md",
+          "sha256": "cee0802880c59ad2861806d816afd3556ebf49cb07e287fd1b9ffa16484d5e44"
+        },
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/bundle.md",
+          "sha256": "44ebdf11ce30b65a415bee51c8cfb9fb2f284c76cf72ac66083d9b61266fb1f3"
+        },
+        {
+          "disposition": "ineligible_empty_unbound",
+          "path": "review-evidence/decision-review-r1-attempt2/native/completed-leg-claude.json",
+          "sha256": "18ca00c3d985946328e0a8d42e45d6210ff5e9a1da43d7d2ab0d086a482072ab"
+        },
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/native/completed-leg-codex.json",
+          "sha256": "cf7624105638f5a8f49719ac467065e31054847c70cb658315b19b6a7ce3093c",
+          "verdict": "AGREE"
+        },
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/native/completed-leg-gemini.json",
+          "sha256": "38aa4c4ab43f3e1418b9a2884fd4f140f74a43c7f075ce819e27852bdacca3af",
+          "verdict": "AGREE"
+        },
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/native/completed-leg-grok.json",
+          "sha256": "3d91b1a4a8df5a08abb32758682b16557306c417dee29d11209a9b4868265b86",
+          "verdict": "PARTIALLY AGREE"
+        },
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/native/result.json",
+          "sha256": "80d09d8b762fa0a618f6873c768801a49c5c6248242c3612971ef5617530ff64"
+        },
+        {
+          "path": "review-evidence/decision-review-r1-attempt2/native/verified-bindings.json",
+          "sha256": "b5b92473bec7e71db9364f8a8f04adf88382f925f3827e83e930af43445069fb"
+        },
+        {
+          "acceptance": false,
+          "path": "review-evidence/decision-review-r1-attempt2/terminal-summary.json",
+          "round": 1,
+          "round_limit": 3,
+          "sha256": "7c43a0de20aa1916efb8ebb6eb6c16bddce4f1a57414a357923d99909d276c21"
+        }
+      ]
+    },
+    "sl0_file_objects": [
+      {
+        "current_sha256": "a1fc25491e467f54caca74e628f62f9e039f8d8e0f1e4974bd8c23a3d734de19",
+        "historical_sha256": "a1fc25491e467f54caca74e628f62f9e039f8d8e0f1e4974bd8c23a3d734de19",
+        "path": "phase-loop-runtime/tests/_runtime_tdd_guard.py"
+      },
+      {
+        "current_sha256": "089b7c8aeb270bf9c2ce3be59fe7f537a84e03e79e08b1f6ea21e49ea8859d1c",
+        "historical_sha256": "089b7c8aeb270bf9c2ce3be59fe7f537a84e03e79e08b1f6ea21e49ea8859d1c",
+        "path": "phase-loop-runtime/tests/runtime_content_tdd_adapter.py"
+      },
+      {
+        "current_sha256": "9a9e96fbf3b4462a2bf7b22ca9bcd4a84fea463ea005e39318b736d08e53e0d9",
+        "historical_sha256": "9a9e96fbf3b4462a2bf7b22ca9bcd4a84fea463ea005e39318b736d08e53e0d9",
+        "path": "phase-loop-runtime/tests/test_cli_train_status_45.py"
+      },
+      {
+        "current_sha256": "94ae5a1e2aa1b122f52e25500175f1ec020ee1473a6290ef01260a89946632e3",
+        "historical_sha256": "94ae5a1e2aa1b122f52e25500175f1ec020ee1473a6290ef01260a89946632e3",
+        "path": "phase-loop-runtime/tests/test_convergence_adapters.py"
+      },
+      {
+        "current_sha256": "8ff41ec471ac5280dae780b4a8a49ca4bb7f004871415ab2647ebe601dd5360d",
+        "historical_sha256": "8ff41ec471ac5280dae780b4a8a49ca4bb7f004871415ab2647ebe601dd5360d",
+        "path": "phase-loop-runtime/tests/test_convergence_event_log.py"
+      },
+      {
+        "current_sha256": "2e9d90614d127228015c7a0b4c6510034376abbbaf0b66cd8a0036742ae01787",
+        "historical_sha256": "2e9d90614d127228015c7a0b4c6510034376abbbaf0b66cd8a0036742ae01787",
+        "path": "phase-loop-runtime/tests/test_convergence_reconcile.py"
+      },
+      {
+        "current_sha256": "95fc96cb4d7311130ee96691b1b6b53a3214225869ae91cb0c5f6785696b8ccd",
+        "disposition": "Preserve both bytes. The reviewed agent-harness#908 correction separates historical grounding from latest-authority current-byte validation.",
+        "historical_sha256": "8a18ac66c63c221702d469365b6745fe25d9423d1c2632e95659cdba5d57b70b",
+        "path": "phase-loop-runtime/tests/test_convergence_runtime_imports.py"
+      },
+      {
+        "current_sha256": "b15a8f7520afd01f6f8490061052409d758b8bf9d00679a3aa1e6bf94d073656",
+        "historical_sha256": "b15a8f7520afd01f6f8490061052409d758b8bf9d00679a3aa1e6bf94d073656",
+        "path": "phase-loop-runtime/tests/test_convergence_status.py"
+      }
+    ]
+  },
+  "closure_complete": false,
+  "criterion": "EC-RUNTIME-0",
+  "historical_disposition": "unproven_evidence_loss",
+  "known_roots": [
+    {
+      "classification": "missing",
+      "expected_path": ".phase-loop/evidence/RUNTIME/tdd/content-tdd-receipt.json",
+      "expected_sha256": "aacdd834885bd8b6e071b8520d66c9974a289e6e96116e228cb2c55c299c3d6b"
+    },
+    {
+      "classification": "missing",
+      "expected_path": ".phase-loop/evidence/RUNTIME/tdd/runtime-content-tdd-binding.json",
+      "expected_sha256": "1f812c5a45c1f3c705b2c0d9e43199b0a29b541c0eca3c9844a8a8dcae42211c"
+    }
+  ],
+  "reconstruction_claim": false,
+  "schema": "runtime_evidence_loss_reference_inventory.v1",
+  "schema_defined_unknowable_slots": [
+    "receipt-bound RED stdout bytes, path, and digest",
+    "receipt-bound RED stderr bytes, path, and digest",
+    "receipt test-file inventory and recorded digests",
+    "receipt RED command, argv, activation environment, collected node IDs, and exit status",
+    "receipt base commit/tree and landing ref/commit/tree",
+    "companion default-leg JUnit bytes/digest, raw-output bytes/digest, return code, and counts",
+    "companion activated-RED JUnit bytes/digest, raw-output bytes/digest, return code, and counts",
+    "companion typed marker inventory, case map, test modules, production union, and SL-0 inventory as recorded",
+    "companion receipt path/digest, identity, landing/base bindings, and ancestry assertion",
+    "companion expected-first-production-parent binding",
+    "companion plan and roadmap paths/seals"
+  ],
+  "status": "proposed_unapproved"
+}

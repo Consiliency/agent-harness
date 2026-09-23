@@ -1,0 +1,424 @@
+{
+  "candidate_binding": "unset_until_approved_policy_and_separately_reviewed_mechanism_exist",
+  "current_acceptance_contract": {
+    "admission_observation": {
+      "command_ordinal": 7,
+      "input_schema": "runtime_current_acceptance.v1",
+      "mode": "read_only",
+      "output_schema": "runtime_current_acceptance_verification.v1",
+      "result_values": [
+        "current_requalified",
+        "failed"
+      ],
+      "self_reference_rule": "The sealed receipt contains neither its own SHA256 nor command 7's result. Command 7 reads the receipt and custody observation without writing either and emits its deterministic observation to stdout."
+    },
+    "candidate": {
+      "clean_tree_required": true,
+      "identity_fields": [
+        "repository",
+        "commit",
+        "tree"
+      ],
+      "input_hash_scope": "Every source, test, policy, catalog, schema, and verifier file loaded from the candidate.",
+      "post_seal_exclusions": [
+        "generated receipt",
+        "custody observation",
+        "verification observation"
+      ]
+    },
+    "custody": {
+      "archive_scope": [
+        "successful pre-admission evidence",
+        "unsuccessful pre-admission evidence"
+      ],
+      "independence": "The custodian is independent of candidate authors and the evidence operator.",
+      "observation_required_fields": [
+        "sealed_receipt_sha256",
+        "complete_evidence_set_digest",
+        "archive_digest",
+        "successful_evidence_digest",
+        "unsuccessful_evidence_digest",
+        "custodian_identity",
+        "independence_disposition",
+        "restore_verification_result"
+      ],
+      "schema": "runtime_current_acceptance_custody.v1"
+    },
+    "downstream_claims": {
+      "CONFORM": false,
+      "HARDEN": false,
+      "IF-0-RUNTIME-1": false,
+      "INTEG": false,
+      "RELEASE": false,
+      "REVIEWTRUTH": false,
+      "SCHED": false,
+      "historical_equivalence": false,
+      "source_review_cycle": false
+    },
+    "enforcement_scope": {
+      "authoritative_closeout_enforcement_present": false,
+      "manifest_hook_only": true,
+      "required_follow_up": "A separately reviewed plan must identify and fail-close every authoritative phase-loop and standalone/manual closeout consumer on the same verification observation.",
+      "until_follow_up": [
+        "v10-RUNTIME remains executing",
+        "phase closeout remains blocked",
+        "verification_status cannot be reported passed",
+        "IF-0-RUNTIME-1 cannot be claimed"
+      ]
+    },
+    "historical_boundary": {
+      "criterion": "EC-RUNTIME-0",
+      "disposition": "unproven_evidence_loss",
+      "equivalence_to_current_acceptance": false,
+      "inventory": "plans/evidence/v10-RUNTIME-evidence-loss-reference-closure.v1.json",
+      "legacy_verifier_translation_allowed": false
+    },
+    "lifecycle": {
+      "completed_transition_guard": {
+        "allowed_from": "executing",
+        "manifest_write_precondition": "Rerun the read-only current-acceptance verification against exact HEAD before appending.",
+        "metadata_binds": [
+          "proven pre-write candidate commit and tree",
+          "receipt path and SHA256",
+          "custody observation path and SHA256",
+          "deterministic verification observation"
+        ],
+        "path_constraints": "Receipt and custody paths are repository-relative regular non-symlinks below .phase-loop/evidence/RUNTIME/current/."
+      },
+      "proof_candidate_state": "executing",
+      "sequence": [
+        "Retain committed through policy and mechanism preparation.",
+        "Append and land the legal committed-to-executing transition with actual run metadata.",
+        "Require a clean sealed candidate containing that executing event before producing evidence.",
+        "Bind receipt, custody, and read-only verification to that exact executing candidate.",
+        "Only after authoritative closeout enforcement exists may an executing-to-completed append bind the proven pre-write candidate."
+      ],
+      "status_vocabulary_extension": false
+    },
+    "normative": true,
+    "ordering": [
+      {
+        "stage": 1,
+        "step": "Policy is approved on concrete reviewed bytes and the tests-first mechanism is separately reviewed and landed."
+      },
+      {
+        "stage": 2,
+        "step": "The manifest legally transitions committed to executing and that event is part of the clean candidate."
+      },
+      {
+        "stage": 3,
+        "step": "Commands 1-6 and 8-12, every explicitly specified catalog mutation case with its own restored-control run, current CI, and independent exact-candidate source approval produce immutable pre-admission evidence."
+      },
+      {
+        "stage": 4,
+        "step": "The recorder validates the complete pre-admission set and seals runtime_current_acceptance.v1 once."
+      },
+      {
+        "stage": 5,
+        "step": "An independent custodian archives successful and unsuccessful evidence, restores and verifies it, and emits runtime_current_acceptance_custody.v1."
+      },
+      {
+        "stage": 6,
+        "step": "Command 7 performs read-only verification and emits runtime_current_acceptance_verification.v1."
+      },
+      {
+        "stage": 7,
+        "step": "Only separately enforced authoritative closeout may consume the observation and request executing to completed."
+      }
+    ],
+    "receipt": {
+      "additional_properties": false,
+      "required_sections": {
+        "authority": "EC-RUNTIME-6, exact executing manifest state and latest authority, exact policy review, final operator approval, and mechanism review.",
+        "candidate": "Exact clean repository commit/tree and complete candidate input-file hashes.",
+        "custody_scope": "Successful and unsuccessful evidence to archive plus required custodian independence.",
+        "downstream": "Explicit false values for every historical, interface, source-review, and downstream claim not independently established.",
+        "falsifier_runs": "Complete accounting for every explicit mutation_cases item in every catalog row, with an independent mutated arm and exact-candidate-restored control for each case. Row-level or grouped credit cannot replace a case result; the required case set is derived from the reviewed catalog rather than a fixed count.",
+        "historical_disposition": "EC-RUNTIME-0 unproven_evidence_loss, both missing roots, archived legacy failure, and the inventory digest with unknown-descendant limit.",
+        "result": "Only pre_admission_complete or failed.",
+        "reviews": "All required role identities and exact-candidate independence dispositions.",
+        "validation_contract": "Exact approved catalog and schema/verifier digests.",
+        "verification": "Immutable producer results for commands 1-6 and 8-12, current CI, and complete outcome accounting."
+      },
+      "result_values": [
+        "pre_admission_complete",
+        "failed"
+      ],
+      "schema": "runtime_current_acceptance.v1"
+    },
+    "required_future_code": {
+      "authoritative_closeout_consumers": "A later separately scoped and reviewed plan; consumers are not implemented or authorized by this carrier.",
+      "tests_first_write_set": [
+        "phase-loop-runtime/tests/test_runtime_current_acceptance.py",
+        "phase-loop-runtime/src/phase_loop_runtime/schemas/runtime-current-acceptance.v1.schema.json",
+        "phase-loop-runtime/src/phase_loop_runtime/runtime_current_acceptance.py",
+        "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py"
+      ]
+    },
+    "roles_and_independence": {
+      "required_roles": [
+        "candidate_authors",
+        "amendment_author",
+        "validation_author",
+        "evidence_operator",
+        "independent_exact_candidate_source_approver",
+        "independent_custodian"
+      ],
+      "review_constraints": [
+        "The source approver is independent of candidate authors and approves the exact candidate.",
+        "The custodian is independent of candidate authors and the evidence operator.",
+        "The receipt records reviewer identities, vendors, author overlap, usable status, grounding, and exact-artifact binding.",
+        "Unavailable, errored, empty, capped, refused, timed-out, ungrounded, or unbound results do not count."
+      ]
+    },
+    "verification_accounting": {
+      "command_7_role": "post-seal read-only admission observation",
+      "producer_command_ordinals": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "required_ci": "Current exact-candidate required CI.",
+      "required_outcome_rule": "Zero unexplained failures, errors, skips, deselections, or omitted required suites."
+    }
+  },
+  "execution_contract": {
+    "arms": [
+      "mutated",
+      "exact_candidate_restored"
+    ],
+    "fresh_interpreter_per_arm": true,
+    "identical_command_per_arm": true,
+    "invalid_evidence": [
+      "collection_or_import_failure_before_entry",
+      "mock_only_substitution",
+      "unentered_symbol",
+      "loaded_source_outside_isolated_candidate",
+      "unrelated_failure",
+      "validator_change_between_arms"
+    ],
+    "loaded_source_evidence": "Record __file__ and SHA256 for every candidate-owned production, test, and verifier module loaded by the case and prove each resolves inside the isolated exact-candidate checkout. Record the external interpreter and dependency identities separately; they cannot replace or shadow a candidate-owned module.",
+    "mutation_case_coverage": "Each mutation_cases item is a separate case. Run and record its mutated arm and its own exact-candidate-restored arm even when several cases share a row or command. Parameterized cases require one independent arm for every member selected by the case definition. Derive coverage from the reviewed catalog; do not assume a fixed case count.",
+    "restore_evidence": "For each explicit mutation case, record the restored production bytes and SHA256, then rerun the identical command to the stated positive control before crediting that case.",
+    "symbol_entry_evidence": "Record entry of every named function or construction site before the intended observable is asserted."
+  },
+  "rows": [
+    {
+      "command": "PHASE_LOOP_TDD_EXPECT_RUNTIME=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_convergence_event_log.py::test_append_drains_partial_writes",
+      "coverage": "existing",
+      "criterion": "EC-RUNTIME-1",
+      "intended_observable": "The existing short-write assertion fails after one partial os.write because the full record is not drained.",
+      "mutation_cases": [
+        "Replace _write_fully's drain loop with one os.write call that returns short."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/event_log.py"
+      ],
+      "production_symbols": [
+        "_append",
+        "_write_fully"
+      ],
+      "restore_control": "The same test passes and records _append and _write_fully entry after exact bytes are restored.",
+      "row_id": "event_log_short_write"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k event_log_regular_file_fsync",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-1",
+      "intended_observable": "The ordered-fd assertion fails because no regular-file fsync occurs after the write even though parent-directory fsync remains.",
+      "mutation_cases": [
+        "Remove only the post-write os.fsync(fd) from _append while retaining os.fsync(parent_fd)."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/event_log.py"
+      ],
+      "production_symbols": [
+        "_append",
+        "_write_fully"
+      ],
+      "restore_control": "The same test observes write, regular-file fsync, then parent-directory fsync after restoration.",
+      "row_id": "event_log_regular_file_fsync"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k registry_divergence_invalidation_chain",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-2",
+      "intended_observable": "A real registry divergence fails to clear carried verification and approval or fails to emit the frozen invalidation trigger.",
+      "mutation_cases": [
+        "Suppress registry divergence in reconcile_train_state while still entering it.",
+        "Bypass invalidate_action_evidence in reconcile_before_action while still entering the full action-time chain."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/reconcile.py"
+      ],
+      "production_symbols": [
+        "reconcile_before_action",
+        "reconcile_train_state",
+        "invalidate_action_evidence"
+      ],
+      "restore_control": "The same test records all three entries and clears carried evidence for actual divergent registry state.",
+      "row_id": "registry_divergence_invalidation_chain"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k live_four_domain_control",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-2",
+      "intended_observable": "The counted boundary assertion fails when any Git, GitHub, provider, or registry production reader is omitted or reused from cache.",
+      "mutation_cases": [
+        "Bypass or reuse cached output from the Git production boundary reader while preserving fresh reads from the other three domains.",
+        "Bypass or reuse cached output from the GitHub production boundary reader while preserving fresh reads from the other three domains.",
+        "Bypass or reuse cached output from the provider production boundary reader while preserving fresh reads from the other three domains.",
+        "Bypass or reuse cached output from the registry production boundary reader while preserving fresh reads from the other three domains."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/reconcile.py"
+      ],
+      "production_symbols": [
+        "reconcile_before_action",
+        "reconcile_train_state"
+      ],
+      "restore_control": "A matching four-domain run proves one fresh read per domain; a divergent-registry run proves the registry arm drives verdict and invalidation.",
+      "row_id": "live_four_domain_control"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k outside_agent_positive_noncoordinating",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-3",
+      "intended_observable": "The valid positive route fails if conformance, version/executable checks, run_bounded, frozen-envelope binding, or zero coordination calls are bypassed.",
+      "mutation_cases": [
+        "Bypass valid conformance before the outside-agent route enters run_bounded.",
+        "Bypass expected-version validation while preserving import and route entry.",
+        "Bypass executable validation while preserving import and route entry.",
+        "Bypass run_bounded while allowing the route to return.",
+        "Corrupt the frozen result envelope's attempt or version binding after bounded execution.",
+        "Bypass the non-coordination guard and perform one coordination call."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py",
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py",
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/outside_agent.py"
+      ],
+      "production_symbols": [
+        "run_outside_agent_adapter",
+        "validate_outside_agent_submission",
+        "run_bounded"
+      ],
+      "restore_control": "A valid canonical submission enters conformance and run_bounded, preserves attempt/version binding, returns the frozen success envelope, and records zero coordination calls.",
+      "row_id": "outside_agent_positive_noncoordinating"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k fresh_process_status_replay",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-4",
+      "intended_observable": "Two fresh processes differ, consult poisoned transcript/cache state, or mutate the durable event log.",
+      "mutation_cases": [
+        "Route train-status through transcript state in a fresh process.",
+        "Route train-status through poisoned cache state in a fresh process.",
+        "Bypass read_convergence_events while preserving command entry.",
+        "Bypass recover_train_state while preserving command entry."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/event_log.py",
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/status.py"
+      ],
+      "production_symbols": [
+        "_run_train_status_command",
+        "read_convergence_events",
+        "recover_train_state",
+        "build_train_status",
+        "render_train_status"
+      ],
+      "restore_control": "Two fresh interpreter processes, with transcript absent and cache paths poisoned, emit identical JSON and human state and leave the log byte-identical.",
+      "row_id": "fresh_process_status_replay"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_convergence_runtime_imports.py -k runtime_v10_reground",
+      "coverage": "existing",
+      "criterion": "EC-RUNTIME-5",
+      "intended_observable": "The current-authority assertion fails when latest authority is ignored while the first historical authority remains intact.",
+      "mutation_cases": [
+        "Resolve current plan bytes from the first authority row instead of the latest row.",
+        "Resolve current roadmap bytes from the first authority row instead of the latest row."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py"
+      ],
+      "production_symbols": [
+        "check"
+      ],
+      "restore_control": "The historical assertion uses the first authority and the current-byte assertion uses the latest authority.",
+      "row_id": "current_authority_selection"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k public_runtime_capability_export",
+      "coverage": "new",
+      "criterion": "IF-0-RUNTIME-1",
+      "intended_observable": "The unconditional export assertion fails while module import itself still succeeds.",
+      "mutation_cases": [
+        "Rebind RUNTIME_CAPABILITY_VERSION away from 1 while preserving successful module import.",
+        "Remove only RUNTIME_CAPABILITY_VERSION membership from __all__ while preserving successful module import and the bound value."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/convergence/__init__.py"
+      ],
+      "production_symbols": [
+        "RUNTIME_CAPABILITY_VERSION",
+        "__all__"
+      ],
+      "restore_control": "The loaded source path/digest is recorded and the test unconditionally requires presence, value 1, and __all__ membership. INTEG consumption remains independently open.",
+      "row_id": "public_runtime_capability_export"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k strict_receipt_schema",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-6",
+      "intended_observable": "Verification fails closed on a missing, extra, stale, contradictory, or mismatched required field or reference.",
+      "mutation_cases": [
+        "For every required receipt or custody schema field, remove that field in an independent arm.",
+        "At every closed receipt or custody schema object level, add an unknown field in an independent arm.",
+        "For every candidate, policy, catalog, schema, verifier, receipt, custody, or evidence identity/reference field, substitute a stale or mismatched value in an independent arm.",
+        "For every receipt or custody cross-field invariant, make the bound values contradictory in an independent arm."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/runtime_current_acceptance.py"
+      ],
+      "production_symbols": [
+        "audit_history",
+        "verify"
+      ],
+      "restore_control": "The same test accepts only the closed schema and recomputed exact references after restoration.",
+      "row_id": "strict_receipt_schema"
+    },
+    {
+      "command": "PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_runtime_current_acceptance.py -k runtime_completed_transition_guard",
+      "coverage": "new",
+      "criterion": "EC-RUNTIME-6",
+      "intended_observable": "The v10-RUNTIME executing-to-completed manifest transition is rejected before write when receipt, custody, candidate, or verification binding is absent or mismatched.",
+      "mutation_cases": [
+        "Allow completed when the required receipt is missing or mismatched.",
+        "Allow completed when the required custody observation is missing or mismatched.",
+        "Allow completed when the requested exact-HEAD candidate differs from the receipt candidate.",
+        "Allow completed without a successful immediate pre-write read-only verification observation."
+      ],
+      "production_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py"
+      ],
+      "production_symbols": [
+        "update_lifecycle"
+      ],
+      "restore_control": "A valid executing-to-completed request embeds the deterministic pre-write observation and input digests; broader closeout remains blocked until separately enforced.",
+      "row_id": "runtime_completed_transition_guard"
+    }
+  ],
+  "schema": "runtime_current_acceptance_falsifier_catalog.v1",
+  "status": "proposed_unapproved"
+}
