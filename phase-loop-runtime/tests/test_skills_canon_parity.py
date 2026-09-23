@@ -135,8 +135,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                 self.assertIn("phase_loop_runtime.panel_invoker", text)
                 self.assertNotIn("run_cli_panels.sh", text)
                 for literal in (
-                    "Claude Fable 5",
-                    "claude-fable-5-1",
+                    "Claude Opus 5.5",
+                    "claude-opus-5-5",
                     "GPT-6 Astra",
                     "gpt-6-astra",
                     "Grok 4.7",

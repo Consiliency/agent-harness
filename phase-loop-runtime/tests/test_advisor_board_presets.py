@@ -35,11 +35,11 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-6-astra", "gemini-3.8-flash", "claude-fable-5-1"},
+            {"gpt-6-astra", "gemini-3.8-flash", "claude-opus-5-5"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
-        self.assertEqual(solo.seats[0].model, "claude-fable-5-1")
+        self.assertEqual(solo.seats[0].model, "claude-opus-5-5")
         # neither seats Sonnet — an unmodeled task is not assumed low-stakes.
         for board in (general, solo):
             self.assertNotIn("claude-sonnet-5", {s.model for s in board.seats})
@@ -56,7 +56,7 @@ class PresetTests(unittest.TestCase):
             (
                 ("gpt-6-astra", "max", "codex"),
                 ("gemini-3.8-flash", "high", "gemini"),
-                ("claude-fable-5-1", "max", "claude"),
+                ("claude-opus-5-5", "max", "claude"),
                 ("grok-4.7", "max", "grok"),
             ),
         )
@@ -80,7 +80,7 @@ class PresetTests(unittest.TestCase):
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
                 ("grok-4.7", "max", "grok", "adversarial"),
-                ("claude-fable-5-1", "max", "claude", "correctness"),
+                ("claude-opus-5-5", "max", "claude", "correctness"),
                 ("gpt-6-astra", "max", "codex", "red-team"),
                 ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),
             ),
@@ -92,7 +92,7 @@ class PresetTests(unittest.TestCase):
             claude_seats = [s for s in PRESETS[name].seats if s.harness == "claude"]
             self.assertTrue(claude_seats, name)
             for s in claude_seats:
-                self.assertEqual(s.model, "claude-fable-5-1", f"{name}: {s.model}")
+                self.assertEqual(s.model, "claude-opus-5-5", f"{name}: {s.model}")
 
     def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
         # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini and GPT
@@ -121,12 +121,12 @@ class PresetTests(unittest.TestCase):
             "legal-review": (
                 ("gpt-6-astra", "max", "codex", "opposing-counsel"),
                 ("gemini-3.8-flash", "high", "gemini", "risk-liability"),
-                ("claude-fable-5-1", "max", "claude", "authority-verification"),
+                ("claude-opus-5-5", "max", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
                 ("gpt-6-astra", "max", "codex", "red-team"),
                 ("gemini-3.8-flash", "high", "gemini", "alternatives"),
-                ("claude-fable-5-1", "max", "claude", "downside-ethics"),
+                ("claude-opus-5-5", "max", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "aggressive"),
