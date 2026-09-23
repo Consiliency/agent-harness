@@ -2103,6 +2103,30 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "view_image",
     "workspace_dependencies",
 )
+# Re-enabled ONLY when a sandbox (a disposable staged review tree) is authorized, so a
+# seat can run the code it reviews. codex >= 0.156 executes commands through the
+# code-mode host, not the bare shell tool: lifting `shell_tool` alone left every
+# sandboxed codex seat answering "code-mode host is disabled". Both stay disabled on
+# the sealed (no-tree) path.
+_BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_mode_host")
+# What confines a sandboxed codex seat's WRITES: the `workspace-write` sandbox rooted at
+# the disposable tree, WITH `/tmp` and `$TMPDIR` removed from its writable set. codex's
+# `workspace-write` leaves both writable by default, and the round's scratch directory
+# (`/tmp/pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lives there, so without
+# these a seat that can run commands could overwrite a SIBLING seat's verdict mid-round
+# (reproduced live on codex 0.156.1). With them, writes land only in the tree; the tree
+# itself stays writable because it is the sandbox root. READS are NOT confined: the seat
+# can read any file the invoking user can (credentials included). What bounds that is the
+# egress policy (private networks denied) and the seat's report being the only output.
+# The one capability a sandboxed codex seat keeps in its bounding set, so codex's own
+# bubblewrap sandbox can start inside the egress namespace (agent-harness#1003; the
+# allowlist and the argument that it cannot restore the firewall live in
+# `sandbox_egress.SEAT_RETAINABLE_CAPS`). Every other seat keeps an EMPTY bounding set.
+_BROKER_CODEX_SANDBOX_RETAINED_CAPS: tuple[str, ...] = ("setfcap",)
+_BROKER_CODEX_SANDBOX_CONFIG: tuple[str, ...] = (
+    "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+    "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+)
 
 
 def _require_staged_tree(staged_tree: Path | None) -> Path | None:
@@ -2205,8 +2229,8 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
-def _provider_launch_prefix(cwd):
-    prefix = list(_EGRESS_LAUNCH_PREFIX.get())
+def _provider_launch_prefix(cwd, retain_caps=()):
+    prefix = list(_sandbox_egress.retain_bounding_caps(_EGRESS_LAUNCH_PREFIX.get(), retain_caps))
     if prefix and prefix[0] == "nsenter":
         # Entering the holder's mount namespace otherwise resets cwd to its root, so the
         # requested cwd is re-established INSIDE the namespace, and by PATH. `nsenter --wd`
@@ -2228,7 +2252,7 @@ def _provider_launch_prefix(cwd):
     return prefix
 
 
-def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[bytes]":
+def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -2248,7 +2272,7 @@ def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[by
     that read call sites was defeated on spelling five times and removed. A raw spawn of a
     provider added elsewhere is a review finding.
     """
-    prefix = _provider_launch_prefix(kwargs.get("cwd"))
+    prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
         # Enter the network namespace before creating the ownership PID namespace,
         # but drop capabilities only AFTER both namespaces exist.
@@ -2363,8 +2387,10 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
             return ("ignore-user-config", "ignore-rules", "ephemeral",
                     *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only")
         return ("ignore-user-config", "ignore-rules", "ephemeral",
-                *(f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"),
-                "stdin-sealed-input", "workspace-write-sandbox-only")
+                *(f for f in _BROKER_CODEX_DISABLED_FEATURES
+                  if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES),
+                "stdin-sealed-input", "workspace-write-sandbox-only", "tmp-not-writable",
+                "bounding-set-setfcap-only")
     if leg == "grok":
         if staged_tree is None:
             return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
@@ -2394,7 +2420,8 @@ def _brokered_codex_command(
     # runaway seat can only damage a directory that is deleted at the end of the round.
     # Without one: byte-for-byte the historical posture.
     disabled = _BROKER_CODEX_DISABLED_FEATURES if tree is None else tuple(
-        f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"
+        f for f in _BROKER_CODEX_DISABLED_FEATURES
+        if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES
     )
     return [
         "codex",
@@ -2402,6 +2429,7 @@ def _brokered_codex_command(
         "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
         "--cd", str(out_dir if tree is None else tree), "--skip-git-repo-check",
         "--sandbox", "read-only" if tree is None else "workspace-write",
+        *(() if tree is None else _BROKER_CODEX_SANDBOX_CONFIG),
         "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
         *codex_effort_args, "--output-last-message", str(out_file), "-",
     ]
@@ -4134,6 +4162,7 @@ def _run_leg_with_liveness(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
     gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
+    retain_caps: "Sequence[str]" = (),
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -4164,6 +4193,7 @@ def _run_leg_with_liveness(
         proc = launch_provider(
             cmd,
             process_owner=() if review_monitor is None else review_monitor.owned_command((), gemini_profile=gemini_profile),
+            retain_caps=retain_caps,
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -6092,18 +6122,23 @@ def _exec_leg(
             str(out_file),
             "-",
         ]
+        codex_retain_caps: tuple[str, ...] = ()
         if brokered:
+            # One sandbox decision, read by the argv, the recorded controls, and the launch.
+            staged_tree = _sandbox_in(review_dir)
+            if staged_tree is not None:
+                codex_retain_caps = _BROKER_CODEX_SANDBOX_RETAINED_CAPS
             cmd = _brokered_codex_command(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
-                staged_tree=_sandbox_in(review_dir),
+                staged_tree=staged_tree,
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="codex",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("codex", _sandbox_in(review_dir)),
+                no_tool_controls=_broker_tool_controls("codex", staged_tree),
                 stdin_prompt=True,
             )
         if agy_capture is not None:
@@ -6149,6 +6184,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
+                    retain_caps=codex_retain_caps,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
@@ -6562,16 +6598,18 @@ def _exec_leg(
             grok_tools,
         ]
         if brokered:
+            # One sandbox decision, read by both the argv and the recorded controls.
+            staged_tree = _sandbox_in(review_dir)
             cmd = _brokered_grok_command(
                 model=model, out_dir=out_dir, grok_effort_args=grok_effort_args,
-                staged_tree=_sandbox_in(review_dir),
+                staged_tree=staged_tree,
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="grok",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("grok", _sandbox_in(review_dir)),
+                no_tool_controls=_broker_tool_controls("grok", staged_tree),
                 redacted_argv_values={"/dev/stdin": "<STDIN_SEALED_INLINE_PROMPT>"},
             )
         if agy_capture is not None:

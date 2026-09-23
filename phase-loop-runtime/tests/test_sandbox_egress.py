@@ -715,3 +715,79 @@ class TestTheRecordDoesNotOverstateWhatIsProtected:
         report = sandbox_egress.enforcement_report(False)
         assert report["network_filtered"] is False
         assert "filesystem_confined" not in report or report["filesystem_confined"] is False
+
+
+# --- agent-harness#1003: one retainable capability for a nested sandbox -----------------
+
+_SETPRIV_PREFIX = ("nsenter", "--net", "-t", "1", "-U", "--preserve-credentials",
+                   "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
+
+
+def test_retain_bounding_caps_rewrites_only_the_bounding_set():
+    from phase_loop_runtime import sandbox_egress as se
+
+    kept = se.retain_bounding_caps(_SETPRIV_PREFIX, ["setfcap"])
+    assert "--bounding-set=-all,+setfcap" in kept
+    assert "--bounding-set=-all" not in kept
+    # Everything else, including the inheritable drop, is byte-identical and in place.
+    assert [p for p in kept if p != "--bounding-set=-all,+setfcap"] == [
+        p for p in _SETPRIV_PREFIX if p != "--bounding-set=-all"
+    ]
+    assert kept.index("--bounding-set=-all,+setfcap") == _SETPRIV_PREFIX.index("--bounding-set=-all")
+    # Nothing requested: the empty bounding set is untouched.
+    assert se.retain_bounding_caps(_SETPRIV_PREFIX, ()) == _SETPRIV_PREFIX
+
+
+@pytest.mark.parametrize("cap", ["net_admin", "sys_admin", "setuid", "all"])
+def test_retain_bounding_caps_refuses_anything_but_setfcap(cap):
+    """The whole point of the empty bounding set is that a seat never holds NET_ADMIN
+    over its own confinement (round 3). No caller may widen it by passing a name."""
+    from phase_loop_runtime import sandbox_egress as se
+
+    with pytest.raises(ValueError, match="not retainable"):
+        se.retain_bounding_caps(_SETPRIV_PREFIX, ["setfcap", cap])
+    assert se.SEAT_RETAINABLE_CAPS == frozenset({"setfcap"})
+
+
+def test_retain_bounding_caps_leaves_an_unisolated_prefix_alone():
+    from phase_loop_runtime import sandbox_egress as se
+
+    assert se.retain_bounding_caps((), ["setfcap"]) == ()
+
+
+def test_a_retained_setfcap_lets_a_nested_sandbox_start_and_nothing_else():
+    """Measured inside the REAL namespace, not asserted from the argv.
+
+    Default prefix: the bounding set is empty and a nested bubblewrap (which is what
+    codex's own sandbox is) cannot map uid 0 -- the exact error every sandboxed codex seat
+    reported. With SETFCAP retained: the nested sandbox starts, the bounding set holds that
+    one bit and nothing else, and the firewall still cannot be flushed.
+    """
+    import shutil
+    import subprocess as sp
+    from phase_loop_runtime import sandbox_egress as se
+
+    if not se.egress_isolation_available():
+        pytest.skip("user namespaces unavailable")
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        pytest.skip("bubblewrap not installed")
+    probe = (
+        "grep CapBnd: /proc/self/status | awk '{print $2}'; "
+        "iptables -F OUTPUT >/dev/null 2>&1 && echo FLUSHED || echo REFUSED; "
+        f"{bwrap} --unshare-user --ro-bind / / --dev /dev --proc /proc -- /bin/echo NESTED-OK 2>&1 | tail -1"
+    )
+    with se.isolated_network() as prefix:
+        assert prefix, "isolation must be available for this test to mean anything"
+        default = sp.run([*prefix, "bash", "-c", probe], capture_output=True, text=True,
+                         timeout=45).stdout.split("\n")
+        kept = sp.run([*se.retain_bounding_caps(prefix, ["setfcap"]), "bash", "-c", probe],
+                      capture_output=True, text=True, timeout=45).stdout.split("\n")
+
+    assert int(default[0], 16) == 0, default
+    assert default[1] == "REFUSED", default
+    assert "NESTED-OK" not in default[2], f"expected the nested sandbox to fail: {default}"
+
+    assert int(kept[0], 16) == 1 << 31, f"only CAP_SETFCAP (bit 31) may be retained: {kept}"
+    assert kept[1] == "REFUSED", f"the seat withdrew its own firewall: {kept}"
+    assert kept[2] == "NESTED-OK", f"codex's own sandbox still cannot start: {kept}"

@@ -90,6 +90,39 @@ PRIVATE_CIDRS: tuple[str, ...] = (
 )
 
 
+# Capabilities a seat MAY keep in its bounding set, by explicit request only. The egress
+# prefix empties the bounding set so a seat can never hold CAP_NET_ADMIN over the namespace
+# that confines it (board round 3: `iptables -F OUTPUT` took qdrant from BLOCKED to 200).
+# One seat needs one capability back: a sandboxed codex seat runs commands inside codex's
+# OWN bubblewrap sandbox, and bwrap's nested user namespace must map uid 0 (the seat is
+# root inside this namespace), which since Linux 5.12 requires CAP_SETFCAP. Without it
+# codex answers "bwrap: setting up uid map: Operation not permitted" and runs nothing
+# (agent-harness#1003). SETFCAP cannot restore the firewall: it grants no NET_ADMIN, file
+# capabilities it sets are still capped by this same bounding set at exec, and a nested
+# namespace's capabilities do not reach the network namespace this one owns. Nothing else
+# is retainable; widening this set is a security decision, not a refactor.
+SEAT_RETAINABLE_CAPS: frozenset[str] = frozenset({"setfcap"})
+_EMPTY_BOUNDING_SET = "--bounding-set=-all"
+
+
+def retain_bounding_caps(prefix, caps) -> tuple[str, ...]:
+    """Return ``prefix`` with ``caps`` kept in the seat's otherwise-empty bounding set.
+
+    ``caps`` must be a subset of :data:`SEAT_RETAINABLE_CAPS`; anything else raises, so a
+    caller can never quietly hand a seat CAP_NET_ADMIN. A prefix without the egress
+    ``setpriv`` (no isolation held) is returned unchanged: there is nothing to relax.
+    """
+    prefix = tuple(prefix)
+    wanted = tuple(sorted({str(c).lower() for c in caps}))
+    illegal = [c for c in wanted if c not in SEAT_RETAINABLE_CAPS]
+    if illegal:
+        raise ValueError(f"capabilities not retainable by a seat: {illegal}")
+    if not wanted or _EMPTY_BOUNDING_SET not in prefix:
+        return prefix
+    kept = _EMPTY_BOUNDING_SET + "".join(f",+{c}" for c in wanted)
+    return tuple(kept if part == _EMPTY_BOUNDING_SET else part for part in prefix)
+
+
 class EgressUnavailable(RuntimeError):
     """Egress isolation was required and could not be enforced."""
 
@@ -372,7 +405,7 @@ def isolated_network(
             # one command. Rules a reviewer can withdraw are a suggestion, not a boundary.
             # Emptying the BOUNDING set (not merely the effective one) means the capability
             # cannot be regained by re-exec either.
-            prefix = (*admin, "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
+            prefix = (*admin, "setpriv", _EMPTY_BOUNDING_SET, "--inh-caps=-all", "--")
 
             # MEASURE THE CAPABILITY, NOT THE STEPS. Board round 9, codex: the resolver
             # bind's failure was suppressed with `2>/dev/null` and slirp was started

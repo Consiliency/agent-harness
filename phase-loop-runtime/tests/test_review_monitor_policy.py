@@ -339,7 +339,10 @@ def test_public_board_real_broker_and_fixture_cli(tmp_path, monkeypatch, empty, 
         "#!/usr/bin/python3\nimport sys,time\nfrom pathlib import Path\n"
         "if 'exec' not in sys.argv: raise SystemExit(0)\n"
         "caps = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('CapBnd:'))\n"
-        "assert int(caps, 16) == 0, 'provider can regain firewall capabilities'\n"
+        # agent-harness#1003: a SANDBOXED codex seat keeps exactly CAP_SETFCAP (bit 31) so
+        # codex's own bubblewrap can start; nothing else, and never NET_ADMIN (bit 12). The
+        # fixture board stages a tree, so this seat is sandboxed. An EMPTY set also passes.
+        "assert int(caps, 16) & ~(1 << 31) == 0, 'provider can regain firewall capabilities'\n"
         f"with Path({str(count)!r}).open('a') as f: f.write('attempt\\n')\n"
         f"sys.stdin.read()\ntime.sleep({60 if cancelled else .2})\n"
         + ("" if empty else "Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('No blocking findings.\\nAGREE')\n")
