@@ -145,7 +145,7 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     # default-model CONSTANT rather than a literal of its own; the second pins WHICH
     # model that constant is. De-hardcoding to the constant alone silently lost the
     # second property, so a default bump would have slid through here unnoticed.
-    assert cmd[cmd.index("-m") + 1] == DEFAULT_LEG_MODELS["grok"] == "grok-4.6"
+    assert cmd[cmd.index("-m") + 1] == DEFAULT_LEG_MODELS["grok"] == "grok-4.7"
     assert cmd[cmd.index("--reasoning-effort") + 1] == _grok_cli_effort("max") == "xhigh"
     # regression guard: the invalid literal must never reach the CLI on the default path.
     assert "max" not in cmd

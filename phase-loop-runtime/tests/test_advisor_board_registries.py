@@ -115,7 +115,9 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(spec.vendor_family, "codex")  # derived from schema.vendor_family
 
     def test_grok_model_resolves_to_the_grok_lane(self) -> None:
-        # grok-4.6 is the xAI-family model for the 4-vendor code-review board.
+        # grok-4.6 is a RETAINED legacy xAI-family model: the 4-vendor code-review
+        # board moved to grok-4.7 (ah#971), but 4.6 stays registered as an explicit
+        # seat, so it must still resolve to the grok lane.
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
 
         spec = DEFAULT_MODEL_REGISTRY.get("grok-4.6")
@@ -125,7 +127,8 @@ class PopulatedRegistryTests(unittest.TestCase):
 
     def test_current_default_board_models_resolve_to_their_lanes(self) -> None:
         # The fleet defaults: claude-fable-5-1 (claude lane) and gemini-3.8-flash
-        # (gemini lane) alongside grok-4.6 / gpt-5.6-sol above.
+        # (gemini lane) alongside gpt-5.6-sol above. grok's default is grok-4.7
+        # (ah#971); grok-4.6 above is the retained legacy seat, not a default.
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
 
         fable = DEFAULT_MODEL_REGISTRY.get("claude-fable-5-1")

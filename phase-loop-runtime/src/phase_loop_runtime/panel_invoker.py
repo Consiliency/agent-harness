@@ -438,7 +438,8 @@ DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "gemini-3.8-flash": "gemini",  # model-id-source: frozen review policy default seat
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
-    "grok-4.6": "grok",  # model-id-source: frozen review policy default seat
+    "grok-4.7": "grok",  # model-id-source: frozen review policy default seat
+    "grok-4.6": "grok",  # model-id-source: explicit legacy review seat
     "grok-4.5": "grok",  # model-id-source: explicit legacy review seat
 }
 
@@ -499,7 +500,7 @@ def _validate_review_board_policy(
 PRESIDENT_LADDER: tuple[str, ...] = (
     "fable",
     "sol",
-    "grok-4.6",  # model-id-source: frozen president availability ladder
+    "grok-4.7",  # model-id-source: frozen president availability ladder
     "gemini-3.8-flash",  # model-id-source: frozen president availability ladder
 )
 
@@ -769,7 +770,7 @@ DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "gemini-3.8-flash-high",  # model-id-source: panel per-leg default
     "claude": "claude-fable-5-1",  # model-id-source: panel per-leg default (single source of truth)
-    "grok": "grok-4.6",  # model-id-source: panel per-leg default (single source of truth)
+    "grok": "grok-4.7",  # model-id-source: panel per-leg default (single source of truth)
 }
 # Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
 # board fans them out across threads for REAL parallelism — a 3-frontier max-effort

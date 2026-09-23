@@ -7,7 +7,7 @@ and descends a rung ONLY on the typed ``{"status": "unavailable",
 for a real landing board:
 
 * a rung names a seat by review alias (``fable``/``sol`` via
-  ``DEFAULT_REVIEW_SEAT_ALIASES``) or by exact model id (``grok-4.6``,
+  ``DEFAULT_REVIEW_SEAT_ALIASES``) or by exact model id (``grok-4.7``,
   ``gemini-3.8-flash``); the rung is matched against the seats of the board that
   is landing, so no model id is spelled here (model-id-source guard). A rung with
   no seat on the board is a typed ``president_unavailable`` (descend).

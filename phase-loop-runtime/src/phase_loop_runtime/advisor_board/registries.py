@@ -270,6 +270,7 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     ("gemini-3.8-flash", "gemini", "high"),
     ("gemini-3.7-flash", "gemini", "high"),
     ("gemini-3.6-flash", "gemini", "high"),
+    ("grok-4.7", "grok", "max"),
     ("grok-4.6", "grok", "max"),
     ("grok-4.5", "grok", "max"),
 )
