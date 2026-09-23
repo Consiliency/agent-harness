@@ -128,7 +128,7 @@ def test_build_grok_command_clamps_explicit_effort():
 
 def test_grok_default_model_resolves_from_profiles():
     selection = resolve_profile_for_executor(action="execute", executor="grok")
-    assert selection.model == GROK_DEFAULT_MODEL == "grok-4.6"
+    assert selection.model == GROK_DEFAULT_MODEL == "grok-4.7"
 
 
 # --- build_grok_launch_spec argv --------------------------------------------
