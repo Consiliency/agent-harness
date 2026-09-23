@@ -47,7 +47,7 @@ _WITNESS_NODE = "tests/test_ci_xdist_witness.py::test_nested_run_target"
 
 
 def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
-    """WITNESS the real run, not the text: the pins above cannot see a conftest hook,
+    """WITNESS the real run, not the text: the pins in `test_ci_xdist_adoption.py` cannot see a conftest hook,
     a pytest config table, or a second install path, and each of those changed the
     real behaviour in review (native p1: `pytest_xdist_auto_num_workers` -> 1 worker;
     `[tool.pytest] addopts = ["-d"]` -> LoadScheduling; codex p1: a `pip install
@@ -88,7 +88,18 @@ def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
         "def pytest_xdist_setupnodes(config, specs):\n"
         "    with open(os.environ['AGENT_HARNESS_XDIST_WITNESS_OUT'], 'w') as fh:\n"
         "        json.dump({'dist': config.getoption('dist'), 'workers': len(specs),\n"
-        "                   'maxworkerrestart': config.getoption('maxworkerrestart')}, fh)\n",
+        "                   'maxworkerrestart': config.getoption('maxworkerrestart')}, fh)\n"
+        "def pytest_sessionfinish(session):\n"
+        "    ds = session.config.pluginmanager.getplugin('dsession')\n"
+        "    if ds is None:\n"
+        "        return\n"
+        "    path = os.environ['AGENT_HARNESS_XDIST_WITNESS_OUT']\n"
+        "    with open(path) as fh:\n"
+        "        rec = json.load(fh)\n"
+        "    rec['sched'] = type(ds.sched).__name__\n"
+        "    rec['effective_restart'] = ds._max_worker_restart\n"
+        "    with open(path, 'w') as fh:\n"
+        "        json.dump(rec, fh)\n",
         encoding="utf-8",
     )
     record = tmp / "witness.json"
@@ -113,5 +124,7 @@ def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
     seen = json.loads(record.read_text(encoding="utf-8"))
     assert seen["workers"] >= _expected_min_workers(), f"the lane's own argv runs {seen['workers']} worker(s): {seen}"
     assert seen["dist"] == "loadfile", f"the lane's own argv schedules by {seen['dist']!r}, not loadfile: {seen}"
+    assert seen.get("sched") == "LoadFileScheduling", f"the lane's own argv schedules via {seen.get('sched')!r}: {seen}"
+    assert seen.get("effective_restart") == 0, f"xdist's controller restart cap is {seen.get('effective_restart')!r}: {seen}"
     assert str(seen["maxworkerrestart"]) == "0", f"the lane's own argv has restart cap {seen['maxworkerrestart']!r}: {seen}"
     assert proc.returncode == 0, f"the witness re-run itself failed (rc={proc.returncode}):\n{out[-3000:]}"
