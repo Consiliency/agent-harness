@@ -350,4 +350,52 @@ def test_cli_refuses_the_truncating_top_level_repo_position(tmp_path, capsys):
     rc = cli.main(["--repo", str(a), "--repo", str(b), "citation-audit"])
     err = capsys.readouterr().err
     assert rc == 2, "must refuse, not silently audit a subset"
-    assert "DISCARDED" in err and "after the subcommand" in err, err
+    assert "only 1 reached the audit" in err and "after the subcommand" in err.lower(), err
+
+
+def test_repo_dropped_in_any_position_or_form_refuses(tmp_path, capsys):
+    """The fail-open was 'fixed' THREE times and reopened each time in a position or form
+    the previous patch did not consider: exact-token counting missed `--repo=`, and counting
+    at all missed the mixed position. So the check is STRUCTURAL — compare INTENT (how many
+    times --repo was written) to EFFECT (how many reached the audit).
+
+    Mutation: revert to counting exact `--repo` tokens -> the equals form slips through."""
+    from phase_loop_runtime import cli
+
+    a = _repo(tmp_path / "a", {"docs/p.md": "clean\n"})
+    b = _repo(tmp_path / "b", {"docs/p.md": "clean\n"})
+
+    for argv in (
+        ["--repo", str(a), "--repo", str(b), "citation-audit"],      # both top-level
+        [f"--repo={a}", f"--repo={b}", "citation-audit"],            # equals form
+        ["--repo", str(a), "citation-audit", "--repo", str(b)],      # mixed position
+    ):
+        assert cli.main(argv) == 2, f"must refuse rather than under-audit: {argv}"
+        assert "reached the audit" in capsys.readouterr().err
+
+    # The supported form still audits everything.
+    assert cli.main(["citation-audit", "--repo", str(a), "--repo", str(b)]) == 0
+    assert capsys.readouterr().out.count("citation-audit [") == 2
+
+
+def test_missing_repo_directory_is_not_a_successful_audit(tmp_path, capsys):
+    """'Successfully audited nothing' is the same fail-open wearing a different hat: a
+    mistyped path found zero documents and reported OK at exit 0. Mutation: drop the
+    is_dir() guard -> a typo silently passes."""
+    from phase_loop_runtime import cli
+
+    assert cli.main(["citation-audit", "--repo", str(tmp_path / "nope")]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_bare_call_at_line_start_is_not_a_definition(tmp_path: Path):
+    """Fail-open in the audit's core question: a statement-expression call
+    (`admit_atomically(req)`) was accepted as a definition, because the C-style declaration
+    pattern allowed an EMPTY type prefix. Mutation: make that prefix optional again."""
+    repo = _repo(tmp_path, {
+        "src/a.py": "def run():\n    x = 1\nadmit_atomically(req)\n",
+        "docs/p.md": "- `src/a.py::admit_atomically`\n- `src/a.py::run`\n",
+    })
+    report = citation_audit.audit(repo)
+    absent = {f.citation.symbol for f in report.findings if f.kind == "symbol_absent"}
+    assert absent == {"admit_atomically"}, f"a call is not a definition; got {absent}"

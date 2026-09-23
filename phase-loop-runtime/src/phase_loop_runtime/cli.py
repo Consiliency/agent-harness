@@ -1079,21 +1079,33 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     if command == "citation-audit":
         from . import citation_audit
 
-        # ah#334 f/u: the TOP-LEVEL `--repo` (cli.py:228) is scalar and shared by every
-        # subcommand, so `phase-loop --repo a --repo b citation-audit` silently keeps only
-        # `b`. Auditing a subset while exiting 0 is the fail-open this command exists to
-        # avoid, so detect the truncating position and refuse rather than under-report.
+        # ah#334 f/u — STRUCTURAL check, after three positional patches failed.
+        #
+        # `--repo` is accepted in two positions (top-level, scalar; subcommand, append) and
+        # two forms (`--repo X`, `--repo=X`). Trying to detect each MISUSE textually kept
+        # missing one: exact-token counting missed `--repo=`, and counting at all missed the
+        # mixed position. So do not detect misuse — compare INTENT to EFFECT. If the user
+        # wrote --repo more times than we are about to audit, repos were dropped, and
+        # auditing a subset while exiting 0 is the fail-open this command exists to prevent.
         raw_repo = getattr(args, "repo", None)
-        if not isinstance(raw_repo, list) and getattr(args, "_argv", []).count("--repo") > 1:
+        repo_args = raw_repo if isinstance(raw_repo, list) else [raw_repo or "."]
+        argv = getattr(args, "_argv", [])
+        requested = sum(1 for a in argv if a == "--repo" or a.startswith("--repo="))
+        if requested > len(repo_args):
             print(
-                "citation-audit: --repo was given more than once BEFORE the subcommand, "
-                "where it is not repeatable and all but the last value are DISCARDED. "
-                "Put them after the subcommand: "
+                f"citation-audit: --repo given {requested} time(s) but only {len(repo_args)} "
+                "reached the audit — argparse keeps the LAST value when --repo appears before "
+                "the subcommand, or in both positions. Put every --repo AFTER the subcommand: "
                 "`phase-loop citation-audit --repo A --repo B`.",
                 file=sys.stderr,
             )
             return 2
-        repo_args = raw_repo if isinstance(raw_repo, list) else [raw_repo or "."]
+        # A path that is not a directory audits nothing and would otherwise report OK —
+        # "successfully audited nothing" is the same fail-open wearing a different hat.
+        missing = [r for r in repo_args if not Path(r).is_dir()]
+        if missing:
+            print(f"citation-audit: not a directory: {', '.join(map(str, missing))}", file=sys.stderr)
+            return 2
         reports = citation_audit.audit_many(
             [resolve_repo(r) for r in (repo_args or ["."])],
             globs=tuple(getattr(args, "glob", None) or ("**/*.md",)),

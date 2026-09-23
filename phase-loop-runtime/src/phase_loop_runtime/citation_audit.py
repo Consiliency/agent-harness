@@ -306,7 +306,11 @@ def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
         # Guarded separately below — see `_STATEMENT_LEAD`. A regex lookahead does NOT
         # work here: `^\s*` backtracks, so the guard lands mid-whitespace and never fires.
         rf"^\s*(?:export\s+)?(?:public\s+|private\s+|static\s+|async\s+)*"
-        rf"[A-Za-z_<>\[\]:*&\s]*\b{escaped}\s*\(",
+        # The prefix is REQUIRED (`+`, not `*`): a C-style declaration always has a return
+        # type or modifier before the name (`void foo(`, `static int bar(`). With `*` an
+        # EMPTY prefix matched, so a bare statement-expression call (`admit_atomically(req)`)
+        # read as a definition — a fail-open in the audit's core question.
+        rf"[A-Za-z_<>\[\]:*&]+\s+{escaped}\s*\(",
         # Receiver / method forms whose prefix contains parens, so the generic
         # `name(` pattern cannot reach them: Go `func (s *Store) Name(`,
         # C++/PHP `Type::Name(`. Found by a portability test that initially passed
@@ -327,7 +331,11 @@ def _symbol_defined(text: str, symbol: str, suffix: str = "") -> bool:
         rf"^\s*(?:(?:public|private|protected|internal|static|final|readonly|const|extern|"
         rf"volatile|synchronized)\s+)+[A-Za-z_][A-Za-z0-9_<>\[\].]*\s+{escaped}\s*[=;]",
         rf"^\s*{escaped}\s*[:=]",
-        rf"^\s*{escaped}\s*\(",
+        # NOTE: a bare `name(` at line start is DELIBERATELY not a definition form. It is
+        # indistinguishable from a statement-expression call (`admit_atomically(req)` in a
+        # function body), which a reviewer showed was being accepted as a definition —
+        # a fail-open in the audit's core question. Shell-style `name() {` and
+        # `name() -> T:` are still matched by the `name()` + brace/arrow/colon form above.
     )
     if not any(re.search(p, text, re.MULTILINE) for p in patterns):
         return False
