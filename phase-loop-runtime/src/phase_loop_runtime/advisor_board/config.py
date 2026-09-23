@@ -17,6 +17,12 @@ built-in ``presets``. Contract:
   actionable message (``validation.validate_board``).
 
 A missing config file is not an error: the built-in presets load on their own.
+
+The same user file may carry a ``[president]`` table whose ``ladder`` sets the
+president fallback order; a repository may set its own in
+``<repo>/.agent-harness/advisor-boards.toml`` (``[president]`` only). The effective
+order is resolved by ``load_president_ladder``: built-in ``PRESIDENT_LADDER`` < user
+< repo.
 """
 
 from __future__ import annotations
@@ -45,7 +51,13 @@ from .schema import (
 )
 
 # Recognised keys — anything else is a hard error (no silent drop).
-_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards"})
+_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president"})
+# A repository file configures the president ladder only: repo-level boards are not a
+# feature, so a ``[[boards]]`` there is refused rather than silently ignored.
+_KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president"})
+_KNOWN_PRESIDENT_KEYS: frozenset[str] = frozenset({"ladder"})
+# Repository-level config, relative to the repository root.
+REPO_CONFIG_RELATIVE_PATH = ".agent-harness/advisor-boards.toml"
 _KNOWN_BOARD_KEYS: frozenset[str] = frozenset(
     {"name", "purpose", "allow_api_key_fallback", "research_enabled", "seats"}
 )
@@ -170,6 +182,69 @@ def _parse_board(raw: Mapping[str, Any], index: int) -> Board:
         raise BoardConfigError(f"board {name!r}: {exc}") from exc
 
 
+def _load_toml(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    with open(path, "rb") as fh:
+        try:
+            return tomllib.load(fh)
+        except tomllib.TOMLDecodeError as exc:
+            raise BoardConfigError(f"{path} is not valid TOML: {exc}") from exc
+
+
+def _parse_president(data: Mapping[str, Any], where: str) -> tuple[str, ...] | None:
+    """The ``[president] ladder`` of one config file, validated; ``None`` when unset."""
+    from ..panel_invoker import PresidentPolicyError, validate_president_ladder
+
+    raw = data.get("president")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise BoardConfigError(f"{where}: 'president' must be a table")
+    _reject_unknown(raw.keys(), _KNOWN_PRESIDENT_KEYS, f"{where} [president]")
+    if "ladder" not in raw:
+        return None
+    try:
+        return validate_president_ladder(raw["ladder"])
+    except PresidentPolicyError as exc:
+        raise BoardConfigError(f"{where} [president] ladder: {exc}") from exc
+
+
+def repo_board_config_path(repo_dir: Path | str) -> Path:
+    return Path(repo_dir) / REPO_CONFIG_RELATIVE_PATH
+
+
+def load_president_ladder(
+    repo_dir: Path | str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    path: Path | None = None,
+) -> tuple[str, ...]:
+    """The effective president fallback order, first rung first.
+
+    Layers, lowest to highest: the built-in ``PRESIDENT_LADDER``; the user file's
+    ``[president] ladder`` (``path``, default ``board_config_path(env)``); the
+    repository's ``<repo_dir>/.agent-harness/advisor-boards.toml``. A layer that sets
+    no ladder leaves the one below it in force. A malformed ladder or an unknown key
+    is a ``BoardConfigError`` -- never a silent fallback to the built-in order.
+    """
+    from ..panel_invoker import PRESIDENT_LADDER
+
+    ladder: tuple[str, ...] = PRESIDENT_LADDER
+    user_path = path if path is not None else board_config_path(env)  # type: ignore[arg-type]
+    user = _load_toml(user_path)
+    if user is not None:
+        _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
+        ladder = _parse_president(user, str(user_path)) or ladder
+    if repo_dir is not None:
+        repo_path = repo_board_config_path(repo_dir)
+        repo = _load_toml(repo_path)
+        if repo is not None:
+            _reject_unknown(repo.keys(), _KNOWN_REPO_TOP_KEYS, str(repo_path))
+            ladder = _parse_president(repo, str(repo_path)) or ladder
+    return ladder
+
+
 def load_boards(
     path: Path | None = None,
     *,
@@ -248,6 +323,7 @@ def load_boards(
             except tomllib.TOMLDecodeError as exc:
                 raise BoardConfigError(f"{cfg_path} is not valid TOML: {exc}") from exc
         _reject_unknown(data.keys(), _KNOWN_TOP_KEYS, str(cfg_path))
+        _parse_president(data, str(cfg_path))  # a bad [president] fails at load too
         raw_boards = data.get("boards", [])
         if not isinstance(raw_boards, list):
             raise BoardConfigError(f"{cfg_path}: 'boards' must be an array of tables")
@@ -295,5 +371,8 @@ def load_boards(
 __all__ = [
     "BoardConfig",
     "BoardConfigError",
+    "REPO_CONFIG_RELATIVE_PATH",
     "load_boards",
+    "load_president_ladder",
+    "repo_board_config_path",
 ]

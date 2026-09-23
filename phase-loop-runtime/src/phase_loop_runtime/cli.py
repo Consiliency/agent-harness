@@ -2086,9 +2086,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         ) / "native-fill" / "president"
         president_kwargs = {"landing_tier": landing_tier_arg, "stream_dir": president_stream_dir}
         if _policy_for_tier(landing_tier_arg).requires_president:
+            from .advisor_board.config import BoardConfigError as _LadderConfigError
+            from .advisor_board.config import load_president_ladder as _load_president_ladder
+
+            try:
+                president_ladder = _load_president_ladder(canonical_repo_authority)
+            except _LadderConfigError as exc:
+                print(f"advisor-board: president ladder config: {exc}", file=sys.stderr)
+                return 2
             president_kwargs["president_invoke"] = _build_president_invoke(
                 board, repo_dir=canonical_repo_authority, stream_dir=president_stream_dir,
                 base_env=dict(os.environ), monitoring_policy=monitoring_policy,
+                ladder=president_ladder,
             )
         native_president_arg = getattr(args, "native_president", None)
         if native_president_arg is not None:
