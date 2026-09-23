@@ -1110,6 +1110,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=("Supply a natively produced fill (claude=<dir-or-request.json>; the dir holds request.json + "
               "review.md). Preflighted against the staged artifact, brief and composition before any launch."),
     )  # ah#84
+    # PRESROUTE (agent-harness#952): run the board under a landing tier, and resume a
+    # natively filled president rung.
+    advisor_board_sub.add_argument(
+        "--landing-tier", dest="landing_tier", default=None,
+        choices=("plan", "production_code", "tests_only", "docs_only"),
+        help=("Run the board under this review landing tier. plan/production_code require a president "
+              "ruling: the Fable rung is filled natively when this process runs under Claude Code and "
+              "through the self-PTY adapter elsewhere."),
+    )
+    advisor_board_sub.add_argument(
+        "--native-president", dest="native_president", default=None, metavar="FILL.json",
+        help=("Resume a deferred president rung with a native ruling: JSON with rung, brief_digest, "
+              "findings_digest and text. Checked against the pending request before it is accepted."),
+    )
     advisor_board_sub.add_argument(
         "--monitoring-policy", choices=("bounded", "heartbeat_only"), default="bounded",
         help="Explicit heartbeat-only monitoring; refuses unsupported requested boards before auth.",
@@ -1895,6 +1909,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         write_private_board,
     )
     from .panel_invoker import _mode_instructions, _preflight_gemini_heartbeat, invoke_board
+    from .panel_invoker import PresidentPolicyError
 
     monitoring_policy = getattr(args, "monitoring_policy", "bounded")
     try:
@@ -1913,6 +1928,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             print(json.dumps({"usable": False, "status": "UNAVAILABLE", "monitoring": record}))
         else:
             print(f"advisor-board: {exc}", file=sys.stderr)
+        return 2
+    # PRESROUTE: a usage error is refused before any availability/auth probe.
+    if getattr(args, "native_president", None) is not None and getattr(args, "landing_tier", None) is None:
+        print("advisor-board: --native-president requires --landing-tier", file=sys.stderr)
         return 2
     artifact_path = Path(args.artifact)
     # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
@@ -2053,6 +2072,36 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
     # radius for this standalone entrypoint. The artifact is passed by ABSOLUTE ref so
     # the constrained cwd never hides it.
+    # PRESROUTE: a president-tier board binds the president seam to THIS driving process
+    # (so the Fable rung defers natively under Claude Code) and a durable stream dir the
+    # deferral and the --native-president resume share.
+    landing_tier_arg = getattr(args, "landing_tier", None)
+    president_kwargs: dict[str, object] = {}
+    if landing_tier_arg is not None:
+        from .panel_invoker import review_policy_for_tier as _policy_for_tier
+        from .president_adapter import build_president_invoke as _build_president_invoke
+
+        president_stream_dir = Path(
+            getattr(args, "native_fill_dir", None) or artifact_path.parent
+        ) / "native-fill" / "president"
+        president_kwargs = {"landing_tier": landing_tier_arg, "stream_dir": president_stream_dir}
+        if _policy_for_tier(landing_tier_arg).requires_president:
+            president_kwargs["president_invoke"] = _build_president_invoke(
+                board, repo_dir=canonical_repo_authority, stream_dir=president_stream_dir,
+                base_env=dict(os.environ), monitoring_policy=monitoring_policy,
+            )
+        native_president_arg = getattr(args, "native_president", None)
+        if native_president_arg is not None:
+            try:
+                president_kwargs["native_president_fill"] = json.loads(
+                    Path(native_president_arg).read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                print(f"advisor-board: --native-president: {exc}", file=sys.stderr)
+                return 2
+    elif getattr(args, "native_president", None) is not None:
+        print("advisor-board: --native-president requires --landing-tier", file=sys.stderr)
+        return 2
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
             invoke_kwargs: dict[str, object] = {
@@ -2065,7 +2114,14 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             if review_authorization is not None:
                 invoke_kwargs["review_authorization"] = review_authorization
                 invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority
+            invoke_kwargs.update(president_kwargs)
             result = invoke_board(board, artifact_text or "", **invoke_kwargs)
+    except PresidentPolicyError as exc:
+        # PRESROUTE: a refused president path (override, stream, resume) is a typed exit.
+        print(f"advisor-board: president refused [{exc.code}]: {exc}", file=sys.stderr)
+        if capture is not None:
+            capture.close()
+        return 2
     except (OSError, ValueError, AgyCanaryEvidenceError) as exc:
         # Artifact staging / resolution failures fail closed with a recoverable exit,
         # not a traceback.
@@ -2076,6 +2132,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     finally:
         if instruction_token is not None:
             reset_review_instruction_digest(instruction_token)
+    # PRESROUTE: the president rung deferred to this driving Claude Code session.
+    pending_president = getattr(result, "needs_native_president", None)
+    if pending_president is not None:
+        record = {"status": "native_president_requested", **pending_president,
+                  "stream_dir": str(president_kwargs.get("stream_dir", ""))}
+        if bool(getattr(args, "json", False)):
+            print(json.dumps(record, indent=2, sort_keys=True))
+        else:
+            print(f"advisor-board: president rung {pending_president['rung']!r} is filled natively -- rule on "
+                  f"the prompt in {record['stream_dir']}/president.pending.json, write FILL.json "
+                  "{rung, brief_digest, findings_digest, text} and re-run with --native-president FILL.json")
+        return 0
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
     usable_vendors = {leg.leg for leg in result.usable_legs}
@@ -2087,6 +2155,16 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # expected non-OK), the board is below its independence floor → exit nonzero.
     usable = usable_count >= FLOOR_SEATS
     exit_code = 0 if usable else 1
+    # PRESROUTE: a president-tier board that the president ruled BLOCKING is not a
+    # usable landing; say so and exit nonzero.
+    president_ruling = getattr(result, "president", None)
+    if president_ruling is not None:
+        from .panel_invoker import president_blocks_landing, president_forcing_decision
+
+        print(f"advisor-board: president ({president_ruling.model}) FORCING DECISION: "
+              f"{president_forcing_decision(president_ruling)}", file=sys.stderr)
+        if president_blocks_landing(president_ruling):
+            exit_code = 1
     # #183 / ABDNATIVE: LOUD requested-vs-delivered shortfall. A floor-satisfying
     # board can still be SHORT an explicitly-requested seat (the claude seat
     # deferred to a native Agent), and a bare `usable:true` masks that. Report

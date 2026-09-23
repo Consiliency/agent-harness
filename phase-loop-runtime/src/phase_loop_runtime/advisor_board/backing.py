@@ -1384,6 +1384,130 @@ def resolve_seat_env(
     raise ValueError(f"unknown seat.auth {seat.auth!r}")
 
 
+# --- PRESROUTE (v10 Phase 14): the president operation's authorization ---------------
+#
+# ADDITIVE beside ``public_board_review.v1``; the review authorization above is not
+# touched. The president operation rules on a board's findings; it never reads a
+# tree, so no tree is staged and none is exposed. Minted like review isolation (the
+# same seal, subscription routes and repository-identity digest) and revalidated
+# immediately before a rung launches, exactly as ``spawn`` revalidates the review
+# authorization before it launches.
+
+PRESIDENT_OPERATION_V1 = "public_board_president.v1"
+
+
+@dataclass(frozen=True)
+class PresidentIsolationAuthorization:
+    """Capability for one brokered president operation over one brief.
+
+    Metadata and digests only, like :class:`ReviewIsolationAuthorization`: no child
+    credential, provider method, host command or live-tree path crosses it, and
+    ``_seal`` is identity-checked here and never serialized.
+    """
+
+    operation: str
+    purpose: str
+    brief_sha256: str
+    broker_contract: str
+    routes: tuple[tuple[str, str], ...]
+    child_credentialless: bool
+    child_network_egress: bool
+    live_tree_exposed: bool
+    api_fallback: bool
+    canonical_repo_sha256: str
+    issued_monotonic_ns: int
+    _seal: object
+
+
+def _president_repo_digest(canonical_repo_authority: Path | str | None) -> str:
+    """Repository identity when there is one, else ``""``.
+
+    Unlike review isolation, the president operation reads no tree -- only the findings
+    text in its brief -- so a missing repository is not a reason to refuse it. Where a
+    repository exists its identity is still bound, and revalidation recomputes the same
+    value, so an authorization carried to a different repository is refused.
+    """
+    try:
+        return _canonical_repo_digest(canonical_repo_authority)
+    except ValueError:
+        return ""
+
+
+def _president_routes(board: object) -> tuple[tuple[str, str], ...]:
+    routes: list[tuple[str, str]] = []
+    for seat in getattr(board, "seats", ()):
+        harness = str(getattr(seat, "harness", "") or "").lower()
+        model = str(getattr(seat, "model", ""))
+        if not harness:
+            continue
+        if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
+            continue
+        try:
+            routes.append((harness, harden_subscription_model(harness, model, getattr(seat, "effort", None))))
+        except ValueError:
+            # Same rule as review isolation: a non-policy Claude seat is a native-host
+            # fill, never a brokered provider route.
+            if harness != "claude":
+                raise
+    return tuple(routes)
+
+
+def prepare_president_isolation_authorization(
+    board: object,
+    brief: str,
+    *,
+    canonical_repo_authority: Path | str | None = None,
+) -> PresidentIsolationAuthorization:
+    """Authorize one president operation over ``brief`` before any provider effect."""
+    if platform.system() != "Linux":
+        raise ValueError("HARDEN president isolation requires Linux")
+    return PresidentIsolationAuthorization(
+        operation=PRESIDENT_OPERATION_V1,
+        purpose=str(getattr(board, "purpose", "")),
+        brief_sha256=sha256(brief.encode("utf-8")).hexdigest(),
+        broker_contract=PARENT_UNIX_BROKER_V1,
+        routes=_president_routes(board),
+        child_credentialless=True,
+        child_network_egress=False,
+        live_tree_exposed=False,
+        api_fallback=False,
+        canonical_repo_sha256=_president_repo_digest(canonical_repo_authority),
+        issued_monotonic_ns=time.monotonic_ns(),
+        _seal=_AUTHORIZATION_SEAL,
+    )
+
+
+def revalidate_president_isolation_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+    board: object,
+    brief: str,
+    *,
+    canonical_repo_authority: Path | str | None = None,
+) -> None:
+    """Independently revalidate a president authorization immediately before use.
+
+    Refuses a missing, forged or foreign authorization, one minted for another
+    brief or board, and one whose isolation posture was altered.
+    """
+    if (
+        not isinstance(authorization, PresidentIsolationAuthorization)
+        or authorization._seal is not _AUTHORIZATION_SEAL
+    ):
+        raise ValueError("missing or forged HARDEN president authorization")
+    if (
+        authorization.operation != PRESIDENT_OPERATION_V1
+        or authorization.brief_sha256 != sha256(brief.encode("utf-8")).hexdigest()
+        or authorization.broker_contract != PARENT_UNIX_BROKER_V1
+        or authorization.routes != _president_routes(board)
+        or not authorization.child_credentialless
+        or authorization.child_network_egress
+        or authorization.live_tree_exposed
+        or authorization.api_fallback
+        or authorization.canonical_repo_sha256 != _president_repo_digest(canonical_repo_authority)
+    ):
+        raise ValueError("HARDEN president authorization does not match this operation")
+
+
 __all__ = [
     "PARENT_UNIX_BROKER_V1",
     "HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES",
@@ -1402,6 +1526,10 @@ __all__ = [
     "derive_review_leg_authorization",
     "revalidate_review_isolation_authorization",
     "revalidate_review_composition_authorization",
+    "PRESIDENT_OPERATION_V1",
+    "PresidentIsolationAuthorization",
+    "prepare_president_isolation_authorization",
+    "revalidate_president_isolation_authorization",
     "VENDOR_API_KEY_VARS",
     "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",

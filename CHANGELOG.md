@@ -6,6 +6,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
+
+- **A seated president rung now rules.** `plan` / `production_code` landings no longer fail
+  closed at `president_execution_route_unavailable`: the president has its own
+  HARDEN-authorized operation, `public_board_president.v1` (`president_operation.py`), with
+  its own brief, completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` …
+  `FORCING DECISION:`) and authorization (`PresidentIsolationAuthorization`, minted beside —
+  never through — the review authorization, and revalidated before each rung launches).
+- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini`, each
+  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the brokered provider
+  route (`launch_provider` only); `fable` is filled natively by the driving Claude Code session
+  (deferred, then resumed with `native_president_fill`, both digests checked against the
+  persisted pending request) and through the self-PTY session elsewhere.
+- **Durable ruling record** (EC-PRESROUTE-5): every ruling on a call with a review stream is
+  written to `<stream_dir>/president.ruling.json` (`president.ruling.v1`); the runner and CLI
+  always pass a stream, and a stream-less call returns its ruling unrecorded.
+- **The interim override is expired** (EC-PRESROUTE-4): a `plan`/`production_code` landing
+  that declares its tier and carries `requires_president=False` is refused
+  (`requires_president_override_refused`); a tierless explicit policy is not detectable at
+  runtime and is a governance violation; and
+  the 2026-09-04 decision note is closed (`EXPIRED by Consiliency/agent-harness#998`).
+- CLI: `advisor-board --landing-tier` and `--native-president FILL.json`.
+- Docs catalog: rescan helper unavailable in this repo; manual audit — the catalog tracks
+  none of the touched docs except `CHANGELOG.md` (by path), so it is unchanged.
+
 ### Small fixes: a host-PID flake, skill effort prose, witness hardening
 
 - `test_observed_launch_closes_stdin_when_no_payload` (in `test_launcher_liveness.py` and its
