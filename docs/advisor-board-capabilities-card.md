@@ -86,6 +86,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `gemini-3.8-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.7-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.6-flash` | gemini      | `gemini`     | gemini            | high           |
+| `grok-4.7`       | grok          | `grok`       | grok              | max            |
 | `grok-4.6`       | grok          | `grok`       | grok              | max            |
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
 
@@ -123,7 +124,7 @@ on any host other than Claude Code through the subscription TUI adapter. No cell
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.6`) |
+| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -145,8 +146,8 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.6 · max · grok · adversarial |
-| `code-review`           | code-review           | grok-4.6 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
+| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
 | `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-6-astra · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-6-astra · medium · codex · structure |
 | `legal-review`          | legal-review          | gpt-6-astra · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-fable-5-1 · max · claude · authority-verification |
@@ -184,7 +185,7 @@ citation-verification treatment is a documented deep-seat follow-on
 The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
-The president availability ladder is Fable → Sol → Grok 4.6 → Gemini 3.8 Flash
+The president availability ladder is Fable → Sol → Grok 4.7 → Gemini 3.8 Flash
 (`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
@@ -377,10 +378,28 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | Brokered homebrew/subscription Claude TUI | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
-| Gemini / agy | Existing internal print timer | Unsupported |
+| Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |
 | Gateway, API-key, capture, research, native host fill | Existing route restrictions | Unsupported |
 | Legacy invoke_panel | Existing behavior | Unsupported |
-| CLI default four-vendor board | Existing behavior | Whole board refused before auth |
+| CLI default four-vendor board | Existing behavior | Preserves four vendors; refuses before auth if Gemini capability is missing or changed |
+
+The Gemini extension (agent-harness#905) admits only entry image SHA256
+`9991515b6d5307bcf701069622b0537b6b206e605f3c891c0cf3a3d208dea8b0`
+and requires sealed memfd/pidfd support in the running Python/kernel. It uses
+literal `--print-timeout 0`, acknowledged stdin input, deny-all settings and no
+staged-tree attachment. The executable/settings are immutable mounts in a private
+namespace-owned HOME. Credential targets are referenced, never copied or restored;
+legitimate refresh writes survive. Required bwrap flags are checked at admission.
+An image update needs qualification before the supported digest changes.
+
+Rejected, empty and native-failed streams retain fixed diagnostics and remain
+non-votes. The qualification driver records distinct completion, cancellation
+and owner-loss receipts with namespace/process/fd observations. Helper image
+checks are sampled; the entry pin does not freeze every helper. Abrupt owner
+loss may briefly release the blocked execution gate before parent-death cleanup.
+See the qualified Gemini extension in the advisor-board contracts for the full
+scope and the repository's qualification script. These receipts are separate
+from the historical bounded-success verifier.
 
 Only admission has a finite 10-second window. Once admitted, the broker waits
 for completion, terminal failure, cancellation, or owner loss. Provider PID

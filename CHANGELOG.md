@@ -6,6 +6,90 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### grok-4.7 is registered and becomes the grok default (agent-harness#971)
+
+- `grok-4.7` shipped 2026-09-21. The advisor-board model registry did not know it, so a
+  downstream fleet could not adopt it by **any** supported means: `load_boards()` is
+  fail-closed and rejected the whole config file, `compose_review_board()` exposes no
+  model override, and `GROK_DEFAULT_MODEL` is upstream. It is now a registered model in
+  `advisor_board.registries` and `panel_invoker`'s model->vendor map.
+- The three independent grok defaults move to it: `profiles.GROK_DEFAULT_MODEL` (executor
+  path SSOT), `panel_invoker.DEFAULT_LEG_MODELS["grok"]` (board seat path), and
+  `panel_invoker.PRESIDENT_LADDER`. `advisor_board.composition` and the golden fixtures in
+  `advisor_board.fixtures` follow. There are three of these, not one -- a "simple default
+  change" touches all of them or the paths silently disagree.
+- `grok-4.6` and `grok-4.5` remain REGISTERED and valid as explicit seats; only the
+  defaults moved. `CANONICAL_VALID_PAIRS` gains `grok-4.7` and keeps `grok-4.6`.
+- Launch-falsified per consumer (the ah#777 rule: a bumped id must be LAUNCHED by every
+  consumer, never assumed). The argv was taken from the production builders, not
+  hand-written, and executed: executor path at `high` (roadmap/plan/review) and `medium`
+  (execute/repair) via `build_grok_command`, and the panel seat at `xhigh` via
+  `DEFAULT_LEG_MODELS` + `render_seat_invocation`. All three returned rc=0 with the
+  expected output.
+- Skill prose regenerated through the canonical pipeline (`skills-src/` ->
+  `regenerate_skills_bundle.py` -> `phase-loop-skills/` -> `sync_skills_bundle.py` ->
+  `skills_bundle/`), so the committed bundle stays byte-identical to a fresh regenerate
+  and the CI parity gate holds. The docs capabilities card gains a `grok-4.7` row.
+- This is the concrete instance of agent-harness#648 (layered resolution + provider-catalog
+  refresh); it is a tactical unblock, not a substitute for it. Second such hand-bump in
+  three days -- `profiles.py` already flags this family VOLATILE ("xAI publishes NO dated
+  snapshot for these").
+
+### grok effort clamp follows the CLI ceiling, which MOVED to `xhigh` (agent-harness#973)
+
+- The grok CLI's accepted `--reasoning-effort` set is established by PROBE, and it grew:
+  ah#222 measured `high | medium | low`, so ah#224/ah#231 clamped both `max` and `xhigh`
+  down to `high`. A 2026-09-22 re-probe measures `xhigh | high | medium | low` on both
+  `grok-4.6` and `grok-4.7`, so the ceiling is CLI-level, not model-specific, and the
+  clamp had been pinning every grok run one tier BELOW what the CLI would accept.
+- Both clamp maps now read `{"minimal": "low", "max": "xhigh"}` and stay
+  verbatim-identical (the ah#231 parity requirement): `launcher._GROK_CLI_EFFORT_OVERRIDES`
+  and `advisor_board.harness_mapping._GROK_EFFORT_OVERRIDES`. `xhigh` is deliberately
+  ABSENT from both — it is now a valid CLI token and passes through unchanged; listing it
+  is what re-introduced the stale down-clamp. `capability_registry`'s grok `effort_map`
+  and user-facing `notes` follow.
+- User-visible effect: the default review board's grok seat has `effort="max"` and was
+  rendering `--reasoning-effort high` on every round, so it was under-driven. It now
+  renders `--reasoning-effort xhigh`. The golden fixture that pins this
+  (`advisor_board.fixtures.DEFAULT_SEAT_EFFORT_ARGS["grok"]`) is updated with it.
+- Other vendors' `"xhigh": "high"` entries (gemini, command, pi) are UNTOUCHED: each was
+  probed against its own CLI and this change carries no evidence about them.
+- The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
+  standing property of grok, which is what let the original clamp outlive its evidence.
+### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
+
+- Align the governed-pipeline issue-state and package-pin probes with its closed
+  issue and 0.7.14 pin, retaining opposite-state and single-field failure controls.
+- Refresh the related roadmap/probe seals and append current plan authority while
+  preserving historical grounding metadata and prior authority records.
+
+### Roadmap validation: reject silently missing phases (agent-harness#729)
+
+- `validate-roadmap` now reports malformed phase headings and phase bodies without
+  a distinct valid heading, instead of silently accepting an incomplete roadmap.
+- Top-level fenced Markdown examples (up to three leading spaces) are excluded
+  from parsed fields and lint checks; direct parser consumers retain raw phase
+  bodies. A repeated `**Key files**` block requires a distinct valid phase heading.
+- Heading recognition and fence masking use consistent LF-delimited source lines
+  with CRLF support. Split headings report diagnostics instead of crashing the
+  standalone validator; other line separators cannot silently hide a phase.
+
+### Qualified Gemini heartbeat reviews (agent-harness#905)
+
+- Brokered Linux subscription Gemini reviews can use heartbeat-only with the
+  measured executable digest and sealed memfd/pidfd support. Literal native
+  timeout zero, one attempt, deny-all settings and a namespace-owned private HOME
+  preserve the no-thinking-deadline policy. Unknown capability refuses the whole
+  requested board before auth; unsupported routes remain refused.
+- Fixed stream-rejection and native-failure diagnostics survive the broker into
+  retained results. Invalid or empty responses cannot become review votes, and
+  private stdout/stderr is not used as a diagnostic or review substitute.
+- Qualification separately binds real completion, cancellation and owner-loss
+  evidence to source/image/profile/helper hashes and local cleanup observations.
+  Sealed image/settings and credential references leave no host profile copy;
+  failed quiescence cannot yield a usable vote. Historical agent-harness#892
+  scope and the bounded-success verifier remain unchanged.
+
 ### CI: the offload lock wait now fits inside the job it is waiting for (agent-harness#945)
 
 - `ci/offload-gate.sh` defaults `OFFLOAD_LOCK_WAIT_SECONDS` to 2400 (40 min) instead of
@@ -41,6 +125,109 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   than restated — the margin is read from the script's own budget table — so no second
   copy can drift, and a value the lookup cannot find is a failure rather than a skip, so
   a rename or a deleted line cannot make the check vacuous.
+
+### Settings write-lease signal guard (agent-harness#950)
+
+- **The admission contract is unchanged**: the settings write lease is still
+  granted only to a single-threaded main thread on Linux. What changed is the
+  INSTRUMENT. The precondition is now read from `/proc/self/task`, the kernel's
+  own task inventory, instead of `threading.active_count()`, which counts only
+  threads the `threading` module created and so answered 1 for a process
+  carrying a `_thread`- or C-spawned thread. An unreadable inventory refuses the
+  lease rather than assuming one thread.
+- A process-wide SIGIO disposition is installed for the lifetime of the lease,
+  and every exit path attempts to restore the previous handler, exceptions
+  included -- attempts, because restoration is best effort; see below.
+  This is defence in depth for the case the precondition cannot cover: a thread
+  that appears after admission and unblocks SIGIO for itself. A `pthread_sigmask`
+  block is per-thread and cannot reach such a thread; the disposition is
+  process-wide and can. A thread that merely appears inherits the mask and was
+  already covered, so this is not a licence to admit multi-threaded callers.
+- The lease is refused when another component already owns SIGIO, that is when
+  the existing disposition is neither the default, nor ignore, nor this guard's
+  own handler. While the lease is held every SIGIO is discarded, and restoring
+  the handler afterwards cannot replay what was dropped: measured at one
+  delivery with no guard, zero inside the lease window, and still zero after the
+  guard restores it. Refusing is the same fail-closed direction as an unreadable
+  inventory, and it applies to a single-threaded caller too. Ownership is decided
+  by identity, never by equality, so a callable that merely compares equal to the
+  default disposition cannot pass; and the handler the installation actually
+  displaced, rather than an earlier reading, is what the decision rests on.
+- **Known limit**: the ownership check covers Python-visible handlers only.
+  `getsignal` reports Python's signal table rather than a fresh query of the
+  kernel disposition, so a native extension that installs a SIGIO handler through
+  raw `sigaction` still reads as the default disposition here. Such an owner
+  cannot be detected from Python, would be clobbered, and could not be restored
+  on the way out. No kernel-aware check is attempted; the limit is documented.
+- A failed entry unwinds both resources on a best-effort basis. An exception raised
+  after SIGIO is blocked or the handler installed, but before the guard returns,
+  hands no token to `clean_settings`, so the exit path never runs; without
+  rollback the process would discard every SIGIO, or leave it blocked, for the
+  rest of its life. Unwinding releases the mask and then restores the
+  disposition -- NOT the reverse of acquisition, which would restore the
+  disposition first -- and a failure in either step neither
+  aborts the other nor replaces the exception that caused the unwind -- which is
+  why it is best effort: attempting both and preserving the original exception is
+  chosen over guaranteeing either. The mask is released BEFORE the disposition is
+  restored, and that order is deliberate rather than incidental: reversing it
+  hands a pending SIGIO a default disposition and then unblocks it, terminating
+  the process. Recovery state is captured before every mutation, and taken from
+  the mutating call where that call reports it, so no change is ever live without
+  a recorded way to undo it. A record can still be stale -- see the residual
+  below. SIGIO stays blocked across the whole admission
+  decision, so a signal arriving inside it remains pending and is seen rather
+  than absorbed by this guard's own discarding handler.
+- **Residual, stated as a residual**: a recovery record can go stale, for the
+  DISPOSITION and for the MASK alike. Each is the return value of a mutating
+  call, and storing it is a separate step, so an interrupt arriving between the
+  two leaves the pre-capture in place. For the disposition, a foreign handler
+  installed in that window is restored as the earlier disposition instead of
+  itself. For the mask, the entry snapshot is the one that gets restored. The
+  mask case is additionally reachable when the mutating call raises before its
+  result is assigned. Restoration is therefore best effort in both cases. This
+  is one structural window, not two problems: the successful path takes the
+  authoritative value from the call, and only an interrupted or failed capture
+  falls back to the earlier reading.
+
+  **Separately, and wider than that window**: release sets the mask to the entry
+  snapshot, so ANY mask change made at ANY point while the lease is held is
+  reverted, not only one made during the capture window above. A callback for
+  some unrelated handled signal, running at any moment of the hold and blocking
+  a signal of its own, has that blocking silently undone on release. Measured on
+  3.10 and 3.12: a signal blocked mid-hold, well clear of capture, is unblocked
+  by release.
+
+  This is the ordinary contract of a scoped save-and-restore rather than a
+  correctness break, and it is not a stale record -- the snapshot is exactly
+  right, it is the SCOPE of the restore that is wide. It is written here because
+  an earlier draft scoped the consequence to the capture window, which is
+  narrower than the code, and because the effect on a caller is the same either
+  way: a signal it blocked is unblocked without notice.
+
+  Its width, stated exactly: under this guard's single-thread admission the
+  interrupt that matters is another Python signal callback, so a single-threaded
+  process is exposed too. This is not a second residual, it is this one at its
+  true width; an earlier draft described it as needing a second thread, which
+  was the reach only while the removed masking region existed.
+
+  Why it is not closed, without flattering us. The general case is not closable
+  at the Python level: masking is per-thread while CPython runs signal callbacks
+  on the main thread whichever thread the kernel delivered to, measured on 3.10
+  and 3.12, and suppressing callbacks by disposition instead means displacing
+  every handler, which is the same unrecordable operation. But the
+  single-threaded case WAS closable by masking. We had it closed, and we removed
+  that mechanism deliberately, because it read as shutting a window it did not
+  shut, it protected a subset of the residual, and it introduced two regressions
+  of its own. Closing the general case needs a C-level primitive this codebase
+  does not have; the question is filed as its own issue rather than attempted
+  again here.
+- **Residual, stated as a residual**: ownership refusal is complete only for
+  PYTHON-VISIBLE ownership. `getsignal` reports Python's signal table rather than
+  a fresh kernel query, so a native extension that installed a SIGIO handler
+  through raw `sigaction` still reads as the default disposition and would be
+  overwritten and not restored. No kernel-aware check is attempted.
+- Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
+  through signal delivery.
 
 ## [0.7.16] - 2026-09-21
 ### Claude native review task delivery (agent-harness#937)

@@ -26,8 +26,12 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             Path("/repo"), grok, action="plan", context_file="context.md"
         )
         effort_index = grok_command.index("--reasoning-effort") + 1
-        self.assertEqual(grok_command[effort_index], "high")
-        self.assertEqual(_adapter_effective_effort("grok", grok.model, grok.effort), "high")
+        # ``max`` is not a grok CLI token, so it clamps -- to ``xhigh``, the CLI's
+        # ceiling as re-probed 2026-09-22 (it accepted only ``high`` when this clamp
+        # was written). The property under test is PROVENANCE: whatever the clamp
+        # emits into argv is what ``_adapter_effective_effort`` records.
+        self.assertEqual(grok_command[effort_index], "xhigh")
+        self.assertEqual(_adapter_effective_effort("grok", grok.model, grok.effort), "xhigh")
 
     def test_gemini_base_model_renders_effort_and_conflict_fails(self):
         self.assertEqual(

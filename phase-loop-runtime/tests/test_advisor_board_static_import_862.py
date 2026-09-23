@@ -77,7 +77,7 @@ try:
 
     if settings["case"] == "static":
         expected = [
-            ("grok-4.6", "max", "grok", "adversarial"),
+            ("grok-4.7", "max", "grok", "adversarial"),
             ("claude-fable-5-1", "max", "claude", "correctness"),
             ("gpt-6-astra", "max", "codex", "red-team"),
             ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),

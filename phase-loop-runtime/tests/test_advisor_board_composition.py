@@ -1495,7 +1495,7 @@ class AvailabilitySimulationTests(unittest.TestCase):
         # ALL four seats on the single available vendor, each a DIFFERENT lens.
         self.assertEqual({s.harness for s in board.seats}, {"grok"})
         self.assertEqual(len({s.lens for s in board.seats}), 4)
-        self.assertEqual({s.model for s in board.seats}, {"grok-4.6"})
+        self.assertEqual({s.model for s in board.seats}, {"grok-4.7"})
 
     def test_never_below_floor_for_any_nonempty_availability(self) -> None:
         # Exhaustively: every non-empty subset of vendors reaches the target and is

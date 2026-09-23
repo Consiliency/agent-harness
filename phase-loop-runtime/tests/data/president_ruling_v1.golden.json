@@ -1,0 +1,22 @@
+{
+  "schema": "president.ruling.v1",
+  "authorization_identity": "public_board_president.v1",
+  "rung_index": 1,
+  "model_id": "claude-fable-5-1",
+  "format_reask_count": 0,
+  "brief_digest": "36bc445119418345d693f8805264db2761549ce332bdd4ec3bbb1d6918f75e2a",
+  "findings_digest": "97043bbed56ed2a7bedcb56482b47ba8517fbff5a28cefb66c6fe81ae5b87361",
+  "forcing_decision": "REJECT until F001 is repaired",
+  "finding_rulings": [
+    {
+      "id": "F001",
+      "disposition": "BLOCKING",
+      "reason": "the dispatch lock is never released"
+    },
+    {
+      "id": "F002",
+      "disposition": "DEFERRED",
+      "reason": "the president ladder skipped a rung"
+    }
+  ]
+}
