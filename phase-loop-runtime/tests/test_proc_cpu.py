@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -20,13 +22,24 @@ def test_own_group_has_consumed_cpu() -> None:
 
 @_needs_proc
 def test_monotonic_and_advances_under_load() -> None:
-    pg = os.getpgrp()
-    before = group_cpu_ticks(pg)
-    x = 0
-    for _ in range(5_000_000):
-        x += 1
-    after = group_cpu_ticks(pg)
-    assert after >= before          # CPU never decreases (heartbeat is monotonic)
+    # Sample a PRIVATE group, not this test's own. Under xdist the test's process
+    # group also holds the controller, the sibling workers and their short-lived
+    # children; one exiting between the two samples takes its ticks out of the sum
+    # (py3.11 CI on agent-harness#956: 29034 -> 28938). A single busy child alone in a
+    # new session is a group whose total can only grow.
+    child = subprocess.Popen([sys.executable, "-c", "while True: pass"], start_new_session=True)
+    try:
+        before = group_cpu_ticks(child.pid)
+        after = before
+        deadline = time.monotonic() + 30
+        while after <= before and time.monotonic() < deadline:
+            time.sleep(0.05)
+            after = group_cpu_ticks(child.pid)
+            assert after >= before      # CPU never decreases (heartbeat is monotonic)
+        assert after > before, "a busy process group's CPU ticks never advanced"
+    finally:
+        child.kill()
+        child.wait()
 
 
 @_needs_proc
