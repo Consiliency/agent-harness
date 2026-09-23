@@ -103,12 +103,14 @@ provider consumption or permission for another supplier review round.
   (a node lacks an admitted open PR, or a prebuilt workspace HEAD is not its admitted head).
   Bounded-mode note: for a prebuilt node with upstream edges this is the terminal
   status under the coordinator today.
-- `review_halted`: material, admission identity, current eligibility or review
-  refused before merging. Inspect `reason` and `detail`; stale/unavailable
-  evidence requires a fresh bound packet. This invocation merged no nodes.
-- `merge_halted`: a recovery, re-verify or merge-stage identity gate refused.
-  Inspect the specific reason (such as `admission_identity_drift`). Earlier
-  merges remain recorded; fix the reported issue before resuming.
+- `review_halted`: a packet checkpoint refused before recovery/readmission
+  began, or the panel/native fill refused. This invocation merged no nodes.
+- `merge_halted`: a packet checkpoint refused after recovery/readmission
+  began, or a recovery, re-verify or merge-stage gate refused. Later packet
+  holds retain the latest durable admission without adding a blocked row;
+  only the per-node recovery handler adds one after that helper began.
+  Inspect `reason` and `detail`; stale evidence needs a fresh bound packet.
+  Earlier merges remain recorded; fix the reported issue before resuming.
 - `merge_failed`: a merge call returned an error (e.g. conflict, branch
   protection). The ledger records the failed node as `blocked`. Fix and resume.
 

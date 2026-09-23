@@ -2709,11 +2709,13 @@ disallowed Unicode. JSON sections decode as outer escapes, JSON, then nested
 hashes intermediate escaped text; preview `presentation_sha256` hashes the
 final rendered section. Readback integrity is not a power-loss durability
 guarantee; that recovery work is tracked in agent-harness#977.
-Pre-review packet refusals use `review_halted`. The recovery/readmission-loop
-handler uses `review_halted` before its first effect and `merge_halted` afterward,
-appending a blocked row only for a node whose recovery/readmission began.
-Merge-loop refusals use `merge_halted`; both handlers retain the typed reason
-and preserve prior merges. Malformed
+Packet identity, material and revocation checkpoints, including finalization,
+storage and checks immediately before review and approval, use `review_halted`
+before recovery/readmission begins and `merge_halted` afterward. The per-node
+recovery/readmission handler alone appends a blocked row, and only after that
+node's helper began; later packet holds retain the latest durable binding.
+Panel rejections and native-fill refusals remain `review_halted`; merge-loop
+refusals remain `merge_halted`. All retain the typed reason and prior merges. Malformed
 stored metadata and excessive JSON nesting yield a typed hold and preview receipt.
 
 Idempotent resume: re-running `run_train` reads the ledger to skip nodes that

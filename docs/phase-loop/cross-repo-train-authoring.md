@@ -197,6 +197,12 @@ current heads. Read-only review and native emission never readmit or recover;
 native fills requiring a new admission hold, and request emission returns even
 when approval is cached. Preview never reads broker evidence.
 
+After native request emission, fill the request and re-run the original command
+with the printed continuation flags, replacing the emission flag. Keep the same
+train, workspace overrides and ledger directory, and retain the original
+`--review-material` file when supplied. Emission does not record approval, so a
+fresh fill cannot retrieve its material through the approved-packet cache.
+
 Packet identity, material and revocation checkpoints—including finalization,
 storage, and checks immediately before review and approval—report `review_halted`
 before this packet's recovery/readmission begins and `merge_halted` after it begins.
