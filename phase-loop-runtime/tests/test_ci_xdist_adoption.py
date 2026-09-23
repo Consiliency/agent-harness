@@ -17,6 +17,16 @@ PINNED: the exact hosted suite block, the exact Dagger `_suite` builder, and the
 exact install line. Any edit there -- whatever it spells -- fails here and must
 update the pin on purpose, in the same diff a reviewer reads.
 
+THE PINS ARE NOT THE WHOLE GUARD. Pin-round 1 found edits OUTSIDE any pinned text
+that still changed the real run: a conftest `pytest_xdist_auto_num_workers` hook, a
+`[tool.pytest] addopts`, a worker cap sourced from an env file above the block, a
+second `pip install` through a requirements file. So in the CI suite lanes
+`test_the_ci_lane_actually_runs_the_pinned_parallelism` WITNESSES the run itself: the
+installed xdist version, that this test is on an xdist worker with >=2 workers and
+restart cap 0, and -- re-running the lane's own post-bash argv on one node in the same
+cwd and environment -- that xdist reports >=2 workers and LoadFileScheduling. The
+pins keep the reviewed text reviewable; the witness keeps the behaviour true.
+
 Threat model, stated so it is not over-read: this catches plausible edits (careless
 or accidental) that change the suite's parallel configuration. It is not a sandbox
 against deliberate obfuscation elsewhere in the workflow (redefining `python`
@@ -30,6 +40,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
+import re
+import subprocess
+import sys
+from importlib.metadata import version as installed_version
 from pathlib import Path
 
 import pytest
@@ -66,9 +81,9 @@ AUTO_WORKERS_CAP = "8"
 # Ambient pytest configuration that would reach the suite without touching its argv.
 AMBIENT_PYTEST_ENV = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
 
-# pytest reads the FIRST of these it finds in the rootdir, BEFORE pyproject.toml, so a
-# new one would shadow the pyproject check below (and could carry `addopts = -n0`).
-SHADOWING_INI_FILES = ("pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg")
+# pytest reads these BEFORE pyproject.toml, so a new one would shadow the pyproject
+# check below (and could carry `addopts = -n0`). tox.ini / setup.cfg come AFTER it.
+SHADOWING_INI_FILES = ("pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini")
 
 # Workflows and the Dagger module are repository source, not package data, so
 # Gate A's copied standalone tree cannot evaluate these assertions.
@@ -106,11 +121,11 @@ def hosted_suite_block(text: str) -> str | None:
         i += 1
     if i == len(lines):
         return None
-    while i < len(lines) and lines[i].rstrip().endswith("\\"):
+    while i < len(lines) and lines[i].endswith("\\"):
         i += 1
     if i == len(lines):
         return None
-    return "\n".join(line.rstrip() for line in lines[starts[0]: i + 1])
+    return "\n".join(lines[starts[0]: i + 1])
 
 
 def dagger_function_source(source: str, name: str) -> str | None:
@@ -174,9 +189,14 @@ def dagger_install_pins(source: str) -> list[str]:
             elts = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
             if "pip" in elts and "install" in elts and "./phase-loop-runtime[visual]" in elts:
                 installs += 1
-            pins.extend(e for e in elts if e.startswith("pytest-xdist"))
+            pins.extend(e for e in elts if _mentions_xdist(e))
     assert installs == 1, f"expected one suite-environment install argv, found {installs}"
     return pins
+
+
+def _mentions_xdist(s: str) -> bool:
+    """pip/uv normalise `pytest_xdist`, `pytest.xdist`, `Pytest-XDist` to one name."""
+    return re.search(r"pytest[-_.]xdist", s, re.IGNORECASE) is not None
 
 
 def hosted_problems(text: str) -> list[str]:
@@ -188,9 +208,11 @@ def hosted_problems(text: str) -> list[str]:
         problems.append(f"the suite block changed (sha256 {_sha(block)}):\n{block}")
     if [line for line in text.splitlines() if line == HOSTED_INSTALL_LINE] == []:
         problems.append(f"the install line is no longer exactly: {HOSTED_INSTALL_LINE.strip()}")
-    xdist_lines = [line for line in text.splitlines() if "pytest-xdist" in line]
+    xdist_lines = [line for line in text.splitlines() if _mentions_xdist(line)]
     if xdist_lines != [HOSTED_INSTALL_LINE]:
         problems.append(f"pytest-xdist must be installed on exactly the pinned line; found {xdist_lines}")
+    if re.search(r"^\s*shell:", text, re.MULTILINE):
+        problems.append("a `shell:` key appeared; the suite step relies on the default `bash -e`")
     for name in (*AMBIENT_PYTEST_ENV, AUTO_WORKERS_VAR):
         if name in text:
             problems.append(f"{name} appears in the workflow; it reaches the suite without its argv")
@@ -275,11 +297,76 @@ def test_parallelism_is_not_moved_into_addopts() -> None:
     applies to those children too, which both oversubscribes the host and makes
     a child's own worker crash indistinguishable from the parent's.
     """
-    pyproject = (REPO_ROOT / "phase-loop-runtime" / "pyproject.toml").read_text(encoding="utf-8")
-    ini = pyproject.partition("[tool.pytest.ini_options]")[2].partition("\n[")[0]
-    assert "addopts" not in ini, (
-        "pytest addopts now exists; -n must never live there (nested pytest runs)"
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # 3.10: the runtime depends on the tomli backport there
+        import tomli as tomllib
+    data = tomllib.loads((REPO_ROOT / "phase-loop-runtime" / "pyproject.toml").read_text(encoding="utf-8"))
+    pytest_tables = data.get("tool", {}).get("pytest", {})
+    # Parsed, not string-searched: `[ tool.pytest.ini_options ]` and pytest 9's native
+    # `[tool.pytest]` table are the same config to pytest (native r3/p1, codex p1).
+    found = [k for k in ("addopts",) if k in pytest_tables or k in pytest_tables.get("ini_options", {})]
+    assert not found, "pytest addopts now exists; -n must never live there (nested pytest runs)"
+
+
+def _in_ci_suite_lane() -> bool:
+    # Hosted: GitHub sets GITHUB_ACTIONS. Dagger: the container env carries the cap.
+    return os.environ.get("GITHUB_ACTIONS") == "true" or AUTO_WORKERS_VAR in os.environ
+
+
+_WITNESS_MARKER = "AGENT_HARNESS_XDIST_WITNESS"
+
+# One fast node whose file has no module state; the witness re-runs ONLY it.
+_WITNESS_NODE = "tests/test_proc_cpu.py::test_unknown_group_is_zero"
+
+
+def test_the_ci_lane_actually_runs_the_pinned_parallelism(request) -> None:
+    """WITNESS the real run, not the text: the pins above cannot see a conftest hook,
+    a pytest config table, or a second install path, and each of those changed the
+    real behaviour in review (native p1: `pytest_xdist_auto_num_workers` -> 1 worker;
+    `[tool.pytest] addopts = ["-d"]` -> LoadScheduling; codex p1: a `pip install
+    pytest-xdist==3.7.0` through `sh -c` or a requirements file).
+
+    In a CI suite lane this test must itself be running on an xdist worker, and the
+    lane's REAL argv -- `workerinput["mainargv"]`, i.e. after bash expansion -- is
+    re-run by pytest on one node in the same cwd and environment (so the same
+    conftest, pyproject and installed xdist). xdist's own report must say it created
+    at least two workers and scheduled by LoadFileScheduling. Nothing is parsed by
+    this file. Outside CI it is skipped: developers may run the suite any way they like.
+    """
+    if not _in_ci_suite_lane():
+        pytest.skip("witnesses the CI suite lanes only")
+    if os.environ.get(_WITNESS_MARKER):
+        pytest.skip("this IS the witness's nested run")
+    assert installed_version("pytest-xdist") == XDIST_PIN.split("==")[1], (
+        f"installed pytest-xdist is {installed_version('pytest-xdist')}, not the pinned one"
     )
+    workerinput = getattr(request.config, "workerinput", None)
+    assert workerinput is not None, "the CI suite is not running under xdist workers"
+    assert workerinput["workercount"] >= 2, f"only {workerinput['workercount']} worker(s)"
+    assert str(request.config.option.maxworkerrestart) == "0", (
+        f"--max-worker-restart is {request.config.option.maxworkerrestart!r}, not 0"
+    )
+    argv = list(workerinput["mainargv"][1:])
+    witness_junit = request.getfixturevalue("tmp_path") / "witness.xml"
+    # The lane's environment, minus this WORKER's own identity (the nested run must be
+    # a controller, not believe it is gw0) and the running test's marker.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("PYTEST_XDIST_WORKER") and k not in ("PYTEST_XDIST_TESTRUNUID", "PYTEST_CURRENT_TEST")}
+    env[_WITNESS_MARKER] = "1"
+    proc = subprocess.run(
+        # `-vv`: xdist names its scheduler only when verbose, and one `-q` in the
+        # lane's argv would cancel a single `-v`.
+        [sys.executable, "-m", "pytest", *argv, "-vv", f"--junitxml={witness_junit}", _WITNESS_NODE],
+        cwd=request.config.invocation_params.dir, env=env, capture_output=True, text=True, check=False,
+    )
+    out = proc.stdout + proc.stderr
+    created = re.search(r"created: (\d+)/(\d+) workers", out)
+    assert created and int(created.group(1)) >= 2, (
+        f"re-running the lane's own argv did not create >=2 workers:\n{out[-3000:]}"
+    )
+    assert "LoadFileScheduling" in out, f"the lane's own argv does not schedule by file:\n{out[-3000:]}"
+    assert proc.returncode == 0, f"the witness re-run itself failed (rc={proc.returncode}):\n{out[-3000:]}"
 
 
 def test_no_ini_file_shadows_the_pyproject_pytest_config() -> None:

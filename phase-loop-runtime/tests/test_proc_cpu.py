@@ -35,7 +35,7 @@ def test_monotonic_and_advances_under_load() -> None:
         while after <= before and time.monotonic() < deadline:
             time.sleep(0.05)
             after = group_cpu_ticks(child.pid)
-            assert after >= before      # CPU never decreases (heartbeat is monotonic)
+            assert after >= before      # a STABLE group's total never decreases
         assert after > before, "a busy process group's CPU ticks never advanced"
     finally:
         child.kill()
@@ -56,3 +56,44 @@ def test_missing_proc_degrades_to_zero(monkeypatch) -> None:
 
     monkeypatch.setattr(_proc_cpu.os, "listdir", _boom)
     assert group_cpu_ticks(os.getpgrp() if _LINUX else 1) == 0
+
+
+@_needs_proc
+def test_sums_every_member_of_the_group() -> None:
+    # The monotonic test above samples a ONE-process group, so it cannot tell a sum
+    # from a single member's ticks. Two busy processes in one new session: the group
+    # total, read AFTER each member's own ticks, is at least their sum (ticks only
+    # grow while a process lives).
+    leader = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys, time\n"
+         "subprocess.Popen([sys.executable, '-c', 'while True: pass'])\n"
+         "while True: pass"],
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        members: list[int] = []
+        while len(members) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            members = [int(e) for e in os.listdir("/proc") if e.isdigit()
+                       and _pgrp_of(int(e)) == leader.pid]
+        assert len(members) == 2, f"expected leader + one child in the group, found {members}"
+        while time.monotonic() < deadline:
+            per_member = [_proc_cpu._pgrp_and_ticks(pid)[1] for pid in members]
+            if all(per_member):
+                break
+            time.sleep(0.05)
+        assert all(per_member), "a busy member never accrued a tick"
+        assert group_cpu_ticks(leader.pid) >= sum(per_member)
+        assert group_cpu_ticks(leader.pid) > max(per_member), "the group total is one member, not a sum"
+    finally:
+        os.killpg(leader.pid, 9)
+        leader.wait()
+
+
+def _pgrp_of(pid: int) -> int | None:
+    try:
+        return _proc_cpu._pgrp_and_ticks(pid)[0]
+    except (OSError, ValueError, IndexError):
+        return None

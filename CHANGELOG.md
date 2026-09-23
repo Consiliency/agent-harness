@@ -40,6 +40,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Changing the suite is allowed; doing it without updating the pin in the same diff is not.
   Threat model: plausible (careless or accidental) edits, not deliberate obfuscation
   elsewhere in the workflow, which code review covers.
+- The pins are not the whole guard: in the CI suite lanes a WITNESS test checks the run
+  itself -- the installed `pytest-xdist` version, that it is executing on an xdist worker
+  with at least two workers and `--max-worker-restart=0`, and, re-running the lane's own
+  post-bash argv on one node in the same cwd and environment, that xdist reports at least
+  two workers and `LoadFileScheduling`. Review showed edits outside every pinned text that
+  still changed the real run (a conftest `pytest_xdist_auto_num_workers` hook, a
+  `[tool.pytest] addopts`, a worker cap sourced from an env file, a second install via a
+  requirements file); each makes the witness red. The `addopts` check now parses
+  `pyproject.toml` as TOML (both `[tool.pytest]` and `[tool.pytest.ini_options]`).
+- `tests/test_proc_cpu.py`: the monotonic test sampled its OWN process group, which under
+  xdist also holds the controller, sibling workers and their short-lived children; one
+  exiting between samples lowered the sum (py3.11 CI: 29034 -> 28938). It now samples a
+  one-process private session, and a new test proves the group total is a SUM over members.
 - `tests/phase_loop_test_utils.make_repo` sets `gc.auto=0` and `maintenance.auto=false`
   before its first commit. Every `git commit` spawns `git maintenance run --auto` detached
   (verified with `GIT_TRACE`: 3 spawns without the keys, 0 with either), and that child
