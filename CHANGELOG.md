@@ -22,7 +22,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Durable ruling record** (EC-PRESROUTE-5): every ruling is written to
   `<stream_dir>/president.ruling.json` (`president.ruling.v1`).
 - **The interim override is expired** (EC-PRESROUTE-4): a `plan`/`production_code` landing
-  carrying `requires_president=False` is refused (`requires_president_override_refused`), and
+  that declares its tier and carries `requires_president=False` is refused
+  (`requires_president_override_refused`); a tierless explicit policy is not detectable at
+  runtime and is a governance violation; and
   the 2026-09-04 decision note is closed (`EXPIRED by Consiliency/agent-harness#998`).
 - CLI: `advisor-board --landing-tier` and `--native-president FILL.json`.
 - Docs catalog: rescan helper unavailable in this repo; manual audit — the catalog tracks
