@@ -15,6 +15,7 @@ is added, and the cap bounds how much can hide here meanwhile.
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -35,7 +36,6 @@ PUBLISH_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
 # `mark.quarantine` covers both `pytest.mark.quarantine` and `from pytest import mark`.
 _MARK = re.compile(r"\bmark\.quarantine\b(?P<call>\([^)]*\))?")
 _REASON = re.compile(r'^\(reason="agent-harness#\d+"\)$')
-_MODULE_MARK = re.compile(r"(?ms)^\s*pytestmark\s*=\s*(\[[^\]]*\]|[^\n]*)")
 
 
 def _sources():
@@ -60,9 +60,27 @@ def test_the_textual_register_is_capped() -> None:
     assert len(marks) <= QUARANTINE_CAP, f"{len(marks)} quarantine marks (cap {QUARANTINE_CAP})"
 
 
+def _module_level_quarantine(text: str) -> bool:
+    """Does a module-level `pytestmark` (plain or annotated assignment) mention quarantine?
+
+    Parsed, not regexed: a list entry containing `]` hid a later mark from the old regex
+    (agent-harness#1036, F012). Unparsable files fall back to a plain text search."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return "pytestmark" in text and "quarantine" in text
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
+            if node.value is not None and "quarantine" in ast.unparse(node.value):
+                return True
+    return False
+
+
 def test_no_module_level_quarantine() -> None:
     offenders = [p.name for p in _sources()
-                 if any("quarantine" in m.group(1) for m in _MODULE_MARK.finditer(p.read_text(encoding="utf-8")))]
+                 if _module_level_quarantine(p.read_text(encoding="utf-8"))]
     assert not offenders, f"quarantine one test at a time, not a module: {offenders}"
 
 
@@ -71,7 +89,9 @@ def test_the_static_checks_can_fail(tmp_path, monkeypatch) -> None:
         (tmp_path / f"test_fake_{i}.py").write_text(
             f'@pytest.mark.quarantine(reason="flaky {i}")\ndef test_x(): pass\n'
         )
-    (tmp_path / "test_module.py").write_text("pytestmark = [\n    pytest.mark.quarantine,\n]\n")
+    (tmp_path / "test_module.py").write_text(
+        'pytestmark = [\n    pytest.mark.parametrize("x", [1]),\n    pytest.mark.quarantine,\n]\n'
+    )
     monkeypatch.setattr(sys.modules[__name__], "TESTS_DIR", tmp_path)
     with pytest.raises(AssertionError, match="must be quarantine"):
         test_every_quarantine_mark_cites_its_tracking_issue()
@@ -91,8 +111,9 @@ def test_only_the_hosted_suite_step_enables_it_and_only_on_pull_requests() -> No
     assert step["env"][QUARANTINE_ENV] == "${{ github.event_name == 'pull_request' && '1' || '0' }}"
     # Exactly one mention anywhere: no job-level env, no `>> $GITHUB_ENV` export (r3 claude).
     assert WORKFLOW_PATH.read_text().count(QUARANTINE_ENV) == 1
-    if PUBLISH_WORKFLOW_PATH.is_file():
-        assert QUARANTINE_ENV not in PUBLISH_WORKFLOW_PATH.read_text()
+    # Unconditional: a renamed publish workflow must red this, not silently skip it (F026).
+    assert PUBLISH_WORKFLOW_PATH.is_file(), f"{PUBLISH_WORKFLOW_PATH} moved; update this guard"
+    assert QUARANTINE_ENV not in PUBLISH_WORKFLOW_PATH.read_text()
 
 
 def _run(tmp_path: Path, body: str, enabled: bool) -> subprocess.CompletedProcess:

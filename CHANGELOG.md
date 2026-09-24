@@ -15,8 +15,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
   3.10/3.11/3.12.
 - New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
-  agent-harness#992 and two agent-harness#987 nodes) are deselected in the hosted
-  pull-request suite only (offload-eligible PRs, push, nightly and Gate A run them),
+  agent-harness#992, agent-harness#1034 and two agent-harness#987 nodes) are deselected in
+  the hosted pull-request suite only (offload-eligible PRs, push, nightly, dispatch and
+  Gate A run them),
   by a conftest collection hook (`tests/_quarantine.py`) enabled with
   `PHASE_LOOP_DESELECT_QUARANTINE=1` -- exact by marker, never a node-ID prefix, and
   more than 5 marked nodes aborts collection. `tests/test_ci_quarantine.py` requires a

@@ -732,6 +732,7 @@ def test_real_output_is_observed_then_silence_is_unknown(tmp_path, monkeypatch, 
         assert result.returncode == 0
 
 
+@pytest.mark.quarantine(reason="agent-harness#1034")
 def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
