@@ -47,11 +47,12 @@ VENV_PYTHON = "3.10"  # the CI floor lane pull requests run
 
 def changed_files(repo: Path, base: str) -> list[str]:
     def git(*args: str) -> list[str]:
-        done = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+        done = subprocess.run(["git", *args], cwd=repo, capture_output=True)
         if done.returncode:
-            sys.exit(f"local_check: git {' '.join(args)} failed: {done.stderr.strip()}\n"
+            sys.exit(f"local_check: git {' '.join(args)} failed: {os.fsdecode(done.stderr).strip()}\n"
                      f"  (fetch the base with `git fetch origin main`, or pass --base <ref>)")
-        return [entry for entry in done.stdout.split("\0") if entry]
+        # Bytes + fsdecode: a filename that is not valid UTF-8 must not crash the check (#1031 r2).
+        return [os.fsdecode(entry) for entry in done.stdout.split(b"\0") if entry]
 
     merge_base = git("merge-base", "HEAD", base)[0].strip()
     # --no-renames: a rename is reported as delete + add, so importers of the OLD

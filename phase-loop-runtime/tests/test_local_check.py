@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -122,7 +123,9 @@ def test_changed_files_handles_odd_paths(lc, tmp_path):
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-qm", "base")
     (tmp_path / 'we"ird é.py').write_text("x")
-    assert lc.changed_files(tmp_path, "main") == ['we"ird é.py']
+    raw = os.fsdecode(b"review-\xff.txt")  # not valid UTF-8 (#1031 r2 codex)
+    (tmp_path / raw).write_text("example\n")
+    assert lc.changed_files(tmp_path, "main") == sorted([raw, 'we"ird é.py'])
 
 
 def test_a_changed_script_selects_the_tests_that_name_it(lc, pkg):
