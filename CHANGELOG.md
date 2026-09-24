@@ -16,6 +16,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   archive and executable binding; automatic fleet updates remain tracked by
   agent-harness#1008.
 
+### President launches run under heartbeat monitoring and broker isolation (agent-harness#1001)
+
+- Every non-native president rung launch (Astra, Grok, Gemini; Claude outside Claude Code)
+  now runs through egress isolation, a single-use broker capability carrying the president
+  operation, and the parent Unix broker -- the same isolation as a review seat. Under
+  `heartbeat_only` it runs with the review heartbeat monitor: no model-thinking deadline and
+  no silence kill (agent-harness#998's route kept a 1800 s deadline and a silence kill, and
+  launched with no broker or egress isolation). A missing canonical repository or unavailable
+  egress refuses before any provider starts. The board's cancel event reaches the president.
+
 ### Configurable president ladder (agent-harness#998 follow-up)
 
 - **The president fallback order is configuration, not code.** `PRESIDENT_LADDER` stays the
