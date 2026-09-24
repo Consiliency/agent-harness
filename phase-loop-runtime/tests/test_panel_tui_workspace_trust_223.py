@@ -498,7 +498,7 @@ def test_modal_line_split_across_trust_answer_cannot_arm_editor(
     assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
 
 
-@pytest.mark.parametrize("control", ["\\033[J", "\\033[H"])
+@pytest.mark.parametrize("control", ["\\033[J", "\\033[H", "\\033[24;7H"])
 def test_partial_ansi_control_cannot_release_modal_fragment(tmp_path, monkeypatch, control):
     _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
     real_write = pi.os.write
@@ -527,7 +527,9 @@ def test_partial_ansi_control_cannot_release_modal_fragment(tmp_path, monkeypatc
     assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
 
 
-@pytest.mark.parametrize("tail", ["❯ ", "\\033[0m"])
+@pytest.mark.parametrize(
+    "tail", ["❯ ", "\\033[0m", "\\033[?2026l", "\\033[?25h", "\\033[?2004h", "\\033]0;Claude Code\\007"],
+)
 def test_editor_with_benign_unterminated_tail_still_submits(tmp_path, monkeypatch, tail):
     _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
     script = (
