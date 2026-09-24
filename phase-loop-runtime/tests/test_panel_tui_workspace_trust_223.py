@@ -464,6 +464,83 @@ def test_editor_line_after_late_modal_footer_rearms_submission(tmp_path, monkeyp
     assert b"review this" in (tmp_path / "prompt-bytes.txt").read_bytes()
 
 
+@pytest.mark.parametrize("redraw", ["repeat_banner", "cwd_status", "cwd_status_split"])
+def test_full_editor_redraw_after_late_footer_rearms_submission(
+    tmp_path, monkeypatch, redraw,
+):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.8, ready_deadline=4.0)
+    real_write = pi.os.write
+    early_pastes = []
+
+    def capture_write(fd, payload):
+        if b"\x1b[200~" in payload and not (tmp_path / "redraw-emitted").exists():
+            early_pastes.append(payload)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(pi.os, "write", capture_write)
+    editor_redraw = {
+        "repeat_banner": "printf '\\033[2J\\033[HClaude Code preview redesign\\n'; ",
+        "cwd_status": "printf '\\033[2J\\033[H%s ❯ \\n' \"$PWD\"; ",
+        "cwd_status_split": (
+            "printf '\\033[2J\\033[HClaude Code preview redesign\\n'; "
+            "sleep 0.3; printf '%s ❯ \\n' \"$PWD\"; "
+        ),
+    }[redraw]
+    script = (
+        "stty raw -echo; " + _MODAL
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        + "printf '\\nClaude Code preview redesign\\n'; sleep 0.3; "
+        + "printf 'Enter y/n:\\n'; sleep 0.3; "
+        + editor_redraw + ": > redraw-emitted; "
+        + "dd bs=1 count=18 of=prompt-bytes.txt 2>/dev/null; "
+        + "printf 'A complete review body with sufficient text to finish.\\nAGREE\\n' > panel-claude.txt; sleep 3"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert not early_pastes
+    assert status == "claude_tui_file_output", (rc, status, text, tail)
+    assert b"review this" in (tmp_path / "prompt-bytes.txt").read_bytes()
+
+
+@pytest.mark.parametrize("redraw", ["modal", "path_only"])
+def test_full_modal_redraw_after_editor_still_holds(tmp_path, monkeypatch, redraw):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.5, ready_deadline=3.5)
+    real_write = pi.os.write
+    writes = []
+
+    def capture_write(fd, payload):
+        writes.append(payload)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(pi.os, "write", capture_write)
+    redraw_command = (
+        "printf '\\033[2J\\033[HAccessing workspace:\\n%s\\nEnter y/n:\\n' \"$PWD\"; "
+        if redraw == "modal" else
+        "printf '\\033[2J\\033[H%s\\n' \"$PWD\"; "
+    )
+    script = (
+        "stty raw -echo; " + _MODAL
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        + "printf '\\nClaude Code preview redesign\\n'; sleep 0.3; "
+        + "printf 'Enter y/n:\\n'; sleep 0.3; "
+        + redraw_command
+        + "dd bs=1 count=1 of=unexpected.txt 2>/dev/null"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert status == "claude_tui_editor_not_ready", (rc, status, text, tail)
+    assert not any(b"\x1b[200~" in payload for payload in writes)
+    assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
+
+
 @pytest.mark.parametrize("before,after", [
     ("Enter to con", "firm Esc to cancel\\n"),
     ("E", "nter y/n:\\n"),

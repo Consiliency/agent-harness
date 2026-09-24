@@ -4615,15 +4615,29 @@ def _tui_trust_residue_line(line: str, cwd_tokens: Sequence[str]) -> bool:
 
 def _tui_post_trust_editor_content(
     chunk: bytes, cwd_tokens: Sequence[str], seen: set[str],
+    *, previously_seen_editor: bool = False,
 ) -> bool:
-    """Find a novel editor line, ignoring modal residue after a split PTY read."""
+    """Find post-gate editor content, including a full redraw of known lines."""
     editor_after_modal = False
-    for line in _tui_visible_lines(chunk):
+    redraw = b"\x1b[2J" in chunk
+    lines = _tui_visible_lines(chunk.rsplit(b"\x1b[2J", 1)[-1] if redraw else chunk)
+    explicit_modal = any(
+        any(token in _normalize_tui_line(line) for token in _CLAUDE_TUI_TRUST_RESIDUE)
+        for line in lines
+    )
+    for line in lines:
         norm = _normalize_tui_line(line)
-        if _tui_trust_residue_line(line, cwd_tokens):
+        cwd_editor_prompt = (
+            previously_seen_editor and not explicit_modal
+            and "❯" in line
+            and any(token.lower() in line.lower() for token in cwd_tokens if token)
+        )
+        if _tui_trust_residue_line(line, cwd_tokens) and not cwd_editor_prompt:
             editor_after_modal = False
             continue
-        if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
+        if len(norm) >= _TUI_PROGRESS_MIN_CHARS and (
+            norm not in seen or redraw or cwd_editor_prompt
+        ):
             editor_after_modal = True
     return editor_after_modal
 
@@ -4719,6 +4733,7 @@ def _run_claude_tui_session(
     trust_answered = False
     gate_signature_seen = False  # a trust-gate signature appeared (recognized OR not)
     ready_since_output = False  # >=1 novel content event AFTER the gate resolved
+    editor_seen_ever = False
     last_novel = start_monotonic
     cwd_tokens = _cwd_trust_tokens(
         cwd
@@ -4859,20 +4874,23 @@ def _run_claude_tui_session(
                         if complete and trust_answered:
                             editor_this_iter = _tui_post_trust_editor_content(
                                 complete, cwd_tokens, seen_tui_lines,
+                                previously_seen_editor=editor_seen_ever,
                             )
+                            editor_seen_ever = editor_seen_ever or editor_this_iter
                             modal_residue_this_iter = not editor_this_iter and any(
                                 _tui_trust_residue_line(line, cwd_tokens)
                                 for line in _tui_visible_lines(complete)
                             )
-                        if complete and (
-                            _tui_chunk_has_novel_content(complete, seen_tui_lines)
-                            or editor_this_iter
-                        ):
+                        if complete and _tui_chunk_has_novel_content(complete, seen_tui_lines):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
                             last_output_progress = now_novel
                             last_novel = now_novel
                             novel_this_iter = True
+                        elif editor_this_iter:
+                            # A repeated full redraw may prove editor readiness, but
+                            # it is not new reviewer progress for the liveness clock.
+                            last_novel = time.monotonic()
                     else:
                         # #48: PTY EOF — the child CLI and ALL its descendants closed
                         # the slave side, so no further output can arrive. Without this
@@ -4938,7 +4956,7 @@ def _run_claude_tui_session(
                 # signature is blocking (or we cleared it), and never on the modal's own
                 # render (the answer this iteration is excluded).
                 if (
-                    novel_this_iter
+                    (novel_this_iter or editor_this_iter)
                     and not answered_this_iter
                     and (trust_answered or not gate_signature_seen)
                     and (not trust_answered or editor_this_iter)
