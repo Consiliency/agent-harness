@@ -4897,6 +4897,9 @@ def _run_claude_tui_session(
                             return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = transcript_salvage or _transcript_text()
                         broker_final = _broker_final()
+                        if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
+                            review_monitor.observe(terminal="user_cancel")
+                            return _finish(1, "", "review_operation_cancelled")
                         if broker_final and _completion_ok(broker_final, mode):
                             return _finish(0, broker_final, "claude_tui_broker_final_assistant")
                         return _finish(
@@ -5018,6 +5021,9 @@ def _run_claude_tui_session(
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
                 broker_final = _broker_final()
+                if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
+                    review_monitor.observe(terminal="user_cancel")
+                    return _finish(1, "", "review_operation_cancelled")
                 if broker_final and _completion_ok(broker_final, mode):
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
                 if broker_final and mode == "president":
@@ -5028,6 +5034,9 @@ def _run_claude_tui_session(
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
                 broker_final = _broker_final()
+                if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
+                    review_monitor.observe(terminal="user_cancel")
+                    return _finish(1, "", "review_operation_cancelled")
                 if broker_final and _completion_ok(broker_final, mode):
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
                 if broker_final and mode == "president":

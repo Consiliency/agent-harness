@@ -313,6 +313,65 @@ while True: time.sleep(.1)
         assert rc != 0
 
 
+def test_cancel_wins_over_terminal_nonconforming_process_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_READY_QUIESCENCE_S", .05)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 60)
+    cancel = threading.Event()
+    monitor = panel_invoker._ReviewMonitor(tmp_path / "monitor.json", "fixture", 0, cancel)
+    marker = tmp_path / "terminal-written"
+    real_select = panel_invoker.select.select
+    real_extract = panel_invoker._final_assistant_text_from_jsonl
+    real_launch = panel_invoker.launch_provider
+    launched = []
+
+    def capture_launch(*args, **kwargs):
+        proc = real_launch(*args, **kwargs)
+        launched.append(proc)
+        return proc
+
+    def no_eof_after_terminal(readers, writers, errors, timeout):
+        if marker.exists():
+            time.sleep(.01)
+            return [], [], []
+        return real_select(readers, writers, errors, timeout)
+
+    def cancel_at_final_read(path, *, require_terminal=False):
+        text = real_extract(path, require_terminal=require_terminal)
+        if require_terminal and text:
+            cancel.set()
+        return text
+
+    script = r'''
+import json, os, sys, time, tty
+from pathlib import Path
+tty.setraw(0)
+print("Claude Code ready for your message", flush=True)
+wire = b""
+while not wire.endswith(b"\x1bOM"):
+    wire += os.read(0, 65536)
+Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
+    "message": {"id": "fixture-message", "role": "assistant", "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "I think it is fine"}]}}) + "\n")
+Path("terminal-written").touch()
+time.sleep(.05)
+'''
+    with patch.object(panel_invoker.select, "select", no_eof_after_terminal), patch.object(
+        panel_invoker, "_final_assistant_text_from_jsonl", cancel_at_final_read,
+    ), patch.object(
+        panel_invoker, "launch_provider", capture_launch,
+    ):
+        rc, text, log, _ = panel_invoker._run_claude_tui_session(
+            command=[sys.executable, "-c", script], cwd=tmp_path, prompt="rule on F001",
+            output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
+            mode="president", backstop_s=10, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
+        )
+    assert marker.exists()
+    assert rc != 0 and text == "" and log == "review_operation_cancelled", (rc, text, log)
+    assert len(launched) == 1 and launched[0].poll() is not None
+
+
 def test_the_seam_predicate_does_not_depend_on_import_order():
     # native seat r1 F1: the production launch site is captured in panel_invoker itself.
     assert panel_invoker._PRODUCTION_LAUNCH_PROVIDER is panel_invoker.launch_provider
