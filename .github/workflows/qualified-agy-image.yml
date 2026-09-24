@@ -1,0 +1,42 @@
+name: qualified-agy-image
+
+on:
+  pull_request:
+    paths:
+      - 'plans/evidence/agy-*-linux-x64-qualification.json'
+      - 'plans/evidence/qualified-provider-images.json'
+      - 'phase-loop-runtime/src/phase_loop_runtime/**'
+      - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
+      - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
+      - '.github/workflows/qualified-agy-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plans/evidence/agy-*-linux-x64-qualification.json'
+      - 'plans/evidence/qualified-provider-images.json'
+      - 'phase-loop-runtime/src/phase_loop_runtime/**'
+      - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
+      - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
+      - '.github/workflows/qualified-agy-image.yml'
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: latest agy source and release asset
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify qualification source pins
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
+      - name: Verify latest release, archive and executable
+        if: always()
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --upstream-only
