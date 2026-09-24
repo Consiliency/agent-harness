@@ -210,6 +210,7 @@ def test_raw_unicode_separator_at_message_edge_survives(tmp_path, separator):
 @pytest.mark.parametrize(("mode", "first", "last"), [
     ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
     ("review", "REVIEW START\n1. Raw\u2028separator stays in text", "REVIEW END\nPARTIALLY AGREE"),
+    ("review", "REVIEW START\n1. Edge separator\u2028", "REVIEW END\nPARTIALLY AGREE"),
     ("president", "FINDING F001: BLOCKING — Preserve the first finding", "FORCING DECISION: Fix F001 before landing"),
 ])
 def test_brokered_tui_returns_complete_split_review(tmp_path, monkeypatch, mode, first, last):
