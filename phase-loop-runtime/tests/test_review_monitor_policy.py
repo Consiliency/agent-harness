@@ -296,6 +296,7 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
     )
     owner = subprocess.Popen([sys.executable, "-c", owner_code], start_new_session=True)
     descendant = None
+    leader = None
     try:
         deadline = time.monotonic() + 5
         while not marker.exists() and time.monotonic() < deadline:
@@ -303,6 +304,10 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
             time.sleep(.02)
         assert marker.exists()
         descendant = _host_pid(marker.read_text())
+        # Resolve the leader NOW, while its namespace is alive: after owner loss a
+        # (namespace inode, local PID) pair can be reused by another test's process.
+        if leader_marker.exists():
+            leader = _host_pid(leader_marker.read_text())
         owner.kill()
         owner.wait(5)
         deadline = time.monotonic() + 5
@@ -315,9 +320,9 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
         owner.wait(5)
         if descendant is not None and Path(f"/proc/{descendant}").exists():
             os.kill(descendant, signal.SIGKILL)
-        if leader_marker.exists():
-            try: os.kill(_host_pid(leader_marker.read_text(), timeout_s=0), signal.SIGKILL)
-            except (AssertionError, ProcessLookupError): pass
+        if leader is not None:
+            try: os.kill(leader, signal.SIGKILL)
+            except ProcessLookupError: pass
 
 
 @pytest.mark.parametrize("empty,cancelled", [(False, False), (True, False), (False, True)])
