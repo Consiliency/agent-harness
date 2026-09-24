@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 import threading
@@ -242,7 +243,7 @@ class PresidentInvoke:
             self._record(rung, seat, "failed", "president_invocation_failed", detail)
             return {"status": "failed", "code": "president_invocation_failed", "detail": detail}
         self._record(rung, seat, "ok", None, None, len(text))
-        return {"status": "ok", "text": text}
+        return {"status": "ok", "text": _unglue_finding_lines(text)}
 
     def _transport(
         self,
@@ -475,6 +476,31 @@ class PresidentInvoke:
 # The staged instructions a brokered president rung binds (the prompt itself is the
 # staged bundle): a fixed marker, so the broker's stage digest identifies the operation.
 _PRESIDENT_STAGE_INSTRUCTIONS = "public_board_president.v1: rule on every finding in the staged brief.\n"
+
+# agent-harness#1011: a provider's plain-text output can join two text segments with no
+# separator -- the grok CLI printed a one-sentence preamble immediately followed by
+# ``FINDING F001: ...`` on the SAME line. A preamble on its own line is already
+# accepted by the ruling grammar; only the lost line break made the ruling invalid.
+_GLUED_FINDING_RE = re.compile(r"(?<=\S)[ \t]*(?=FINDING\s+F\d+:\s+(?:BLOCKING|DEFERRED)\s+[—-]\s)")
+
+
+def _unglue_finding_lines(text: str) -> str:
+    """Restore the line break before a ruling line glued onto a PROSE line.
+
+    Only a line that is not itself a ruling line is split, and only before its FIRST
+    glued ruling line -- so a valid ruling whose reason quotes another finding is never
+    touched. Whitespace-only and fail-closed: nothing is removed or reworded, and
+    anything still malformed goes to the grammar check and its one format re-ask.
+    """
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("FINDING ", "FORCING DECISION:")):
+            continue
+        match = _GLUED_FINDING_RE.search(line)
+        if match is not None:
+            lines[index] = line[: match.start()] + "\n" + line[match.end():]
+    return "\n".join(lines)
+
 
 def _injected_president_seam() -> bool:
     """True for the in-process control seam: a patched transport or launch site.

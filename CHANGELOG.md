@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A president ruling line glued onto a preamble is restored (agent-harness#1011)
+
+- The live qualification of the fixed president route found the Grok rung's plain-text output
+  joining a one-sentence preamble directly onto `FINDING F001: ...`, so a complete, correct
+  ruling failed the ruling grammar and would have spent the format re-ask. The president adapter
+  now restores the line break before the first ruling line glued onto a prose line. The repair is
+  whitespace-only and fail-closed; lines that are themselves ruling lines are never split.
+
 ### Qualified agy 1.2.9 entry image (agent-harness#1008)
 
 - Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
