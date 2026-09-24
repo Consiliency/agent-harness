@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Qualified agy 1.2.10 entry image (agent-harness#1008)
+
+- Admit the newly published 1.2.10 Linux x64 image for brokered Gemini
+  heartbeat-only review after separate real completion, cancellation and
+  owner-loss qualification. The 1.2.9 image now refuses before launch. The
+  current-image record and CI provenance check bind the new source, archive and
+  executable; automatic fleet updates remain tracked by agent-harness#1008.
+
 ### Qualified agy 1.2.9 entry image (agent-harness#1008)
 
 - Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
