@@ -132,3 +132,13 @@ def test_a_changed_script_selects_the_tests_that_name_it(lc, pkg):
     (pkg / "tests" / "test_runs_tool.py").write_text('SCRIPT = ROOT / "scripts" / "tool.py"\n')
     tests, _ = lc.select(pkg, ["phase-loop-runtime/scripts/tool.py"])
     assert tests == ["tests/test_runs_tool.py"]
+
+
+def test_an_unparsable_importer_fails_open(lc):
+    """#1031 r2 (claude): a host Python older than the test's syntax must not drop it."""
+    newer = "match x:\n    case 1: pass\nfrom phase_loop_runtime.foo import f\n"
+    if lc.imported_modules(newer) is None:  # host cannot parse `match`
+        assert lc.imports_module(newer, "phase_loop_runtime.foo")
+    assert lc.imports_module("def (:\nimport phase_loop_runtime.foo\n", "phase_loop_runtime.foo")
+    assert lc.imports_module("\ufeffimport phase_loop_runtime.foo\n", "phase_loop_runtime.foo")
+    assert lc.imports_module("x = '\\0'\0\nimport phase_loop_runtime.foo\n", "phase_loop_runtime.foo")

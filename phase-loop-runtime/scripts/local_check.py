@@ -71,14 +71,14 @@ def module_name(path: str) -> str | None:
     return dotted.removesuffix(".__init__")
 
 
-def imported_modules(text: str) -> set[str]:
+def imported_modules(text: str) -> set[str] | None:
     """Every module a source imports, by dotted name, anywhere in the file (parsed, so
     parenthesised multi-line imports count). `from a import b` yields both `a` and `a.b`,
     since `b` may be a submodule."""
     try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return set()
+        tree = ast.parse(text.removeprefix("\ufeff"))
+    except (SyntaxError, ValueError):
+        return None
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -90,8 +90,14 @@ def imported_modules(text: str) -> set[str]:
 
 
 def imports_module(text: str, dotted: str) -> bool:
-    """Does this source import `dotted` or one of its submodules?"""
-    return any(name == dotted or name.startswith(dotted + ".") for name in imported_modules(text))
+    """Does this source import `dotted` or one of its submodules?
+
+    A file this interpreter cannot parse (newer syntax than the host Python, NUL bytes)
+    fails OPEN: select it if it names the module at all (#1031 r2)."""
+    names = imported_modules(text)
+    if names is None:
+        return dotted in text
+    return any(name == dotted or name.startswith(dotted + ".") for name in names)
 
 
 def select(pkg_root: Path, files: list[str]) -> tuple[list[str] | None, list[str]]:
@@ -220,9 +226,17 @@ def main(argv: list[str] | None = None) -> int:
     if tests != [] and not args.with_chronology:
         # CI runs the ~50-minute CONFORM chronology node on py3.10/Gate A only; so does this
         # only with --with-chronology, in either mode.
-        node = subprocess.run(["bash", str(repo / "ci" / "chronology-scope.sh"), "--node"],
-                              cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        scope = subprocess.run(["bash", str(repo / "ci" / "chronology-scope.sh"), "--node"],
+                               cwd=repo, capture_output=True, text=True)
+        node = scope.stdout.strip()
+        # --deselect is a PREFIX match: an empty or file-level value would drop far more.
+        if scope.returncode or "::" not in node:
+            sys.exit(f"local_check: ci/chronology-scope.sh --node gave {node!r} "
+                     f"(exit {scope.returncode}): {scope.stderr.strip()}")
         pytest_cmd.append(f"--deselect={node}")
+        if tests and node.split("::", 1)[0] in tests:
+            print(f"  NOTE : this diff reaches {node}, which is deselected here "
+                  "(CI runs it on py3.10); pass --with-chronology to run it")
 
     uvx = shutil.which("uvx")
     lint_cmd = [uvx, RUFF_PIN.replace("==", "@"), "check", "."] if uvx else None
@@ -240,7 +254,9 @@ def main(argv: list[str] | None = None) -> int:
     if tests != []:
         env = dict(os.environ, PYTHONPATH="src:tests") if args.host_env else clean_env(python)
         code = subprocess.run(pytest_cmd, cwd=pkg_root, env=env).returncode
-        status |= 0 if code == 5 else code  # 5: every selected test was deselected by marker
+        # 5 = nothing collected: fine when every SELECTED test was deselected by marker;
+        # never for the whole suite.
+        status |= 0 if code == 5 and tests is not None else code
     print("local_check: " + ("PASS" if status == 0 else "FAIL") +
           " (CI still runs Gate A and, on main, 3.11/3.12)")
     return 1 if status else 0
