@@ -1,6 +1,13 @@
 """model-routing-v1 P2 — governed planning gate (IF-0-P2-1)."""
+import hashlib
+import json
+from pathlib import Path
 import unittest
 from unittest.mock import Mock
+
+import execfind_content_tdd_adapter as execfind_tdd
+import phase_loop_runtime.governed_review as governed_review
+import phase_loop_runtime.panel_invoker as panel_invoker
 
 from phase_loop_runtime.closeout_validators import CloseoutContext
 from phase_loop_runtime.governed_review import (
@@ -206,6 +213,242 @@ class VerdictClassifierTest(unittest.TestCase):
         # A "BLOCK:" line that is NOT a terminal verdict is non-conforming, not a
         # block at this layer (fail-closed as unusable upstream, never a pass).
         self.assertFalse(_leg_blocks("BLOCK: the migration drops a column"))
+
+
+class ExecfindFindingTests(unittest.TestCase):
+    def test_finding_prose(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            leg = PanelLegResult(
+                "claude", "OK", "FINDING F001: BLOCKING — prose concern\nDISAGREE",
+                seat_key="claude:claude-opus-5-5:max:correctness",
+            )
+            findings = governed_review._findings_from_panel(
+                PanelResult((leg,)), reviewed_sha="1" * 40,
+                falsifier_runs={}, falsifier_policy="optional",
+            )
+            self.assertTrue(any(
+                f.code == "finding_prose" and f.severity == "warn"
+                and f.body == leg.text and f.reviewed_sha == "1" * 40
+                for f in findings
+            ), findings)
+            self.assertFalse(any(f.code == "panel_block" for f in findings), findings)
+
+        execfind_tdd.run_execfind_contract("finding_prose", check)
+
+    def test_degraded_leg_whole_code(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            leg = PanelLegResult("claude", "DEGRADED", "", detail="EgressUnavailable")
+            findings = governed_review._findings_from_panel(
+                PanelResult((leg,)), reviewed_sha="1" * 40,
+                falsifier_runs={}, falsifier_policy="optional",
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].code, "panel_leg_degraded")
+            self.assertEqual(findings[0].severity, "warn")
+            self.assertIn("EgressUnavailable", findings[0].reason)
+
+        execfind_tdd.run_execfind_contract("degraded_leg_whole_code", check)
+
+    def test_falsifier_policy_optional(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            leg = PanelLegResult(
+                "claude", "OK", "FINDING F001: BLOCKING — prose concern\nDISAGREE",
+                seat_key="claude:claude-opus-5-5:max:correctness",
+            )
+            findings = governed_review._findings_from_panel(
+                PanelResult((leg,)), reviewed_sha="1" * 40,
+                falsifier_runs={}, falsifier_policy="optional",
+            )
+            self.assertTrue(any(
+                f.code == "finding_prose" and f.severity == "warn" for f in findings
+            ), findings)
+            self.assertFalse(any(f.severity == "block" for f in findings), findings)
+
+        execfind_tdd.run_execfind_contract("falsifier_policy_optional", check)
+
+    def test_falsifier_policy_required_refuses_prose(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            leg = PanelLegResult(
+                "claude", "OK", "FINDING F001: BLOCKING — prose concern\nDISAGREE",
+                seat_key="claude:claude-opus-5-5:max:correctness",
+            )
+            findings = governed_review._findings_from_panel(
+                PanelResult((leg,)), reviewed_sha="1" * 40,
+                falsifier_runs={}, falsifier_policy="required",
+            )
+            self.assertTrue(any(
+                f.code == "finding_prose" and f.severity == "block" for f in findings
+            ), findings)
+            self.assertFalse(any(f.code == "finding_bound" for f in findings), findings)
+
+        execfind_tdd.run_execfind_contract("falsifier_policy_required_refuses_prose", check)
+
+    def test_finding_receipt(self):
+        def check():
+            golden = json.loads((
+                Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
+            ).read_text())
+            entry = golden["attachment"]["falsifiers"][0]
+            source_record = golden["record"]
+            falsifier = execfind_tdd.require_attr(panel_invoker, "FindingFalsifier")(**entry)
+            attachment = execfind_tdd.require_attr(
+                panel_invoker, "FindingFalsifierAttachment"
+            )((falsifier,))
+            leg = PanelLegResult(
+                "claude", "OK", "FINDING F001: BLOCKING — repro\nDISAGREE",
+                seat_key=source_record["seat_key"],
+            )
+            execfind_tdd.require_attr(panel_invoker, "attach_finding_falsifiers")(
+                leg, attachment,
+            )
+            panel = PanelResult((leg,))
+            result_type = execfind_tdd.require_attr(
+                execfind_tdd.require_module("phase_loop_runtime.falsifier"),
+                "FalsifierRunResult",
+            )
+            binding_type = execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            reduce_findings = execfind_tdd.require_attr(
+                governed_review, "_findings_from_panel"
+            )
+            key = (source_record["seat_key"], source_record["finding_id"])
+            for outcome in ("apply_failed", "node_missing", "error"):
+                record = {**source_record, "outcome": outcome, "red_output_digest": None}
+                digest = hashlib.sha256(json.dumps(
+                    record, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                ).encode("utf-8")).hexdigest()
+                result = result_type(
+                    outcome=outcome, nodeid=record["nodeid"],
+                    red_output_digest=None, diff_digest=record["diff_digest"],
+                    junit_path=None, detail=None, record=record,
+                )
+                binding = binding_type(
+                    seat_key=key[0], finding_id=key[1],
+                    reviewed_sha=record["reviewed_sha"], result=result,
+                    record_digest=digest,
+                )
+                findings = reduce_findings(
+                    panel, reviewed_sha=record["reviewed_sha"],
+                    falsifier_runs={key: binding},
+                )
+                self.assertTrue(any(
+                    f.code == "finding_receipt" and f.severity == "block"
+                    and f"record_digest={digest}" in f.reason
+                    and f.body == leg.text
+                    for f in findings
+                ), (outcome, findings))
+                self.assertFalse(any(
+                    f.code in ("finding_bound", "finding_unbound") for f in findings
+                ), (outcome, findings))
+
+        execfind_tdd.run_execfind_contract("finding_receipt", check)
+
+    def test_finding_receipt_digest_unresolved(self):
+        def check():
+            golden = json.loads((
+                Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
+            ).read_text())
+            entry = golden["attachment"]["falsifiers"][0]
+            record = golden["record"]
+            falsifier = execfind_tdd.require_attr(panel_invoker, "FindingFalsifier")(**entry)
+            attachment = execfind_tdd.require_attr(
+                panel_invoker, "FindingFalsifierAttachment"
+            )((falsifier,))
+            leg = PanelLegResult(
+                "claude", "OK", "FINDING F001: BLOCKING — repro\nDISAGREE",
+                seat_key=record["seat_key"],
+            )
+            execfind_tdd.require_attr(panel_invoker, "attach_finding_falsifiers")(
+                leg, attachment,
+            )
+            panel = PanelResult((leg,))
+            result_type = execfind_tdd.require_attr(
+                execfind_tdd.require_module("phase_loop_runtime.falsifier"),
+                "FalsifierRunResult",
+            )
+            binding_type = execfind_tdd.require_attr(
+                governed_review, "FalsifierRunBinding"
+            )
+            reduce_findings = execfind_tdd.require_attr(
+                governed_review, "_findings_from_panel"
+            )
+            key = (record["seat_key"], record["finding_id"])
+
+            for outcome, expected_code in (
+                ("red_on_head", "finding_bound"),
+                ("green_on_head", "finding_unbound"),
+            ):
+                expected = dict(record)
+                expected["outcome"] = outcome
+                if outcome == "green_on_head":
+                    expected["red_output_digest"] = None
+
+                def binding(changed_record=None, **overrides):
+                    actual = dict(expected if changed_record is None else changed_record)
+                    result = result_type(
+                        outcome=overrides.pop("outcome", actual["outcome"]),
+                        nodeid=overrides.pop("nodeid", actual["nodeid"]),
+                        red_output_digest=overrides.pop(
+                            "red_output_digest", actual["red_output_digest"]
+                        ),
+                        diff_digest=overrides.pop("diff_digest", actual["diff_digest"]),
+                        junit_path=None, detail=None, record=actual,
+                    )
+                    digest = hashlib.sha256(json.dumps(
+                        actual, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest()
+                    return binding_type(
+                        seat_key=overrides.pop("seat_key", key[0]),
+                        finding_id=overrides.pop("finding_id", key[1]),
+                        reviewed_sha=overrides.pop("reviewed_sha", record["reviewed_sha"]),
+                        result=result,
+                        record_digest=overrides.pop("record_digest", digest),
+                    )
+
+                valid = reduce_findings(
+                    panel, reviewed_sha=record["reviewed_sha"],
+                    falsifier_runs={key: binding()},
+                )
+                self.assertTrue(any(f.code == expected_code for f in valid), valid)
+                wrong = [
+                    {},
+                    {(key[0], "F002"): binding()},
+                    {key: binding(record_digest="0" * 64)},
+                    {key: binding(reviewed_sha="2" * 40)},
+                    {key: binding({**expected, "finding_id": "F002"})},
+                    {key: binding({**expected, "seat_key": "other:seat"})},
+                    {key: binding({**expected, "reviewed_sha": "2" * 40})},
+                    {key: binding({**expected, "nodeid": "other.py::test_other"})},
+                    {key: binding({**expected, "diff_digest": "0" * 64})},
+                    {key: binding({**expected, "schema": "wrong.v1"})},
+                    {key: binding({**expected, "authorization_identity": "wrong.v1"})},
+                    {key: binding(outcome=(
+                        "green_on_head" if outcome == "red_on_head" else "red_on_head"
+                    ))},
+                    {key: binding(nodeid="other.py::test_other")},
+                    {key: binding(diff_digest="0" * 64)},
+                    {key: binding(red_output_digest="0" * 64)},
+                ]
+                for invalid in wrong:
+                    with self.subTest(outcome=outcome, invalid=invalid):
+                        findings = reduce_findings(
+                            panel, reviewed_sha=record["reviewed_sha"],
+                            falsifier_runs=invalid,
+                        )
+                        self.assertFalse(any(
+                            f.code in ("finding_bound", "finding_unbound")
+                            for f in findings
+                        ), findings)
+                        self.assertTrue(any(
+                            f.code == "finding_receipt" and f.severity == "block"
+                            and "record_digest=unresolved" in f.reason
+                            for f in findings
+                        ), findings)
+
+        execfind_tdd.run_execfind_contract("finding_receipt_digest_unresolved", check)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,38 @@
+{
+  "attachment": {
+    "falsifiers": [
+      {
+        "diff": "diff --git a/phase-loop-runtime/tests/test_finding_F001.py b/phase-loop-runtime/tests/test_finding_F001.py\nnew file mode 100644\n--- /dev/null\n+++ b/phase-loop-runtime/tests/test_finding_F001.py\n@@ -0,0 +1,2 @@\n+def test_trigger():\n+    assert False\n",
+        "expected_nodeid": "phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+        "finding_id": "F001",
+        "new_test_path": "phase-loop-runtime/tests/test_finding_F001.py"
+      }
+    ]
+  },
+  "outcomes": [
+    "red_on_head",
+    "green_on_head",
+    "apply_failed",
+    "node_missing",
+    "error"
+  ],
+  "record": {
+    "authorization_identity": "public_board_falsifier.v1",
+    "diff_digest": "20e5cfb02d749e515368ffa996461695da8272fc669db757fb24b8aaa2a6c6f9",
+    "finding_id": "F001",
+    "nodeid": "phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+    "outcome": "red_on_head",
+    "output_cap_bytes": 65536,
+    "red_output_digest": "09397686e99143ab6d5cb7ebec4e362a987783040754367e6ab212225a044d4c",
+    "reviewed_sha": "1111111111111111111111111111111111111111",
+    "schema": "finding_falsifier.v1",
+    "seat_key": "claude:claude-opus-5-5:max:correctness",
+    "wall_clock_bound_s": 30.0
+  },
+  "record_digest": "6fd01aee431c36733db74db811b69e87fa6e6150b77248dcd5b36536e09e510d",
+  "red_output_fixture": {
+    "stderr_utf8": "AssertionError\n",
+    "stdout_utf8": "F001 failed\n"
+  },
+  "schema": "execfind_falsifier_attachment_v1.golden"
+}
