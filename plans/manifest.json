@@ -4596,6 +4596,20 @@
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "PRESROUTE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "5cc4f230c9e7e29bd192febeb0998b55b3721264e60aa20bf02425bd24bf5c08",
+          "roadmap_sha256": "af53a90951c1bcae1fa08ba937eba61a4ed632047f5a37d27393943667aadd94",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1025"
+        },
+        {
+          "plan_sha256": "a785897862c94634caeced558f991a886e87b90c5d06a82e0e2430004eb1e0ac",
+          "roadmap_sha256": "3e465669d4a30be1334e40c6998a6f5aae610d7204b94346bdd27ab1f0c4a9b0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1027"
+        }
+      ],
       "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -8609,6 +8623,20 @@
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "EXECFIND",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "7af04f72e31e9d94db2244576dad8483730b75c14d1405b4f89602aeec25921d",
+          "roadmap_sha256": "af53a90951c1bcae1fa08ba937eba61a4ed632047f5a37d27393943667aadd94",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1025"
+        },
+        {
+          "plan_sha256": "bee48ed042facb8caee654515d5b9620bfef98b61d381959bffcffd085ae7f13",
+          "roadmap_sha256": "3e465669d4a30be1334e40c6998a6f5aae610d7204b94346bdd27ab1f0c4a9b0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1025"
+        }
+      ],
       "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
