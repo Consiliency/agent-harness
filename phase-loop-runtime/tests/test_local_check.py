@@ -123,3 +123,9 @@ def test_changed_files_handles_odd_paths(lc, tmp_path):
     _git(tmp_path, "commit", "-qm", "base")
     (tmp_path / 'we"ird é.py').write_text("x")
     assert lc.changed_files(tmp_path, "main") == ['we"ird é.py']
+
+
+def test_a_changed_script_selects_the_tests_that_name_it(lc, pkg):
+    (pkg / "tests" / "test_runs_tool.py").write_text('SCRIPT = ROOT / "scripts" / "tool.py"\n')
+    tests, _ = lc.select(pkg, ["phase-loop-runtime/scripts/tool.py"])
+    assert tests == ["tests/test_runs_tool.py"]

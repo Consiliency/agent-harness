@@ -9,6 +9,7 @@ Default: lint (ruff, CI's pinned version and config) plus the tests your diff ca
 
 - every changed `phase-loop-runtime/tests/test_*.py`;
 - every test that imports a changed `phase_loop_runtime` module (by dotted name);
+- tests that name a changed `phase-loop-runtime/scripts/` file (scripts load by path);
 - the CI guard tests when workflows, `ci/`, or the Gate A script changed;
 - the whole suite when a shared fixture/config file changed (conftest, pyproject).
 
@@ -111,6 +112,13 @@ def select(pkg_root: Path, files: list[str]) -> tuple[list[str] | None, list[str
             if any(imports_module(text, m) for m in modules):
                 hits.add(f"tests/{test.name}")
         reasons.append(f"{len(hits)} test file(s) importing {len(modules)} changed module(s)")
+        tests |= hits
+    scripts = [Path(f).name for f in files if f.startswith(f"{PKG}/scripts/") and f.endswith((".py", ".sh"))]
+    if scripts:
+        # Scripts are loaded by PATH (spec_from_file_location, subprocess), not imported.
+        hits = {f"tests/{test.name}" for test in sorted((pkg_root / "tests").glob("test_*.py"))
+                if any(name in test.read_text(encoding="utf-8", errors="replace") for name in scripts)}
+        reasons.append(f"{len(hits)} test file(s) naming {len(scripts)} changed script(s)")
         tests |= hits
     if any(f.startswith(CI_TRIGGERS) for f in files):
         guards = {f"tests/{p.name}" for g in CI_GUARD_GLOBS for p in pkg_root.glob(g)}
