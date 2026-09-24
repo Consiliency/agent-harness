@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Qualified agy 1.2.9 entry image (agent-harness#1008)
+
+- Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
+  Gemini heartbeat-only review after real completion, cancellation and owner-loss
+  qualification. Hosts must install 1.2.9 with this runtime update; both the
+  previous image and unknown future images refuse before provider launch. The
+  repository's current-image record and CI provenance check expose the source,
+  archive and executable binding; automatic fleet updates remain tracked by
+  agent-harness#1008.
+
 ### The heartbeat owner wrapper gives its PID namespace its own /proc (agent-harness#1003)
 
 - Under `monitoring_policy="heartbeat_only"`, the owner wrapper (`_ReviewMonitor.owned_command`)
