@@ -279,6 +279,9 @@ def test_post_trust_chunk_accepts_editor_after_modal_remainder():
     assert not pi._tui_post_trust_editor_content(
         b"\xe2\x9d\xaf 2. No, exit\nEnter to confirm \xc2\xb7 Esc to cancel\n", (), set()
     )
+    assert not pi._tui_post_trust_editor_content(
+        b"Is this a project you created or one you trust?\n", (), set()
+    )
     seen = {pi._normalize_tui_line("Claude Code v2.1.208")}
     assert not pi._tui_post_trust_editor_content(
         b"Accessing workspace:\nClaude Code v2.1.208\n", (), seen

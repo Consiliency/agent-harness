@@ -1191,7 +1191,8 @@ _CLAUDE_TUI_TRUST_PROMPT = "enter y/n"
 _CLAUDE_TUI_TRUST_REJECT = "please answer y or n"  # Claude rejected a non-y/n answer
 _CLAUDE_TUI_TRUST_RESIDUE = (
     "accessing workspace", "quick safety check", "trust this folder",
-    "no exit", "enter y n", "please answer y or n", "enter to confirm",
+    "is this a project you created or one you trust", "no exit",
+    "enter y n", "please answer y or n", "enter to confirm",
 )
 _CLAUDE_TUI_TRUST_ANSWER = b"y\r"
 # Editor readiness = QUIESCENCE, armed ONLY after real post-gate output (never treat
