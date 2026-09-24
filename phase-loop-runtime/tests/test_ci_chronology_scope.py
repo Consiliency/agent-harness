@@ -425,9 +425,61 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     eligible = trusted and secret == "true" and sandbox_ready == "true"
     assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
     assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
-    for lane in ("pytest", "cleanroom"):
-        assert jobs[lane]["if"] == "needs.elig.outputs.eligible != 'true'"
+    assert jobs["pytest"]["if"] == "needs.elig.outputs.eligible != 'true'"
+    # agent-harness#1029: Gate A runs off pull requests; the wheel smoke runs on them.
+    assert jobs["cleanroom"]["if"] == (
+        "needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'"
+    )
+    assert jobs["wheel-smoke"]["if"] == (
+        "needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'"
+    )
     assert jobs["pytest"]["strategy"]["matrix"]["python-version"] == ["3.10", "3.11", "3.12"]
+    # A pull request keeps the py3.10 floor lane only; every other event keeps all three.
+    assert jobs["pytest"]["strategy"]["matrix"]["exclude"] == (
+        "${{ github.event_name == 'pull_request' && "
+        "fromJSON('[{\"python-version\":\"3.11\"},{\"python-version\":\"3.12\"}]') "
+        "|| fromJSON('[]') }}"
+    )
+
+
+@pytest.mark.parametrize("event,pytest_r,retention,cleanroom,smoke,success", [
+    ("pull_request", "success", "success", "skipped", "success", True),
+    ("pull_request", "success", "success", "skipped", "failure", False),
+    ("pull_request", "success", "success", "skipped", "skipped", False),
+    ("pull_request", "success", "success", "success", "success", False),
+    ("pull_request", "failure", "success", "skipped", "success", False),
+    ("push", "success", "success", "success", "skipped", True),
+    ("push", "success", "success", "skipped", "skipped", False),
+    ("push", "success", "success", "failure", "skipped", False),
+    ("push", "success", "success", "success", "success", False),
+    ("schedule", "success", "success", "success", "skipped", True),
+    ("schedule", "success", "failure", "success", "skipped", False),
+    ("pull_request", "success", "failure", "skipped", "success", False),
+    ("push", "failure", "success", "success", "skipped", False),
+])
+def test_hosted_collapse_requires_the_lane_for_the_event(
+    event, pytest_r, retention, cleanroom, smoke, success,
+):
+    """agent-harness#1029: exactly the event's lane ran and passed; the other skipped."""
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    hosted = jobs["hosted"]
+    assert set(hosted["needs"]) == {"elig", "pytest", "chronology-retention", "cleanroom", "wheel-smoke"}
+    step, = hosted["steps"]
+    # The script is exercised with injected values below; pin their WIRING here, or a
+    # swapped mapping (e.g. SMOKE fed from needs.pytest) would pass the behaviour rows.
+    assert step["env"] == {
+        "EVENT": "${{ github.event_name }}",
+        "PYTEST": "${{ needs.pytest.result }}",
+        "RETENTION": "${{ needs.chronology-retention.result }}",
+        "CLEANROOM": "${{ needs.cleanroom.result }}",
+        "SMOKE": "${{ needs.wheel-smoke.result }}",
+    }
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], capture_output=True, text=True,
+        env={**os.environ, "EVENT": event, "PYTEST": pytest_r, "RETENTION": retention,
+             "CLEANROOM": cleanroom, "SMOKE": smoke},
+    )
+    assert (result.returncode == 0) is success, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("offload,hosted,success", [
@@ -443,3 +495,25 @@ def test_suite_gate_requires_one_real_success(offload, hosted, success):
         env={**os.environ, "OFFLOAD": offload, "HOSTED": hosted},
     )
     assert (result.returncode == 0) is success, result.stdout + result.stderr
+
+
+def test_the_wheel_smoke_keeps_gate_a_parity():
+    """agent-harness#1029: the PR stand-in must run Gate A's script and sandbox setup."""
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+
+    def step(job, name):
+        return next(s for s in jobs[job]["steps"] if s.get("name") == name)
+
+    prereq = "Install review sandbox prerequisites"
+    smoke_prereq = {line.strip() for line in step("wheel-smoke", prereq)["run"].splitlines()}
+    gate_prereq = {line.strip() for line in step("cleanroom", prereq)["run"].splitlines()}
+    assert {line for line in smoke_prereq if line and not line.startswith("#")} <= gate_prereq
+    for needed in ("sudo apt-get install -y bubblewrap slirp4netns iptables util-linux",
+                   "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"):
+        assert needed in smoke_prereq
+    smoke = step("wheel-smoke", "Wheel smoke — build, install, probe")
+    assert smoke["run"] == "bash scripts/gate_a_cleanroom.sh"
+    assert smoke["working-directory"] == "phase-loop-runtime"
+    assert smoke["env"] == {"PHASE_LOOP_SKIP_GATE_A_SUITE": "1"}
+    assert step("wheel-smoke", "Set up Python")["with"]["python-version"] == \
+        step("cleanroom", "Set up Python")["with"]["python-version"]

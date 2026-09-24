@@ -23,6 +23,7 @@ from _outside_agent_canonical import (
     normalized_nodeid,
 )
 from _dotfiles_tree import dotfiles_tree_present
+from _quarantine import deselect_quarantined
 
 
 _CONFORM_BODY_COUNTER_ENV = "PHASE_LOOP_CONFORM_BODY_COUNTER"
@@ -159,6 +160,9 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if item.get_closest_marker("dotfiles_integration") is not None:
                 item.add_marker(skip_marker)
+
+    # agent-harness#1029: active only when PHASE_LOOP_DESELECT_QUARANTINE=1 (hosted PR suite).
+    deselect_quarantined(config, items)
 
     canonical_mode = canonical_mode_enabled()
     for item in items:
