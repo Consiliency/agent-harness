@@ -204,6 +204,7 @@ def test_wrong_dir_modal_is_not_answered(tmp_path, monkeypatch, header):
     assert not (out / "answer.txt").exists(), "a stray y was written to a foreign-dir modal"
 
 
+@pytest.mark.quarantine(reason="agent-harness#992")
 def test_modal_answered_but_editor_never_ready_is_editor_not_ready(tmp_path, monkeypatch):
     """CR F2/R6: a modal that IS answered but whose editor never reaches readiness is
     ``claude_tui_editor_not_ready`` (an editor-readiness failure), NOT the misleading

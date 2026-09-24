@@ -217,6 +217,7 @@ class RoadmapLintModuleTest(unittest.TestCase):
         errors = lint_roadmap_text(cyclic)
         self.assertTrue(any(e.startswith("(F)") for e in errors), errors)
 
+    @pytest.mark.quarantine(reason="agent-harness#987")
     def test_validate_roadmap_cli_subcommand(self):
         with tempfile.TemporaryDirectory() as td:
             good = Path(td) / "good.md"

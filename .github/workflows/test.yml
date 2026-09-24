@@ -147,24 +147,39 @@ jobs:
     # fork/no-secret or unsupported-sandbox path, NOT a retry of a failed
     # offload. A failed offload must stay failed -- otherwise an unreachable
     # host silently becomes green.
-    needs: [elig, pytest, chronology-retention, cleanroom]
+    needs: [elig, pytest, chronology-retention, cleanroom, wheel-smoke]
     if: always() && needs.elig.outputs.eligible != 'true'
     timeout-minutes: 5
     steps:
       - name: Collapse the hosted lanes into one verdict
+        # agent-harness#1029: a pull_request runs the wheel smoke INSTEAD of Gate A
+        # (Gate A runs on push-to-main, nightly and release tags). Exactly one of the
+        # two must be the executed lane for the event, the other skipped -- a PR that
+        # somehow ran neither, or a push that skipped Gate A, is a red.
         env:
+          EVENT: ${{ github.event_name }}
           PYTEST: ${{ needs.pytest.result }}
           RETENTION: ${{ needs.chronology-retention.result }}
           CLEANROOM: ${{ needs.cleanroom.result }}
+          SMOKE: ${{ needs.wheel-smoke.result }}
         run: |
           set -euo pipefail
-          echo "pytest=$PYTEST retention=$RETENTION cleanroom=$CLEANROOM"
-          for r in "$PYTEST" "$RETENTION" "$CLEANROOM"; do
+          echo "event=$EVENT pytest=$PYTEST retention=$RETENTION cleanroom=$CLEANROOM smoke=$SMOKE"
+          if [ "$EVENT" = "pull_request" ]; then
+            required=("$PYTEST" "$RETENTION" "$SMOKE"); must_skip="$CLEANROOM"
+          else
+            required=("$PYTEST" "$RETENTION" "$CLEANROOM"); must_skip="$SMOKE"
+          fi
+          for r in "${required[@]}"; do
             if [ "$r" != "success" ]; then
               echo "hosted suite FAILED: a hosted lane did not succeed" >&2
               exit 1
             fi
           done
+          if [ "$must_skip" != "skipped" ]; then
+            echo "hosted suite FAILED: the lane not meant for event=$EVENT did not skip ($must_skip)" >&2
+            exit 1
+          fi
           echo "hosted suite: all lanes green"
 
   gate:
@@ -243,6 +258,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.10', '3.11', '3.12']
+        # agent-harness#1029: pull requests run the py3.10 floor lane only; push,
+        # nightly and dispatch keep all three.
+        exclude: ${{ github.event_name == 'pull_request' && fromJSON('[{"python-version":"3.11"},{"python-version":"3.12"}]') || fromJSON('[]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -302,6 +320,10 @@ jobs:
         working-directory: phase-loop-runtime
         env:
           CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
+          # agent-harness#1029: pull requests deselect `quarantine`-marked known flakes
+          # (tests/_quarantine.py, via conftest; exact by marker, capped at 5 nodes).
+          # Push, nightly and Gate A run them.
+          PHASE_LOOP_DESELECT_QUARANTINE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           # tests/__init__.py prepends the sibling src tree in the TEST process
           # only; the evidence-verifier child inherits env, not sys.path. Export
@@ -453,7 +475,9 @@ jobs:
     # covers. Kept for the fork/no-secret path, where `hosted` is the suite of
     # record.
     needs: elig
-    if: needs.elig.outputs.eligible != 'true'
+    # agent-harness#1029: push-to-main, nightly, dispatch and tags only; pull requests
+    # run the `wheel-smoke` job below instead.
+    if: needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:
@@ -521,6 +545,44 @@ jobs:
           name: chronology-junit-gate-a
           path: ${{ runner.temp }}/junit-gate-a.xml
           if-no-files-found: error
+
+  wheel-smoke:
+    name: wheel smoke (build, clean-venv install, probes)
+    # agent-harness#1029: the pull-request stand-in for Gate A (~2 min instead of ~19).
+    # The SAME script with its existing switch: build the wheel, install it into an
+    # isolated venv, check the entry points and run the probe configs -- everything
+    # except the full standalone suite, which Gate A still runs after merge.
+    needs: elig
+    if: needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install review sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install build + pytest
+        run: python -m pip install build pytest
+
+      - name: Wheel smoke — build, install, probe
+        working-directory: phase-loop-runtime
+        env:
+          PHASE_LOOP_SKIP_GATE_A_SUITE: '1'
+        run: bash scripts/gate_a_cleanroom.sh
 
   # Report the gate's result on main as ONE labelled issue (`ci-main-red`):
   # created/commented/reopened on a red landing push or nightly, closed when the
