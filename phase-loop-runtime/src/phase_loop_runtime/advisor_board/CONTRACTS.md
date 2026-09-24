@@ -660,15 +660,18 @@ review text and the exception in detail; sandbox facts describe actual enforceme
 
 ### Qualified Gemini extension (agent-harness#905)
 
-The Linux x64 subscription `agy` 1.2.9 entry image must match SHA256
-`1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711`.
+The Linux x64 subscription `agy` 1.2.10 entry image must match SHA256
+`aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67`.
 The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;
 Python version alone is not a capability check. Unknown images or missing
 capabilities refuse before availability/auth effects. Required bwrap mount/gate
-flags are checked at admission, before inference. The measured help defines
-literal `--print-timeout 0` as waiting for completion. A quick real completion
-establishes compatibility; clock controls establish that old runtime deadlines
-and silence cannot terminate a healthy heartbeat-only operation.
+flags are checked at admission, before inference. Measure help through the
+admitted `agy` filename: the usage line includes that name, while the same
+archive member invoked as `antigravity` produces different help bytes. The
+measured help defines literal `--print-timeout 0` as waiting for completion.
+A quick real completion establishes compatibility; clock controls establish
+that old runtime deadlines and silence cannot terminate a healthy heartbeat-only
+operation.
 
 The sealed image and deny-all settings are read-only mounts inside a private
 HOME owned by the existing PID/mount namespace. A private symlink references the
