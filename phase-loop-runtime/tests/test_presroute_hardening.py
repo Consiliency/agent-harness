@@ -388,3 +388,29 @@ def test_historical_receipt_rejects_evidence_drift_hidden_from_git_diff(
     subprocess.run(["git", "diff", "--quiet", landing, "--", rel], cwd=repo, check=True)
     with pytest.raises(ValueError, match="frozen PRESROUTE evidence drift"):
         verifier.main()
+
+
+def test_historical_receipt_finds_registered_worktree_with_newline_path(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "tracked").write_text("tracked\n")
+    subprocess.run(["git", "add", "tracked"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "baseline"], cwd=repo, check=True)
+    checkout = tmp_path / "with\nnewline"
+    subprocess.run(["git", "worktree", "add", "--detach", str(checkout), "HEAD"],
+                   cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    try:
+        assert verifier.registered_checkout(repo, checkout)
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(checkout)],
+                       cwd=repo, check=True, stdout=subprocess.DEVNULL)

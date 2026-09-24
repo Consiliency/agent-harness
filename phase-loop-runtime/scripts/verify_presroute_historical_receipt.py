@@ -19,11 +19,8 @@ EVIDENCE_FILES = (
 
 def registered_checkout(repo: Path, checkout: Path) -> bool:
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"],
-                             cwd=repo, check=True, capture_output=True, text=True)
-    return any(
-        Path(line.removeprefix("worktree ")).resolve() == checkout.resolve()
-        for line in listing.stdout.splitlines() if line.startswith("worktree ")
-    )
+                             cwd=repo, check=True, capture_output=True)
+    return b"worktree " + os.fsencode(checkout.resolve()) + b"\n" in listing.stdout
 
 
 def worktree_root(repo: Path) -> Path:
@@ -56,6 +53,9 @@ def main() -> int:
         if path.read_bytes() != original or committed != original or staged != original:
             raise ValueError(f"frozen PRESROUTE evidence drift: {rel}")
     root = worktree_root(repo).resolve()
+    if any(ord(char) < 32 or ord(char) == 127
+           for path in (repo, root) for char in str(path)):
+        raise ValueError("PRESROUTE receipt worktree paths contain control characters")
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agent-harness-presroute-receipt-", dir=root) as temp:
         checkout = Path(temp) / "landing"
