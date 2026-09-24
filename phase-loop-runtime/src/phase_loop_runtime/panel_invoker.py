@@ -4590,18 +4590,18 @@ def _tui_post_trust_editor_content(
     chunk: bytes, cwd_tokens: Sequence[str], seen: set[str],
 ) -> bool:
     """Find a novel editor line, ignoring modal residue after a split PTY read."""
+    editor_after_modal = False
     for line in _tui_visible_lines(chunk):
         low = line.strip().lower()
         norm = _normalize_tui_line(line)
-        if (
-            len(norm) < _TUI_PROGRESS_MIN_CHARS
-            or any(token in norm for token in _CLAUDE_TUI_TRUST_RESIDUE)
-            or any(token.lower() in low for token in cwd_tokens if token)
+        if any(token in norm for token in _CLAUDE_TUI_TRUST_RESIDUE) or any(
+            token.lower() in low for token in cwd_tokens if token
         ):
+            editor_after_modal = False
             continue
-        if norm not in seen:
-            return True
-    return False
+        if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
+            editor_after_modal = True
+    return editor_after_modal
 
 
 # Residual C0 control chars (excluding \n) to strip from an evidence tail AFTER ANSI/OSC
@@ -4897,6 +4897,9 @@ def _run_claude_tui_session(
                     answered_this_iter = True
                     last_heartbeat = now
                     ready_since_output = False  # require NEW output after the answer
+                    # A pre-answer partial line must not become editor content when
+                    # its newline arrives after the answer.
+                    tui_carry.clear()
                 # Editor-readiness ARMS on post-gate novel content: only once no gate
                 # signature is blocking (or we cleared it), and never on the modal's own
                 # render (the answer this iteration is excluded).

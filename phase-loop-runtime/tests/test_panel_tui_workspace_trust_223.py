@@ -288,6 +288,16 @@ def test_post_trust_chunk_accepts_editor_after_modal_remainder():
     )
 
 
+def test_post_trust_modal_after_changed_banner_vetoes_earlier_novel_line():
+    assert "enter y n" in pi._normalize_tui_line("Enter y/n:")
+    banner = b"Claude Code v2.1.209\x1b[2J\x1b[H"
+    modal = b"Permission Required: Accessing workspace:\nEnter y/n:\n"
+    assert not pi._tui_post_trust_editor_content(banner + modal, (), set())
+    assert pi._tui_post_trust_editor_content(
+        modal + b"\x1b[2J\x1b[Hmanual mode on ready now\n", (), set()
+    )
+
+
 def test_identical_ansi_modal_redraw_is_not_novel_editor_content():
     frame = (
         b"Claude Code v2.1.208\x1b[2J\x1b[HPermission Required: Accessing workspace:\n"
@@ -332,6 +342,39 @@ def test_identical_ansi_modal_redraw_does_not_receive_review(tmp_path, monkeypat
     assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
 
 
+def test_pre_answer_ansi_banner_released_by_later_newline_cannot_arm_editor(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    real_write = pi.os.write
+    writes = []
+
+    def capture_write(fd, payload):
+        writes.append(payload)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(pi.os, "write", capture_write)
+    script = (
+        "stty raw -echo; "
+        "printf 'Claude Code v2.1.208\\033[2J\\033[H"
+        "Permission Required: Accessing workspace: %s "
+        "Quick safety check: Is this a project you created or one you trust? "
+        "y. Yes, I trust this folder n. No, exit Enter y/n:' \"$PWD\"; "
+        "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        "printf '\\n'; "
+        "dd bs=1 count=1 of=unexpected.txt 2>/dev/null"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert status == "claude_tui_editor_not_ready", (
+        rc, status, text, tail, any(b"review this" in payload for payload in writes),
+    )
+    assert not any(b"review this" in payload for payload in writes)
+    assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
+
+
 def test_post_trust_current_header_redraw_does_not_arm_editor(tmp_path, monkeypatch):
     _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
     script = (
@@ -358,9 +401,9 @@ def test_post_trust_ansi_redraw_after_unterminated_prompt_keeps_editor(tmp_path,
     script = (
         "stty raw -echo; "
         + _MODAL
-        + "dd bs=1 count=1 of=answer.txt 2>/dev/null; "
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
         + "printf '\\033[2J\\033[HClaude Code v2.1.208\\n'; "
-        + "dd bs=1 count=1 of=prompt-byte.txt 2>/dev/null; "
+        + "dd bs=1 count=18 of=prompt-bytes.txt 2>/dev/null; "
         + "printf 'A complete review body with sufficient text to finish.\\nAGREE\\n' > panel-claude.txt; sleep 3"
     )
     rc, text, status, tail = _run_claude_tui_session(
@@ -368,9 +411,9 @@ def test_post_trust_ansi_redraw_after_unterminated_prompt_keeps_editor(tmp_path,
         output_file=tmp_path / "panel-claude.txt", timeout_s=10,
         env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
     )
-    assert (tmp_path / "answer.txt").read_text() == "y"
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
     assert status == "claude_tui_file_output", (rc, status, text, tail)
-    assert (tmp_path / "prompt-byte.txt").exists()
+    assert b"review this" in (tmp_path / "prompt-bytes.txt").read_bytes()
 
 
 def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
