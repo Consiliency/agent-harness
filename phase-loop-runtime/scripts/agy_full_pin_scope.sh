@@ -14,6 +14,12 @@ full=false
 case "${EVENT:-}" in
   workflow_dispatch) full=true ;;
   pull_request)
+    # The answer is only meaningful on GitHub's merge ref, whose first parent is the
+    # base; on any other checkout HEAD^1 is just the previous commit (agent-harness#1036).
+    if ! git rev-parse -q --verify HEAD^2 >/dev/null; then
+      echo "::error::expected the pull request's merge commit (HEAD^2 missing)" >&2
+      exit 1
+    fi
     rc=0
     git diff --quiet HEAD^1 HEAD -- RELEASE_PIN plans/evidence/qualified-provider-images.json \
       'plans/evidence/agy-*-linux-x64-qualification.json' || rc=$?

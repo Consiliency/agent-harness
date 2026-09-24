@@ -149,7 +149,31 @@ def test_release_cut_detection_fails_closed_without_a_base_parent(tmp_path):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "root")
     result = _scope(repo, "pull_request")
-    assert result.returncode == 1 and "cannot diff" in result.stderr
+    assert result.returncode == 1 and "HEAD^2 missing" in result.stderr
+
+
+def test_release_cut_detection_refuses_a_non_merge_checkout(tmp_path):
+    """agent-harness#1036: on a plain commit HEAD^1 is the previous commit, not the base."""
+    repo = tmp_path / "linear"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    for text in ("v1\n", "v2\n"):
+        (repo / "RELEASE_PIN").write_text(text)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", text)
+    result = _scope(repo, "pull_request")
+    assert result.returncode == 1 and "merge commit" in result.stderr
+
+
+def test_the_full_check_step_is_wired_to_the_scope_decision():
+    """agent-harness#1036: the full step runs exactly when the scope says so, and blocks."""
+    steps = {s.get("name"): s for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]}
+    scope = steps["Decide whether this run needs the full pin set"]
+    assert scope["id"] == "full" and scope["run"] == "bash phase-loop-runtime/scripts/agy_full_pin_scope.sh"
+    full = steps["Verify every qualification source pin (release cut, new record, dispatch)"]
+    assert full["if"] == "steps.full.outputs.full == 'true'"
+    assert full["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only"
+    assert "continue-on-error" not in full
 
 
 @pytest.mark.parametrize("event,full", [("workflow_dispatch", "true"), ("push", "false"), ("schedule", "false")])

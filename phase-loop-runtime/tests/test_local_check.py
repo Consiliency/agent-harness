@@ -145,3 +145,12 @@ def test_an_unparsable_importer_fails_open(lc):
     assert lc.imports_module("def (:\nimport phase_loop_runtime.foo\n", "phase_loop_runtime.foo")
     assert lc.imports_module("\ufeffimport phase_loop_runtime.foo\n", "phase_loop_runtime.foo")
     assert lc.imports_module("x = '\\0'\0\nimport phase_loop_runtime.foo\n", "phase_loop_runtime.foo")
+
+
+def test_the_clean_env_has_a_ci_runners_system_path(lc):
+    """agent-harness#1036: sandbox tests need sbin (iptables); a CI runner has it."""
+    env = lc.clean_env("/opt/venv/bin/python")
+    dirs = env["PATH"].split(":")
+    assert dirs[0] == "/opt/venv/bin"
+    assert {"/usr/sbin", "/sbin", "/usr/bin", "/bin"} <= set(dirs)
+    assert not any(d.startswith(str(lc.Path.home())) for d in dirs), "no user dirs"

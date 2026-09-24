@@ -30,7 +30,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   repository root): CI's pinned ruff lint plus the tests a diff can reach -- changed test
   files, tests importing a changed module, the CI guard tests when workflow/`ci/` plumbing
   changed, the whole suite when shared test config changed. Tests run under `env -i` with a
-  throwaway HOME and bare PATH in a cached venv built from CI's install line
+  throwaway HOME and a CI runner's system PATH in a cached venv built from CI's install line
   (`phase-loop-runtime/.local-check-venv/`, rebuilt from scratch when the deps,
   `pyproject.toml` or the target Python change; `LOCAL_CHECK_PYTHON` overrides it), so
   host-dependent passes surface before CI. Imports are parsed (multi-line forms count) and
