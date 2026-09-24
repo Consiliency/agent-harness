@@ -290,7 +290,7 @@ def test_post_trust_chunk_accepts_editor_after_modal_remainder():
 
 def test_post_trust_modal_after_changed_banner_vetoes_earlier_novel_line():
     assert "enter y n" in pi._normalize_tui_line("Enter y/n:")
-    banner = b"Claude Code v2.1.209\x1b[2J\x1b[H"
+    banner = b"Claude Code preview redesign\x1b[2J\x1b[H"
     modal = b"Permission Required: Accessing workspace:\nEnter y/n:\n"
     assert not pi._tui_post_trust_editor_content(banner + modal, (), set())
     assert pi._tui_post_trust_editor_content(
@@ -372,6 +372,41 @@ def test_pre_answer_ansi_banner_released_by_later_newline_cannot_arm_editor(tmp_
         rc, status, text, tail, any(b"review this" in payload for payload in writes),
     )
     assert not any(b"review this" in payload for payload in writes)
+    assert not any(b"\x1b[200~" in payload for payload in writes)
+    assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
+
+
+def test_changed_ansi_banner_followed_by_modal_redraw_does_not_receive_review(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    real_write = pi.os.write
+    writes = []
+
+    def capture_write(fd, payload):
+        writes.append(payload)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(pi.os, "write", capture_write)
+    redraw = (
+        "Claude Code preview redesign\\033[2J\\033[H"
+        "Permission Required: Accessing workspace:\\n%s\\n"
+        "Quick safety check: Is this a project you created or one you trust?\\n"
+        "y. Yes, I trust this folder\\nn. No, exit\\nEnter y/n:\\n"
+    )
+    script = (
+        "stty raw -echo; printf 'Claude Code v2.1.208\\n'; "
+        + _MODAL
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        + f"printf '{redraw}' \"$PWD\"; "
+        + "dd bs=1 count=1 of=unexpected.txt 2>/dev/null"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert status == "claude_tui_editor_not_ready", (rc, status, text, tail)
+    assert not any(b"\x1b[200~" in payload for payload in writes)
     assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
 
 
