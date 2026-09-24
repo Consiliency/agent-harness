@@ -398,6 +398,9 @@ runtime performs no release discovery or image search: it hashes the single
 `agy` resolved on `PATH` and refuses any other digest, including the previously
 qualified 1.2.7 image. A durable image catalog, upstream-release discovery and
 fleet updater coordination are tracked by agent-harness#1008.
+The redacted 1.2.9 qualification record and exact source hashes are in
+`plans/evidence/agy-1.2.9-linux-x64-qualification.json`; that evidence record is
+not a second admission source.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation
