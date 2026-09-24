@@ -12,7 +12,9 @@ Not part of the PRESROUTE SL-0 frozen corpus.
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -239,6 +241,63 @@ def test_the_claude_rung_hands_the_broker_latch_to_the_tui_session(tmp_path):
         seam._transport("claude", "claude-opus-5-5", "F001: [x] y", tmp_path, tmp_path,
                         monitor=monitor, latch=latch)
     assert handed == {"monitor": monitor, "latch": latch}
+
+
+@pytest.mark.parametrize("mode,stop_reason,expected_log", [
+    ("president", "end_turn", "claude_tui_broker_terminal_nonconforming"),
+    ("president", None, "review_operation_cancelled"),
+    ("review", "end_turn", "review_operation_cancelled"),
+])
+def test_terminal_nonconforming_claude_turn_reaches_president_reask(
+    tmp_path, monkeypatch, mode, stop_reason, expected_log,
+):
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_READY_QUIESCENCE_S", .05)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", .05)
+    cancel = threading.Event()
+    monitor = panel_invoker._ReviewMonitor(tmp_path / "monitor.json", "fixture", 0, cancel)
+    marker = tmp_path / "terminal-written"
+    script = r'''
+import json, os, sys, time, tty
+from pathlib import Path
+tty.setraw(0)
+print("Claude Code ready for your message", flush=True)
+wire = b""
+while not wire.endswith(b"\x1bOM"):
+    wire += os.read(0, 65536)
+Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
+    "message": {"id": "fixture-message", "role": "assistant", "stop_reason": None if sys.argv[1] == "null" else sys.argv[1],
+                "content": [{"type": "text", "text": "I think it is fine"}]}}) + "\n")
+Path("terminal-written").touch()
+while True: time.sleep(.1)
+'''
+
+    def cancel_if_not_returned():
+        until = time.monotonic() + 5  # synthetic fixture startup only
+        while not marker.exists() and time.monotonic() < until:
+            time.sleep(.01)
+        if not cancel.wait(.5):
+            cancel.set()
+
+    controller = threading.Thread(target=cancel_if_not_returned)
+    controller.start()
+    try:
+        rc, text, log, _ = panel_invoker._run_claude_tui_session(
+            command=[sys.executable, "-c", script, "null" if stop_reason is None else stop_reason],
+            cwd=tmp_path, prompt="rule on F001", output_file=tmp_path / "president.txt",
+            timeout_s=1, env={"PATH": "/usr/bin:/bin"}, mode=mode, backstop_s=1,
+            review_monitor=monitor, allow_transcript_final=True,
+            broker_transcript_path=tmp_path / "owned.jsonl",
+        )
+    finally:
+        cancel.set()
+        controller.join(5)
+    assert marker.exists()
+    assert log == expected_log
+    if expected_log == "claude_tui_broker_terminal_nonconforming":
+        assert rc == 0 and text == "I think it is fine"
+    else:
+        assert rc != 0
 
 
 def test_the_seam_predicate_does_not_depend_on_import_order():
