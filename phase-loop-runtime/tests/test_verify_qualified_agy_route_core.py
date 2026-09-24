@@ -122,9 +122,18 @@ def _merge_commit(tmp_path, pr_changes):
     return repo
 
 
-def _scope(repo, event):
-    env = {**os.environ, "EVENT": event}
-    env.pop("GITHUB_OUTPUT", None)
+def _rev(repo, ref):
+    return subprocess.run(["git", "rev-parse", ref], cwd=repo, capture_output=True, text=True).stdout.strip()
+
+
+def _scope(repo, event, github_sha=None, pr_head=None):
+    """Run the scope script as GitHub would on a pull_request: GITHUB_SHA is the synthetic
+    merge commit and PR_HEAD_SHA its second parent (defaults: taken from the repo)."""
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_OUTPUT", "GITHUB_SHA", "PR_HEAD_SHA")}
+    env["EVENT"] = event
+    if event == "pull_request" and (repo / ".git").exists():
+        env["GITHUB_SHA"] = github_sha if github_sha is not None else _rev(repo, "HEAD")
+        env["PR_HEAD_SHA"] = pr_head if pr_head is not None else _rev(repo, "HEAD^2")
     return subprocess.run(["bash", str(SCOPE)], cwd=repo, env=env, capture_output=True, text=True)
 
 
@@ -149,7 +158,7 @@ def test_release_cut_detection_fails_closed_without_a_base_parent(tmp_path):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "root")
     result = _scope(repo, "pull_request")
-    assert result.returncode == 1 and "HEAD^2 missing" in result.stderr
+    assert result.returncode == 1 and "synthetic merge commit" in result.stderr
 
 
 def test_release_cut_detection_refuses_a_non_merge_checkout(tmp_path):
@@ -162,7 +171,7 @@ def test_release_cut_detection_refuses_a_non_merge_checkout(tmp_path):
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", text)
     result = _scope(repo, "pull_request")
-    assert result.returncode == 1 and "merge commit" in result.stderr
+    assert result.returncode == 1 and "synthetic merge commit" in result.stderr
 
 
 def test_the_full_check_step_is_wired_to_the_scope_decision():
@@ -170,6 +179,10 @@ def test_the_full_check_step_is_wired_to_the_scope_decision():
     steps = {s.get("name"): s for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]}
     scope = steps["Decide whether this run needs the full pin set"]
     assert scope["id"] == "full" and scope["run"] == "bash phase-loop-runtime/scripts/agy_full_pin_scope.sh"
+    # Without EVENT the case falls through to full=false and the full check never runs.
+    assert scope["env"] == {"EVENT": "${{ github.event_name }}",
+                            "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}"}
+    assert "continue-on-error" not in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]
     full = steps["Verify every qualification source pin (release cut, new record, dispatch)"]
     assert full["if"] == "steps.full.outputs.full == 'true'"
     assert full["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only"
@@ -180,3 +193,14 @@ def test_the_full_check_step_is_wired_to_the_scope_decision():
 def test_other_events(tmp_path, event, full):
     result = _scope(tmp_path, event)
     assert result.returncode == 0 and result.stdout.strip() == f"full={full}"
+
+
+def test_a_merge_commit_that_is_not_the_pr_merge_ref_fails_closed(tmp_path):
+    """#1037 r1 (codex): a merge on the PR branch (parents: PR history, base) has HEAD^2, but
+    HEAD^1 is the PR's own history -- comparing to it would miss the PR's RELEASE_PIN change."""
+    repo = _merge_commit(tmp_path, {"RELEASE_PIN": "v3\n"})
+    merge = _rev(repo, "HEAD")
+    assert _scope(repo, "pull_request", github_sha="0" * 40).returncode == 1
+    assert _scope(repo, "pull_request", pr_head=_rev(repo, "HEAD^1")).returncode == 1
+    ok = _scope(repo, "pull_request", github_sha=merge)
+    assert ok.returncode == 0 and ok.stdout.strip() == "full=true"

@@ -53,6 +53,7 @@ jobs:
         id: full
         env:
           EVENT: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash phase-loop-runtime/scripts/agy_full_pin_scope.sh
       - name: Verify every qualification source pin (release cut, new record, dispatch)
         if: steps.full.outputs.full == 'true'

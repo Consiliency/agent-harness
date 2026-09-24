@@ -14,10 +14,15 @@ full=false
 case "${EVENT:-}" in
   workflow_dispatch) full=true ;;
   pull_request)
-    # The answer is only meaningful on GitHub's merge ref, whose first parent is the
-    # base; on any other checkout HEAD^1 is just the previous commit (agent-harness#1036).
-    if ! git rev-parse -q --verify HEAD^2 >/dev/null; then
-      echo "::error::expected the pull request's merge commit (HEAD^2 missing)" >&2
+    # The answer is only meaningful on GitHub's SYNTHETIC merge commit for this PR:
+    # HEAD must be $GITHUB_SHA and its second parent the PR head, so HEAD^1 is the base.
+    # Any other checkout (a linear commit, or a merge commit on the PR branch whose first
+    # parent is the PR's own history) fails closed (agent-harness#1036, #1037 r1).
+    head="$(git rev-parse -q --verify HEAD)" || head=""
+    second="$(git rev-parse -q --verify HEAD^2)" || second=""
+    if [ -z "${GITHUB_SHA:-}" ] || [ -z "${PR_HEAD_SHA:-}" ] || [ -z "$second" ] \
+        || [ "$head" != "$GITHUB_SHA" ] || [ "$second" != "$PR_HEAD_SHA" ]; then
+      echo "::error::expected the pull request's synthetic merge commit (HEAD=$head GITHUB_SHA=${GITHUB_SHA:-} HEAD^2=$second PR_HEAD_SHA=${PR_HEAD_SHA:-})" >&2
       exit 1
     fi
     rc=0

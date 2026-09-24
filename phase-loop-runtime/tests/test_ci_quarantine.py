@@ -61,7 +61,7 @@ def test_the_textual_register_is_capped() -> None:
 
 
 def _module_level_quarantine(text: str) -> bool:
-    """Does a module-level `pytestmark` (plain or annotated assignment) mention quarantine?
+    """Does a module- or class-level `pytestmark` assignment mention quarantine?
 
     Parsed, not regexed: a list entry containing `]` hid a later mark from the old regex
     (agent-harness#1036, F012). Unparsable files fall back to a plain text search."""
@@ -69,9 +69,24 @@ def _module_level_quarantine(text: str) -> bool:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return "pytestmark" in text and "quarantine" in text
-    for node in tree.body:
-        targets = node.targets if isinstance(node, ast.Assign) else (
-            [node.target] if isinstance(node, ast.AnnAssign) else [])
+
+    def module_scope(nodes):
+        # Module and class scope, through if/try/with/for/while/match blocks; not function
+        # bodies (#1037 r1: `if True:\n    pytestmark = ...` is module-level, and a class
+        # body's pytestmark quarantines the whole class -- both were caught by the regex).
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            yield node
+            yield from module_scope(ast.iter_child_nodes(node))
+
+    for node in module_scope(tree.body):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
         if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
             if node.value is not None and "quarantine" in ast.unparse(node.value):
                 return True
@@ -81,7 +96,7 @@ def _module_level_quarantine(text: str) -> bool:
 def test_no_module_level_quarantine() -> None:
     offenders = [p.name for p in _sources()
                  if _module_level_quarantine(p.read_text(encoding="utf-8"))]
-    assert not offenders, f"quarantine one test at a time, not a module: {offenders}"
+    assert not offenders, f"quarantine one test at a time, not a module or class: {offenders}"
 
 
 def test_the_static_checks_can_fail(tmp_path, monkeypatch) -> None:
@@ -197,3 +212,18 @@ def test_the_real_conftest_deselects_every_marked_node(tmp_path) -> None:
     marked = [line for line in run(["-m", "quarantine"], "0").splitlines() if "::" in line]
     assert marked
     assert f"({len(marked)} deselected)" in run([], "1"), "the conftest hook is not wired"
+
+
+@pytest.mark.parametrize("source,flagged", [
+    ('pytestmark = [\n    pytest.mark.parametrize("x", [1]),\n    pytest.mark.quarantine,\n]\n', True),
+    ("if True:\n    pytestmark = pytest.mark.quarantine(reason='x')\n", True),       # #1037 r1
+    ("try:\n    pass\nexcept Exception:\n    pytestmark = [pytest.mark.quarantine]\n", True),
+    ("pytestmark: list = [pytest.mark.quarantine]\n", True),
+    ("pytestmark += [pytest.mark.quarantine]\n", True),
+    ("def f():\n    pytestmark = pytest.mark.quarantine\n", False),                 # not module scope
+    ("class T:\n    pytestmark = pytest.mark.quarantine\n", True),                  # whole class
+    ("with ctx():\n    pytestmark = [pytest.mark.quarantine]\n", True),
+    ("pytestmark = [pytest.mark.slow]\n", False),
+])
+def test_module_level_quarantine_detection(source, flagged) -> None:
+    assert _module_level_quarantine(source) is flagged
