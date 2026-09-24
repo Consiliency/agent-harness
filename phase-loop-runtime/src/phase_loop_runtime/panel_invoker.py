@@ -4537,6 +4537,18 @@ def _tui_take_complete_lines(carry: bytearray, chunk: bytes) -> bytes:
     return complete
 
 
+def _tui_drop_pre_answer_fragment(complete: bytes) -> tuple[bytes, bool]:
+    """Discard the tail of a modal line that was incomplete when we answered."""
+    boundaries = [position for position in (complete.find(b"\n"), complete.find(b"\r")) if position >= 0]
+    for match in re.finditer(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", complete):
+        if match.group(0).endswith((b"J", b"H")):
+            boundaries.append(match.end() - 1)
+            break
+    if not boundaries:
+        return b"", False
+    return complete[min(boundaries) + 1:], True
+
+
 def _tui_screen_text(terminal_bytes: bytes) -> str:
     """De-ANSI'd, lowercased view of the ACCUMULATED PTY buffer.
 
@@ -4688,6 +4700,7 @@ def _run_claude_tui_session(
     tui_carry = (
         bytearray()
     )  # #188 CR: trailing partial line held across os.read boundaries
+    pre_answer_fragment_pending = False
     last_review_len = 0
     last_transcript_len = 0
     last_transcript_activity = 0
@@ -4834,6 +4847,9 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
+                        if pre_answer_fragment_pending:
+                            complete, fragment_ended = _tui_drop_pre_answer_fragment(complete)
+                            pre_answer_fragment_pending = not fragment_ended
                         if complete and trust_answered:
                             editor_this_iter = _tui_post_trust_editor_content(
                                 complete, cwd_tokens, seen_tui_lines,
@@ -4910,6 +4926,7 @@ def _run_claude_tui_session(
                     ready_since_output = False  # require NEW output after the answer
                     # A pre-answer partial line must not become editor content when
                     # its newline arrives after the answer.
+                    pre_answer_fragment_pending = bool(tui_carry)
                     tui_carry.clear()
                 # Editor-readiness ARMS on post-gate novel content: only once no gate
                 # signature is blocking (or we cleared it), and never on the modal's own
