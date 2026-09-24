@@ -3968,14 +3968,14 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             item["text"] for item in content
             if isinstance(item, dict) and item.get("type") == "text"
             and isinstance(item.get("text"), str)
-        ).strip()
+        )
         key = record_id if record_id is not None else len(blocks)
         blocks[key] = text
         if record_id is not None and record_version is not None:
             seen_record_uuids.add(record_id)
             current_group_uuids.add(record_id)
             seen_record_versions.add(record_version)
-    return "" if incomplete or pending_terminal else "\n".join(text for text in blocks.values() if text).strip()
+    return "" if incomplete or pending_terminal else "\n".join(text for text in blocks.values() if text).strip(" \t\r\n")
 
 
 def _cleanup_broker_claude_transcript(

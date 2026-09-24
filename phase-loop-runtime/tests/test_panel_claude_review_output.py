@@ -184,6 +184,28 @@ def test_raw_unicode_separator_in_final_text_is_preserved(tmp_path, separator):
                     ensure_ascii=False) == final
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_raw_unicode_separator_at_text_block_edge_survives(tmp_path, separator):
+    records = [
+        _assistant("First finding" + separator, uuid="first", stop_reason=None),
+        _assistant("Further detail\nDISAGREE", uuid="last", stop_reason="end_turn"),
+    ]
+    assert _extract(tmp_path, records, ensure_ascii=False) == (
+        "First finding" + separator + "\nFurther detail\nDISAGREE"
+    )
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_raw_unicode_separator_at_message_edge_survives(tmp_path, separator):
+    records = [
+        _assistant(separator + "First finding", uuid="first", stop_reason=None),
+        _assistant("DISAGREE" + separator, uuid="last", stop_reason="end_turn"),
+    ]
+    assert _extract(tmp_path, records, ensure_ascii=False) == (
+        separator + "First finding\nDISAGREE" + separator
+    )
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PTY")
 @pytest.mark.parametrize(("mode", "first", "last"), [
     ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
