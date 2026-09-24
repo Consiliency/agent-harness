@@ -513,5 +513,5 @@ def test_the_wheel_smoke_keeps_gate_a_parity():
     assert smoke["run"] == "bash scripts/gate_a_cleanroom.sh"
     assert smoke["working-directory"] == "phase-loop-runtime"
     assert smoke["env"] == {"PHASE_LOOP_SKIP_GATE_A_SUITE": "1"}
-    assert jobs["wheel-smoke"]["steps"][1]["with"]["python-version"] == \
-        jobs["cleanroom"]["steps"][1]["with"]["python-version"]
+    assert step("wheel-smoke", "Set up Python")["with"]["python-version"] == \
+        step("cleanroom", "Set up Python")["with"]["python-version"]

@@ -320,6 +320,10 @@ jobs:
         working-directory: phase-loop-runtime
         env:
           CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
+          # agent-harness#1029: pull requests deselect `quarantine`-marked known flakes
+          # (tests/_quarantine.py, via conftest; exact by marker, capped at 5 nodes).
+          # Push, nightly and Gate A run them.
+          PHASE_LOOP_DESELECT_QUARANTINE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           # tests/__init__.py prepends the sibling src tree in the TEST process
           # only; the evidence-verifier child inherits env, not sys.path. Export
@@ -347,29 +351,6 @@ jobs:
           else
             suite_args+=("--deselect=$CHRONOLOGY_NODE")
             expect=""
-          fi
-          # agent-harness#1029: known flakes carry `@pytest.mark.quarantine` (each citing an
-          # open issue) and are deselected on pull requests only; push, nightly and Gate A
-          # still run them. pytest's --deselect matches node-ID PREFIXES, so a quarantined
-          # `x::test_a` would also drop an unmarked `x::test_a_more`: the run fails closed
-          # unless each quarantined ID prefixes exactly one collected node (itself).
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            collected="$(PYTHONPATH=src:tests python -m pytest --collect-only -q --color=no -m "not dotfiles_integration" 2>/dev/null | awk 'index($0, "::")')"
-            while IFS= read -r qnode; do
-              case "$qnode" in *::*) ;; *) continue ;; esac
-              hits="$(awk -v p="$qnode" 'index($0, p) == 1' <<<"$collected" | wc -l)"
-              if [ "$hits" -ne 1 ]; then
-                echo "::error::quarantine deselect of $qnode would match $hits collected nodes (prefix collision); rename or unquarantine" >&2
-                exit 1
-              fi
-              echo "quarantined on this PR run: $qnode"
-              suite_args+=("--deselect=$qnode")
-              quarantined=$((${quarantined:-0} + 1))
-              if [ "$quarantined" -gt 5 ]; then
-                echo "::error::more than 5 quarantined nodes (a module/class mark counts per node); fix one first" >&2
-                exit 1
-              fi
-            done < <(PYTHONPATH=src:tests python -m pytest --collect-only -q --color=no -m quarantine 2>/dev/null)
           fi
           # The deselect must never become a silent no-op: if the node is renamed
           # or moved, `--deselect` matches nothing and pytest says nothing. Assert

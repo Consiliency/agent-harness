@@ -16,8 +16,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   3.10/3.11/3.12.
 - New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
   agent-harness#992 and two agent-harness#987 nodes) are deselected on pull-request
-  CI only. `tests/test_ci_quarantine.py` requires a cited issue, caps the register
-  at 5, and pins the deselect under the pull_request guard.
+  CI only, by a conftest collection hook (`tests/_quarantine.py`) enabled with
+  `PHASE_LOOP_DESELECT_QUARANTINE=1` -- exact by marker, never a node-ID prefix, and
+  more than 5 marked nodes aborts collection. `tests/test_ci_quarantine.py` requires a
+  cited issue, refuses module-level quarantine, and runs the real hook on prefix-sibling,
+  double-mark and backslash-id fixtures.
 
 ## [0.7.17] - 2026-09-24
 
