@@ -276,16 +276,15 @@ def test_real_broker_expired_admission_never_invokes(tmp_path):
 
 
 def test_owner_death_reaps_detached_descendant(tmp_path):
-    marker = tmp_path / "descendant-host-pid"
-    leader_marker = tmp_path / "provider-host-pid"
-    # /proc remains the host mount, so stat exposes a host PID despite PID isolation.
+    marker = tmp_path / "descendant-ready"
+    leader_marker = tmp_path / "provider-ready"
     child_code = (
         "import os,time,pathlib; os.setsid(); "
-        f"pathlib.Path({str(marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0]); "
+        f"pathlib.Path({str(marker)!r}).write_text('ready'); "
         "time.sleep(60)"
     )
     provider_code = (f"import subprocess,sys,time,pathlib; "
-                     f"pathlib.Path({str(leader_marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0]); "
+                     f"pathlib.Path({str(leader_marker)!r}).write_text('ready'); "
                      f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)")
     owner_code = (
         "import os,sys,threading; from pathlib import Path; "
@@ -295,29 +294,54 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
     )
     owner = subprocess.Popen([sys.executable, "-c", owner_code], start_new_session=True)
     descendant = None
+    leader = None
+
+    def process_identity(code):
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                argv = (entry / "cmdline").read_bytes().split(b"\0")
+                if len(argv) < 3 or argv[1] != b"-c" or argv[2] != code.encode():
+                    continue
+                start = (entry / "stat").read_text().rsplit(") ", 1)[1].split()[19]
+                return int(entry.name), start
+            except (OSError, IndexError):
+                continue
+        return None
+
+    def still_running(identity):
+        if identity is None:
+            return False
+        try:
+            return (Path(f"/proc/{identity[0]}/stat").read_text().rsplit(") ", 1)[1].split()[19]
+                    == identity[1])
+        except (OSError, IndexError):
+            return False
+
     try:
         deadline = time.monotonic() + 5
         while not marker.exists() and time.monotonic() < deadline:
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
-        descendant = int(marker.read_text())
+        descendant = process_identity(child_code)
+        leader = process_identity(provider_code)
+        assert descendant is not None and leader is not None
         owner.kill()
         owner.wait(5)
         deadline = time.monotonic() + 5
-        while Path(f"/proc/{descendant}").exists() and time.monotonic() < deadline:
+        while still_running(descendant) and time.monotonic() < deadline:
             time.sleep(.02)
-        assert not Path(f"/proc/{descendant}").exists(), "descendant escaped owner loss"
+        assert not still_running(descendant), "descendant escaped owner loss"
     finally:
         if owner.poll() is None:
             owner.kill()
         owner.wait(5)
-        if descendant is not None and Path(f"/proc/{descendant}").exists():
-            os.kill(descendant, signal.SIGKILL)
-        if leader_marker.exists():
-            leader = int(leader_marker.read_text())
-            try: os.kill(leader, signal.SIGKILL)
-            except ProcessLookupError: pass
+        for identity in (descendant, leader):
+            if still_running(identity):
+                try: os.kill(identity[0], signal.SIGKILL)
+                except ProcessLookupError: pass
 
 
 @pytest.mark.parametrize("empty,cancelled", [(False, False), (True, False), (False, True)])
@@ -942,6 +966,27 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
             assert int(record["caps"], 16) == 0
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+@pytest.mark.skipif(sys.platform != "linux" or not Path("/usr/bin/bwrap").exists(),
+                    reason="requires Linux bubblewrap")
+def test_heartbeat_owned_pid_namespace_has_its_own_proc_mount(tmp_path):
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "owned-proc", 0, threading.Event())
+    command = [sys.executable, "-c", (
+        "import os; from pathlib import Path; "
+        "status = Path('/proc/self/status').read_text(); "
+        "pid = int(next(line.split()[1] for line in status.splitlines() "
+        "if line.startswith('Pid:'))); "
+        "print('PROC_MATCH', int(os.getpid() == pid))"
+    )]
+    proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 process_owner=monitor.owned_command(()))
+    output, error = proc.communicate(timeout=10)
+    assert proc.returncode == 0, error
+    assert output.strip() == b"PROC_MATCH 1", (
+        "the owned PID namespace must mount its own /proc for nested CLI sandboxes"
+    )
 
 
 # --- agent-harness#908 board round 4, finding (f): the provider's cwd is re-established INSIDE the

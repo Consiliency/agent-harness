@@ -243,7 +243,7 @@ class _ReviewMonitor:
         # The PID namespace's init owns even descendants that start a new session.
         # Kernel parent-death notification kills the namespace on abrupt owner loss.
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev",
+                "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
                 *(gemini_profile.mount_args if gemini_profile is not None else ()),
                 "--", *command]
 
