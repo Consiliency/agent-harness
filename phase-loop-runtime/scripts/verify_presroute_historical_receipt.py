@@ -55,7 +55,7 @@ def main() -> int:
                                 check=True, capture_output=True).stdout
         if path.read_bytes() != original or committed != original or staged != original:
             raise ValueError(f"frozen PRESROUTE evidence drift: {rel}")
-    root = worktree_root(repo)
+    root = worktree_root(repo).resolve()
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agent-harness-presroute-receipt-", dir=root) as temp:
         checkout = Path(temp) / "landing"
