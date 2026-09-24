@@ -129,48 +129,64 @@ fi
 
 say() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 
-# --- 1) uv (cross-OS official installer; no Homebrew dependency) -----------
-if ! command -v uv >/dev/null 2>&1; then
-    say "[1/4] installing uv (astral.sh official installer)…"
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-fi
-command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not on PATH after install; add ~/.local/bin to PATH and re-run." >&2; exit 1; }
-
-# --- resolve the ref to ONE commit, before anything is installed ------------
+# --- 1) resolve the ref to ONE commit and check it out, before installing anything ---
 # agent-harness#980: `git clone --branch` accepts a branch or tag but not a commit SHA,
-# so a fresh full-SHA pin installed the runtime and THEN failed at the skill clone. The
-# skill-source checkout is now fetched first (init + fetch works for a branch, a tag or
-# a full SHA alike), and the runtime is installed from the commit that fetch resolved,
-# so runtime and skills always come from the same source. A ref that cannot be fetched
-# fails here, before any installation; a directory this run created is removed again.
-say "[2/4] resolving ${REF} from ${REPO}…"
+# so a fresh full-SHA pin installed the runtime and THEN failed at the skill clone. Now
+# the skill-source checkout is fetched and checked out FIRST (init + fetch takes a
+# branch, a tag or a full SHA), before uv is even bootstrapped, and the runtime is then
+# installed from that same commit. Until that checkout completes, a home this run
+# created is removed on ANY exit (failure, Ctrl-C, SIGTERM, hang-up), so a failed run
+# never leaves a half-initialised checkout that a rerun would refuse; after it, a later
+# failure leaves a clean, valid checkout that a rerun accepts.
+say "[1/4] resolving ${REF} from ${REPO}…"
 _created_home=""
+_remove_created_home() {
+    if [ -n "$_created_home" ]; then rm -rf -- "$HOME_DIR"; fi
+}
 if [ ! -d "$HOME_DIR/.git" ]; then
-    mkdir -p "$HOME_DIR"
+    mkdir -p -- "$(dirname -- "$HOME_DIR")"
+    # Exclusive create: only a directory THIS run created is ever removed. Anything that
+    # appeared since the preflight is refused, never adopted or deleted.
+    if ! mkdir -- "$HOME_DIR"; then
+        echo "ERROR: ${HOME_DIR} appeared during installation; refusing to adopt it." >&2
+        exit 1
+    fi
     _created_home=1
+    trap '_remove_created_home' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     git -C "$HOME_DIR" init -q
     git -C "$HOME_DIR" remote add origin "$REPO"
 fi
 if ! git -C "$HOME_DIR" fetch --depth 1 origin "$REF" ||
    ! RESOLVED="$(git -C "$HOME_DIR" rev-parse --verify -q 'FETCH_HEAD^{commit}')"; then
-    [ -n "$_created_home" ] && rm -rf -- "$HOME_DIR"
     echo "ERROR: could not resolve ${REF} from ${REPO}; nothing was installed." >&2
     exit 1
 fi
+git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
+# The checkout is complete and valid: keep it from here on.
+_created_home=""
+trap - EXIT INT TERM HUP
 say "  ${REF} -> ${RESOLVED}"
 
-# --- 2) phase-loop runtime CLI from the resolved commit -----------------------
+# --- 2) uv (cross-OS official installer; no Homebrew dependency) -----------
+if ! command -v uv >/dev/null 2>&1; then
+    say "[2/4] installing uv (astral.sh official installer)…"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+fi
+command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not on PATH after install; add ~/.local/bin to PATH and re-run." >&2; exit 1; }
+
+# --- 3) phase-loop runtime CLI from the resolved commit -----------------------
 say "[3/4] installing phase-loop-runtime ${RESOLVED} from ${REPO}…"
 uv tool install --force "git+${REPO}@${RESOLVED}#subdirectory=phase-loop-runtime"
 hash -r 2>/dev/null || true
 export PATH="$HOME/.local/bin:$PATH"
 phase-loop --version
 
-# --- 3) workflow skills for each harness, from the public bundle -----------
-# Keep a release checkout as the source for copied, harness-expanded skills.
+# --- 4) workflow skills for each harness, from the resolved checkout ----------
 say "[4/4] installing workflow skills (${HARNESSES}) from ${REF} (${RESOLVED})…"
-git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
 for _h in $HARNESSES; do
     # An explicit AGENT_HARNESS_SKILL_DEST override is only honored for a single harness.
     if [ "$HARNESS" != all ] && [ -n "${AGENT_HARNESS_SKILL_DEST:-}" ]; then

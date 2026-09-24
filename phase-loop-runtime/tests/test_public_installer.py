@@ -89,6 +89,8 @@ elif name == 'git' and command == 'fetch':
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'git' and command == 'checkout':
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
+elif name == 'uv' and os.environ.get('INSTALL_TEST_UV_RC'):
+    sys.exit(int(os.environ['INSTALL_TEST_UV_RC']))
 elif name == 'phase-loop' and 'install' in args:
     from phase_loop_runtime.cli import main
     sys.exit(main([*args, '--json']))
@@ -249,13 +251,27 @@ def _resolved_install(env):
     return installs[0][-1].split("@", 1)[1].split("#", 1)[0]
 
 
+def _commit(template, git_run, message):
+    (template / f"{message}.txt").write_text(message)
+    git_run("-C", str(template), "add", f"{message}.txt")
+    git_run("-C", str(template), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", message)
+    return git_run("-C", str(template), "rev-parse", "HEAD").stdout.strip()
+
+
 @pytest.mark.parametrize("pin", ["tag", "branch", "full_sha"])
 def test_a_fresh_install_resolves_runtime_and_skills_to_one_commit(installation, pin):
     # agent-harness#980: a fresh full-SHA pin used to install the runtime and then fail at
-    # `git clone --branch <sha>`.
+    # `git clone --branch <sha>`. Each pin names a DISTINCT commit (none is the default
+    # branch's tip), so a fallback to the default branch cannot pass.
     env, template, git_run = installation
-    commit = git_run("-C", str(template), "rev-parse", "HEAD").stdout.strip()
-    git_run("-C", str(template), "branch", "release-line")
+    targets = {"tag": git_run("-C", str(template), "rev-parse", "v1.2.3^{commit}").stdout.strip()}
+    git_run("-C", str(template), "checkout", "-q", "-b", "release-line")
+    targets["branch"] = _commit(template, git_run, "branch-only")
+    git_run("-C", str(template), "checkout", "-q", "-")
+    targets["full_sha"] = _commit(template, git_run, "sha-only")
+    _commit(template, git_run, "default-tip")
+    commit = targets[pin]
     env["AGENT_HARNESS_REF"] = {"tag": "v1.2.3", "branch": "release-line", "full_sha": commit}[pin]
     result = run_installer(env)
     assert result.returncode == 0, result.stderr
@@ -285,3 +301,30 @@ def test_a_failed_fetch_into_an_existing_checkout_keeps_it(installation):
     assert result.returncode != 0
     assert Path(env["AGENT_HARNESS_HOME"], "RELEASE_PIN").is_file()
     assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_an_unresolvable_ref_bootstraps_nothing_when_uv_is_absent(installation):
+    # board r1: resolution precedes the uv bootstrap (`curl | sh`), so a bad ref installs
+    # nothing at all. The curl stand-in fails the run if it is ever invoked.
+    env, _, _ = installation
+    (Path(env["PATH"].split(":")[0]) / "uv").unlink()
+    env["AGENT_HARNESS_REF"] = "no-such-ref"
+    result = run_installer(env)
+    assert result.returncode != 0 and "nothing was installed" in result.stderr
+    assert not any(call[0] == "curl" for call in effects(env))
+    assert not Path(env["AGENT_HARNESS_HOME"]).exists()
+
+
+def test_a_failure_after_resolution_leaves_a_checkout_a_rerun_accepts(installation):
+    # board r1: a later failure (here the runtime install) must not leave a half-initialised
+    # home that the next run refuses.
+    env, template, git_run = installation
+    env["INSTALL_TEST_UV_RC"] = "1"
+    result = run_installer(env)
+    assert result.returncode != 0
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert (target / "RELEASE_PIN").is_file()
+    assert git_run("-C", str(target), "status", "--porcelain").stdout == ""
+    del env["INSTALL_TEST_UV_RC"]
+    rerun = run_installer(env)
+    assert rerun.returncode == 0, rerun.stderr
