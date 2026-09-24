@@ -30,6 +30,7 @@ from _quarantine import QUARANTINE_CAP, QUARANTINE_ENV
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_DIR = Path(__file__).resolve().parent
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "test.yml"
+PUBLISH_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
 
 # `mark.quarantine` covers both `pytest.mark.quarantine` and `from pytest import mark`.
 _MARK = re.compile(r"\bmark\.quarantine\b(?P<call>\([^)]*\))?")
@@ -88,7 +89,10 @@ def test_only_the_hosted_suite_step_enables_it_and_only_on_pull_requests() -> No
     assert enabled == [("pytest", "Run standalone test suite")], enabled
     step = next(s for s in jobs["pytest"]["steps"] if s.get("name") == "Run standalone test suite")
     assert step["env"][QUARANTINE_ENV] == "${{ github.event_name == 'pull_request' && '1' || '0' }}"
-    assert QUARANTINE_ENV not in WORKFLOW_PATH.read_text().split("jobs:", 1)[0], "never workflow-wide"
+    # Exactly one mention anywhere: no job-level env, no `>> $GITHUB_ENV` export (r3 claude).
+    assert WORKFLOW_PATH.read_text().count(QUARANTINE_ENV) == 1
+    if PUBLISH_WORKFLOW_PATH.is_file():
+        assert QUARANTINE_ENV not in PUBLISH_WORKFLOW_PATH.read_text()
 
 
 def _run(tmp_path: Path, body: str, enabled: bool) -> subprocess.CompletedProcess:
@@ -142,7 +146,33 @@ def test_disabled_runs_everything(tmp_path) -> None:
     assert "1 failed" in result.stdout and "deselected" not in result.stdout, result.stdout
 
 
-def test_the_node_cap_aborts_collection(tmp_path) -> None:
-    methods = "".join(f"    def test_{i}(self): pass\n" for i in range(QUARANTINE_CAP + 1))
-    result = _run(tmp_path, '@pytest.mark.quarantine(reason="x")\nclass TestMany:\n' + methods, enabled=True)
-    assert result.returncode != 0 and "cap 5" in result.stdout + result.stderr, result.stdout + result.stderr
+@pytest.mark.parametrize("marked,aborts", [(QUARANTINE_CAP, False), (QUARANTINE_CAP + 1, True)])
+def test_the_node_cap_aborts_collection(tmp_path, marked, aborts) -> None:
+    """A class mark counts per node; one over the cap is a usage error (exit 4), at the cap
+    it is not -- an unmarked test keeps a non-aborting run from exiting 5 (r3 claude)."""
+    methods = "".join(f"    def test_{i}(self): pass\n" for i in range(marked))
+    body = ('@pytest.mark.quarantine(reason="x")\nclass TestMany:\n' + methods
+            + "\ndef test_unmarked(): pass\n")
+    result = _run(tmp_path, body, enabled=True)
+    output = result.stdout + result.stderr
+    if aborts:
+        assert result.returncode == 4 and "cap 5" in output, output
+    else:
+        assert result.returncode == 0 and f"{marked} deselected" in output, output
+
+
+def test_the_real_conftest_deselects_every_marked_node(tmp_path) -> None:
+    """Wiring: the real conftest calls the hook (deleting the call reds this)."""
+    files = sorted({f"tests/{name}" for name, _ in quarantine_marks()})
+    if not files:
+        pytest.skip("no quarantined tests to wire-check")
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("PYTEST_") and k not in ("FORCE_COLOR", "PY_COLORS")}
+    base = [sys.executable, "-m", "pytest", "--collect-only", "-q", "--color=no", "-p", "no:cacheprovider", *files]
+
+    def run(extra, value):
+        return subprocess.run(base + extra, cwd=TESTS_DIR.parent, capture_output=True, text=True,
+                              env={**env, QUARANTINE_ENV: value, "PYTHONPATH": "src:tests"}).stdout
+    marked = [line for line in run(["-m", "quarantine"], "0").splitlines() if "::" in line]
+    assert marked
+    assert f"({len(marked)} deselected)" in run([], "1"), "the conftest hook is not wired"

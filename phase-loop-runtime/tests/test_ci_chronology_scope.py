@@ -454,6 +454,8 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     ("push", "success", "success", "success", "success", False),
     ("schedule", "success", "success", "success", "skipped", True),
     ("schedule", "success", "failure", "success", "skipped", False),
+    ("pull_request", "success", "failure", "skipped", "success", False),
+    ("push", "failure", "success", "success", "skipped", False),
 ])
 def test_hosted_collapse_requires_the_lane_for_the_event(
     event, pytest_r, retention, cleanroom, smoke, success,

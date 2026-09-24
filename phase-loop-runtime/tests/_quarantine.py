@@ -4,7 +4,8 @@ A test marked ``@pytest.mark.quarantine(reason="agent-harness#N")`` is a known f
 ``PHASE_LOOP_DESELECT_QUARANTINE=1`` (set by test.yml on pull_request only), collection drops
 exactly the marked items -- by marker, never by node-ID prefix -- and reports them as
 deselected. More than ``QUARANTINE_CAP`` marked nodes aborts collection: the register is
-debt, not an off switch. Push, nightly and Gate A leave the variable unset and run them.
+debt, not an off switch. Any other value (test.yml passes ``0`` off pull requests; Gate A,
+publish-pypi and the offload path never set it) runs them.
 """
 from __future__ import annotations
 

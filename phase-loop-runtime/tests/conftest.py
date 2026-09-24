@@ -161,7 +161,7 @@ def pytest_collection_modifyitems(config, items):
             if item.get_closest_marker("dotfiles_integration") is not None:
                 item.add_marker(skip_marker)
 
-    # agent-harness#1029: pull-request CI only (the variable is unset everywhere else).
+    # agent-harness#1029: active only when PHASE_LOOP_DESELECT_QUARANTINE=1 (hosted PR suite).
     deselect_quarantined(config, items)
 
     canonical_mode = canonical_mode_enabled()
