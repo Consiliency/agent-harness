@@ -14,6 +14,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   current-image record and CI provenance check bind the new source, archive and
   executable; automatic fleet updates remain tracked by agent-harness#1008.
 
+### The installer resolves a pin to one commit before installing (agent-harness#980)
+
+- `install-agent-harness.sh` used to install the runtime from the ref and then clone the skills
+  with `git clone --branch <ref>`, which rejects a commit SHA. A fresh full-SHA pin therefore
+  left a new runtime with no matching skills. The installer now fetches the ref into the skill
+  checkout first (`init` + `fetch`, which accepts a branch, a tag or a full SHA), installs the
+  runtime from the commit that fetch resolved, and checks out that same commit for the skills.
+  An unresolvable ref fails before anything is installed, and a directory the run created is
+  removed again.
+
 ### Qualified agy 1.2.9 entry image (agent-harness#1008)
 
 - Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered

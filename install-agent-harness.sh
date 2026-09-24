@@ -129,31 +129,83 @@ fi
 
 say() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 
-# --- 1) uv (cross-OS official installer; no Homebrew dependency) -----------
+# --- 1) resolve the ref to ONE commit and check it out, before installing anything ---
+# agent-harness#980: `git clone --branch` accepts a branch or tag but not a commit SHA,
+# so a fresh full-SHA pin installed the runtime and THEN failed at the skill clone. Now
+# the skill-source checkout is fetched and checked out FIRST (init + fetch takes a
+# branch, a tag or a full SHA), before uv is even bootstrapped, and the runtime is then
+# installed from that same commit. A fresh home is built in a private stage and
+# published by one rename only when complete, so a failed or interrupted run leaves no
+# half-initialised home that a rerun would refuse, and deletes nothing it did not
+# create; after publication, a later failure leaves a clean, valid checkout that a
+# rerun accepts.
+say "[1/4] resolving ${REF} from ${REPO}…"
+# git's repository-redirecting environment would point every `git -C` below at some
+# other repository (hook contexts, bare-repo dotfile setups); `git clone` ignored it.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY || true
+# A fresh home is BUILT in a private staging directory beside it and PUBLISHED with one
+# rename only once the resolved commit is checked out. Cleanup only ever removes that
+# private stage (an unguessable mktemp name this run created), never the home pathname,
+# which another process could have replaced meanwhile. An existing checkout is updated in
+# place exactly as before.
+_stage=""
+_remove_stage() {
+    if [ -n "$_stage" ]; then rm -rf -- "$_stage"; fi
+}
+trap '_remove_stage' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+if [ -d "$HOME_DIR/.git" ]; then
+    _work="$HOME_DIR"
+else
+    mkdir -p -- "$(dirname -- "$HOME_DIR")"
+    _stage="$(mktemp -d -- "$(dirname -- "$HOME_DIR")/.agent-harness-install.XXXXXXXX")"
+    _work="$_stage"
+    git -C "$_work" init -q
+    git -C "$_work" remote add origin "$REPO"
+fi
+# writeFetchHEAD is forced on: with a user `fetch.writeFetchHEAD=false`, a stale FETCH_HEAD
+# from an earlier run would otherwise resolve as this ref.
+if ! git -C "$_work" -c fetch.writeFetchHEAD=true fetch --depth 1 origin "$REF" ||
+   ! RESOLVED="$(git -C "$_work" rev-parse --verify -q 'FETCH_HEAD^{commit}')"; then
+    echo "ERROR: could not resolve ${REF} from ${REPO}; nothing was installed." >&2
+    exit 1
+fi
+git -C "$_work" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
+if [ -n "$_stage" ]; then
+    # Publish with an ATOMIC no-replace rename: GNU `mv -T -n` issues
+    # renameat2(RENAME_NOREPLACE), so a home that appeared at any moment -- even an empty
+    # directory created an instant before -- is refused, never replaced. `mv -n` exits 0
+    # when it skips (coreutils 8.x), so success is judged by where the stage ended up.
+    mv -T -n -- "$_stage" "$HOME_DIR" || true
+    if [ -e "$_stage" ] ||
+       [ "$(git -C "$HOME_DIR" rev-parse -q --verify HEAD 2>/dev/null)" != "$RESOLVED" ]; then
+        echo "ERROR: ${HOME_DIR} appeared during installation; refusing to replace it." >&2
+        exit 1
+    fi
+    _stage=""
+fi
+trap - EXIT INT TERM HUP
+say "  ${REF} -> ${RESOLVED}"
+
+# --- 2) uv (cross-OS official installer; no Homebrew dependency) -----------
 if ! command -v uv >/dev/null 2>&1; then
-    say "[1/3] installing uv (astral.sh official installer)…"
+    say "[2/4] installing uv (astral.sh official installer)…"
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not on PATH after install; add ~/.local/bin to PATH and re-run." >&2; exit 1; }
 
-# --- 2) phase-loop runtime CLI from the pinned PUBLIC release ---------------
-say "[2/3] installing phase-loop-runtime ${REF} from ${REPO}…"
-uv tool install --force "git+${REPO}@${REF}#subdirectory=phase-loop-runtime"
+# --- 3) phase-loop runtime CLI from the resolved commit -----------------------
+say "[3/4] installing phase-loop-runtime ${RESOLVED} from ${REPO}…"
+uv tool install --force "git+${REPO}@${RESOLVED}#subdirectory=phase-loop-runtime"
 hash -r 2>/dev/null || true
 export PATH="$HOME/.local/bin:$PATH"
 phase-loop --version
 
-# --- 3) workflow skills for each harness, from the public bundle -----------
-# Keep a release checkout as the source for copied, harness-expanded skills.
-say "[3/3] installing workflow skills (${HARNESSES}) from ${REF}…"
-if [ -d "$HOME_DIR/.git" ]; then
-    git -C "$HOME_DIR" fetch --depth 1 origin "$REF"
-    git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q FETCH_HEAD
-else
-    mkdir -p "$(dirname "$HOME_DIR")"
-    git clone --depth 1 --branch "$REF" "$REPO" "$HOME_DIR"
-fi
+# --- 4) workflow skills for each harness, from the resolved checkout ----------
+say "[4/4] installing workflow skills (${HARNESSES}) from ${REF} (${RESOLVED})…"
 for _h in $HARNESSES; do
     # An explicit AGENT_HARNESS_SKILL_DEST override is only honored for a single harness.
     if [ "$HARNESS" != all ] && [ -n "${AGENT_HARNESS_SKILL_DEST:-}" ]; then
@@ -167,7 +219,7 @@ for _h in $HARNESSES; do
     echo "  ✓ ${_h} skills → ${_dest}"
 done
 
-say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF}."
+say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF} (${RESOLVED})."
 echo "  runtime : $(command -v phase-loop)  ($(phase-loop --version 2>/dev/null))"
 echo "  bundle  : ${HOME_DIR}/phase-loop-skills"
 # Report the update path from where THIS run's ref actually came, not from a proxy.
