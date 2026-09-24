@@ -80,6 +80,15 @@ def test_replayed_uuid_from_earlier_message_cannot_restore_old_verdict(tmp_path)
     ]) == "Current review\nDISAGREE"
 
 
+@pytest.mark.parametrize("message_ids", [("old", "new"), (None, None)])
+def test_changed_uuid_reused_across_messages_fails_closed(tmp_path, message_ids):
+    old_id, new_id = message_ids
+    assert _extract(tmp_path, [
+        _assistant("Old review\nAGREE", message_id=old_id, uuid="same", stop_reason="end_turn"),
+        _assistant("Current review\nDISAGREE", message_id=new_id, uuid="same", stop_reason="end_turn"),
+    ]) == ""
+
+
 def test_replayed_uuid_after_user_boundary_cannot_restore_old_verdict(tmp_path):
     old = _assistant("Old review\nAGREE", uuid="old", stop_reason="end_turn")
     assert _extract(tmp_path, [

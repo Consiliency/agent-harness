@@ -3942,6 +3942,8 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             current_id is None or current_id != message_id
             or record_id not in current_group_uuids
         ):
+            if record_version not in seen_record_versions:
+                return ""
             continue
         if record_version in seen_record_versions:
             continue
@@ -3969,7 +3971,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         ).strip()
         key = record_id if record_id is not None else len(blocks)
         blocks[key] = text
-        if record_id is not None:
+        if record_id is not None and record_version is not None:
             seen_record_uuids.add(record_id)
             current_group_uuids.add(record_id)
             seen_record_versions.add(record_version)
