@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -217,6 +219,7 @@ class RoadmapLintModuleTest(unittest.TestCase):
         errors = lint_roadmap_text(cyclic)
         self.assertTrue(any(e.startswith("(F)") for e in errors), errors)
 
+    @pytest.mark.quarantine(reason="agent-harness#987")
     def test_validate_roadmap_cli_subcommand(self):
         with tempfile.TemporaryDirectory() as td:
             good = Path(td) / "good.md"

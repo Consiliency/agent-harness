@@ -425,9 +425,50 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     eligible = trusted and secret == "true" and sandbox_ready == "true"
     assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
     assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
-    for lane in ("pytest", "cleanroom"):
-        assert jobs[lane]["if"] == "needs.elig.outputs.eligible != 'true'"
+    assert jobs["pytest"]["if"] == "needs.elig.outputs.eligible != 'true'"
+    # agent-harness#1029: Gate A runs off pull requests; the wheel smoke runs on them.
+    assert jobs["cleanroom"]["if"] == (
+        "needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'"
+    )
+    assert jobs["wheel-smoke"]["if"] == (
+        "needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'"
+    )
     assert jobs["pytest"]["strategy"]["matrix"]["python-version"] == ["3.10", "3.11", "3.12"]
+    # A pull request keeps the py3.10 floor lane only; every other event keeps all three.
+    assert jobs["pytest"]["strategy"]["matrix"]["exclude"] == (
+        "${{ github.event_name == 'pull_request' && "
+        "fromJSON('[{\"python-version\":\"3.11\"},{\"python-version\":\"3.12\"}]') "
+        "|| fromJSON('[]') }}"
+    )
+
+
+@pytest.mark.parametrize("event,pytest_r,retention,cleanroom,smoke,success", [
+    ("pull_request", "success", "success", "skipped", "success", True),
+    ("pull_request", "success", "success", "skipped", "failure", False),
+    ("pull_request", "success", "success", "skipped", "skipped", False),
+    ("pull_request", "success", "success", "success", "success", False),
+    ("pull_request", "failure", "success", "skipped", "success", False),
+    ("push", "success", "success", "success", "skipped", True),
+    ("push", "success", "success", "skipped", "skipped", False),
+    ("push", "success", "success", "failure", "skipped", False),
+    ("push", "success", "success", "success", "success", False),
+    ("schedule", "success", "success", "success", "skipped", True),
+    ("schedule", "success", "failure", "success", "skipped", False),
+])
+def test_hosted_collapse_requires_the_lane_for_the_event(
+    event, pytest_r, retention, cleanroom, smoke, success,
+):
+    """agent-harness#1029: exactly the event's lane ran and passed; the other skipped."""
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    hosted = jobs["hosted"]
+    assert set(hosted["needs"]) == {"elig", "pytest", "chronology-retention", "cleanroom", "wheel-smoke"}
+    step, = hosted["steps"]
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], capture_output=True, text=True,
+        env={**os.environ, "EVENT": event, "PYTEST": pytest_r, "RETENTION": retention,
+             "CLEANROOM": cleanroom, "SMOKE": smoke},
+    )
+    assert (result.returncode == 0) is success, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("offload,hosted,success", [

@@ -154,6 +154,7 @@ phase_loop_runtime = [
 [tool.pytest.ini_options]
 markers = [
     "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
+    "quarantine(reason): known flake tracked by an OPEN issue; deselected on pull-request CI only (agent-harness#1029)",
 ]
 
 [tool.setuptools.data-files]

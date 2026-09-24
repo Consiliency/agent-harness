@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Faster pull-request CI (agent-harness#1029)
+
+- Pull requests run a ~2-minute wheel smoke (build, clean-venv install, entry-point
+  and probe checks) instead of the ~19-minute Gate A clean room; Gate A still runs
+  on every push to main, nightly, on dispatch and on release tags. `publish-pypi.yml`
+  likewise skips its standalone suite on pull requests only.
+- Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
+  3.10/3.11/3.12.
+- New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
+  agent-harness#992 and two agent-harness#987 nodes) are deselected on pull-request
+  CI only. `tests/test_ci_quarantine.py` requires a cited issue, caps the register
+  at 5, and pins the deselect under the pull_request guard.
+
 ## [0.7.17] - 2026-09-24
 
 ### Opus 5.5 is the default first president rung (agent-harness#1025)

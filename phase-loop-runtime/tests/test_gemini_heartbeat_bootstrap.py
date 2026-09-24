@@ -277,7 +277,9 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     ("quoted-timeout", "ERROR", "malformed JSON"),
     ("denied-empty", "ERROR", "tool permission"),
     ("event", "ERROR", "malformed stream event"),
-    ("session", "ERROR", "conversation"), ("count", "ERROR", "incomplete ingestion"),
+    pytest.param("session", "ERROR", "conversation",
+                 marks=pytest.mark.quarantine(reason="agent-harness#987")),
+    ("count", "ERROR", "incomplete ingestion"),
     ("final", "ERROR", "terminal response"), ("truncation", "ERROR", "truncation"),
 ])
 def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path, mode, status, detail):

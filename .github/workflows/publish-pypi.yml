@@ -115,9 +115,14 @@ jobs:
         # touches the gate's selection plumbing retains it there too, per
         # ci/chronology-scope.sh), so running it here again proves nothing new;
         # the script's junit witness proves the node is absent from the evidence.
+        # agent-harness#1029: a pull_request run now skips the standalone suite here
+        # entirely (the wheel is still built, installed and probed): test.yml's pytest
+        # lane runs that suite on the same PR head, and a tag or dispatch still runs it
+        # in full before anything is published.
         env:
           GATE_A_JUNIT: ${{ runner.temp }}/junit-release-gate-a.xml
           GATE_A_DESELECT_CHRONOLOGY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          PHASE_LOOP_SKIP_GATE_A_SUITE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           shopt -s nullglob
           wheels=(dist/*.whl)
