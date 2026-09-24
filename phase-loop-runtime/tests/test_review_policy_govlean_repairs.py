@@ -11,6 +11,7 @@ from president_fakes import deferring_president
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
 from phase_loop_runtime.advisor_board.schema import Board, Seat
 from phase_loop_runtime.panel_invoker import (
+    PRESIDENT_LADDER,
     PresidentPolicyError,
     ReviewLandingTier,
     invoke_board,
@@ -113,13 +114,17 @@ def test_post_switch_full_production_board_reaches_the_real_invocation_path(tmp_
 
 
 def test_president_format_reask_unavailability_descends_the_ladder() -> None:
+    # Rungs are named by ladder INDEX, not alias, so the invariant (a first rung whose
+    # format re-ask comes back unavailable descends to the second rung) survives the
+    # EC-PRESROUTE-3 reorder (agent-harness#952).
+    first, second = PRESIDENT_LADDER[0], PRESIDENT_LADDER[1]
     calls: list[str] = []
 
     def invoke(model: str, prompt: str) -> dict[str, str]:
         calls.append(model)
-        if model == "fable" and len(calls) == 1:
+        if model == first and len(calls) == 1:
             return {"status": "ok", "text": "missing terminal grammar"}
-        if model == "fable":
+        if model == first:
             return {"status": "unavailable", "code": "president_unavailable"}
         return {
             "status": "ok",
@@ -132,8 +137,8 @@ def test_president_format_reask_unavailability_descends_the_ladder() -> None:
         max_substantive_rounds=3,
     )
 
-    assert ruling.model == "sol"
-    assert calls == ["fable", "fable", "sol"]
+    assert ruling.model == second
+    assert calls == [first, first, second]
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,91 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Qualified agy 1.2.9 entry image (agent-harness#1008)
+
+- Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
+  Gemini heartbeat-only review after real completion, cancellation and owner-loss
+  qualification. Hosts must install 1.2.9 with this runtime update; both the
+  previous image and unknown future images refuse before provider launch. The
+  repository's current-image record and CI provenance check expose the source,
+  archive and executable binding; automatic fleet updates remain tracked by
+  agent-harness#1008.
+
+### The heartbeat owner wrapper gives its PID namespace its own /proc (agent-harness#1003)
+
+- Under `monitoring_policy="heartbeat_only"`, the owner wrapper (`_ReviewMonitor.owned_command`)
+  put the provider in a new PID namespace but bind-mounted the host `/proc`. A provider that
+  starts its own bubblewrap sandbox from a process that is not the namespace's first -- codex's
+  `workspace-write` sandbox launched through a shell -- then resolved `/proc/<pid>/ns` in the
+  wrong PID namespace and failed before running anything (`bwrap: open /proc/26/ns/ns failed`).
+  Reproduced through `launch_provider` on bubblewrap 0.9.0 / Linux 7.0, with and without the
+  egress prefix. The wrapper now mounts `--proc /proc`. The owner's identity checks read the
+  host `/proc` from outside and are unchanged; three tests that learned host PIDs by reading
+  `/proc/self/stat` inside the namespace now resolve them from outside.
+
+### President launches run under heartbeat monitoring and broker isolation (agent-harness#1001)
+
+- Every non-native president rung launch (Astra, Grok, Gemini; Claude outside Claude Code)
+  now runs through egress isolation, a single-use broker capability carrying the president
+  operation, and the parent Unix broker -- the same isolation as a review seat. Under
+  `heartbeat_only` it runs with the review heartbeat monitor: no model-thinking deadline and
+  no silence kill (agent-harness#998's route kept a 1800 s deadline and a silence kill, and
+  launched with no broker or egress isolation). A missing canonical repository or unavailable
+  egress refuses before any provider starts. The board's cancel event reaches the president.
+
+### Configurable president ladder (agent-harness#998 follow-up)
+
+- **The president fallback order is configuration, not code.** `PRESIDENT_LADDER` stays the
+  built-in order; `advisor_board.config.load_president_ladder` layers the user file's
+  `[president] ladder` (`$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`) and then the
+  repository's `.agent-harness/advisor-boards.toml` over it. A malformed ladder is refused,
+  never silently replaced by the built-in. `advisor-board --landing-tier`, the runner's
+  auto-wired president seam and `rung_index` all use the configured order. This repository
+  sets `fable, sol, grok, gemini` (Opus 5.5, Astra, Grok 4.7, Gemini 3.8 Flash).
+- **A native president resume is bound to the review brief** (the agent-harness#998
+  president's BLOCKING F035) and to the ladder. It also resolves its rung through the run's
+  `review_seat_aliases`, and a new deferral removes a stale `president.ruling.json` from a
+  reused stream.
+- The credential-less gemini president HOME now carries the broker's deny-all agy profile.
+- A `president.pending.json` written before this change has no brief or ladder binding and
+  is refused on resume (fail-closed): re-run the board to defer again.
+
+### Fixed
+
+- **The subscription scrub removes the xAI/Grok API key** (agent-harness#864).
+  `scrub_subscription_env` kept `XAI_API_KEY`. It now removes `XAI_API_KEY` and
+  `GROK_CODE_XAI_API_KEY` (the grok CLI's API-key variables) and grok's documented
+  endpoint redirects (`GROK_CLI_CHAT_PROXY_BASE_URL`, `GROK_XAI_API_BASE_URL`,
+  `GROK_MODELS_BASE_URL`; plus `XAI_API_BASE_URL`, removed defensively) from every
+  environment built through it -- not an exhaustive list of grok endpoint settings; the brokered legs were
+  already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
+  so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
+
+### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
+
+- **A seated president rung now rules.** `plan` / `production_code` landings no longer fail
+  closed at `president_execution_route_unavailable`: the president has its own
+  HARDEN-authorized operation, `public_board_president.v1` (`president_operation.py`), with
+  its own brief, completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` …
+  `FORCING DECISION:`) and authorization (`PresidentIsolationAuthorization`, minted beside —
+  never through — the review authorization, and revalidated before each rung launches).
+- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini`, each
+  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the brokered provider
+  route (`launch_provider` only); `fable` is filled natively by the driving Claude Code session
+  (deferred, then resumed with `native_president_fill`, both digests checked against the
+  persisted pending request) and through the self-PTY session elsewhere.
+- **Durable ruling record** (EC-PRESROUTE-5): every ruling on a call with a review stream is
+  written to `<stream_dir>/president.ruling.json` (`president.ruling.v1`); the runner and CLI
+  always pass a stream, and a stream-less call returns its ruling unrecorded.
+- **The interim override is expired** (EC-PRESROUTE-4): a `plan`/`production_code` landing
+  that declares its tier and carries `requires_president=False` is refused
+  (`requires_president_override_refused`); a tierless explicit policy is not detectable at
+  runtime and is a governance violation; and
+  the 2026-09-04 decision note is closed (`EXPIRED by Consiliency/agent-harness#998`).
+- CLI: `advisor-board --landing-tier` and `--native-president FILL.json`.
+- Docs catalog: rescan helper unavailable in this repo; manual audit — the catalog tracks
+  none of the touched docs except `CHANGELOG.md` (by path), so it is unchanged.
+
 ### Small fixes: a host-PID flake, skill effort prose, witness hardening
 
 - `test_observed_launch_closes_stdin_when_no_payload` (in `test_launcher_liveness.py` and its

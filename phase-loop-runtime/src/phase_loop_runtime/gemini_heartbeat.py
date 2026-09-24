@@ -14,7 +14,7 @@ import time
 from .agy_canary_evidence import AgyCanaryEvidenceError, _linux_memfd_seal_abi, _sealed_tree_fd
 
 
-QUALIFIED_IMAGE_SHA256 = "9991515b6d5307bcf701069622b0537b6b206e605f3c891c0cf3a3d208dea8b0"
+QUALIFIED_IMAGE_SHA256 = "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711"
 QUALIFIED_HELP_SHA256 = "5a03bf7dc9d3d7645f5853906cc117363fd8978a79c2a89521f0ff7590dbe454"
 PROFILE_ID = "agy_memfd_home_deny_all_v1"
 PRIVATE_HOME = "/dev/phase-loop-agy"

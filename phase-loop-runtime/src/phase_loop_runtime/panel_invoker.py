@@ -242,8 +242,14 @@ class _ReviewMonitor:
             raise _ReviewOperationCancelled("review_operation_cancelled")
         # The PID namespace's init owns even descendants that start a new session.
         # Kernel parent-death notification kills the namespace on abrupt owner loss.
+        # ``--proc /proc`` gives the new PID namespace its OWN procfs (agent-harness#1003):
+        # with the host /proc bind-mounted instead, a provider that starts its own
+        # bubblewrap sandbox -- codex's workspace-write sandbox -- resolves its children's
+        # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
+        # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
+        # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev",
+                "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
                 *(gemini_profile.mount_args if gemini_profile is not None else ()),
                 "--", *command]
 
@@ -501,10 +507,13 @@ def _validate_review_board_policy(
 
 
 PRESIDENT_LADDER: tuple[str, ...] = (
-    "fable",
+    # EC-PRESROUTE-3: the seat-alias order. Each rung is a review-policy SEAT alias, not
+    # a model id; it resolves to its vendor's registry PIN through
+    # DEFAULT_REVIEW_SEAT_ALIASES, where the ``model-id-source:`` markers live.
     "sol",
-    "grok-4.7",  # model-id-source: frozen president availability ladder
-    "gemini-3.8-flash",  # model-id-source: frozen president availability ladder
+    "fable",
+    "grok",
+    "gemini",
 )
 
 
@@ -512,6 +521,45 @@ class PresidentPolicyError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+PRESIDENT_LADDER_INVALID = "president_ladder_invalid"
+
+
+def validate_president_ladder(ladder: object) -> tuple[str, ...]:
+    """A configured president ladder: a non-empty sequence of distinct review-seat
+    aliases (or exact model ids the alias table knows), first rung first."""
+    if isinstance(ladder, (str, bytes)) or not isinstance(ladder, (list, tuple)):
+        raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, "the president ladder must be a list of rungs")
+    rungs = tuple(ladder)
+    known = set(DEFAULT_REVIEW_SEAT_ALIASES.values()) | set(DEFAULT_REVIEW_SEAT_ALIASES)
+    if not rungs:
+        raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, "the president ladder is empty")
+    for rung in rungs:
+        if type(rung) is not str or rung not in known:
+            raise PresidentPolicyError(
+                PRESIDENT_LADDER_INVALID,
+                f"unknown president rung {rung!r}; expected one of {sorted(set(DEFAULT_REVIEW_SEAT_ALIASES.values()))}",
+            )
+    # A model id and its alias name the SAME seat: compare canonical aliases.
+    canonical = [DEFAULT_REVIEW_SEAT_ALIASES.get(rung, rung) for rung in rungs]
+    if len(set(canonical)) != len(canonical):
+        raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, f"the president ladder repeats a rung: {list(rungs)}")
+    return rungs
+
+
+def effective_president_ladder(invoke: object) -> tuple[str, ...]:
+    """The ladder a president seam carries (configured order), else ``PRESIDENT_LADDER``.
+
+    A seam built without a ladder -- every frozen test fake, and ``invoke_board``'s own
+    auto-wired adapter -- walks the built-in EC-PRESROUTE-3 order.
+    """
+    ladder = getattr(invoke, "ladder", None)
+    # Only a real sequence is a configured ladder; an absent attribute -- or one a test
+    # double synthesises (e.g. a Mock attribute) -- is "not configured".
+    if not isinstance(ladder, (list, tuple)):
+        return PRESIDENT_LADDER
+    return validate_president_ladder(ladder)
 
 
 @dataclass(frozen=True)
@@ -563,9 +611,13 @@ def invoke_president(
 ) -> PresidentRuling:
     if max_substantive_rounds < 1:
         raise PresidentPolicyError("president_round_limit", "at least one round is required")
-    for model in PRESIDENT_LADDER:
+    for model in effective_president_ladder(invoke):
         response = invoke(model, _president_prompt(findings))
         status = response.get("status")
+        if status == PRESIDENT_NATIVE_FILL_DEFERRED_STATUS:
+            # PRESROUTE: the rung is filled natively by the driving Claude Code session;
+            # the board surfaces the pending request and resumes against it.
+            raise PresidentNativeFillDeferred(model, response)
         if status == "unavailable" and response.get("code") == "president_unavailable":
             continue
         if status not in {"ok", "degraded"}:
@@ -627,6 +679,7 @@ _PRESIDENT_REFUSAL_CODES: frozenset[str] = frozenset({
     "president_invocation_failed",
     "president_ruling_format_missing",
     "degraded_president_validation_deferred",
+    "president_operation_cancelled",
 })
 
 _PRESIDENT_FORCING_PREFIX = "FORCING DECISION:"
@@ -669,6 +722,310 @@ def president_blocks_landing(ruling: PresidentRuling) -> bool:
     """True when any finding is ruled BLOCKING (DEFERRED is recorded, never waived)."""
     return any(item.disposition == "BLOCKING" for item in president_finding_rulings(ruling))
 
+
+# --- PRESROUTE (v10 Phase 14, agent-harness#952): additive board-side seams --------------
+
+REQUIRES_PRESIDENT_OVERRIDE_REFUSED = "requires_president_override_refused"
+PRESIDENT_NATIVE_FILL_DEFERRED_STATUS = "native_fill_deferred"
+PRESIDENT_NATIVE_FILL_DEFERRED = "president_native_fill_deferred"
+PRESIDENT_PENDING_FILENAME = "president.pending.json"
+PRESIDENT_NATIVE_FILL_STREAM_REQUIRED = "president_native_fill_stream_required"
+
+
+def enforce_requires_president(
+    tier: ReviewLandingTier | str, *, requires_president: bool
+) -> None:
+    """EC-PRESROUTE-4: a ``plan``/``production_code`` landing may not waive the president.
+
+    The interim ratification note's ``requires_president=False`` override is expired;
+    a landing that still carries it is refused with a typed reason. A no-op for the
+    honest value and for the tiers that never require a president.
+    """
+    tier = _coerce_review_landing_tier(tier)
+    if tier in {ReviewLandingTier.PLAN, ReviewLandingTier.PRODUCTION_CODE} and not requires_president:
+        raise PresidentPolicyError(
+            REQUIRES_PRESIDENT_OVERRIDE_REFUSED,
+            f"a {tier.value} landing requires a president ruling; the requires_president=False "
+            "override is expired (EC-PRESROUTE-4)",
+        )
+
+
+class PresidentNativeFillDeferred(PresidentPolicyError):
+    """A president rung deferred to a native fill by the driving Claude Code session."""
+
+    def __init__(self, rung: str, request: Mapping[str, str]) -> None:
+        super().__init__(
+            PRESIDENT_NATIVE_FILL_DEFERRED,
+            f"president rung {rung!r} deferred to a native fill",
+        )
+        self.rung = rung
+        self.request = {
+            "rung": rung,
+            "brief_digest": str(request.get("brief_digest", "")),
+            "findings_digest": str(request.get("findings_digest", "")),
+        }
+
+
+def _write_json_atomically(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _persist_president_ruling(
+    stream_dir: Path | str | None,
+    board: Board,
+    ruling: PresidentRuling,
+    findings: Sequence[str],
+    ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
+) -> None:
+    """EC-PRESROUTE-5: write ``president.ruling.json`` (``president.ruling.v1``) to the stream.
+
+    A ruling answers the stream: any pending native request an earlier run left there is
+    removed, so it can never later resume over this ruling.
+    """
+    if stream_dir is None:
+        return
+    from .president_operation import PRESIDENT_RULING_FILENAME, board_president_ruling_record
+
+    record = board_president_ruling_record(
+        ruling, findings, board, brief=_president_prompt(findings), ladder=ladder,
+        seat_aliases=seat_aliases,
+    )
+    _write_json_atomically(Path(stream_dir) / PRESIDENT_RULING_FILENAME, record)
+    (Path(stream_dir) / PRESIDENT_PENDING_FILENAME).unlink(missing_ok=True)
+
+
+def _president_legs_record(legs: Sequence[PanelLegResult]) -> list[dict[str, object]]:
+    return [
+        {"leg": leg.leg, "status": leg.status, "text": leg.text,
+         "detail": leg.detail, "seat_key": leg.seat_key}
+        for leg in legs
+    ]
+
+
+def _president_legs_digest(legs_record: Sequence[Mapping[str, object]]) -> str:
+    """Digest over the deferred seat verdicts in full (status, text INCLUDING the verdict
+    line that finding extraction drops, detail, identity)."""
+    return sha256(
+        json.dumps(list(legs_record), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _president_run_binding(
+    board: Board,
+    artifact: str,
+    *,
+    mode: str | None,
+    policy: "ReviewLandingPolicy | None",
+    landing_tier: "ReviewLandingTier | str | None",
+    brief_sha256: str | None = None,
+    ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """What a native president deferral is bound to: the exact run it belongs to.
+
+    A resume is accepted only for the SAME resolved artifact bytes, the same resolved
+    review brief (the seats' verdicts answer that brief), the same board (its ordered
+    seat keys), the same mode, the same landing policy and the same president ladder --
+    so a pending request left in a reused stream directory can never answer for a
+    different artifact, brief, board or rung order.
+    """
+    from .president_adapter import seat_for_rung
+
+    tier = None
+    if landing_tier is not None:
+        tier = _coerce_review_landing_tier(landing_tier).value
+    effective_ladder = tuple(PRESIDENT_LADDER if ladder is None else ladder)
+    return {
+        "artifact_sha256": sha256(artifact.encode("utf-8")).hexdigest(),
+        "seat_keys": [seat.seat_key for seat in board.seats],
+        "mode": mode,
+        "landing_tier": tier,
+        "required_seats": list(policy.required_seats) if policy is not None else None,
+        "requires_president": bool(policy.requires_president) if policy is not None else None,
+        # Captured ONCE, before any seat ran (``_president_brief_digest``): a brief file
+        # edited after the seats read it cannot re-bind their verdicts.
+        "brief_sha256": brief_sha256,
+        "ladder": list(effective_ladder),
+        # How each rung RESOLVED on this board under this run's ``review_seat_aliases``:
+        # an alias map changed between deferral and resume re-points a rung at another
+        # seat (another model), so the resolution itself is bound.
+        "ladder_seats": [
+            None if seat is None else seat.seat_key
+            for seat in (
+                seat_for_rung(board, rung, seat_aliases=seat_aliases) for rung in effective_ladder
+            )
+        ],
+    }
+
+
+def _president_brief_digest(mode: str, brief_ref: str | None) -> str:
+    """The digest of the review brief the seats are about to answer.
+
+    An unreadable brief yields a marker, never an exception: the run fails on the brief
+    where it always did. The marker is unique per call, so it can equal neither a real
+    digest nor another run's marker at resume.
+    """
+    try:
+        return sha256(_resolve_brief(mode, brief_ref).encode("utf-8")).hexdigest()
+    except (OSError, UnicodeError, ValueError) as exc:
+        return f"unresolvable:{type(exc).__name__}:{uuid.uuid4().hex}"
+
+
+def _resolve_native_president(
+    board: Board,
+    legs: Sequence[PanelLegResult],
+    findings: Sequence[str],
+    deferred: PresidentNativeFillDeferred,
+    *,
+    stream_dir: Path | str | None,
+    fill: Mapping[str, str] | None,
+    binding: Mapping[str, object] | None = None,
+) -> "PanelResult":
+    """DEFER a natively filled president rung (the resume is ``_resume_native_president``).
+
+    Persists the pending request -- rung, both digests, the exact prompt, and the
+    findings and seat verdicts it was built from -- to ``stream_dir`` and returns the
+    board with ``needs_native_president`` set and no ruling. A durable stream is
+    required: without one there is nothing a resume can be checked against.
+    """
+    del fill  # a resume never reaches the seats; see _resume_native_president
+    request = dict(deferred.request)
+    if stream_dir is None:
+        raise PresidentPolicyError(
+            PRESIDENT_NATIVE_FILL_STREAM_REQUIRED,
+            "a natively filled president rung requires stream_dir for its pending request and ruling record",
+        )
+    pending = {**request, "prompt": _president_prompt(findings)}
+    _write_json_atomically(
+        Path(stream_dir) / PRESIDENT_PENDING_FILENAME,
+        {
+            "schema": "president.pending.v1",
+            **pending,
+            "binding": dict(binding or {}),
+            "findings": list(findings),
+            "legs": _president_legs_record(legs),
+            "legs_digest": _president_legs_digest(_president_legs_record(legs)),
+        },
+    )
+    # A ruling left in a reused stream by an EARLIER run must not stand beside this
+    # run's pending request as if it answered it (removed only once the request exists).
+    from .president_operation import PRESIDENT_RULING_FILENAME
+
+    (Path(stream_dir) / PRESIDENT_RULING_FILENAME).unlink(missing_ok=True)
+    result = PanelResult(legs=tuple(legs), president_findings=tuple(findings))
+    object.__setattr__(result, "_needs_native_president", pending)
+    return result
+
+
+def _resume_native_president(
+    board: Board,
+    *,
+    stream_dir: Path | str | None,
+    fill: Mapping[str, str],
+    binding: Mapping[str, object] | None = None,
+    ladder: Sequence[str] | None = None,
+    seat_aliases: Mapping[str, str] | None = None,
+) -> "PanelResult":
+    """RESUME a deferred native president rung against the persisted pending request.
+
+    No seat runs again: the ruling binds to the findings and seat verdicts the deferral
+    persisted, so a board whose seats would word things differently on a re-run still
+    resumes (re-running and re-deriving would make the native route unreachable with
+    real providers). The fill is accepted only when its rung and BOTH digests equal the
+    persisted request, the persisted digests recompute from the persisted findings, and
+    its text passes the ruling grammar for those findings; otherwise it is refused
+    (``president_fill_digest_mismatch`` / ``president_ruling_format_missing``) and
+    nothing is persisted.
+    """
+    from .president_operation import PRESIDENT_FILL_DIGEST_MISMATCH, brief_digest, findings_digest
+
+    if stream_dir is None:
+        raise PresidentPolicyError(
+            PRESIDENT_NATIVE_FILL_STREAM_REQUIRED,
+            "resuming a native president fill requires the stream_dir its deferral persisted to",
+        )
+
+    def refuse(detail: str) -> PresidentPolicyError:
+        return PresidentPolicyError(PRESIDENT_FILL_DIGEST_MISMATCH, detail)
+
+    try:
+        pending = json.loads((Path(stream_dir) / PRESIDENT_PENDING_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise refuse("no pending native president request to resume against") from exc
+    if not isinstance(pending, dict) or not isinstance(fill, Mapping):
+        raise refuse("the pending native president request or the fill is malformed")
+    findings = pending.get("findings")
+    legs_raw = pending.get("legs")
+    if (
+        not isinstance(findings, list)
+        or not all(isinstance(item, str) for item in findings)
+        or not isinstance(legs_raw, list)
+        or not all(isinstance(item, dict) for item in legs_raw)
+    ):
+        raise refuse("the pending native president request is malformed")
+    findings = tuple(findings)
+    # The WHOLE pending record must be self-consistent: its schema, its prompt (the one
+    # the native session ruled on) against its findings, and its seat verdicts in full
+    # against their digest -- a verdict-line edit is invisible to finding extraction.
+    if pending.get("schema") != "president.pending.v1":
+        raise refuse("the pending native president request has an unknown schema")
+    if pending.get("prompt") != _president_prompt(findings):
+        raise refuse("the pending prompt does not match its findings")
+    if pending.get("legs_digest") != _president_legs_digest(legs_raw):
+        raise refuse("the pending seat verdicts do not match their digest")
+    # Bound to THIS run: same artifact bytes, board, mode and landing policy.
+    if pending.get("binding") != dict(binding or {}):
+        raise refuse("the pending native president request belongs to a different run "
+                     "(artifact, review brief, board, mode, landing policy or president ladder differs)")
+    # The deferred verdicts must be this board's seats, in order.
+    if [item.get("seat_key") for item in legs_raw] != [seat.seat_key for seat in board.seats]:
+        raise refuse("the pending seat verdicts do not match this board's seats")
+    rung = pending.get("rung")
+    rung_seat = None
+    if isinstance(rung, str) and rung in (PRESIDENT_LADDER if ladder is None else tuple(ladder)):
+        from .president_adapter import seat_for_rung
+
+        rung_seat = seat_for_rung(board, rung, seat_aliases=seat_aliases)
+    if rung_seat is None or str(rung_seat.harness or "").lower() != "claude":
+        raise refuse(f"the pending rung {rung!r} is not a natively filled rung on this board")
+    # The persisted request must be internally consistent: its digests recompute from
+    # the findings it carries.
+    if (
+        pending.get("findings_digest") != findings_digest(findings)
+        or pending.get("brief_digest") != brief_digest(_president_prompt(findings))
+    ):
+        raise refuse("the pending native president request does not match its own findings")
+    for key in ("rung", "brief_digest", "findings_digest"):
+        if str(fill.get(key, "")) != str(pending.get(key, "")):
+            raise refuse(f"native president fill {key} does not match the pending request")
+    text = str(fill.get("text", ""))
+    if not _valid_president_grammar(text, findings):
+        raise PresidentPolicyError(
+            "president_ruling_format_missing",
+            "the native president fill omitted the mandatory ruling grammar",
+        )
+    legs = tuple(
+        PanelLegResult(
+            leg=str(item.get("leg", "")), status=str(item.get("status", "")),
+            text=str(item.get("text", "")), detail=item.get("detail"),
+            seat_key=item.get("seat_key"),
+        )
+        for item in legs_raw
+    )
+    if president_findings_from_legs(board.seats, legs) != findings:
+        raise refuse("the pending findings do not derive from the pending seat verdicts")
+    ruling = PresidentRuling(model=rung, text=text, substantive_rounds=1, format_reasks=0)
+    # Persisting the ruling also consumes the pending request: it answers exactly once.
+    _persist_president_ruling(stream_dir, board, ruling, findings, ladder, seat_aliases)
+    # The resumed board's seat verdicts ARE the deferred board's: republish them to the
+    # stream through the same per-seat publisher the live pool uses.
+    for index, leg in enumerate(legs):
+        _write_incremental_verdict(Path(stream_dir), index, leg)
+    return PanelResult(legs=legs, president=ruling, president_findings=findings)
 
 _PRESIDENT_VERDICT_LINES = frozenset({"AGREE", "PARTIALLY AGREE", "DISAGREE"})
 _PRESIDENT_WS_RE = re.compile(r"\s+")
@@ -1139,6 +1496,14 @@ class PanelResult:
         return tuple(leg for leg in self.legs if leg.usable)
 
     @property
+    def needs_native_president(self) -> Mapping[str, str] | None:
+        """PRESROUTE: the pending native president request (rung + both digests), if any.
+
+        A non-field attribute, like ``needs_native_agent``, so golden serializers never
+        see it."""
+        return getattr(self, "_needs_native_president", None)
+
+    @property
     def native_fill_requests(self) -> tuple["NativeAgentLegRequest", ...]:
         """ABDNATIVE (#183 companion): the deferred seats a driving host can fill
         natively (each carries seat_key/model/effort/lens + the review contract).
@@ -1370,7 +1735,18 @@ def _completion_ok(text: str, mode: str = "review") -> bool:
     """
     if mode == "advisory":
         return len((text or "").strip()) >= 40
+    # PRESROUTE: the president operation's own completion grammar -- its last line is
+    # a non-empty ``FORCING DECISION:``, never a review verdict.
+    if mode == "president":
+        return _president_ruling_complete(text)
     return terminal_verdict(text) is not None
+
+
+def _president_ruling_complete(text: str) -> bool:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return bool(lines) and lines[-1].startswith("FORCING DECISION:") and bool(
+        lines[-1][len("FORCING DECISION:"):].strip()
+    )
 
 
 # Auth/error stderr signatures → `degraded` so a verbose auth error is never read
@@ -1821,6 +2197,30 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "view_image",
     "workspace_dependencies",
 )
+# Re-enabled ONLY when a sandbox (a disposable staged review tree) is authorized, so a
+# seat can run the code it reviews. codex >= 0.156 executes commands through the
+# code-mode host, not the bare shell tool: lifting `shell_tool` alone left every
+# sandboxed codex seat answering "code-mode host is disabled". Both stay disabled on
+# the sealed (no-tree) path.
+_BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_mode_host")
+# What confines a sandboxed codex seat's WRITES: the `workspace-write` sandbox rooted at
+# the disposable tree, WITH `/tmp` and `$TMPDIR` removed from its writable set. codex's
+# `workspace-write` leaves both writable by default, and the round's scratch directory
+# (`/tmp/pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lives there, so without
+# these a seat that can run commands could overwrite a SIBLING seat's verdict mid-round
+# (reproduced live on codex 0.156.1). With them, writes land only in the tree; the tree
+# itself stays writable because it is the sandbox root. READS are NOT confined: the seat
+# can read any file the invoking user can (credentials included). What bounds that is the
+# egress policy (private networks denied) and the seat's report being the only output.
+# The one capability a sandboxed codex seat keeps in its bounding set, so codex's own
+# bubblewrap sandbox can start inside the egress namespace (agent-harness#1003; the
+# allowlist and the argument that it cannot restore the firewall live in
+# `sandbox_egress.SEAT_RETAINABLE_CAPS`). Every other seat keeps an EMPTY bounding set.
+_BROKER_CODEX_SANDBOX_RETAINED_CAPS: tuple[str, ...] = ("setfcap",)
+_BROKER_CODEX_SANDBOX_CONFIG: tuple[str, ...] = (
+    "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+    "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+)
 
 
 def _require_staged_tree(staged_tree: Path | None) -> Path | None:
@@ -1923,8 +2323,8 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
-def _provider_launch_prefix(cwd):
-    prefix = list(_EGRESS_LAUNCH_PREFIX.get())
+def _provider_launch_prefix(cwd, retain_caps=()):
+    prefix = list(_sandbox_egress.retain_bounding_caps(_EGRESS_LAUNCH_PREFIX.get(), retain_caps))
     if prefix and prefix[0] == "nsenter":
         # Entering the holder's mount namespace otherwise resets cwd to its root, so the
         # requested cwd is re-established INSIDE the namespace, and by PATH. `nsenter --wd`
@@ -1946,7 +2346,7 @@ def _provider_launch_prefix(cwd):
     return prefix
 
 
-def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[bytes]":
+def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -1966,7 +2366,7 @@ def launch_provider(argv, *, process_owner=(), **kwargs) -> "subprocess.Popen[by
     that read call sites was defeated on spelling five times and removed. A raw spawn of a
     provider added elsewhere is a review finding.
     """
-    prefix = _provider_launch_prefix(kwargs.get("cwd"))
+    prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
         # Enter the network namespace before creating the ownership PID namespace,
         # but drop capabilities only AFTER both namespaces exist.
@@ -2081,8 +2481,10 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
             return ("ignore-user-config", "ignore-rules", "ephemeral",
                     *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only")
         return ("ignore-user-config", "ignore-rules", "ephemeral",
-                *(f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"),
-                "stdin-sealed-input", "workspace-write-sandbox-only")
+                *(f for f in _BROKER_CODEX_DISABLED_FEATURES
+                  if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES),
+                "stdin-sealed-input", "workspace-write-sandbox-only", "tmp-not-writable",
+                "bounding-set-setfcap-only")
     if leg == "grok":
         if staged_tree is None:
             return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
@@ -2112,7 +2514,8 @@ def _brokered_codex_command(
     # runaway seat can only damage a directory that is deleted at the end of the round.
     # Without one: byte-for-byte the historical posture.
     disabled = _BROKER_CODEX_DISABLED_FEATURES if tree is None else tuple(
-        f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"
+        f for f in _BROKER_CODEX_DISABLED_FEATURES
+        if f not in _BROKER_CODEX_SANDBOX_ENABLED_FEATURES
     )
     return [
         "codex",
@@ -2120,6 +2523,7 @@ def _brokered_codex_command(
         "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
         "--cd", str(out_dir if tree is None else tree), "--skip-git-repo-check",
         "--sandbox", "read-only" if tree is None else "workspace-write",
+        *(() if tree is None else _BROKER_CODEX_SANDBOX_CONFIG),
         "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
         *codex_effort_args, "--output-last-message", str(out_file), "-",
     ]
@@ -3867,6 +4271,7 @@ def _run_leg_with_liveness(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
     gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
+    retain_caps: "Sequence[str]" = (),
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -3897,6 +4302,7 @@ def _run_leg_with_liveness(
         proc = launch_provider(
             cmd,
             process_owner=() if review_monitor is None else review_monitor.owned_command((), gemini_profile=gemini_profile),
+            retain_caps=retain_caps,
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -5825,18 +6231,23 @@ def _exec_leg(
             str(out_file),
             "-",
         ]
+        codex_retain_caps: tuple[str, ...] = ()
         if brokered:
+            # One sandbox decision, read by the argv, the recorded controls, and the launch.
+            staged_tree = _sandbox_in(review_dir)
+            if staged_tree is not None:
+                codex_retain_caps = _BROKER_CODEX_SANDBOX_RETAINED_CAPS
             cmd = _brokered_codex_command(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
-                staged_tree=_sandbox_in(review_dir),
+                staged_tree=staged_tree,
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="codex",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("codex", _sandbox_in(review_dir)),
+                no_tool_controls=_broker_tool_controls("codex", staged_tree),
                 stdin_prompt=True,
             )
         if agy_capture is not None:
@@ -5882,6 +6293,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
+                    retain_caps=codex_retain_caps,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
@@ -6295,16 +6707,18 @@ def _exec_leg(
             grok_tools,
         ]
         if brokered:
+            # One sandbox decision, read by both the argv and the recorded controls.
+            staged_tree = _sandbox_in(review_dir)
             cmd = _brokered_grok_command(
                 model=model, out_dir=out_dir, grok_effort_args=grok_effort_args,
-                staged_tree=_sandbox_in(review_dir),
+                staged_tree=staged_tree,
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="grok",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=_broker_tool_controls("grok", _sandbox_in(review_dir)),
+                no_tool_controls=_broker_tool_controls("grok", staged_tree),
                 redacted_argv_values={"/dev/stdin": "<STDIN_SEALED_INLINE_PROMPT>"},
             )
         if agy_capture is not None:
@@ -7035,6 +7449,9 @@ _PRODUCTION_EXEC_LEG = _exec_leg
 _PRODUCTION_EXEC_CLAUDE_TUI_LEG = _exec_claude_tui_leg
 _PRODUCTION_RUN_LEG_WITH_LIVENESS = _run_leg_with_liveness
 _PRODUCTION_RUN_CLAUDE_TUI_SESSION = _run_claude_tui_session
+# The president's control-seam predicate (agent-harness#1001) compares against THIS
+# module-level capture, so it cannot depend on when ``president_adapter`` was imported.
+_PRODUCTION_LAUNCH_PROVIDER = launch_provider
 _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS = _claude_code_support_status
 _PRODUCTION_CLAUDE_SUBSCRIPTION_AUTH_OK = _claude_subscription_auth_ok
 _PRODUCTION_DEFAULT_SPAWN = _default_spawn
@@ -7689,6 +8106,7 @@ def invoke_board(
     monitoring_policy: str = "bounded",
     cancel_event: threading.Event | None = None,
     native_leg_fills: Sequence[NativeLegFill] | None = None,
+    native_president_fill: Mapping[str, str] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -7815,6 +8233,32 @@ def invoke_board(
             _coerce_review_landing_tier(landing_tier)  # type: ignore[arg-type]
         )
         _validate_review_board_policy(board, policy, review_seat_aliases)
+        # PRESROUTE EC-PRESROUTE-4: the expired requires_president=False override is refused.
+        if landing_tier is not None:
+            enforce_requires_president(landing_tier, requires_president=policy.requires_president)
+        # PRESROUTE: under Claude Code -- decided from the PASSED base_env only, never the
+        # process environment -- the president seam is wired automatically so its Fable
+        # rung can defer to a native fill.
+        if (
+            policy.requires_president
+            and president_invoke is None
+            and base_env is not None
+            and _under_claude_code(base_env)
+        ):
+            from .advisor_board.config import BoardConfigError, load_president_ladder
+            from .president_adapter import build_president_invoke
+
+            # The configured rung order (built-in < user < repo), refused before any
+            # seat runs when malformed -- never a silent fall back to the built-in.
+            try:
+                configured_ladder = load_president_ladder(repo_dir, env=base_env)
+            except BoardConfigError as exc:
+                raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, str(exc)) from exc
+            president_invoke = build_president_invoke(
+                board, repo_dir=repo_dir, stream_dir=stream_dir, base_env=base_env,
+                seat_aliases=review_seat_aliases, monitoring_policy=monitoring_policy,
+                ladder=configured_ladder, cancel_event=operation_cancel,
+            )
         # ah#736: a president-requiring tier without a president seam is a policy
         # misconfiguration, refused BEFORE any seat runs (same class as the tier
         # checks above) rather than discovered after four legs have spent effort.
@@ -7835,6 +8279,10 @@ def invoke_board(
         artifact, context_refs, soft_warn=context_refs_soft_warn
     )
     authorization_artifact = artifact
+    president_brief_sha256 = (
+        _president_brief_digest(mode, brief_ref)
+        if policy is not None and policy.requires_president else None
+    )
     review_instruction_token: object | None = None
     def review_exit(result: PanelResult) -> PanelResult:
         # Every exit after the instruction digest is bound -- refusal, typed
@@ -7865,11 +8313,26 @@ def invoke_board(
                     findings=findings_, invoke=president_invoke,
                     max_substantive_rounds=PRESIDENT_MAX_SUBSTANTIVE_ROUNDS,
                 )
+            except PresidentNativeFillDeferred as deferred_:
+                return _resolve_native_president(
+                    board, results_, findings_, deferred_,
+                    stream_dir=stream_dir, fill=native_president_fill,
+                    binding=_president_run_binding(
+                        board, authorization_artifact, mode=mode, policy=policy,
+                        landing_tier=landing_tier, brief_sha256=president_brief_sha256,
+                        seat_aliases=review_seat_aliases,
+                        ladder=effective_president_ladder(president_invoke),
+                    ),
+                )
             except PresidentPolicyError as exc:
                 if exc.code not in _PRESIDENT_REFUSAL_CODES:
                     raise
                 return replace(review_refusal(f"president_ruling_missing:{exc.code}"), president_findings=findings_)
             panel_ = PanelResult(legs=tuple(results_), president=ruling_, president_findings=findings_)
+            _persist_president_ruling(
+                stream_dir, board, ruling_, findings_, effective_president_ladder(president_invoke),
+                review_seat_aliases,
+            )
         return panel_
 
     def review_refusal(detail: str) -> PanelResult:
@@ -8067,6 +8530,23 @@ def invoke_board(
             _fill_refusal = _invoker_preflight_fills()
             if _fill_refusal is not None:
                 return review_exit(_fill_refusal)
+            # PRESROUTE EC-PRESROUTE-2: a native president RESUME joins the pending request
+            # its deferral persisted -- after the same factory/revalidation gate, and
+            # before any seat launches (no seat is re-run).
+            if policy is not None and policy.requires_president and native_president_fill is not None:
+                return review_exit(
+                    _resume_native_president(
+                        board, stream_dir=stream_dir, fill=native_president_fill,
+                        binding=_president_run_binding(
+                            board, authorization_artifact, mode=mode, policy=policy,
+                            landing_tier=landing_tier, brief_sha256=president_brief_sha256,
+                            seat_aliases=review_seat_aliases,
+                            ladder=effective_president_ladder(president_invoke),
+                        ),
+                        ladder=effective_president_ladder(president_invoke),
+                        seat_aliases=review_seat_aliases,
+                    )
+                )
             # Native-host deferral is a typed data result, never a path to host
             # execution. It is reached only after the same factory/revalidation gate.
             if native_host_deferral_only and spawn is None:
@@ -8688,6 +9168,17 @@ def invoke_board(
                     invoke=president_invoke,
                     max_substantive_rounds=PRESIDENT_MAX_SUBSTANTIVE_ROUNDS,
                 )
+            except PresidentNativeFillDeferred as deferred:
+                return _resolve_native_president(
+                    board, results, findings, deferred,
+                    stream_dir=stream_dir, fill=native_president_fill,
+                    binding=_president_run_binding(
+                        board, authorization_artifact, mode=mode, policy=policy,
+                        landing_tier=landing_tier, brief_sha256=president_brief_sha256,
+                        seat_aliases=review_seat_aliases,
+                        ladder=effective_president_ladder(president_invoke),
+                    ),
+                )
             except PresidentPolicyError as exc:
                 if exc.code not in _PRESIDENT_REFUSAL_CODES:
                     raise
@@ -8700,6 +9191,10 @@ def invoke_board(
                 )
             panel_result = PanelResult(
                 legs=tuple(results), president=ruling, president_findings=findings
+            )
+            _persist_president_ruling(
+                stream_dir, board, ruling, findings, effective_president_ladder(president_invoke),
+                review_seat_aliases,
             )
         if agy_canary_capture is not None:
             object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))

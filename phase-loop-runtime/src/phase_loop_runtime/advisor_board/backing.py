@@ -1292,8 +1292,38 @@ CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
 )
 
 
+# API-key variables of a SUBSCRIPTION-ONLY harness (agent-harness#864). They are removed
+# from every subscription child environment but are deliberately NOT in
+# ``VENDOR_API_KEY_VARS``: that map is also the api-key INJECTION map, and grok has no
+# api-key lane (``registries``), so no opt-in may ever inject one. Names from the grok
+# CLI's own documentation: ``XAI_API_KEY`` (Bearer API key) and ``GROK_CODE_XAI_API_KEY``
+# (its backward-compatible alias).
+SUBSCRIPTION_SCRUB_ONLY_VARS: tuple[str, ...] = ("XAI_API_KEY", "GROK_CODE_XAI_API_KEY")
+
+# Endpoint selectors that redirect a grok child's inference traffic away from the
+# subscription service -- the grok counterpart of ``ANTHROPIC_BASE_URL`` in
+# ``CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS``. Documented by the grok CLI (1.0.41):
+# ``GROK_CLI_CHAT_PROXY_BASE_URL`` (override the cli-chat-proxy URL),
+# ``GROK_XAI_API_BASE_URL`` (public xAI API base) and ``GROK_MODELS_BASE_URL`` (custom
+# inference base URL). ``XAI_API_BASE_URL`` is NOT shown to be read by the CLI; it is
+# removed defensively (an xAI SDK-style endpoint name; removing it is harmless).
+# Not exhaustive: other grok configuration (e.g. its config-file endpoints) is out of
+# an environment scrub's reach.
+GROK_SUBSCRIPTION_BLOCKED_ENV_VARS: tuple[str, ...] = (
+    "GROK_CLI_CHAT_PROXY_BASE_URL",
+    "GROK_XAI_API_BASE_URL",
+    "GROK_MODELS_BASE_URL",
+    "XAI_API_BASE_URL",
+)
+
+
 def all_vendor_key_vars() -> tuple[str, ...]:
-    """Every vendor API-key var (scrub set for a subscription seat)."""
+    """Every INJECTABLE vendor API-key var (``VENDOR_API_KEY_VARS``).
+
+    A subset of what a subscription seat loses: ``scrub_subscription_env`` also removes
+    ``SUBSCRIPTION_SCRUB_ONLY_VARS`` and the per-harness blocked selectors. Filter with
+    ``scrub_subscription_env``, never with this alone.
+    """
     seen: list[str] = []
     for vars_ in VENDOR_API_KEY_VARS.values():
         for var in vars_:
@@ -1305,12 +1335,19 @@ def all_vendor_key_vars() -> tuple[str, ...]:
 def scrub_subscription_env(base_env: Mapping[str, str]) -> dict[str, str]:
     """Return a subscription-only child environment.
 
-    All vendor API keys are removed. Claude-specific credential helpers,
+    All vendor API keys are removed -- including the api-key variables of the
+    subscription-only grok harness (``SUBSCRIPTION_SCRUB_ONLY_VARS``) and grok's
+    endpoint redirects (``GROK_SUBSCRIPTION_BLOCKED_ENV_VARS``). Claude-specific credential helpers,
     custom request headers, alternate endpoints, and cloud-provider selectors
     are removed as well so a Claude seat cannot silently escape the first-party
     subscription lane.
     """
-    blocked = set(all_vendor_key_vars()) | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    blocked = (
+        set(all_vendor_key_vars())
+        | set(SUBSCRIPTION_SCRUB_ONLY_VARS)
+        | set(CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS)
+        | set(GROK_SUBSCRIPTION_BLOCKED_ENV_VARS)
+    )
     return {key: value for key, value in base_env.items() if key not in blocked}
 
 
@@ -1384,6 +1421,246 @@ def resolve_seat_env(
     raise ValueError(f"unknown seat.auth {seat.auth!r}")
 
 
+# --- PRESROUTE (v10 Phase 14): the president operation's authorization ---------------
+#
+# ADDITIVE beside ``public_board_review.v1``; the review authorization above is not
+# touched. The president operation rules on a board's findings; it never reads a
+# tree, so no tree is staged and none is exposed. Minted like review isolation (the
+# same seal, subscription routes and repository-identity digest) and revalidated
+# immediately before a rung launches, exactly as ``spawn`` revalidates the review
+# authorization before it launches.
+
+PRESIDENT_OPERATION_V1 = "public_board_president.v1"
+
+
+@dataclass(frozen=True)
+class PresidentIsolationAuthorization:
+    """Capability for one brokered president operation over one brief.
+
+    Metadata and digests only, like :class:`ReviewIsolationAuthorization`: no child
+    credential, provider method, host command or live-tree path crosses it, and
+    ``_seal`` is identity-checked here and never serialized.
+    """
+
+    operation: str
+    purpose: str
+    brief_sha256: str
+    broker_contract: str
+    routes: tuple[tuple[str, str], ...]
+    child_credentialless: bool
+    child_network_egress: bool
+    live_tree_exposed: bool
+    api_fallback: bool
+    canonical_repo_sha256: str
+    issued_monotonic_ns: int
+    _seal: object
+    # agent-harness#1001: the policy every rung launch of this operation runs under.
+    # ``heartbeat_only`` = no model-thinking deadline and no silence kill; the leg's
+    # admission window is the only clock. Bound to the operation's lease.
+    monitoring_policy: str = "bounded"
+
+
+def _president_repo_digest(canonical_repo_authority: Path | str | None) -> str:
+    """Repository identity when there is one, else ``""``.
+
+    Unlike review isolation, the president operation reads no tree -- only the findings
+    text in its brief -- so a missing repository is not a reason to refuse it. Where a
+    repository exists its identity is still bound, and revalidation recomputes the same
+    value, so an authorization carried to a different repository is refused.
+    """
+    try:
+        return _canonical_repo_digest(canonical_repo_authority)
+    except ValueError:
+        return ""
+
+
+def _president_routes(board: object) -> tuple[tuple[str, str], ...]:
+    routes: list[tuple[str, str]] = []
+    for seat in getattr(board, "seats", ()):
+        harness = str(getattr(seat, "harness", "") or "").lower()
+        model = str(getattr(seat, "model", ""))
+        if not harness:
+            continue
+        if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
+            continue
+        try:
+            routes.append((harness, harden_subscription_model(harness, model, getattr(seat, "effort", None))))
+        except ValueError:
+            # Same rule as review isolation: a non-policy Claude seat is a native-host
+            # fill, never a brokered provider route.
+            if harness != "claude":
+                raise
+    return tuple(routes)
+
+
+def prepare_president_isolation_authorization(
+    board: object,
+    brief: str,
+    *,
+    canonical_repo_authority: Path | str | None = None,
+    monitoring_policy: str = "bounded",
+) -> PresidentIsolationAuthorization:
+    """Authorize one president operation over ``brief`` before any provider effect.
+
+    Registers the operation's single-use lease (as review isolation does): a brokered
+    rung launch activates it, derives one leg capability per launch from it, and closes it.
+    """
+    if platform.system() != "Linux":
+        raise ValueError("HARDEN president isolation requires Linux")
+    if monitoring_policy not in ("bounded", "heartbeat_only"):
+        raise ValueError("review_monitoring_policy_invalid")
+    authorization = PresidentIsolationAuthorization(
+        operation=PRESIDENT_OPERATION_V1,
+        purpose=str(getattr(board, "purpose", "")),
+        brief_sha256=sha256(brief.encode("utf-8")).hexdigest(),
+        broker_contract=PARENT_UNIX_BROKER_V1,
+        routes=_president_routes(board),
+        child_credentialless=True,
+        child_network_egress=False,
+        live_tree_exposed=False,
+        api_fallback=False,
+        canonical_repo_sha256=_president_repo_digest(canonical_repo_authority),
+        issued_monotonic_ns=time.monotonic_ns(),
+        _seal=_AUTHORIZATION_SEAL,
+        monitoring_policy=monitoring_policy,
+    )
+    _remember_lease(authorization)  # type: ignore[arg-type]
+    return authorization
+
+
+def revalidate_president_isolation_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+    board: object,
+    brief: str,
+    *,
+    canonical_repo_authority: Path | str | None = None,
+) -> None:
+    """Independently revalidate a president authorization immediately before use.
+
+    Refuses a missing, forged or foreign authorization, one minted for another
+    brief or board, and one whose isolation posture was altered.
+    """
+    if (
+        not isinstance(authorization, PresidentIsolationAuthorization)
+        or authorization._seal is not _AUTHORIZATION_SEAL
+    ):
+        raise ValueError("missing or forged HARDEN president authorization")
+    if (
+        authorization.operation != PRESIDENT_OPERATION_V1
+        or authorization.brief_sha256 != sha256(brief.encode("utf-8")).hexdigest()
+        or authorization.broker_contract != PARENT_UNIX_BROKER_V1
+        or authorization.routes != _president_routes(board)
+        or not authorization.child_credentialless
+        or authorization.child_network_egress
+        or authorization.live_tree_exposed
+        or authorization.api_fallback
+        or authorization.canonical_repo_sha256 != _president_repo_digest(canonical_repo_authority)
+    ):
+        raise ValueError("HARDEN president authorization does not match this operation")
+    try:
+        lease = _lease_for(authorization)  # type: ignore[arg-type]
+    except ValueError:
+        lease = None
+    if lease is not None and lease.monitoring_policy != authorization.monitoring_policy:
+        raise ValueError("review_monitoring_policy_mismatch")
+
+
+def activate_president_isolation_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+    board: object,
+    brief: str,
+    *,
+    canonical_repo_authority: Path | str | None = None,
+) -> None:
+    """Claim the operation's single-use lease before its first host effect (agent-harness#1001)."""
+    revalidate_president_isolation_authorization(
+        authorization, board, brief, canonical_repo_authority=canonical_repo_authority
+    )
+    assert authorization is not None
+    lease = _lease_for(authorization)  # type: ignore[arg-type]
+    with lease.lock:
+        if lease.closed or lease.active:
+            raise ValueError("HARDEN president authorization is not available for activation")
+        if time.monotonic_ns() - lease.prepared_monotonic_ns > _PRE_ACTIVATION_FRESHNESS_NS:
+            raise ValueError("HARDEN president authorization expired before activation")
+        lease.active = True
+
+
+def close_president_isolation_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+) -> None:
+    """Close the operation's lease on every path; a closed lease can never be revived."""
+    if not isinstance(authorization, PresidentIsolationAuthorization):
+        return
+    try:
+        lease = _lease_for(authorization)  # type: ignore[arg-type]
+    except ValueError:
+        return
+    with lease.lock:
+        lease.active = False
+        lease.closed = True
+        lease.cancel_event.set()
+
+
+def derive_president_leg_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+    board: object,
+    brief: str,
+    *,
+    harness: str,
+    model: str,
+    deadline_s: float | None,
+    instructions_sha256: str,
+    canonical_repo_authority: Path | str | None,
+) -> ReviewLegAuthorization:
+    """Mint the single-route broker capability for ONE president rung launch.
+
+    The capability carries the PRESIDENT operation identity (never the review one),
+    the brief as its bound input, and the operation's monitoring policy. A brokered
+    launch needs a probeable canonical repository; without one it is refused here,
+    before any host effect, with that reason.
+    """
+    revalidate_president_isolation_authorization(
+        authorization, board, brief, canonical_repo_authority=canonical_repo_authority
+    )
+    assert authorization is not None
+    if not authorization.canonical_repo_sha256:
+        raise ValueError("president broker isolation requires a canonical repository")
+    policy = authorization.monitoring_policy
+    if (
+        (harness, model) not in authorization.routes
+        or (policy == "bounded" and (
+            deadline_s is None or not math.isfinite(deadline_s) or deadline_s <= 0))
+        or (policy == "heartbeat_only" and deadline_s is not None)
+    ):
+        raise ValueError("invalid HARDEN president leg authority")
+    lease = _lease_for(authorization)  # type: ignore[arg-type]
+    route = (harness, model)
+    with lease.lock:
+        if lease.closed or not lease.active:
+            raise ValueError("HARDEN president authorization is not active")
+        if lease.route_counts[route] <= 0:
+            raise ValueError("HARDEN president route occurrence already consumed")
+        lease.route_counts[route] -= 1
+    issued = time.monotonic_ns()
+    leg = ReviewLegAuthorization(
+        operation=authorization.operation, purpose=authorization.purpose,
+        input_sha256=authorization.brief_sha256,
+        instructions_sha256=instructions_sha256,
+        canonical_repo_sha256=authorization.canonical_repo_sha256,
+        broker_contract=PARENT_UNIX_BROKER_V1, harness=harness, model=model,
+        issued_monotonic_ns=issued,
+        expires_monotonic_ns=issued + (
+            10_000_000_000 if policy == "heartbeat_only"
+            else int(float(deadline_s) * 1_000_000_000) + _BROKER_TRANSPORT_ALLOWANCE_NS  # type: ignore[arg-type]
+        ),
+        _seal=_AUTHORIZATION_SEAL,
+        monitoring_policy=policy,
+    )
+    _remember_leg_claim(leg, lease)
+    return leg
+
+
 __all__ = [
     "PARENT_UNIX_BROKER_V1",
     "HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES",
@@ -1402,6 +1679,15 @@ __all__ = [
     "derive_review_leg_authorization",
     "revalidate_review_isolation_authorization",
     "revalidate_review_composition_authorization",
+    "PRESIDENT_OPERATION_V1",
+    "PresidentIsolationAuthorization",
+    "activate_president_isolation_authorization",
+    "close_president_isolation_authorization",
+    "derive_president_leg_authorization",
+    "prepare_president_isolation_authorization",
+    "revalidate_president_isolation_authorization",
+    "GROK_SUBSCRIPTION_BLOCKED_ENV_VARS",
+    "SUBSCRIPTION_SCRUB_ONLY_VARS",
     "VENDOR_API_KEY_VARS",
     "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",
