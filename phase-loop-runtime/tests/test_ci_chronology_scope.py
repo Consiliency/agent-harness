@@ -463,6 +463,15 @@ def test_hosted_collapse_requires_the_lane_for_the_event(
     hosted = jobs["hosted"]
     assert set(hosted["needs"]) == {"elig", "pytest", "chronology-retention", "cleanroom", "wheel-smoke"}
     step, = hosted["steps"]
+    # The script is exercised with injected values below; pin their WIRING here, or a
+    # swapped mapping (e.g. SMOKE fed from needs.pytest) would pass the behaviour rows.
+    assert step["env"] == {
+        "EVENT": "${{ github.event_name }}",
+        "PYTEST": "${{ needs.pytest.result }}",
+        "RETENTION": "${{ needs.chronology-retention.result }}",
+        "CLEANROOM": "${{ needs.cleanroom.result }}",
+        "SMOKE": "${{ needs.wheel-smoke.result }}",
+    }
     result = subprocess.run(
         ["bash", "-c", step["run"]], capture_output=True, text=True,
         env={**os.environ, "EVENT": event, "PYTEST": pytest_r, "RETENTION": retention,
@@ -484,3 +493,25 @@ def test_suite_gate_requires_one_real_success(offload, hosted, success):
         env={**os.environ, "OFFLOAD": offload, "HOSTED": hosted},
     )
     assert (result.returncode == 0) is success, result.stdout + result.stderr
+
+
+def test_the_wheel_smoke_keeps_gate_a_parity():
+    """agent-harness#1029: the PR stand-in must run Gate A's script and sandbox setup."""
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+
+    def step(job, name):
+        return next(s for s in jobs[job]["steps"] if s.get("name") == name)
+
+    prereq = "Install review sandbox prerequisites"
+    smoke_prereq = {line.strip() for line in step("wheel-smoke", prereq)["run"].splitlines()}
+    gate_prereq = {line.strip() for line in step("cleanroom", prereq)["run"].splitlines()}
+    assert {line for line in smoke_prereq if line and not line.startswith("#")} <= gate_prereq
+    for needed in ("sudo apt-get install -y bubblewrap slirp4netns iptables util-linux",
+                   "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"):
+        assert needed in smoke_prereq
+    smoke = step("wheel-smoke", "Wheel smoke — build, install, probe")
+    assert smoke["run"] == "bash scripts/gate_a_cleanroom.sh"
+    assert smoke["working-directory"] == "phase-loop-runtime"
+    assert smoke["env"] == {"PHASE_LOOP_SKIP_GATE_A_SUITE": "1"}
+    assert jobs["wheel-smoke"]["steps"][1]["with"]["python-version"] == \
+        jobs["cleanroom"]["steps"][1]["with"]["python-version"]

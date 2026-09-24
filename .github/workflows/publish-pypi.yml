@@ -117,8 +117,9 @@ jobs:
         # the script's junit witness proves the node is absent from the evidence.
         # agent-harness#1029: a pull_request run now skips the standalone suite here
         # entirely (the wheel is still built, installed and probed): test.yml's pytest
-        # lane runs that suite on the same PR head, and a tag or dispatch still runs it
-        # in full before anything is published.
+        # lane runs the same tests on the same PR head, but from the checkout rather than
+        # the installed wheel -- that installed-layout run now happens after merge (push
+        # and nightly Gate A) and, in full, on a tag or dispatch before publication.
         env:
           GATE_A_JUNIT: ${{ runner.temp }}/junit-release-gate-a.xml
           GATE_A_DESELECT_CHRONOLOGY: ${{ github.event_name == 'pull_request' && '1' || '0' }}

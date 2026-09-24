@@ -68,7 +68,7 @@ HOSTED_INSTALL_LINE = (
 # `_sandbox_exec` is pinned too: it prepends a preflight to the suite script and runs
 # both through one `bash -c`, so it is on the suite's execution path.
 SANDBOX_EXEC_SHA256 = "8a6bcabbf6db690741c06bf94131b1132d62066300416d434d8d121dca74a353"
-HOSTED_SUITE_SHA256 = "7b1d375584ff19d9f01106df886a227d653be5a169c76ca2fa837410bafe460f"
+HOSTED_SUITE_SHA256 = "023343e7693350a8df5afe68757a934987ccd0510cbad490c8b547273f7b3dad"
 DAGGER_SUITE_SHA256 = "4f25fe45b21ebd14da522e338953e66fb14ca6ade0c633267f28571bb956fde7"
 
 # The container-env cap for `-n auto` on the offload host: exactly one site, in `_base`.
