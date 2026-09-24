@@ -134,39 +134,53 @@ say() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 # so a fresh full-SHA pin installed the runtime and THEN failed at the skill clone. Now
 # the skill-source checkout is fetched and checked out FIRST (init + fetch takes a
 # branch, a tag or a full SHA), before uv is even bootstrapped, and the runtime is then
-# installed from that same commit. Until that checkout completes, a home this run
-# created is removed on ANY exit (failure, Ctrl-C, SIGTERM, hang-up), so a failed run
-# never leaves a half-initialised checkout that a rerun would refuse; after it, a later
-# failure leaves a clean, valid checkout that a rerun accepts.
+# installed from that same commit. A fresh home is built in a private stage and
+# published by one rename only when complete, so a failed or interrupted run leaves no
+# half-initialised home that a rerun would refuse, and deletes nothing it did not
+# create; after publication, a later failure leaves a clean, valid checkout that a
+# rerun accepts.
 say "[1/4] resolving ${REF} from ${REPO}…"
-_created_home=""
-_remove_created_home() {
-    if [ -n "$_created_home" ]; then rm -rf -- "$HOME_DIR"; fi
+# git's repository-redirecting environment would point every `git -C` below at some
+# other repository (hook contexts, bare-repo dotfile setups); `git clone` ignored it.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY || true
+# A fresh home is BUILT in a private staging directory beside it and PUBLISHED with one
+# rename only once the resolved commit is checked out. Cleanup only ever removes that
+# private stage (an unguessable mktemp name this run created), never the home pathname,
+# which another process could have replaced meanwhile. An existing checkout is updated in
+# place exactly as before.
+_stage=""
+_remove_stage() {
+    if [ -n "$_stage" ]; then rm -rf -- "$_stage"; fi
 }
-if [ ! -d "$HOME_DIR/.git" ]; then
+trap '_remove_stage' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+if [ -d "$HOME_DIR/.git" ]; then
+    _work="$HOME_DIR"
+else
     mkdir -p -- "$(dirname -- "$HOME_DIR")"
-    # Exclusive create: only a directory THIS run created is ever removed. Anything that
-    # appeared since the preflight is refused, never adopted or deleted.
-    if ! mkdir -- "$HOME_DIR"; then
-        echo "ERROR: ${HOME_DIR} appeared during installation; refusing to adopt it." >&2
-        exit 1
-    fi
-    _created_home=1
-    trap '_remove_created_home' EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
-    git -C "$HOME_DIR" init -q
-    git -C "$HOME_DIR" remote add origin "$REPO"
+    _stage="$(mktemp -d -- "$(dirname -- "$HOME_DIR")/.agent-harness-install.XXXXXXXX")"
+    _work="$_stage"
+    git -C "$_work" init -q
+    git -C "$_work" remote add origin "$REPO"
 fi
-if ! git -C "$HOME_DIR" fetch --depth 1 origin "$REF" ||
-   ! RESOLVED="$(git -C "$HOME_DIR" rev-parse --verify -q 'FETCH_HEAD^{commit}')"; then
+# writeFetchHEAD is forced on: with a user `fetch.writeFetchHEAD=false`, a stale FETCH_HEAD
+# from an earlier run would otherwise resolve as this ref.
+if ! git -C "$_work" -c fetch.writeFetchHEAD=true fetch --depth 1 origin "$REF" ||
+   ! RESOLVED="$(git -C "$_work" rev-parse --verify -q 'FETCH_HEAD^{commit}')"; then
     echo "ERROR: could not resolve ${REF} from ${REPO}; nothing was installed." >&2
     exit 1
 fi
-git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
-# The checkout is complete and valid: keep it from here on.
-_created_home=""
+git -C "$_work" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
+if [ -n "$_stage" ]; then
+    if [ -e "$HOME_DIR" ] || [ -L "$HOME_DIR" ]; then
+        echo "ERROR: ${HOME_DIR} appeared during installation; refusing to replace it." >&2
+        exit 1
+    fi
+    mv -T -- "$_stage" "$HOME_DIR"
+    _stage=""
+fi
 trap - EXIT INT TERM HUP
 say "  ${REF} -> ${RESOLVED}"
 

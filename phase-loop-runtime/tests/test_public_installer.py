@@ -67,7 +67,11 @@ def installation(tmp_path):
 import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 name = pathlib.Path(sys.argv[0]).name
-command = args[2] if name == 'git' and args[:1] == ['-C'] else (args[0] if args else '')
+rest = list(args)
+while name == 'git' and rest[:1] in (['-C'], ['-c']):
+    rest = rest[2:]  # the subcommand follows any -C <dir> / -c <key=value> options
+command = rest[0] if rest else ''
+
 if name == 'git' and command not in ('fetch', 'checkout', 'clone'):
     os.execv({git!r}, [{git!r}, *args])
 with open(os.environ['INSTALL_TEST_LOG'], 'a') as log:
@@ -77,7 +81,8 @@ if name == 'git' and command == 'clone':
     # fails exactly as it does against the real remote -- agent-harness#980), against
     # the local template.
     args[args.index(os.environ['AGENT_HARNESS_REPO'])] = os.environ['INSTALL_TEST_TEMPLATE']
-    args = [a for a in args if a not in ('--depth', '1')]
+    if '--depth' in args:
+        del args[args.index('--depth'):args.index('--depth') + 2]
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'git' and command == 'fetch':
     if os.environ.get('INSTALL_TEST_FETCH_RC'):
@@ -85,9 +90,14 @@ elif name == 'git' and command == 'fetch':
     # The local template stands in for the remote. `--depth` is dropped: a shallow fetch
     # from a local path is refused for an arbitrary commit, a real remote allows it.
     args[args.index('origin')] = os.environ['INSTALL_TEST_TEMPLATE']
-    args = [a for a in args if a not in ('--depth', '1')]
+    if '--depth' in args:
+        del args[args.index('--depth'):args.index('--depth') + 2]
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'git' and command == 'checkout':
+    race = os.environ.get('INSTALL_TEST_RACE_CREATE')
+    if race:  # another process creates the home while this run is still staging
+        os.makedirs(race, exist_ok=True)
+        pathlib.Path(race, 'sentinel').write_text('not ours')
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'uv' and os.environ.get('INSTALL_TEST_UV_RC'):
     sys.exit(int(os.environ['INSTALL_TEST_UV_RC']))
@@ -248,7 +258,7 @@ def _resolved_install(env):
     """The runtime ref ``uv tool install`` was given."""
     installs = [call for call in effects(env) if call[0] == "uv" and "install" in call]
     assert len(installs) == 1, installs
-    return installs[0][-1].split("@", 1)[1].split("#", 1)[0]
+    return installs[0][-1].rsplit("@", 1)[1].split("#", 1)[0]
 
 
 def _commit(template, git_run, message):
@@ -299,6 +309,7 @@ def test_a_failed_fetch_into_an_existing_checkout_keeps_it(installation):
     env["INSTALL_TEST_FETCH_RC"] = "1"
     result = run_installer(env)
     assert result.returncode != 0
+    assert "nothing was installed" in result.stderr, "refused by the preflight, not by the fetch"
     assert Path(env["AGENT_HARNESS_HOME"], "RELEASE_PIN").is_file()
     assert not any(call[0] == "uv" and "install" in call for call in effects(env))
 
@@ -308,6 +319,7 @@ def test_an_unresolvable_ref_bootstraps_nothing_when_uv_is_absent(installation):
     # nothing at all. The curl stand-in fails the run if it is ever invoked.
     env, _, _ = installation
     (Path(env["PATH"].split(":")[0]) / "uv").unlink()
+    assert shutil.which("uv", path=env["PATH"]) is None, "a host uv would hide the bootstrap"
     env["AGENT_HARNESS_REF"] = "no-such-ref"
     result = run_installer(env)
     assert result.returncode != 0 and "nothing was installed" in result.stderr
@@ -328,3 +340,51 @@ def test_a_failure_after_resolution_leaves_a_checkout_a_rerun_accepts(installati
     del env["INSTALL_TEST_UV_RC"]
     rerun = run_installer(env)
     assert rerun.returncode == 0, rerun.stderr
+
+
+def _stages(env):
+    return list(Path(env["AGENT_HARNESS_HOME"]).parent.glob(".agent-harness-install.*"))
+
+
+def test_a_home_that_appears_during_installation_is_never_replaced_or_deleted(installation):
+    # board r2 (codex): the home pathname can be replaced by another process; cleanup
+    # removes only this run's private stage, and publication refuses an existing home.
+    env, _, _ = installation
+    env["INSTALL_TEST_RACE_CREATE"] = env["AGENT_HARNESS_HOME"]
+    result = run_installer(env)
+    assert result.returncode != 0 and "appeared during installation" in result.stderr
+    assert Path(env["AGENT_HARNESS_HOME"], "sentinel").read_text() == "not ours"
+    assert _stages(env) == [], "the private stage was left behind"
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_an_existing_checkout_moves_to_a_full_sha_pin(installation):
+    env, template, git_run = installation
+    shutil.copytree(template, env["AGENT_HARNESS_HOME"])
+    commit = _commit(template, git_run, "later")
+    env["AGENT_HARNESS_REF"] = commit
+    result = run_installer(env)
+    assert result.returncode == 0, result.stderr
+    assert git_run("-C", env["AGENT_HARNESS_HOME"], "rev-parse", "HEAD").stdout.strip() == commit
+    assert _resolved_install(env) == commit
+
+
+def test_user_git_state_cannot_redirect_or_stale_the_resolution(installation, tmp_path):
+    # board r2 (Claude): `fetch.writeFetchHEAD=false` and an exported GIT_DIR both changed
+    # what init+fetch did, where `git clone` ignored them.
+    env, template, git_run = installation
+    expected = git_run("-C", str(template), "rev-parse", "v1.2.3^{commit}").stdout.strip()
+    other = tmp_path / "other-repo"
+    git_run("init", "-q", str(other))
+    env.update(GIT_DIR=str(other / ".git"), GIT_CONFIG_COUNT="1",
+               GIT_CONFIG_KEY_0="fetch.writeFetchHEAD", GIT_CONFIG_VALUE_0="false")
+    result = run_installer(env)
+    assert result.returncode == 0, result.stderr
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert (target / ".git").is_dir() and (target / "RELEASE_PIN").is_file()
+    head = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          env={k: v for k, v in env.items() if not k.startswith("GIT_DIR")}).stdout.strip()
+    assert head == expected
+    # and the other repository was never touched
+    assert not (other / ".git" / "FETCH_HEAD").exists()
+    assert _stages(env) == []
