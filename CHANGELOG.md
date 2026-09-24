@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Workspace trust editor readiness (agent-harness#992)
+
+- Ignore trust-modal lines delivered after the `y` answer by a split PTY read;
+  they no longer count as editor readiness or cause a review prompt to be pasted
+  into a still-open modal. An answered gate without editor output remains a
+  typed `claude_tui_editor_not_ready` failure.
+
 ### Qualified agy 1.2.9 entry image (agent-harness#1008)
 
 - Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered

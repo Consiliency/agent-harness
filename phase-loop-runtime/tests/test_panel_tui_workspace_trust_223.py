@@ -226,6 +226,58 @@ def test_modal_answered_but_editor_never_ready_is_editor_not_ready(tmp_path, mon
     assert status == "claude_tui_editor_not_ready", f"answered-but-unready must be editor_not_ready; got {status!r}"
 
 
+def test_trailing_modal_chunk_cannot_arm_editor_readiness(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    marker = b"y. Yes, I trust this folder"
+    pending = bytearray()
+    split_count = 0
+    real_read = pi.os.read
+    real_select = pi.select.select
+
+    def split_read(fd, length):
+        nonlocal split_count
+        if pending:
+            data = bytes(pending)
+            pending.clear()
+            return data
+        data = real_read(fd, length)
+        if split_count == 0 and marker in data:
+            end = data.index(marker) + len(marker)
+            pending.extend(data[end:])
+            split_count += 1
+            return data[:end]
+        return data
+
+    def select_pending(readers, writers, errors, timeout=None):
+        if pending:
+            return readers, [], []
+        return real_select(readers, writers, errors, timeout)
+
+    script = (
+        "printf 'Permission Required: Accessing workspace:\\n%s\\n"
+        "y. Yes, I trust this folder\\nn. No, exit\\nEnter y/n:\\n' \"$PWD\"; "
+        "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; sleep 5"
+    )
+    monkeypatch.setattr(pi.os, "read", split_read)
+    monkeypatch.setattr(pi.select, "select", select_pending)
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert split_count == 1
+    assert (tmp_path / "answer.txt").read_text().strip() == "y"
+    assert status == "claude_tui_editor_not_ready", (rc, status, text, tail)
+
+
+def test_post_trust_chunk_accepts_editor_after_modal_remainder():
+    remainder = b"n. No, exit\nEnter y/n:\n"
+    assert not pi._tui_post_trust_editor_content(remainder, ())
+    assert pi._tui_post_trust_editor_content(
+        remainder + b"Claude Code v2.1.208\nmanual mode on ready now\n", ()
+    )
+
+
 def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
     """CR F3/R3: the redacted tail is preserved as diagnosable evidence for EVERY non-OK
     failure — via a WARNING log, NOT stamped into ``text`` (which feeds verdict-conformance

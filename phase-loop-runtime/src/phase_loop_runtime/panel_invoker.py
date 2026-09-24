@@ -4576,6 +4576,27 @@ def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
     return any(tok in screen for tok in cwd_tokens) if cwd_tokens else True
 
 
+def _tui_post_trust_editor_content(chunk: bytes, cwd_tokens: Sequence[str]) -> bool:
+    """Ignore modal lines delivered after the answer by a split PTY read."""
+    visible = _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", chunk.decode("utf-8", errors="replace")))
+    for line in re.split(r"[\r\n]+", visible):
+        low = line.strip().lower()
+        if (
+            not low
+            or _CLAUDE_TUI_TRUST_HEADER in low
+            or _CLAUDE_TUI_TRUST_CHOICE in low
+            or _CLAUDE_TUI_TRUST_PROMPT in low
+            or _CLAUDE_TUI_TRUST_REJECT in low
+            or low.startswith("n. no, exit")
+            or low.startswith("quick safety check")
+            or any(token in low for token in cwd_tokens)
+        ):
+            continue
+        if len(_normalize_tui_line(line)) >= _TUI_PROGRESS_MIN_CHARS:
+            return True
+    return False
+
+
 # Residual C0 control chars (excluding \n) to strip from an evidence tail AFTER ANSI/OSC
 # removal — so a bounded, redacted PTY tail is plain diagnosable text, not raw terminal
 # control bytes (a serialized/displayed ``detail`` must not carry them).
@@ -4777,6 +4798,7 @@ def _run_claude_tui_session(
                     review_monitor.observe(terminal="user_cancel")
                     return _finish(1, "", "review_operation_cancelled")
             novel_this_iter = False  # substantive new content arrived this iteration
+            complete = b""
             if master_fd is not None:
                 readable, _, _ = select.select(
                     [master_fd], [], [], _CLAUDE_TUI_READ_INTERVAL_S
@@ -4869,6 +4891,7 @@ def _run_claude_tui_session(
                     novel_this_iter
                     and not answered_this_iter
                     and (trust_answered or not gate_signature_seen)
+                    and (not trust_answered or _tui_post_trust_editor_content(complete, cwd_tokens))
                 ):
                     ready_since_output = True
                 # Our ``y`` was rejected (or a stuck modal): fail closed, typed, before 180s.
