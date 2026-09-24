@@ -56,11 +56,11 @@ def test_bounded_builder_cannot_render_a_zero_or_nonfinite_sentinel(deadline):
         panel._brokered_gemini_command(model="gemini-3.8-flash-high", deadline_s=deadline)
 
 
-def test_no_profile_does_not_change_other_providers_owner_argv(tmp_path):
+def test_owner_mounts_proc_without_gemini_profile(tmp_path):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "unchanged", 0, threading.Event())
     assert monitor.owned_command(("fixture", "arg")) == [
         "/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-        "--bind", "/", "/", "--dev", "/dev", "--", "fixture", "arg",
+        "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "fixture", "arg",
     ]
 
 
@@ -435,7 +435,8 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     assert leg.status == "UNAVAILABLE" and leg.text == ""
     assert leg.detail == "review_operation_cancelled"
     assert leg.harden_isolation_evidence["provider_agy_home_cleanup_verified"]
-    assert not Path(f"/proc/{int(detached.read_text())}").exists()
+    quiescence = leg.harden_isolation_evidence["provider_namespace_quiescence"]
+    assert quiescence["init_exited"] and not quiescence["live_members"]
     assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
     verdict, = [json.loads(p.read_text()) for p in (tmp_path / "records").glob("*.verdict.json")]
     assert verdict["status"] == "UNAVAILABLE" and verdict["text"] == ""
@@ -817,6 +818,22 @@ def test_partial_admission_info_cannot_block_past_local_admission_bound(fixture_
             proc.wait(5)
 
 
+def _host_pid_in_namespace(namespace, inner_pid):
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            if os.readlink(entry / "ns/pid") != namespace:
+                continue
+            nested = next(line for line in (entry / "status").read_text().splitlines()
+                          if line.startswith("NSpid:")).split()
+            if int(nested[-1]) == inner_pid:
+                return int(entry.name)
+        except (OSError, StopIteration, ValueError):
+            continue
+    raise AssertionError("fixture process was not found in its PID namespace")
+
+
 def test_owner_loss_through_real_broker_reclaims_namespace(fixture_cli, tmp_path):
     fixture_cli.mode.write_text("cancel")
     detached = tmp_path / "detached"
@@ -840,9 +857,11 @@ panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heart
             assert time.monotonic() < until, "synthetic provider never admitted"
             time.sleep(.02)
         info = json.loads(fixture_cli.observation.read_text())
-        for pid in (info["pid"], int(detached.read_text())):
+        host_pids = [_host_pid_in_namespace(info["namespace"], pid)
+                     for pid in (info["pid"], int(detached.read_text()))]
+        for pid in host_pids:
             pidfds.append(os.pidfd_open(pid))
-        namespace = os.stat(f"/proc/{info['pid']}/ns/pid")
+        namespace = os.stat(f"/proc/{host_pids[0]}/ns/pid")
         assert namespace.st_ino != os.stat("/proc/self/ns/pid").st_ino
         worker.kill()
         worker.wait(10)
