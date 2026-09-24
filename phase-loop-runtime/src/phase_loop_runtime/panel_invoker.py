@@ -3896,7 +3896,7 @@ def _assistant_text_from_jsonl(path: Path) -> str:
     return "\n".join(texts).strip()
 
 
-def _final_assistant_text_from_jsonl(path: Path) -> str:
+def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
     """Collect the final assistant message's blocks, never earlier turns or tools."""
     message_id: str | None = None
     blocks: dict[str | int, str] = {}
@@ -3905,6 +3905,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     current_group_uuids: set[str] = set()
     incomplete = False
     pending_terminal = False
+    terminal = False
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
@@ -3925,6 +3926,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             message_id, blocks, incomplete = None, {}, False
             current_group_uuids.clear()
             pending_terminal = False
+            terminal = False
             continue
         if message.get("role") != "assistant":
             continue
@@ -3951,13 +3953,22 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             message_id, blocks, incomplete = current_id, {}, False
             current_group_uuids.clear()
             pending_terminal = False
+            terminal = False
         content = message.get("content")
         if not isinstance(content, list):
             return ""
         if "stop_reason" in message:
             stop_reason = message["stop_reason"]
             pending_terminal = stop_reason is None
+            terminal = (
+                stop_reason == "end_turn"
+                and message.get("model") != "<synthetic>"
+                and not message.get("isApiErrorMessage")
+                and not payload.get("isApiErrorMessage")
+            )
             incomplete |= stop_reason not in (None, "end_turn", "stop_sequence")
+        else:
+            terminal = False
         incomplete |= any(
             isinstance(item, dict) and item.get("type") == "tool_use"
             for item in content
@@ -3973,7 +3984,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             seen_record_uuids.add(record_id)
             current_group_uuids.add(record_id)
             seen_record_versions.add(record_version)
-    return "" if incomplete or pending_terminal else "\n".join(text for text in blocks.values() if text).strip()
+    return "" if incomplete or pending_terminal or (require_terminal and not terminal) else "\n".join(text for text in blocks.values() if text).strip()
 
 
 def _cleanup_broker_claude_transcript(
@@ -4749,28 +4760,12 @@ def _run_claude_tui_session(
     def _broker_final() -> str:
         if not allow_transcript_final or broker_transcript_path is None:
             return ""
-        text = _final_assistant_text_from_jsonl(broker_transcript_path)
-        if mode != "president" or not text:
-            return text
         # A president may need a format re-ask. Hand its completed API turn to
         # invoke_president even when the text lacks the required ruling grammar;
         # never treat a streaming or partial transcript as that completed turn.
-        try:
-            lines = broker_transcript_path.read_text(encoding="utf-8", errors="replace").split("\n")
-            for line in reversed(lines):
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                message = payload.get("message") if isinstance(payload, dict) else None
-                if not isinstance(message, dict):
-                    continue
-                if message.get("role") == "user":
-                    return ""
-                if message.get("role") == "assistant":
-                    return text if message.get("stop_reason") in ("end_turn", "stop_sequence") else ""
-        except (OSError, json.JSONDecodeError):
-            pass
-        return ""
+        return _final_assistant_text_from_jsonl(
+            broker_transcript_path, require_terminal=mode == "president",
+        )
 
     def _pending_tool_uses() -> tuple[str, ...]:
         # Brokered Claude has an empty tool surface, so only the exact assistant
@@ -4902,8 +4897,6 @@ def _run_claude_tui_session(
                         broker_final = _broker_final()
                         if broker_final and _completion_ok(broker_final, mode):
                             return _finish(0, broker_final, "claude_tui_broker_final_assistant")
-                        if broker_final and mode == "president":
-                            return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                         return _finish(
                             proc.poll() or 1,
                             review_text or transcript_text,

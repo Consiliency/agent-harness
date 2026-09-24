@@ -257,6 +257,7 @@ def test_terminal_nonconforming_claude_turn_reaches_president_reask(
     cancel = threading.Event()
     monitor = panel_invoker._ReviewMonitor(tmp_path / "monitor.json", "fixture", 0, cancel)
     marker = tmp_path / "terminal-written"
+    controller_fired = threading.Event()
     script = r'''
 import json, os, sys, time, tty
 from pathlib import Path
@@ -277,6 +278,7 @@ while True: time.sleep(.1)
         while not marker.exists() and time.monotonic() < until:
             time.sleep(.01)
         if not cancel.wait(.5):
+            controller_fired.set()
             cancel.set()
 
     controller = threading.Thread(target=cancel_if_not_returned)
@@ -296,6 +298,7 @@ while True: time.sleep(.1)
     assert log == expected_log
     if expected_log == "claude_tui_broker_terminal_nonconforming":
         assert rc == 0 and text == "I think it is fine"
+        assert not controller_fired.is_set()
     else:
         assert rc != 0
 

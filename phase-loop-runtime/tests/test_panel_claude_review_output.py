@@ -28,9 +28,11 @@ def _assistant(text, *, message_id="review", uuid=None, stop_reason=_MISSING):
     return record
 
 
-def _extract(tmp_path, records, *, ensure_ascii=True):
+def _extract(tmp_path, records, *, ensure_ascii=True, require_terminal=False):
     path = tmp_path / "owned.jsonl"
     path.write_text("".join(json.dumps(record, ensure_ascii=ensure_ascii) + "\n" for record in records))
+    if require_terminal:
+        return pi._final_assistant_text_from_jsonl(path, require_terminal=True)
     return pi._final_assistant_text_from_jsonl(path)
 
 
@@ -93,6 +95,56 @@ def test_replayed_null_block_does_not_undo_terminal_record(tmp_path):
     first = _assistant("Finding", uuid="first", stop_reason=None)
     terminal = _assistant("REVIEW END\nDISAGREE", uuid="last", stop_reason="end_turn")
     assert _extract(tmp_path, [first, terminal, first]) == "Finding\nREVIEW END\nDISAGREE"
+
+
+def test_president_terminal_status_ignores_replayed_null_block(tmp_path):
+    first = _assistant("Finding", uuid="first", stop_reason=None)
+    terminal = _assistant("I think it is fine", uuid="last", stop_reason="end_turn")
+    assert _extract(tmp_path, [first, terminal, first], require_terminal=True) == (
+        "Finding\nI think it is fine"
+    )
+
+
+def test_president_terminal_status_ignores_replayed_old_turn(tmp_path):
+    old = _assistant("Old ruling", message_id="old", uuid="old", stop_reason="end_turn")
+    current = _assistant("Current unfinished ruling", message_id="current", uuid="current")
+    assert _extract(tmp_path, [
+        old, {"type": "user", "message": {"role": "user", "content": "New request"}},
+        current, old,
+    ], require_terminal=True) == ""
+
+
+def test_president_terminal_status_requires_explicit_completion(tmp_path):
+    assert _extract(tmp_path, [_assistant("Current ruling", uuid="current")],
+                    require_terminal=True) == ""
+
+
+def test_president_terminal_status_reopened_by_changed_record(tmp_path):
+    terminal = _assistant("Ruling", uuid="ruling", stop_reason="end_turn")
+    revised = _assistant("Ruling revised", uuid="ruling")
+    assert _extract(tmp_path, [terminal, revised], require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("stop_reason", [None, "max_tokens", "tool_use", "stop_sequence"])
+def test_president_terminal_status_rejects_incomplete_or_unsupported_stop(tmp_path, stop_reason):
+    assert _extract(tmp_path, [_assistant("Ruling", stop_reason=stop_reason)],
+                    require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("error_field", ["model", "isApiErrorMessage"])
+def test_president_terminal_status_rejects_synthetic_errors(tmp_path, error_field):
+    record = _assistant("API Error: Request was aborted", stop_reason="end_turn")
+    record["message"][error_field] = "<synthetic>" if error_field == "model" else True
+    assert _extract(tmp_path, [record], require_terminal=True) == ""
+
+
+def test_president_terminal_status_rejects_new_user_or_partial_json(tmp_path):
+    terminal = _assistant("Ruling", stop_reason="end_turn")
+    user = {"type": "user", "message": {"role": "user", "content": "New request"}}
+    assert _extract(tmp_path, [terminal, user], require_terminal=True) == ""
+    path = tmp_path / "owned.jsonl"
+    path.write_text(json.dumps(terminal) + "\n{\"type\":")
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
 
 
 def test_changed_record_with_same_uuid_can_reopen_completion(tmp_path):
