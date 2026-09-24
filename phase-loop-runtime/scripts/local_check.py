@@ -132,7 +132,7 @@ def clean_env(python: str) -> dict[str, str]:
         "PYTHONPATH": "src:tests",
         "TMPDIR": tempfile.gettempdir(),
     }
-    for keep in ("TERM",):
+    for keep in ("TERM", "USER", "LOGNAME"):  # a CI runner has these too
         if keep in os.environ:
             env[keep] = os.environ[keep]
     return env
@@ -142,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--full", action="store_true", help="run the whole standalone suite")
+    ap.add_argument("--with-chronology", action="store_true",
+                    help="with --full, keep the ~50-minute CONFORM chronology node (CI runs it on py3.10/Gate A)")
     ap.add_argument("--host-env", action="store_true", help="keep this shell's environment")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
     args = ap.parse_args(argv)
@@ -162,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
         pytest_cmd += ["-n", "auto", "--dist", "loadfile", "--max-worker-restart=0"]
     if tests is None:
         pytest_cmd += [arg for ignore in SUITE_IGNORES for arg in ("--ignore", ignore)]
+        if not args.with_chronology:
+            node = subprocess.run(["bash", str(repo / "ci" / "chronology-scope.sh"), "--node"],
+                                  cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+            pytest_cmd.append(f"--deselect={node}")
     elif tests:
         pytest_cmd += tests
 
