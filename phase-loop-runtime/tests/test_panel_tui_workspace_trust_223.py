@@ -288,6 +288,50 @@ def test_post_trust_chunk_accepts_editor_after_modal_remainder():
     )
 
 
+def test_identical_ansi_modal_redraw_is_not_novel_editor_content():
+    frame = (
+        b"Claude Code v2.1.208\x1b[2J\x1b[HPermission Required: Accessing workspace:\n"
+        b"Quick safety check: Is this a project you created or one you trust?\n"
+        b"y. Yes, I trust this folder\nn. No, exit\nEnter y/n:\n"
+    )
+    seen = set()
+    assert pi._tui_chunk_has_novel_content(frame, seen)
+    assert not pi._tui_post_trust_editor_content(frame, (), seen)
+
+
+def test_identical_ansi_modal_redraw_does_not_receive_review(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    real_write = pi.os.write
+    writes = []
+
+    def capture_write(fd, payload):
+        writes.append(payload)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(pi.os, "write", capture_write)
+    frame = (
+        "Claude Code v2.1.208\\033[2J\\033[HPermission Required: Accessing workspace:\\n%s\\n"
+        "Quick safety check: Is this a project you created or one you trust?\\n"
+        "y. Yes, I trust this folder\\nn. No, exit\\nEnter y/n:\\n"
+    )
+    script = (
+        "stty raw -echo; "
+        + f"printf '{frame}' \"$PWD\"; "
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        + f"printf '{frame}' \"$PWD\"; "
+        + "dd bs=1 count=1 of=unexpected.txt 2>/dev/null"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert status == "claude_tui_editor_not_ready", (rc, status, text, tail)
+    assert not any(b"review this" in payload for payload in writes)
+    assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
+
+
 def test_post_trust_current_header_redraw_does_not_arm_editor(tmp_path, monkeypatch):
     _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
     script = (

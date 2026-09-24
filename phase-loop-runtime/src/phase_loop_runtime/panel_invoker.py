@@ -4484,6 +4484,14 @@ def _normalize_tui_line(line: str) -> str:
     return " ".join(line.split()).strip().lower()
 
 
+def _tui_visible_lines(chunk: bytes) -> list[str]:
+    text = _ANSI_OSC_RE.sub("", chunk.decode("utf-8", errors="replace"))
+    text = _ANSI_CSI_RE.sub(
+        lambda match: "\n" if match.group(0).endswith(("J", "H")) else "", text,
+    )
+    return re.split(r"[\r\n]+", text)
+
+
 def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
     """True iff a PTY chunk carries SUBSTANTIVE new (non-cosmetic) terminal text.
 
@@ -4493,11 +4501,8 @@ def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
     novelty — a wedge's animation vocabulary is finite, so it saturates and stops
     resetting the kill clock).
     """
-    text = chunk.decode("utf-8", errors="replace")
-    text = _ANSI_OSC_RE.sub("", text)
-    text = _ANSI_CSI_RE.sub("", text)
     novel = False
-    for raw in re.split(r"[\r\n]+", text):
+    for raw in _tui_visible_lines(chunk):
         norm = _normalize_tui_line(raw)
         if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
             seen.add(norm)
@@ -4585,11 +4590,7 @@ def _tui_post_trust_editor_content(
     chunk: bytes, cwd_tokens: Sequence[str], seen: set[str],
 ) -> bool:
     """Find a novel editor line, ignoring modal residue after a split PTY read."""
-    visible = _ANSI_CSI_RE.sub(
-        lambda match: "\n" if match.group(0).endswith(("J", "H")) else "",
-        _ANSI_OSC_RE.sub("", chunk.decode("utf-8", errors="replace")),
-    )
-    for line in re.split(r"[\r\n]+", visible):
+    for line in _tui_visible_lines(chunk):
         low = line.strip().lower()
         norm = _normalize_tui_line(line)
         if (
