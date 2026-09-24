@@ -58,7 +58,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   isolation for president launches (agent-harness#1009); heartbeat-only review hardening — the
   owner wrapper's own `/proc` (agent-harness#1012), the sandboxed codex seat
   (agent-harness#999), qualified Gemini heartbeat reviews (agent-harness#944) and the qualified
-  `agy` 1.2.9 image (agent-harness#1010); Opus 5.5 replacing the Fable defaults
+  `agy` 1.2.10 image (agent-harness#1024, superseding the interim 1.2.9 image of
+  agent-harness#1010); Opus 5.5 replacing the Fable defaults
   (agent-harness#991, agent-harness#994); grok-4.7 and the `xhigh` effort ceiling
   (agent-harness#982, agent-harness#974); the xAI/Grok API-key scrub (agent-harness#1005); the
   settings write-lease signal guard (agent-harness#953); `validate-roadmap` phase-heading
@@ -167,8 +168,8 @@ and the published digests are recorded here after the tag push. As for `0.7.15` 
 `0.7.16`, the published digests are expected to differ, because archive bytes are
 timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `ba5ecd9168ddf8489a6e52ffc0fe0ecb8ca71bedcc60def4d17b4bf6f882120a`
-- prepared direct-sdist sha256: `5f0e58036b9160f1bc45f0fe9e4419813b3230f7e132cf9d4a00fe70d7ffa08f`
+- prepared direct-wheel sha256: `637a24ff40b299272222b2fd3262bb15bc810e45d1012ab0615d79ba69efa9be`
+- prepared direct-sdist sha256: `bce1290ad99875002c7aa2d24a93edfd4a7c41a91b5d70faed1866e9f69111dc`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.16 (published)
