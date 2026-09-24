@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "e6d826d79f5a6da58aad738404e9a600a700d8a4518405e65d99de54f3a001b1",
-      "raw_receipt_sha256": "8375f2143444bc26aa0e85b3a22bfb1458336779d486aa8659963f692f11d946",
+      "raw_receipt_sha256": "9b6dd628b2fe4ad84c53764e821293d7031aee61dcfda1267dd5dd59bd852252",
       "record_sha256": {
-        "broker": "00b702dd2c2066505276547d2936d2ca50b41cddff17048c29f12e6f6a144844",
-        "monitoring": "96ec990e93da731796455392ead1cdb66ccf65dd78ad93bc5e235da15f9fbb26",
-        "observer": "4a88f41d5685bc806b53b1ee7b81281f3430abbf4798632f0a823b3d1cd0b371",
-        "result": "11a66a16f2a3c03686c2f320a989a462ce9b5dddd409f014bd91e86117c2a33d"
+        "broker": "03f37ca89b4a45a5ca76ceca3531784de2bf2da0f71877df92e4bafc6145f490",
+        "monitoring": "435440921d77f8f8d26d2079bbb32f8da37f42b2631a1d29189d4c4699406dad",
+        "observer": "076410a3d8dcc76cad731db6ded659ded10fd41459f22bc48dc377440259d540",
+        "result": "0b7b0d38c447ca3dc49ef591157bd4c069b12235bc80e5d11530ecaf958d925f"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "e6d826d79f5a6da58aad738404e9a600a700d8a4518405e65d99de54f3a001b1",
-      "raw_receipt_sha256": "8fadd61d2977526935273efbc4ea02fdce777022c6f540eacfcc1bdf3ad0f932",
+      "raw_receipt_sha256": "1672cc5c74470717b5ac23184dc1dc39251e1163a192238a41cd791cd451fde7",
       "record_sha256": {
-        "broker": "ffa7568b9224015ab9c78122884ffbde7ae491c9cb0ea23b7639ec77ded13948",
-        "monitoring": "eceda507a3eb02621fdcc259b1a83b9d3cec4cdedbcc6a81466633956d532976",
-        "observer": "901ad591795f44c7dfeda169237e6c5163f5a65cb6c5a00f1668c9af3e163b67",
+        "broker": "5b8f7047b35393d2377fadd7624bcbe2ae3e58f9f1c8b6e939bfe37ca17963e5",
+        "monitoring": "45ad891bb685df6727cad96cc90d7946b9ceda21082c7790f0defc49aa5dd9f4",
+        "observer": "c69b9e997586d7f6ad30dafb4bab062c20365942f9fca0a61ffb2e16ae9d5bba",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "e6d826d79f5a6da58aad738404e9a600a700d8a4518405e65d99de54f3a001b1",
-      "raw_receipt_sha256": "be4e329557bb4a9885411b6a75e25634b3b4614af6f8a6f17278e160ba86371f",
+      "raw_receipt_sha256": "f83ea55b7c7ea5001ce3a1706354547c1890afaa396012b027b168bc322a2095",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "70880d24bcbf0d59a8f9920edc50d638c7c3dcecf990401a55119790bd6586d5",
-        "observer": "fd78417f2a364dccdb1e978078cbec5c9935fd8e601c30745b4f49bea04fe504",
+        "monitoring": "7d4becf5bc98ebf3b86567ff7c9ac1a353dbbff2aa8d1b80e3303ab2c68ec2db",
+        "observer": "7268a8d7c95dc28752da950ad913deef078ba5cf1cff2bfb50aa10f63c7ebbd0",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -196,7 +196,7 @@
   "route": "brokered_subscription_heartbeat_only",
   "schema": "agy_1210_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "4506054f342a4785301555204e4201e985a32b090f4eba313ce6bbe60ba3618b",
+    "__init__.py": "941d4d5c5068a223da9835e2b03df6f7b30d1a07f14198ca2107b1b553bcb25c",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "e9a503543374ccb83e41535c9fee012fe849b9397003d87aec9ff8fdb653bc73",
     "advisor_board/__init__.py": "7a746aa1ccf9cca9e6344c0d09a34c464cd1bd82044e469f56c2fa5b1b641ff8",
@@ -353,7 +353,7 @@
     "review_stage.py": "b49548413af2c51a7308488524fccb0772a1610a5cc23d8301b71cb9dd845c9c",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "1004fb5dcf3edfea33f29aac067216b065bc8581c3151d54542012799b8cc3b2",
+    "roadmap_assumptions.py": "cd5999f842f1cac5ed0ab50416b9439b08000b86622d803ccad28f424f578234",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
