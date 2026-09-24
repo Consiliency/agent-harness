@@ -1,0 +1,53 @@
+{
+  "cases": [
+    {
+      "captured_processes": 3,
+      "case": "conforming",
+      "conforms": true,
+      "final_assistant_end_turn_with_text": true,
+      "owned_transcripts_removed": true,
+      "processes_reaped": true,
+      "ruling_text_sha256": "065461e3e0df63c562925782de05af8355791797d0fc3bb86a8a9687e71050de",
+      "session_ids_distinct": true,
+      "status": "ok",
+      "transcript_count": 1
+    },
+    {
+      "captured_processes": 6,
+      "case": "nonconforming",
+      "conforms": true,
+      "final_assistant_end_turn_with_text": true,
+      "format_reasks": 1,
+      "owned_transcripts_removed": true,
+      "processes_reaped": true,
+      "session_ids_distinct": true,
+      "status": "ok",
+      "transcript_count": 2,
+      "turns": [
+        {
+          "conforms": false,
+          "prompt_kind": "deliberately_nonconforming",
+          "status": "ok",
+          "text_chars": 4,
+          "text_sha256": "283e91eb85d58ffc2ad922884b644c41b54140660f6d1fda3c403d543eedd839"
+        },
+        {
+          "conforms": true,
+          "prompt_kind": "format_reask",
+          "status": "ok",
+          "text_chars": 260,
+          "text_sha256": "2741d9481e72ab5febdda188117618de85cd7cd8ef9089ce0ee40180346c7c1a"
+        }
+      ]
+    }
+  ],
+  "local_receipts_root": "/mnt/workspace/archives/agent-harness-pr1017-live-president-20260924",
+  "local_script_sha256": "32600539b0019411c99129d1ad80d736b40e56ed7135b686b1a75a91e13debe0",
+  "method": "Read-only observer wrapped launch_provider and owned-transcript cleanup, delegated to the original functions, and retained metadata only. The nonconforming case used a deliberate challenge prompt for the first live turn; invoke_president made the policy format re-ask in a fresh brokered session.",
+  "model_deadline_s": null,
+  "monitoring_policy": "heartbeat_only",
+  "route": "brokered_claude_subscription_tui",
+  "schema": "claude_president_terminal_live_diagnostic.v1",
+  "silence_deadline_s": null,
+  "source_sha256": "7f9e0784c3923e0f21832996526e783586b2f0981011320d749599d051572414"
+}
