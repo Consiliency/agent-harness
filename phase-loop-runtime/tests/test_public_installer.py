@@ -99,6 +99,11 @@ elif name == 'git' and command == 'checkout':
         os.makedirs(race, exist_ok=True)
         pathlib.Path(race, 'sentinel').write_text('not ours')
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
+elif name == 'mv':
+    late = os.environ.get('INSTALL_TEST_RACE_BEFORE_PUBLISH')
+    if late:  # an EMPTY home appears in the instant before publication
+        os.makedirs(late, exist_ok=True)
+    os.execv('/bin/mv', ['/bin/mv', *args])
 elif name == 'uv' and os.environ.get('INSTALL_TEST_UV_RC'):
     sys.exit(int(os.environ['INSTALL_TEST_UV_RC']))
 elif name == 'phase-loop' and 'install' in args:
@@ -109,7 +114,7 @@ elif name == 'phase-loop':
 elif name == 'curl':
     sys.exit('unexpected network request')
 """
-    for name in ("git", "uv", "phase-loop", "curl"):
+    for name in ("git", "uv", "phase-loop", "curl", "mv"):
         path = tools / name
         path.write_text(wrapper)
         path.chmod(0o755)
@@ -388,3 +393,16 @@ def test_user_git_state_cannot_redirect_or_stale_the_resolution(installation, tm
     # and the other repository was never touched
     assert not (other / ".git" / "FETCH_HEAD").exists()
     assert _stages(env) == []
+
+
+def test_an_empty_home_created_just_before_publication_is_not_replaced(installation):
+    # board r3 (codex, grok): a check-then-rename published OVER an empty directory created
+    # between the check and the rename. Publication is now an atomic no-replace rename.
+    env, _, _ = installation
+    env["INSTALL_TEST_RACE_BEFORE_PUBLISH"] = env["AGENT_HARNESS_HOME"]
+    marker = Path(env["AGENT_HARNESS_HOME"])
+    result = run_installer(env)
+    assert result.returncode != 0 and "appeared during installation" in result.stderr
+    assert marker.is_dir() and list(marker.iterdir()) == [], "the foreign empty home was replaced"
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))

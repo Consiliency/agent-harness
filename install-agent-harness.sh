@@ -174,11 +174,16 @@ if ! git -C "$_work" -c fetch.writeFetchHEAD=true fetch --depth 1 origin "$REF" 
 fi
 git -C "$_work" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
 if [ -n "$_stage" ]; then
-    if [ -e "$HOME_DIR" ] || [ -L "$HOME_DIR" ]; then
+    # Publish with an ATOMIC no-replace rename: GNU `mv -T -n` issues
+    # renameat2(RENAME_NOREPLACE), so a home that appeared at any moment -- even an empty
+    # directory created an instant before -- is refused, never replaced. `mv -n` exits 0
+    # when it skips (coreutils 8.x), so success is judged by where the stage ended up.
+    mv -T -n -- "$_stage" "$HOME_DIR" || true
+    if [ -e "$_stage" ] ||
+       [ "$(git -C "$HOME_DIR" rev-parse -q --verify HEAD 2>/dev/null)" != "$RESOLVED" ]; then
         echo "ERROR: ${HOME_DIR} appeared during installation; refusing to replace it." >&2
         exit 1
     fi
-    mv -T -- "$_stage" "$HOME_DIR"
     _stage=""
 fi
 trap - EXIT INT TERM HUP
