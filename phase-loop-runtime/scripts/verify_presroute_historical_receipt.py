@@ -20,6 +20,7 @@ EVIDENCE_FILES = (
 def registered_checkout(repo: Path, checkout: Path) -> bool:
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"],
                              cwd=repo, check=True, capture_output=True)
+    # Git 2.34 has no -z here; match the complete raw path field without splitlines().
     return b"worktree " + os.fsencode(checkout.resolve()) + b"\n" in listing.stdout
 
 
