@@ -412,12 +412,16 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     cancel = threading.Event()
     detached = tmp_path / "detached"
     control_errors = []
+    detached_pidfd = []
     def cancel_when_launched():
         try:
             until = time.monotonic() + 30  # synthetic admission only
             while not detached.exists():
                 if time.monotonic() >= until: raise AssertionError("fixture did not launch")
                 time.sleep(.02)
+            # Pin the detached child while it is ALIVE: after cancellation a (namespace
+            # inode, local PID) pair can be reused by another test's process.
+            detached_pidfd.append(os.pidfd_open(_host_pid(detached.read_text())))
         except Exception as exc:
             control_errors.append(exc)
         finally:
@@ -435,8 +439,16 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     assert leg.status == "UNAVAILABLE" and leg.text == ""
     assert leg.detail == "review_operation_cancelled"
     assert leg.harden_isolation_evidence["provider_agy_home_cleanup_verified"]
-    # no process is left in that PID namespace with that local PID
-    assert _host_pid_or_none(detached.read_text()) is None
+    # the pinned detached child is gone (its pidfd is readable once it has exited)
+    import select
+    assert detached_pidfd, "the detached child was never pinned"
+    try:
+        until = time.monotonic() + 5
+        while not select.select([detached_pidfd[0]], [], [], 0)[0]:
+            assert time.monotonic() < until, "detached child survived cancellation"
+            time.sleep(.02)
+    finally:
+        os.close(detached_pidfd[0])
     assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
     verdict, = [json.loads(p.read_text()) for p in (tmp_path / "records").glob("*.verdict.json")]
     assert verdict["status"] == "UNAVAILABLE" and verdict["text"] == ""
@@ -1274,9 +1286,3 @@ def _host_pid(record: str, timeout_s: float = 5.0) -> int:
             raise AssertionError(f"no host process for {record!r}")
         time.sleep(.02)
 
-
-def _host_pid_or_none(record: str):
-    try:
-        return _host_pid(record, timeout_s=0)
-    except AssertionError:
-        return None
