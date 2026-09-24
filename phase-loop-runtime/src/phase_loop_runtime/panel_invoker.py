@@ -4749,7 +4749,28 @@ def _run_claude_tui_session(
     def _broker_final() -> str:
         if not allow_transcript_final or broker_transcript_path is None:
             return ""
-        return _final_assistant_text_from_jsonl(broker_transcript_path)
+        text = _final_assistant_text_from_jsonl(broker_transcript_path)
+        if mode != "president" or not text:
+            return text
+        # A president may need a format re-ask. Hand its completed API turn to
+        # invoke_president even when the text lacks the required ruling grammar;
+        # never treat a streaming or partial transcript as that completed turn.
+        try:
+            lines = broker_transcript_path.read_text(encoding="utf-8", errors="replace").split("\n")
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                message = payload.get("message") if isinstance(payload, dict) else None
+                if not isinstance(message, dict):
+                    continue
+                if message.get("role") == "user":
+                    return ""
+                if message.get("role") == "assistant":
+                    return text if message.get("stop_reason") in ("end_turn", "stop_sequence") else ""
+        except (OSError, json.JSONDecodeError):
+            pass
+        return ""
 
     def _pending_tool_uses() -> tuple[str, ...]:
         # Brokered Claude has an empty tool surface, so only the exact assistant
@@ -4881,6 +4902,8 @@ def _run_claude_tui_session(
                         broker_final = _broker_final()
                         if broker_final and _completion_ok(broker_final, mode):
                             return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                        if broker_final and mode == "president":
+                            return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                         return _finish(
                             proc.poll() or 1,
                             review_text or transcript_text,
@@ -5002,6 +5025,8 @@ def _run_claude_tui_session(
                 broker_final = _broker_final()
                 if broker_final and _completion_ok(broker_final, mode):
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                if broker_final and mode == "president":
+                    return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
@@ -5010,6 +5035,8 @@ def _run_claude_tui_session(
                 broker_final = _broker_final()
                 if broker_final and _completion_ok(broker_final, mode):
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                if broker_final and mode == "president":
+                    return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                 detail = "claude_tui_missing_canonical_output"
                 return _finish(
                     proc.returncode or 1, review_text or transcript_text, detail
