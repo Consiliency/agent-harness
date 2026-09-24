@@ -344,9 +344,9 @@ def test_the_gemini_rung_without_an_agy_credential_launches_into_an_empty_home(t
     assert response["status"] == "failed" and response["code"] == "president_invocation_failed"
 
 
-@pytest.mark.parametrize("flag,delete", [("--assume-unchanged", False), ("--skip-worktree", True)])
-def test_historical_receipt_rejects_physical_evidence_drift_hidden_from_git_diff(
-    tmp_path, monkeypatch, flag, delete,
+@pytest.mark.parametrize("case", ("assume-unchanged", "skip-worktree", "head-drift"))
+def test_historical_receipt_rejects_evidence_drift_hidden_from_git_diff(
+    tmp_path, monkeypatch, case,
 ):
     script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
     if not script.is_file():
@@ -372,10 +372,19 @@ def test_historical_receipt_rejects_physical_evidence_drift_hidden_from_git_diff
     monkeypatch.setattr(sys, "argv", [str(script), "--repo", str(repo)])
 
     rel = verifier.EVIDENCE_FILES[1]
-    subprocess.run(["git", "update-index", flag, rel], cwd=repo, check=True)
-    if delete:
+    if case == "head-drift":
+        (repo / rel).write_bytes(b"committed drift\n")
+        subprocess.run(["git", "add", rel], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                        "commit", "-qm", "changed receipt"], cwd=repo, check=True)
+        (repo / rel).write_bytes(b"frozen evidence\n")
+        subprocess.run(["git", "add", rel], cwd=repo, check=True)
+    elif case == "skip-worktree":
+        subprocess.run(["git", "update-index", "--skip-worktree", rel], cwd=repo, check=True)
         (repo / rel).unlink()
     else:
+        subprocess.run(["git", "update-index", "--assume-unchanged", rel], cwd=repo, check=True)
         (repo / rel).write_bytes(b"modified physical evidence\n")
+    subprocess.run(["git", "diff", "--quiet", landing, "--", rel], cwd=repo, check=True)
     with pytest.raises(ValueError, match="frozen PRESROUTE evidence drift"):
         verifier.main()
