@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.16`
-- Runtime `phase_loop_runtime.__version__`: `0.7.16`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.16`
+- Version: `0.7.17`
+- Runtime `phase_loop_runtime.__version__`: `0.7.17`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.17`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.16`
+- Validator version: `0.7.17`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,33 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.17` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.16` tag commit (`1390a13c`): the v10 PRESROUTE president execution
+  route (agent-harness#998, with its plan agent-harness#952 and frozen corpus agent-harness#961)
+  and its follow-ups — configurable president ladder (agent-harness#1004) and heartbeat/broker
+  isolation for president launches (agent-harness#1009); heartbeat-only review hardening — the
+  owner wrapper's own `/proc` (agent-harness#1012), the sandboxed codex seat
+  (agent-harness#999), qualified Gemini heartbeat reviews (agent-harness#944) and the qualified
+  `agy` 1.2.9 image (agent-harness#1010); Opus 5.5 replacing the Fable defaults
+  (agent-harness#991, agent-harness#994); grok-4.7 and the `xhigh` effort ceiling
+  (agent-harness#982, agent-harness#974); the xAI/Grok API-key scrub (agent-harness#1005); the
+  settings write-lease signal guard (agent-harness#953); `validate-roadmap` phase-heading
+  integrity (agent-harness#975); the reconciled LEGIBLE assumption 2 (agent-harness#981); the
+  installer's single-commit pin resolution (agent-harness#1022); CI xdist adoption and offload
+  lock sizing (agent-harness#956, agent-harness#946) with small fixes (agent-harness#997); the
+  v10 concurrency ruling (agent-harness#949) and the 0.7.16 published record
+  (agent-harness#954). The EXECFIND plan (agent-harness#964, agent-harness#1021) is planning
+  only. No release-tracking issue exists for 0.7.17; the appended plan-authority rows cite
+  agent-harness#930 (release reseal sites).
+- Tag, publication and fleet-adoption evidence for `0.7.17` are recorded here after the
+  maintainer-gated tag push, the same way the `0.7.16` record below was completed. They are
+  deliberately absent rather than asserted in advance.
+
+### Previous release: 0.7.16 (published)
 
 - `publication_status=published`
 - `0.7.16` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -130,7 +157,21 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.16 (published)
+### This release: 0.7.17 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
+record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
+and the published digests are recorded here after the tag push. As for `0.7.15` and
+`0.7.16`, the published digests are expected to differ, because archive bytes are
+timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `ba5ecd9168ddf8489a6e52ffc0fe0ecb8ca71bedcc60def4d17b4bf6f882120a`
+- prepared direct-sdist sha256: `5f0e58036b9160f1bc45f0fe9e4419813b3230f7e132cf9d4a00fe70d7ffa08f`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.16 (published)
 
 The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
 `35642420908` from its build of the tagged commit `1390a13c`, verified by the publish job
@@ -187,23 +228,22 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the published `0.7.16` artifacts (workflow `35642420908`); identical to the
-pre-tag prepared measurement.
+Measured on the prepared `0.7.17` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.16-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.16.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.16.data`, `phase_loop_runtime-0.7.16.dist-info`
-- Wheel file count: `468`
+- Wheel artifact: `phase_loop_runtime-0.7.17-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.17.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.17.data`, `phase_loop_runtime-0.7.17.dist-info`
+- Wheel file count: `470`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `941` regular files (`1076` archive members including directories)
+- Sdist file count: `956` regular files (`1091` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
-`0.7.16` is published (tag push → PyPI; this document records it as
-`published`), so governed-pipeline may consume it as an authoritative
-validator by pinning `phase-loop-runtime==0.7.16`, then calling:
+Once `0.7.17` is published (tag push → PyPI; this document records it as
+`prepared` until then), governed-pipeline may consume it as an authoritative
+validator by pinning `phase-loop-runtime==0.7.17`, then calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -250,18 +290,20 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
+- `0.7.17` was not published or tagged from this handoff, and no workflow was dispatched
+  by it. The maintainer-gated tag push remains the only trigger (`EC-RELEASE-4`).
 - For `0.7.16`: the package was not published from this handoff; trusted workflow
   `35642420908` published it from the signed `v0.7.16` tag (verified tag object
-  `275e391dd8bc64e98d45fbe160da61ccc9ad75b0`). The maintainer-gated tag push remains the
-  only trigger (`EC-RELEASE-4`).
+  `275e391dd8bc64e98d45fbe160da61ccc9ad75b0`).
 - For `0.7.15`: the package was not published from this handoff; trusted workflow
   `35570678898` published it from the signed `v0.7.15` tag (verified tag object
   `59100b814e4c186f0bf573956e09721950407394`).
 - For `0.7.14`: the package was not published from this handoff; trusted workflow
   `32783112944` published it from the signed `v0.7.14` tag (verified tag object
   `2de6c06973b84890b62184fa023d387f6044a43c`).
-- For `0.7.16`, `0.7.15` and `0.7.14` the maintainer's tag push triggered the workflow and it
-  completed successfully; none was dispatched from a handoff.
+- No PyPI workflow has been dispatched for `0.7.17`; for `0.7.16`, `0.7.15` and `0.7.14` the
+  maintainer's tag push triggered the workflow and it completed successfully; none was
+  dispatched from a handoff.
 - Production governed-pipeline enforcement is not claimed by this handoff.
 - Maintainers retain ownership of future publishing, tagging, workflow dispatch,
   and downstream production pin rollout.

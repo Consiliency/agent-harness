@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.17] - 2026-09-24
+
 ### Qualified agy 1.2.10 entry image (agent-harness#1008)
 
 - Admit the newly published 1.2.10 Linux x64 image for brokered Gemini
@@ -84,6 +86,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   environment built through it -- not an exhaustive list of grok endpoint settings; the brokered legs were
   already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
   so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
+
+### A sandboxed codex review seat can run commands in its staged tree (agent-harness#999)
+
+- A codex seat reviewing a staged tree (agent-harness#848) could not run anything: codex
+  >= 0.156 executes commands through the code-mode host, which stayed disabled. The brokered
+  codex argv now lifts `code_mode_host` alongside `shell_tool`, only when a tree is staged; the
+  sealed (no-tree) argv and its pinned controls are unchanged.
+- The sandboxed seat can no longer write `/tmp` or `$TMPDIR`
+  (`sandbox_workspace_write.exclude_slash_tmp` / `exclude_tmpdir_env_var`), so it cannot
+  overwrite a sibling seat's verdict in the round's scratch directory. Reads are not confined.
+- Under the egress prefix the staged-tree codex leg keeps exactly one bounding capability,
+  `CAP_SETFCAP`, which codex's own bubblewrap sandbox needs to map uid 0
+  (`sandbox_egress.SEAT_RETAINABLE_CAPS`); every other seat keeps an empty bounding set, and
+  `iptables -F OUTPUT` stays refused inside the namespace. The recorded controls gain
+  `tmp-not-writable` and `bounding-set-setfcap-only`.
 
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 
@@ -199,7 +216,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
   unchanged and is invoked as its own shell command with no `-n auto`.
 
-### Opus 5.5 replaces every Fable default
+### The native-fill hint names the seat's model (agent-harness#994)
+
+- The advisor-board CLI's hint for an unfilled native seat hard-coded "run a native Fable
+  Agent". It now prints the model from the seat's own native request, so after
+  agent-harness#991 it names Opus 5.5.
+
+### Opus 5.5 replaces every Fable default (agent-harness#991)
 
 - `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the
   DEFAULT, by maintainer direction (2026-09-23, "for now"): the Claude panel leg
@@ -212,9 +235,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `claude-opus-5-5 -> fable`, the same way `gpt-6-astra` still answers to `sol`; without it
   every board fails the landing policy's seat-name check. Because the president ladder
   names that seat rather than a model, its first rung now resolves to Opus 5.5 with no
-  ladder change (verified by `seat_for_rung` on both default boards). A seated president
-  rung still has no production execution route today (`president_execution_route_unavailable`,
-  pre-existing and unchanged).
+  ladder change (verified by `seat_for_rung` on both default boards). When this change merged
+  a seated president rung still had no production execution route
+  (`president_execution_route_unavailable`); agent-harness#998 (PRESROUTE, above) adds it in
+  this release.
 - Fable is NOT retired: `claude-fable-5-1` stays registered, aliased and selectable per seat.
 - `build_bundle.PRESERVE_LITERALS` gains `claude-opus-5-5` (placed before `claude-opus-5`,
   a prefix of it, since sentinel substitution runs in order) and `Claude Opus 5.5`, so the
@@ -274,6 +298,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   probed against its own CLI and this change carries no evidence about them.
 - The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
   standing property of grok, which is what let the original clamp outlive its evidence.
+
 ### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
 
 - Align the governed-pipeline issue-state and package-pin probes with its closed
@@ -446,6 +471,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   overwritten and not restored. No kernel-aware check is attempted.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
   through signal delivery.
+
+### Release record: 0.7.16 published (agent-harness#954)
+
+- `docs/releases/outside-agent-release-handoff.md` records the 0.7.16 publication (signed
+  tag, workflow and job ids, PyPI digests, fresh install).
+
+### Roadmap: v10 concurrency ruling (agent-harness#949, source agent-harness#948)
+
+- PRESROUTE and EXECFIND steps 1–5 may run concurrently with HARDEN, REVIEWTRUTH and SCHED
+  (maintainer ratification, Option A). Roadmap and seals only; no runtime behaviour changes.
 
 ## [0.7.16] - 2026-09-21
 ### Claude native review task delivery (agent-harness#937)
