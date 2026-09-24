@@ -404,8 +404,9 @@ not a second admission source.
 `plans/evidence/qualified-provider-images.json` points to the current record.
 The `qualified-agy-image` CI check compares the record's hashes of the route's core
 files (`gemini_heartbeat.py`, `qualify_gemini_heartbeat.py`) with the checkout on
-every pull request and push. The full source-hash set is checked on the release-cut
-pull request, nightly, and before publication (agent-harness#1029), so a release
+pull requests and pushes that touch them or the evidence. The full source-hash set
+blocks publication, a release-cut pull request and a pull request that changes the
+evidence, and is reported without blocking nightly (agent-harness#1029), so a release
 still needs a qualification series on its exact tree. Nightly and manual runs also
 verify the latest official release archive and extracted executable.
 

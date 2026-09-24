@@ -15,10 +15,11 @@ PACKAGE = REPO / "phase-loop-runtime/src/phase_loop_runtime"
 EVIDENCE = REPO / "plans/evidence"
 ASSET = "agy_cli_linux_x64.tar.gz"
 API = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest"
-# agent-harness#1029: the files that ARE the qualified route. A pull request or push must keep
-# these byte-identical to the qualification record; the full pin set (every package source)
-# is enforced at release (publish-pypi.yml, before Gate A), so ordinary runtime changes no
-# longer need a live requalification per PR -- only once per release.
+# agent-harness#1029: the files that implement the qualified route directly (and hold the
+# admitted image/help digests and profile id). This is a TRIPWIRE for direct edits, not the
+# whole route: modules they import can change its behaviour too. The FULL pin set (every
+# package source) is the guarantee, enforced before publication (publish-pypi.yml) and on a
+# release-cut PR, so ordinary runtime changes need a live requalification once per release.
 ROUTE_CORE = ("gemini_heartbeat.py", "qualify_gemini_heartbeat.py")
 
 

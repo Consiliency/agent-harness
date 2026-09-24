@@ -39,13 +39,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### agy source pins: full check once per release (agent-harness#1029)
 
-- `qualified-agy-image` now checks, on pull requests and pushes, only the qualification
-  record and the route's core files (`verify_qualified_agy_image.py --route-core`:
-  `gemini_heartbeat.py`, `qualify_gemini_heartbeat.py`). An ordinary runtime change no
-  longer needs a live Gemini requalification per PR.
-- The full pin set (every package source) is still enforced on the release-cut PR (any PR
-  that changes `RELEASE_PIN`), nightly, and as a blocking step in `publish-pypi.yml` before
-  publication. The latest-upstream-release check moves to nightly/manual runs.
+- `qualified-agy-image` now checks, on pull requests and pushes that touch the route or
+  the evidence, only the qualification record and the route's core files
+  (`verify_qualified_agy_image.py --route-core`: `gemini_heartbeat.py`,
+  `qualify_gemini_heartbeat.py`, a tripwire for direct edits). An ordinary runtime change
+  no longer needs a live Gemini requalification per PR.
+- The full pin set (every package source) blocks publication (`publish-pypi.yml`, before
+  the build), blocks a release-cut PR (merging it changes `RELEASE_PIN`) or a PR that
+  changes the qualification evidence (`scripts/agy_full_pin_scope.sh`, judged on the merge
+  commit), and is reported as a non-blocking warning nightly. The latest-upstream-release
+  check moves to its own nightly/manual job.
 
 ## [0.7.17] - 2026-09-24
 

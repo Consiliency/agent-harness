@@ -7,12 +7,19 @@ full check, and a route-core drift fails route-core.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify_qualified_agy_image.py"
-RECORDS = Path(__file__).resolve().parents[2] / "plans" / "evidence" / "qualified-provider-images.json"
+SCOPE = Path(__file__).resolve().parents[1] / "scripts" / "agy_full_pin_scope.sh"
+REPO = Path(__file__).resolve().parents[2]
+RECORDS = REPO / "plans" / "evidence" / "qualified-provider-images.json"
+PUBLISH = REPO / ".github" / "workflows" / "publish-pypi.yml"
+QUALIFIED = REPO / ".github" / "workflows" / "qualified-agy-image.yml"
 
 pytestmark = pytest.mark.skipif(
     not SCRIPT.is_file() or not RECORDS.is_file(),
@@ -40,8 +47,13 @@ def test_the_route_core_is_pinned_by_the_record(verifier):
     assert set(verifier.ROUTE_CORE) <= set(record["source_sha256"])
 
 
+def _non_core(verifier):
+    record, _ = verifier.validate_record(verify_sources=False)
+    return next(name for name in sorted(record["source_sha256"]) if name not in verifier.ROUTE_CORE)
+
+
 def test_a_non_core_drift_passes_route_core_but_fails_the_release_check(verifier, monkeypatch):
-    _drift(verifier, monkeypatch, "president_operation.py")
+    _drift(verifier, monkeypatch, _non_core(verifier))
     verifier.validate_record(route_core_only=True)
     with pytest.raises(ValueError, match="differ from this checkout"):
         verifier.validate_record()
@@ -52,3 +64,95 @@ def test_a_route_core_drift_fails_route_core(verifier, monkeypatch, name):
     _drift(verifier, monkeypatch, name)
     with pytest.raises(ValueError, match=f"route-core file {name}"):
         verifier.validate_record(route_core_only=True)
+
+
+def test_a_route_core_file_missing_from_the_record_fails(verifier, monkeypatch):
+    record, _ = verifier.validate_record(verify_sources=False)
+    monkeypatch.setattr(verifier, "actual_source_hashes", lambda: dict(record["source_sha256"]))
+    monkeypatch.setattr(verifier, "ROUTE_CORE", verifier.ROUTE_CORE + ("not_pinned.py",))
+    with pytest.raises(ValueError, match="does not pin route-core file not_pinned.py"):
+        verifier.validate_record(route_core_only=True)
+
+
+def test_publication_is_gated_on_the_full_pin_set():
+    steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["build"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    index = names.index("Verify every agy qualification source pin (release only)")
+    step = steps[index]
+    assert step["if"] == "github.event_name != 'pull_request'"
+    assert step["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only"
+    assert "continue-on-error" not in step
+    assert index < names.index("Build sdist + wheel") < names.index(
+        "Gate A — verify the exact prebuilt wheel in a clean room")
+
+
+def test_every_qualified_image_run_checks_the_route_core():
+    step = next(s for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]
+                if s.get("name") == "Verify route-core qualification pins")
+    assert "if" not in step and "continue-on-error" not in step
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t",
+                    *args], cwd=repo, check=True, capture_output=True)
+
+
+def _merge_commit(tmp_path, pr_changes):
+    """A PR forked before main changed RELEASE_PIN, merged as GitHub's merge ref."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "RELEASE_PIN").write_text("v1\n")
+    (repo / "x.py").write_text("a\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-qb", "pr")
+    for name, text in pr_changes.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "pr")
+    _git(repo, "checkout", "-q", "main")
+    # main advanced AFTER the fork: a release cut, unless the PR itself is one
+    advanced = "y.py" if "RELEASE_PIN" in pr_changes else "RELEASE_PIN"
+    (repo / advanced).write_text("v2\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "main advanced")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge ref", "pr")
+    return repo
+
+
+def _scope(repo, event):
+    env = {**os.environ, "EVENT": event}
+    env.pop("GITHUB_OUTPUT", None)
+    return subprocess.run(["bash", str(SCOPE)], cwd=repo, env=env, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("changes,full", [
+    ({"x.py": "b\n"}, "false"),                           # base moved; the PR did not
+    ({"RELEASE_PIN": "v3\n"}, "true"),                    # the PR is a release cut
+    ({"plans/evidence/agy-9.9.9-linux-x64-qualification.json": "{}"}, "true"),
+])
+def test_release_cut_detection_uses_the_prs_own_effect(tmp_path, changes, full):
+    """#1032 r1 (codex, claude): a two-dot base..head diff flagged RELEASE_PIN for a PR that
+    merely forked before a release cut."""
+    result = _scope(_merge_commit(tmp_path, changes), "pull_request")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"full={full}"
+
+
+def test_release_cut_detection_fails_closed_without_a_base_parent(tmp_path):
+    repo = tmp_path / "root"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "RELEASE_PIN").write_text("v1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "root")
+    result = _scope(repo, "pull_request")
+    assert result.returncode == 1 and "cannot diff" in result.stderr
+
+
+@pytest.mark.parametrize("event,full", [("workflow_dispatch", "true"), ("push", "false"), ("schedule", "false")])
+def test_other_events(tmp_path, event, full):
+    result = _scope(tmp_path, event)
+    assert result.returncode == 0 and result.stdout.strip() == f"full={full}"
