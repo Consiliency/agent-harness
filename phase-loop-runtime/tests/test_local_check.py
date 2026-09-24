@@ -124,8 +124,11 @@ def test_changed_files_handles_odd_paths(lc, tmp_path):
     _git(tmp_path, "commit", "-qm", "base")
     (tmp_path / 'we"ird é.py').write_text("x")
     raw = os.fsdecode(b"review-\xff.txt")  # not valid UTF-8 (#1031 r2 codex)
-    (tmp_path / raw).write_text("example\n")
-    assert lc.changed_files(tmp_path, "main") == sorted([raw, 'we"ird é.py'])
+    try:
+        (tmp_path / raw).write_text("example\n")
+    except OSError:  # macOS: HFS+/APFS reject names that are not valid UTF-8 (#1031 r3)
+        raw = None
+    assert lc.changed_files(tmp_path, "main") == sorted(p for p in (raw, 'we"ird é.py') if p)
 
 
 def test_a_changed_script_selects_the_tests_that_name_it(lc, pkg):
