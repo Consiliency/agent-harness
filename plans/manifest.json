@@ -4360,6 +4360,12 @@
           "roadmap_sha256": "af53a90951c1bcae1fa08ba937eba61a4ed632047f5a37d27393943667aadd94",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#797"
+        },
+        {
+          "plan_sha256": "22f10f936adc8652b65cf15dfcdf56e982582b476f306ab67706f79134055a0e",
+          "roadmap_sha256": "c446c22154e83cf629cbaa5d2f2c46abd56b7b16e535f2faba41262351187526",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1027"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
@@ -4536,6 +4542,14 @@
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "PRESROUTE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "830476d5434e1783eb50d683f9e5871de240e084047e30c2e67831fd685ac731",
+          "roadmap_sha256": "c446c22154e83cf629cbaa5d2f2c46abd56b7b16e535f2faba41262351187526",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1027"
+        }
+      ],
       "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -6507,6 +6521,12 @@
           "roadmap_sha256": "af53a90951c1bcae1fa08ba937eba61a4ed632047f5a37d27393943667aadd94",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#797"
+        },
+        {
+          "plan_sha256": "4e6f9e75bffd67b1ed522d51f12b875c49bd5ecd47d494299b9e9bbc7ccd1339",
+          "roadmap_sha256": "c446c22154e83cf629cbaa5d2f2c46abd56b7b16e535f2faba41262351187526",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1027"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
@@ -8477,6 +8497,14 @@
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "EXECFIND",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "8b5acee0fe7dcd2645a523cb41bb71e10268584207eeafd17f7d4cdc6c2bf8b8",
+          "roadmap_sha256": "c446c22154e83cf629cbaa5d2f2c46abd56b7b16e535f2faba41262351187526",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1027"
+        }
+      ],
       "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",

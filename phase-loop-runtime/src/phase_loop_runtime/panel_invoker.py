@@ -510,8 +510,8 @@ PRESIDENT_LADDER: tuple[str, ...] = (
     # EC-PRESROUTE-3: the seat-alias order. Each rung is a review-policy SEAT alias, not
     # a model id; it resolves to its vendor's registry PIN through
     # DEFAULT_REVIEW_SEAT_ALIASES, where the ``model-id-source:`` markers live.
-    "sol",
     "fable",
+    "sol",
     "grok",
     "gemini",
 )

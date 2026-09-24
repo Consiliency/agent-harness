@@ -1262,8 +1262,9 @@ Source: agent-harness#935 (maintainer direction 2026-09-21); gap record: agent-h
   Code; by a native president fill accepted under `heartbeat_only`; by a fill whose digests do not
   bind the brief and findings it was asked to rule on.
 - [ ] EC-PRESROUTE-3 — **The ladder is ordered by seat alias, stated here once, on each
-  vendor's current registry id.** `PRESIDENT_LADDER` equals `("sol", "fable", "grok", "gemini")`
-  (Astra, Fable, Grok, Gemini) — this criterion is the ONLY place the order is written; the
+  vendor's current registry id.** `PRESIDENT_LADDER` equals `("fable", "sol", "grok", "gemini")`
+  (Claude, Astra, Grok, Gemini) — the 2026-09-24 maintainer ruling in agent-harness#1027
+  supersedes the original Sol-first order. This criterion is the ONLY place the order is written; the
   Execution Notes, the verification recipe and the pinned tests reference it. Each alias resolves
   to its vendor's frozen registry PIN (the documented Opus substitution counts as the `fable`
   seat); at freeze the four PINs are each vendor's current id as recorded by the registry's own

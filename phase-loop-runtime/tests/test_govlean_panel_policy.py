@@ -1,17 +1,18 @@
 """GOVLEAN review-tier + PRESROUTE president-ladder falsifiers (SL-0 frozen corpus).
 
-This file is frozen byte-equal from SL-0 landing until merge (content_tdd_receipt.v1).
+This file was frozen byte-equal from SL-0 landing until agent-harness#998 merged
+(content_tdd_receipt.v1). The post-merge default-order amendment is agent-harness#1027.
 The pinned ``-k`` node identifiers EC-PRESROUTE selects are ``ladder`` and
 ``requires_president_false_refused``; the remaining tests are order-agnostic
 GOVLEAN invariants that stay green across the ladder reorder because they name
 rungs by ``PRESIDENT_LADDER`` index, not by literal alias.
 
-Contract SL-1/SL-2 must satisfy to turn the pinned nodes green (they may not edit
-this file):
+The pinned contracts were frozen for SL-1/SL-2; the post-merge default-order
+amendment changes only the first assertion:
 
-* ``panel_invoker.PRESIDENT_LADDER == ("sol", "fable", "grok", "gemini")`` — the
-  EC-PRESROUTE-3 seat-alias order, each entry a bare alias resolving to its
-  vendor's registry PIN (EC-PRESROUTE-3).
+* ``panel_invoker.PRESIDENT_LADDER == ("fable", "sol", "grok", "gemini")`` — the
+  amended EC-PRESROUTE-3 seat-alias order, each entry a bare alias resolving to
+  its vendor's registry PIN (agent-harness#1027).
 * ``panel_invoker.enforce_requires_president(tier, *, requires_president: bool)``
   raises ``PresidentPolicyError`` with code ``requires_president_override_refused``
   for a ``PLAN``/``PRODUCTION_CODE`` landing carrying ``requires_president=False``,
@@ -43,7 +44,7 @@ pytestmark = pytest.mark.skipif(
 
 # The EC-PRESROUTE-3 ladder is written in exactly one place in the codebase
 # (``PRESIDENT_LADDER``); this expectation is the pinned test referencing it.
-EC_PRESROUTE_3_LADDER = ("sol", "fable", "grok", "gemini")
+EC_PRESROUTE_3_LADDER = ("fable", "sol", "grok", "gemini")
 _SEAT_ALIASES = {"fable", "sol", "gemini", "grok"}
 
 

@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Opus 5.5 is the built-in first president rung (agent-harness#1027)
+
+- The built-in president ladder now starts with the `fable` seat, which resolves to
+  Claude Opus 5.5, followed by Astra, Grok and Gemini. This applies without a user
+  or repository configuration file. Explicit ladder overrides and their validation
+  keep the same precedence and behavior.
+
 ### Qualified agy 1.2.10 entry image (agent-harness#1008)
 
 - Admit the newly published 1.2.10 Linux x64 image for brokered Gemini
@@ -59,8 +66,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Configurable president ladder (agent-harness#998 follow-up)
 
-- **The president fallback order is configuration, not code.** `PRESIDENT_LADDER` stays the
-  built-in order; `advisor_board.config.load_president_ladder` layers the user file's
+- **The president fallback order became configurable.** This change left
+  `PRESIDENT_LADDER` unchanged; `advisor_board.config.load_president_ladder` layers the user file's
   `[president] ladder` (`$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`) and then the
   repository's `.agent-harness/advisor-boards.toml` over it. A malformed ladder is refused,
   never silently replaced by the built-in. `advisor-board --landing-tier`, the runner's
