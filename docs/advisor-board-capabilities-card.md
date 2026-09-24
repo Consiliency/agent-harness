@@ -385,9 +385,9 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | Legacy invoke_panel | Existing behavior | Unsupported |
 | CLI default four-vendor board | Existing behavior | Preserves four vendors; refuses before auth if Gemini capability is missing or changed |
 
-The Gemini extension (agent-harness#905) admits only the qualified `agy` 1.2.9
+The Gemini extension (agent-harness#905) admits only the qualified `agy` 1.2.10
 Linux x64 entry image SHA256
-`1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711`
+`aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67`
 and requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, acknowledged stdin input, deny-all settings and no
 staged-tree attachment. The executable/settings are immutable mounts in a private
@@ -396,10 +396,10 @@ legitimate refresh writes survive. Required bwrap flags are checked at admission
 An image update needs qualification before the supported digest changes. The
 runtime performs no release discovery or image search: it hashes the single
 `agy` resolved on `PATH` and refuses any other digest, including the previously
-qualified 1.2.7 image. A durable image catalog, upstream-release discovery and
-fleet updater coordination are tracked by agent-harness#1008.
-The redacted 1.2.9 qualification record and exact source hashes are in
-`plans/evidence/agy-1.2.9-linux-x64-qualification.json`; that evidence record is
+qualified 1.2.9 and 1.2.7 images. A durable image catalog, upstream-release
+discovery and fleet updater coordination are tracked by agent-harness#1008.
+The redacted 1.2.10 qualification record and exact source hashes are in
+`plans/evidence/agy-1.2.10-linux-x64-qualification.json`; that evidence record is
 not a second admission source.
 `plans/evidence/qualified-provider-images.json` points to the current record.
 The `qualified-agy-image` CI check compares its source hashes with the checkout
