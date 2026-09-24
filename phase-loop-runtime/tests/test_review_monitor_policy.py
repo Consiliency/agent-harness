@@ -278,14 +278,15 @@ def test_real_broker_expired_admission_never_invokes(tmp_path):
 def test_owner_death_reaps_detached_descendant(tmp_path):
     marker = tmp_path / "descendant-host-pid"
     leader_marker = tmp_path / "provider-host-pid"
-    # /proc remains the host mount, so stat exposes a host PID despite PID isolation.
+    # /proc inside the owner is the namespace's own procfs (agent-harness#1003): each process
+    # records its namespace link and local PID, and the host PID is resolved from outside.
     child_code = (
         "import os,time,pathlib; os.setsid(); "
-        f"pathlib.Path({str(marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0]); "
+        f"pathlib.Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
         "time.sleep(60)"
     )
-    provider_code = (f"import subprocess,sys,time,pathlib; "
-                     f"pathlib.Path({str(leader_marker)!r}).write_text(pathlib.Path('/proc/self/stat').read_text().split()[0]); "
+    provider_code = (f"import os,subprocess,sys,time,pathlib; "
+                     f"pathlib.Path({str(leader_marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
                      f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)")
     owner_code = (
         "import os,sys,threading; from pathlib import Path; "
@@ -301,7 +302,7 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
-        descendant = int(marker.read_text())
+        descendant = _host_pid(marker.read_text())
         owner.kill()
         owner.wait(5)
         deadline = time.monotonic() + 5
@@ -315,9 +316,8 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
         if descendant is not None and Path(f"/proc/{descendant}").exists():
             os.kill(descendant, signal.SIGKILL)
         if leader_marker.exists():
-            leader = int(leader_marker.read_text())
-            try: os.kill(leader, signal.SIGKILL)
-            except ProcessLookupError: pass
+            try: os.kill(_host_pid(leader_marker.read_text(), timeout_s=0), signal.SIGKILL)
+            except (AssertionError, ProcessLookupError): pass
 
 
 @pytest.mark.parametrize("empty,cancelled", [(False, False), (True, False), (False, True)])
@@ -1047,3 +1047,31 @@ def test_cli_refuses_native_leg_with_heartbeat_only_before_loading_the_fill(tmp_
     record = json.loads(capsys.readouterr().out)
     assert record["status"] == "UNAVAILABLE" and record["monitoring"]["terminal_reason"] == "policy_refusal"
     assert "native_fill" in record["monitoring"]["diagnostic"]
+
+
+def _host_pid(record: str, timeout_s: float = 5.0) -> int:
+    """Host PID for a ``"<pid-namespace link> <namespace-local pid>"`` record.
+
+    Inside the owner wrapper /proc is the namespace's OWN procfs (agent-harness#1003), so a
+    process can only report its namespace-local PID; the host PID is resolved from outside
+    through the host /proc (the process whose pid namespace matches and whose innermost
+    ``NSpid`` is that PID).
+    """
+    link, local = record.split()
+    deadline = time.monotonic() + timeout_s
+    while True:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                if os.readlink(f"/proc/{entry}/ns/pid") != link:
+                    continue
+                nspid = next(line for line in Path(f"/proc/{entry}/status").read_text().splitlines()
+                             if line.startswith("NSpid:"))
+            except (OSError, StopIteration):
+                continue
+            if nspid.split()[-1] == local:
+                return int(entry)
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"no host process for {record!r}")
+        time.sleep(.02)

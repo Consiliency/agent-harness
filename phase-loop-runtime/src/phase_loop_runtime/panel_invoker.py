@@ -242,8 +242,14 @@ class _ReviewMonitor:
             raise _ReviewOperationCancelled("review_operation_cancelled")
         # The PID namespace's init owns even descendants that start a new session.
         # Kernel parent-death notification kills the namespace on abrupt owner loss.
+        # ``--proc /proc`` gives the new PID namespace its OWN procfs (agent-harness#1003):
+        # with the host /proc bind-mounted instead, a provider that starts its own
+        # bubblewrap sandbox -- codex's workspace-write sandbox -- resolves its children's
+        # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
+        # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
+        # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev",
+                "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
                 *(gemini_profile.mount_args if gemini_profile is not None else ()),
                 "--", *command]
 
