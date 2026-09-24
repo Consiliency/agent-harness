@@ -5,7 +5,7 @@ on:
     paths:
       - 'plans/evidence/agy-*-linux-x64-qualification.json'
       - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/**'
       - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
       - '.github/workflows/qualified-agy-image.yml'
@@ -14,7 +14,7 @@ on:
     paths:
       - 'plans/evidence/agy-*-linux-x64-qualification.json'
       - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
+      - 'phase-loop-runtime/src/phase_loop_runtime/**'
       - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
       - '.github/workflows/qualified-agy-image.yml'
@@ -35,5 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify source pins, latest release, archive and executable
-        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py
+      - name: Verify qualification source pins
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
+      - name: Verify latest release, archive and executable
+        if: always()
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --upstream-only

@@ -38,7 +38,7 @@ def image_constants():
             for target in node.targets if isinstance(target, ast.Name) and target.id in names}
 
 
-def validate_record():
+def validate_record(*, verify_sources=True):
     catalog = json.loads((EVIDENCE / "qualified-provider-images.json").read_text())
     require(catalog["schema"] == "qualified_provider_images.v1", "catalog schema mismatch")
     require(set(catalog["routes"]) == {"gemini_heartbeat_linux_x64"}, "catalog route mismatch")
@@ -58,9 +58,10 @@ def validate_record():
     require(record["help_sha256"] == constants["QUALIFIED_HELP_SHA256"], "help digest mismatch")
     require(record["isolation_profile"] == constants["PROFILE_ID"], "isolation profile mismatch")
     pins = record["source_sha256"]
-    actual = {str(path.relative_to(PACKAGE)): digest_file(path) for path in PACKAGE.rglob("*.py")}
-    actual["qualify_gemini_heartbeat.py"] = digest_file(REPO / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py")
-    require(pins == actual, "qualification source hashes differ from this checkout")
+    if verify_sources:
+        actual = {str(path.relative_to(PACKAGE)): digest_file(path) for path in PACKAGE.rglob("*.py")}
+        actual["qualify_gemini_heartbeat.py"] = digest_file(REPO / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py")
+        require(pins == actual, "qualification source hashes differ from this checkout")
     require(record["validator"] == {"validated": 3,
                                     "operations": ["cancel", "completion", "owner-loss"],
                                     "route_qualified": True}, "qualification validation mismatch")
@@ -70,7 +71,7 @@ def validate_record():
                 row["help_sha256"] == record["help_sha256"] and
                 row["profile"]["id"] == record["isolation_profile"]
                 for row in record["records"]), "qualification record image or profile mismatch")
-    return record, len(actual)
+    return record, len(pins)
 
 
 def verify_archive(record, archive):
@@ -89,8 +90,14 @@ def verify_archive(record, archive):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, help="verify a locally downloaded official asset")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--source-only", action="store_true", help="verify the record and source pins without network")
+    mode.add_argument("--upstream-only", action="store_true", help="verify the latest release without source pins")
     args = parser.parse_args()
-    record, source_count = validate_record()
+    record, source_count = validate_record(verify_sources=not args.upstream_only)
+    if args.source_only:
+        print(json.dumps({"source_files": source_count, "source_pins_verified": True}))
+        return
     request = Request(API, headers={"Accept": "application/vnd.github+json",
                                     "User-Agent": "agent-harness-qualified-image-check"})
     with urlopen(request, timeout=30) as response:
@@ -113,6 +120,7 @@ def main():
                     require(target.tell() <= 128_000_000, "release asset exceeds expected size")
             verify_archive(record, archive)
     print(json.dumps({"latest_release": release["tag_name"], "source_files": source_count,
+                      "source_pins_verified": not args.upstream_only,
                       "asset_sha256": record["upstream_asset_sha256"],
                       "image_sha256": record["image_sha256"], "verified": True}))
 
