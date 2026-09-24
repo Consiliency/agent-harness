@@ -401,6 +401,9 @@ fleet updater coordination are tracked by agent-harness#1008.
 The redacted 1.2.9 qualification record and exact source hashes are in
 `plans/evidence/agy-1.2.9-linux-x64-qualification.json`; that evidence record is
 not a second admission source.
+`plans/evidence/qualified-provider-images.json` points to the current record.
+The `qualified-agy-image` CI check compares its source hashes with the checkout
+and verifies the latest official release archive and extracted executable.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation

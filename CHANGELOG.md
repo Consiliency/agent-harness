@@ -12,7 +12,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Gemini heartbeat-only review after real completion, cancellation and owner-loss
   qualification. Hosts must install 1.2.9 with this runtime update; both the
   previous image and unknown future images refuse before provider launch. The
-  catalog and fleet update policy remain tracked by agent-harness#1008.
+  repository's current-image record and CI provenance check expose the source,
+  archive and executable binding; automatic fleet updates remain tracked by
+  agent-harness#1008.
 
 ### Configurable president ladder (agent-harness#998 follow-up)
 
