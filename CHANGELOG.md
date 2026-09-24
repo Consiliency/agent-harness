@@ -37,6 +37,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   replace CI: selection misses golden/subprocess consumers (`--full` covers them), and Gate A
   and 3.11/3.12 still run in CI.
 
+### agy source pins: full check once per release (agent-harness#1029)
+
+- `qualified-agy-image` now checks, on pull requests and pushes that touch the route or
+  the evidence, only the qualification record and the route's core files
+  (`verify_qualified_agy_image.py --route-core`: `gemini_heartbeat.py`,
+  `qualify_gemini_heartbeat.py`, a tripwire for direct edits). An ordinary runtime change
+  no longer needs a live Gemini requalification per PR.
+- The full pin set (every package source) blocks publication (`publish-pypi.yml`, before
+  the build), blocks a release-cut PR (merging it changes `RELEASE_PIN`) or a PR that
+  changes the qualification evidence (`scripts/agy_full_pin_scope.sh`, judged on the merge
+  commit), and is reported as a non-blocking warning nightly. The latest-upstream-release
+  check moves to its own nightly/manual job.
+
 ## [0.7.17] - 2026-09-24
 
 ### Opus 5.5 is the default first president rung (agent-harness#1025)

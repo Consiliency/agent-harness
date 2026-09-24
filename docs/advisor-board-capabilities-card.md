@@ -402,8 +402,13 @@ The redacted 1.2.10 qualification record and exact source hashes are in
 `plans/evidence/agy-1.2.10-linux-x64-qualification.json`; that evidence record is
 not a second admission source.
 `plans/evidence/qualified-provider-images.json` points to the current record.
-The `qualified-agy-image` CI check compares its source hashes with the checkout
-and verifies the latest official release archive and extracted executable.
+The `qualified-agy-image` CI check compares the record's hashes of the route's core
+files (`gemini_heartbeat.py`, `qualify_gemini_heartbeat.py`) with the checkout on
+pull requests and pushes that touch them or the evidence. The full source-hash set
+blocks publication, a release-cut pull request and a pull request that changes the
+evidence, and is reported without blocking nightly (agent-harness#1029), so a release
+still needs a qualification series on its exact tree. Nightly and manual runs also
+verify the latest official release archive and extracted executable.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation

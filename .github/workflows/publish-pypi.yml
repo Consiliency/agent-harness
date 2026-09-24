@@ -48,6 +48,13 @@ jobs:
           fi
           bwrap --unshare-user --unshare-pid --ro-bind / / -- /bin/true
           unshare --net --map-root-user true
+      - name: Verify every agy qualification source pin (release only)
+        # agent-harness#1029: pull requests check only the qualified route's core files
+        # (qualified-agy-image.yml); a release must ship a tree whose EVERY package source
+        # matches the live qualification record, so this blocks publication otherwise. It runs
+        # before the build so nothing the build writes can be hashed.
+        if: github.event_name != 'pull_request'
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
       - name: Verify tag matches phase-loop-runtime version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
