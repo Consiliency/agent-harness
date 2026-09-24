@@ -82,6 +82,15 @@ def test_replayed_uuid_from_earlier_message_cannot_restore_old_verdict(tmp_path)
     ]) == "Current review\nDISAGREE"
 
 
+@pytest.mark.parametrize("message_ids", [("old", "new"), (None, None)])
+def test_changed_uuid_reused_across_messages_fails_closed(tmp_path, message_ids):
+    old_id, new_id = message_ids
+    assert _extract(tmp_path, [
+        _assistant("Old review\nAGREE", message_id=old_id, uuid="same", stop_reason="end_turn"),
+        _assistant("Current review\nDISAGREE", message_id=new_id, uuid="same", stop_reason="end_turn"),
+    ]) == ""
+
+
 def test_replayed_uuid_after_user_boundary_cannot_restore_old_verdict(tmp_path):
     old = _assistant("Old review\nAGREE", uuid="old", stop_reason="end_turn")
     assert _extract(tmp_path, [
@@ -227,10 +236,33 @@ def test_raw_unicode_separator_in_final_text_is_preserved(tmp_path, separator):
                     ensure_ascii=False) == final
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_raw_unicode_separator_at_text_block_edge_survives(tmp_path, separator):
+    records = [
+        _assistant("First finding" + separator, uuid="first", stop_reason=None),
+        _assistant("Further detail\nDISAGREE", uuid="last", stop_reason="end_turn"),
+    ]
+    assert _extract(tmp_path, records, ensure_ascii=False) == (
+        "First finding" + separator + "\nFurther detail\nDISAGREE"
+    )
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_raw_unicode_separator_at_message_edge_survives(tmp_path, separator):
+    records = [
+        _assistant(separator + "First finding", uuid="first", stop_reason=None),
+        _assistant("DISAGREE" + separator, uuid="last", stop_reason="end_turn"),
+    ]
+    assert _extract(tmp_path, records, ensure_ascii=False) == (
+        separator + "First finding\nDISAGREE" + separator
+    )
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PTY")
 @pytest.mark.parametrize(("mode", "first", "last"), [
     ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
     ("review", "REVIEW START\n1. Raw\u2028separator stays in text", "REVIEW END\nPARTIALLY AGREE"),
+    ("review", "REVIEW START\n1. Edge separator\u2028", "REVIEW END\nPARTIALLY AGREE"),
     ("president", "FINDING F001: BLOCKING — Preserve the first finding", "FORCING DECISION: Fix F001 before landing"),
 ])
 def test_brokered_tui_returns_complete_split_review(tmp_path, monkeypatch, mode, first, last):

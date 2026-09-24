@@ -3944,6 +3944,8 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
             current_id is None or current_id != message_id
             or record_id not in current_group_uuids
         ):
+            if record_version not in seen_record_versions:
+                return ""
             continue
         if record_version in seen_record_versions:
             continue
@@ -3977,14 +3979,14 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
             item["text"] for item in content
             if isinstance(item, dict) and item.get("type") == "text"
             and isinstance(item.get("text"), str)
-        ).strip()
+        )
         key = record_id if record_id is not None else len(blocks)
         blocks[key] = text
-        if record_id is not None:
+        if record_id is not None and record_version is not None:
             seen_record_uuids.add(record_id)
             current_group_uuids.add(record_id)
             seen_record_versions.add(record_version)
-    return "" if incomplete or pending_terminal or (require_terminal and not terminal) else "\n".join(text for text in blocks.values() if text).strip()
+    return "" if incomplete or pending_terminal or (require_terminal and not terminal) else "\n".join(text for text in blocks.values() if text).strip(" \t\r\n")
 
 
 def _cleanup_broker_claude_transcript(
