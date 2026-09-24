@@ -131,29 +131,46 @@ say() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 
 # --- 1) uv (cross-OS official installer; no Homebrew dependency) -----------
 if ! command -v uv >/dev/null 2>&1; then
-    say "[1/3] installing uv (astral.sh official installer)…"
+    say "[1/4] installing uv (astral.sh official installer)…"
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not on PATH after install; add ~/.local/bin to PATH and re-run." >&2; exit 1; }
 
-# --- 2) phase-loop runtime CLI from the pinned PUBLIC release ---------------
-say "[2/3] installing phase-loop-runtime ${REF} from ${REPO}…"
-uv tool install --force "git+${REPO}@${REF}#subdirectory=phase-loop-runtime"
+# --- resolve the ref to ONE commit, before anything is installed ------------
+# agent-harness#980: `git clone --branch` accepts a branch or tag but not a commit SHA,
+# so a fresh full-SHA pin installed the runtime and THEN failed at the skill clone. The
+# skill-source checkout is now fetched first (init + fetch works for a branch, a tag or
+# a full SHA alike), and the runtime is installed from the commit that fetch resolved,
+# so runtime and skills always come from the same source. A ref that cannot be fetched
+# fails here, before any installation; a directory this run created is removed again.
+say "[2/4] resolving ${REF} from ${REPO}…"
+_created_home=""
+if [ ! -d "$HOME_DIR/.git" ]; then
+    mkdir -p "$HOME_DIR"
+    _created_home=1
+    git -C "$HOME_DIR" init -q
+    git -C "$HOME_DIR" remote add origin "$REPO"
+fi
+if ! git -C "$HOME_DIR" fetch --depth 1 origin "$REF" ||
+   ! RESOLVED="$(git -C "$HOME_DIR" rev-parse --verify -q 'FETCH_HEAD^{commit}')"; then
+    [ -n "$_created_home" ] && rm -rf -- "$HOME_DIR"
+    echo "ERROR: could not resolve ${REF} from ${REPO}; nothing was installed." >&2
+    exit 1
+fi
+say "  ${REF} -> ${RESOLVED}"
+
+# --- 2) phase-loop runtime CLI from the resolved commit -----------------------
+say "[3/4] installing phase-loop-runtime ${RESOLVED} from ${REPO}…"
+uv tool install --force "git+${REPO}@${RESOLVED}#subdirectory=phase-loop-runtime"
 hash -r 2>/dev/null || true
 export PATH="$HOME/.local/bin:$PATH"
 phase-loop --version
 
 # --- 3) workflow skills for each harness, from the public bundle -----------
 # Keep a release checkout as the source for copied, harness-expanded skills.
-say "[3/3] installing workflow skills (${HARNESSES}) from ${REF}…"
-if [ -d "$HOME_DIR/.git" ]; then
-    git -C "$HOME_DIR" fetch --depth 1 origin "$REF"
-    git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q FETCH_HEAD
-else
-    mkdir -p "$(dirname "$HOME_DIR")"
-    git clone --depth 1 --branch "$REF" "$REPO" "$HOME_DIR"
-fi
+say "[4/4] installing workflow skills (${HARNESSES}) from ${REF} (${RESOLVED})…"
+git -C "$HOME_DIR" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
 for _h in $HARNESSES; do
     # An explicit AGENT_HARNESS_SKILL_DEST override is only honored for a single harness.
     if [ "$HARNESS" != all ] && [ -n "${AGENT_HARNESS_SKILL_DEST:-}" ]; then
@@ -167,7 +184,7 @@ for _h in $HARNESSES; do
     echo "  ✓ ${_h} skills → ${_dest}"
 done
 
-say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF}."
+say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF} (${RESOLVED})."
 echo "  runtime : $(command -v phase-loop)  ($(phase-loop --version 2>/dev/null))"
 echo "  bundle  : ${HOME_DIR}/phase-loop-skills"
 # Report the update path from where THIS run's ref actually came, not from a proxy.

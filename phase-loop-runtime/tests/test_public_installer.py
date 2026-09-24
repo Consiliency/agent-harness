@@ -73,13 +73,21 @@ if name == 'git' and command not in ('fetch', 'checkout', 'clone'):
 with open(os.environ['INSTALL_TEST_LOG'], 'a') as log:
     log.write(json.dumps([name, *args]) + '\\n')
 if name == 'git' and command == 'clone':
-    subprocess.run([{git!r}, 'clone', '-q', '--local', os.environ['INSTALL_TEST_TEMPLATE'], args[-1]], check=True)
+    # Honest stand-in: the REAL clone with the caller's arguments (so `--branch <sha>`
+    # fails exactly as it does against the real remote -- agent-harness#980), against
+    # the local template.
+    args[args.index(os.environ['AGENT_HARNESS_REPO'])] = os.environ['INSTALL_TEST_TEMPLATE']
+    args = [a for a in args if a not in ('--depth', '1')]
+    sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'git' and command == 'fetch':
-    if os.environ.get('INSTALL_TEST_REAL_UPDATE'):
-        args[args.index('origin')] = os.environ['INSTALL_TEST_TEMPLATE']
-        sys.exit(subprocess.run([{git!r}, *args]).returncode)
-    sys.exit(int(os.environ.get('INSTALL_TEST_FETCH_RC', '0')))
-elif name == 'git' and command == 'checkout' and os.environ.get('INSTALL_TEST_REAL_UPDATE'):
+    if os.environ.get('INSTALL_TEST_FETCH_RC'):
+        sys.exit(int(os.environ['INSTALL_TEST_FETCH_RC']))
+    # The local template stands in for the remote. `--depth` is dropped: a shallow fetch
+    # from a local path is refused for an arbitrary commit, a real remote allows it.
+    args[args.index('origin')] = os.environ['INSTALL_TEST_TEMPLATE']
+    args = [a for a in args if a not in ('--depth', '1')]
+    sys.exit(subprocess.run([{git!r}, *args]).returncode)
+elif name == 'git' and command == 'checkout':
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'phase-loop' and 'install' in args:
     from phase_loop_runtime.cli import main
@@ -174,7 +182,9 @@ def test_absent_or_recognized_checkout_installs_copies(installation, existing, s
     assert result.returncode == 0, result.stderr
     calls = effects(env)
     git_calls = [call for call in calls if call[0] == "git"]
-    assert any(("fetch" if existing else "clone") in call for call in git_calls)
+    # agent-harness#980: fresh and existing checkouts both fetch; nothing clones by --branch.
+    assert any("fetch" in call for call in git_calls)
+    assert not any("clone" in call for call in git_calls)
     installs = [call for call in calls if call[0] == "phase-loop" and "install" in call]
     assert len(installs) == 1
     assert "--copy" in installs[0] and "--symlink" not in installs[0]
@@ -230,3 +240,48 @@ def test_managed_checkout_with_git_url_rewrite_can_update(installation):
     result = run_installer(env)
     assert result.returncode == 0, result.stderr
     assert any(call[0] == "git" and "checkout" in call for call in effects(env))
+
+
+def _resolved_install(env):
+    """The runtime ref ``uv tool install`` was given."""
+    installs = [call for call in effects(env) if call[0] == "uv" and "install" in call]
+    assert len(installs) == 1, installs
+    return installs[0][-1].split("@", 1)[1].split("#", 1)[0]
+
+
+@pytest.mark.parametrize("pin", ["tag", "branch", "full_sha"])
+def test_a_fresh_install_resolves_runtime_and_skills_to_one_commit(installation, pin):
+    # agent-harness#980: a fresh full-SHA pin used to install the runtime and then fail at
+    # `git clone --branch <sha>`.
+    env, template, git_run = installation
+    commit = git_run("-C", str(template), "rev-parse", "HEAD").stdout.strip()
+    git_run("-C", str(template), "branch", "release-line")
+    env["AGENT_HARNESS_REF"] = {"tag": "v1.2.3", "branch": "release-line", "full_sha": commit}[pin]
+    result = run_installer(env)
+    assert result.returncode == 0, result.stderr
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert git_run("-C", str(target), "rev-parse", "HEAD").stdout.strip() == commit
+    assert _resolved_install(env) == commit, "the runtime and the skills came from different sources"
+    assert (Path(env["AGENT_HARNESS_SKILL_DEST"]) / "codex-plan-detailed").is_dir()
+
+
+def test_an_unresolvable_ref_fails_before_any_installation(installation):
+    env, _, _ = installation
+    env["AGENT_HARNESS_REF"] = "no-such-ref"
+    result = run_installer(env)
+    assert result.returncode != 0
+    assert "nothing was installed" in result.stderr
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+    assert not any(call[0] == "phase-loop" and "install" in call for call in effects(env))
+    # the directory this run created is removed, so a rerun is not refused
+    assert not Path(env["AGENT_HARNESS_HOME"]).exists()
+
+
+def test_a_failed_fetch_into_an_existing_checkout_keeps_it(installation):
+    env, template, _ = installation
+    shutil.copytree(template, env["AGENT_HARNESS_HOME"])
+    env["INSTALL_TEST_FETCH_RC"] = "1"
+    result = run_installer(env)
+    assert result.returncode != 0
+    assert Path(env["AGENT_HARNESS_HOME"], "RELEASE_PIN").is_file()
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
