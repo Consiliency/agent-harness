@@ -41,17 +41,19 @@ the ladder walk beside the ruling (or beside the refusal).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import subprocess
 import tempfile
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from . import panel_invoker
+from . import gemini_heartbeat, panel_invoker
 from .advisor_board import backing
 from .advisor_board.schema import Board, Seat
 from .panel_invoker import DEFAULT_REVIEW_SEAT_ALIASES, PresidentPolicyError
@@ -65,6 +67,8 @@ from .president_operation import (
 # returns it.
 PRESIDENT_ROUTE_UNAVAILABLE = "president_execution_route_unavailable"
 PRESIDENT_NATIVE_FILL_DEFERRED = "native_fill_deferred"
+# agent-harness#1001: a cancelled operation stops the walk (no later rung launches).
+PRESIDENT_OPERATION_CANCELLED = "president_operation_cancelled"
 
 _PROMPT_PREFIX = panel_invoker._president_prompt(())
 _REASK_SUFFIX = panel_invoker._president_prompt((), format_reask=True)[len(_PROMPT_PREFIX):]
@@ -133,6 +137,10 @@ class PresidentInvoke:
     # The configured rung order (``load_president_ladder``); ``None`` walks the
     # built-in ``PRESIDENT_LADDER``.
     ladder: tuple[str, ...] | None = None
+    # agent-harness#1001: the operation's cancellation, and the invocation id its
+    # heartbeat records are filed under.
+    cancel_event: threading.Event | None = None
+    invocation: str = field(default_factory=lambda: uuid.uuid4().hex)
     attempts: list[PresidentAttempt] = field(default_factory=list)
 
     def _record(
@@ -157,16 +165,30 @@ class PresidentInvoke:
             self._record(rung, None, "unavailable", "president_unavailable", detail)
             return {"status": "unavailable", "code": "president_unavailable", "detail": detail}
         harness = str(seat.harness or "").lower()
+        # A cancelled operation stops the walk on EVERY route, the native fill included.
+        self._raise_if_cancelled(rung, seat)
         if harness == "claude" and panel_invoker._under_claude_code(self.base_env):
             return self._native_fill(rung, seat, prompt)
         try:
-            return self._launch(rung, seat, harness, prompt)
+            response = self._launch(rung, seat, harness, prompt)
+            if response.get("status") != "ok":
+                # A launch the cancellation ended is a cancellation, not a rung failure.
+                self._raise_if_cancelled(rung, seat)
+            return response
         except PresidentPolicyError:
             raise
         except Exception as exc:  # a broken route is a typed failure, never a descent
+            # A cancelled operation stops the whole walk: no later rung may launch.
+            self._raise_if_cancelled(rung, seat)
             detail = f"president {rung!r} route failed: {type(exc).__name__}: {exc}"
             self._record(rung, seat, "failed", "president_invocation_failed", detail)
             return {"status": "failed", "code": "president_invocation_failed", "detail": detail}
+
+    def _raise_if_cancelled(self, rung: str, seat: Seat) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            detail = "the president operation was cancelled"
+            self._record(rung, seat, "cancelled", PRESIDENT_OPERATION_CANCELLED, detail)
+            raise PresidentPolicyError(PRESIDENT_OPERATION_CANCELLED, detail)
 
     def _native_fill(self, rung: str, seat: Seat, prompt: str) -> Mapping[str, str]:
         if self.monitoring_policy == "heartbeat_only":
@@ -184,39 +206,37 @@ class PresidentInvoke:
 
     def _launch(self, rung: str, seat: Seat, harness: str, prompt: str) -> Mapping[str, str]:
         authorization = backing.prepare_president_isolation_authorization(
-            self.board, prompt, canonical_repo_authority=self.repo_dir
+            self.board, prompt, canonical_repo_authority=self.repo_dir,
+            monitoring_policy=self.monitoring_policy,
         )
-        backing.revalidate_president_isolation_authorization(
-            authorization, self.board, prompt, canonical_repo_authority=self.repo_dir
-        )
-        routes = dict(authorization.routes)
-        # Every launch -- the Claude self-PTY session included -- uses the route the
-        # revalidated authorization carries, never a fallback to the seat's own model: a
-        # seat the authorization did not route is refused without launching.
-        if harness not in routes:
-            raise ValueError(f"no authorized president route for {harness!r}")
-        with tempfile.TemporaryDirectory(prefix="phase-loop-president-") as scratch:
-            president_dir = Path(scratch) / "president"
-            out_dir = Path(scratch) / "out"
-            president_dir.mkdir()
-            out_dir.mkdir()
-            if harness == "claude":
-                rc, text, log = self._launch_claude(routes["claude"], prompt, out_dir)
-            elif harness == "gemini":
-                rc, text, log = self._launch_gemini(routes["gemini"], prompt, out_dir)
+        try:
+            backing.revalidate_president_isolation_authorization(
+                authorization, self.board, prompt, canonical_repo_authority=self.repo_dir
+            )
+            routes = dict(authorization.routes)
+            # Every launch -- the Claude self-PTY session included -- uses the route the
+            # revalidated authorization carries, never a fallback to the seat's own model: a
+            # seat the authorization did not route is refused without launching.
+            if harness not in routes:
+                raise ValueError(f"no authorized president route for {harness!r}")
+            if self.monitoring_policy != "heartbeat_only" and _injected_president_seam():
+                # The in-process control seam (a patched transport or launch site), under
+                # BOUNDED monitoring only -- the frozen corpus's seam, with the same
+                # identity rule as review seats (``_has_injected_review_execution_seam``).
+                # Never evidence. ``heartbeat_only`` never takes this branch: its guarantee
+                # (monitor, broker, egress) holds whatever the launch site is.
+                with tempfile.TemporaryDirectory(prefix="phase-loop-president-") as scratch:
+                    stage = Path(scratch) / "president"
+                    out_dir = Path(scratch) / "out"
+                    stage.mkdir()
+                    out_dir.mkdir()
+                    rc, text, log = self._transport(harness, routes[harness], prompt, stage, out_dir)
             else:
-                rc, text, log = panel_invoker._exec_leg(
-                    harness,
-                    president_dir,
-                    out_dir,
-                    None,
-                    prompt,
-                    "president",
-                    routes[harness],
-                    env=self.base_env,
-                    broker_prompt=prompt,
-                    broker_evidence={},
+                rc, text, log = self._launch_brokered(
+                    rung, harness, routes[harness], prompt, authorization
                 )
+        finally:
+            backing.close_president_isolation_authorization(authorization)
         if rc != 0 or not (text or "").strip():
             detail = f"president {rung!r} ({harness}) returned rc={rc}: {(log or '')[-400:]}"
             self._record(rung, seat, "failed", "president_invocation_failed", detail)
@@ -224,7 +244,148 @@ class PresidentInvoke:
         self._record(rung, seat, "ok", None, None, len(text))
         return {"status": "ok", "text": text}
 
-    def _launch_gemini(self, route_model: str, prompt: str, out_dir: Path) -> tuple[int, str, str]:
+    def _transport(
+        self,
+        harness: str,
+        route_model: str,
+        prompt: str,
+        stage: Path,
+        out_dir: Path,
+        *,
+        monitor: "panel_invoker._ReviewMonitor | None" = None,
+        latch: "panel_invoker._ProviderQuiescenceLatch | None" = None,
+    ) -> tuple[int, str, str]:
+        if harness == "claude":
+            return self._launch_claude(route_model, prompt, out_dir, monitor=monitor, latch=latch)
+        if harness == "gemini":
+            return self._launch_gemini(route_model, prompt, out_dir, monitor=monitor, latch=latch)
+        return panel_invoker._exec_leg(
+            harness,
+            stage,
+            out_dir,
+            None,
+            prompt,
+            "president",
+            route_model,
+            env=self.base_env,
+            broker_prompt=prompt,
+            broker_evidence={},
+            **({"review_monitor": monitor} if monitor is not None else {}),
+            **({"quiescence_latch": latch} if latch is not None else {}),
+        )
+
+    def _monitor(self, rung: str) -> "panel_invoker._ReviewMonitor":
+        ladder = panel_invoker.effective_president_ladder(self)
+        position = list(ladder).index(rung) if rung in ladder else 0
+        root = (
+            Path(self.stream_dir) if self.stream_dir is not None
+            else Path(self.repo_dir or ".") / ".phase-loop" / "review-monitoring"
+        )
+        return panel_invoker._ReviewMonitor(
+            root / "president-monitoring" / self.invocation / f"rung-{position}.json",
+            self.invocation, position, self.cancel_event or threading.Event(),
+        )
+
+    def _launch_brokered(
+        self,
+        rung: str,
+        harness: str,
+        route_model: str,
+        prompt: str,
+        authorization: "backing.PresidentIsolationAuthorization",
+    ) -> tuple[int, str, str]:
+        """agent-harness#1001: a rung launch through the SAME isolation a review seat gets.
+
+        Egress isolation (no retained capabilities), a single-use broker capability that
+        carries the president operation, the ``ParentUnixBroker`` over read-only staged
+        bytes, and -- under ``heartbeat_only`` -- a ``_ReviewMonitor`` (no model-thinking
+        deadline, no silence kill; cancellation and owner loss are the only stops). Any
+        missing piece refuses before a provider starts, with the real reason.
+        """
+        heartbeat = self.monitoring_policy == "heartbeat_only"
+        if self.repo_dir is None or not authorization.canonical_repo_sha256:
+            raise ValueError("president broker isolation requires a canonical repository")
+        repo = Path(self.repo_dir).resolve()
+        backing.activate_president_isolation_authorization(
+            authorization, self.board, prompt, canonical_repo_authority=repo
+        )
+        deadline_s = None if heartbeat else panel_invoker._MAX_LEG_TIMEOUT_S
+        with tempfile.TemporaryDirectory(prefix="phase-loop-president-") as scratch, \
+                contextlib.ExitStack() as egress_stack:
+            stage = Path(scratch) / "stage"
+            out_dir = Path(scratch) / "out"
+            stage.mkdir()
+            out_dir.mkdir()
+            for name, content in (
+                ("review-bundle.md", prompt),
+                ("review-instructions.md", _PRESIDENT_STAGE_INSTRUCTIONS),
+            ):
+                (stage / name).write_text(content, encoding="utf-8")
+                (stage / name).chmod(0o400)
+            egress_prefix = egress_stack.enter_context(panel_invoker._sandbox_egress.isolated_network(
+                timeout_s=None if heartbeat else float(panel_invoker._LEG_TIMEOUT_MAX_S) + 300.0,
+            ))
+            if not egress_prefix:
+                # Unconditional, unlike the review path's operator opt-out: this
+                # authorization DECLARES child_network_egress=False, and a launch without a
+                # filtered namespace would contradict it.
+                raise panel_invoker._sandbox_egress.EgressUnavailable(
+                    "egress isolation unavailable: the president launch requires a filtered namespace"
+                )
+            token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
+            egress_stack.callback(panel_invoker._EGRESS_LAUNCH_PREFIX.reset, token)
+            leg = backing.derive_president_leg_authorization(
+                authorization, self.board, prompt, harness=harness, model=route_model,
+                deadline_s=None if deadline_s is None else float(deadline_s),
+                instructions_sha256=hashlib.sha256(
+                    _PRESIDENT_STAGE_INSTRUCTIONS.encode("utf-8")
+                ).hexdigest(),
+                canonical_repo_authority=repo,
+            )
+            monitor = self._monitor(rung) if heartbeat else None
+            if monitor is not None:
+                monitor.record.update(
+                    admission_expires_monotonic_ns=leg.expires_monotonic_ns,
+                    authorization_expiry_scope="admission_only",
+                )
+                monitor.observe()
+            broker = backing.ParentUnixBroker(
+                leg, harness=harness, model=route_model, staged_dir=stage, canonical_repo=repo,
+            )
+            outcome: dict[str, object] = {}
+            try:
+                latch = panel_invoker._ProviderQuiescenceLatch()
+
+                def infer() -> tuple[str, str]:
+                    rc, text, log = self._transport(
+                        harness, route_model, prompt, stage, out_dir, monitor=monitor, latch=latch,
+                    )
+                    outcome.update(rc=rc, log=log)
+                    return ("OK" if rc == 0 and (text or "").strip() else "ERROR"), text
+
+                adapter = backing._make_broker_inference_adapter(infer, latch.cancel, latch.is_quiescent)
+                cancel = monitor.cancel if monitor is not None else self.cancel_event
+                response, _probe = broker.run_credentialless_client(
+                    adapter, deadline_s=None if deadline_s is None else float(deadline_s),
+                    **({"cancel_event": cancel} if cancel is not None else {}),
+                )
+                latch.raise_if_set()
+            finally:
+                broker.close()
+        if response is None:
+            return 1, "", "president broker completed without a response"
+        rc = int(outcome.get("rc", 1)) if response["status"] == "OK" else (int(outcome.get("rc", 1)) or 1)
+        return rc, str(response["text"]), str(outcome.get("log", ""))
+
+    def _launch_gemini(
+        self,
+        route_model: str,
+        prompt: str,
+        out_dir: Path,
+        *,
+        monitor: "panel_invoker._ReviewMonitor | None" = None,
+        latch: "panel_invoker._ProviderQuiescenceLatch | None" = None,
+    ) -> tuple[int, str, str]:
         # The brokered agy transport with the PRESIDENT's own final instruction (the
         # review transport asks for "the complete review and its required terminal
         # verdict"), launched only through ``_run_leg_with_liveness`` ->
@@ -232,16 +393,34 @@ class PresidentInvoke:
         protocol = _president_gemini_stream_protocol(prompt)
         deadline_s = panel_invoker._MAX_LEG_TIMEOUT_S
         command = panel_invoker._brokered_gemini_command(
-            model=route_model, deadline_s=deadline_s, staged_tree=None, monitoring_policy="bounded",
+            model=route_model, deadline_s=deadline_s, staged_tree=None,
+            monitoring_policy="heartbeat_only" if monitor is not None else "bounded",
         )
-        with _president_agy_environment(panel_invoker._broker_subscription_env(self.base_env)) as env:
-            try:
+        subscription_env = panel_invoker._broker_subscription_env(self.base_env)
+        if monitor is not None:
+            # agent-harness#1001: the heartbeat route is the review seat's -- an owned agy
+            # profile under the monitor, no print timeout, no silence kill.
+            gemini_heartbeat.require_capability(subscription_env)
+            with gemini_heartbeat.owned_profile(
+                subscription_env, settings_bytes=panel_invoker._broker_agy_settings_bytes(),
+                credential_path=Path(subscription_env.get("HOME", str(Path.home())))
+                / ".gemini/antigravity-cli/antigravity-oauth-token",
+            ) as profile:
                 proc = panel_invoker._run_leg_with_liveness(
-                    command, cwd=out_dir, env=env, deadline_s=deadline_s,
-                    input_text=protocol.transport,
+                    [profile.executable, *command[1:]], cwd=out_dir, env=profile.env,
+                    deadline_s=deadline_s, input_text=protocol.transport,
+                    quiescence_latch=latch, review_monitor=monitor, gemini_profile=profile,
                 )
-            except subprocess.TimeoutExpired:
-                return 124, "", "Gemini president deadline exceeded"
+        else:
+            with _president_agy_environment(subscription_env) as env:
+                try:
+                    proc = panel_invoker._run_leg_with_liveness(
+                        command, cwd=out_dir, env=env, deadline_s=deadline_s,
+                        input_text=protocol.transport,
+                        **({"quiescence_latch": latch} if latch is not None else {}),
+                    )
+                except subprocess.TimeoutExpired:
+                    return 124, "", "Gemini president deadline exceeded"
         if proc.returncode != 0:
             return proc.returncode, "", proc.stderr or ""
         rc, text, detail, _metadata = panel_invoker._broker_gemini_stream_result(
@@ -249,7 +428,15 @@ class PresidentInvoke:
         )
         return rc, text, detail or proc.stderr or ""
 
-    def _launch_claude(self, route_model: str, prompt: str, out_dir: Path) -> tuple[int, str, str]:
+    def _launch_claude(
+        self,
+        route_model: str,
+        prompt: str,
+        out_dir: Path,
+        *,
+        monitor: "panel_invoker._ReviewMonitor | None" = None,
+        latch: "panel_invoker._ProviderQuiescenceLatch | None" = None,
+    ) -> tuple[int, str, str]:
         # The brokered self-PTY session: tools off, no directory grant, answer read from
         # the session transcript. Called directly (not through the review wrapper) so a
         # host without a supported, logged-in Claude still fails closed on the session
@@ -275,10 +462,30 @@ class PresidentInvoke:
                 stall_threshold_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
                 allow_transcript_final=True,
                 broker_transcript_path=transcript,
+                **({"review_monitor": monitor} if monitor is not None else {}),
+                # The broker's stop path reaches the Claude process through the latch,
+                # exactly as for the review TUI seat.
+                **({"quiescence_latch": latch} if latch is not None else {}),
             )
         finally:
             panel_invoker._cleanup_broker_claude_transcript(transcript, None)
         return rc, text, log
+
+
+# The staged instructions a brokered president rung binds (the prompt itself is the
+# staged bundle): a fixed marker, so the broker's stage digest identifies the operation.
+_PRESIDENT_STAGE_INSTRUCTIONS = "public_board_president.v1: rule on every finding in the staged brief.\n"
+
+def _injected_president_seam() -> bool:
+    """True for the in-process control seam: a patched transport or launch site.
+
+    Nothing real can launch through it, so the broker is not constructed; like the
+    review seam, it is never evidence of a brokered execution.
+    """
+    return (
+        panel_invoker._has_injected_review_execution_seam()
+        or panel_invoker.launch_provider is not panel_invoker._PRODUCTION_LAUNCH_PROVIDER
+    )
 
 
 _PRESIDENT_GEMINI_FINAL_INSTRUCTION = (
@@ -349,6 +556,7 @@ def build_president_invoke(
     seat_aliases: Mapping[str, str] | None = None,
     monitoring_policy: str = "bounded",
     ladder: Sequence[str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> PresidentInvoke:
     from .panel_invoker import validate_president_ladder
 
@@ -360,4 +568,5 @@ def build_president_invoke(
         seat_aliases=seat_aliases,
         monitoring_policy=monitoring_policy,
         ladder=None if ladder is None else validate_president_ladder(ladder),
+        cancel_event=cancel_event,
     )
