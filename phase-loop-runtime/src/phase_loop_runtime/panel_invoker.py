@@ -4493,7 +4493,7 @@ def _normalize_tui_line(line: str) -> str:
 def _tui_visible_lines(chunk: bytes) -> list[str]:
     text = _ANSI_OSC_RE.sub("", chunk.decode("utf-8", errors="replace"))
     text = _ANSI_CSI_RE.sub(
-        lambda match: "\n" if match.group(0).endswith(("J", "H")) else "", text,
+        lambda match: "\n" if match.group(0) == "\x1b[2J" else "", text,
     )
     return re.split(r"[\r\n]+", text)
 
@@ -4547,7 +4547,7 @@ def _tui_drop_pre_answer_fragment(complete: bytes) -> tuple[bytes, bool]:
     """Discard the tail of a modal line that was incomplete when we answered."""
     boundaries = [position for position in (complete.find(b"\n"), complete.find(b"\r")) if position >= 0]
     for match in re.finditer(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", complete):
-        if match.group(0).endswith((b"J", b"H")):
+        if match.group(0) == b"\x1b[2J":
             boundaries.append(match.end() - 1)
             break
     if not boundaries:
@@ -4970,7 +4970,13 @@ def _run_claude_tui_session(
                 # trigger strings — its echo must not answer).
                 if (
                     ready_since_output
-                    and (not trust_answered or not tui_carry)
+                    and (
+                        not trust_answered
+                        or not any(
+                            _normalize_tui_line(line)
+                            for line in _tui_visible_lines(bytes(tui_carry))
+                        )
+                    )
                     and (trust_answered or not gate_signature_seen)
                     and now - last_novel >= _CLAUDE_TUI_READY_QUIESCENCE_S
                     and now - start_monotonic >= _CLAUDE_TUI_SUBMIT_DELAY_S
