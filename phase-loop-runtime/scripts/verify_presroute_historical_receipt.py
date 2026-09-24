@@ -41,13 +41,20 @@ def main() -> int:
     top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=requested_repo,
                          check=True, capture_output=True, text=True).stdout.strip()
     repo = Path(top).resolve()
-    receipt = repo / EVIDENCE_FILES[0]
-    if not receipt.is_file() or receipt.is_symlink():
-        raise FileNotFoundError(f"PRESROUTE receipt missing or not regular: {receipt}")
     subprocess.run(["git", "merge-base", "--is-ancestor", LANDING, "HEAD"],
                    cwd=repo, check=True)
-    subprocess.run(["git", "diff", "--exit-code", LANDING, "--", *EVIDENCE_FILES],
-                   cwd=repo, check=True)
+    for rel in EVIDENCE_FILES:
+        path = repo / rel
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"frozen PRESROUTE evidence drift: {rel} is missing or not regular")
+        original = subprocess.run(["git", "show", f"{LANDING}:{rel}"], cwd=repo,
+                                  check=True, capture_output=True).stdout
+        committed = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=repo,
+                                   check=True, capture_output=True).stdout
+        staged = subprocess.run(["git", "show", f":{rel}"], cwd=repo,
+                                check=True, capture_output=True).stdout
+        if path.read_bytes() != original or committed != original or staged != original:
+            raise ValueError(f"frozen PRESROUTE evidence drift: {rel}")
     root = worktree_root(repo)
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agent-harness-presroute-receipt-", dir=root) as temp:

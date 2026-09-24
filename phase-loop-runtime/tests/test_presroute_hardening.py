@@ -4,8 +4,11 @@ Not part of the SL-0 frozen corpus.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -339,3 +342,40 @@ def test_the_gemini_rung_without_an_agy_credential_launches_into_an_empty_home(t
     home = Path(launched[0]["HOME"])
     assert home != tmp_path / "no-credential-home" and not any(home.rglob("*oauth*"))
     assert response["status"] == "failed" and response["code"] == "president_invocation_failed"
+
+
+@pytest.mark.parametrize("flag,delete", [("--assume-unchanged", False), ("--skip-worktree", True)])
+def test_historical_receipt_rejects_physical_evidence_drift_hidden_from_git_diff(
+    tmp_path, monkeypatch, flag, delete,
+):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    evidence = repo / verifier.EVIDENCE_DIR
+    evidence.mkdir(parents=True)
+    for rel in verifier.EVIDENCE_FILES:
+        (repo / rel).write_bytes(b"frozen evidence\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "frozen receipt"], cwd=repo, check=True)
+    landing = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    monkeypatch.setattr(verifier, "LANDING", landing)
+    monkeypatch.setattr(verifier, "worktree_root", lambda _repo: pytest.fail("checkout allocated"))
+    monkeypatch.setattr(sys, "argv", [str(script), "--repo", str(repo)])
+
+    rel = verifier.EVIDENCE_FILES[1]
+    subprocess.run(["git", "update-index", flag, rel], cwd=repo, check=True)
+    if delete:
+        (repo / rel).unlink()
+    else:
+        (repo / rel).write_bytes(b"modified physical evidence\n")
+    with pytest.raises(ValueError, match="frozen PRESROUTE evidence drift"):
+        verifier.main()
