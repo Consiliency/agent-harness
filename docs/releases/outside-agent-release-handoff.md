@@ -168,8 +168,8 @@ and the published digests are recorded here after the tag push. As for `0.7.15` 
 `0.7.16`, the published digests are expected to differ, because archive bytes are
 timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `637a24ff40b299272222b2fd3262bb15bc810e45d1012ab0615d79ba69efa9be`
-- prepared direct-sdist sha256: `bce1290ad99875002c7aa2d24a93edfd4a7c41a91b5d70faed1866e9f69111dc`
+- prepared direct-wheel sha256: `04a7b8fe5d7b6ece03a327a2c0612c305e6338ce798c61a0076e7b6c193a3d72`
+- prepared direct-sdist sha256: `08125bfab4288117a3c31efc5d32b3a2e60d03b86f84e71fe72179c6985fb105`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.16 (published)
