@@ -28,9 +28,9 @@ def _assistant(text, *, message_id="review", uuid=None, stop_reason=_MISSING):
     return record
 
 
-def _extract(tmp_path, records):
+def _extract(tmp_path, records, *, ensure_ascii=True):
     path = tmp_path / "owned.jsonl"
-    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    path.write_text("".join(json.dumps(record, ensure_ascii=ensure_ascii) + "\n" for record in records))
     return pi._final_assistant_text_from_jsonl(path)
 
 
@@ -161,9 +161,24 @@ def test_incomplete_json_tail_does_not_reuse_stale_verdict(tmp_path):
     assert pi._final_assistant_text_from_jsonl(path) == ""
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_raw_unicode_separator_in_user_record_is_not_jsonl_boundary(tmp_path, separator):
+    user = {"type": "user", "message": {"role": "user", "content": f"Prompt{separator}continued"}}
+    assert _extract(tmp_path, [user, _assistant("Current review\nDISAGREE", stop_reason="end_turn")],
+                    ensure_ascii=False) == "Current review\nDISAGREE"
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_raw_unicode_separator_in_final_text_is_preserved(tmp_path, separator):
+    final = f"Finding{separator}detail\nREVIEW END\nDISAGREE"
+    assert _extract(tmp_path, [_assistant(final, stop_reason="end_turn")],
+                    ensure_ascii=False) == final
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PTY")
 @pytest.mark.parametrize(("mode", "first", "last"), [
     ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
+    ("review", "REVIEW START\n1. Raw\u2028separator stays in text", "REVIEW END\nPARTIALLY AGREE"),
     ("president", "FINDING F001: BLOCKING — Preserve the first finding", "FORCING DECISION: Fix F001 before landing"),
 ])
 def test_brokered_tui_returns_complete_split_review(tmp_path, monkeypatch, mode, first, last):
@@ -189,7 +204,7 @@ print("Claude Code ready for your message", flush=True)
 wire = b""
 while not wire.endswith(b"\x1bOM"):
     wire += os.read(0, 65536)
-Path("owned.jsonl").write_text("".join(json.dumps(r) + "\n" for r in json.loads(sys.argv[1])))
+Path("owned.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in json.loads(sys.argv[1])))
 '''
     rc, text, status, _ = pi._run_claude_tui_session(
         command=[sys.executable, "-c", script, json.dumps(records)],

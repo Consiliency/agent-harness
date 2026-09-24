@@ -3906,7 +3906,7 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     incomplete = False
     pending_terminal = False
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
         return ""
     for line in lines:
