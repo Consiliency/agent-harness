@@ -8,10 +8,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Qualified agy 1.2.9 entry image (agent-harness#1008)
 
-- Admit the official Linux x64 `agy` 1.2.9 executable for brokered Gemini
-  heartbeat-only review after real completion, cancellation and owner-loss
-  qualification. An unknown later image still refuses before provider launch;
-  the catalog and fleet update policy remain tracked by agent-harness#1008.
+- Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
+  Gemini heartbeat-only review after real completion, cancellation and owner-loss
+  qualification. Hosts must install 1.2.9 with this runtime update; both the
+  previous image and unknown future images refuse before provider launch. The
+  catalog and fleet update policy remain tracked by agent-harness#1008.
 
 ### Configurable president ladder (agent-harness#998 follow-up)
 

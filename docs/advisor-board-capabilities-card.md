@@ -394,9 +394,10 @@ staged-tree attachment. The executable/settings are immutable mounts in a privat
 namespace-owned HOME. Credential targets are referenced, never copied or restored;
 legitimate refresh writes survive. Required bwrap flags are checked at admission.
 An image update needs qualification before the supported digest changes. The
-runtime does not select an older installed image when the latest available
-release is unqualified; it refuses the changed executable. A durable image
-catalog and fleet updater coordination are tracked by agent-harness#1008.
+runtime performs no release discovery or image search: it hashes the single
+`agy` resolved on `PATH` and refuses any other digest, including the previously
+qualified 1.2.7 image. A durable image catalog, upstream-release discovery and
+fleet updater coordination are tracked by agent-harness#1008.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation
