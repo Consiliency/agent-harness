@@ -283,18 +283,28 @@ while True: time.sleep(.1)
 
     controller = threading.Thread(target=cancel_if_not_returned)
     controller.start()
+    launched = []
+    real_launch = panel_invoker.launch_provider
+
+    def capture_launch(*args, **kwargs):
+        proc = real_launch(*args, **kwargs)
+        launched.append(proc)
+        return proc
+
     try:
-        rc, text, log, _ = panel_invoker._run_claude_tui_session(
-            command=[sys.executable, "-c", script, "null" if stop_reason is None else stop_reason],
-            cwd=tmp_path, prompt="rule on F001", output_file=tmp_path / "president.txt",
-            timeout_s=1, env={"PATH": "/usr/bin:/bin"}, mode=mode, backstop_s=1,
-            review_monitor=monitor, allow_transcript_final=True,
-            broker_transcript_path=tmp_path / "owned.jsonl",
-        )
+        with patch.object(panel_invoker, "launch_provider", capture_launch):
+            rc, text, log, _ = panel_invoker._run_claude_tui_session(
+                command=[sys.executable, "-c", script, "null" if stop_reason is None else stop_reason],
+                cwd=tmp_path, prompt="rule on F001", output_file=tmp_path / "president.txt",
+                timeout_s=1, env={"PATH": "/usr/bin:/bin"}, mode=mode, backstop_s=1,
+                review_monitor=monitor, allow_transcript_final=True,
+                broker_transcript_path=tmp_path / "owned.jsonl",
+            )
     finally:
         cancel.set()
         controller.join(5)
     assert marker.exists()
+    assert len(launched) == 1 and launched[0].poll() is not None
     assert log == expected_log
     if expected_log == "claude_tui_broker_terminal_nonconforming":
         assert rc == 0 and text == "I think it is fine"
