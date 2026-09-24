@@ -1189,6 +1189,10 @@ _CLAUDE_TUI_TRUST_QUESTION = "quick safety check: is this a project you created 
 _CLAUDE_TUI_TRUST_CHOICE = "trust this folder"
 _CLAUDE_TUI_TRUST_PROMPT = "enter y/n"
 _CLAUDE_TUI_TRUST_REJECT = "please answer y or n"  # Claude rejected a non-y/n answer
+_CLAUDE_TUI_TRUST_RESIDUE = (
+    "accessing workspace", "quick safety check", "trust this folder",
+    "no exit", "enter y n", "please answer y or n", "enter to confirm",
+)
 _CLAUDE_TUI_TRUST_ANSWER = b"y\r"
 # Editor readiness = QUIESCENCE, armed ONLY after real post-gate output (never treat
 # pre-output silence as ready — that would race a late-rendering modal into a paste).
@@ -4576,23 +4580,24 @@ def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
     return any(tok in screen for tok in cwd_tokens) if cwd_tokens else True
 
 
-def _tui_post_trust_editor_content(chunk: bytes, cwd_tokens: Sequence[str]) -> bool:
-    """Ignore modal lines delivered after the answer by a split PTY read."""
-    visible = _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", chunk.decode("utf-8", errors="replace")))
+def _tui_post_trust_editor_content(
+    chunk: bytes, cwd_tokens: Sequence[str], seen: set[str],
+) -> bool:
+    """Find a novel editor line, ignoring modal residue after a split PTY read."""
+    visible = _ANSI_CSI_RE.sub(
+        lambda match: "\n" if match.group(0).endswith(("J", "H")) else "",
+        _ANSI_OSC_RE.sub("", chunk.decode("utf-8", errors="replace")),
+    )
     for line in re.split(r"[\r\n]+", visible):
         low = line.strip().lower()
+        norm = _normalize_tui_line(line)
         if (
-            not low
-            or _CLAUDE_TUI_TRUST_HEADER in low
-            or _CLAUDE_TUI_TRUST_CHOICE in low
-            or _CLAUDE_TUI_TRUST_PROMPT in low
-            or _CLAUDE_TUI_TRUST_REJECT in low
-            or low.startswith("n. no, exit")
-            or low.startswith("quick safety check")
-            or any(token in low for token in cwd_tokens)
+            len(norm) < _TUI_PROGRESS_MIN_CHARS
+            or any(token in norm for token in _CLAUDE_TUI_TRUST_RESIDUE)
+            or any(token.lower() in low for token in cwd_tokens if token)
         ):
             continue
-        if len(_normalize_tui_line(line)) >= _TUI_PROGRESS_MIN_CHARS:
+        if norm not in seen:
             return True
     return False
 
@@ -4798,6 +4803,7 @@ def _run_claude_tui_session(
                     review_monitor.observe(terminal="user_cancel")
                     return _finish(1, "", "review_operation_cancelled")
             novel_this_iter = False  # substantive new content arrived this iteration
+            editor_this_iter = False
             complete = b""
             if master_fd is not None:
                 readable, _, _ = select.select(
@@ -4819,8 +4825,13 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
-                        if complete and _tui_chunk_has_novel_content(
-                            complete, seen_tui_lines
+                        if complete and trust_answered:
+                            editor_this_iter = _tui_post_trust_editor_content(
+                                complete, cwd_tokens, seen_tui_lines,
+                            )
+                        if complete and (
+                            _tui_chunk_has_novel_content(complete, seen_tui_lines)
+                            or editor_this_iter
                         ):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
@@ -4891,7 +4902,7 @@ def _run_claude_tui_session(
                     novel_this_iter
                     and not answered_this_iter
                     and (trust_answered or not gate_signature_seen)
-                    and (not trust_answered or _tui_post_trust_editor_content(complete, cwd_tokens))
+                    and (not trust_answered or editor_this_iter)
                 ):
                     ready_since_output = True
                 # Our ``y`` was rejected (or a stuck modal): fail closed, typed, before 180s.

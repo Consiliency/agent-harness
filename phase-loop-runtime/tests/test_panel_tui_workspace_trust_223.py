@@ -272,10 +272,58 @@ def test_trailing_modal_chunk_cannot_arm_editor_readiness(tmp_path, monkeypatch)
 
 def test_post_trust_chunk_accepts_editor_after_modal_remainder():
     remainder = b"n. No, exit\nEnter y/n:\n"
-    assert not pi._tui_post_trust_editor_content(remainder, ())
+    assert not pi._tui_post_trust_editor_content(remainder, (), set())
     assert pi._tui_post_trust_editor_content(
-        remainder + b"Claude Code v2.1.208\nmanual mode on ready now\n", ()
+        remainder + b"Claude Code v2.1.208\nmanual mode on ready now\n", (), set()
     )
+    assert not pi._tui_post_trust_editor_content(
+        b"\xe2\x9d\xaf 2. No, exit\nEnter to confirm \xc2\xb7 Esc to cancel\n", (), set()
+    )
+    seen = {pi._normalize_tui_line("Claude Code v2.1.208")}
+    assert not pi._tui_post_trust_editor_content(
+        b"Accessing workspace:\nClaude Code v2.1.208\n", (), seen
+    )
+
+
+def test_post_trust_current_header_redraw_does_not_arm_editor(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    script = (
+        _MODAL
+        + "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; "
+        + "printf '\\nAccessing workspace:\\n'; "
+        + "IFS= read -r unexpected; printf '%s' \"$unexpected\" > unexpected.txt"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_text().strip() == "y"
+    assert status == "claude_tui_editor_not_ready", (rc, status, text, tail)
+    assert not (tmp_path / "unexpected.txt").exists()
+
+
+def test_post_trust_ansi_redraw_after_unterminated_prompt_keeps_editor(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    assert pi._tui_post_trust_editor_content(
+        b"Enter y/n:\x1b[2J\x1b[HClaude Code v2.1.208\n", (), set()
+    )
+    script = (
+        "stty raw -echo; "
+        + _MODAL
+        + "dd bs=1 count=1 of=answer.txt 2>/dev/null; "
+        + "printf '\\033[2J\\033[HClaude Code v2.1.208\\n'; "
+        + "dd bs=1 count=1 of=prompt-byte.txt 2>/dev/null; "
+        + "printf 'A complete review body with sufficient text to finish.\\nAGREE\\n' > panel-claude.txt; sleep 3"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_text() == "y"
+    assert status == "claude_tui_file_output", (rc, status, text, tail)
+    assert (tmp_path / "prompt-byte.txt").exists()
 
 
 def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):

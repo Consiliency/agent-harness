@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "4e55a54305eb145d19af81b50aebe96fc325fc368c6c1dc44e892936a6cb20bf",
-      "raw_receipt_sha256": "8c18a6cc8eba03fc197f0e9afc61918219aab0a287541d0105e50b791a8aefa3",
+      "raw_receipt_sha256": "d504bf5693cde902c52d22dae352290302d9918fdafc926636a67a436e725891",
       "record_sha256": {
-        "broker": "d85e1582cb17081d95ddde91732b856af967f5872e3e4ac1b4d1a7ecfcffb1e7",
-        "monitoring": "4f94912480ca5143dad7891960a936336714fa5937efacf4a58ed04dec7a6c84",
-        "observer": "a59ef6fe5b6b5cb1790a6d843a8715bb3a3cb16d27578970ebbc7cd858b221d4",
-        "result": "3287265923b28ed04f9075e383d88b7a0af6ecf5ce19cf6eecc6cd0901b34474"
+        "broker": "c9478629149e474bfec49200f769bbd5939bd6607b34f2a855e413fe943588d9",
+        "monitoring": "805681f6b6705df467e272ef4d967132ac6d03c0c3af1e037e29264cc5bf439f",
+        "observer": "7fe0df4d0525cbd7032d42ca3f69efb8d92de195eb7edc7907a432013cc170fa",
+        "result": "c8402c8fa826bb494abfde12dbeec786ad5bd8dc48ed2a879b2d966691d952ed"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "4e55a54305eb145d19af81b50aebe96fc325fc368c6c1dc44e892936a6cb20bf",
-      "raw_receipt_sha256": "37f7f97fde8b7f9dbe409ceac0c7cca14dc18d7e188e28890617638ba8c585f0",
+      "raw_receipt_sha256": "08b7ba66044006f905f00999ef7c18d636c54770d11fb8e0c0b01613365b610f",
       "record_sha256": {
-        "broker": "20358d9fb24ab9f740503b7d079d0b7f4187f6dedad2c9df4ac00aa981ac6090",
-        "monitoring": "391b3a288a9e1f005b33c34c9ea6f6d9f6ed95b523fb2f4c2612c8541bf7a915",
-        "observer": "c19305d8fb70239c6a294b6963c89c2ea8a3e9b73b979773d4e6ff1488424ea5",
+        "broker": "e44287aff2572e6df674525d9e5f1d2c6e9549389c7f8a57f0ad6b24f4bca8b1",
+        "monitoring": "0f07688e07c4b06d10eea388e131a43b3a2bdbab483bbc3b26075d8bbba8577a",
+        "observer": "a5989b453e02da1879f995d3fed2cfd9d2030a117440f87d9250c240f9cc010b",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "4e55a54305eb145d19af81b50aebe96fc325fc368c6c1dc44e892936a6cb20bf",
-      "raw_receipt_sha256": "6c37ed0c8e4a3cff41dfd4b1fe94b9893bd9dde59cac5185518ed3727a2d19c7",
+      "raw_receipt_sha256": "34f6432f068d58b00b1315b77e8a54a4d4950b606f8f9ce9b58b86eb684e6054",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "c490f59a899c080e8c625c123ac294933444bc4522d052693c50ae015df14be1",
-        "observer": "af77d1ea67d41c8d535a61b55c69ad25ea3ee53d79958478bafc54031af2aa31",
+        "monitoring": "f849d0878be79b50640c181b18ccbd1bd6a5b926d4239abbf82f35cb5518490a",
+        "observer": "938f00e398621d091abd9cc286003e16988c3aceec9df75b697f6dd88640df0e",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -320,7 +320,7 @@
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "59b6efb213c53a69d65809e01d46e523a8079668c7e3da314d3310570254808d",
-    "panel_invoker.py": "2958ab6d2049559269589945488fba97025c7d48fa5338ed72ab7170a133adee",
+    "panel_invoker.py": "f730faa84edcd601f929acf3e85068dcbf8f208e023f815e95bf44fb91310224",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
     "pipeline_adapter/__init__.py": "a7a88428e2b814b7621bbd5421e1c564491ab0ab41dea59d3011906f26df8a6a",
