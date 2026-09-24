@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ def test_module_name(lc):
 def test_a_changed_module_selects_its_importers_and_not_a_prefix_namesake(lc, pkg):
     tests, _ = lc.select(pkg, ["phase-loop-runtime/src/phase_loop_runtime/pkg/a.py"])
     # `pkg.ab` shares the prefix `pkg.a` but is a different module: it must not be picked.
-    assert tests == ["tests/test_uses_a.py"]
+    assert tests == ["tests/test_uses_a.py", "tests/test_uses_a_leaf.py"]
 
 
 def test_a_changed_test_and_ci_plumbing(lc, pkg):
@@ -56,10 +57,69 @@ def test_shared_config_runs_the_whole_suite(lc, pkg):
     assert tests is None
 
 
-def test_parenthesised_leaf_import_is_seen(lc, pkg):
-    """`from phase_loop_runtime.pkg import (a,)` -- the leaf may sit on the next line."""
+def test_parenthesised_multiline_leaf_import_is_seen(lc, pkg):
+    """#1031 r1 (codex): `from phase_loop_runtime.pkg import (\n    a,\n)` imports pkg.a."""
     text = (pkg / "tests" / "test_uses_a_leaf.py").read_text()
-    assert lc.imports_module("from phase_loop_runtime.pkg import (a, b)", "phase_loop_runtime.pkg.a")
-    # Multi-line parenthesised imports are a known limit of the line-oriented match;
-    # pin it so a change in behaviour is deliberate.
-    assert not lc.imports_module(text, "phase_loop_runtime.pkg.a")
+    assert lc.imports_module(text, "phase_loop_runtime.pkg.a")
+    assert lc.imports_module("def f():\n    import phase_loop_runtime.pkg.a\n", "phase_loop_runtime.pkg.a")
+    assert not lc.imports_module("import phase_loop_runtime.pkg.ab\n", "phase_loop_runtime.pkg.a")
+    tests, _ = lc.select(pkg, ["phase-loop-runtime/src/phase_loop_runtime/pkg/a.py"])
+    assert "tests/test_uses_a_leaf.py" in tests
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t",
+                           *args], cwd=repo, check=True, capture_output=True, text=True).stdout
+
+
+def test_a_rename_reports_both_endpoints(lc, tmp_path):
+    """#1031 r1 (codex): importers of the OLD module path must still be selected."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    src = tmp_path / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "pkg"
+    src.mkdir(parents=True)
+    (src / "a.py").write_text("value = 1\n" * 20)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "mv", str(src / "a.py"), str(src / "b.py"))
+    files = lc.changed_files(tmp_path, "main")
+    assert "phase-loop-runtime/src/phase_loop_runtime/pkg/a.py" in files
+    assert "phase-loop-runtime/src/phase_loop_runtime/pkg/b.py" in files
+
+
+def test_the_venv_cache_key_tracks_project_metadata(lc, tmp_path):
+    (tmp_path / "phase-loop-runtime").mkdir()
+    pyproject = tmp_path / "phase-loop-runtime" / "pyproject.toml"
+    pyproject.write_text('requires-python = ">=3.10"\n')
+    before = lc.cache_key(tmp_path)
+    pyproject.write_text('requires-python = ">=3.11"\n')
+    assert lc.cache_key(tmp_path) != before
+
+
+def test_no_linter_is_not_a_pass(lc, monkeypatch, capsys):
+    monkeypatch.setattr(lc.shutil, "which", lambda name: None if name == "uvx" else name)
+    monkeypatch.setattr(lc, "changed_files", lambda repo, base: [])
+    monkeypatch.setenv("LOCAL_CHECK_PYTHON", lc.sys.executable)
+    assert lc.main([]) == 1
+    assert "FAIL" in capsys.readouterr().out
+
+
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "test.yml"
+
+
+@pytest.mark.skipif(not WORKFLOW.is_file(), reason="CI plumbing is absent from the standalone layout")
+def test_the_ci_mirrors_match_the_workflow(lc):
+    """RUFF_PIN and CI_TEST_DEPS are copied from test.yml by hand; keep them honest."""
+    text = WORKFLOW.read_text()
+    assert f"'{lc.RUFF_PIN}'" in text
+    install = next(line for line in text.splitlines() if "pip install \"./phase-loop-runtime[visual]\"" in line)
+    for dep in lc.CI_TEST_DEPS:
+        assert (f'"{dep}"' if dep != "pytest" else " pytest ") in install, dep
+
+
+def test_changed_files_handles_odd_paths(lc, tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "keep.txt").write_text("x")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    (tmp_path / 'we"ird é.py').write_text("x")
+    assert lc.changed_files(tmp_path, "main") == ['we"ird é.py']

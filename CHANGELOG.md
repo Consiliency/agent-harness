@@ -30,9 +30,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   files, tests importing a changed module, the CI guard tests when workflow/`ci/` plumbing
   changed, the whole suite when shared test config changed. Tests run under `env -i` with a
   throwaway HOME and bare PATH in a cached venv built from CI's install line
-  (`phase-loop-runtime/.local-check-venv/`), so host-dependent passes surface before CI.
-  It does not replace CI: import-by-name selection misses golden/subprocess consumers
-  (`--full` covers them), and Gate A and 3.11/3.12 still run in CI.
+  (`phase-loop-runtime/.local-check-venv/`, rebuilt from scratch when the deps,
+  `pyproject.toml` or the target Python change; `LOCAL_CHECK_PYTHON` overrides it), so
+  host-dependent passes surface before CI. Imports are parsed (multi-line forms count) and
+  renames select importers of both paths; a run that could not lint is a FAIL. It does not
+  replace CI: selection misses golden/subprocess consumers (`--full` covers them), and Gate A
+  and 3.11/3.12 still run in CI.
 
 ## [0.7.17] - 2026-09-24
 
