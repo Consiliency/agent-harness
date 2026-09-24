@@ -17,6 +17,6 @@ title = "agent-harness gitleaks"
 useDefault = true
 
 [allowlist]
-description = "Narrow entries only, for confirmed synthetic-fixture false positives. The one regex below is the exact opaque literal the HARDEN verifier self-test feeds its OWN secret scanner to prove rejection (phase-loop-runtime/scripts/verify_harden_evidence.py, reject_secret_text(..., 'self-test opaque value')); it is not a credential and matches nothing else in history (Consiliency/agent-harness#737)."
+description = "Narrow entries only for confirmed non-secret false positives: the HARDEN verifier self-test literal (agent-harness#737) and the SHA256 of convergence/broker/credsep.py in the source-bound Gemini qualification record (agent-harness#1010). Neither value is a credential."
 paths = []
-regexes = ['''q7Rt9vXz2LmN4pQ8''']
+regexes = ['''q7Rt9vXz2LmN4pQ8''', '''f87b13733de2175a9609b7d812f7a0c37642582d8b006447feec7c6264e30753''']
