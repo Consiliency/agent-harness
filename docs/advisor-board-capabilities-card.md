@@ -396,8 +396,8 @@ legitimate refresh writes survive. Required bwrap flags are checked at admission
 An image update needs qualification before the supported digest changes. The
 runtime performs no release discovery or image search: it hashes the single
 `agy` resolved on `PATH` and refuses any other digest, including the previously
-qualified 1.2.7 image. A durable image catalog, upstream-release discovery and
-fleet updater coordination are tracked by agent-harness#1008.
+qualified 1.2.9 and 1.2.7 images. A durable image catalog, upstream-release
+discovery and fleet updater coordination are tracked by agent-harness#1008.
 The redacted 1.2.10 qualification record and exact source hashes are in
 `plans/evidence/agy-1.2.10-linux-x64-qualification.json`; that evidence record is
 not a second admission source.
