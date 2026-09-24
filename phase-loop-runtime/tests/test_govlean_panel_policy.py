@@ -9,7 +9,7 @@ rungs by ``PRESIDENT_LADDER`` index, not by literal alias.
 Contract SL-1/SL-2 must satisfy to turn the pinned nodes green (they may not edit
 this file):
 
-* ``panel_invoker.PRESIDENT_LADDER == ("sol", "fable", "grok", "gemini")`` — the
+* ``panel_invoker.PRESIDENT_LADDER == ("fable", "sol", "grok", "gemini")`` — the
   EC-PRESROUTE-3 seat-alias order, each entry a bare alias resolving to its
   vendor's registry PIN (EC-PRESROUTE-3).
 * ``panel_invoker.enforce_requires_president(tier, *, requires_president: bool)``
@@ -43,7 +43,8 @@ pytestmark = pytest.mark.skipif(
 
 # The EC-PRESROUTE-3 ladder is written in exactly one place in the codebase
 # (``PRESIDENT_LADDER``); this expectation is the pinned test referencing it.
-EC_PRESROUTE_3_LADDER = ("sol", "fable", "grok", "gemini")
+# Amended 2026-09-24 (maintainer ruling, agent-harness#1025): Opus 5.5 (`fable`) first.
+EC_PRESROUTE_3_LADDER = ("fable", "sol", "grok", "gemini")
 _SEAT_ALIASES = {"fable", "sol", "gemini", "grok"}
 
 

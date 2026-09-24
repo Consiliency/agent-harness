@@ -8,6 +8,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [0.7.17] - 2026-09-24
 
+### Opus 5.5 is the default first president rung (agent-harness#1025)
+
+- The built-in `PRESIDENT_LADDER` is now `fable, sol, grok, gemini` — Claude Opus 5.5, GPT-6
+  Astra, Grok 4.7, Gemini 3.8 Flash — by maintainer ruling (2026-09-24), amending
+  EC-PRESROUTE-3 (previously `sol, fable, grok, gemini`). A configured `[president] ladder`
+  (user or repository, agent-harness#1004) still overrides it. Note: until agent-harness#1016
+  lands, a brokered Claude-TUI president under `heartbeat_only` can stay active after a
+  completed turn whose ruling grammar is malformed (no format re-ask); rulings filled natively
+  under Claude Code are unaffected.
+
 ### Qualified agy 1.2.10 entry image (agent-harness#1008)
 
 - Admit the newly published 1.2.10 Linux x64 image for brokered Gemini
@@ -110,7 +120,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   its own brief, completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` …
   `FORCING DECISION:`) and authorization (`PresidentIsolationAuthorization`, minted beside —
   never through — the review authorization, and revalidated before each rung launches).
-- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini`, each
+- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini` (amended
+  to `fable` first in this release, above), each
   resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the single provider
   launch site (`launch_provider` only); agent-harness#1009 (above) later adds the heartbeat
   monitor and the parent Unix broker / egress isolation to those launches. `fable` is filled natively by the driving Claude Code session
@@ -237,8 +248,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   every board fails the landing policy's seat-name check. Because the president ladder
   names that seat rather than a model, its `fable` rung resolves to Opus 5.5 with no
   ladder change (verified by `seat_for_rung` on both default boards). The built-in ladder
-  order is `sol, fable, grok, gemini` (agent-harness#998, above), so Opus 5.5 is the first
-  rung only under a configured ladder such as this repository's (agent-harness#1004). When this change merged
+  order is `fable, sol, grok, gemini` as of this release (see "Opus 5.5 is the default first
+  president rung", above), so Opus 5.5 is the first rung by default. When this change merged
   a seated president rung still had no production execution route
   (`president_execution_route_unavailable`); agent-harness#998 (PRESROUTE, above) adds it in
   this release.
