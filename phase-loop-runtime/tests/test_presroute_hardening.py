@@ -462,3 +462,42 @@ def test_historical_receipt_cleans_registered_checkout_after_hook_failure(tmp_pa
     assert subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo) == before
     scratch = repo / "scratch"
     assert scratch.is_dir() and not any(scratch.iterdir())
+
+
+def test_historical_receipt_does_not_verify_sibling_of_newline_named_repo(tmp_path, monkeypatch):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "suite-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for rel in verifier.EVIDENCE_FILES:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"frozen evidence\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "frozen receipt"], cwd=repo, check=True)
+    landing = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    newline_repo = tmp_path / "suite-repo\n"
+    subprocess.run(["git", "worktree", "add", "--detach", str(newline_repo), "HEAD"],
+                   cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    try:
+        (newline_repo / verifier.EVIDENCE_FILES[1]).write_bytes(b"altered evidence\n")
+        raw_top = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], cwd=newline_repo)
+        assert raw_top.endswith(b"\n\n"), "the path newline and Git output delimiter must both be present"
+        monkeypatch.setattr(verifier, "LANDING", landing)
+        monkeypatch.setattr(verifier, "worktree_root", lambda _repo: pytest.fail("scratch allocated"))
+        monkeypatch.setattr(sys, "argv", [str(script), "--repo", str(newline_repo)])
+        before = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo)
+        with pytest.raises(ValueError, match="control characters"):
+            verifier.main()
+        assert subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo) == before
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(newline_repo)],
+                       cwd=repo, check=True, stdout=subprocess.DEVNULL)

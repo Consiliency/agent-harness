@@ -32,13 +32,23 @@ def worktree_root(repo: Path) -> Path:
     return repo.parent
 
 
+def refuse_control_paths(*paths: Path) -> None:
+    if any(ord(char) < 32 or ord(char) == 127
+           for path in paths for char in str(path)):
+        raise ValueError("PRESROUTE receipt worktree paths contain control characters")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     requested_repo = parser.parse_args().repo.resolve()
+    refuse_control_paths(requested_repo)
     top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=requested_repo,
-                         check=True, capture_output=True, text=True).stdout.strip()
-    repo = Path(top).resolve()
+                         check=True, capture_output=True).stdout
+    if not top.endswith(b"\n"):
+        raise ValueError("git rev-parse did not terminate the repository path")
+    repo = Path(os.fsdecode(top[:-1])).resolve()
+    refuse_control_paths(repo)
     subprocess.run(["git", "merge-base", "--is-ancestor", LANDING, "HEAD"],
                    cwd=repo, check=True)
     for rel in EVIDENCE_FILES:
@@ -54,9 +64,7 @@ def main() -> int:
         if path.read_bytes() != original or committed != original or staged != original:
             raise ValueError(f"frozen PRESROUTE evidence drift: {rel}")
     root = worktree_root(repo).resolve()
-    if any(ord(char) < 32 or ord(char) == 127
-           for path in (repo, root) for char in str(path)):
-        raise ValueError("PRESROUTE receipt worktree paths contain control characters")
+    refuse_control_paths(root)
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agent-harness-presroute-receipt-", dir=root) as temp:
         checkout = Path(temp) / "landing"
