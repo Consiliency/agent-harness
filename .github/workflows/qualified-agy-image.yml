@@ -5,19 +5,21 @@ on:
     paths:
       - 'plans/evidence/agy-*-linux-x64-qualification.json'
       - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
       - '.github/workflows/qualified-agy-image.yml'
+      - 'RELEASE_PIN'
   push:
     branches: [main]
     paths:
       - 'plans/evidence/agy-*-linux-x64-qualification.json'
       - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
       - '.github/workflows/qualified-agy-image.yml'
+      - 'RELEASE_PIN'
   schedule:
     - cron: '43 4 * * *'
   workflow_dispatch:
@@ -32,11 +34,37 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify qualification source pins
+      # agent-harness#1029 (maintainer ruling 2026-09-24): pull requests and pushes check
+      # the ROUTE CORE only -- the qualification record plus the files that are the
+      # qualified route -- so an ordinary runtime change no longer needs a live Gemini
+      # requalification per PR. The FULL pin set (every package source) is enforced
+      # once per release: on the release-cut PR (it changes RELEASE_PIN), nightly, and
+      # as a blocking step in publish-pypi.yml before anything is published.
+      - name: Verify route-core qualification pins
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --route-core
+      - name: Decide whether this run needs the full pin set
+        id: full
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          full=false
+          case "$EVENT" in
+            schedule|workflow_dispatch) full=true ;;
+            pull_request)
+              if git diff --name-only "$BASE" "$HEAD" | grep -qx 'RELEASE_PIN'; then full=true; fi ;;
+          esac
+          echo "full=$full" | tee -a "$GITHUB_OUTPUT"
+      - name: Verify every qualification source pin (release cut / nightly)
+        if: steps.full.outputs.full == 'true'
         run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
       - name: Verify latest release, archive and executable
-        if: always()
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --upstream-only

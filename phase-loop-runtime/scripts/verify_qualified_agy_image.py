@@ -15,6 +15,11 @@ PACKAGE = REPO / "phase-loop-runtime/src/phase_loop_runtime"
 EVIDENCE = REPO / "plans/evidence"
 ASSET = "agy_cli_linux_x64.tar.gz"
 API = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest"
+# agent-harness#1029: the files that ARE the qualified route. A pull request or push must keep
+# these byte-identical to the qualification record; the full pin set (every package source)
+# is enforced at release (publish-pypi.yml, before Gate A), so ordinary runtime changes no
+# longer need a live requalification per PR -- only once per release.
+ROUTE_CORE = ("gemini_heartbeat.py", "qualify_gemini_heartbeat.py")
 
 
 def require(condition, reason):
@@ -38,7 +43,13 @@ def image_constants():
             for target in node.targets if isinstance(target, ast.Name) and target.id in names}
 
 
-def validate_record(*, verify_sources=True):
+def actual_source_hashes():
+    actual = {str(path.relative_to(PACKAGE)): digest_file(path) for path in PACKAGE.rglob("*.py")}
+    actual["qualify_gemini_heartbeat.py"] = digest_file(REPO / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py")
+    return actual
+
+
+def validate_record(*, verify_sources=True, route_core_only=False):
     catalog = json.loads((EVIDENCE / "qualified-provider-images.json").read_text())
     require(catalog["schema"] == "qualified_provider_images.v1", "catalog schema mismatch")
     require(set(catalog["routes"]) == {"gemini_heartbeat_linux_x64"}, "catalog route mismatch")
@@ -59,9 +70,14 @@ def validate_record(*, verify_sources=True):
     require(record["isolation_profile"] == constants["PROFILE_ID"], "isolation profile mismatch")
     pins = record["source_sha256"]
     if verify_sources:
-        actual = {str(path.relative_to(PACKAGE)): digest_file(path) for path in PACKAGE.rglob("*.py")}
-        actual["qualify_gemini_heartbeat.py"] = digest_file(REPO / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py")
-        require(pins == actual, "qualification source hashes differ from this checkout")
+        actual = actual_source_hashes()
+        if route_core_only:
+            for name in ROUTE_CORE:
+                require(name in pins, f"qualification record does not pin route-core file {name}")
+                require(pins[name] == actual.get(name),
+                        f"route-core file {name} differs from its qualification; requalify")
+        else:
+            require(pins == actual, "qualification source hashes differ from this checkout")
     require(record["validator"] == {"validated": 3,
                                     "operations": ["cancel", "completion", "owner-loss"],
                                     "route_qualified": True}, "qualification validation mismatch")
@@ -93,8 +109,18 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--source-only", action="store_true", help="verify the record and source pins without network")
     mode.add_argument("--upstream-only", action="store_true", help="verify the latest release without source pins")
+    mode.add_argument("--route-core", action="store_true",
+                      help="verify the record and the route-core source pins only, without network")
     args = parser.parse_args()
-    record, source_count = validate_record(verify_sources=not args.upstream_only)
+    record, source_count = validate_record(verify_sources=not args.upstream_only,
+                                           route_core_only=args.route_core)
+    if args.route_core:
+        drift = sorted(name for name, digest in actual_source_hashes().items()
+                       if record["source_sha256"].get(name) != digest)
+        print(json.dumps({"route_core": list(ROUTE_CORE), "route_core_pins_verified": True,
+                          "other_sources_drifted": len(drift),
+                          "full_pin_check": "at release (publish-pypi.yml)"}))
+        return
     if args.source_only:
         print(json.dumps({"source_files": source_count, "source_pins_verified": True}))
         return
