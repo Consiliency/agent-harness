@@ -1,0 +1,12 @@
+{
+  "schema": "qualified_provider_images.v1",
+  "routes": {
+    "gemini_heartbeat_linux_x64": {
+      "provider": "gemini",
+      "route": "brokered_subscription_heartbeat_only",
+      "platform": "linux",
+      "architecture": "x86_64",
+      "record": "agy-1.2.9-linux-x64-qualification.json"
+    }
+  }
+}

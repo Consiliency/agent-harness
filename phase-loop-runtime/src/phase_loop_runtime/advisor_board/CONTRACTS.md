@@ -660,8 +660,8 @@ review text and the exception in detail; sandbox facts describe actual enforceme
 
 ### Qualified Gemini extension (agent-harness#905)
 
-The Linux subscription `agy` entry image must match SHA256
-`9991515b6d5307bcf701069622b0537b6b206e605f3c891c0cf3a3d208dea8b0`.
+The Linux x64 subscription `agy` 1.2.9 entry image must match SHA256
+`1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711`.
 The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;
 Python version alone is not a capability check. Unknown images or missing
 capabilities refuse before availability/auth effects. Required bwrap mount/gate
