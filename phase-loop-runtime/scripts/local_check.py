@@ -14,7 +14,7 @@ Default: lint (ruff, CI's pinned version and config) plus the tests your diff ca
 - the whole suite when a shared fixture/config file changed (conftest, pyproject).
 
 The diff is against `git merge-base HEAD <base>` (default `origin/main`) plus uncommitted and
-untracked files. Tests run under `env -i` with a throwaway HOME and a bare PATH, which is how
+untracked files. Tests run under `env -i` with a throwaway HOME and only the system PATH, which is how
 CI-only failures (a test leaning on this host's login, config or PATH) reproduce locally.
 
 What this does NOT cover, so CI still matters: tests that consume a changed module
@@ -41,6 +41,7 @@ FULL_TRIGGERS = (f"{PKG}/tests/conftest.py", f"{PKG}/pyproject.toml", f"{PKG}/te
 SUITE_IGNORES = ("tests/test_legible_roadmap_contract.py", "tests/test_legible_evidence.py")
 # The hosted lane's suite-environment install (test.yml), so local runs resolve what CI does.
 CI_TEST_DEPS = ("./phase-loop-runtime[visual]", "pytest", "pytest-xdist==3.8.0", "build==1.6.1", "setuptools>=70.1")
+SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 VENV_DIR = ".local-check-venv"
 VENV_PYTHON = "3.10"  # the CI floor lane pull requests run
 
@@ -177,7 +178,9 @@ def clean_env(python: str) -> dict[str, str]:
     atexit.register(shutil.rmtree, home, True)
     env = {
         "HOME": home,
-        "PATH": f"{Path(python).parent}:/usr/bin:/bin",
+        # The system dirs a CI runner has -- incl. sbin (iptables, used by the sandbox
+        # tests): a bare /usr/bin:/bin made them fail here but not in CI (agent-harness#1036).
+        "PATH": f"{Path(python).parent}:{SYSTEM_PATH}",
         "LANG": "C.UTF-8",
         "PYTHONPATH": "src:tests",
         "TMPDIR": tempfile.gettempdir(),
@@ -242,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     lint_cmd = [uvx, RUFF_PIN.replace("==", "@"), "check", "."] if uvx else None
     print(f"  lint : {' '.join(lint_cmd) if lint_cmd else 'UNAVAILABLE (install uv for uvx; CI pins ' + RUFF_PIN + ')'}")
     print(f"  tests: {'none selected' if tests == [] else ' '.join(pytest_cmd[3:])}")
-    print(f"  env  : {'host' if args.host_env else 'clean (env -i, throwaway HOME, bare PATH)'}"
+    print(f"  env  : {'host' if args.host_env else 'clean (env -i, throwaway HOME, system PATH)'}"
           f"{'' if has_xdist else '; pytest-xdist absent, running serially'}")
     if args.dry_run:
         return 0
