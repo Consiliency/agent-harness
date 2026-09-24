@@ -410,6 +410,60 @@ def test_changed_ansi_banner_followed_by_modal_redraw_does_not_receive_review(tm
     assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
 
 
+@pytest.mark.parametrize("footer", ["unterminated", "later_complete"])
+def test_post_answer_modal_footer_cannot_keep_editor_ready(tmp_path, monkeypatch, footer):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    real_write = pi.os.write
+    writes = []
+
+    def capture_write(fd, payload):
+        writes.append(payload)
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(pi.os, "write", capture_write)
+    footer_command = (
+        "printf 'Enter y/n:'; " if footer == "unterminated" else
+        "sleep 0.02; printf 'Enter y/n:\\n'; "
+    )
+    script = (
+        "stty raw -echo; " + _MODAL
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        + "printf 'Claude Code preview redesign\\n'; "
+        + footer_command
+        + "dd bs=1 count=1 of=unexpected.txt 2>/dev/null"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert status == "claude_tui_editor_not_ready", (rc, status, text, tail)
+    assert not any(b"\x1b[200~" in payload for payload in writes)
+    assert not (tmp_path / "unexpected.txt").exists() or not (tmp_path / "unexpected.txt").read_bytes()
+
+
+def test_editor_line_after_late_modal_footer_rearms_submission(tmp_path, monkeypatch):
+    _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
+    script = (
+        "stty raw -echo; " + _MODAL
+        + "dd bs=1 count=2 of=answer.txt 2>/dev/null; "
+        + "printf 'Claude Code preview redesign\\n'; "
+        + "sleep 0.02; printf 'Enter y/n:\\n'; "
+        + "sleep 0.02; printf 'manual mode on ready now\\n'; "
+        + "dd bs=1 count=18 of=prompt-bytes.txt 2>/dev/null; "
+        + "printf 'A complete review body with sufficient text to finish.\\nAGREE\\n' > panel-claude.txt; sleep 3"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10,
+    )
+    assert (tmp_path / "answer.txt").read_bytes() == b"y\r"
+    assert status == "claude_tui_file_output", (rc, status, text, tail)
+    assert b"review this" in (tmp_path / "prompt-bytes.txt").read_bytes()
+
+
 def test_post_trust_current_header_redraw_does_not_arm_editor(tmp_path, monkeypatch):
     _fast_timing(monkeypatch, submit_delay=0.1, quiescence=0.05, ready_deadline=2.0)
     script = (

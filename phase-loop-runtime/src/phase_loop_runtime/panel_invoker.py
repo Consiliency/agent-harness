@@ -4586,17 +4586,23 @@ def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
     return any(tok in screen for tok in cwd_tokens) if cwd_tokens else True
 
 
+def _tui_trust_residue_line(line: str, cwd_tokens: Sequence[str]) -> bool:
+    """Recognize modal text even when it follows an apparent editor line."""
+    low = line.strip().lower()
+    norm = _normalize_tui_line(line)
+    return any(token in norm for token in _CLAUDE_TUI_TRUST_RESIDUE) or any(
+        token.lower() in low for token in cwd_tokens if token
+    )
+
+
 def _tui_post_trust_editor_content(
     chunk: bytes, cwd_tokens: Sequence[str], seen: set[str],
 ) -> bool:
     """Find a novel editor line, ignoring modal residue after a split PTY read."""
     editor_after_modal = False
     for line in _tui_visible_lines(chunk):
-        low = line.strip().lower()
         norm = _normalize_tui_line(line)
-        if any(token in norm for token in _CLAUDE_TUI_TRUST_RESIDUE) or any(
-            token.lower() in low for token in cwd_tokens if token
-        ):
+        if _tui_trust_residue_line(line, cwd_tokens):
             editor_after_modal = False
             continue
         if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
@@ -4806,6 +4812,7 @@ def _run_claude_tui_session(
                     return _finish(1, "", "review_operation_cancelled")
             novel_this_iter = False  # substantive new content arrived this iteration
             editor_this_iter = False
+            modal_residue_this_iter = False
             complete = b""
             if master_fd is not None:
                 readable, _, _ = select.select(
@@ -4830,6 +4837,10 @@ def _run_claude_tui_session(
                         if complete and trust_answered:
                             editor_this_iter = _tui_post_trust_editor_content(
                                 complete, cwd_tokens, seen_tui_lines,
+                            )
+                            modal_residue_this_iter = not editor_this_iter and any(
+                                _tui_trust_residue_line(line, cwd_tokens)
+                                for line in _tui_visible_lines(complete)
                             )
                         if complete and (
                             _tui_chunk_has_novel_content(complete, seen_tui_lines)
@@ -4910,6 +4921,8 @@ def _run_claude_tui_session(
                     and (not trust_answered or editor_this_iter)
                 ):
                     ready_since_output = True
+                if trust_answered and modal_residue_this_iter:
+                    ready_since_output = False
                 # Our ``y`` was rejected (or a stuck modal): fail closed, typed, before 180s.
                 if trust_answered and _CLAUDE_TUI_TRUST_REJECT in screen:
                     return _finish(
@@ -4934,6 +4947,7 @@ def _run_claude_tui_session(
                 # trigger strings — its echo must not answer).
                 if (
                     ready_since_output
+                    and (not trust_answered or not tui_carry)
                     and (trust_answered or not gate_signature_seen)
                     and now - last_novel >= _CLAUDE_TUI_READY_QUIESCENCE_S
                     and now - start_monotonic >= _CLAUDE_TUI_SUBMIT_DELAY_S
