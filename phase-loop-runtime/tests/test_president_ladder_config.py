@@ -75,6 +75,8 @@ def test_a_malformed_ladder_is_refused(ladder):
 
 
 def test_no_config_is_the_built_in_ladder(tmp_path):
+    assert PRESIDENT_LADDER == ("fable", "sol", "grok", "gemini")
+    assert president_adapter.seat_for_rung(DEFAULT_BOARD, PRESIDENT_LADDER[0]).model == "claude-opus-5-5"
     assert load_president_ladder(_repo(tmp_path, None), path=tmp_path / "absent.toml") == PRESIDENT_LADDER
 
 
