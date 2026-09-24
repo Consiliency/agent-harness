@@ -1454,6 +1454,10 @@ class PresidentIsolationAuthorization:
     canonical_repo_sha256: str
     issued_monotonic_ns: int
     _seal: object
+    # agent-harness#1001: the policy every rung launch of this operation runs under.
+    # ``heartbeat_only`` = no model-thinking deadline and no silence kill; the leg's
+    # admission window is the only clock. Bound to the operation's lease.
+    monitoring_policy: str = "bounded"
 
 
 def _president_repo_digest(canonical_repo_authority: Path | str | None) -> str:
@@ -1494,11 +1498,18 @@ def prepare_president_isolation_authorization(
     brief: str,
     *,
     canonical_repo_authority: Path | str | None = None,
+    monitoring_policy: str = "bounded",
 ) -> PresidentIsolationAuthorization:
-    """Authorize one president operation over ``brief`` before any provider effect."""
+    """Authorize one president operation over ``brief`` before any provider effect.
+
+    Registers the operation's single-use lease (as review isolation does): a brokered
+    rung launch activates it, derives one leg capability per launch from it, and closes it.
+    """
     if platform.system() != "Linux":
         raise ValueError("HARDEN president isolation requires Linux")
-    return PresidentIsolationAuthorization(
+    if monitoring_policy not in ("bounded", "heartbeat_only"):
+        raise ValueError("review_monitoring_policy_invalid")
+    authorization = PresidentIsolationAuthorization(
         operation=PRESIDENT_OPERATION_V1,
         purpose=str(getattr(board, "purpose", "")),
         brief_sha256=sha256(brief.encode("utf-8")).hexdigest(),
@@ -1511,7 +1522,10 @@ def prepare_president_isolation_authorization(
         canonical_repo_sha256=_president_repo_digest(canonical_repo_authority),
         issued_monotonic_ns=time.monotonic_ns(),
         _seal=_AUTHORIZATION_SEAL,
+        monitoring_policy=monitoring_policy,
     )
+    _remember_lease(authorization)  # type: ignore[arg-type]
+    return authorization
 
 
 def revalidate_president_isolation_authorization(
@@ -1543,6 +1557,108 @@ def revalidate_president_isolation_authorization(
         or authorization.canonical_repo_sha256 != _president_repo_digest(canonical_repo_authority)
     ):
         raise ValueError("HARDEN president authorization does not match this operation")
+    try:
+        lease = _lease_for(authorization)  # type: ignore[arg-type]
+    except ValueError:
+        lease = None
+    if lease is not None and lease.monitoring_policy != authorization.monitoring_policy:
+        raise ValueError("review_monitoring_policy_mismatch")
+
+
+def activate_president_isolation_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+    board: object,
+    brief: str,
+    *,
+    canonical_repo_authority: Path | str | None = None,
+) -> None:
+    """Claim the operation's single-use lease before its first host effect (agent-harness#1001)."""
+    revalidate_president_isolation_authorization(
+        authorization, board, brief, canonical_repo_authority=canonical_repo_authority
+    )
+    assert authorization is not None
+    lease = _lease_for(authorization)  # type: ignore[arg-type]
+    with lease.lock:
+        if lease.closed or lease.active:
+            raise ValueError("HARDEN president authorization is not available for activation")
+        if time.monotonic_ns() - lease.prepared_monotonic_ns > _PRE_ACTIVATION_FRESHNESS_NS:
+            raise ValueError("HARDEN president authorization expired before activation")
+        lease.active = True
+
+
+def close_president_isolation_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+) -> None:
+    """Close the operation's lease on every path; a closed lease can never be revived."""
+    if not isinstance(authorization, PresidentIsolationAuthorization):
+        return
+    try:
+        lease = _lease_for(authorization)  # type: ignore[arg-type]
+    except ValueError:
+        return
+    with lease.lock:
+        lease.active = False
+        lease.closed = True
+        lease.cancel_event.set()
+
+
+def derive_president_leg_authorization(
+    authorization: PresidentIsolationAuthorization | None,
+    board: object,
+    brief: str,
+    *,
+    harness: str,
+    model: str,
+    deadline_s: float | None,
+    instructions_sha256: str,
+    canonical_repo_authority: Path | str | None,
+) -> ReviewLegAuthorization:
+    """Mint the single-route broker capability for ONE president rung launch.
+
+    The capability carries the PRESIDENT operation identity (never the review one),
+    the brief as its bound input, and the operation's monitoring policy. A brokered
+    launch needs a probeable canonical repository; without one it is refused here,
+    before any host effect, with that reason.
+    """
+    revalidate_president_isolation_authorization(
+        authorization, board, brief, canonical_repo_authority=canonical_repo_authority
+    )
+    assert authorization is not None
+    if not authorization.canonical_repo_sha256:
+        raise ValueError("president broker isolation requires a canonical repository")
+    policy = authorization.monitoring_policy
+    if (
+        (harness, model) not in authorization.routes
+        or (policy == "bounded" and (
+            deadline_s is None or not math.isfinite(deadline_s) or deadline_s <= 0))
+        or (policy == "heartbeat_only" and deadline_s is not None)
+    ):
+        raise ValueError("invalid HARDEN president leg authority")
+    lease = _lease_for(authorization)  # type: ignore[arg-type]
+    route = (harness, model)
+    with lease.lock:
+        if lease.closed or not lease.active:
+            raise ValueError("HARDEN president authorization is not active")
+        if lease.route_counts[route] <= 0:
+            raise ValueError("HARDEN president route occurrence already consumed")
+        lease.route_counts[route] -= 1
+    issued = time.monotonic_ns()
+    leg = ReviewLegAuthorization(
+        operation=authorization.operation, purpose=authorization.purpose,
+        input_sha256=authorization.brief_sha256,
+        instructions_sha256=instructions_sha256,
+        canonical_repo_sha256=authorization.canonical_repo_sha256,
+        broker_contract=PARENT_UNIX_BROKER_V1, harness=harness, model=model,
+        issued_monotonic_ns=issued,
+        expires_monotonic_ns=issued + (
+            10_000_000_000 if policy == "heartbeat_only"
+            else int(float(deadline_s) * 1_000_000_000) + _BROKER_TRANSPORT_ALLOWANCE_NS  # type: ignore[arg-type]
+        ),
+        _seal=_AUTHORIZATION_SEAL,
+        monitoring_policy=policy,
+    )
+    _remember_leg_claim(leg, lease)
+    return leg
 
 
 __all__ = [
@@ -1565,6 +1681,9 @@ __all__ = [
     "revalidate_review_composition_authorization",
     "PRESIDENT_OPERATION_V1",
     "PresidentIsolationAuthorization",
+    "activate_president_isolation_authorization",
+    "close_president_isolation_authorization",
+    "derive_president_leg_authorization",
     "prepare_president_isolation_authorization",
     "revalidate_president_isolation_authorization",
     "GROK_SUBSCRIPTION_BLOCKED_ENV_VARS",
