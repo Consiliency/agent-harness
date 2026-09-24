@@ -23,6 +23,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   archive and executable binding; automatic fleet updates remain tracked by
   agent-harness#1008.
 
+### The heartbeat owner wrapper gives its PID namespace its own /proc (agent-harness#1003)
+
+- Under `monitoring_policy="heartbeat_only"`, the owner wrapper (`_ReviewMonitor.owned_command`)
+  put the provider in a new PID namespace but bind-mounted the host `/proc`. A provider that
+  starts its own bubblewrap sandbox from a process that is not the namespace's first -- codex's
+  `workspace-write` sandbox launched through a shell -- then resolved `/proc/<pid>/ns` in the
+  wrong PID namespace and failed before running anything (`bwrap: open /proc/26/ns/ns failed`).
+  Reproduced through `launch_provider` on bubblewrap 0.9.0 / Linux 7.0, with and without the
+  egress prefix. The wrapper now mounts `--proc /proc`. The owner's identity checks read the
+  host `/proc` from outside and are unchanged; three tests that learned host PIDs by reading
+  `/proc/self/stat` inside the namespace now resolve them from outside.
+
 ### President launches run under heartbeat monitoring and broker isolation (agent-harness#1001)
 
 - Every non-native president rung launch (Astra, Grok, Gemini; Claude outside Claude Code)

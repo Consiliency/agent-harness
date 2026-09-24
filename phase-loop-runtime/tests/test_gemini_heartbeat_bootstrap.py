@@ -60,7 +60,7 @@ def test_no_profile_does_not_change_other_providers_owner_argv(tmp_path):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "unchanged", 0, threading.Event())
     assert monitor.owned_command(("fixture", "arg")) == [
         "/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-        "--bind", "/", "/", "--dev", "/dev", "--", "fixture", "arg",
+        "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "fixture", "arg",
     ]
 
 
@@ -138,7 +138,7 @@ Path({str(observation)!r}).write_text(json.dumps({{
  'argv':sys.argv, 'home':str(home), 'settings_readonly':settings_readonly,
  'settings':settings_value, 'mode':mode,
  'caps':next(x.split()[1] for x in Path('/proc/self/status').read_text().splitlines() if x.startswith('CapBnd:')),
- 'pid':int(Path('/proc/self/stat').read_text().split()[0]),
+ 'pid':os.readlink('/proc/self/ns/pid')+' '+str(os.getpid()),
  'namespace':os.readlink('/proc/self/ns/pid'), 'fd_targets':fd_targets,
  'random_available':len(os.urandom(8))==8
 }}))
@@ -147,7 +147,7 @@ if mode=='cancel':
     if child==0:
         os.setsid()
         ready=Path({str(tmp_path / 'detached')!r})
-        ready.with_suffix('.tmp').write_text(Path('/proc/self/stat').read_text().split()[0])
+        ready.with_suffix('.tmp').write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid()))
         os.replace(ready.with_suffix('.tmp'),ready)
         while True: time.sleep(.1)
     print('synthetic provider ready',file=sys.stderr,flush=True)
@@ -412,12 +412,16 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     cancel = threading.Event()
     detached = tmp_path / "detached"
     control_errors = []
+    detached_pidfd = []
     def cancel_when_launched():
         try:
             until = time.monotonic() + 30  # synthetic admission only
             while not detached.exists():
                 if time.monotonic() >= until: raise AssertionError("fixture did not launch")
                 time.sleep(.02)
+            # Pin the detached child while it is ALIVE: after cancellation a (namespace
+            # inode, local PID) pair can be reused by another test's process.
+            detached_pidfd.append(os.pidfd_open(_host_pid(detached.read_text())))
         except Exception as exc:
             control_errors.append(exc)
         finally:
@@ -435,7 +439,16 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     assert leg.status == "UNAVAILABLE" and leg.text == ""
     assert leg.detail == "review_operation_cancelled"
     assert leg.harden_isolation_evidence["provider_agy_home_cleanup_verified"]
-    assert not Path(f"/proc/{int(detached.read_text())}").exists()
+    # the pinned detached child is gone (its pidfd is readable once it has exited)
+    import select
+    assert detached_pidfd, "the detached child was never pinned"
+    try:
+        until = time.monotonic() + 5
+        while not select.select([detached_pidfd[0]], [], [], 0)[0]:
+            assert time.monotonic() < until, "detached child survived cancellation"
+            time.sleep(.02)
+    finally:
+        os.close(detached_pidfd[0])
     assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
     verdict, = [json.loads(p.read_text()) for p in (tmp_path / "records").glob("*.verdict.json")]
     assert verdict["status"] == "UNAVAILABLE" and verdict["text"] == ""
@@ -840,9 +853,10 @@ panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heart
             assert time.monotonic() < until, "synthetic provider never admitted"
             time.sleep(.02)
         info = json.loads(fixture_cli.observation.read_text())
-        for pid in (info["pid"], int(detached.read_text())):
+        provider_pid = _host_pid(info["pid"])
+        for pid in (provider_pid, _host_pid(detached.read_text())):
             pidfds.append(os.pidfd_open(pid))
-        namespace = os.stat(f"/proc/{info['pid']}/ns/pid")
+        namespace = os.stat(f"/proc/{provider_pid}/ns/pid")
         assert namespace.st_ino != os.stat("/proc/self/ns/pid").st_ino
         worker.kill()
         worker.wait(10)
@@ -1243,3 +1257,32 @@ def test_qualification_refuses_an_empty_network_rule_set(monkeypatch):
     monkeypatch.setattr(sandbox_egress, "egress_rules", lambda: [])
     with pytest.raises(ValueError, match="rule set is empty"):
         _qualification_validator().__globals__["inspect_network"](os.getpid())
+
+
+def _host_pid(record: str, timeout_s: float = 5.0) -> int:
+    """Host PID for a ``"<pid-namespace link> <namespace-local pid>"`` record.
+
+    Inside the owner wrapper /proc is the namespace's OWN procfs (agent-harness#1003), so a
+    process can only report its namespace-local PID; the host PID is resolved from outside
+    through the host /proc (the process whose pid namespace matches and whose innermost
+    ``NSpid`` is that PID).
+    """
+    link, local = record.split()
+    deadline = time.monotonic() + timeout_s
+    while True:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                if os.readlink(f"/proc/{entry}/ns/pid") != link:
+                    continue
+                nspid = next(line for line in Path(f"/proc/{entry}/status").read_text().splitlines()
+                             if line.startswith("NSpid:"))
+            except (OSError, StopIteration):
+                continue
+            if nspid.split()[-1] == local:
+                return int(entry)
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"no host process for {record!r}")
+        time.sleep(.02)
+
