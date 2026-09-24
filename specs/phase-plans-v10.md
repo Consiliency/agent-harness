@@ -86,10 +86,10 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
    / `verdict_schema_sha256`. CONFORM's pin work is therefore NO LONGER externally gated and is
    satisfiable against merged sources; EC-CONFORM-5/6/7 are re-derived accordingly below. (Swept
    the other four assumptions against current `main`: #2 subsequently reconciled — `governed-pipeline#128`
-   CLOSED, we still ship `0.7.16`; #3 holds — `tui_adapter_required` still present in
+   CLOSED, we still ship `0.7.17`; #3 holds — `tui_adapter_required` still present in
    `panel_invoker.py`, REVIEWTRUTH unlanded; #4/#5 structurally independent of agent-harness#377. That original sweep found only #1
    stale; #2's later drift is reconciled below.)
-2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.16; it has acted on
+2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.17; it has acted on
    `governed-pipeline#128`, which is CLOSED. No phase here depends on that being resolved.
 3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
    inside Claude Code today (`tui_adapter_required`). The coordinated v10 run therefore invokes its
@@ -1262,8 +1262,9 @@ Source: agent-harness#935 (maintainer direction 2026-09-21); gap record: agent-h
   Code; by a native president fill accepted under `heartbeat_only`; by a fill whose digests do not
   bind the brief and findings it was asked to rule on.
 - [ ] EC-PRESROUTE-3 — **The ladder is ordered by seat alias, stated here once, on each
-  vendor's current registry id.** `PRESIDENT_LADDER` equals `("sol", "fable", "grok", "gemini")`
-  (Astra, Fable, Grok, Gemini) — this criterion is the ONLY place the order is written; the
+  vendor's current registry id.** `PRESIDENT_LADDER` equals `("fable", "sol", "grok", "gemini")`
+  (Opus 5.5, Astra, Grok, Gemini; amended 2026-09-24 by maintainer ruling, agent-harness#1025 —
+  previously `("sol", "fable", "grok", "gemini")`) — this criterion is the ONLY place the order is written; the
   Execution Notes, the verification recipe and the pinned tests reference it. Each alias resolves
   to its vendor's frozen registry PIN (the documented Opus substitution counts as the `fable`
   seat); at freeze the four PINs are each vendor's current id as recorded by the registry's own

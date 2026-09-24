@@ -1,7 +1,7 @@
 {
   "architecture": "x86_64",
   "help_sha256": "5a03bf7dc9d3d7645f5853906cc117363fd8978a79c2a89521f0ff7590dbe454",
-  "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+  "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
   "isolation_profile": "agy_memfd_home_deny_all_v1",
   "platform": "linux",
   "provider": "gemini",
@@ -16,13 +16,13 @@
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": false,
-        "provider_image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "provider_image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_owned_fds_closed": true,
         "sandbox_network_filtered": true
       },
       "help_sha256": "5a03bf7dc9d3d7645f5853906cc117363fd8978a79c2a89521f0ff7590dbe454",
-      "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+      "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -35,7 +35,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -46,16 +46,16 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "4e55a54305eb145d19af81b50aebe96fc325fc368c6c1dc44e892936a6cb20bf",
-      "raw_receipt_sha256": "90bb3affdbaa89b816220e5dde84bc5f60cbef496f7979fda5708026f4839a45",
+      "profile_sha256": "e6d826d79f5a6da58aad738404e9a600a700d8a4518405e65d99de54f3a001b1",
+      "raw_receipt_sha256": "dba3c6b1d043c0b5d7ec4e510b13ede11257e6c32d611fa26bddb3dd7faa722c",
       "record_sha256": {
-        "broker": "12697f23bde058149f7bdb33c964f4617170c50b8aad53cc70488de718b53ca6",
-        "monitoring": "4741f0560c73f3108f9f259df7f44912569908323c8ae019fc924557f221b184",
-        "observer": "207d581892c8d9bea1925fd65418a9128eb0993413da494c229e052244addf0b",
-        "result": "4e86a002da921ee85dacb58623c60093ea57cee13028ff534abb681ece88cc87"
+        "broker": "b94efa1d43c7b6fa937731bd4c5d843f0ad3fe7b9b701c147076a34472e7a30c",
+        "monitoring": "5a913288ffed043b94958fee1501c63c9ff79e0ea0c4478696be803cf5fc8806",
+        "observer": "3113d33e2efdec22e698fb1b996e8b6cecf4923d981a26bf21bc35cd79ff968e",
+        "result": "47ca6ec06d0fdc4ec3c9655b0b9df5efe9ffc6c9a38112a5cd11c2a843b7ce89"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -77,13 +77,13 @@
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": true,
-        "provider_image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "provider_image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_owned_fds_closed": true,
         "sandbox_network_filtered": true
       },
       "help_sha256": "5a03bf7dc9d3d7645f5853906cc117363fd8978a79c2a89521f0ff7590dbe454",
-      "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+      "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -96,7 +96,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -107,15 +107,15 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "4e55a54305eb145d19af81b50aebe96fc325fc368c6c1dc44e892936a6cb20bf",
-      "raw_receipt_sha256": "fdf3f61bc943530df1efde2af6995bb1726a8b64f8fd5f23bc2613cfa09ba2b6",
+      "profile_sha256": "e6d826d79f5a6da58aad738404e9a600a700d8a4518405e65d99de54f3a001b1",
+      "raw_receipt_sha256": "ae632cc9b040fa13135843558b485b3fa5858be92a4fa873d5fd2cb08842446a",
       "record_sha256": {
-        "broker": "a3fcc3e369d916d48a30213f71af904503e62dae97e80262be6de0ce22308a25",
-        "monitoring": "efcf7323a6d7f9a57b05e8581f6f698a512670665b2d6205fe804ca733ee19c4",
-        "observer": "a30a7e0a8bcdd71a33ec62af8c154104da4b3eff74853ef63bf94befbd774a02",
+        "broker": "197eedcb522d17cf61354e4a730b4556319d9e71b401cbeec0322b7c69ecb374",
+        "monitoring": "b131f072c4421f40ef7adea290abad48cfcfe2248d7415bd8a47778d34622d0a",
+        "observer": "b2dcd0478c7c7419e68ba65f56ec41e24e44502d60016ab17b95402601951971",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -144,7 +144,7 @@
         "sandbox_network_filtered": null
       },
       "help_sha256": "5a03bf7dc9d3d7645f5853906cc117363fd8978a79c2a89521f0ff7590dbe454",
-      "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+      "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -157,7 +157,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -168,15 +168,15 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "1dbb10f8295cc1ad2e558bd006c7808fe53b6c7f678a887eb557b576bb591711",
+        "image_sha256": "aea7ed8df1e79b716c0ccd14c7d8086db75b14da535ffb7febdec9a488deff67",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "4e55a54305eb145d19af81b50aebe96fc325fc368c6c1dc44e892936a6cb20bf",
-      "raw_receipt_sha256": "b906888bfad16fb2e24a32dacaeb7fc9b47798e4a6fa936311463fee5d1bd34a",
+      "profile_sha256": "e6d826d79f5a6da58aad738404e9a600a700d8a4518405e65d99de54f3a001b1",
+      "raw_receipt_sha256": "0592d5e957d7954fccf2b828753e4d0001ccac9e03c9a4985d101ac5f39830df",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "742d9f8d3dbd8129b9af0028ce9a2c0ccf8d0f82ce0a7bc82520de3e001d09ec",
-        "observer": "353bbd62c5602d31854f6a8262fdc4d624b79849173de0365e9cfc89f70e1af8",
+        "monitoring": "62fbf798ea775f8adab217c7c1ce21478690ef017223289df6c7474eb4d8332b",
+        "observer": "4e4b2c643e6ca161ae5606e1bfcf7deb2eaf9e80c6ba5abbf2858a2e67a821d4",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -191,12 +191,12 @@
       }
     }
   ],
-  "release_version": "1.2.9",
+  "release_version": "1.2.10",
   "role": "redacted qualification evidence; runtime admission remains the checked executable digest",
   "route": "brokered_subscription_heartbeat_only",
-  "schema": "agy_129_redacted_qualification_summary.v1",
+  "schema": "agy_1210_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "4506054f342a4785301555204e4201e985a32b090f4eba313ce6bbe60ba3618b",
+    "__init__.py": "941d4d5c5068a223da9835e2b03df6f7b30d1a07f14198ca2107b1b553bcb25c",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "e9a503543374ccb83e41535c9fee012fe849b9397003d87aec9ff8fdb653bc73",
     "advisor_board/__init__.py": "7a746aa1ccf9cca9e6344c0d09a34c464cd1bd82044e469f56c2fa5b1b641ff8",
@@ -299,7 +299,7 @@
     "fleet_metrics.py": "ac6ee05199a6f1faa7c708a6e21995cf1ccb54fc358dcecb2cf954a8bf784954",
     "fleet_metrics_export.py": "cbb858559663b3ef0235402c80d1604bc7f9d5a98f93af5a9d6e468145f2504d",
     "gate_posture.py": "6530a147ac9c7c5507ed055704ddae29b32197a67ad3f2f36f1cc99f51bebe30",
-    "gemini_heartbeat.py": "aaed0a2c0d6bec838060b5d63b390da0c5ea826ac180177fa976788c20da7382",
+    "gemini_heartbeat.py": "70c99f76d3177fd424ead453b49028d4abf0399bf3896b7eaa981d6cb1d1c69f",
     "git_discipline.py": "fbcd91c6849f04ffbbaa35bed6290aa4f3eb76a117bc2e5557994736e758f030",
     "git_ops.py": "2113ef93f3dc9024851ec7102f3b4a0d477f5e41c8f97efa553535a14f31c743",
     "git_topology.py": "4a09d442498ac9229f3d8f8560f6cf5066b951a5d781e9144403842596c78dec",
@@ -320,7 +320,7 @@
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "59b6efb213c53a69d65809e01d46e523a8079668c7e3da314d3310570254808d",
-    "panel_invoker.py": "504565af59050d80e5d8f0767d7ae44dc1affd5704fddb4f5054e109087b35db",
+    "panel_invoker.py": "c82b1481cf8e59188c28a93e6912105f21abcc6a6f592de17839bfadad54aefb",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
     "pipeline_adapter/__init__.py": "a7a88428e2b814b7621bbd5421e1c564491ab0ab41dea59d3011906f26df8a6a",
@@ -353,7 +353,7 @@
     "review_stage.py": "b49548413af2c51a7308488524fccb0772a1610a5cc23d8301b71cb9dd845c9c",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "1004fb5dcf3edfea33f29aac067216b065bc8581c3151d54542012799b8cc3b2",
+    "roadmap_assumptions.py": "973af76977a94509e6aac26e186b651981b44c98a36bed5f0ca6f8387db90c7a",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
@@ -411,8 +411,8 @@
     "worktree_index.py": "377002709d6b703a189b59e921bf118cd285f1735699524382bbe7c15c55b7ed"
   },
   "upstream_asset_name": "agy_cli_linux_x64.tar.gz",
-  "upstream_asset_sha256": "d9850373f3df866011024a961fa9740cc4adaac060eebe9c70fbf263ac6b2624",
-  "upstream_release_url": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.9",
+  "upstream_asset_sha256": "77cb69251292aa35b0b662f91f704f06dd787b72f7902a62db8c6d692989203e",
+  "upstream_release_url": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.10",
   "validator": {
     "operations": [
       "cancel",

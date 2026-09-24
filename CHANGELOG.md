@@ -6,15 +6,102 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Qualified agy 1.2.9 entry image (agent-harness#1008)
+### Faster pull-request CI (agent-harness#1029)
+
+- Pull requests run a ~2-minute wheel smoke (build, clean-venv install, entry-point
+  and probe checks) instead of the ~19-minute Gate A clean room; Gate A still runs
+  on every push to main, nightly, on dispatch and on release tags. `publish-pypi.yml`
+  likewise skips its standalone suite on pull requests only.
+- Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
+  3.10/3.11/3.12.
+- New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
+  agent-harness#992 and two agent-harness#987 nodes) are deselected in the hosted
+  pull-request suite only (offload-eligible PRs, push, nightly and Gate A run them),
+  by a conftest collection hook (`tests/_quarantine.py`) enabled with
+  `PHASE_LOOP_DESELECT_QUARANTINE=1` -- exact by marker, never a node-ID prefix, and
+  more than 5 marked nodes aborts collection. `tests/test_ci_quarantine.py` requires a
+  cited issue, refuses module-level quarantine, and runs the real hook on prefix-sibling,
+  double-mark and backslash-id fixtures.
+
+### `make check`: the local pre-PR check (agent-harness#1029)
+
+- New `phase-loop-runtime/scripts/local_check.py` (`make check` / `make check-full` at the
+  repository root): CI's pinned ruff lint plus the tests a diff can reach -- changed test
+  files, tests importing a changed module, the CI guard tests when workflow/`ci/` plumbing
+  changed, the whole suite when shared test config changed. Tests run under `env -i` with a
+  throwaway HOME and bare PATH in a cached venv built from CI's install line
+  (`phase-loop-runtime/.local-check-venv/`, rebuilt from scratch when the deps,
+  `pyproject.toml` or the target Python change; `LOCAL_CHECK_PYTHON` overrides it), so
+  host-dependent passes surface before CI. Imports are parsed (multi-line forms count) and
+  renames select importers of both paths; a run that could not lint is a FAIL. It does not
+  replace CI: selection misses golden/subprocess consumers (`--full` covers them), and Gate A
+  and 3.11/3.12 still run in CI.
+
+### agy source pins: full check once per release (agent-harness#1029)
+
+- `qualified-agy-image` now checks, on pull requests and pushes that touch the route or
+  the evidence, only the qualification record and the route's core files
+  (`verify_qualified_agy_image.py --route-core`: `gemini_heartbeat.py`,
+  `qualify_gemini_heartbeat.py`, a tripwire for direct edits). An ordinary runtime change
+  no longer needs a live Gemini requalification per PR.
+- The full pin set (every package source) blocks publication (`publish-pypi.yml`, before
+  the build), blocks a release-cut PR (merging it changes `RELEASE_PIN`) or a PR that
+  changes the qualification evidence (`scripts/agy_full_pin_scope.sh`, judged on the merge
+  commit), and is reported as a non-blocking warning nightly. The latest-upstream-release
+  check moves to its own nightly/manual job.
+
+## [0.7.17] - 2026-09-24
+
+### Opus 5.5 is the default first president rung (agent-harness#1025)
+
+- The built-in `PRESIDENT_LADDER` is now `fable, sol, grok, gemini` — Claude Opus 5.5, GPT-6
+  Astra, Grok 4.7, Gemini 3.8 Flash — by maintainer ruling (2026-09-24), amending
+  EC-PRESROUTE-3 (previously `sol, fable, grok, gemini`). A configured `[president] ladder`
+  (user or repository, agent-harness#1004) still overrides it. Note: until agent-harness#1016
+  lands, a brokered Claude-TUI president under `heartbeat_only` can stay active after a
+  completed turn whose ruling grammar is malformed (no format re-ask); rulings filled natively
+  under Claude Code are unaffected.
+
+### Qualified agy 1.2.10 entry image (agent-harness#1008)
+
+- Admit the newly published 1.2.10 Linux x64 image for brokered Gemini
+  heartbeat-only review after separate real completion, cancellation and
+  owner-loss qualification. Hosts must install 1.2.10 with this runtime update;
+  the 1.2.9 image now refuses before launch. The current-image record and CI
+  provenance check bind the new source, archive and
+  executable; automatic fleet updates remain tracked by agent-harness#1008.
+
+### The installer resolves a pin to one commit before installing (agent-harness#980)
+
+- `install-agent-harness.sh` used to install the runtime from the ref and then clone the skills
+  with `git clone --branch <ref>`, which rejects a commit SHA. A fresh full-SHA pin therefore
+  left a new runtime with no matching skills. The installer now fetches the ref into the skill
+  checkout first (`init` + `fetch`, which accepts a branch, a tag or a full SHA), installs the
+  runtime from the commit that fetch resolved, and checks out that same commit for the skills.
+  An unresolvable ref fails before anything is installed, and a directory the run created is
+  removed again.
+
+### Qualified agy 1.2.9 entry image (superseded before release; agent-harness#1008)
 
 - Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
   Gemini heartbeat-only review after real completion, cancellation and owner-loss
-  qualification. Hosts must install 1.2.9 with this runtime update; both the
-  previous image and unknown future images refuse before provider launch. The
+  qualification. This was an interim pin before 1.2.10; while it was current,
+  the 1.2.7 and unknown images refused before provider launch. The
   repository's current-image record and CI provenance check expose the source,
   archive and executable binding; automatic fleet updates remain tracked by
   agent-harness#1008.
+
+### The heartbeat owner wrapper gives its PID namespace its own /proc (agent-harness#1003)
+
+- Under `monitoring_policy="heartbeat_only"`, the owner wrapper (`_ReviewMonitor.owned_command`)
+  put the provider in a new PID namespace but bind-mounted the host `/proc`. A provider that
+  starts its own bubblewrap sandbox from a process that is not the namespace's first -- codex's
+  `workspace-write` sandbox launched through a shell -- then resolved `/proc/<pid>/ns` in the
+  wrong PID namespace and failed before running anything (`bwrap: open /proc/26/ns/ns failed`).
+  Reproduced through `launch_provider` on bubblewrap 0.9.0 / Linux 7.0, with and without the
+  egress prefix. The wrapper now mounts `--proc /proc`. The owner's identity checks read the
+  host `/proc` from outside and are unchanged; three tests that learned host PIDs by reading
+  `/proc/self/stat` inside the namespace now resolve them from outside.
 
 ### President launches run under heartbeat monitoring and broker isolation (agent-harness#1001)
 
@@ -54,6 +141,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
   so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
 
+### A sandboxed codex review seat can run commands in its staged tree (agent-harness#999)
+
+- A codex seat reviewing a staged tree (agent-harness#848) could not run anything: codex
+  >= 0.156 executes commands through the code-mode host, which stayed disabled. The brokered
+  codex argv now lifts `code_mode_host` alongside `shell_tool`, only when a tree is staged; the
+  sealed (no-tree) argv and its pinned controls are unchanged.
+- The sandboxed seat can no longer write `/tmp` or `$TMPDIR`
+  (`sandbox_workspace_write.exclude_slash_tmp` / `exclude_tmpdir_env_var`), so it cannot
+  overwrite a sibling seat's verdict in the round's scratch directory. Reads are not confined.
+- Under the egress prefix the staged-tree codex leg keeps exactly one bounding capability,
+  `CAP_SETFCAP`, which codex's own bubblewrap sandbox needs to map uid 0
+  (`sandbox_egress.SEAT_RETAINABLE_CAPS`); every other seat keeps an empty bounding set, and
+  `iptables -F OUTPUT` stays refused inside the namespace. The recorded controls gain
+  `tmp-not-writable` and `bounding-set-setfcap-only`.
+
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 
 - **A seated president rung now rules.** `plan` / `production_code` landings no longer fail
@@ -62,9 +164,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   its own brief, completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` …
   `FORCING DECISION:`) and authorization (`PresidentIsolationAuthorization`, minted beside —
   never through — the review authorization, and revalidated before each rung launches).
-- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini`, each
-  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the brokered provider
-  route (`launch_provider` only); `fable` is filled natively by the driving Claude Code session
+- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini` (amended
+  to `fable` first in this release, above), each
+  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the single provider
+  launch site (`launch_provider` only); agent-harness#1009 (above) later adds the heartbeat
+  monitor and the parent Unix broker / egress isolation to those launches. `fable` is filled natively by the driving Claude Code session
   (deferred, then resumed with `native_president_fill`, both digests checked against the
   persisted pending request) and through the self-PTY session elsewhere.
 - **Durable ruling record** (EC-PRESROUTE-5): every ruling on a call with a review stream is
@@ -168,7 +272,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
   unchanged and is invoked as its own shell command with no `-n auto`.
 
-### Opus 5.5 replaces every Fable default
+### The native-fill hint names the seat's model (agent-harness#994)
+
+- The advisor-board CLI's hint for an unfilled native seat hard-coded "run a native Fable
+  Agent". It now prints the model from the seat's own native request, so after
+  agent-harness#991 it names Opus 5.5.
+
+### Opus 5.5 replaces every Fable default (agent-harness#991)
 
 - `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the
   DEFAULT, by maintainer direction (2026-09-23, "for now"): the Claude panel leg
@@ -180,10 +290,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The review-policy seat NAME stays `fable`. `DEFAULT_REVIEW_SEAT_ALIASES` gains
   `claude-opus-5-5 -> fable`, the same way `gpt-6-astra` still answers to `sol`; without it
   every board fails the landing policy's seat-name check. Because the president ladder
-  names that seat rather than a model, its first rung now resolves to Opus 5.5 with no
-  ladder change (verified by `seat_for_rung` on both default boards). A seated president
-  rung still has no production execution route today (`president_execution_route_unavailable`,
-  pre-existing and unchanged).
+  names that seat rather than a model, its `fable` rung resolves to Opus 5.5 with no
+  ladder change (verified by `seat_for_rung` on both default boards). The built-in ladder
+  order is `fable, sol, grok, gemini` as of this release (see "Opus 5.5 is the default first
+  president rung", above), so Opus 5.5 is the first rung by default. When this change merged
+  a seated president rung still had no production execution route
+  (`president_execution_route_unavailable`); agent-harness#998 (PRESROUTE, above) adds it in
+  this release.
 - Fable is NOT retired: `claude-fable-5-1` stays registered, aliased and selectable per seat.
 - `build_bundle.PRESERVE_LITERALS` gains `claude-opus-5-5` (placed before `claude-opus-5`,
   a prefix of it, since sentinel substitution runs in order) and `Claude Opus 5.5`, so the
@@ -243,6 +356,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   probed against its own CLI and this change carries no evidence about them.
 - The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
   standing property of grok, which is what let the original clamp outlive its evidence.
+
 ### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
 
 - Align the governed-pipeline issue-state and package-pin probes with its closed
@@ -415,6 +529,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   overwritten and not restored. No kernel-aware check is attempted.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
   through signal delivery.
+
+### Release record: 0.7.16 published (agent-harness#954)
+
+- `docs/releases/outside-agent-release-handoff.md` records the 0.7.16 publication (signed
+  tag, workflow and job ids, PyPI digests, fresh install).
+
+### Roadmap: v10 concurrency ruling (agent-harness#949, source agent-harness#948)
+
+- PRESROUTE and EXECFIND steps 1–5 may run concurrently with HARDEN, REVIEWTRUTH and SCHED
+  (maintainer ratification, Option A). Roadmap and seals only; no runtime behaviour changes.
 
 ## [0.7.16] - 2026-09-21
 ### Claude native review task delivery (agent-harness#937)
