@@ -68,8 +68,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   lock sizing (agent-harness#956, agent-harness#946) with small fixes (agent-harness#997); the
   v10 concurrency ruling (agent-harness#949) and the 0.7.16 published record
   (agent-harness#954). The EXECFIND plan (agent-harness#964, agent-harness#1021) is planning
-  only. No release-tracking issue exists for 0.7.17; the appended plan-authority rows cite
-  agent-harness#930 (release reseal sites).
+  only. The release-tracking issue is agent-harness#1025; the appended plan-authority rows
+  cite it.
 - Tag, publication and fleet-adoption evidence for `0.7.17` are recorded here after the
   maintainer-gated tag push, the same way the `0.7.16` record below was completed. They are
   deliberately absent rather than asserted in advance.

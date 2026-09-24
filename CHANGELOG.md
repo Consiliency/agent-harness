@@ -111,8 +111,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `FORCING DECISION:`) and authorization (`PresidentIsolationAuthorization`, minted beside —
   never through — the review authorization, and revalidated before each rung launches).
 - **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini`, each
-  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the brokered provider
-  route (`launch_provider` only); `fable` is filled natively by the driving Claude Code session
+  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the single provider
+  launch site (`launch_provider` only); agent-harness#1009 (above) later adds the heartbeat
+  monitor and the parent Unix broker / egress isolation to those launches. `fable` is filled natively by the driving Claude Code session
   (deferred, then resumed with `native_president_fill`, both digests checked against the
   persisted pending request) and through the self-PTY session elsewhere.
 - **Durable ruling record** (EC-PRESROUTE-5): every ruling on a call with a review stream is
@@ -234,8 +235,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The review-policy seat NAME stays `fable`. `DEFAULT_REVIEW_SEAT_ALIASES` gains
   `claude-opus-5-5 -> fable`, the same way `gpt-6-astra` still answers to `sol`; without it
   every board fails the landing policy's seat-name check. Because the president ladder
-  names that seat rather than a model, its first rung now resolves to Opus 5.5 with no
-  ladder change (verified by `seat_for_rung` on both default boards). When this change merged
+  names that seat rather than a model, its `fable` rung resolves to Opus 5.5 with no
+  ladder change (verified by `seat_for_rung` on both default boards). The built-in ladder
+  order is `sol, fable, grok, gemini` (agent-harness#998, above), so Opus 5.5 is the first
+  rung only under a configured ladder such as this repository's (agent-harness#1004). When this change merged
   a seated president rung still had no production execution route
   (`president_execution_route_unavailable`); agent-harness#998 (PRESROUTE, above) adds it in
   this release.
