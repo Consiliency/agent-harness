@@ -744,3 +744,32 @@ def test_president_route_rejects_a_marked_answer_with_neither_id_nor_uuid(tmp_pa
         answer["isApiErrorMessage"] = True
     path = _jsonl(tmp_path, [_user("u1"), answer])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_rejects_a_damaged_newer_request_followed_by_metadata(tmp_path):
+    # agent-harness#1017 r8 (codex): the damaged user line is not the last line, so the review
+    # route skips it as history; the president route must fail closed instead.
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps(_user("u1", "First request")) + "\n"
+                    + json.dumps(_asst("I think it is fine", mid="m1", uuid="a1")) + "\n"
+                    + '{"type":"user","uuid":"u2","message":{"role":"user","content":\n'
+                    + json.dumps({"type": "progress"}) + "\n")
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+    assert pi._final_assistant_text_from_jsonl(path) == "I think it is fine"  # review route unchanged
+
+
+@pytest.mark.parametrize("earlier", ["stop_sequence", "tool_use", "synthetic", "api_error"])
+def test_president_route_rejects_a_bad_earlier_message_in_the_final_turn(tmp_path, earlier):
+    # agent-harness#1017 r8 differential sweep: an earlier message of the final turn that is not
+    # a clean completed block means the turn is not a genuine single completed answer.
+    first = _asst("partial", mid="m1", uuid="a1", stop=None)
+    if earlier == "stop_sequence":
+        first["message"]["stop_reason"] = "stop_sequence"
+    elif earlier == "tool_use":
+        first["message"]["content"] = [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]
+    elif earlier == "synthetic":
+        first["message"]["model"] = "<synthetic>"
+    else:
+        first["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), first, _asst("FORCING DECISION: APPROVE", mid="m2", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""

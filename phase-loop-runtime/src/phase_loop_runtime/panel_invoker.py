@@ -4009,10 +4009,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     Blocks of one message that repeat the same text under distinct uuids are all kept, so a copy
     of such a block under a fresh uuid is not detected.
 
-    With ``require_terminal`` (the president route, agent-harness#1016), the answer also
-    requires its last record to stop with ``end_turn``, and no record of the answer, including
-    a superseded version, may stop with anything else (earlier blocks stay null), be a
-    ``<synthetic>`` model record, or carry ``isApiErrorMessage`` on the message or the record.
+    With ``require_terminal`` (the president route, agent-harness#1016), any damaged line fails
+    closed, the answer's last record must stop with ``end_turn``, and no assistant record of the
+    final turn (superseded versions and replays included) may stop with anything else (earlier
+    blocks stay null), carry a tool call, be a ``<synthetic>`` model record, or carry
+    ``isApiErrorMessage`` on the message or the record.
 
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
@@ -4029,8 +4030,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            if index == last_line:
-                return ""  # a writer may still be appending the latest record
+            if index == last_line or require_terminal:
+                # A writer may still be appending the latest record. The president route owns a
+                # fresh transcript per call, so any damaged line there (for example a half-written
+                # newer request) fails closed rather than being skipped as history.
+                return ""
             continue  # a damaged line with valid records after it is history
         message = payload.get("message") if isinstance(payload, dict) else None
         if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
@@ -4146,16 +4150,14 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         final_records = list(group)
     versions = [m for _, m in final_records]
     terminal_payload, terminal = final_records[-1]
-    # The president route checks every raw in-turn record of the answer: superseded versions and
-    # exact replays included. The replay rule compares only id, role, content and stop state, so
-    # a replay carrying an API-error or <synthetic> marker would otherwise vanish. A record belongs
-    # to the answer by its message id, or by a uuid one of the answer's records carries.
-    answer_uuids = {_uuid(p) for p, _ in group} - {None}
+    # The president route checks every raw assistant record of the final turn: the answer's
+    # superseded versions and exact replays included (the replay rule ignores API-error and
+    # <synthetic> markers), and earlier messages of the turn too. After the last user record
+    # (a tool_result is a user record) a genuine final answer has no tool call, marker or
+    # non-final stop anywhere in its turn, so any of them fails closed on this route.
     answer_records = list(group) + [
-        (p, m) for p, m in records[boundary + 1:]
-        if m.get("role") == "assistant"
-        and ((final_id is not None and m.get("id") == final_id) or _uuid(p) in answer_uuids)
-    ]  # the group itself always, so an answer with neither id nor uuid is still checked
+        (p, m) for p, m in records[boundary + 1:] if m.get("role") == "assistant"
+    ]
     if require_terminal and (
         terminal.get("stop_reason") != "end_turn"
         or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
