@@ -2622,32 +2622,12 @@ def _run_train_unfenced(
           ``{"status": "merge_halted", "node_id": …, "reason": …}`` —
           downstream re-verify failed; upstream stays merged (forward-only).
     """
-    if review_monitoring_policy not in ("bounded", "heartbeat_only"):
-        return {"status": "review_halted", "reason": "review_monitoring_policy_invalid",
-                "detail": f"unsupported review monitoring policy {review_monitoring_policy!r}",
-                "terminal_blocker": _non_human_train_blocker("review_monitoring_policy_invalid")}
-    if review_monitoring_policy == "heartbeat_only":
-        # Every refusal the review gate would make later is made HERE, before any ledger,
-        # broker, publish or packet effect, for direct callers as well as the CLI
-        # (agent-harness#1061 r1). The gate re-checks before any seat launches.
-        refusal = None
-        if run_mode != "governed":
-            refusal = "review_monitoring_requires_governed"
-        elif emit_native_request or native_leg_fills:
-            refusal = "review_monitoring_unsupported_route:native_fill"
-        else:
-            from .advisor_board.backing import resolve_review_monitoring_policy
-            from .advisor_board.fixtures import DEFAULT_BOARD
-            from .panel_invoker import _preflight_gemini_heartbeat
-            try:
-                resolve_review_monitoring_policy(review_monitoring_policy, DEFAULT_BOARD)
-                _preflight_gemini_heartbeat(DEFAULT_BOARD, review_monitoring_policy)
-            except (OSError, ValueError) as exc:
-                refusal = str(exc) or type(exc).__name__
-        if refusal is not None:
-            return {"status": "review_halted", "reason": refusal,
-                    "detail": f"heartbeat_only train review refused before any effect: {refusal}",
-                    "terminal_blocker": _non_human_train_blocker(refusal)}
+    refused = _heartbeat_review_refusal(
+        review_monitoring_policy, run_mode=run_mode,
+        native_route=bool(emit_native_request or native_leg_fills),
+    )
+    if refused is not None:
+        return refused
 
     # A supplied converged runtime must remain credential-free and carries the
     # event-log authority/broker seams.  Legacy callers remain supported while
@@ -4160,8 +4140,45 @@ def _run_train_unfenced(
     }
 
 
+def _heartbeat_review_refusal(policy: str, *, run_mode: str, native_route: bool) -> Optional[Dict]:
+    """run-train --monitoring-policy (agent-harness#1061): every refusal the review gate would
+    make later, made up front -- before any lease, publish, ledger, broker or packet effect,
+    for direct callers as well as the CLI. The gate still re-checks before any seat launches.
+    Returns the ``review_halted`` result, or None when the run may proceed."""
+    refusal = None
+    if policy not in ("bounded", "heartbeat_only"):
+        refusal = "review_monitoring_policy_invalid"
+    elif policy == "heartbeat_only":
+        if run_mode != "governed":
+            refusal = "review_monitoring_requires_governed"
+        elif native_route:
+            refusal = "review_monitoring_unsupported_route:native_fill"
+        else:
+            from .advisor_board.backing import resolve_review_monitoring_policy
+            from .advisor_board.fixtures import DEFAULT_BOARD
+            from .panel_invoker import _preflight_gemini_heartbeat
+            try:
+                resolve_review_monitoring_policy(policy, DEFAULT_BOARD)
+                _preflight_gemini_heartbeat(DEFAULT_BOARD, policy)
+            except (OSError, ValueError) as exc:
+                refusal = str(exc) or type(exc).__name__
+    if refusal is None:
+        return None
+    return {"status": "review_halted", "reason": refusal,
+            "detail": f"train review monitoring policy refused before any effect: {refusal}",
+            "terminal_blocker": _non_human_train_blocker(refusal)}
+
+
 def run_train(*args, **kwargs):
     """Generation-fenced public boundary for every CLI and direct train run."""
+    # Before the fence: its generation leases are an effect a refused review must not take.
+    refused = _heartbeat_review_refusal(
+        kwargs.get("review_monitoring_policy", "bounded"),
+        run_mode=kwargs.get("run_mode", "autonomous"),
+        native_route=bool(kwargs.get("emit_native_request") or kwargs.get("native_leg_fills")),
+    )
+    if refused is not None:
+        return refused
     roadmap = args[0] if args else kwargs["roadmap"]
     resolve_workspace = kwargs["resolve_workspace"]
     from .convergence.broker.live import (

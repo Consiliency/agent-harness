@@ -185,6 +185,25 @@ class TestTrainWiring:
         assert result["terminal_blocker"]["human_required"] is False
         assert ledger.read_bytes() == before and merged == []
 
+    def test_the_refusal_precedes_the_generation_fence(self, tmp_path, monkeypatch):
+        """The public boundary refuses before its fence probes repositories or takes a
+        generation lease (both effects a refused review must not have)."""
+        from phase_loop_runtime.convergence.broker import live
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+        from test_train_prebuilt import PREBUILT_1NODE_MD
+
+        def _raise(board, policy, env=None):
+            raise ValueError("gemini_heartbeat_unqualified")
+
+        monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", _raise)
+        monkeypatch.setattr(live, "is_git_repository", never)
+        monkeypatch.setattr(live, "fabpub_capability_active", never)
+        monkeypatch.setattr(tr, "run_train_generation_leases", never)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        result = tr.run_train(parse_train_roadmap(PREBUILT_1NODE_MD), ledger, run_mode="governed",
+                              resolve_workspace=never, review_monitoring_policy=HB)
+        assert result["reason"] == "gemini_heartbeat_unqualified" and not ledger.parent.exists()
+
     def test_run_train_refuses_heartbeat_only_outside_governed_mode(self, tmp_path):
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
         result = tr.run_train(None, ledger, run_mode="autonomous", resolve_workspace=never,
