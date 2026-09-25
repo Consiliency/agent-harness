@@ -2690,6 +2690,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "4661bd07417ed5855f7f95c68c2f7f1e1f12b7e0ff6ce2ff49c410ccc29c7012",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
@@ -3327,6 +3333,12 @@
         {
           "plan_sha256": "bd2e5e8e8f821c8d2c912043ccb3cb18d3eb2210125aeeeadddfc45227bcd0c4",
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "bd2e5e8e8f821c8d2c912043ccb3cb18d3eb2210125aeeeadddfc45227bcd0c4",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
         }
@@ -4225,6 +4237,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "58551ec6137ad798bee75ee7e654f8f1ea5d52a1a2c1f4bce652b791e5566162",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4606,6 +4624,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "905d16f1bce6ee0b0c1eb40f485c17e828e1b3a5498433ac0e150e1dec6eded8",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
@@ -4810,6 +4834,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "45614648e5e69931be408bfbd08a0279a61d8a390d1baf7113944b759d15fb84",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
@@ -4918,6 +4948,12 @@
         {
           "plan_sha256": "b6471c7410c0cbda7af64c4bccbc961c59cf1a998ffca5a022dc0b889f5e6798",
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "6fe485e9844fe2059cd2b03be9998735f1d59e891b617092abe24625dae7ca9e",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
         }
@@ -5789,6 +5825,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "664f6516884039f8724cb55732c58906b6a976e27a9b5e789b634d043e9745e7",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": null,
@@ -5975,6 +6017,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "1d474ef41c536deff7234e6449d14fc11fc434a199ac0dd49409c3a3c9c14aca",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": null,
@@ -6148,6 +6196,12 @@
         {
           "plan_sha256": "bae605d434cd09d9c1f52e990b609c9c254ecaf6591afd861025377d94ef9cbd",
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "bae605d434cd09d9c1f52e990b609c9c254ecaf6591afd861025377d94ef9cbd",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
         }
@@ -6959,6 +7013,12 @@
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "f626ca937dc294732df008c946e204ca030c5953b86dd6fd0cb6380a2b3c8c7b",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05b770de/codex-v10-reviewtruth-plan-repair/20260904T072245Z-01-reviewtruth-plan.md",
@@ -7197,6 +7257,12 @@
         {
           "plan_sha256": "0830e655abe7985bedb04954876a2ad4e824cf477cccd705610d5f090cdfeef3",
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "e426a460e6991286e78ea0cf41c37c84508414c25650196ce6ddaa9606477a4f",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
         }
@@ -7766,6 +7832,12 @@
         {
           "plan_sha256": "93865389155adc61a293d5a77ee4410f8e7e94f9fb0983808fe02c4f7f9a225c",
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "93865389155adc61a293d5a77ee4410f8e7e94f9fb0983808fe02c4f7f9a225c",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
         }
@@ -9329,6 +9401,12 @@
         {
           "plan_sha256": "4d98bcc14150ac86ca505d544b8473b73e08d0e883048b5f1d254b6e788d77a4",
           "roadmap_sha256": "5537686a2ab772f8f6c7913906227576a00e1ab5db8c56219a945f4327e46787",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "9dd24b2a54c7ffbe8015d8d5a416122b4420e745a70034898c51699038eef0c8",
+          "roadmap_sha256": "d2ac13653d2de66ba34b2ec035423ce05bb74b145f7fb4a0bbadd9fb6dc96d36",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
         }
