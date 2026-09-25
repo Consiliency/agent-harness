@@ -7,6 +7,7 @@ import hashlib
 import math
 import os
 import re
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -37,7 +38,8 @@ class FalsifierRunResult:
 
 def _git(repo: Path, *args: str) -> bytes:
     return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, check=True,
+        ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
+        capture_output=True, check=True,
     ).stdout
 
 
@@ -47,8 +49,39 @@ def _clean_exact_source(repo: Path, sha: str) -> None:
         raise ValueError("falsifier repository is not its canonical Git root")
     if _git(repo, "rev-parse", "HEAD").decode().strip() != sha:
         raise ValueError("falsifier reviewed SHA does not match source HEAD")
-    if _git(repo, "status", "--porcelain", "--untracked-files=all"):
+    object_format = _git(repo, "rev-parse", "--show-object-format").decode().strip()
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("unsupported falsifier Git object format")
+    tree = _git(repo, "ls-tree", "-rz", "--full-tree", sha)
+    expected: dict[str, tuple[str, str]] = {}
+    for entry in tree.split(b"\0"):
+        if entry:
+            header, raw_path = entry.split(b"\t", 1)
+            mode, kind, oid = header.split(b" ")
+            if kind != b"blob":
+                raise ValueError("falsifier source contains an unsupported Git entry")
+            expected[os.fsdecode(raw_path)] = mode.decode(), oid.decode()
+    indexed = _git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    paths = [os.fsdecode(path) for path in indexed.split(b"\0") if path]
+    if len(paths) != len(set(paths)) or set(paths) != set(expected):
         raise ValueError("falsifier source is not clean")
+    for rel in paths:
+        target = repo / rel
+        mode, oid = expected[rel]
+        if target.is_symlink():
+            if mode != "120000":
+                raise ValueError("falsifier source is not clean")
+            payload = os.readlink(target).encode("utf-8", "surrogateescape")
+        elif target.is_file():
+            actual_mode = "100755" if stat.S_IMODE(target.stat().st_mode) & 0o111 else "100644"
+            if actual_mode != mode:
+                raise ValueError("falsifier source is not clean")
+            payload = target.read_bytes()
+        else:
+            raise ValueError("falsifier source is not clean")
+        blob = b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+        if hashlib.new(object_format, blob).hexdigest() != oid:
+            raise ValueError("falsifier source is not clean")
 
 
 def _one_new_test_diff(falsifier: FindingFalsifier) -> bool:
@@ -149,26 +182,25 @@ def run_finding_falsifier(
             if candidate.exists() or candidate.is_symlink():
                 outcome = "apply_failed"
                 detail = "falsifier test path already exists"
+            elif candidate.parent.is_symlink() or candidate.parent.parent.is_symlink():
+                outcome = "apply_failed"
+                detail = "falsifier test path crosses a symlink"
             else:
-                applied = subprocess.run(
-                    ["git", "-C", str(staged), "apply", "--no-index", "--", "-"],
-                    input=falsifier.diff.encode("utf-8"), capture_output=True, check=False,
+                lines = falsifier.diff.splitlines(keepends=True)
+                hunk = next(index for index, line in enumerate(lines) if line.startswith("@@ -0,0 +1"))
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_bytes("".join(line[1:] for line in lines[hunk + 1:]).encode("utf-8"))
+                returncode, stdout, stderr, failure, report = review_stage.run_bounded_falsifier_node(
+                    staged=staged, nodeid=falsifier.expected_nodeid,
+                    wall_clock_s=float(wall_clock_s), output_cap_bytes=output_cap_bytes,
                 )
-                if applied.returncode or not candidate.is_file() or candidate.is_symlink():
-                    outcome = "apply_failed"
-                    detail = "new test diff did not apply"
+                if failure:
+                    detail = failure
                 else:
-                    returncode, stdout, stderr, failure, report = review_stage.run_bounded_falsifier_node(
-                        staged=staged, nodeid=falsifier.expected_nodeid,
-                        wall_clock_s=float(wall_clock_s), output_cap_bytes=output_cap_bytes,
-                    )
-                    if failure:
-                        detail = failure
-                    else:
-                        outcome = _outcome_from_report(report, falsifier.expected_nodeid, returncode)
-                        if outcome == "red_on_head":
-                            red_digest = hashlib.sha256(stdout + stderr).hexdigest()
-                        # The clone is removed below; no live JUnit path is retained.
+                    outcome = _outcome_from_report(report, falsifier.expected_nodeid, returncode)
+                    if outcome == "red_on_head":
+                        red_digest = hashlib.sha256(stdout + stderr).hexdigest()
+                    # The clone is removed below; no live JUnit path is retained.
     except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as exc:
         detail = str(exc)
     finally:

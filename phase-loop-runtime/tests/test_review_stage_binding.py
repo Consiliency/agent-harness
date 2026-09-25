@@ -79,6 +79,62 @@ def test_stage_carries_an_independent_git_and_no_ignored_paths(tmp_path):
     assert (staged / ".gitignore").is_file()
 
 
+def test_stage_clone_does_not_run_host_git_filter(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".gitattributes").write_text("src.py filter=probe\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".gitattributes"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "attributes"],
+        check=True,
+    )
+    marker = tmp_path / "host-filter-ran"
+    config = tmp_path / "global.gitconfig"
+    config.write_text(
+        f'[filter "probe"]\n smudge = touch {marker}; cat\n required = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+    staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+    assert (staged / "src.py").is_file()
+    assert not marker.exists()
+
+
+def test_stage_clone_does_not_run_tracked_git_hook(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    marker = tmp_path / "host-hook-ran"
+    hook = repo / ".githooks" / "post-checkout"
+    hook.parent.mkdir()
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    subprocess.run(["git", "-C", str(repo), "add", ".githooks/post-checkout"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "hook"],
+        check=True,
+    )
+    config = tmp_path / "global.gitconfig"
+    config.write_text('[core]\n hooksPath = .githooks\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+    staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+    assert (staged / "src.py").is_file()
+    assert not marker.exists()
+
+
+def test_stage_path_selection_does_not_run_host_fsmonitor(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    marker = tmp_path / "host-fsmonitor-ran"
+    hook = tmp_path / "fsmonitor"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    config = tmp_path / "global.gitconfig"
+    config.write_text(f"[core]\n fsmonitor = {hook}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+    assert "src.py" in review_stage.review_tree_paths(repo)
+    assert not marker.exists()
+
+
 def test_stage_includes_uncommitted_work_a_reviewer_would_see(tmp_path):
     repo = _git_repo(tmp_path / "repo")
     (repo / "src.py").write_text("uncommitted edit\n", encoding="utf-8")
@@ -473,6 +529,94 @@ def test_falsifier_inventory_refuses_project_symlink_outside_stage(tmp_path, kin
 
     with pytest.raises(ValueError, match="outside staged tree"):
         review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
+
+
+def test_falsifier_new_test_does_not_run_host_git_filter(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    (repo / ".gitattributes").write_text(f"{path} filter=probe\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".gitattributes"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "attributes"],
+        check=True,
+    )
+    marker = tmp_path / "host-filter-ran"
+    config = tmp_path / "global.gitconfig"
+    config.write_text(
+        f'[filter "probe"]\n smudge = touch {marker}; cat\n required = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+def test_trigger(): pass\n"
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    seen = []
+
+    def capture_test(*, staged, **_kwargs):
+        seen.append((staged / path).read_text(encoding="utf-8"))
+        return 1, b"", b"", "probe stop", None
+
+    monkeypatch.setattr(review_stage, "run_bounded_falsifier_node", capture_test)
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10, output_cap_bytes=65536,
+    )
+    assert result.outcome == "error"
+    assert not marker.exists()
+    assert seen == ["def test_trigger(): pass\n"]
+
+
+def test_falsifier_source_check_does_not_run_host_git_filter(tmp_path, monkeypatch):
+    from phase_loop_runtime import falsifier
+
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".gitattributes").write_text("src.py filter=probe\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".gitattributes"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "attributes"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    marker = tmp_path / "host-filter-ran"
+    config = tmp_path / "global.gitconfig"
+    config.write_text(
+        f'[filter "probe"]\n clean = touch {marker}; cat\n required = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    (repo / "src.py").write_text("live tree file\n", encoding="utf-8")
+
+    falsifier._clean_exact_source(repo, head)
+    assert not marker.exists()
+
+
+def test_falsifier_source_check_does_not_run_host_fsmonitor(tmp_path, monkeypatch):
+    from phase_loop_runtime import falsifier
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    marker = tmp_path / "host-fsmonitor-ran"
+    hook = tmp_path / "fsmonitor"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    config = tmp_path / "global.gitconfig"
+    config.write_text(f"[core]\n fsmonitor = {hook}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+    falsifier._clean_exact_source(repo, head)
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("target_minor_delta", [0, 1])
