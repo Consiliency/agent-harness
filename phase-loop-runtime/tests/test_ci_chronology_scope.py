@@ -391,7 +391,6 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
             "CHRONOLOGY_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
             "CHRONOLOGY_FORCE": "${{ inputs.chronology }}",
         }, job
-        assert not any(k.startswith(("CHRONOLOGY", "GITHUB_")) for k in (jobs[job].get("env") or {})), job
         # A shell wrapper can re-spell any env override (#1043 r2 codex): no defaults.
         assert "defaults" not in jobs[job], job
         # And the backstop GitHub evaluates itself, right after the decision.
@@ -403,8 +402,16 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
             "github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' "
             "&& inputs.chronology == false) && steps.scope.outputs.chronology != 'true'"
         ), job
-        assert "exit 1" in guard["run"], job
-    assert not any(k.startswith(("CHRONOLOGY", "GITHUB_")) for k in (workflow.get("env") or {}))
+        assert guard["run"] == (
+            'echo "::error::a ${{ github.event_name }} run resolved chronology='
+            '${{ steps.scope.outputs.chronology }}; it must retain the node" >&2\nexit 1\n'
+        ), job
+        # No job-level env at all: nothing (BASH_ENV, a startup file, an exit trap) can
+        # change what the scope step or the backstop executes (#1043 r3 codex). Scope:
+        # accidental edits -- a deliberate saboteur with workflow write access could as
+        # easily edit this test, so that is the review board's job, not this guard's.
+        assert "env" not in jobs[job], job
+    assert "env" not in workflow
     assert "defaults" not in workflow
     offload = next(s for s in jobs["offload"]["steps"] if "dagger-offload" in s.get("uses", ""))
     assert offload["env"]["CHRONOLOGY"] == "${{ steps.scope.outputs.chronology }}"
