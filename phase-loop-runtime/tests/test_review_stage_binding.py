@@ -453,6 +453,26 @@ def test_project_without_declared_dependencies_keeps_pytest_available(tmp_path):
     review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
 
 
+def test_falsifier_inventory_does_not_import_reviewed_json_from_cwd(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    marker = tmp_path / "host-marker"
+    (repo / "json.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "json.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "shadow"],
+        check=True,
+    )
+    stage = review_stage.stage_review_tree(repo, tmp_path / "stage")
+    monkeypatch.chdir(repo)
+
+    review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
+
+    assert not marker.exists()
+
+
 def test_empty_reason_xpass_is_not_recorded_as_green(tmp_path):
     if not Path("/usr/bin/bwrap").is_file():
         pytest.skip("canonical falsifier launcher absent")
