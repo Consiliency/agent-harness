@@ -1,10 +1,13 @@
 {
-  "base_commit": "d7efb448f81026a09e388238925191e76a382a9c",
-  "base_tree_digest": "ed08bf9c15981afa781be8e4b6d6ad8dea0bdaad",
-  "landing_commit": "d7efb448f81026a09e388238925191e76a382a9c",
+  "base_commit": "99d57a824912b7dcfc27932ac7dc3d4d48858f4e",
+  "base_tree_digest": "38083727607a0a13feb1182e8d4b1b5a7fccc119",
+  "landing_commit": "99d57a824912b7dcfc27932ac7dc3d4d48858f4e",
   "landing_ref": "HEAD",
-  "landing_tree_digest": "ed08bf9c15981afa781be8e4b6d6ad8dea0bdaad",
+  "landing_tree_digest": "38083727607a0a13feb1182e8d4b1b5a7fccc119",
   "red_argv": [
+    "env",
+    "PHASE_LOOP_TDD_EXPECT_EXECFIND=1",
+    "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests",
     "python3",
     "-m",
     "pytest",
@@ -17,7 +20,7 @@
     "phase-loop-runtime/tests/test_governed_review.py",
     "phase-loop-runtime/tests/test_advisor_board_golden.py"
   ],
-  "red_command": "python3 -m pytest -q --tb=line --color=no -p no:cacheprovider phase-loop-runtime/tests/test_execfind_falsifier.py phase-loop-runtime/tests/test_governed_review.py phase-loop-runtime/tests/test_advisor_board_golden.py",
+  "red_command": "env PHASE_LOOP_TDD_EXPECT_EXECFIND=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q --tb=line --color=no -p no:cacheprovider phase-loop-runtime/tests/test_execfind_falsifier.py phase-loop-runtime/tests/test_governed_review.py phase-loop-runtime/tests/test_advisor_board_golden.py",
   "red_environment": {
     "PHASE_LOOP_TDD_EXPECT_GOVLEAN": "1"
   },
@@ -48,6 +51,7 @@
     "tests/test_execfind_falsifier.py::test_red_on_head",
     "tests/test_execfind_falsifier.py::test_green_on_head",
     "tests/test_execfind_falsifier.py::test_node_missing",
+    "tests/test_execfind_falsifier.py::test_reviewed_sha_mismatch_error",
     "tests/test_execfind_falsifier.py::test_bound_expiry_error",
     "tests/test_execfind_falsifier.py::test_no_network_no_credentials",
     "tests/test_execfind_falsifier.py::test_staged_tree_only",
@@ -86,6 +90,7 @@
     "tests/test_governed_review.py::ExecfindFindingTests::test_finding_prose",
     "tests/test_governed_review.py::ExecfindFindingTests::test_finding_receipt",
     "tests/test_governed_review.py::ExecfindFindingTests::test_finding_receipt_digest_unresolved",
+    "tests/test_governed_review.py::ExecfindFindingTests::test_finding_reviewed_sha_mismatch",
     "tests/test_governed_review.py::ExecfindFindingTests::test_finding_unbound",
     "tests/test_advisor_board_golden.py::GoldenPerLegLaunchTests::test_claude_argv_and_env_equal_legacy",
     "tests/test_advisor_board_golden.py::GoldenPerLegLaunchTests::test_codex_argv_env_and_timeout_equal_legacy",
@@ -110,7 +115,7 @@
   "red_stderr_path": "content-tdd-receipt.red.stderr.log",
   "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "red_stdout_path": "content-tdd-receipt.red.stdout.log",
-  "red_stdout_sha256": "bfd7d77b29250fb66d07632da009bd95a07d3d2b17b4376326e5fd8fee9ecebe",
+  "red_stdout_sha256": "aba4d076f9b3978929764bd514d27cf19169cb4c5cd490adb7360d2fb385362f",
   "schema": "content_tdd_receipt.v1",
   "test_files": [
     {
@@ -119,7 +124,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/execfind_content_tdd_adapter.py",
-      "sha256": "2c052c62e9fc5e286a267f9e7f0ecfc3458152044e0355d9c06271bb4d5ff18d"
+      "sha256": "aaacb7baae8c4f9b2111d22415c2d7c0de3e7f7b14c8bfa9c42bafe6a302a1fe"
     },
     {
       "path": "phase-loop-runtime/tests/test_advisor_board_golden.py",
@@ -127,11 +132,11 @@
     },
     {
       "path": "phase-loop-runtime/tests/test_execfind_falsifier.py",
-      "sha256": "04d0f4a241e3cbc81a2237e38b9101bccb5cafe19405e11fee996eff5d08e65e"
+      "sha256": "abc51bfd74cc970329eb7242c8291912fc1c7cf2b74799c92b1b86a9c09d043b"
     },
     {
       "path": "phase-loop-runtime/tests/test_governed_review.py",
-      "sha256": "7a956f017ab447f3fc48c8a7147a297902b2e757290fea9f4be07a9242531fc8"
+      "sha256": "072e115399901933e4a1000db8fcfcaced2a822c757d0732d13ccba2d29f5360"
     }
   ]
 }
