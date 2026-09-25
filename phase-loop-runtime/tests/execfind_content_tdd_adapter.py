@@ -119,7 +119,6 @@ RED_COMMAND = (
     "python3 -m pytest -q --tb=line --color=no -p no:cacheprovider "
     + " ".join(FROZEN_TEST_FILES)
 )
-_MARKERS = re.compile(r"EXECFIND_RED::(\S+)")
 _FAILED = re.compile(r"(?m)^FAILED\s+(\S+::\S+)")
 
 
@@ -164,8 +163,8 @@ def run_execfind_contract(case: str, check: Callable[[], None]) -> None:
 def scan_red_output(output: str) -> str | None:
     if UNSOUND in output or "XPASS" in output or "unexpected pass" in output.lower():
         return "unexpected pass or already-green contract"
-    markers = Counter(_MARKERS.findall(output))
-    expected_markers = Counter({case: 1 for case in EXPECTED_RED_CASES})
+    markers = Counter(token for token in output.split() if "EXECFIND_RED::" in token)
+    expected_markers = Counter({f"EXECFIND_RED::{case}": 1 for case in EXPECTED_RED_CASES})
     if markers != expected_markers:
         return "RED markers are missing, repeated, or unexpected"
     failed = frozenset(_FAILED.findall(output))

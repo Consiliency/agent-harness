@@ -200,6 +200,10 @@ def test_marker_exact_match_only():
     assert "markers" in tdd.scan_red_output(uppercase_suffix)
     punctuation_suffix = valid.replace("EXECFIND_RED::grammar\n", "EXECFIND_RED::grammar.bad\n")
     assert "markers" in tdd.scan_red_output(punctuation_suffix)
+    prefixed = valid.replace("EXECFIND_RED::grammar\n", "NOT_EXECFIND_RED::grammar\n")
+    assert "markers" in tdd.scan_red_output(prefixed)
+    punctuation_prefix = valid.replace("EXECFIND_RED::grammar\n", "!EXECFIND_RED::grammar\n")
+    assert "markers" in tdd.scan_red_output(punctuation_prefix)
     repeated = valid + f"\n{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::grammar\n"
     assert "markers" in tdd.scan_red_output(repeated)
 
