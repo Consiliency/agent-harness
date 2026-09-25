@@ -2542,11 +2542,19 @@ def test_a_refusal_repeated_across_runs_keeps_the_admission(fab_downstream_with_
     def transient(*_args, **_kwargs):
         raise RuntimeError("transient remote failure")
 
+    fired: list[int] = []  # the configured downstream failure, once per run (r1 witness)
+
     if failure == "reverify_false":
-        options = {"_reverify_fn": lambda ws, *a, **k: ws != downstream_repo}
+        def reverify(ws, *a, **k):
+            if ws == downstream_repo:
+                fired.append(1)
+                return False
+            return True
+        options = {"_reverify_fn": reverify}
     else:
         def merge(workspace, branch, **kwargs):
             if workspace == downstream_repo:
+                fired.append(1)
                 transient()
             return kwargs["head_sha"]
         options = {"_merge_pr_fn": merge}
@@ -2573,15 +2581,16 @@ def test_a_refusal_repeated_across_runs_keeps_the_admission(fab_downstream_with_
         options["_pr_is_open"] = lambda ws, br: not (ws == upstream_repo and merged_upstream() is not None)
         options["_pr_merged_sha_fn"] = lambda ws, *a, **k: (
             merged_upstream().upstream_merge_sha if ws == upstream_repo and merged_upstream() is not None else None)
-        _repeat_refusal(c, options)
+        _repeat_refusal(c, options, fired)
     finally:
         patch.stop()
 
 
-def _repeat_refusal(c, options):
+def _repeat_refusal(c, options, fired):
     expected = {**packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}
     for attempt in (1, 2):
         result = c["run"](**options)
+        assert len(fired) == attempt, f"run {attempt}: the configured refusal did not fire ({result})"
         assert result["status"] in ("blocked", "merge_halted") and result["node_id"] == c["downstream"].node_id, (attempt, result)
         row = read_ledger(c["ledger"])[c["downstream"].node_id]
         assert row.status == "blocked", attempt

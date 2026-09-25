@@ -162,3 +162,8 @@ def test_the_walk_checks_pid_1_itself(monkeypatch):
     monkeypatch.setattr(module.Path, "read_text", lambda self, *a, **k: (
         f"4242 (sleep) S {parents[4242]} 0 0" if str(self) == "/proc/4242/stat" else real_read(self, *a, **k)))
     assert module._network_owner_pid(4242) == 1
+    # Negative control: with pid 1 NOT in the owning user namespace, the walk finds no owner.
+    monkeypatch.setattr(module.os, "stat", lambda path, *a, **k: (
+        other_ns if path in ("/proc/1/ns/user", "/proc/4242/ns/user") else real_stat(path, *a, **k)))
+    with pytest.raises(module.QualificationFailure, match="owner was not observed"):
+        module._network_owner_pid(4242)

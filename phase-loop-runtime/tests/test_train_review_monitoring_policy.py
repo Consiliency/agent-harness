@@ -352,7 +352,10 @@ def test_the_cli_refuses_an_unqualified_agy_route_before_effects(request, monkey
     c = request.getfixturevalue("candidate")
     train, ledger = _cli_candidate(c, monkeypatch)
 
+    calls = []
+
     def _unqualified(board, policy, env=None):
+        calls.append(policy)
         raise ValueError("gemini_heartbeat_unqualified")
 
     monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", _unqualified)
@@ -360,4 +363,5 @@ def test_the_cli_refuses_an_unqualified_agy_route_before_effects(request, monkey
     rc = cli.main(["run-train", "--train", str(train), "--governed", "--review-only", "--monitoring-policy", HB,
                    "--workspace", "repo-a=" + str(c["repo"]), "--ledger-dir", str(ledger.parent)])
     assert rc == 2 and "gemini_heartbeat_unqualified" in capsys.readouterr().err
+    assert calls == [HB], "the refusal came from the agy preflight itself"
     assert ledger.read_bytes() == before and not (ledger.parent / "broker").exists()
