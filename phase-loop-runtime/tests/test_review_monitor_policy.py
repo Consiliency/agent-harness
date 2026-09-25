@@ -748,17 +748,19 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
 
     The child prints one CR-terminated status frame and WAITS for `go`, which the
     observe hook creates only once the monitor has held that frame as progress for
-    0.1 s. The child then repaints and waits for `done`, created 0.3 s after `go`.
-    Correct: the age keeps growing from the first frame and never drops. Broken (repaints
-    refresh progress): the age drops from >= 0.1 s back to ~0."""
+    0.1 s. The child then repaints and waits for `done`, created by a LIVE observation
+    0.3 s after `go`. Correct: between `go` and `done` the age grows as fast as wall time.
+    Broken (repaints refresh progress): the age falls behind wall time by at least the
+    0.1 s it had at `go`, however sparsely the monitor happens to sample it."""
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_latest_claude_transcript_text", lambda *a, **k: "")
     monkeypatch.setattr(panel, "_latest_claude_transcript_activity", lambda *a, **k: 0)
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
-    go, done = tmp_path / "go", tmp_path / "done"
+    go, done, finished = tmp_path / "go", tmp_path / "done", tmp_path / "finished"
     snapshots = []
-    released = []
+    released = []  # (monotonic time, age) at `go`
+    marked = []  # (monotonic time, age) at `done`
     judged_last_repaint = []
     judged = bytearray()
     last = 8  # the child repaints frames 1..last
@@ -782,11 +784,16 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
         observe(*args, **kwargs)
         snapshots.append(dict(monitor.record))
         age = monitor.record["last_genuine_progress_age_s"]
+        if kwargs.get("terminal") is not None:
+            # The session's closing observation carries the PREVIOUS age forward; it must
+            # never complete the handshake (agent-harness#1060 r3, claude).
+            return
         if not go.exists() and age is not None and age >= .1:
-            released.append(time.monotonic())
+            released.append((time.monotonic(), age))
             go.touch()
         elif (released and judged_last_repaint and not done.exists()
-              and time.monotonic() - released[0] >= .3):
+              and time.monotonic() - released[0][0] >= .3):
+            marked.append((time.monotonic(), age))
             done.touch()
 
     monkeypatch.setattr(monitor, "observe", capture)
@@ -807,22 +814,26 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  "print(line % 0, end='', flush=True)\n"
                  "wait(go, 3)\n"
                  f"for i in range(1, {last + 1}): print(line % i, end='', flush=True)\n"
-                 "wait(done, 4)\n",
-                 str(go), str(done)],
+                 "wait(done, 4)\n"
+                 # Proof the child saw `done` (the session's own rc is not the child's).
+                 "open(sys.argv[3], 'w').close()\n",
+                 str(go), str(done), str(finished)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
         timeout_s=15, env=os.environ, review_monitor=monitor,  # not enforced; see the child
     )
     assert released, f"go never released (child exit {result[0]}; 3 = waited for go)"
-    assert judged_last_repaint and done.exists(), f"repaints never judged (child exit {result[0]}; 4 = waited for done)"
+    assert judged_last_repaint, f"repaints never judged (child exit {result[0]}; {result[2]})"
+    assert marked and finished.exists(), (
+        f"no live observation completed the handshake (child exit {result[0]}; 4 = waited for "
+        f"done; {result[2]})")
     ages = [s["last_genuine_progress_age_s"] for s in snapshots
             if s["last_genuine_progress_age_s"] is not None]
     assert all(later >= earlier for earlier, later in zip(ages, ages[1:])), ages
     assert snapshots[-1]["observation_state"] == "progress_unobserved"
-    # Not an absolute threshold: a terminal observe() carries the PREVIOUS age forward, so
-    # under CI load the final age can lag wall time (agent-harness#1060 CI: 0.16 s). What
-    # the handshake guarantees is that it never fell below the 0.1 s that released `go`;
-    # with the monotonic check above, a refreshing repaint (age back to ~0) still fails.
-    assert snapshots[-1]["last_genuine_progress_age_s"] >= .1, ages
+    # Relative to wall time, not an absolute bound, so load cannot fail a correct runtime:
+    # a reset after `go` loses at least the age it had there (>= 0.1 s) against the clock.
+    (t_go, age_go), (t_done, age_done) = released[0], marked[0]
+    assert age_done - age_go >= (t_done - t_go) - .05, (released, marked, ages)
 
 
 def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
