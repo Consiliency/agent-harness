@@ -483,6 +483,9 @@ Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture
 Path("terminal-written").touch()
 if sys.argv[1] == "eof":
     sys.exit(0)  # the PTY hangs up; the read path sees EOF before the loop polls the process
+if sys.argv[1] == "late-exit":
+    time.sleep(.2)  # outlast any select already in flight, so a suppressed EOF cannot be seen
+    sys.exit(0)
 while True:
     time.sleep(.1)
 '''
@@ -570,7 +573,7 @@ def test_terminal_nonconforming_turn_is_returned_at_process_exit(tmp_path, monke
         panel_invoker, "launch_provider", capture_launch,
     ):
         rc, text, log, _ = panel_invoker._run_claude_tui_session(
-            command=[sys.executable, "-c", _TERMINAL_CHILD, "eof"], cwd=tmp_path, prompt="rule on F001",
+            command=[sys.executable, "-c", _TERMINAL_CHILD, "late-exit"], cwd=tmp_path, prompt="rule on F001",
             output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
             mode="president", backstop_s=10, review_monitor=monitor,
             allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",

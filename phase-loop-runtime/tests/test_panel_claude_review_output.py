@@ -686,14 +686,15 @@ def test_president_route_accepts_open_earlier_blocks_before_the_end_turn(tmp_pat
         "Part one\nFORCING DECISION: APPROVE")
 
 
+@pytest.mark.parametrize("mid", ["m", None])
 @pytest.mark.parametrize("flag", ["model", "message_error", "record_error"])
-def test_president_route_rejects_a_flag_on_a_superseded_version(tmp_path, flag):
-    open_ = _asst("FORCING DECISION: APPROVE", mid="m", uuid="a", stop=None)
+def test_president_route_rejects_a_flag_on_a_superseded_version(tmp_path, flag, mid):
+    open_ = _asst("FORCING DECISION: APPROVE", mid=mid, uuid="a", stop=None)
     if flag == "model":
         open_["message"]["model"] = "<synthetic>"
     elif flag == "message_error":
         open_["message"]["isApiErrorMessage"] = True
     else:
         open_["isApiErrorMessage"] = True
-    path = _jsonl(tmp_path, [_user("u1"), open_, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
+    path = _jsonl(tmp_path, [_user("u1"), open_, _asst("FORCING DECISION: APPROVE", mid=mid, uuid="a")])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
