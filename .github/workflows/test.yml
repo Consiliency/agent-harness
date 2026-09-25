@@ -6,8 +6,9 @@ on:
   pull_request:
   # The heavy CONFORM chronology node (~50 min, ~88% of a per-PR run) is scoped
   # by ci/chronology-scope.sh: every push to main and this nightly run RETAIN it
-  # unconditionally; a pull_request DEFERS it to the landing push unless its diff
-  # touches the gate's own selection plumbing (the script's table). The nightly
+  # unconditionally; every pull_request DEFERS it to the landing push -- incl. one
+  # touching the gate's own selection plumbing since agent-harness#1042 (dispatch
+  # this workflow on the branch with chronology=true to prove it first). The nightly
   # is the backstop that bounds how long a regression can stay invisible,
   # independent of merge traffic; the `main-red` job below is what makes a red
   # landing push visible (a labelled issue) without anyone watching this tab.
@@ -117,6 +118,20 @@ jobs:
           CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CHRONOLOGY_FORCE: ${{ inputs.chronology }}
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
+
+      - name: A non-PR run must retain the chronology node
+        # agent-harness#1042: PRs never re-prove the node, so a landing push must. This
+        # condition is evaluated by GitHub from its OWN event context, which no shell
+        # prefix, `defaults.run.shell` wrapper or env override inside the job can
+        # spoof (#1043 r1/r2 codex). Only an explicit dispatch with chronology=false
+        # may run without it.
+        if: >-
+          github.event_name != 'pull_request'
+          && !(github.event_name == 'workflow_dispatch' && inputs.chronology == false)
+          && steps.scope.outputs.chronology != 'true'
+        run: |
+          echo "::error::a ${{ github.event_name }} run resolved chronology=${{ steps.scope.outputs.chronology }}; it must retain the node" >&2
+          exit 1
       - name: Offload the suite to the tailnet host
         # Pinned to a full commit SHA, never a moving tag.
         uses: Consiliency/ci-actions/dagger-offload@c9272a525486204a9d7333aef6e78297b3054de3
@@ -312,6 +327,20 @@ jobs:
           CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CHRONOLOGY_FORCE: ${{ inputs.chronology }}
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
+
+      - name: A non-PR run must retain the chronology node
+        # agent-harness#1042: PRs never re-prove the node, so a landing push must. This
+        # condition is evaluated by GitHub from its OWN event context, which no shell
+        # prefix, `defaults.run.shell` wrapper or env override inside the job can
+        # spoof (#1043 r1/r2 codex). Only an explicit dispatch with chronology=false
+        # may run without it.
+        if: >-
+          github.event_name != 'pull_request'
+          && !(github.event_name == 'workflow_dispatch' && inputs.chronology == false)
+          && steps.scope.outputs.chronology != 'true'
+        run: |
+          echo "::error::a ${{ github.event_name }} run resolved chronology=${{ steps.scope.outputs.chronology }}; it must retain the node" >&2
+          exit 1
 
       - name: Run standalone test suite
         # The two frozen LEGIBLE files distinguish a canonical source checkout
@@ -518,6 +547,20 @@ jobs:
           CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CHRONOLOGY_FORCE: ${{ inputs.chronology }}
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
+
+      - name: A non-PR run must retain the chronology node
+        # agent-harness#1042: PRs never re-prove the node, so a landing push must. This
+        # condition is evaluated by GitHub from its OWN event context, which no shell
+        # prefix, `defaults.run.shell` wrapper or env override inside the job can
+        # spoof (#1043 r1/r2 codex). Only an explicit dispatch with chronology=false
+        # may run without it.
+        if: >-
+          github.event_name != 'pull_request'
+          && !(github.event_name == 'workflow_dispatch' && inputs.chronology == false)
+          && steps.scope.outputs.chronology != 'true'
+        run: |
+          echo "::error::a ${{ github.event_name }} run resolved chronology=${{ steps.scope.outputs.chronology }}; it must retain the node" >&2
+          exit 1
 
       - name: Gate A — standalone-from-wheel clean room
         # Builds the wheel, installs it into an isolated venv, and runs the FULL
