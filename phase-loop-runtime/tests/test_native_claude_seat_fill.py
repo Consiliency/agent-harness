@@ -47,6 +47,11 @@ from pathlib import Path
 
 import pytest
 
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 import _reviewtruth_native_fill_tdd_guard as guard
 from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import governed_review as gr

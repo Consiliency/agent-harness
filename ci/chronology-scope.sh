@@ -8,23 +8,26 @@
 # It proves a property of frozen HISTORY, not of the diff under review, so a
 # pull request DEFERS it: the landing push to main executes it on the exact
 # merged tree, and the nightly bounds how long a regression can stay invisible.
-# The one exception is a PR that changes the gate's own selection plumbing --
-# this script, the workflows, the offload/Dagger plumbing, the witness, Gate A's
-# consumer and its probe (the table below) -- because such a PR could change
-# WHETHER the node runs, and that must be proven on the PR itself.
-# Exception record (rule / reason / owner / accepted limitation):
-# .consiliency/plans/detailed-split-pr-gate-chronology-746-*.md, and the
-# CHANGELOG entry for Consiliency/agent-harness#746.
+#
+# agent-harness#1042 (maintainer ruling 2026-09-25) retired the agent-harness#746
+# exception that retained the node on a PR touching the gate's own selection
+# plumbing (the table below): that cost ~50 minutes on every CI PR. Such a PR is
+# still covered: the static guards in tests/test_ci_chronology_scope.py (run on
+# every PR) pin that push/nightly/dispatch retain the node and that every
+# consumer spells it the same way; the PR lane asserts the node is collectable;
+# and the landing push's junit witness reds main if the node did not run and
+# pass. To prove it BEFORE merge, dispatch test.yml on the branch with
+# chronology=true. The table is kept: the reason line names a touched plumbing
+# path, and ci/gate_metrics.py classifies runs with `--match`.
 #
 # Output: prints `chronology=true|false` (a GITHUB_OUTPUT line) and a reason to
-# stderr. Exit 0 in both cases. FAIL CLOSED: anything this script cannot decide
-# (unknown event, no base, diff command failure) resolves to `true` -- the
-# expensive-but-correct answer -- never to `false`.
+# stderr. Exit 0 in both cases. FAIL CLOSED: an unknown event resolves to `true`
+# -- the expensive-but-correct answer. A pull_request always resolves to `false`;
+# its diff is read only to name a touched plumbing path in the reason.
 #
 # `--match <path>` mode: prints `match` / `no-match` for one path and exits 0.
 # tests/test_ci_chronology_scope.py drives this mode to pin the table to the
-# selection consumers, so it can neither drift wider (re-running the node on
-# ordinary PRs) nor narrower (letting a plumbing change skip its own proof).
+# selection consumers.
 set -euo pipefail
 
 CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
@@ -81,26 +84,24 @@ case "$event" in
 esac
 
 base="${CHRONOLOGY_BASE_SHA:-}"
+deferred="the landing push proves it; dispatch test.yml with chronology=true to prove it on the branch"
 if [ -z "$base" ]; then
-  decide true "pull_request without CHRONOLOGY_BASE_SHA; failing closed"; exit 0
+  decide false "pull_request (no CHRONOLOGY_BASE_SHA to name touched plumbing); $deferred"; exit 0
 fi
-# --no-renames: a rename reports BOTH endpoints, so moving an input out of the
-# table still surfaces the old (matched) path instead of only the new one.
-# -z: NUL-terminated records. Without it git quotes pathnames containing
-# non-ASCII bytes, tabs, newlines or quotes (core.quotePath), and the leading
-# `"` would defeat every prefix pattern above. NUL bytes do not survive a shell
-# variable, so the listing goes through a file.
+# --no-renames: a rename reports BOTH endpoints. -z: NUL-terminated records, so
+# quoted pathnames (core.quotePath) still match the table. NUL bytes do not
+# survive a shell variable, so the listing goes through a file.
 changed="$(mktemp)"
 trap 'rm -f "$changed"' EXIT
 if ! git diff -z --name-only --no-renames "$base...HEAD" >"$changed" 2>/dev/null; then
-  decide true "git diff $base...HEAD failed (shallow or missing base?); failing closed"; exit 0
+  decide false "pull_request (git diff $base...HEAD failed; touched plumbing unknown); $deferred"; exit 0
 fi
 count=0
 while IFS= read -r -d '' path; do
   [ -n "$path" ] || continue
   count=$((count + 1))
   if gate_plumbing_path "$path"; then
-    decide true "PR touches gate plumbing: $path"; exit 0
+    decide false "pull_request touches gate plumbing ($path); $deferred"; exit 0
   fi
 done <"$changed"
 decide false "PR defers the chronology node to the landing push ($count paths changed)"

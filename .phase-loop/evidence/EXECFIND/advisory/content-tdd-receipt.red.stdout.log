@@ -1,0 +1,83 @@
+...........FFFFFFFFFFFFFFFFFFFFFFFFFFFFF................FFFFFFFFFF...... [ 84%]
+.............                                                            [100%]
+=================================== FAILURES ===================================
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::outcome_vocabulary
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::grammar
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::parser_reject_outside_tests
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::parser_reject_modify_existing
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::parser_reject_no_nodeid
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::parser_reject_foreign_nodeid
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::parser_reject_double_claim
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::brief_teaches_form
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::attachment_byte_neutral
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::attachment_matches_frozen_contract
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::apply_failed
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::red_on_head
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::green_on_head
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::node_missing
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::reviewed_sha_mismatch_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::bound_expiry_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::no_network_no_credentials
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::staged_tree_only
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::staged_overlay_drift_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::staged_untracked_extra_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::staged_ignored_extra_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::staged_symlink_retarget_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::staged_exec_bit_drift_error
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::only_named_node_runs
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::authorization_identity
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::seat_tool_attempt_refused
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::inline_fixture_artifact_ref
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::brokered_text_only
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::prompt_over_cap_refused
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::degraded_leg_whole_code
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::falsifier_count_bound
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::falsifier_policy_optional
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::falsifier_policy_required_refuses_prose
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::finding_prose
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::finding_receipt
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::finding_receipt_digest_unresolved
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::finding_reviewed_sha_mismatch
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::green_receipt_requires_ruling
+/mnt/HC_Volume_105438154/worktrees/agent-harness-execfind-advisory-contract-20260925/phase-loop-runtime/tests/execfind_content_tdd_adapter.py:152: AssertionError: GOVLEAN deliberate RED anchor EXECFIND_RED::red_receipt_requires_ruling
+=========================== short test summary info ============================
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_outcome_vocabulary
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_grammar - As...
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_parser_reject_outside_tests
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_parser_reject_modify_existing
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_parser_reject_no_nodeid
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_parser_reject_foreign_nodeid
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_parser_reject_double_claim
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_brief_teaches_form
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_attachment_byte_neutral
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_attachment_matches_frozen_contract
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_apply_failed
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_red_on_head
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_green_on_head
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_node_missing
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_reviewed_sha_mismatch_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_bound_expiry_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_no_network_no_credentials
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_staged_tree_only
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_staged_overlay_drift_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_staged_untracked_extra_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_staged_ignored_extra_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_staged_symlink_retarget_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_staged_exec_bit_drift_error
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_only_named_node_runs
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_authorization_identity
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_seat_tool_attempt_refused
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_inline_fixture_artifact_ref
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_brokered_text_only
+FAILED phase-loop-runtime/tests/test_execfind_falsifier.py::test_prompt_over_cap_refused
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_degraded_leg_whole_code
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_falsifier_count_bound
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_falsifier_policy_optional
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_falsifier_policy_required_refuses_prose
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_finding_prose
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_finding_receipt
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_finding_receipt_digest_unresolved
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_finding_reviewed_sha_mismatch
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_green_receipt_requires_ruling
+FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_red_receipt_requires_ruling
+39 failed, 46 passed in 4.18s

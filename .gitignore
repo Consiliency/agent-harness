@@ -14,3 +14,6 @@ __pycache__/
 # Gate A clean-room junit evidence (CI overrides GATE_A_JUNIT to a runner path;
 # a local run defaults to this file, which must not dirty the worktree).
 phase-loop-runtime/gate-a-standalone.junit.xml
+
+# make check / scripts/local_check.py interpreter (agent-harness#1029)
+phase-loop-runtime/.local-check-venv/

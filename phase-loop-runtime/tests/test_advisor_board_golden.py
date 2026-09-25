@@ -43,6 +43,8 @@ proves the two live code paths agree, so it does not re-snapshot literals.
 from __future__ import annotations
 
 import os
+from dataclasses import asdict
+import json
 import tempfile
 import threading
 import unittest
@@ -381,6 +383,21 @@ class ConcurrencyProofTests(unittest.TestCase):
         self.assertTrue(all(r.status == "OK" for r in seq.legs))
         for p, s in zip(par.legs, seq.legs):
             self.assertEqual((p.leg, p.status, p.text, p.seat_key), (s.leg, s.status, s.text, s.seat_key))
+
+
+class ExecfindGoldenBytesTest(unittest.TestCase):
+    def test_attached_falsifier_leaves_leg_golden_bytes_unchanged(self) -> None:
+        leg = pi.PanelLegResult("claude", "OK", "FINDING F001: BLOCKING — repro\nDISAGREE")
+        before = json.dumps(asdict(leg), sort_keys=True, separators=(",", ":")).encode()
+        if hasattr(pi, "FindingFalsifier"):
+            fixture = json.loads((
+                Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
+            ).read_text(encoding="utf-8"))
+            falsifier = pi.FindingFalsifier(**fixture["attachment"]["falsifiers"][0])
+            pi.attach_finding_falsifiers(leg, pi.FindingFalsifierAttachment((falsifier,)))
+            self.assertIsNotNone(leg.finding_falsifiers)
+        after = json.dumps(asdict(leg), sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

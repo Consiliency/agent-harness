@@ -6,8 +6,9 @@ on:
   pull_request:
   # The heavy CONFORM chronology node (~50 min, ~88% of a per-PR run) is scoped
   # by ci/chronology-scope.sh: every push to main and this nightly run RETAIN it
-  # unconditionally; a pull_request DEFERS it to the landing push unless its diff
-  # touches the gate's own selection plumbing (the script's table). The nightly
+  # unconditionally; every pull_request DEFERS it to the landing push -- incl. one
+  # touching the gate's own selection plumbing since agent-harness#1042 (dispatch
+  # this workflow on the branch with chronology=true to prove it first). The nightly
   # is the backstop that bounds how long a regression can stay invisible,
   # independent of merge traffic; the `main-red` job below is what makes a red
   # landing push visible (a labelled issue) without anyone watching this tab.
@@ -117,6 +118,20 @@ jobs:
           CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CHRONOLOGY_FORCE: ${{ inputs.chronology }}
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
+
+      - name: A non-PR run must retain the chronology node
+        # agent-harness#1042: PRs never re-prove the node, so a landing push must. This
+        # condition is evaluated by GitHub from its OWN event context, which no shell
+        # prefix, `defaults.run.shell` wrapper or env override inside the job can
+        # spoof (#1043 r1/r2 codex). Only an explicit dispatch with chronology=false
+        # may run without it.
+        if: >-
+          github.event_name != 'pull_request'
+          && !(github.event_name == 'workflow_dispatch' && inputs.chronology == false)
+          && steps.scope.outputs.chronology != 'true'
+        run: |
+          echo "::error::a ${{ github.event_name }} run resolved chronology=${{ steps.scope.outputs.chronology }}; it must retain the node" >&2
+          exit 1
       - name: Offload the suite to the tailnet host
         # Pinned to a full commit SHA, never a moving tag.
         uses: Consiliency/ci-actions/dagger-offload@c9272a525486204a9d7333aef6e78297b3054de3
@@ -147,24 +162,39 @@ jobs:
     # fork/no-secret or unsupported-sandbox path, NOT a retry of a failed
     # offload. A failed offload must stay failed -- otherwise an unreachable
     # host silently becomes green.
-    needs: [elig, pytest, chronology-retention, cleanroom]
+    needs: [elig, pytest, chronology-retention, cleanroom, wheel-smoke]
     if: always() && needs.elig.outputs.eligible != 'true'
     timeout-minutes: 5
     steps:
       - name: Collapse the hosted lanes into one verdict
+        # agent-harness#1029: a pull_request runs the wheel smoke INSTEAD of Gate A
+        # (Gate A runs on push-to-main, nightly and release tags). Exactly one of the
+        # two must be the executed lane for the event, the other skipped -- a PR that
+        # somehow ran neither, or a push that skipped Gate A, is a red.
         env:
+          EVENT: ${{ github.event_name }}
           PYTEST: ${{ needs.pytest.result }}
           RETENTION: ${{ needs.chronology-retention.result }}
           CLEANROOM: ${{ needs.cleanroom.result }}
+          SMOKE: ${{ needs.wheel-smoke.result }}
         run: |
           set -euo pipefail
-          echo "pytest=$PYTEST retention=$RETENTION cleanroom=$CLEANROOM"
-          for r in "$PYTEST" "$RETENTION" "$CLEANROOM"; do
+          echo "event=$EVENT pytest=$PYTEST retention=$RETENTION cleanroom=$CLEANROOM smoke=$SMOKE"
+          if [ "$EVENT" = "pull_request" ]; then
+            required=("$PYTEST" "$RETENTION" "$SMOKE"); must_skip="$CLEANROOM"
+          else
+            required=("$PYTEST" "$RETENTION" "$CLEANROOM"); must_skip="$SMOKE"
+          fi
+          for r in "${required[@]}"; do
             if [ "$r" != "success" ]; then
               echo "hosted suite FAILED: a hosted lane did not succeed" >&2
               exit 1
             fi
           done
+          if [ "$must_skip" != "skipped" ]; then
+            echo "hosted suite FAILED: the lane not meant for event=$EVENT did not skip ($must_skip)" >&2
+            exit 1
+          fi
           echo "hosted suite: all lanes green"
 
   gate:
@@ -243,6 +273,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.10', '3.11', '3.12']
+        # agent-harness#1029: pull requests run the py3.10 floor lane only; push,
+        # nightly and dispatch keep all three.
+        exclude: ${{ github.event_name == 'pull_request' && fromJSON('[{"python-version":"3.11"},{"python-version":"3.12"}]') || fromJSON('[]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -295,6 +328,20 @@ jobs:
           CHRONOLOGY_FORCE: ${{ inputs.chronology }}
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
 
+      - name: A non-PR run must retain the chronology node
+        # agent-harness#1042: PRs never re-prove the node, so a landing push must. This
+        # condition is evaluated by GitHub from its OWN event context, which no shell
+        # prefix, `defaults.run.shell` wrapper or env override inside the job can
+        # spoof (#1043 r1/r2 codex). Only an explicit dispatch with chronology=false
+        # may run without it.
+        if: >-
+          github.event_name != 'pull_request'
+          && !(github.event_name == 'workflow_dispatch' && inputs.chronology == false)
+          && steps.scope.outputs.chronology != 'true'
+        run: |
+          echo "::error::a ${{ github.event_name }} run resolved chronology=${{ steps.scope.outputs.chronology }}; it must retain the node" >&2
+          exit 1
+
       - name: Run standalone test suite
         # The two frozen LEGIBLE files distinguish a canonical source checkout
         # from an installed consumer. Run them from a copied tests tree so this
@@ -302,6 +349,10 @@ jobs:
         working-directory: phase-loop-runtime
         env:
           CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
+          # agent-harness#1029: pull requests deselect `quarantine`-marked known flakes
+          # (tests/_quarantine.py, via conftest; exact by marker, capped at 5 nodes).
+          # Push, nightly and Gate A run them.
+          PHASE_LOOP_DESELECT_QUARANTINE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           # tests/__init__.py prepends the sibling src tree in the TEST process
           # only; the evidence-verifier child inherits env, not sys.path. Export
@@ -453,7 +504,9 @@ jobs:
     # covers. Kept for the fork/no-secret path, where `hosted` is the suite of
     # record.
     needs: elig
-    if: needs.elig.outputs.eligible != 'true'
+    # agent-harness#1029: push-to-main, nightly, dispatch and tags only; pull requests
+    # run the `wheel-smoke` job below instead.
+    if: needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:
@@ -495,6 +548,20 @@ jobs:
           CHRONOLOGY_FORCE: ${{ inputs.chronology }}
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
 
+      - name: A non-PR run must retain the chronology node
+        # agent-harness#1042: PRs never re-prove the node, so a landing push must. This
+        # condition is evaluated by GitHub from its OWN event context, which no shell
+        # prefix, `defaults.run.shell` wrapper or env override inside the job can
+        # spoof (#1043 r1/r2 codex). Only an explicit dispatch with chronology=false
+        # may run without it.
+        if: >-
+          github.event_name != 'pull_request'
+          && !(github.event_name == 'workflow_dispatch' && inputs.chronology == false)
+          && steps.scope.outputs.chronology != 'true'
+        run: |
+          echo "::error::a ${{ github.event_name }} run resolved chronology=${{ steps.scope.outputs.chronology }}; it must retain the node" >&2
+          exit 1
+
       - name: Gate A — standalone-from-wheel clean room
         # Builds the wheel, installs it into an isolated venv, and runs the FULL
         # standalone suite (TESTDECOUPLE), apart from CONFORM's four exact
@@ -521,6 +588,44 @@ jobs:
           name: chronology-junit-gate-a
           path: ${{ runner.temp }}/junit-gate-a.xml
           if-no-files-found: error
+
+  wheel-smoke:
+    name: wheel smoke (build, clean-venv install, probes)
+    # agent-harness#1029: the pull-request stand-in for Gate A (~2 min instead of ~19).
+    # The SAME script with its existing switch: build the wheel, install it into an
+    # isolated venv, check the entry points and run the probe configs -- everything
+    # except the full standalone suite, which Gate A still runs after merge.
+    needs: elig
+    if: needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install review sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap slirp4netns iptables util-linux
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install build + pytest
+        run: python -m pip install build pytest
+
+      - name: Wheel smoke — build, install, probe
+        working-directory: phase-loop-runtime
+        env:
+          PHASE_LOOP_SKIP_GATE_A_SUITE: '1'
+        run: bash scripts/gate_a_cleanroom.sh
 
   # Report the gate's result on main as ONE labelled issue (`ci-main-red`):
   # created/commented/reopened on a red landing push or nightly, closed when the

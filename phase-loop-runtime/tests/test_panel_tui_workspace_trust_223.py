@@ -226,6 +226,65 @@ def test_modal_answered_but_editor_never_ready_is_editor_not_ready(tmp_path, mon
     assert status == "claude_tui_editor_not_ready", f"answered-but-unready must be editor_not_ready; got {status!r}"
 
 
+def test_modal_lines_arriving_after_the_answer_do_not_arm_readiness(tmp_path, monkeypatch):
+    """agent-harness#992: the modal can render in pieces. The detector answers as soon as
+    header + choice + cwd are on screen; the modal's REMAINING lines ("n. No, exit",
+    "Enter y/n:") then arrive after the answer. They are the modal, not the editor: they
+    must not arm readiness (which pasted the review into a still-unready TUI and ended in
+    ``claude_tui_pty_eof_no_output``). Deterministic: the child prints the rest of the modal
+    only after it has read the answer."""
+    _fast_timing(monkeypatch, ready_deadline=3.0, stall=120)
+    script = (
+        "printf 'Permission Required: Accessing workspace:\\n%s\\ny. Yes, I trust this folder\\n' \"$PWD\"; "
+        # The rest of the modal is printed only AFTER the answer has been read, so the
+        # ordering is guaranteed, not timed (#1049 r1 codex).
+        "IFS= read -r ans; printf 'n. No, exit\\nEnter y/n:\\n'; "
+        "printf '%s' \"$ans\" > answer.txt; sleep 8"
+    )
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=120,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=120,
+    )
+    assert (tmp_path / "answer.txt").read_text().strip() == "y", "the modal should have been answered"
+    assert status == "claude_tui_editor_not_ready", f"got {status!r}; tail {tail!r}"
+    assert "review this" not in tail, "the review was pasted into an unready TUI"
+
+
+# The live Claude Code 2.1.282 workspace-trust modal, captured on a private PTY in a fresh
+# untrusted directory (2026-09-25; no input sent). One entry per rendered line.
+_LIVE_MODAL_2_1_282 = (
+    "Accessing workspace:",
+    "/tmp/fresh-untrusted-dir",
+    "Quick safety check: Is this a project you created or one you trust? (Like your own code, "
+    "a well-known open source project, or work from your team). If not, take a moment to "
+    "review what's in this folder first.",
+    "Claude Code'll be able to read, edit, and execute files here.",
+    "Security guide",
+    "\u276f No, exit",
+    "Yes, I trust this folder",
+    "Enter to confirm \u00b7 Esc to cancel",
+)
+
+
+def test_every_line_of_the_live_modal_is_modal_vocabulary():
+    """agent-harness#1053 (the live capture #1049's ruling asked for): any line of the real
+    modal that arrives after the answer is recognized as the modal, never editor output;
+    ordinary editor text is not."""
+    cwd_norms = (pi._normalize_tui_line("/tmp/fresh-untrusted-dir"),)
+    for line in _LIVE_MODAL_2_1_282:
+        norm = pi._normalize_tui_line(line)
+        assert pi._tui_trust_modal_line(norm, cwd_norms), line
+    # The same modal WRAPPED at 80 and 100 columns: every piece is still the modal.
+    import textwrap
+    for width in (80, 100):
+        for line in _LIVE_MODAL_2_1_282[2:4]:
+            for piece in textwrap.wrap(line, width):
+                assert pi._tui_trust_modal_line(pi._normalize_tui_line(piece), cwd_norms), (width, piece)
+    for editor_line in ("Try \"fix typecheck errors\"", "? for shortcuts", "Welcome to Claude Code"):
+        assert not pi._tui_trust_modal_line(pi._normalize_tui_line(editor_line), cwd_norms), editor_line
+
+
 def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
     """CR F3/R3: the redacted tail is preserved as diagnosable evidence for EVERY non-OK
     failure — via a WARNING log, NOT stamped into ``text`` (which feeds verdict-conformance

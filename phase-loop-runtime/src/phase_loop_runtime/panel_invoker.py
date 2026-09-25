@@ -242,8 +242,14 @@ class _ReviewMonitor:
             raise _ReviewOperationCancelled("review_operation_cancelled")
         # The PID namespace's init owns even descendants that start a new session.
         # Kernel parent-death notification kills the namespace on abrupt owner loss.
+        # ``--proc /proc`` gives the new PID namespace its OWN procfs (agent-harness#1003):
+        # with the host /proc bind-mounted instead, a provider that starts its own
+        # bubblewrap sandbox -- codex's workspace-write sandbox -- resolves its children's
+        # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
+        # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
+        # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev",
+                "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
                 *(gemini_profile.mount_args if gemini_profile is not None else ()),
                 "--", *command]
 
@@ -504,8 +510,9 @@ PRESIDENT_LADDER: tuple[str, ...] = (
     # EC-PRESROUTE-3: the seat-alias order. Each rung is a review-policy SEAT alias, not
     # a model id; it resolves to its vendor's registry PIN through
     # DEFAULT_REVIEW_SEAT_ALIASES, where the ``model-id-source:`` markers live.
-    "sol",
+    # Maintainer ruling 2026-09-24: the Anthropic seat (Opus 5.5) is the default first rung.
     "fable",
+    "sol",
     "grok",
     "gemini",
 )
@@ -1721,6 +1728,57 @@ def _canonical_review_repo_authority(repo_dir: Path | str | None) -> Path:
     return Path(root).resolve()
 
 
+def _outside_any_git_work_tree(path: Path | str) -> bool:
+    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor.
+
+    Structural: git's output is never parsed. Any ``.git`` entry (directory, ``gitdir:``
+    file -- reachable or not -- or symlink) means "maybe a repository", and so does ANY
+    error: ``os.lstat`` is called directly because ``Path.exists``/``is_symlink`` swallow
+    OSError on newer Pythons (EACCES/EIO would read as "absent"), and a symlink loop in
+    ``resolve`` raises RuntimeError on Python <= 3.12 (agent-harness#1054/#1055 r2/r3).
+    """
+    try:
+        # strict=True: non-strict resolve() swallows lookup errors and returns the
+        # unresolved alias, whose lexical ancestors can miss the real repository
+        # (#1054 r4 / #1055 r3, codex). Any error -- incl. a missing path -- fails closed.
+        resolved = Path(path).resolve(strict=True)
+        for directory in (resolved, *resolved.parents):
+            try:
+                os.lstat(directory / ".git")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            return False
+    except (OSError, RuntimeError, ValueError):  # ValueError: an embedded NUL byte
+        return False
+    return True
+
+
+def _resolve_review_authority(
+    canonical_repo_authority: Path | str | None,
+    repo_dir: Path | str | None,
+    *,
+    governed: bool,
+    resolve: Callable[[Path | str | None], Path] | None = None,
+) -> Path:
+    """The HARDEN review authority -- the tree fingerprinted AND staged -- resolved once.
+
+    Order (agent-harness#1053, maintainer decision 2026-09-25): an explicit
+    ``canonical_repo_authority``; else ``repo_dir``, the repository under review; else the
+    process cwd. ``repo_dir`` is not consulted for a GOVERNED request (a pre-minted
+    authorization is bound to its own authority). A ``repo_dir`` falls back to the cwd only
+    when it is structurally outside any git work tree -- it cannot be fingerprinted as a
+    repository -- so a real repository whose resolution FAILS (git missing, refused, timed
+    out) reaches the typed refusal instead of silently reviewing the cwd. Each call makes
+    exactly one resolution (a frozen static-import probe pins that single ``git`` call).
+    """
+    resolve = resolve or _canonical_review_repo_authority
+    if canonical_repo_authority is not None or repo_dir is None or governed:
+        return resolve(canonical_repo_authority)
+    if _outside_any_git_work_tree(repo_dir):
+        return resolve(None)
+    return resolve(repo_dir)
+
+
 def _completion_ok(text: str, mode: str = "review") -> bool:
     """Is a leg's output a COMPLETE response for this mode?
 
@@ -2328,7 +2386,7 @@ def _provider_launch_prefix(cwd, retain_caps=()):
         # its cwd -- codex's own sandbox does -- then fails with ENOENT before any inference
         # (agent-harness#908 board round 4, finding (f); reproduced with the real codex CLI:
         # `--wd` -> exit 1 "No such file or directory (os error 2)", path-based chdir -> OK).
-        # `env --chdir` runs after nsenter and setpriv, so the chdir is a plain path lookup in
+        # `env --chdir` runs after nsenter and capability setup, so the chdir is a plain path lookup in
         # the namespace the provider will live in; the cwd attested as ``provider_cwd_sha256``
         # is unchanged. A plain nested user+mount namespace does NOT reproduce the failure --
         # the fchdir()ed cwd stays reachable there -- so the class needs the provider's own
@@ -2362,10 +2420,28 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "sub
     """
     prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
-        # Enter the network namespace before creating the ownership PID namespace,
-        # but drop capabilities only AFTER both namespaces exist.
         position = prefix.index("setpriv") if "setpriv" in prefix else len(prefix)
-        prefix[position:position] = process_owner
+        if tuple(retain_caps) not in ((), ("setfcap",)):
+            raise ValueError("unsupported owned provider capability policy")
+        if retain_caps:
+            # Keep Codex in the holder's user namespace so its own sandbox can
+            # create another one. The unshare supervisor owns the PID namespace;
+            # the inner setpriv still drops every capability except SETFCAP.
+            prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
+                                         "/usr/bin/unshare", "--pid", "--fork",
+                                         "--kill-child=SIGKILL", "--mount-proc"]
+            inner_setpriv = prefix.index("setpriv", position + 1)
+            prefix[inner_setpriv + 1:inner_setpriv + 1] = ["--pdeathsig", "keep"]
+        else:
+            # Bubblewrap drops CAP_SETPCAP before a later setpriv can use it.
+            owner = list(process_owner)
+            if owner[0] != "/usr/bin/bwrap":
+                raise ValueError("unsupported owned provider")
+            owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
+                          "--gid", str(os.getgid()), "--cap-drop", "ALL"]
+            if position < len(prefix):
+                del prefix[position:prefix.index("--", position) + 1]
+            prefix[position:position] = owner
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
@@ -3010,6 +3086,21 @@ def _render_broker_inline_prompt(
             verdict,
         ))
     )
+    return _assemble_broker_inline_prompt(
+        artifact, instructions, preamble,
+        (instructions_begin, instructions_end), (artifact_begin, artifact_end),
+    )
+
+
+def _assemble_broker_inline_prompt(
+    artifact: str, instructions: str, preamble: str,
+    instruction_frames: tuple[str, str], artifact_frames: tuple[str, str],
+) -> str:
+    """Pure assembly shared by validated launches and non-authorizing preflight."""
+    artifact_bytes = artifact.encode("utf-8", errors="strict")
+    instruction_bytes = instructions.encode("utf-8", errors="strict")
+    instructions_begin, instructions_end = instruction_frames
+    artifact_begin, artifact_end = artifact_frames
     prompt = "\n".join((
         preamble,
         f"AUTHORITATIVE-INSTRUCTIONS sha256={sha256(instruction_bytes).hexdigest()} bytes={len(instruction_bytes)}",
@@ -4536,7 +4627,9 @@ def _normalize_tui_line(line: str) -> str:
     return " ".join(line.split()).strip().lower()
 
 
-def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
+def _tui_chunk_has_novel_content(
+    chunk: bytes, seen: set[str], ignore: Callable[[str], bool] | None = None
+) -> bool:
     """True iff a PTY chunk carries SUBSTANTIVE new (non-cosmetic) terminal text.
 
     Strips ANSI escapes, splits on newline AND carriage-return (spinner overwrite),
@@ -4553,8 +4646,48 @@ def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
         norm = _normalize_tui_line(raw)
         if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
             seen.add(norm)
-            novel = True
+            # ``ignore`` lines are recorded as seen but are never progress (#992).
+            if ignore is None or not ignore(norm):
+                novel = True
     return novel
+
+
+# The workspace-trust modal's own vocabulary, normalized like any TUI line. After the
+# modal is answered, lines of the modal that were still rendering (it can arrive in
+# pieces) must not arm editor readiness (agent-harness#992).
+_TUI_TRUST_MODAL_NORMS = tuple(
+    _normalize_tui_line(text)
+    for text in (
+        _CLAUDE_TUI_TRUST_HEADER,
+        _CLAUDE_TUI_TRUST_HEADER_CURRENT,
+        _CLAUDE_TUI_TRUST_QUESTION,
+        _CLAUDE_TUI_TRUST_CHOICE,
+        _CLAUDE_TUI_TRUST_PROMPT,
+        "no, exit",
+        # The rest of the live Claude Code 2.1.282 selector modal (captured 2026-09-25,
+        # agent-harness#1053): its explanation, link and footer can also arrive after the
+        # answer and are not editor output either.
+        # Short fragments, so a paragraph WRAPPED at the terminal width still matches line by
+        # line (#1060 r1, claude): e.g. at 80 columns the explanation breaks mid-sentence.
+        "your own code",
+        "well-known open source",
+        "work from your team",
+        "take a moment to review",
+        "folder first",
+        "read, edit, and execute",
+        "execute files here",
+        "security guide",
+        "enter to confirm",
+        "esc to cancel",
+    )
+)
+
+
+def _tui_trust_modal_line(norm: str, cwd_norms: Sequence[str]) -> bool:
+    """Is this normalized line part of the workspace-trust modal (incl. its cwd line)?"""
+    return any(token in norm for token in _TUI_TRUST_MODAL_NORMS) or any(
+        token and token in norm for token in cwd_norms
+    )
 
 
 # A single ``os.read(8192)`` can split a novel review line across two chunks; each
@@ -4727,6 +4860,10 @@ def _run_claude_tui_session(
     cwd_tokens = _cwd_trust_tokens(
         cwd
     )  # run-unique FULL-path tokens (not the bare basename)
+    cwd_norms = tuple(
+        norm for norm in (_normalize_tui_line(token) for token in cwd_tokens)
+        if len(norm) >= _TUI_PROGRESS_MIN_CHARS
+    )
 
     def _current_output() -> str:
         return (
@@ -4854,8 +4991,16 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
+                        # Between answering the trust modal and submitting, the
+                        # modal's own late-rendering lines are not editor output
+                        # (agent-harness#992): they must not arm readiness.
+                        modal_ignore = (
+                            (lambda norm: _tui_trust_modal_line(norm, cwd_norms))
+                            if trust_answered and not prompt_sent
+                            else None
+                        )
                         if complete and _tui_chunk_has_novel_content(
-                            complete, seen_tui_lines
+                            complete, seen_tui_lines, modal_ignore
                         ):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
@@ -8516,8 +8661,19 @@ def invoke_board(
                     review_instruction_token = set_review_instruction_digest(
                         _resolve_brief(mode, brief_ref)
                     )
-                    canonical_repo_authority = _canonical_review_repo_authority(
-                        canonical_repo_authority
+                    # The repository under review is the authority: an explicit
+                    # ``canonical_repo_authority`` first, then ``repo_dir`` when it IS a
+                    # git repository, and only then the process cwd -- so the fingerprinted
+                    # and staged tree is the one the caller named (agent-harness#1053,
+                    # maintainer decision 2026-09-25). A non-git ``repo_dir`` cannot be
+                    # fingerprinted as a repository and keeps the historical cwd authority,
+                    # so every later typed refusal is unchanged. Falling back to
+                    # ``repo_dir`` does NOT make this a governed request:
+                    # ``governed_review_request`` above keys on the caller's explicit
+                    # authority / authorization only.
+                    canonical_repo_authority = _resolve_review_authority(
+                        canonical_repo_authority, repo_dir,
+                        governed=governed_review_request,
                     )
                 except (OSError, UnicodeError, ValueError) as exc:
                     return review_refusal(str(exc))
