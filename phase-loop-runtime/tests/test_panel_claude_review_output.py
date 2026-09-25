@@ -361,3 +361,54 @@ def test_a_damaged_line_mid_journal_does_not_block_a_later_answer(tmp_path):
     path.write_text("\n".join([_json.dumps(_user("r1")), '{"type": "user", "message": {"role": "us',
                                 _json.dumps(_user("r2")), _json.dumps(_asst("Review\nAGREE", mid="m", uuid="a"))]) + "\n")
     assert _final_assistant_text_from_jsonl(path) == "Review\nAGREE"
+
+
+# agent-harness#1002 round 2 (codex, grok, claude): every sequence the board found.
+def test_r2_identityless_replay_after_id_reuse_fails_closed(tmp_path):
+    assert _extract(tmp_path, [
+        _assistant("Old review\nAGREE", stop_reason="end_turn"),
+        _user("request-2", "Review again"),
+        _assistant("Current review\nDISAGREE", uuid="answer-2", stop_reason="end_turn"),
+        _assistant("Old review\nAGREE", stop_reason="end_turn"),
+    ]) == ""
+
+
+def test_r2_history_interleave_does_not_block_a_later_answer(tmp_path):
+    assert _extract(tmp_path, [
+        _assistant("Earlier first block", message_id="A", uuid="a1", stop_reason=None),
+        _assistant("Interleaved message", message_id="B", uuid="b1", stop_reason="end_turn"),
+        _assistant("Earlier final block", message_id="A", uuid="a2", stop_reason="end_turn"),
+        _user("new-request", "Perform a new review"),
+        _assistant("Current complete review\nDISAGREE", message_id="C", uuid="c1", stop_reason="end_turn"),
+    ]) == "Current complete review\nDISAGREE"
+
+
+def test_r2_absent_then_null_stop_reason_is_not_final(tmp_path):
+    assert _extract(tmp_path, [
+        _assistant("Review\nAGREE", uuid="answer"),
+        _assistant("Review\nAGREE", uuid="answer", stop_reason=None),
+    ]) == ""
+
+
+def test_r2_an_older_message_cannot_replace_a_newer_one(tmp_path):
+    assert _extract(tmp_path, [
+        _assistant("First review\nAGREE", message_id="m1", uuid="a1", stop_reason="end_turn"),
+        _user("q2", "Second"),
+        _assistant("Second review\nDISAGREE", message_id="m2", uuid="a2", stop_reason="end_turn"),
+        _assistant("First review\nAGREE", message_id="m1", uuid="a3", stop_reason="end_turn"),
+    ]) == ""
+
+
+def test_r2_an_old_answer_after_a_pending_new_one_fails_closed(tmp_path):
+    assert _extract(tmp_path, [
+        _user("u1"), _assistant("Old\nAGREE", message_id="old", uuid="a1", stop_reason="end_turn"),
+        _user("u2", "Review again"),
+        _assistant("REVIEW START\n1. Blocking", message_id="new", uuid="b1", stop_reason=None),
+        _assistant("Old\nAGREE", message_id="old", uuid="a1-copy", stop_reason="end_turn"),
+    ]) == ""
+
+
+def test_r2_a_completed_record_rewritten_under_its_uuid_fails_closed(tmp_path):
+    v1 = _assistant("1. Blocking\nDISAGREE", uuid="r1", stop_reason="end_turn")
+    v2 = _assistant("No findings\nAGREE", uuid="r1", stop_reason="end_turn")
+    assert _extract(tmp_path, [_user("u1"), v1, v2, v1]) == ""
