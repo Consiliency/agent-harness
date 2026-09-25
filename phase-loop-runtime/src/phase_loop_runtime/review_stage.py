@@ -45,6 +45,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -318,6 +319,15 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     interpreter = json.loads(inventory.stdout)
     paths = [path for path in interpreter["paths"] if isinstance(path, str) and path.startswith("/")]
     version = interpreter["version"]
+    if version[:2] == list(sys.version_info[:2]):
+        prefixes = (Path(sys.prefix), Path(sys.base_prefix))
+        paths = list(dict.fromkeys([
+            *(path for path in sys.path
+              if path.startswith("/")
+              and any(part in ("site-packages", "dist-packages") for part in Path(path).parts)
+              and any(Path(path).is_relative_to(prefix) for prefix in prefixes)),
+            *paths,
+        ]))
     marker_environment = default_environment()
     marker_environment["python_version"] = f"{version[0]}.{version[1]}"
     marker_environment["python_full_version"] = ".".join(map(str, version))

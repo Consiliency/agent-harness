@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -450,7 +451,40 @@ def test_project_without_declared_dependencies_keeps_pytest_available(tmp_path):
     (stage / "phase-loop-runtime" / "pyproject.toml").write_text(
         '[project]\nname = "empty-dependencies"\n', encoding="utf-8",
     )
-    review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
+    dependencies = tmp_path / "dependencies"
+    review_stage._snapshot_falsifier_dependencies(stage, dependencies)
+    assert (dependencies / "pytest" / "__init__.py").is_file()
+
+
+def test_inventory_uses_invoking_install_when_system_python_lacks_pytest(tmp_path, monkeypatch):
+    prefix = tmp_path / "toolcache"
+    site = prefix / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    package = site / "pytest"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# installed pytest\n", encoding="utf-8")
+    metadata = site / "pytest-9.1.1.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: pytest\nVersion: 9.1.1\n", encoding="utf-8")
+    (metadata / "RECORD").write_text("pytest/__init__.py,,\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "path", [str(site), *sys.path])
+    original_run = subprocess.run
+
+    def empty_system_inventory(argv, *args, **kwargs):
+        if argv[:2] == ["/usr/bin/python3", "-c"] and "import json,sys" in argv[2]:
+            version = ",".join(str(part) for part in sys.version_info[:3])
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=f'{{"paths":[],"version":[{version}]}}', stderr="",
+            )
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(review_stage.subprocess, "run", empty_system_inventory)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    dependencies = tmp_path / "dependencies"
+    review_stage._snapshot_falsifier_dependencies(stage, dependencies)
+
+    assert (dependencies / "pytest" / "__init__.py").read_text() == "# installed pytest\n"
 
 
 def test_falsifier_inventory_does_not_import_reviewed_json_from_cwd(tmp_path, monkeypatch):
