@@ -38,9 +38,10 @@ class FalsifierRunResult:
 
 def _git(repo: Path, *args: str) -> bytes:
     return subprocess.run(
-        ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
+        ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         capture_output=True, check=True,
-        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+             "GIT_NO_REPLACE_OBJECTS": "1"},
     ).stdout
 
 

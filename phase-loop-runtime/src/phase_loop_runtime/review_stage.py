@@ -260,8 +260,10 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
     if object_format not in ("sha1", "sha256"):
         raise ValueError("unsupported falsifier Git object format")
     tree = subprocess.run(
-        ["git", "-C", str(staged), "ls-tree", "-rz", "--full-tree", reviewed_sha],
+        ["git", "--no-replace-objects", "-C", str(staged), "ls-tree", "-rz", "--full-tree", reviewed_sha],
         capture_output=True, check=True,
+        env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+             "GIT_NO_REPLACE_OBJECTS": "1"},
     ).stdout
     expected: dict[str, tuple[str, str]] = {}
     for entry in tree.split(b"\0"):
@@ -357,7 +359,11 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     copied_bytes = 0
     while pending:
         requirement = Requirement(pending.pop())
-        if requirement.marker is not None and not requirement.marker.evaluate(marker_environment):
+        try:
+            selected = requirement.marker is None or requirement.marker.evaluate(marker_environment)
+        except KeyError as exc:
+            raise ValueError("falsifier dependency marker context is unsupported") from exc
+        if not selected:
             continue
         name = re.sub(r"[-_.]+", "-", requirement.name).lower()
         if name in seen:
@@ -550,9 +556,10 @@ CLONE_DEPTH = 50
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:
     return subprocess.run(
-        ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
+        ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         capture_output=True, text=True, check=check,
-        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+             "GIT_NO_REPLACE_OBJECTS": "1"},
     ).stdout
 
 
@@ -621,14 +628,15 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
         git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         git_env.update(
             GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
+            GIT_NO_REPLACE_OBJECTS="1",
         )
         subprocess.run(
-            ["git", "clone", "--quiet", "--depth", str(CLONE_DEPTH), "--no-single-branch",
+            ["git", "--no-replace-objects", "clone", "--quiet", "--depth", str(CLONE_DEPTH), "--no-single-branch",
              f"file://{root}", str(staged)],
             capture_output=True, text=True, check=True, env=git_env,
         )
         subprocess.run(
-            ["git", "-C", str(staged), "checkout", "--quiet", "--detach", head],
+            ["git", "--no-replace-objects", "-C", str(staged), "checkout", "--quiet", "--detach", head],
             capture_output=True, text=True, check=False, env=git_env,
         )
         _overlay_working_tree(root, staged)

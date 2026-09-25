@@ -48,6 +48,22 @@ def _git_repo(root: Path) -> Path:
     return root
 
 
+def _replaced_source_repo(root: Path) -> tuple[Path, str]:
+    repo = _git_repo(root)
+    reviewed = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    (repo / "src.py").write_text("substituted bytes\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "src.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "replacement"],
+        check=True,
+    )
+    replacement = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo), "replace", reviewed, replacement], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "--quiet", "--detach", reviewed], check=True)
+    assert subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"]).strip() == b""
+    return repo, reviewed
+
+
 def test_stage_is_a_copy_and_never_the_live_tree(tmp_path):
     """The seat must never be handed a path into the reviewed working tree."""
     repo = _git_repo(tmp_path / "repo")
@@ -966,6 +982,67 @@ def test_falsifier_source_rejects_tracked_file_through_ancestor_symlink(tmp_path
         authorization=authorization, repo=repo, wall_clock_s=10, output_cap_bytes=65536,
     )
     assert result.outcome == "error"
+    assert backing._falsifier_authorization_lease(authorization).closed
+
+
+def test_falsifier_source_ignores_local_replace_ref(tmp_path):
+    from phase_loop_runtime import falsifier
+
+    repo, reviewed = _replaced_source_repo(tmp_path / "repo")
+    with pytest.raises(ValueError, match="not clean"):
+        falsifier._clean_exact_source(repo, reviewed)
+
+
+def test_falsifier_stage_ignores_ambient_git_dir_and_replace_ref(tmp_path, monkeypatch):
+    repo, reviewed = _replaced_source_repo(tmp_path / "repo")
+    staged = review_stage.stage_review_tree(repo)
+    try:
+        assert (staged / "src.py").read_text(encoding="utf-8") == "substituted bytes\n"
+        monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+        with pytest.raises(ValueError, match="staged bytes differ"):
+            review_stage.revalidate_falsifier_staged_tree(staged=staged, reviewed_sha=reviewed)
+    finally:
+        review_stage.remove_review_stage(staged)
+
+
+@pytest.mark.parametrize("variable", ["extras", "dependency_groups"])
+def test_falsifier_unsupported_dependency_marker_records_error(tmp_path, variable):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    project = repo / "phase-loop-runtime" / "pyproject.toml"
+    project.parent.mkdir()
+    project.write_text(
+        f'''[project]\nname = "marker-probe"\nversion = "0.1.0"\ndependencies = ['pytest; {variable} == "test"']\n''',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "phase-loop-runtime/pyproject.toml"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "marker"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,2 @@\n"
+        "+def test_trigger():\n+    assert True\n"
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10, output_cap_bytes=65536,
+    )
+    assert result.outcome == result.record["outcome"] == "error"
+    assert "marker" in (result.detail or "")
+    assert result.red_output_digest is None
     assert backing._falsifier_authorization_lease(authorization).closed
 
 
