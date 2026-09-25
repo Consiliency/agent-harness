@@ -2680,6 +2680,14 @@ admission or models. A ready receipt is not approval. The rendered prompt,
 including framing and instructions, must fit 512 KiB; the separate 1 MiB packet
 parser limit does not establish readiness. There is no truncation fallback.
 
+`run-train --governed --monitoring-policy heartbeat_only` runs the train-level review
+under review monitoring policy v1 heartbeat-only: the frozen four-vendor default board
+(any other composition is refused), no model deadline, no native host seat. The policy
+is bound into the review authorization and passed to the invoker, which refuses a
+mismatch. Native emission/fill, a non-governed run or an unqualified Gemini route is
+refused before ledger, broker, publish or packet effects (CLI and direct callers), and
+re-checked before any seat launches. The bounded review path is unchanged.
+
 Trusted-opt-in FAB readmission during ordinary governed merging first freezes
 the entire prospective packet against proposed-head evidence without granting
 authority. Existing broker readmission and fresh complete durable bindings must
