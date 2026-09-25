@@ -8505,6 +8505,21 @@ def invoke_board(
                     review_instruction_token = set_review_instruction_digest(
                         _resolve_brief(mode, brief_ref)
                     )
+                    # The repository under review is the authority: an explicit
+                    # ``canonical_repo_authority`` first, then ``repo_dir`` when it IS a
+                    # git repository, and only then the process cwd -- so the fingerprinted
+                    # and staged tree is the one the caller named (agent-harness#1053,
+                    # maintainer decision 2026-09-25). A non-git ``repo_dir`` cannot be
+                    # fingerprinted as a repository and keeps the historical cwd authority,
+                    # so every later typed refusal is unchanged. Falling back to
+                    # ``repo_dir`` does NOT make this a governed request:
+                    # ``governed_review_request`` above keys on the caller's explicit
+                    # authority / authorization only.
+                    if canonical_repo_authority is None and repo_dir is not None:
+                        try:
+                            canonical_repo_authority = _canonical_review_repo_authority(repo_dir)
+                        except ValueError:
+                            canonical_repo_authority = None
                     canonical_repo_authority = _canonical_review_repo_authority(
                         canonical_repo_authority
                     )

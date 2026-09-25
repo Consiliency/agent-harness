@@ -296,6 +296,65 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     assert not fixture_cli.attempts.exists()
 
 
+def test_repo_dir_sets_the_review_authority_not_the_cwd(fixture_cli, tmp_path, monkeypatch):
+    """agent-harness#1053 decision 2: ``repo_dir`` is the repository under review, so it is
+    also the HARDEN review authority -- the tree that is fingerprinted and staged -- rather
+    than whatever directory the process happens to run in. The cwd here is a different
+    repository; both the authorization digest and the staged tree must come from repo_dir."""
+    import phase_loop_runtime.advisor_board.backing as backing
+    import phase_loop_runtime.review_stage as review_stage
+
+    fixture_cli.mode.write_text("ok")
+    reviewed = _fixture_repo(tmp_path / "reviewed")
+    elsewhere = _fixture_repo(tmp_path / "elsewhere")
+    monkeypatch.chdir(elsewhere)
+    digested, staged = [], []
+    real_digest, real_stage = backing._staged_tree_digest, review_stage.stage_review_tree
+
+    def digest(authority):
+        digested.append(Path(authority).resolve())
+        return real_digest(authority)
+
+    def stage(repo, parent=None):
+        staged.append(Path(repo).resolve())
+        return real_stage(repo, parent)
+
+    monkeypatch.setattr(backing, "_staged_tree_digest", digest)
+    monkeypatch.setattr(review_stage, "stage_review_tree", stage)
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=reviewed,
+    )
+    leg, = result.legs
+    assert leg.status == "OK", (leg.status, leg.detail)
+    assert digested == [reviewed.resolve()], digested
+    assert staged == [reviewed.resolve()], staged
+
+
+def test_a_non_git_repo_dir_keeps_the_cwd_authority(fixture_cli, tmp_path, monkeypatch):
+    """The other half of agent-harness#1053 decision 2: a ``repo_dir`` that is not a git
+    repository cannot be fingerprinted as one, so the historical cwd authority stands (and
+    every later typed refusal is unchanged)."""
+    import phase_loop_runtime.advisor_board.backing as backing
+
+    fixture_cli.mode.write_text("ok")
+    cwd_repo = _fixture_repo(tmp_path / "cwd")
+    plain = tmp_path / "plain-dir"
+    plain.mkdir()
+    monkeypatch.chdir(cwd_repo)
+    digested = []
+    real_digest = backing._staged_tree_digest
+    monkeypatch.setattr(backing, "_staged_tree_digest",
+                        lambda authority: digested.append(Path(authority).resolve()) or real_digest(authority))
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=plain,
+    )
+    leg, = result.legs
+    assert leg.status == "OK", (leg.status, leg.detail)
+    assert digested == [cwd_repo.resolve()], digested
+
+
 @pytest.mark.parametrize("mode,status,detail", [
     ("ok", "OK", None), ("empty", "EMPTY", "without review text"),
     ("malformed", "ERROR", "malformed JSON"), ("ack", "ERROR", "acknowledgement"),
