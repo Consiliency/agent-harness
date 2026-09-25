@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Executable review findings (EXECFIND)
+
+- Reviewers can attach a proposed new pytest test to a finding. The harness runs only
+  its named node in a staged, networkless tree under a separate authorization and
+  records the result as an advisory receipt; RED and GREEN do not decide the finding.
+- The review brief teaches the attachment form, and the attachment remains outside
+  serialized panel legs. Governed review decomposes attached findings into bound
+  receipts for a later ruling while retaining prose findings and whole-leg outcomes.
+  The `falsifier_policy` is optional by default or can require attachments; a
+  usable reviewer DISAGREE cannot promote solely because prose is optional.
+
 ## [0.7.18] - 2026-09-25
 
 ### Bound train review material (agent-harness#906, agent-harness#915; PR agent-harness#978)
