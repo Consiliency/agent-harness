@@ -104,8 +104,9 @@ class ReviewFinding:
     panel scratch dir is torn down after the leg completes, so if the body is not
     carried here it is lost. ``reviewed_sha`` (issue #88) binds the verdict to the
     exact reviewed commit so a consumer can reject a verdict computed against a
-    different head (SHA-bound agent-review-gate). Both are optional so every
-    existing caller and persisted finding stay byte-for-byte unchanged.
+    different head (SHA-bound agent-review-gate). ``seat_key`` identifies the
+    reviewing seat when a panel leg produced this finding. These fields are
+    optional; callers that omit them retain their prior serialization.
     """
 
     code: str
@@ -114,6 +115,7 @@ class ReviewFinding:
     blocker_class: str | None = None
     body: str | None = None
     reviewed_sha: str | None = None
+    seat_key: str | None = None
 
     def __post_init__(self) -> None:
         if self.severity not in REVIEW_SEVERITIES:
@@ -135,6 +137,8 @@ class ReviewFinding:
         # #88: persist the reviewed commit the verdict is bound to.
         if self.reviewed_sha is not None:
             payload["reviewed_sha"] = self.reviewed_sha
+        if self.seat_key is not None:
+            payload["seat_key"] = self.seat_key
         return payload
 
 

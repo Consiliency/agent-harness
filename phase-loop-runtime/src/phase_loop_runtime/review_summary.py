@@ -54,11 +54,11 @@ def _collect_by_kind(events, kind, *, key, tag_phase):
 
 def collect_review_findings(events: Iterable[Any]) -> list[dict]:
     """Extract de-duplicated review findings from ledger events, tagging each with
-    its event's ``phase``; dedup by (phase, code, reason, severity)."""
+    its event's ``phase``; distinct reviewing seats retain distinct findings."""
     return _collect_by_kind(
         events,
         "review_finding",
-        key=lambda r, phase: (phase, r.get("code"), r.get("reason"), r.get("severity")),
+        key=lambda r, phase: (phase, r.get("code"), r.get("reason"), r.get("severity"), r.get("seat_key")),
         tag_phase=True,
     )
 
@@ -77,9 +77,10 @@ def render_review_findings_summary(findings: list[dict]) -> str:
         "Address them or set PHASE_LOOP_REVIEW=block to enforce on the next run.",
     ]
     for f in findings:
+        seat = f" [{f['seat_key']}]" if f.get("seat_key") else ""
         lines.append(
             f"  - [{f.get('severity', 'warn')}] {f.get('phase') or '?'}: "
-            f"{f.get('code')} — {f.get('reason')}"
+            f"{f.get('code')}{seat} — {f.get('reason')}"
         )
     return "\n".join(lines)
 
