@@ -8515,14 +8515,17 @@ def invoke_board(
                     # ``repo_dir`` does NOT make this a governed request:
                     # ``governed_review_request`` above keys on the caller's explicit
                     # authority / authorization only.
+                    # Exactly one resolution per source (a frozen static-import probe
+                    # pins the single ``git rev-parse`` a same-cwd call makes).
                     if canonical_repo_authority is None and repo_dir is not None:
                         try:
                             canonical_repo_authority = _canonical_review_repo_authority(repo_dir)
                         except ValueError:
-                            canonical_repo_authority = None
-                    canonical_repo_authority = _canonical_review_repo_authority(
-                        canonical_repo_authority
-                    )
+                            canonical_repo_authority = _canonical_review_repo_authority(None)
+                    else:
+                        canonical_repo_authority = _canonical_review_repo_authority(
+                            canonical_repo_authority
+                        )
                 except (OSError, UnicodeError, ValueError) as exc:
                     return review_refusal(str(exc))
             elif canonical_repo_authority is not None:
