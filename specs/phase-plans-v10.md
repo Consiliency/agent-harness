@@ -284,6 +284,9 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   field and its resolution bound.
 - **IF-0-GOVSETUP-1** — the `governance_profile.v1` schema, the resolver precedence (explicit,
   environment, repo file, user file, default) and the four named profiles.
+- **IF-0-PANEL-1** — the `[panel.<task>]` lane-table and lens-declaration schema, its sources and
+  precedence (EC-PANEL-1), the landing rule (EC-PANEL-4) and the result labels (EC-PANEL-5), as those
+  criteria state them.
 
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
 
@@ -1623,6 +1626,201 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
+### Phase 18 — Panel Vendor Fallback and Lanes (PANEL)
+
+**Objective**
+Let a panel run with whatever vendor subscriptions a user actually has. Each panel task declares
+its lanes (a review lens with an ordered vendor preference); composition seats each lane from the
+first vendor that is available, authenticated and passes the route preflight, under every monitoring
+policy; a governed landing states and enforces a distinct-vendor minimum that defaults to today's four.
+Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer direction 2026-09-25
+(see the PANEL ruling under Verification).
+
+**Exit criteria**
+- [ ] EC-PANEL-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0.
+- [ ] EC-PANEL-1 — **Per-task lane tables with declarable lenses.** A `[panel.<task>]` table holds
+  `lanes` (ordered `{lens, vendors}`; `vendors` an ordered preference over the board vendors) and an
+  optional `lenses` map declaring a custom lens (`name` → instruction text). Sources:
+  - the user file `$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`, read once at run start and
+    recorded by content digest; a landing whose user file changed during the run is refused;
+  - the repository file `.agent-harness/advisor-boards.toml`, of which PANEL's loader reads only
+    `[panel.*]`. For a landing it is read at the **base revision**: the target branch head at gate time,
+    never the change under review and never a stale merge-base. A landing whose target head changed
+    `[panel.*]` or the repository `governance.toml` `panel` list after its gate is re-gated before it
+    merges.
+
+  Precedence is built-in < user < repository, table by table. Validity:
+  - a `[panel.*]` table the change adds or edits must be valid once applied onto the target head, or the
+    change is refused; it never governs the change itself;
+  - a base `[panel.*]` table that is invalid, including a TOML parse error, is replaced by its built-in
+    table (the strictest) and labelled `repository table invalid at base, replaced`, whether or not the
+    change edits it; its invalidity does not block a landing the built-in table admits;
+  - a base revision that cannot be read at all (not an invalid file) fails closed.
+
+  Unknown keys are refused only inside `[panel.*]`. "Unknown lens" means neither built-in nor declared; a
+  declared lens may not reuse a built-in lens name. Every built-in preset task has a built-in table. With every vendor available, each table
+  composes exactly the seats that task seats today; for code review, "today" means the landing path's
+  `DEFAULT_BOARD`. Falsified by:
+  - an unknown key, task, vendor or lens being accepted, or any malformed `[panel.*]` value being
+    accepted instead of refused with a typed reason (a wrong type, an empty or duplicate-bearing
+    `vendors` list, or empty lens text);
+  - a declared custom lens being refused, or a declared lens that reuses a built-in lens name being
+    accepted;
+  - a landing proceeding after the user file's content changed during the run;
+  - PANEL's loader reading `[panel.*]` for a landing at any revision other than the target branch head at
+    gate time (for example, a stale merge-base), or reading anything other than `[panel.*]` from the
+    repository file;
+  - a landing merging after its target head changed `[panel.*]` or the repository `governance.toml`
+    `panel` list since its gate, without being re-gated;
+  - a change that adds or edits a `[panel.*]` table that is invalid once applied landing, or a valid
+    repair of an invalid base table being refused as invalid;
+  - an invalid base table being used as anything other than its built-in table, being labelled
+    otherwise, or causing a landing the built-in table admits to be refused;
+  - an unreadable base revision not failing closed;
+  - a key outside `[panel.*]` being refused by PANEL's loader;
+  - a built-in preset task without a built-in table, or a built-in table composing different
+    all-available seats than today;
+  - a user table not overriding a built-in one, or a repository table not overriding a user one;
+  - a change that edits the repository table in its own diff being governed by that edit.
+- [ ] EC-PANEL-2 — **Lane fallback within the task's own lanes, for any subset of vendors.** Each
+  lane is seated by the first vendor in its list that is available, authenticated and passes the
+  monitoring policy's route preflight (e.g. agy capability); a lane no listed vendor can serve is
+  recorded unfilled, never silently dropped; no seat carries a lens outside its task's lanes; every
+  built-in table lists every board vendor in every lane, so any single available vendor fills every
+  lane. Falsified by any lane, built-in or configured, where either:
+  - the seated vendor is not the first listed vendor that is available, authenticated and passes the
+    route preflight; or
+  - the lane is recorded unfilled while such a vendor exists, or is not recorded unfilled when none
+    exists.
+
+  Also falsified by:
+  - any seat carrying a lens that is not one of its task's lanes;
+  - a built-in task leaving a lane unfilled while any one board vendor is available, authenticated and
+    passes its preflight.
+- [ ] EC-PANEL-3 — **One composition for every monitoring policy and entry point.** `heartbeat_only`
+  composes through the same lane fallback instead of the frozen default board, and `advisor-board`,
+  the governed board gate and `run-train` all use it. Falsified by a `heartbeat_only` board with one
+  vendor unavailable failing a seat that a listed fallback vendor could fill; by any entry point composing
+  differently for the same configuration, availability and preflight outcomes.
+- [ ] EC-PANEL-4 — **An enforced distinct-vendor minimum, four by default, lowerable only as ruled.**
+  `min_distinct_vendors` is one integer in the `code-review` table, applying to both the `plan` and
+  `production_code` tiers; it is refused in any other table. A resolved table that omits it means 4,
+  labelled with the built-in source. While the resolved `code-review` table does not set it, the landing
+  path is today's: `review_policy_for_tier` requires its four named seats.
+  When the resolved `code-review` table sets it (from the user or base-revision repository file), a
+  keyword-only seam beside that function gates
+  the landing on the count of distinct vendors over **usable** panel seats (seats whose review the landing
+  path already classifies as usable; the president is not a seat) instead of on the four named seats. In
+  both cases the landing also requires any seats an explicit governance profile names (see the PANEL
+  ruling), and every `plan` and `production_code` landing needs at least two usable panel seats and a
+  president ruling. Falsified by:
+  - the no-config outcome differing from today's for the same configuration, availability and seat
+    outcomes;
+  - a resolved `code-review` table that omits the key having an effective minimum other than 4;
+  - for each configured value 1, 2, 3 and 4:
+    - a landing proceeding with fewer usable distinct vendors than that value; or
+    - a landing that meets that value, has two usable panel seats and a president ruling, and has
+      every seat an explicit profile requires, being refused on panel composition (for example, for a
+      missing named seat);
+  - a landing proceeding with fewer than two usable panel seats, or without a president ruling;
+  - the key being accepted in any table other than `code-review`;
+  - any value other than an integer from 1 to the board-vendor count (for example 0, 5, 2.5, `true` or
+    `"2"`) being loaded, coerced or clamped instead of refused with a typed reason;
+  - a lowering accepted from any source other than the user or base-revision repository
+    `advisor-boards.toml` (a governance profile cannot lower it);
+  - a landing proceeding without a seat an explicit profile requires.
+- [ ] EC-PANEL-5 — **Every result is labelled, and the labels are right.** The panel result, the
+  `advisor-board` JSON and every landing record state:
+  - the usable distinct-vendor count, the composed seat count and the usable seat count;
+  - each seat's lens name, and whether that lens is built-in or declared;
+  - the lanes filled by fallback, and any unfilled lane;
+  - the effective minimum and its source: built-in, the user file (path and content digest) or the
+    repository file (path and base revision);
+  - each resolved table's source (built-in, the user file with content digest, or the repository file
+    with base revision), whether or not it set the minimum;
+  - any seats an explicit profile requires, and that profile's path with its digest or base revision;
+  - whether the minimum was met;
+  - each seat's lens delivery (`prompt` or `metadata-only`).
+
+  Falsified by a result or landing record lacking any of these, or carrying a value that disagrees with
+  the resolved configuration and the actual seat outcomes.
+- [ ] EC-PANEL-6 — **(Slice 2) Every seat's lens reaches its reviewer's instructions.** Each seat's lens
+  name and instruction text (built-in or declared) are inside the instructions that seat's route sends:
+  inside the digest-bound authoritative-instructions frame on the brokered and TUI routes, and in the
+  instruction channel (not metadata) on native fill. The lens is rendered under a fixed, subordinate
+  heading, followed by a statement that the verdict protocol takes precedence. It narrows what the reviewer
+  looks at; the verdict protocol text is the same for every seat. Only then is the seat's lens delivery label
+  `prompt`. This satisfies EC-LEGLIFE-4 (see the PANEL ruling). Falsified by any seat, whether its lens is
+  built-in or declared, where:
+  - the lens name or text is absent from those instructions, or appears only outside them (in the
+    reviewed payload, or in metadata);
+  - the label says `prompt` when the lens is not there;
+  - the lens is not under the fixed subordinate heading, or is not followed by the precedence statement;
+  - the verdict protocol text differs between any two seats.
+- [ ] EC-PANEL-7 — **Documented, both ways.** The onboarding docs and the advisor-board capabilities
+  card document the lane tables, lens declarations, fallback, the minimum and its precedence, and the
+  labels, and the entry-doc check covers those sections. They point a single-vendor user to the
+  `[president]` table, since that user also needs a reachable president. Falsified by a documented key the loader
+  refuses; by a key the loader accepts or a label the result emits that is undocumented; by the
+  entry-doc check not covering the sections.
+
+**Scope notes**
+Decompose into 2 slices, each a single implementation lane.
+- **Slice 1** owns the lane tables and lens declarations, the composition, the landing minimum and the
+  labels:
+  - `advisor_board/config.py` (loader, including the base-revision read);
+  - `advisor_board/composition.py` (lane fallback). `FLOOR_SEATS` and `board_independence()` remain,
+    computed over the composed board, as labels only: neither refuses a landing that EC-PANEL-4
+    admits.
+  - `advisor_board/presets.py` (built-in tables);
+  - the keyword-only seam beside `review_policy_for_tier`;
+  - the `heartbeat_only` board selection in `cli.py` and `governed_review.py`.
+- **Slice 2** owns the lens in each route's rendered prompt: `panel_invoker.py` prompt assembly for the
+  brokered, TUI and native-fill routes.
+
+Shared files `panel_invoker.py`, `governed_review.py` and `cli.py` are owned by committed phases
+(HARDEN, REVIEWTRUTH, LEGLIFE, RESIDUAL) and touched by in-flight EXECFIND work.
+- The `review_policy_for_tier` seam and the label plumbing are keyword-only additive seams.
+- Three changes are declared **default-path changes**, not seams:
+  - EC-PANEL-3's `heartbeat_only` board selection (slice 1);
+  - replacing the global `LENS_CYCLE` backfill with per-task lanes, which changes default
+    `advisor-board` output (slice 1, PANEL-owned files);
+  - EC-PANEL-6's per-seat prompt assembly (slice 2), which makes each seat's instructions frame differ.
+- Each landing keeps the owning phases' tests green. A test or golden that pins the frozen default
+  board, the lens cycle, a missing vendor failing its seat, or identical seat instructions is updated in
+  the same landing and listed in its record.
+
+Landings touching these files take their turn in manifest queue order among landings that are ready. That
+is file ordering under PRESROUTE's touch-shape falsifier, not a phase dependency: beyond the declared
+Depends on, nothing here waits on a shared-file owner's future landings or completion.
+
+**Non-goals**
+Per-seat model selection (ids stay registry-pinned). Re-seating a seat that fails after it was seated
+(for example, on quota): it counts as not usable. Self-qualification of provider images
+(agent-harness#1076). Changing the president ladder (EC-PRESROUTE-3 owns it). Changing GOVSETUP's
+profile schema (see the PANEL ruling).
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (`review_policy_for_tier` seam; slice 2 prompt assembly)
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (board selection, a default-path change)
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py` (board selection, a default-path change)
+- `docs/advisor-board-capabilities-card.md`, `docs/TEAM-ONBOARDING.md`
+
+**Depends on**
+- PRESROUTE
+- GOVLEAN
+
+**Produces**
+- IF-0-PANEL-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
 ## Phase Dependency DAG
 
 ```
@@ -1684,6 +1882,10 @@ Downstream semantic edges:
   PRESROUTE   → RATIFY      (ruling classes extend the president line grammar PRESROUTE freezes)
   EXECFIND    → RATIFY      (the president's residual is defined by which findings bound)
   RATIFY      → GOVSETUP    (the profile's human tier and falsifier policy are RATIFY's and EXECFIND's vocabularies)
+  PRESROUTE   → PANEL       (a lowered distinct-vendor minimum still requires the president ruling PRESROUTE routes)
+  GOVLEAN     → PANEL       (the landing tiers whose seat requirement PANEL turns into a distinct-vendor minimum are EC-GOVLEAN-5's)
+
+Governance ruling (amendment 2026-09-25, PANEL): GOVSETUP's plan, LEGLIFE's EC-LEGLIFE-4 closeout, and REVIEWTRUTH's EC-REVIEWTRUTH-5 lane and closeout are dispatch-gated behind PANEL (slice 1 for GOVSETUP and the REVIEWTRUTH-5 lane, slice 2 for the LEGLIFE-4 and REVIEWTRUTH-5 closeouts), as recorded in the PANEL ruling under Verification. The grammar forbids the forward edges, so, as for the 2026-08-13 GOVLEAN ruling, the gate is operative through the named plans citing the ruling.
 
 Lane-level writer edge:
   SCHED lane B before HARDEN  (runner.py and launcher.py; lane B may land while SCHED lane A resolves agent-harness#354; HARDEN consumes the exact SCHED_HARDEN_HANDOFF before writing either path)
@@ -2041,3 +2243,61 @@ The original EXECFIND SL-0 content receipt remains historical. Before the
 changed production disposition lands, a superseding tests-first receipt must
 freeze the new RED/GREEN advisory controls and their RED-on-main results in a
 separate evidence directory; do not rewrite the original receipt or its logs.
+
+### PANEL ruling (amendment 2026-09-25, maintainer)
+
+The maintainer ruled on 2026-09-25 that panels must work for users with any subset of vendor
+subscriptions (agy, Claude Code, Codex, Grok), per panel task, by lane. This phase is appended rather
+than folded into LEGLIFE, because LEGLIFE also carries unrelated leg-lifecycle work. The roadmap grammar
+forbids editing existing phases and forward dependencies. So, following the precedent of the
+2026-08-13 GOVLEAN governance ruling, the cross-phase effects below are recorded here and made
+operative by dispatch discipline: the named plans must cite them.
+
+- **EC-LEGLIFE-4 is met through EC-PANEL-6.** EC-LEGLIFE-4 stays LEGLIFE's criterion. LEGLIFE's plan
+  meets it by citing EC-PANEL-6's landing and does not re-implement lens delivery. Dispatch holds
+  LEGLIFE's EC-4 lane until LEGLIFE's plan cites this ruling. LEGLIFE's other
+  criteria do not wait on PANEL. Only LEGLIFE's EC-4 closeout waits for PANEL slice 2.
+- **GOVSETUP's profiles can add required seats; they never lower PANEL's minimum.** EC-GOVSETUP-1's
+  `panel` field keeps its schema (required seat aliases or `none`). GOVSETUP's plan must cite this
+  ruling, and it must:
+  - treat a `panel` alias list as **explicit** only when it is set in a user or repository
+    `governance.toml`, never as a built-in profile default. The repository `governance.toml` `panel`
+    list (only that list) is read at the same base revision as `[panel.*]`, so a change cannot drop a
+    repository raise in its own diff. When both set one, IF-0-GOVSETUP-1's
+    precedence picks one list (repository over user), and that file's path is the one labelled;
+  - treat an explicit list as seats the landing also requires, on top of EC-PANEL-4's minimum. It is a
+    requirement, not a number compared with the minimum;
+  - keep the built-in profiles' frozen default `panel` tables byte-equal, as EC-GOVSETUP-4 requires.
+    Being defaults, they add nothing, so the no-config landing stays today's;
+  - never let a profile table name fewer seats than those defaults for `plan` or `production_code`.
+
+  EC-GOVSETUP-6's floor (two usable panel seats plus a president ruling) holds under every source. The
+  only lowering route is EC-PANEL-4's user or base-revision repository `advisor-boards.toml`, down to one
+  distinct vendor. Every such landing is labelled with its effective minimum, that minimum's source and
+  any explicitly required seats (EC-PANEL-5).
+- **Assumption: the user file is the operator's.** PANEL does not enforce who may write
+  `$XDG_CONFIG_HOME/agent-harness/`; the sandbox policy that keeps seats and implementers from writing
+  outside their workspace does. PANEL refuses a mid-run edit and labels the digest each landing used.
+  The digest covers the whole user file, so a mid-run `[president]` edit also refuses the landing.
+- **EC-REVIEWTRUTH-5's first half is met through EC-PANEL-6.** EC-REVIEWTRUTH-5 ("`Seat.lens` reaches
+  the reviewer's prompt, and ratification counts lens coverage only for seats whose prompt carried it")
+  stays REVIEWTRUTH's criterion. Its prompt half is implemented by EC-PANEL-6. Its coverage half stays
+  REVIEWTRUTH's work, and it counts only seats whose EC-PANEL-5 lens delivery label is `prompt`.
+  REVIEWTRUTH's plan must cite this ruling. Dispatch holds REVIEWTRUTH's EC-5 lane until that plan cites
+  this ruling and PANEL slice 1 (which creates the label) has landed, and holds its EC-5 closeout until
+  PANEL slice 2 lands. REVIEWTRUTH's other criteria do not wait on PANEL.
+- **LEGLIFE-4's "custom seat" is a declared lane.** LEGLIFE's plan uses IF-0-PANEL-1's lane and lens
+  declarations instead of defining a second seat schema.
+- **Lanes are real only in slice 2.** Until EC-PANEL-6 lands, a seat's lens selects its vendor order and
+  labels the seat, but does not change the reviewer's instructions. Every result says so through the
+  `metadata-only` lens-delivery label (EC-PANEL-5). A lowered landing whose two seats share one vendor is
+  visible as such, because both the vendor count and lens delivery are labelled.
+
+```bash
+# PANEL: a Claude-only code-review board seats only code-review lanes and is labelled one usable vendor;
+# with min_distinct_vendors = 1 at base, two usable seats and a president ruling, a plan landing
+# proceeds; below the effective minimum it is refused
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_lanes.py
+# PANEL slice 2: every seat's lens text is in the prompt its route sends
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_lens_delivery.py
+```

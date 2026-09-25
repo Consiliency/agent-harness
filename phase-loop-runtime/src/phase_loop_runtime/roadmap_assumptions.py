@@ -28,7 +28,7 @@ from typing import Any, Mapping, Sequence
 PROBE_SIDECAR_REL = "specs/roadmap-assumption-probes-v10.json"
 PROBE_SCHEMA = "roadmap_assumption_probe.v1"
 CANONICAL_ROADMAP_REL = "specs/phase-plans-v10.md"
-CANONICAL_ROADMAP_SHA256 = "ae5b814a9be561ca78fdcf976e77bcc582a4e0a09c775563a8bbaf4daf740ff4"
+CANONICAL_ROADMAP_SHA256 = "a3fc6672df33c8ca4bbf46881f76b94fa65b2e995d473ac679422fdfeed5fca9"
 CANONICAL_PROBES_SHA256 = "42d473e2396df4c9dd2a9f98f9c330fa0362bfc51d3e1c99580ed48e3619ebf1"
 CANONICAL_PROBE_IDS = (
     "LEGIBLE-A1-CONFORM-UNGATED", "LEGIBLE-A1-I118", "LEGIBLE-A1-PIN-SHA",
