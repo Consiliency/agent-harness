@@ -638,5 +638,48 @@ class ExecfindFindingTests(unittest.TestCase):
         execfind_tdd.run_execfind_contract("finding_receipt_digest_unresolved", check)
 
 
+def test_invalid_falsifier_keeps_other_seats_prose_finding(tmp_path):
+    repo, head = _source_repo(tmp_path)
+    board = Board(name="execfind-invalid", purpose="code-review", seats=DEFAULT_SEATS)
+    prose_seat = "gemini:gemini-3.8-flash:high:alternative-approach"
+    invalid_seat = "claude:claude-opus-5-5:max:correctness"
+    panel = PanelResult((
+        PanelLegResult("codex", "OK", "AGREE", seat_key="codex:gpt-6-astra:max:red-team"),
+        PanelLegResult("gemini", "OK", "FINDING F001: prose concern\nDISAGREE", seat_key=prose_seat),
+        PanelLegResult("grok", "OK", "AGREE", seat_key="grok:grok-4.7:max:adversarial"),
+        PanelLegResult("claude", "OK", "FINDING F002: bad attachment\n```falsifier bad\nDISAGREE", seat_key=invalid_seat),
+    ))
+    gate = governed_review.governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed", reviewed_sha=head,
+        canonical_repo_authority=repo, compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
+    assert gate.ran and not gate.promoted and gate.reason == "invalid_falsifier"
+    assert any(f.code == "finding_prose" and f.seat_key == prose_seat
+               and f.body == panel.legs[1].text for f in gate.findings)
+    assert any(f.code == "governed_invalid_falsifier" and f.seat_key == invalid_seat
+               for f in gate.findings)
+
+
+def test_falsifier_count_refusal_names_offending_seat(tmp_path):
+    repo, head = _source_repo(tmp_path)
+    seats = [
+        f"{seat.harness}:{seat.model}:{seat.effort}:{seat.lens}"
+        for seat in DEFAULT_SEATS[:2]
+    ]
+    outcomes = []
+    for counts, expected_seat in (((5, 0, 0, 0), seats[0]), ((0, 5, 0, 0), seats[1])):
+        gate = _count_gate(repo, head, counts)
+        assert gate.ran and not gate.promoted and gate.reason == "falsifier_count_exceeded"
+        refusal = next(f for f in gate.findings if f.code == "governed_falsifier_count_exceeded")
+        assert refusal.seat_key == expected_seat
+        assert expected_seat in refusal.reason
+        assert any(f.code == "finding_receipt" and f.seat_key == expected_seat
+                   for f in gate.findings)
+        outcomes.append((refusal.reason, refusal.seat_key))
+    assert outcomes[0] != outcomes[1]
+
+
 if __name__ == "__main__":
     unittest.main()

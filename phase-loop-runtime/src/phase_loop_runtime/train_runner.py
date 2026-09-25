@@ -3903,6 +3903,10 @@ def _run_train_unfenced(
                         "severity": getattr(f, "severity", None),
                         # A DISAGREE's actionable review text (board r1, grok).
                         "body": getattr(f, "body", None),
+                        **({"reviewed_sha": f.reviewed_sha}
+                           if getattr(f, "reviewed_sha", None) is not None else {}),
+                        **({"seat_key": f.seat_key}
+                           if getattr(f, "seat_key", None) is not None else {}),
                     }
                     for f in (getattr(review_result, "findings", None) or ())
                 ],

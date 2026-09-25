@@ -650,6 +650,36 @@ class TestReviewOnly:
         }
         assert result["terminal_blocker"]["blocker_class"] == "review_gate_block"
 
+    def test_review_halt_preserves_each_dissenting_seat(self, tmp_path):
+        seats = (
+            "claude:claude-opus-5-5:max:correctness",
+            "gemini:gemini-3.8-flash:high:alternative-approach",
+        )
+        panel = PanelResult((
+            PanelLegResult("codex", "OK", "AGREE", seat_key="codex:gpt-6-astra:max:red-team"),
+            PanelLegResult("grok", "OK", "AGREE", seat_key="grok:grok-4.7:max:adversarial"),
+            *(PanelLegResult(
+                seat.split(":")[0], "OK", "FINDING F001: blocking concern\nDISAGREE",
+                seat_key=seat,
+            ) for seat in seats),
+        ))
+        reviewed_sha = "a" * 40
+        gate = gr._gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+        loop = run_governed_premerge_loop(
+            artifact="reviewed artifact", author_executor="train-coordinator",
+            run_mode="governed", max_rounds=1, invoke=lambda **_kwargs: gate,
+        )
+        assert not loop.mergeable
+        assert {f.seat_key for f in loop.findings if f.code == "finding_prose"} == set(seats)
+        result, merged = _run_review(
+            tmp_path, _ledger(tmp_path), review_only=True,
+            review_fn=lambda _artifact, _mode: loop,
+        )
+        assert result["status"] == "review_halted" and merged == []
+        findings = [f for f in result["findings"] if f["code"] == "finding_prose"]
+        assert {f.get("seat_key") for f in findings} == set(seats)
+        assert {f.get("reviewed_sha") for f in findings} == {reviewed_sha}
+
     def test_node_without_admitted_pr_is_refused_before_publication(self, tmp_path):
         ledger = _ledger(tmp_path)
         publish = _Never("publish_fn")
