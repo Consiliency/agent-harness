@@ -311,8 +311,9 @@ class RoadmapLintModuleTest(unittest.TestCase):
         return roadmap
 
     def test_an_undeterminable_git_answer_keeps_the_coherence_check(self):
-        """#1054 r1 (all four seats): only a POSITIVE "not a git repository" skips. Git
-        missing, a safe.directory refusal or odd output must keep the check (fail closed)."""
+        """#1054 r1 (all four seats): git missing, a safe.directory refusal or odd git
+        output must keep the check inside a real repository (fail closed). The probe is
+        structural now, so these hold without git being consulted at all."""
         with tempfile.TemporaryDirectory() as td:
             roadmap = self._real_repo_roadmap(td)
             self.assertEqual(self._run_with_git(roadmap, git_script=None), [True], "git missing")
@@ -320,9 +321,35 @@ class RoadmapLintModuleTest(unittest.TestCase):
             self.assertEqual(self._run_with_git(roadmap, git_script=dubious), [True], "safe.directory")
             self.assertEqual(self._run_with_git(roadmap, git_script="echo false\n"), [True], "odd output")
 
+    def test_structural_cases_from_review_round_2(self):
+        """#1054 r2: an unreachable worktree ``.git`` FILE keeps the check; a repository
+        whose path contains "not a git repository" keeps the check; a loose roadmap is
+        skipped whatever the locale (no git output is parsed)."""
+        with tempfile.TemporaryDirectory() as td:
+            wt = Path(td) / "wt"
+            (wt / "specs").mkdir(parents=True)
+            (wt / ".git").write_text("gitdir: /nonexistent/.git/worktrees/wt\n", encoding="utf-8")
+            roadmap = wt / "specs" / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True], "unreachable gitdir file")
+
+            named = Path(td) / "not a git repository"
+            (named / "specs").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(named)], check=True)
+            roadmap = named / "specs" / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True], "phrase in path")
+
+            loose = Path(td) / "loose" / "specs"
+            loose.mkdir(parents=True)
+            roadmap = loose / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            self.assertEqual(self._run_with_git(roadmap, extra_env={
+                "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de"}), [], "localized")
+
     def test_an_inherited_git_dir_cannot_answer_for_the_roadmap(self):
         """GIT_DIR/GIT_WORK_TREE exported for ANOTHER repository must not make a loose
-        roadmap look like it is inside a work tree (the probe drops GIT_* variables)."""
+        roadmap look like it is inside a work tree (the probe ignores the environment)."""
         with tempfile.TemporaryDirectory() as td:
             other = Path(td) / "other"
             subprocess.run(["git", "init", "-q", str(other)], check=True)

@@ -23,9 +23,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (`<repo>/specs/<roadmap>.md`). For a roadmap outside any git work tree that guess is not a
   repository -- a roadmap loose in a tempdir made it `/tmp` itself, whose timestamps other
   processes change mid-check. It now skips the repository roadmap-status coherence check there
-  with a note on stderr -- but only when git itself positively reports "not a git
-  repository". If git is missing, times out, refuses (`safe.directory`) or answers oddly, the
-  check still runs (fail closed), and inherited `GIT_*` variables cannot answer for the path.
+  with a note on stderr -- but only when no `.git` entry (directory, or a worktree/submodule
+  `gitdir:` file even with an unreachable target) exists at that directory or any ancestor.
+  The test is structural: git's output is not parsed (it is localized and can echo any path),
+  git need not be installed, and `GIT_*` variables play no part; any error keeps the check.
   Inside a git work tree the check runs exactly as before, with `required=True`, as
   IF-0-LEGIBLE-1 requires of canonical validation.
   Maintainer decision on agent-harness#1053.

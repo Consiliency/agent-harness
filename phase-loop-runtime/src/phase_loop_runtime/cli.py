@@ -1176,24 +1176,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _confirmed_outside_git_work_tree(path: Path) -> bool:
-    """True ONLY when git ran and positively reported that ``path`` is not in a repository.
+    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor.
 
-    Every other outcome -- git missing, a timeout, a ``safe.directory`` refusal, a
-    worktree whose gitdir is unreachable, unexpected output -- is "could not determine",
-    and the caller keeps the coherence check (fail closed: IF-0-LEGIBLE-1 requires it
-    for a real repository). Inherited ``GIT_*`` variables are dropped so a caller's
-    ``GIT_DIR``/``GIT_WORK_TREE`` for another repository cannot answer for this path.
+    Structural, not a parse of git's output: git's messages are localized and may echo
+    a path that contains any phrase (agent-harness#1054 r2), and a missing, refused or
+    timed-out git says nothing about the tree. Any ``.git`` entry -- a directory, or the
+    ``gitdir:`` FILE of a linked worktree or submodule even when its target is
+    unreachable -- and any error while looking counts as "maybe a repository", so the
+    caller keeps the coherence check (fail closed: IF-0-LEGIBLE-1 requires it for a
+    real repository). Environment such as ``GIT_DIR`` plays no part.
     """
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=10, env=env,
-        )
-    except (OSError, subprocess.SubprocessError):
+        resolved = Path(path).resolve()
+        for directory in (resolved, *resolved.parents):
+            marker = directory / ".git"
+            if marker.exists() or marker.is_symlink():
+                return False
+    except OSError:
         return False
-    return out.returncode != 0 and "not a git repository" in out.stderr.lower()
-
+    return True
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
