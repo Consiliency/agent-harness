@@ -358,6 +358,7 @@ def test_real_runner_native_stale_fill_precedes_cache(candidate, monkeypatch):
     assert run_candidate(c, monkeypatch)["status"] == "review_approved"
     result = run_candidate(c, monkeypatch, native_leg_fills=[SimpleNamespace(artifact_sha256="f" * 64)], _train_review_fn=never)
     assert result["reason"] == "native_fill_stale_request"
+    assert result["terminal_blocker"]["human_required"] is False, result
 
 
 def test_real_runner_native_emission_uses_stored_packet(candidate, monkeypatch):
@@ -2390,6 +2391,8 @@ def test_stale_upstream_refusal_preserves_downstream_fab_route(fab_downstream_wi
     result = c["run"]()
     if boundary == "revoked_resume":
         assert result["status"] == "review_halted" and result.get("reason") == "readmission_revoked", result
+        # A durable, typed refusal the coordinator re-evaluates: never a human hold.
+        assert result["terminal_blocker"]["human_required"] is False, result
         assert not calls["review"] and not calls["recover"] and not calls["merge"]
     else:
         assert result["status"] == "merged", result
@@ -2422,3 +2425,108 @@ def test_unchanged_upstream_keeps_downstream_fab_guard(fab_downstream_with_upstr
         assert len(c["calls"]["review"]) == 1
     assert not c["calls"]["execute"] and not c["calls"]["publish"]
     assert len(c["seeded"]["store"].replay()) == 1
+
+
+@pytest.mark.parametrize("failure", ["reverify_false", "reverify_raises", "merge_raises", "step3_merged_lookup_raises",
+                                     "pre_review_merged_lookup_raises"])
+def test_refusal_writers_keep_the_downstream_admission(fab_downstream_with_upstream, failure):
+    """agent-harness#978 round 10 (codex, grok): round nine fixed one writer of a class. Every
+    refusal of an ADMITTED node must keep its durable binding (PR, head, FAB run, merge order):
+    last-wins folding of a branch-only row made the next run republish the node or resume a
+    FAB node as non-FAB."""
+    c = fab_downstream_with_upstream
+    downstream_repo = c["fixture"].repo
+
+    def transient(*_args, **_kwargs):
+        raise RuntimeError("transient remote failure")
+
+    options = {}
+    if failure == "reverify_false":
+        options["_reverify_fn"] = lambda ws, *a, **k: ws != downstream_repo
+    elif failure == "reverify_raises":
+        options["_reverify_fn"] = lambda ws, *a, **k: transient() if ws == downstream_repo else True
+    elif failure == "merge_raises":
+        def merge(workspace, branch, **kwargs):
+            if workspace == downstream_repo:
+                transient()
+            return kwargs["head_sha"]
+        options["_merge_pr_fn"] = merge
+    elif failure == "step3_merged_lookup_raises":
+        options["_pr_is_open"] = lambda ws, br: ws != downstream_repo
+        options["_pr_merged_sha_fn"] = lambda ws, *a, **k: transient() if ws == downstream_repo else None
+    else:  # PR still open: Step 3 keeps it, P4's pre-review already-merged check raises
+        options["_pr_merged_sha_fn"] = lambda ws, *a, **k: transient() if ws == downstream_repo else None
+    # The binding under test is a FAB one with an order, so equality proves both are kept.
+    assert c["initial"].fab_run_id and c["initial"].merge_order is not None
+    result = c["run"](**options)
+    assert result["status"] in ("blocked", "merge_halted") and result["node_id"] == c["downstream"].node_id, result
+    blocked = read_ledger(c["ledger"])[c["downstream"].node_id]
+    assert blocked.status == "blocked"
+    assert {**packet.admission_binding(blocked), "merge_order": blocked.merge_order} == {
+        **packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}
+
+
+def test_git_reader_renders_every_validated_text_file_in_full(candidate, monkeypatch):
+    """agent-harness#978 round 10 (codex): a text file over ``core.bigFileThreshold`` (512 MiB
+    by default) rendered as a binary summary that passed the header checks. A 1-byte
+    threshold stands in for the size here."""
+    c = candidate
+    monkeypatch.setattr(packet, "_CONFIG", [*packet._CONFIG, "-c", "core.bigFileThreshold=1"])
+    result = c["build"]()
+    assert "actual_changed_code" in result.artifact and "Binary files" not in result.artifact
+
+
+def test_a_binary_summary_patch_holds_the_packet(candidate, monkeypatch):
+    """Defence in depth: without ``--text`` the summary is refused, never shown as a patch."""
+    c = candidate
+    monkeypatch.setattr(packet, "_CONFIG", [*packet._CONFIG, "-c", "core.bigFileThreshold=1"])
+    monkeypatch.setattr(packet, "_DIFF", [arg for arg in packet._DIFF if arg != "--text"])
+    with pytest.raises(packet.PacketError, match="binary_patch_summary"):
+        c["build"]()
+
+
+def test_an_unreadable_ledger_gets_no_unbound_blocked_row(fab_downstream_with_upstream, monkeypatch):
+    """agent-harness#978 round 11 (codex): a refusal that cannot read the ledger must not append
+    a branch-only row; once reads recover it would win the fold and erase the admission."""
+    from phase_loop_runtime import train_runner as tr
+    c = fab_downstream_with_upstream
+    downstream_repo = c["fixture"].repo
+    real_read = tr.read_ledger
+    state = {"refusing": False}
+
+    def reverify(ws, *args, **kwargs):
+        if ws == downstream_repo:
+            state["refusing"] = True  # the refusal writer's read comes next
+            return False
+        return True
+
+    def flaky_read(path, *args, **kwargs):
+        if state["refusing"]:
+            state["refusing"] = False
+            raise OSError("transient read failure")
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(tr, "read_ledger", flaky_read)
+    result = c["run"](_reverify_fn=reverify)
+    assert result["status"] == "merge_halted" and result["node_id"] == c["downstream"].node_id, result
+    after = real_read(c["ledger"])[c["downstream"].node_id]
+    assert {**packet.admission_binding(after), "merge_order": after.merge_order} == {
+        **packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}
+
+
+def test_the_blocked_writer_changes_only_status_and_time(tmp_path):
+    """The helper is the one writer the head-append inventory cannot see into: pin that it
+    re-appends the latest record verbatim but for ``status`` and a fresh ``ts``."""
+    from dataclasses import replace
+    from phase_loop_runtime import train_runner as tr
+    ledger = tmp_path / "ledger.jsonl"
+    admitted = LedgerRecord("repo-a/P.md", "pr_open", branch="feat", pr_url="https://github.com/o/r/pull/1",
+                            head_sha="a" * 40, merge_order=2, fab_run_id="run-1", ts="2026-01-01T00:00:00Z")
+    append_record(ledger, admitted)
+    tr._append_blocked_keeping_admission(ledger, admitted.node_id, branch="other-branch")
+    row = read_ledger(ledger)[admitted.node_id]
+    assert row.ts and row.ts != admitted.ts
+    assert replace(row, ts="") == replace(admitted, status="blocked", ts="")
+    tr._append_blocked_keeping_admission(ledger, "repo-b/Q.md", branch="fresh")
+    assert read_ledger(ledger)["repo-b/Q.md"] == replace(read_ledger(ledger)["repo-b/Q.md"],
+        status="blocked", branch="fresh", head_sha=None, pr_url=None, fab_run_id=None, merge_order=None)

@@ -164,7 +164,11 @@ def _env():
     return env
 
 
-_DIFF = ["--no-color", "--no-ext-diff", "--no-textconv", "--full-index", "--no-renames",
+# ``--text``: every changed blob is validated as NUL-free UTF-8 before its patch is taken,
+# so this only stops Git from SUMMARISING a validated text file as binary (a file over
+# ``core.bigFileThreshold`` would otherwise render as "Binary files ... differ" and pass
+# the header checks with its content omitted; agent-harness#978 round 10, codex).
+_DIFF = ["--text", "--no-color", "--no-ext-diff", "--no-textconv", "--full-index", "--no-renames",
          "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none",
          "--diff-algorithm=myers", "--unified=3"]
 _CONFIG = ["-c", "diff.relative=false", "-c", "diff.orderFile=/dev/null", "-c", "diff.noprefix=false",
@@ -516,6 +520,8 @@ def _node_snapshot(node, record, workspace, material, raw, material_root, pr_fn,
             expected_index = f"index {old_oid}..{new_oid}".encode()
             if not any(line == expected_index or line.startswith(expected_index + b" ") for line in block.split(b"\n")):
                 _fail("patch_inventory_object_mismatch", row["path"])
+        if any(re.search(rb"(?m)^(Binary files .* differ|GIT binary patch)$", block) for block in selected):
+            _fail("binary_patch_summary", row["path"])
         patches.extend(selected)
     context = []
     for path in material["context"]:

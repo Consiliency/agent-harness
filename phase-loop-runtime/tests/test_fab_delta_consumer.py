@@ -1413,15 +1413,16 @@ def _assert_head_append_inventory(source_text: str):
         ("_run_train_unfenced", "inline", "pr_open"),
         ("_run_train_unfenced", "assigned", "merged"),
         ("_run_train_unfenced", "inline", "merged"),
-        # agent-harness#906 (PR #909): four `blocked` rows that carry the PRIOR admitted head
-        # (read back from the pr_open record / completed_nodes["admitted_head_sha"], never a
-        # new or derived head) so a refused refresh, a failed live-head read, a rejected
-        # admission and a stale-upstream block stay classified as the admitted open PR on
-        # resume instead of letting a plain retry publish fresh. No new head enters the
-        # ledger through these sites; each is pinned by a two-run regression in
-        # test_train_prebuilt.py::TestPrebuiltRefresh.
-        ("_run_train_unfenced", "inline", "blocked"),
-        ("_run_train_unfenced", "inline", "blocked"),
+        # agent-harness#906 (PR #909): two inline `blocked` rows that carry the PRIOR admitted
+        # binding in full (head, PR, FAB run, merge order; read back from the pr_open record,
+        # never a new or derived head): a failed live-head read and a stale-upstream block.
+        # Every other refusal of an admitted node -- including a refused refresh publish and a
+        # refresh's FAB-scope block, formerly inline rows here -- goes through
+        # `_append_blocked_keeping_admission`, which re-appends the node's admission (the latest
+        # durable record, or the one P3 captured before its breadcrumb) verbatim except for
+        # `status`/`ts` (agent-harness#978 rounds 10-12), so no new head
+        # enters the ledger there either. Pinned by test_train_prebuilt.py::TestPrebuiltRefresh
+        # and test_train_review_packet.py (refusal writers, helper unit test).
         ("_run_train_unfenced", "inline", "blocked"),
         ("_run_train_unfenced", "inline", "blocked"),
     ))
