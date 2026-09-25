@@ -1728,6 +1728,46 @@ def _canonical_review_repo_authority(repo_dir: Path | str | None) -> Path:
     return Path(root).resolve()
 
 
+def _outside_any_git_work_tree(path: Path | str) -> bool:
+    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor (structural;
+    any error counts as "maybe a repository")."""
+    try:
+        resolved = Path(path).resolve()
+        for directory in (resolved, *resolved.parents):
+            marker = directory / ".git"
+            if marker.exists() or marker.is_symlink():
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def _resolve_review_authority(
+    canonical_repo_authority: Path | str | None,
+    repo_dir: Path | str | None,
+    *,
+    governed: bool,
+    resolve: Callable[[Path | str | None], Path] | None = None,
+) -> Path:
+    """The HARDEN review authority -- the tree fingerprinted AND staged -- resolved once.
+
+    Order (agent-harness#1053, maintainer decision 2026-09-25): an explicit
+    ``canonical_repo_authority``; else ``repo_dir``, the repository under review; else the
+    process cwd. ``repo_dir`` is not consulted for a GOVERNED request (a pre-minted
+    authorization is bound to its own authority). A ``repo_dir`` falls back to the cwd only
+    when it is structurally outside any git work tree -- it cannot be fingerprinted as a
+    repository -- so a real repository whose resolution FAILS (git missing, refused, timed
+    out) reaches the typed refusal instead of silently reviewing the cwd. Each call makes
+    exactly one resolution (a frozen static-import probe pins that single ``git`` call).
+    """
+    resolve = resolve or _canonical_review_repo_authority
+    if canonical_repo_authority is not None or repo_dir is None or governed:
+        return resolve(canonical_repo_authority)
+    if _outside_any_git_work_tree(repo_dir):
+        return resolve(None)
+    return resolve(repo_dir)
+
+
 def _completion_ok(text: str, mode: str = "review") -> bool:
     """Is a leg's output a COMPLETE response for this mode?
 
@@ -8515,17 +8555,10 @@ def invoke_board(
                     # ``repo_dir`` does NOT make this a governed request:
                     # ``governed_review_request`` above keys on the caller's explicit
                     # authority / authorization only.
-                    # Exactly one resolution per source (a frozen static-import probe
-                    # pins the single ``git rev-parse`` a same-cwd call makes).
-                    if canonical_repo_authority is None and repo_dir is not None:
-                        try:
-                            canonical_repo_authority = _canonical_review_repo_authority(repo_dir)
-                        except ValueError:
-                            canonical_repo_authority = _canonical_review_repo_authority(None)
-                    else:
-                        canonical_repo_authority = _canonical_review_repo_authority(
-                            canonical_repo_authority
-                        )
+                    canonical_repo_authority = _resolve_review_authority(
+                        canonical_repo_authority, repo_dir,
+                        governed=governed_review_request,
+                    )
                 except (OSError, UnicodeError, ValueError) as exc:
                     return review_refusal(str(exc))
             elif canonical_repo_authority is not None:

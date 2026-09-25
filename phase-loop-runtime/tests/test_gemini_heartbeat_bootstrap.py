@@ -355,6 +355,40 @@ def test_a_non_git_repo_dir_keeps_the_cwd_authority(fixture_cli, tmp_path, monke
     assert digested == [cwd_repo.resolve()], digested
 
 
+def test_review_authority_resolution_rule(tmp_path):
+    """agent-harness#1053 decision 2, every branch of the one rule (#1055 r1): explicit
+    authority wins; else repo_dir; a GOVERNED request ignores repo_dir; a repo_dir outside
+    any work tree falls back to the cwd; a real repository whose resolution fails does NOT
+    fall back (it reaches the typed refusal). Exactly one resolution per call."""
+    repo = _fixture_repo(tmp_path / "r")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    worktree_file = tmp_path / "wt"
+    worktree_file.mkdir()
+    (worktree_file / ".git").write_text("gitdir: /nonexistent\n")
+    seen = []
+
+    def resolve(value):
+        seen.append(value)
+        if value == worktree_file:
+            raise ValueError("HARDEN review has no canonical repository authority")
+        return Path(value or "/cwd")
+
+    def rule(explicit, repo_dir, governed=False):
+        seen.clear()
+        result = panel._resolve_review_authority(explicit, repo_dir, governed=governed, resolve=resolve)
+        assert len(seen) == 1, seen
+        return result, seen[0]
+
+    assert rule(tmp_path / "explicit", repo)[1] == tmp_path / "explicit"
+    assert rule(None, repo)[1] == repo
+    assert rule(None, repo, governed=True)[1] is None
+    assert rule(None, plain)[1] is None
+    assert rule(None, None)[1] is None
+    with pytest.raises(ValueError, match="no canonical repository authority"):
+        panel._resolve_review_authority(None, worktree_file, governed=False, resolve=resolve)
+
+
 @pytest.mark.parametrize("mode,status,detail", [
     ("ok", "OK", None), ("empty", "EMPTY", "without review text"),
     ("malformed", "ERROR", "malformed JSON"), ("ack", "ERROR", "acknowledgement"),
