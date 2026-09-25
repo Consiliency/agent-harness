@@ -15,6 +15,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   environment. They now run from a copied tree exactly as in CI (with the working tree's
   `src/` on the path), and a drift test ties the list to `test.yml`'s ignores.
 
+### Review follow-ups: live trust-modal vocabulary, fail-closed probes, test hardening (agent-harness#1053)
+
+- The Claude TUI trust-modal readiness filter (agent-harness#1049) now also recognizes the rest
+  of the live Claude Code 2.1.282 modal -- its explanation, "Security guide" link and "Enter to
+  confirm · Esc to cancel" footer -- captured from a real session; before, those lines arriving
+  after the answer could still arm editor readiness.
+- The work-tree probes behind `validate-roadmap` (agent-harness#1054) and the board's
+  review-authority rule (agent-harness#1055) also fail closed on a path with an embedded NUL byte.
+- Test hardening: a real-permission (unmocked) probe test in both places; the alias test
+  resolves `TMPDIR` and skips when it sits inside a repository; `git init` in those tests drops
+  inherited `GIT_*`; the remaining live-checkout review authority in the Gemini tests uses a
+  private repository; the TUI handshake waits for the whole last frame; the quarantine cap is
+  pinned at its boundary for one shared decorator; the chronology plumbing reason is one
+  constant checked against the script; stale docstring and CHANGELOG wording corrected.
+
 ### Review board: `repo_dir` is the review target (agent-harness#1053)
 
 - `invoke_board(repo_dir=...)` now makes that repository the HARDEN review authority -- the tree
@@ -48,8 +63,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   validation"; reproduced 2/10 under /tmp churn, 0/10 after). It now uses a private
   `repo/specs/` layout.
 - `test_real_board_preserves_diagnostics_without_retries` let the board default to the LIVE
-  checkout (digesting its tracked files but staging a clone of HEAD); it now passes a
-  private fixture repository, like its sibling test. Both quarantine marks are gone.
+  checkout (digesting its tracked files but staging a clone of HEAD). The HARDEN review
+  authority follows the cwd, so every test in that file now runs with a private one-commit
+  repository as its cwd (an autouse fixture). Both quarantine marks are gone.
 
 ### Claude TUI: a trust modal rendered in pieces no longer arms editor readiness (agent-harness#992)
 

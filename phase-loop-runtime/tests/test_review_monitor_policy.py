@@ -799,17 +799,19 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
 
     The child prints one CR-terminated status frame and WAITS for `go`, which the
     observe hook creates only once the monitor has held that frame as progress for
-    0.1 s. The child then repaints and waits for `done`, created 0.3 s after `go`.
-    Correct: the age keeps growing from the first frame (> 0.35 s at the end). Broken
-    (repaints refresh progress): the age drops from >= 0.1 s back to ~0."""
+    0.1 s. The child then repaints and waits for `done`, created by a LIVE observation
+    0.3 s after `go`. Correct: between `go` and `done` the age grows as fast as wall time.
+    Broken (repaints refresh progress): the age falls behind wall time by at least the
+    0.1 s it had at `go`, however sparsely the monitor happens to sample it."""
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_latest_claude_transcript_text", lambda *a, **k: "")
     monkeypatch.setattr(panel, "_latest_claude_transcript_activity", lambda *a, **k: 0)
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
-    go, done = tmp_path / "go", tmp_path / "done"
+    go, done, stage = tmp_path / "go", tmp_path / "done", tmp_path / "stage"
     snapshots = []
-    released = []
+    released = []  # (monotonic time, age) at `go`
+    marked = []  # (monotonic time, age) at `done`
     judged_last_repaint = []
     judged = bytearray()
     last = 8  # the child repaints frames 1..last
@@ -822,21 +824,30 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
         # chunks still counts -- not on elapsed time (#1047, #1048 r1).
         verdict = novel(chunk, seen, *rest)
         judged.extend(chunk)
-        if f"({last}s ".encode() in judged:
+        # The WHOLE last frame, not just its timer prefix (agent-harness#1053).
+        if f"* Herding... ({last}s . esc to interrupt)\r".encode() in judged:
             judged_last_repaint.append(True)
         return verdict
 
     monkeypatch.setattr(panel, "_tui_chunk_has_novel_content", judging)
 
     def capture(*args, **kwargs):
+        # One clock read, before observe()'s own I/O: the age was computed at the loop top
+        # just before this call, so the (time, age) pairs below stay within microseconds.
+        now = time.monotonic()
         observe(*args, **kwargs)
-        snapshots.append(dict(monitor.record))
+        snapshots.append(dict(monitor.record, t=now))
         age = monitor.record["last_genuine_progress_age_s"]
+        if kwargs.get("terminal") is not None:
+            # The session's closing observation carries the PREVIOUS age forward; it must
+            # never complete the handshake (agent-harness#1060 r3, claude).
+            return
         if not go.exists() and age is not None and age >= .1:
-            released.append(time.monotonic())
+            released.append((now, age))
             go.touch()
         elif (released and judged_last_repaint and not done.exists()
-              and time.monotonic() - released[0] >= .3):
+              and now - released[0][0] >= .3):
+            marked.append((now, age))
             done.touch()
 
     monkeypatch.setattr(monitor, "observe", capture)
@@ -850,25 +861,43 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  # handshake exits in 10 s and fails `released`/`done` below, never hangs CI.
                  "deadline = time.monotonic() + 10\n"
                  # Distinct exit codes name the stage that broke (#1047): 3 = go, 4 = done.
+                 # The child records how it ended in `stage` (the session's rc is
+                 # `proc.poll() or 1`, not the child's exit code).
                  "def wait(path, code):\n"
                  " while not os.path.exists(path):\n"
-                 "  if time.monotonic() > deadline: sys.exit(code)\n"
+                 "  if time.monotonic() > deadline:\n"
+                 "   open(sys.argv[3], 'w').write('timed out waiting for %s' % path)\n"
+                 "   sys.exit(code)\n"
                  "  time.sleep(.01)\n"
                  "print(line % 0, end='', flush=True)\n"
                  "wait(go, 3)\n"
                  f"for i in range(1, {last + 1}): print(line % i, end='', flush=True)\n"
-                 "wait(done, 4)\n",
-                 str(go), str(done)],
+                 "wait(done, 4)\n"
+                 "open(sys.argv[3], 'w').write('finished')\n",
+                 str(go), str(done), str(stage)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
         timeout_s=15, env=os.environ, review_monitor=monitor,  # not enforced; see the child
     )
     assert released, f"go never released (child exit {result[0]}; 3 = waited for go)"
-    assert judged_last_repaint and done.exists(), f"repaints never judged (child exit {result[0]}; 4 = waited for done)"
+    child = stage.read_text() if stage.exists() else "no stage recorded"
+    timeline = [(round(s["t"] - snapshots[0]["t"], 3), s["last_genuine_progress_age_s"],
+                 s.get("terminal_reason")) for s in snapshots]
+    context = (f"child: {child}; session: {result[2]}; elapsed "
+               f"{timeline[-1][0] if timeline else 0} s; last observations {timeline[-6:]}")
+    assert judged_last_repaint, f"repaints never judged ({context})"
+    assert marked and child == "finished", f"no live observation completed the handshake ({context})"
     ages = [s["last_genuine_progress_age_s"] for s in snapshots
             if s["last_genuine_progress_age_s"] is not None]
     assert all(later >= earlier for earlier, later in zip(ages, ages[1:])), ages
     assert snapshots[-1]["observation_state"] == "progress_unobserved"
-    assert snapshots[-1]["last_genuine_progress_age_s"] > .35, ages
+    # Relative to wall time, not an absolute bound: a reset after `go` loses at least the
+    # age it had there (>= 0.1 s) against the clock, however sparse the samples. Sampling
+    # delay cannot fail a correct runtime here; only a > 0.05 s stall between the loop-top
+    # age and the clock read above could. (The handshake itself still needs a live
+    # observation 0.3 s after `go`: a monitor that stops observing fails above, by design.)
+    (t_go, age_go), (t_done, age_done) = released[0], marked[0]
+    assert age_done - age_go >= (t_done - t_go) - .05, (released, marked, timeline)
+    assert snapshots[-1]["last_genuine_progress_age_s"] >= age_done, timeline
 
 
 def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
