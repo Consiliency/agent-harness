@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude TUI: a trust modal rendered in pieces no longer arms editor readiness (agent-harness#992)
+
+- The workspace-trust detector answers as soon as the modal's header, choice and cwd are on
+  screen. When the modal rendered in pieces, its remaining lines ("n. No, exit", "Enter
+  y/n:") arrived after the answer and counted as new editor output, arming readiness: the
+  review was pasted into a TUI that was not ready, and the leg ended as
+  `claude_tui_pty_eof_no_output` instead of `claude_tui_editor_not_ready`. Between the
+  answer and the submit, lines of the modal's own vocabulary (and its cwd line) are now
+  recorded as seen but never count as progress. This was the xdist flake in
+  `test_modal_answered_but_editor_never_ready_is_editor_not_ready` (reproduced 2/32 under
+  load; 32/32 after); a new test reproduces it deterministically. The quarantine mark is gone.
+
 ### CI: pull requests never run the chronology node (agent-harness#1042)
 
 - A pull request touching CI selection plumbing no longer runs the ~50-minute CONFORM
@@ -35,7 +47,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
   3.10/3.11/3.12.
 - New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
-  agent-harness#992 and two agent-harness#987 nodes) are deselected in
+  two agent-harness#987 nodes) are deselected in
   the hosted pull-request suite only (offload-eligible PRs, push, nightly, dispatch and
   Gate A run them),
   by a conftest collection hook (`tests/_quarantine.py`) enabled with
