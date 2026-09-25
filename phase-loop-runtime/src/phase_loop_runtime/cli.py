@@ -1174,6 +1174,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+def _inside_git_work_tree(path: Path) -> bool:
+    """True iff ``path`` is inside a git work tree (``git rev-parse`` says so)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == "true"
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1401,11 +1413,24 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             # specs/roadmap-status.json at all) is a silent no-op.
             candidate_path = Path(candidate)
             status_repo = candidate_path.resolve().parent.parent
-            try:
-                roadmap_lint.validate_roadmap_status_coherence(status_repo, required=True)
-            except roadmap_lint.RoadmapStatusError as exc:
-                print(f"validate-roadmap: roadmap-status coherence error: {exc}", file=sys.stderr)
-                return 1
+            # The repository is inferred as the roadmap's grandparent
+            # (<repo>/specs/<roadmap>.md). Outside a git work tree that guess is
+            # not a repository at all -- a roadmap loose in a tempdir made it
+            # ``/tmp`` itself -- so there is no canonical repository to check:
+            # skip with a note rather than validate a shared system directory
+            # (agent-harness#987 / #1053, maintainer decision 2026-09-25).
+            if not _inside_git_work_tree(status_repo):
+                print(
+                    f"validate-roadmap: note: {status_repo} is not inside a git work tree; "
+                    "skipping the repository roadmap-status coherence check",
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    roadmap_lint.validate_roadmap_status_coherence(status_repo, required=True)
+                except roadmap_lint.RoadmapStatusError as exc:
+                    print(f"validate-roadmap: roadmap-status coherence error: {exc}", file=sys.stderr)
+                    return 1
         if getattr(args, "check_assumptions", False):
             from . import roadmap_assumptions
 

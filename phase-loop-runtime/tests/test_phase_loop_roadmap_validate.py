@@ -236,6 +236,48 @@ class RoadmapLintModuleTest(unittest.TestCase):
             self.assertEqual(main(["validate-roadmap", str(bad)]), 1)
 
 
+    def test_validate_roadmap_skips_coherence_outside_a_git_work_tree(self):
+        """agent-harness#1053: a roadmap loose in a non-git directory has no canonical
+        repository; the inferred grandparent (here a bare tempdir, in the wild ``/tmp``)
+        must not be validated as one. A coherence validator that would fail proves the
+        check is skipped, not merely passing."""
+        import phase_loop_runtime.roadmap_lint as roadmap_lint_module
+
+        calls = []
+
+        def _refuse(repo, required=False):
+            calls.append((repo, required))
+            raise roadmap_lint_module.RoadmapStatusError("must not run outside git")
+
+        with tempfile.TemporaryDirectory() as td:
+            specs = Path(td) / "loose" / "specs"
+            specs.mkdir(parents=True)
+            good = specs / "good.md"
+            good.write_text(_VALID_ROADMAP, encoding="utf-8")
+            err = io.StringIO()
+            with patch.object(roadmap_lint_module, "validate_roadmap_status_coherence", _refuse), \
+                    contextlib.redirect_stderr(err):
+                self.assertEqual(main(["validate-roadmap", str(good)]), 0)
+        self.assertEqual(calls, [])
+        self.assertIn("not inside a git work tree", err.getvalue())
+
+    def test_validate_roadmap_runs_coherence_inside_a_git_work_tree(self):
+        """The other half: inside a git work tree the check still runs, required=True."""
+        import phase_loop_runtime.roadmap_lint as roadmap_lint_module
+
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / "specs").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            good = repo / "specs" / "good.md"
+            good.write_text(_VALID_ROADMAP, encoding="utf-8")
+            with patch.object(roadmap_lint_module, "validate_roadmap_status_coherence",
+                              lambda repo, required=False: calls.append((Path(repo).resolve(), required))):
+                self.assertEqual(main(["validate-roadmap", str(good)]), 0)
+            self.assertEqual(calls, [(repo.resolve(), True)])
+
+
 _SECOND_PHASE = """### Phase 2 — Delivery (DELIVERY)
 **Objective**
 Ship the change.
