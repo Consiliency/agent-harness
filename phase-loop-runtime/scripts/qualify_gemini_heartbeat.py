@@ -391,9 +391,42 @@ def observe_owned_helpers(table, init_pid, helpers):
             continue
 
 
+_NS_GET_USERNS = 0xB701  # linux/nsfs.h: _IO(0xb7, 0x1)
+
+
+def _network_owner_pid(pid):
+    """The nearest ancestor-or-self of ``pid`` living in the user namespace that OWNS its
+    network namespace. Since agent-harness#1052 an ordinary owned provider runs in a nested
+    user namespace with no capabilities, so entering the PROVIDER's user namespace cannot
+    read the holder's egress rules; the owner's user namespace can."""
+    import fcntl
+    net_fd = os.open(f"/proc/{pid}/ns/net", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        owner_fd = fcntl.ioctl(net_fd, _NS_GET_USERNS)
+    finally:
+        os.close(net_fd)
+    try:
+        owner = os.fstat(owner_fd)
+    finally:
+        os.close(owner_fd)
+    current = pid
+    while current >= 1:  # pid 1 is checked too; its parent is 0
+        user = os.stat(f"/proc/{current}/ns/user")
+        if (user.st_dev, user.st_ino) == (owner.st_dev, owner.st_ino):
+            return current
+        current = int(Path(f"/proc/{current}/stat").read_text().rsplit(")", 1)[1].split()[1])
+    raise QualificationFailure("qualification network namespace owner was not observed")
+
+
 def inspect_network(pid):
     from phase_loop_runtime import sandbox_egress
-    admin = ["nsenter", "--net", "--user", "--preserve-credentials", "-t", str(pid)]
+    owner = _network_owner_pid(pid)
+    # The PROVIDER's network namespace, entered with the credentials of the user namespace
+    # that owns it (the holder's; the provider's own may be a capability-less child).
+    admin = ["nsenter", f"--net=/proc/{pid}/ns/net"]
+    own, target = os.stat("/proc/self/ns/user"), os.stat(f"/proc/{owner}/ns/user")
+    if (own.st_dev, own.st_ino) != (target.st_dev, target.st_ino):  # setns to one's own is EINVAL
+        admin += [f"--user=/proc/{owner}/ns/user", "--preserve-credentials"]
     rules = sandbox_egress.egress_rules()
     if not rules:
         raise QualificationFailure("qualification network rule set is empty")
