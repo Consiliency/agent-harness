@@ -729,7 +729,8 @@ ignored extra files. Only the named pytest node runs in the staged clone.
 The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
 `node_missing`, `error`. Pytest emits JUnit, but the recorded outcome comes from
 the wrapper's reported call-phase result; the test-writable XML is not read as
-authority. Seat-authored Python runs in the wrapper's process and can forge
+authority. Seat-authored and reviewed-tree Python (including conftest) run
+in the wrapper's process and can forge
 the reported status, including a parent-keyed frame. RED and GREEN are therefore
 observed, untrusted results: neither binds nor dismisses a finding. Drift,
 expiry, unavailable isolation, and incomplete evidence are `error`; every
