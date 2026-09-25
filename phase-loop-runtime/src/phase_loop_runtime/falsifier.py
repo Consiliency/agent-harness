@@ -73,7 +73,7 @@ def _clean_exact_source(repo: Path, sha: str) -> None:
                 raise ValueError("falsifier source is not clean")
             payload = os.readlink(target).encode("utf-8", "surrogateescape")
         elif target.is_file():
-            actual_mode = "100755" if stat.S_IMODE(target.stat().st_mode) & 0o111 else "100644"
+            actual_mode = "100755" if target.stat().st_mode & stat.S_IXUSR else "100644"
             if actual_mode != mode:
                 raise ValueError("falsifier source is not clean")
             payload = target.read_bytes()

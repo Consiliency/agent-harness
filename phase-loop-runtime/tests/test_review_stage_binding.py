@@ -849,6 +849,88 @@ def test_falsifier_exec_bit_validation_survives_noexec_mount(tmp_path, monkeypat
         review_stage.remove_review_stage(staged)
 
 
+def test_falsifier_source_rejects_removed_owner_execute_bit(tmp_path):
+    from phase_loop_runtime import falsifier
+
+    repo = _git_repo(tmp_path / "repo")
+    source = repo / "src.py"
+    source.chmod(0o755)
+    subprocess.run(["git", "-C", str(repo), "add", "src.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "executable"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    source.chmod(0o655)
+
+    with pytest.raises(ValueError, match="not clean"):
+        falsifier._clean_exact_source(repo, head)
+
+
+def test_falsifier_stage_rejects_removed_owner_execute_bit(tmp_path):
+    repo = _git_repo(tmp_path / "repo")
+    source = repo / "src.py"
+    source.chmod(0o755)
+    subprocess.run(["git", "-C", str(repo), "add", "src.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "executable"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    staged = review_stage.stage_review_tree(repo)
+    try:
+        (staged / "src.py").chmod(0o655)
+        with pytest.raises(ValueError, match="executable bit changed"):
+            review_stage.revalidate_falsifier_staged_tree(staged=staged, reviewed_sha=head)
+    finally:
+        review_stage.remove_review_stage(staged)
+
+
+@pytest.mark.parametrize("expected", ["green_on_head", "red_on_head"])
+def test_falsifier_real_bwrap_reports_outcome_and_isolation(tmp_path, monkeypatch, expected):
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("canonical falsifier launcher absent")
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    host_net_inode = (Path("/proc/self/ns/net")).stat().st_ino
+    monkeypatch.setenv("FALSIFIER_HOST_SENTINEL", "host-only")
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    source = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "def test_trigger():\n"
+        "    assert 'FALSIFIER_HOST_SENTINEL' not in os.environ\n"
+        "    assert os.environ['HOME'] == '/home/falsifier'\n"
+        f"    assert Path('/proc/self/ns/net').stat().st_ino != {host_net_inode}\n"
+        f"    assert {expected == 'green_on_head'}\n"
+    )
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,7 @@\n"
+        + "".join(f"+{line}\n" for line in source.splitlines())
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=30,
+        output_cap_bytes=65536,
+    )
+    assert result.outcome == expected, result.detail
+    assert (result.red_output_digest is not None) == (expected == "red_on_head")
+    assert not (repo / path).exists()
+    with pytest.raises(ValueError):
+        backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+
+
 def test_early_broken_stdin_close_still_reaps_falsifier_child(tmp_path, monkeypatch):
     if not Path("/usr/bin/bwrap").is_file():
         pytest.skip("canonical falsifier launcher absent")
