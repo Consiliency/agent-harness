@@ -1,9 +1,9 @@
 {
-  "base_commit": "c149cfc44c832128a9a91a51ea5a151920adb577",
-  "base_tree_digest": "6137c8c845cc2f28a7aac98e4d714f0e09ab6602",
-  "landing_commit": "c149cfc44c832128a9a91a51ea5a151920adb577",
+  "base_commit": "33b2f9b4a5ce7f4961e7d62e1acf77cb247bb09b",
+  "base_tree_digest": "7fae6529bca234c7e3c8f6370f44704fb541831a",
+  "landing_commit": "33b2f9b4a5ce7f4961e7d62e1acf77cb247bb09b",
   "landing_ref": "HEAD",
-  "landing_tree_digest": "6137c8c845cc2f28a7aac98e4d714f0e09ab6602",
+  "landing_tree_digest": "7fae6529bca234c7e3c8f6370f44704fb541831a",
   "red_argv": [
     "env",
     "PHASE_LOOP_TDD_EXPECT_EXECFIND=1",
@@ -124,7 +124,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/execfind_content_tdd_adapter.py",
-      "sha256": "0bb1302c1857402e75120fd6257a609b8b9e68611858ef7268e1314049165534"
+      "sha256": "3056e50d3595941b08dae9a5b464c7318ec120c4ce99f077a77d72fa50950bef"
     },
     {
       "path": "phase-loop-runtime/tests/test_advisor_board_golden.py",
@@ -132,7 +132,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/test_execfind_falsifier.py",
-      "sha256": "5e0d34a96a80f52a5370f002731ed4f635820e0e0d77b7946d02b088a3e3b6a5"
+      "sha256": "fb0b0b0fa901022cd407908f11b0c3ba842c1f8c2c86944ae5eaef0498a981b8"
     },
     {
       "path": "phase-loop-runtime/tests/test_governed_review.py",
