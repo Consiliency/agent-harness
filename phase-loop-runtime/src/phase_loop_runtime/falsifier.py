@@ -143,7 +143,7 @@ def _outcome_from_report(
     calls = report.get("calls")
     if (exit_code == 4 and calls == [] and report.get("collection_failed") is False
             and report.get("collection_skipped") is False
-            and report.get("collection_root_passed") is True
+            and report.get("root_match_count") == 0
             and report.get("collection_hook_failed") is False
             and report.get("session_started") is True and report.get("selected_count") == 0):
         return "node_missing"
