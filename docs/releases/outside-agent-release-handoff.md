@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.17`
-- Runtime `phase_loop_runtime.__version__`: `0.7.17`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.17`
+- Version: `0.7.18`
+- Runtime `phase_loop_runtime.__version__`: `0.7.18`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.18`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.17`
+- Validator version: `0.7.18`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,34 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.18` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.17` tag commit (`374efd11`):
+  - the governed train review packet and `run-train --governed --review-only --preview-review`
+    (agent-harness#978), and `run-train --monitoring-policy heartbeat_only` (agent-harness#1061).
+    Together these are the agent-harness side of the treesitter-chunker#97 supplier review
+    (agent-harness#906);
+  - review sandbox isolation for owned providers where Bubblewrap drops `CAP_SETPCAP`
+    (agent-harness#1052), and the requalification observer that follows it (this cut);
+  - the review board's `repo_dir` authority and the structural git work-tree probes
+    (agent-harness#1054, agent-harness#1055), plus the #1053 leftovers (agent-harness#1060);
+  - TUI readiness and trust-modal fixes (agent-harness#1049), and test-race fixes
+    (agent-harness#1045, agent-harness#1051, agent-harness#1040);
+  - the EXECFIND tests-first corpus, advisory falsifier contract and promotion-guard plan
+    amendment (agent-harness#1041, agent-harness#1056, agent-harness#1069; planning and tests only);
+  - PRESROUTE receipt-proof maintenance (agent-harness#1035);
+  - CI slimming and `make check` (agent-harness#1030, agent-harness#1031, agent-harness#1032,
+    agent-harness#1037, agent-harness#1043, agent-harness#1044, agent-harness#1048,
+    agent-harness#1059);
+  - the 0.7.17 published record (agent-harness#1046).
+- Release tracking: agent-harness#1066; the appended plan-authority rows cite it.
+- Tag: not yet created. The signed `v0.7.18` tag push, which publishes to PyPI, is
+  maintainer-gated.
+
+### Previous release: 0.7.17 (published)
 
 - `publication_status=published`
 - `0.7.17` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -167,7 +195,21 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.17 (published)
+### This release: 0.7.18 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
+record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
+and the published digests are recorded here after the tag push. As for `0.7.15`–`0.7.17`,
+the published digests are expected to differ, because archive bytes are
+timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `504298b115a1553132fc9b7ceca73b9da400d94a9011a1c4f12e546841586972`
+- prepared direct-sdist sha256: `6f2888d794b6d4e1698ec823ff5706f40987e310c89f624846118d1383ec9564`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.17 (published)
 
 The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
 `36078445981` from its build of the tagged commit `374efd11`, verified by the publish job
@@ -240,23 +282,23 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the published `0.7.17` artifacts (workflow `36078445981`); identical to the
-prepared measurement.
+Measured on the prepared `0.7.18` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.17-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.17.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.17.data`, `phase_loop_runtime-0.7.17.dist-info`
-- Wheel file count: `470`
+- Wheel artifact: `phase_loop_runtime-0.7.18-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.18.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.18.data`, `phase_loop_runtime-0.7.18.dist-info`
+- Wheel file count: `471`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `956` regular files (`1091` archive members including directories)
+- Sdist file count: `964` regular files (`1099` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
 `0.7.17` is published (PyPI, trusted-publish workflow `36078445981`), so governed-pipeline
-may consume it as an authoritative
-validator by pinning `phase-loop-runtime==0.7.17`, then calling:
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.17`. Once
+`0.7.18` is published (tag push → PyPI; this document records it as `prepared` until then),
+the pin may move to `phase-loop-runtime==0.7.18`. In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
