@@ -355,6 +355,31 @@ def test_a_non_git_repo_dir_keeps_the_cwd_authority(fixture_cli, tmp_path, monke
     assert digested == [cwd_repo.resolve()], digested
 
 
+def test_the_work_tree_probe_fails_closed_on_filesystem_errors(tmp_path, monkeypatch):
+    """#1055 r2 (codex, claude): an EACCES/EIO on a ``.git`` lookup, or a symlink loop,
+    means "maybe a repository" -- never "outside" (which would review the cwd instead)."""
+    import errno
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert panel._outside_any_git_work_tree(plain) is True
+    real_lstat = os.lstat
+
+    def failing_lstat(path, *args, **kwargs):
+        if Path(path).name == ".git":
+            raise PermissionError(errno.EACCES, "injected", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", failing_lstat)
+    assert panel._outside_any_git_work_tree(plain) is False
+    monkeypatch.setattr(os, "lstat", real_lstat)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    assert panel._outside_any_git_work_tree(loop) in (False, True)  # never raises
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("loop")))
+    assert panel._outside_any_git_work_tree(plain) is False
+
+
 def test_review_authority_resolution_rule(tmp_path):
     """agent-harness#1053 decision 2, every branch of the one rule (#1055 r1): explicit
     authority wins; else repo_dir; a GOVERNED request ignores repo_dir; a repo_dir outside

@@ -1729,15 +1729,23 @@ def _canonical_review_repo_authority(repo_dir: Path | str | None) -> Path:
 
 
 def _outside_any_git_work_tree(path: Path | str) -> bool:
-    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor (structural;
-    any error counts as "maybe a repository")."""
+    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor.
+
+    Structural: git's output is never parsed. Any ``.git`` entry (directory, ``gitdir:``
+    file -- reachable or not -- or symlink) means "maybe a repository", and so does ANY
+    error: ``os.lstat`` is called directly because ``Path.exists``/``is_symlink`` swallow
+    OSError on newer Pythons (EACCES/EIO would read as "absent"), and a symlink loop in
+    ``resolve`` raises RuntimeError on Python <= 3.12 (agent-harness#1054/#1055 r2/r3).
+    """
     try:
         resolved = Path(path).resolve()
         for directory in (resolved, *resolved.parents):
-            marker = directory / ".git"
-            if marker.exists() or marker.is_symlink():
-                return False
-    except OSError:
+            try:
+                os.lstat(directory / ".git")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            return False
+    except (OSError, RuntimeError):
         return False
     return True
 
