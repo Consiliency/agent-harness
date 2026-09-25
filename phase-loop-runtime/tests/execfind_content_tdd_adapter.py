@@ -24,6 +24,7 @@ from phase_loop_runtime.tdd_receipts import (
 
 
 ACTIVATION_ENV = "PHASE_LOOP_TDD_EXPECT_EXECFIND"
+STRICT_GREEN_ENV = "PHASE_LOOP_TDD_REQUIRE_EXECFIND_GREEN"
 UNSOUND = "EXECFIND_RECORD_UNSOUND"
 TEST_DIR = "phase-loop-runtime/tests"
 FROZEN_TEST_FILES = (
@@ -101,6 +102,8 @@ def run_execfind_contract(case: str, check: Callable[[], None]) -> None:
     try:
         check()
     except MissingCapability as exc:
+        if os.environ.get(STRICT_GREEN_ENV) == "1":
+            raise
         import pytest
 
         pytest.skip(f"EXECFIND capability unimplemented for {case}: {exc}")
