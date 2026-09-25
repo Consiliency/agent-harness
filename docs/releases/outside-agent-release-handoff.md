@@ -78,8 +78,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - Publication: trusted-publish workflow run `36137860560` (job `108080177612` build + verify
   wheel + sdist; job `108095997920` publish to PyPI, trusted publishing), triggered by that tag
   push; completed successfully. PyPI reports exactly the `SHA256SUMS` digests recorded under
-  Sealed Implementation Evidence below; a fresh isolated `pip install phase-loop-runtime==0.7.18`
-  imports `0.7.18`, and `phase-loop run-train --help` offers `--preview-review` and
+  Sealed Implementation Evidence below; a fresh isolated install (`uv pip install --no-cache
+  phase-loop-runtime==0.7.18` from pypi.org into a new Python 3.10 venv) imports `0.7.18`, and `phase-loop run-train --help` offers `--preview-review` and
   `--monitoring-policy`. GitHub release:
   https://github.com/Consiliency/agent-harness/releases/tag/v0.7.18.
 - Fleet adoption: the dotfiles pin bump to `v0.7.18` is a separate client-repo change and is
