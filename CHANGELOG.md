@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude final-message extraction (agent-harness#960)
+
+- Retain every text block of the final logical assistant message, grouped by API
+  message identity. Drop exact same-uuid re-journals of a record, and fail closed
+  when the final message copies or updates an earlier turn's record. Exclude
+  thinking and tool content, and reject incomplete or new-turn boundaries instead
+  of reusing a stale verdict. Review and president PTY controls preserve the full
+  message and existing owned-transcript cleanup.
+
 ### Test hardening from the 0.7.18 president rulings (agent-harness#1064, agent-harness#1065, agent-harness#1070)
 
 - Train refusals: a refusal repeated across two runs keeps the whole admission binding, and the
