@@ -163,7 +163,15 @@ def run_execfind_contract(case: str, check: Callable[[], None]) -> None:
 def scan_red_output(output: str) -> str | None:
     if UNSOUND in output or "XPASS" in output or "unexpected pass" in output.lower():
         return "unexpected pass or already-green contract"
-    markers = Counter(token for token in output.split() if "EXECFIND_RED::" in token)
+    marker_tokens = []
+    for line in output.splitlines():
+        if "EXECFIND_RED::" not in line:
+            continue
+        tokens = [token for token in line.split() if "EXECFIND_RED::" in token]
+        if len(tokens) != 1 or not line.endswith(f"{RED_ANCHOR_MARKER} {tokens[0]}"):
+            return "RED markers are not standalone anchored tokens"
+        marker_tokens.extend(tokens)
+    markers = Counter(marker_tokens)
     expected_markers = Counter({f"EXECFIND_RED::{case}": 1 for case in EXPECTED_RED_CASES})
     if markers != expected_markers:
         return "RED markers are missing, repeated, or unexpected"

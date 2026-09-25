@@ -204,6 +204,16 @@ def test_marker_exact_match_only():
     assert "markers" in tdd.scan_red_output(prefixed)
     punctuation_prefix = valid.replace("EXECFIND_RED::grammar\n", "!EXECFIND_RED::grammar\n")
     assert "markers" in tdd.scan_red_output(punctuation_prefix)
+    unanchored = valid.replace(
+        f"{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::grammar\n",
+        "unrelated failure EXECFIND_RED::grammar\n",
+    )
+    assert "markers" in tdd.scan_red_output(unanchored)
+    doubled_line = valid.replace(
+        f"{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::grammar\n",
+        f"{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::grammar EXECFIND_RED::outcome_vocabulary\n",
+    ).replace(f"{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::outcome_vocabulary\n", "")
+    assert "markers" in tdd.scan_red_output(doubled_line)
     repeated = valid + f"\n{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::grammar\n"
     assert "markers" in tdd.scan_red_output(repeated)
 
