@@ -1006,6 +1006,26 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
+def test_owned_namespace_retains_only_requested_setfcap(tmp_path):
+    from phase_loop_runtime.sandbox_egress import isolated_network
+
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "cap-binding", 0, threading.Event())
+    command = [sys.executable, "-c",
+        "from pathlib import Path; print(next(x.split()[1] for x in "
+        "Path('/proc/self/status').read_text().splitlines() if x.startswith('CapBnd:')))"]
+    with isolated_network(timeout_s=None) as prefix:
+        token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                process_owner=monitor.owned_command(()), retain_caps=("setfcap",))
+            output, error = proc.communicate(timeout=10)
+            assert proc.returncode == 0, error
+            assert int(output, 16) == 1 << 31
+        finally:
+            panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
 # --- agent-harness#908 board round 4, finding (f): the provider's cwd is re-established INSIDE the
 # namespace by PATH. `nsenter --wd` fchdir()ed to a dentry opened in the caller's mount namespace,
 # which a provider that canonicalises its cwd (codex's own sandbox) cannot resolve -- the real

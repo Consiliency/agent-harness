@@ -2369,10 +2369,17 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "sub
     """
     prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
-        # Enter the network namespace before creating the ownership PID namespace,
-        # but drop capabilities only AFTER both namespaces exist.
+        # The PID owner must enter its own user namespace before dropping caps:
+        # bubblewrap's no-new-privileges transition prevents a later setpriv.
         position = prefix.index("setpriv") if "setpriv" in prefix else len(prefix)
-        prefix[position:position] = process_owner
+        owner = list(process_owner)
+        if owner[0] != "/usr/bin/bwrap" or tuple(retain_caps) not in ((), ("setfcap",)):
+            raise ValueError("unsupported owned provider capability policy")
+        owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()), "--gid", str(os.getgid()),
+                      "--cap-drop", "ALL", *(["--cap-add", "CAP_SETFCAP"] if retain_caps else [])]
+        if position < len(prefix):
+            del prefix[position:position + 4]
+        prefix[position:position] = owner
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
