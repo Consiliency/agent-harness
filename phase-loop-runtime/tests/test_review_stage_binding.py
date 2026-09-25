@@ -922,6 +922,20 @@ def test_falsifier_rejects_selector_expansion_before_call(tmp_path, source, sele
         "def pytest_configure(config):\n"
         "    raise pytest.UsageError('startup configuration failed')\n"
     ),
+    (
+        "import pytest\n"
+        "class BrokenCollection:\n"
+        "    def pytest_collectstart(self, collector):\n"
+        "        raise pytest.UsageError('collection startup failed')\n"
+        "def pytest_configure(config):\n"
+        "    config.pluginmanager.register(BrokenCollection())\n"
+    ),
+    (
+        "import pytest\n"
+        "def pytest_collection_modifyitems(session, config, items):\n"
+        "    items.clear()\n"
+        "    raise pytest.UsageError('collection selection failed')\n"
+    ),
 ])
 def test_falsifier_startup_failure_is_not_node_missing(tmp_path, conftest_source):
     from phase_loop_runtime import falsifier
@@ -932,6 +946,28 @@ def test_falsifier_startup_failure_is_not_node_missing(tmp_path, conftest_source
     (tests / "conftest.py").write_text(conftest_source, encoding="utf-8")
     path = "phase-loop-runtime/tests/test_finding_F001.py"
     (stage / path).write_text("def test_trigger():\n    assert True\n", encoding="utf-8")
+    nodeid = f"{path}::test_trigger"
+
+    returncode, _stdout, _stderr, failure, report = review_stage.run_bounded_falsifier_node(
+        staged=stage, nodeid=nodeid, wall_clock_s=30, output_cap_bytes=65536,
+    )
+
+    assert failure is None
+    assert report is not None
+    assert falsifier._outcome_from_report(report, nodeid, returncode) == "error"
+
+
+def test_falsifier_skipped_collection_is_not_node_missing(tmp_path):
+    from phase_loop_runtime import falsifier
+
+    stage = tmp_path / "stage"
+    tests = stage / "phase-loop-runtime" / "tests"
+    tests.mkdir(parents=True)
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    (stage / path).write_text(
+        "import pytest\npytest.skip('unavailable', allow_module_level=True)\n",
+        encoding="utf-8",
+    )
     nodeid = f"{path}::test_trigger"
 
     returncode, _stdout, _stderr, failure, report = review_stage.run_bounded_falsifier_node(
