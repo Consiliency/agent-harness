@@ -572,3 +572,41 @@ def test_r4_uuid_and_uuidless_records_of_the_final_message_fail_closed(tmp_path)
     path = _jsonl(tmp_path, [_user("u1"), _asst("Current\nDISAGREE", mid="m", uuid="a1", stop=None),
                              _asst("Old\nAGREE", mid="m")])
     assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+# Round 5 (agent-harness#1002).
+
+
+@pytest.mark.parametrize("tail_uuid", [None, "fresh"])
+def test_r5_an_identityless_copy_of_an_earlier_answer_in_the_same_turn_fails_closed(tmp_path, tail_uuid):
+    path = _jsonl(tmp_path, [_user("u1", "Review this change"),
+                             _asst("Earlier review\nAGREE", mid="old", uuid="a0"),
+                             _asst("Current review\nDISAGREE", mid="current", uuid="a1"),
+                             _asst("Earlier review\nAGREE", mid=None, uuid=tail_uuid)])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r5_an_identityless_answer_keeps_its_own_open_version(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Findings\nAGREE", mid=None, uuid="a1", stop=None),
+                             _asst("Findings\nAGREE", mid=None, uuid="a1")])
+    assert pi._final_assistant_text_from_jsonl(path) == "Findings\nAGREE"
+
+
+@pytest.mark.parametrize("bad_stop", [{}, ["end_turn"], 1])
+def test_r5_a_non_string_stop_reason_fails_closed(tmp_path, bad_stop):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Review\nAGREE", mid="m", uuid="a1", stop=bad_stop)])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r5_a_stale_open_copy_of_a_stopped_history_record_does_not_blank_the_answer(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1", "Round 4"), _asst("Old\nDISAGREE", mid="old", uuid="a0"),
+                             _user("u2", "Round 5"), _asst("Old\nDISAGREE", mid="old", uuid="a0", stop=None),
+                             _asst("New\nAGREE", mid="new", uuid="a1")])
+    assert pi._final_assistant_text_from_jsonl(path) == "New\nAGREE"
+
+
+def test_r5_an_open_stop_reason_cannot_become_absent(tmp_path):
+    record = _asst("1. Blocking\nDISAGREE", mid="m", uuid="a1")
+    del record["message"]["stop_reason"]
+    path = _jsonl(tmp_path, [_user("u1"), _asst("1. Blocking\nDISAGREE", mid="m", uuid="a1", stop=None), record])
+    assert pi._final_assistant_text_from_jsonl(path) == ""

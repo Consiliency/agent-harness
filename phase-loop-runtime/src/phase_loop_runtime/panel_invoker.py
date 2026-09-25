@@ -3992,18 +3992,25 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
 
     The rule (agent-harness#1002): a TURN starts at the last user record that is not a replay
     (same uuid AND same content as an earlier user record; a changed request under a reused
-    uuid is a new request). History before the turn never blocks a later answer. In the turn:
-    an exact replay of any earlier version of a record (same uuid, content and completion state)
-    is dropped,
-    because the CLI re-journals records with changed ``usage``/``parentUuid``/``promptId``;
-    a record that changes an explicitly open (null) completion state under its uuid is an update,
-    and the latest version wins; any other state change fails closed. The answer is the turn's last message id; if any of its records shares a uuid, a
-    message id or its content with history, it is a copy and fails closed. (Earlier messages
-    of the turn may share a history id: parallel tool calls continue one message across a
-    tool_result.) A message id that leaves and returns, a record rewritten
-    after its message stopped, uuid and uuid-less records mixed, or a repeated uuid-less record
-    also fails closed. Measured on real Claude Code 2.1.282 journals: every record has a uuid,
-    9 of 28,960 turns hold more than one message id and none an A-B-A.
+    uuid is a new request). History before the turn never blocks a later answer.
+
+    Records: an exact replay of any earlier version of a record (same uuid, content and
+    completion state) is dropped, because the CLI re-journals records with changed
+    ``usage``/``parentUuid``/``promptId``; a stale open version of a stopped record is dropped
+    too. Within the turn, an explicitly open (null) stop_reason may change to a value under its
+    uuid, and the latest version wins; any other state change, or a content change after the
+    message stopped or across messages, fails closed.
+
+    The answer is the turn's last message id. It fails closed if any of its records shares a
+    uuid, a message id or its content with history (earlier messages of the turn may share a
+    history id: parallel tool calls continue one message across a tool_result), or if an
+    identity-less answer repeats any other assistant record. A message id that leaves and
+    returns, uuid and uuid-less records mixed, or a repeated uuid-less record also fails closed.
+    Blocks of one message that repeat the same text under distinct uuids are all kept, so a copy
+    of such a block under a fresh uuid is not detected.
+
+    Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
+    hold more than one message id and none an A-B-A.
     """
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
@@ -4023,6 +4030,8 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         message = payload.get("message") if isinstance(payload, dict) else None
         if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
             if message.get("id") is not None and not isinstance(message.get("id"), str):
+                return ""
+            if message.get("stop_reason") is not None and not isinstance(message.get("stop_reason"), str):
                 return ""
             records.append((payload, message))
 
@@ -4051,7 +4060,6 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     history_ids = {m.get("id") for _, m in history} - {None}
     history_uuids = {_uuid(p) for p, _ in history} - {None}
     history_said = {_said(m) for _, m in history}
-    history_spoken = {json.dumps([m.get("role"), m.get("content")], sort_keys=True) for _, m in history}
 
     known: dict[str, tuple[str, tuple]] = {}  # the latest version of each uuid
     seen_versions: dict[str, set[tuple[str, tuple]]] = {}  # every version of each uuid
@@ -4066,6 +4074,8 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             if (said, state) in seen_versions[uid]:
                 continue  # an exact replay of this or an earlier version of the record
             known_said, known_state = known[uid]
+            if said == known_said and state == (True, None) and known_state[1] is not None:
+                continue  # a stale open version of a stopped record; a stop never re-opens
             previous_id = json.loads(known_said)[0]
             if in_turn and known_said != said and (
                     previous_id is None or previous_id != message.get("id")
@@ -4073,8 +4083,8 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
                 # A streaming block may be revised while its message is open; after the
                 # message stopped, or across messages, a changed record fails closed.
                 return ""
-            if in_turn and known_state != state and known_state != (True, None):
-                return ""  # only an explicitly open (null) stop_reason may change
+            if in_turn and known_state != state and not (known_state == (True, None) and state[0]):
+                return ""  # only an explicitly open (null) stop_reason may change, to a value
         if uid is not None:
             known[uid] = (said, state)
             seen_versions.setdefault(uid, set()).add((said, state))
@@ -4100,13 +4110,21 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         group = [(p, m) for p, m in turn if m.get("id") == final_id]
     if any(_uuid(p) in history_uuids or _said(m) in history_said
            or (m.get("id") is not None and m.get("id") in history_ids)
-           or (m.get("id") is None and json.dumps(
-               [m.get("role"), m.get("content")], sort_keys=True) in history_spoken)
            for p, m in group):
         # A copy or update of history cannot answer a new request. Earlier messages of the
         # turn may share a history id: the CLI writes a parallel tool call's next tool_use
         # block under the same message id after the previous tool_result.
         return ""
+    if final_id is None:
+        # An identity-less answer must not repeat any other assistant record, earlier in this
+        # turn or in history: a copy stripped of its message id cannot be told from a replay.
+        final_payload, final_message = group[0]
+        spoken = json.dumps([final_message.get("role"), final_message.get("content")], sort_keys=True)
+        if any(m is not final_message and m.get("role") == "assistant"
+               and (_uuid(final_payload) is None or _uuid(p) != _uuid(final_payload))
+               and json.dumps([m.get("role"), m.get("content")], sort_keys=True) == spoken
+               for p, m in records):
+            return ""
     with_uuid = [(p, m) for p, m in group if _uuid(p) is not None]
     if with_uuid and len(with_uuid) != len(group):
         return ""  # uuid and uuid-less records cannot be told apart from a replay
