@@ -325,6 +325,57 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
             except ProcessLookupError: pass
 
 
+def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
+    marker = tmp_path / "setfcap-descendant"
+    death_signal = tmp_path / "setfcap-pdeathsig"
+    child_code = (
+        "import os,time,pathlib; os.setsid(); "
+        f"pathlib.Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    provider_code = (
+        "import ctypes,subprocess,sys,time,pathlib; "
+        "sig=ctypes.c_int(); ctypes.CDLL(None).prctl(2,ctypes.byref(sig)); "
+        f"pathlib.Path({str(death_signal)!r}).write_text(str(sig.value)); "
+        f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)"
+    )
+    owner_code = (
+        "import os,sys,threading; from pathlib import Path; "
+        "from phase_loop_runtime import panel_invoker as p; "
+        "from phase_loop_runtime.sandbox_egress import isolated_network; "
+        f"m=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}),'test-setfcap',0,threading.Event())\n"
+        "with isolated_network(timeout_s=None) as prefix:\n"
+        " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
+        " try:\n"
+        f"  p.launch_provider([sys.executable,'-c',{provider_code!r}],cwd='.',env=os.environ,"
+        "process_owner=m.owned_command(()),retain_caps=('setfcap',),start_new_session=True).wait()\n"
+        " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
+    )
+    owner = subprocess.Popen([sys.executable, "-c", owner_code],
+                             start_new_session=True)
+    descendant = None
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            assert owner.poll() is None
+            time.sleep(.02)
+        assert marker.exists()
+        assert int(death_signal.read_text()) == int(signal.SIGKILL)
+        descendant = _host_pid(marker.read_text())
+        owner.kill()
+        owner.wait(5)
+        deadline = time.monotonic() + 5
+        while Path(f"/proc/{descendant}").exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert not Path(f"/proc/{descendant}").exists(), "setfcap descendant escaped owner loss"
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(5)
+        if descendant is not None and Path(f"/proc/{descendant}").exists():
+            os.kill(descendant, signal.SIGKILL)
+
+
 @pytest.mark.parametrize("empty,cancelled", [(False, False), (True, False), (False, True)])
 def test_public_board_real_broker_and_fixture_cli(tmp_path, monkeypatch, empty, cancelled):
     """No factory/spawn replacement: the fixture is an executable CLI on PATH."""
@@ -748,17 +799,19 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
 
     The child prints one CR-terminated status frame and WAITS for `go`, which the
     observe hook creates only once the monitor has held that frame as progress for
-    0.1 s. The child then repaints and waits for `done`, created 0.3 s after `go`.
-    Correct: the age keeps growing from the first frame (> 0.35 s at the end). Broken
-    (repaints refresh progress): the age drops from >= 0.1 s back to ~0."""
+    0.1 s. The child then repaints and waits for `done`, created by a LIVE observation
+    0.3 s after `go`. Correct: between `go` and `done` the age grows as fast as wall time.
+    Broken (repaints refresh progress): the age falls behind wall time by at least the
+    0.1 s it had at `go`, however sparsely the monitor happens to sample it."""
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_latest_claude_transcript_text", lambda *a, **k: "")
     monkeypatch.setattr(panel, "_latest_claude_transcript_activity", lambda *a, **k: 0)
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
-    go, done = tmp_path / "go", tmp_path / "done"
+    go, done, stage = tmp_path / "go", tmp_path / "done", tmp_path / "stage"
     snapshots = []
-    released = []
+    released = []  # (monotonic time, age) at `go`
+    marked = []  # (monotonic time, age) at `done`
     judged_last_repaint = []
     judged = bytearray()
     last = 8  # the child repaints frames 1..last
@@ -771,21 +824,30 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
         # chunks still counts -- not on elapsed time (#1047, #1048 r1).
         verdict = novel(chunk, seen, *rest)
         judged.extend(chunk)
-        if f"({last}s ".encode() in judged:
+        # The WHOLE last frame, not just its timer prefix (agent-harness#1053).
+        if f"* Herding... ({last}s . esc to interrupt)\r".encode() in judged:
             judged_last_repaint.append(True)
         return verdict
 
     monkeypatch.setattr(panel, "_tui_chunk_has_novel_content", judging)
 
     def capture(*args, **kwargs):
+        # One clock read, before observe()'s own I/O: the age was computed at the loop top
+        # just before this call, so the (time, age) pairs below stay within microseconds.
+        now = time.monotonic()
         observe(*args, **kwargs)
-        snapshots.append(dict(monitor.record))
+        snapshots.append(dict(monitor.record, t=now))
         age = monitor.record["last_genuine_progress_age_s"]
+        if kwargs.get("terminal") is not None:
+            # The session's closing observation carries the PREVIOUS age forward; it must
+            # never complete the handshake (agent-harness#1060 r3, claude).
+            return
         if not go.exists() and age is not None and age >= .1:
-            released.append(time.monotonic())
+            released.append((now, age))
             go.touch()
         elif (released and judged_last_repaint and not done.exists()
-              and time.monotonic() - released[0] >= .3):
+              and now - released[0][0] >= .3):
+            marked.append((now, age))
             done.touch()
 
     monkeypatch.setattr(monitor, "observe", capture)
@@ -799,25 +861,43 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  # handshake exits in 10 s and fails `released`/`done` below, never hangs CI.
                  "deadline = time.monotonic() + 10\n"
                  # Distinct exit codes name the stage that broke (#1047): 3 = go, 4 = done.
+                 # The child records how it ended in `stage` (the session's rc is
+                 # `proc.poll() or 1`, not the child's exit code).
                  "def wait(path, code):\n"
                  " while not os.path.exists(path):\n"
-                 "  if time.monotonic() > deadline: sys.exit(code)\n"
+                 "  if time.monotonic() > deadline:\n"
+                 "   open(sys.argv[3], 'w').write('timed out waiting for %s' % path)\n"
+                 "   sys.exit(code)\n"
                  "  time.sleep(.01)\n"
                  "print(line % 0, end='', flush=True)\n"
                  "wait(go, 3)\n"
                  f"for i in range(1, {last + 1}): print(line % i, end='', flush=True)\n"
-                 "wait(done, 4)\n",
-                 str(go), str(done)],
+                 "wait(done, 4)\n"
+                 "open(sys.argv[3], 'w').write('finished')\n",
+                 str(go), str(done), str(stage)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
         timeout_s=15, env=os.environ, review_monitor=monitor,  # not enforced; see the child
     )
     assert released, f"go never released (child exit {result[0]}; 3 = waited for go)"
-    assert judged_last_repaint and done.exists(), f"repaints never judged (child exit {result[0]}; 4 = waited for done)"
+    child = stage.read_text() if stage.exists() else "no stage recorded"
+    timeline = [(round(s["t"] - snapshots[0]["t"], 3), s["last_genuine_progress_age_s"],
+                 s.get("terminal_reason")) for s in snapshots]
+    context = (f"child: {child}; session: {result[2]}; elapsed "
+               f"{timeline[-1][0] if timeline else 0} s; last observations {timeline[-6:]}")
+    assert judged_last_repaint, f"repaints never judged ({context})"
+    assert marked and child == "finished", f"no live observation completed the handshake ({context})"
     ages = [s["last_genuine_progress_age_s"] for s in snapshots
             if s["last_genuine_progress_age_s"] is not None]
     assert all(later >= earlier for earlier, later in zip(ages, ages[1:])), ages
     assert snapshots[-1]["observation_state"] == "progress_unobserved"
-    assert snapshots[-1]["last_genuine_progress_age_s"] > .35, ages
+    # Relative to wall time, not an absolute bound: a reset after `go` loses at least the
+    # age it had there (>= 0.1 s) against the clock, however sparse the samples. Sampling
+    # delay cannot fail a correct runtime here; only a > 0.05 s stall between the loop-top
+    # age and the clock read above could. (The handshake itself still needs a live
+    # observation 0.3 s after `go`: a monitor that stops observing fails above, by design.)
+    (t_go, age_go), (t_done, age_done) = released[0], marked[0]
+    assert age_done - age_go >= (t_done - t_go) - .05, (released, marked, timeline)
+    assert snapshots[-1]["last_genuine_progress_age_s"] >= age_done, timeline
 
 
 def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
@@ -1002,6 +1082,55 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
             record = json.loads(output)
             assert record["cwd"] == str(cwd)
             assert int(record["caps"], 16) == 0
+        finally:
+            panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+def test_owned_namespace_cannot_flush_parent_firewall(tmp_path):
+    from phase_loop_runtime.sandbox_egress import isolated_network
+
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "firewall-binding", 0, threading.Event())
+    command = [sys.executable, "-c",
+        "import subprocess; p=subprocess.run(['iptables','-F','OUTPUT'],capture_output=True); "
+        "print(p.returncode)"]
+    with isolated_network(timeout_s=None) as prefix:
+        token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                process_owner=monitor.owned_command(()))
+            output, error = proc.communicate(timeout=10)
+            assert proc.returncode == 0, error
+            assert int(output) != 0
+        finally:
+            panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+def test_owned_setfcap_starts_nested_sandbox_without_firewall_access(tmp_path):
+    from phase_loop_runtime.sandbox_egress import isolated_network
+
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "setfcap-binding", 0, threading.Event())
+    command = [sys.executable, "-c",
+        "import json,subprocess; from pathlib import Path; "
+        "caps=next(x.split()[1] for x in Path('/proc/self/status').read_text().splitlines() "
+        "if x.startswith('CapBnd:')); "
+        "inner=subprocess.run(['bwrap','--unshare-user','--ro-bind','/','/',"
+        "'--dev','/dev','--proc','/proc','--','echo','NESTED-OK'],capture_output=True,text=True); "
+        "flush=subprocess.run(['iptables','-F','OUTPUT'],capture_output=True); "
+        "print(json.dumps({'caps':caps,'inner_rc':inner.returncode,"
+        "'inner_text':inner.stdout.strip(),'flush_rc':flush.returncode}))"]
+    with isolated_network(timeout_s=None) as prefix:
+        token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                process_owner=monitor.owned_command(()), retain_caps=("setfcap",))
+            output, error = proc.communicate(timeout=10)
+            assert proc.returncode == 0, error
+            record = json.loads(output)
+            assert int(record["caps"], 16) == 1 << 31
+            assert record["inner_rc"] == 0 and record["inner_text"] == "NESTED-OK"
+            assert record["flush_rc"] != 0
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 

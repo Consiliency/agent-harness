@@ -1203,7 +1203,7 @@ def _confirmed_outside_git_work_tree(path: Path | str) -> bool:
             except (FileNotFoundError, NotADirectoryError):
                 continue
             return False
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: an embedded NUL byte
         return False
     return True
 

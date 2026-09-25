@@ -12,6 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from phase_loop_test_utils import make_repo, provenanced_event, provenanced_state, write_phase_plan
 from phase_loop_runtime.cli import main
+
+
+def _git_init(path):
+    """git init with inherited GIT_* removed, so a caller's GIT_DIR cannot redirect it."""
+    import os
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
 from phase_loop_runtime.events import append_event
 from phase_loop_runtime.provenance import (
     phase_provenance_map,
@@ -269,7 +276,7 @@ class RoadmapLintModuleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             (repo / "specs").mkdir(parents=True)
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            _git_init(repo)
             good = repo / "specs" / "good.md"
             good.write_text(_VALID_ROADMAP, encoding="utf-8")
             with patch.object(roadmap_lint_module, "validate_roadmap_status_coherence",
@@ -305,7 +312,7 @@ class RoadmapLintModuleTest(unittest.TestCase):
     def _real_repo_roadmap(self, td):
         repo = Path(td) / "repo"
         (repo / "specs").mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        _git_init(repo)
         roadmap = repo / "specs" / "good.md"
         roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
         return roadmap
@@ -335,7 +342,7 @@ class RoadmapLintModuleTest(unittest.TestCase):
 
             named = Path(td) / "not a git repository"
             (named / "specs").mkdir(parents=True)
-            subprocess.run(["git", "init", "-q", str(named)], check=True)
+            _git_init(named)
             roadmap = named / "specs" / "good.md"
             roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
             self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True], "phrase in path")
@@ -377,11 +384,14 @@ class RoadmapLintModuleTest(unittest.TestCase):
         import os
         from phase_loop_runtime.cli import _confirmed_outside_git_work_tree
 
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td) / "repo"
+        with tempfile.TemporaryDirectory() as raw_td:
+            td = Path(raw_td).resolve()  # a symlinked TMPDIR must not hide the layout
+            if not _confirmed_outside_git_work_tree(td):
+                self.skipTest("TMPDIR is itself inside a git work tree; the alias case is moot")
+            repo = td / "repo"
             (repo / "subdir").mkdir(parents=True)
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            alias = Path(td) / "outside" / "link"
+            _git_init(repo)
+            alias = td / "outside" / "link"
             alias.parent.mkdir()
             alias.symlink_to(repo / "subdir")
             self.assertFalse(_confirmed_outside_git_work_tree(alias))
@@ -394,16 +404,33 @@ class RoadmapLintModuleTest(unittest.TestCase):
 
             with patch.object(os, "lstat", eio_on_alias):
                 self.assertFalse(_confirmed_outside_git_work_tree(alias))
-            loop = Path(td) / "loop"
+            loop = td / "loop"
             loop.symlink_to(loop)
             self.assertFalse(_confirmed_outside_git_work_tree(loop))
+
+    def test_an_unreadable_path_is_maybe_a_repository(self):
+        """Implementation-agnostic (a real EACCES, nothing mocked): a path the probe
+        cannot examine must never be reported "outside" (#1054 president)."""
+        import os
+        from phase_loop_runtime.cli import _confirmed_outside_git_work_tree
+
+        if os.geteuid() == 0:
+            self.skipTest("root ignores directory permissions")
+        with tempfile.TemporaryDirectory() as td:
+            locked = Path(td) / "locked"
+            (locked / "inner").mkdir(parents=True)
+            locked.chmod(0o000)
+            try:
+                self.assertFalse(_confirmed_outside_git_work_tree(locked / "inner"))
+            finally:
+                locked.chmod(0o700)
 
     def test_an_inherited_git_dir_cannot_answer_for_the_roadmap(self):
         """GIT_DIR/GIT_WORK_TREE exported for ANOTHER repository must not make a loose
         roadmap look like it is inside a work tree (the probe ignores the environment)."""
         with tempfile.TemporaryDirectory() as td:
             other = Path(td) / "other"
-            subprocess.run(["git", "init", "-q", str(other)], check=True)
+            _git_init(other)
             specs = Path(td) / "loose" / "specs"
             specs.mkdir(parents=True)
             roadmap = specs / "good.md"
