@@ -48,7 +48,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - `0.7.17` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
@@ -70,9 +70,18 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   (agent-harness#954). The EXECFIND plan (agent-harness#964, agent-harness#1021) is planning
   only. The release-tracking issue is agent-harness#1025; the appended plan-authority rows
   cite it.
-- Tag, publication and fleet-adoption evidence for `0.7.17` are recorded here after the
-  maintainer-gated tag push, the same way the `0.7.16` record below was completed. They are
-  deliberately absent rather than asserted in advance.
+- Tag: signed `v0.7.17` (tag object `74353e228e4a8b7400d09bfee817d16ae347e7fc`, verified: good
+  ED25519 signature) → `374efd1129d4b954d9d65a574f67f4202d16dc2f` (agent-harness#1026's landing on
+  `main`). Created and pushed by the maintainer's agent on the maintainer's explicit
+  instruction to publish (2026-09-25), not from this handoff.
+- Publication: trusted-publish workflow run `36078445981` (job `107894801065` build + verify
+  wheel + sdist; job `107907776228` publish to PyPI, trusted publishing), triggered by that tag
+  push; completed successfully. PyPI reports exactly the `SHA256SUMS` digests recorded under
+  Sealed Implementation Evidence below; a fresh isolated `pip install phase-loop-runtime==0.7.17`
+  imports `0.7.17`. GitHub release:
+  https://github.com/Consiliency/agent-harness/releases/tag/v0.7.17.
+- Fleet adoption: the dotfiles pin bump to `v0.7.17` is a separate client-repo change and is
+  not claimed here.
 
 ### Previous release: 0.7.16 (published)
 
@@ -158,18 +167,20 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.17 (prepared)
+### This release: 0.7.17 (published)
 
-The digests below are from the pre-tag local build of the release candidate, produced by
-`uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
-record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
-and the published digests are recorded here after the tag push. As for `0.7.15` and
-`0.7.16`, the published digests are expected to differ, because archive bytes are
-timestamp/toolchain-dependent.
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`36078445981` from its build of the tagged commit `374efd11`, verified by the publish job
+without rebuilding, and equal to the digests PyPI reports. The pre-tag local build of the
+candidate at `3bdd5ef7` (`uv build` under `umask 022`, `Consiliency/agent-harness#519`)
+measured wheel `04a7b8fe5d7b6ece03a327a2c0612c305e6338ce798c61a0076e7b6c193a3d72` and sdist
+`08125bfab4288117a3c31efc5d32b3a2e60d03b86f84e71fe72179c6985fb105`; the published tuples differ
+because archive bytes are timestamp/toolchain-dependent — a preparation measurement, not a
+content discrepancy in the runtime (the package surface inventory below was re-measured on
+the published artifacts and is identical to the prepared measurement).
 
-- prepared direct-wheel sha256: `04a7b8fe5d7b6ece03a327a2c0612c305e6338ce798c61a0076e7b6c193a3d72`
-- prepared direct-sdist sha256: `08125bfab4288117a3c31efc5d32b3a2e60d03b86f84e71fe72179c6985fb105`
+- direct-wheel sha256: `462cefa01121a485f072ce0ce107fd003e28ee99848b490d23f5ea9c9d1f0b79`
+- direct-sdist sha256: `98a1b7838f3db15b9172ff7a72c8281e4b6678bdfc135c2bd09c8148339bdbb9`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.16 (published)
@@ -229,7 +240,8 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.17` build described above.
+Measured on the published `0.7.17` artifacts (workflow `36078445981`); identical to the
+prepared measurement.
 
 - Wheel artifact: `phase_loop_runtime-0.7.17-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.17.tar.gz`
@@ -242,8 +254,8 @@ Measured on the prepared `0.7.17` build described above.
 
 ## Governed-Pipeline Pinning
 
-Once `0.7.17` is published (tag push → PyPI; this document records it as
-`prepared` until then), governed-pipeline may consume it as an authoritative
+`0.7.17` is published (PyPI, trusted-publish workflow `36078445981`), so governed-pipeline
+may consume it as an authoritative
 validator by pinning `phase-loop-runtime==0.7.17`, then calling:
 
 ```bash
@@ -291,8 +303,10 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
-- `0.7.17` was not published or tagged from this handoff, and no workflow was dispatched
-  by it. The maintainer-gated tag push remains the only trigger (`EC-RELEASE-4`).
+- For `0.7.17`: the package was not published from this handoff; trusted workflow
+  `36078445981` published it from the signed `v0.7.17` tag (verified tag object
+  `74353e228e4a8b7400d09bfee817d16ae347e7fc`), pushed on the maintainer's explicit
+  instruction. The tag push remains the only trigger (`EC-RELEASE-4`).
 - For `0.7.16`: the package was not published from this handoff; trusted workflow
   `35642420908` published it from the signed `v0.7.16` tag (verified tag object
   `275e391dd8bc64e98d45fbe160da61ccc9ad75b0`).
@@ -302,8 +316,8 @@ merge verdict.
 - For `0.7.14`: the package was not published from this handoff; trusted workflow
   `32783112944` published it from the signed `v0.7.14` tag (verified tag object
   `2de6c06973b84890b62184fa023d387f6044a43c`).
-- No PyPI workflow has been dispatched for `0.7.17`; for `0.7.16`, `0.7.15` and `0.7.14` the
-  maintainer's tag push triggered the workflow and it completed successfully; none was
+- For `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
+  workflow and it completed successfully; none was
   dispatched from a handoff.
 - Production governed-pipeline enforcement is not claimed by this handoff.
 - Maintainers retain ownership of future publishing, tagging, workflow dispatch,
