@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGIBLE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6
+roadmap_sha256: ae5b814a9be561ca78fdcf976e77bcc582a4e0a09c775563a8bbaf4daf740ff4
 legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
@@ -404,7 +404,7 @@ sidecar text becomes a command. The complete per-drifting-fact inventory is:
 | LEGIBLE-A1-CONFORM-UNGATED | CONFORM is no longer blocked on `spec#118` | v10 dependency/criterion predicates contain no unresolved `spec#118` prerequisite for CONFORM | inject a `spec#118 must close` dependency | current dependency graph passes |
 | LEGIBLE-A2-I128 | `Consiliency/governed-pipeline#128` is closed | GitHub issue state is `CLOSED` | observe `OPEN` | current closed payload passes |
 | LEGIBLE-A2-GP-PIN | governed-pipeline pins agent-harness `0.7.14` | default-branch `tools/agent-harness.pin.json` has package `phase-loop-runtime`, `expected_version == "0.7.14"`, and `pip_spec == "phase-loop-runtime==0.7.14"` | change `expected_version` alone to `0.5.0` | current remote JSON passes |
-| LEGIBLE-A2-LOCAL-VERSION | agent-harness ships `0.7.17` | `phase-loop-runtime/pyproject.toml` and `phase_loop_runtime.__version__` both equal `0.7.17` | change either surface alone to `0.7.18` | current equal pair passes |
+| LEGIBLE-A2-LOCAL-VERSION | agent-harness ships `0.7.18` | `phase-loop-runtime/pyproject.toml` and `phase_loop_runtime.__version__` both equal `0.7.18` | change either surface alone to `0.7.19` | current equal pair passes |
 | LEGIBLE-A2-NO-DEPENDENCY | no v10 phase depends on governed-pipeline#128 resolving | roadmap dependency/criterion predicate finds no closure prerequisite | inject one phase dependency on issue closure | current roadmap passes |
 | LEGIBLE-A3-REVIEWTRUTH-TRANSITION | Assumption 3 is in exactly one declared before/after state | fixed `reviewtruth_fable_transition` adapter classifies `pending` or `resolved` from one issue/source/behavior/live-route observation | exercise every inconsistent issue/source/route combination, or make the required live Fable leg unavailable | current pending observation passes; a resolved native-fill fixture with a bound live verdict reaches FULL |
 | LEGIBLE-A3-NO-DEGRADED-GATE | a runtime-internal 3-of-4 result cannot satisfy this run's gate | v10 execution policy requires four-vendor exact-digest review and forbids degraded promotion | mutate the policy to authorize 3-of-4 | current no-degraded policy passes |
