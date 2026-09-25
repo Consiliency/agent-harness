@@ -396,11 +396,17 @@ def _gate_result_from_panel(
             extra_findings=findings,
         )
     has_block = any(f.severity == "block" for f in findings)
+    unresolved_prose_dissent = not has_block and any(
+        leg.usable and _leg_blocks(leg.text) for leg in panel.legs
+    )
+    if unresolved_prose_dissent:
+        has_block = True
     return GateResult(
         ran=True,
         promoted=not has_block,
         findings=findings,
         degraded=False,
+        reason="unresolved_prose_dissent" if unresolved_prose_dissent else None,
         panel=panel,
     )
 
