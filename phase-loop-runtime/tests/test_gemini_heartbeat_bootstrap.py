@@ -375,7 +375,23 @@ def test_the_work_tree_probe_fails_closed_on_filesystem_errors(tmp_path, monkeyp
     monkeypatch.setattr(os, "lstat", real_lstat)
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
-    assert panel._outside_any_git_work_tree(loop) in (False, True)  # never raises
+    assert panel._outside_any_git_work_tree(loop) is False  # a symlink loop fails closed
+    # #1055 r3 (codex): an I/O error while RESOLVING a symlink alias into a repository
+    # must not leave the unresolved alias (whose ancestors miss the repo) -> "outside".
+    repo = _fixture_repo(tmp_path / "aliased")
+    (repo / "child").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(repo / "child")
+    assert panel._outside_any_git_work_tree(alias) is False
+
+    def eio_on_alias(path, *args, **kwargs):
+        if Path(path) == alias:
+            raise OSError(errno.EIO, "injected", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", eio_on_alias)
+    assert panel._outside_any_git_work_tree(alias) is False
+    monkeypatch.setattr(os, "lstat", real_lstat)
     monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("loop")))
     assert panel._outside_any_git_work_tree(plain) is False
 

@@ -1738,7 +1738,10 @@ def _outside_any_git_work_tree(path: Path | str) -> bool:
     ``resolve`` raises RuntimeError on Python <= 3.12 (agent-harness#1054/#1055 r2/r3).
     """
     try:
-        resolved = Path(path).resolve()
+        # strict=True: non-strict resolve() swallows lookup errors and returns the
+        # unresolved alias, whose lexical ancestors can miss the real repository
+        # (#1054 r4 / #1055 r3, codex). Any error -- incl. a missing path -- fails closed.
+        resolved = Path(path).resolve(strict=True)
         for directory in (resolved, *resolved.parents):
             try:
                 os.lstat(directory / ".git")
