@@ -268,6 +268,9 @@ exception, because the next reader cannot tell it from a mistake.
   2026-09-03. Recorded: in the CHANGELOG entry for Consiliency/agent-harness#746 and the
   scope script's header, next to the accepted limitation (a regression surfaces on main, so
   a red landing push files a labelled issue rather than waiting for someone to notice).
+  The plumbing exception was itself retired on 2026-09-25 (Consiliency/agent-harness#1042):
+  it cost ~50 minutes on every CI pull request, and static guards plus the landing-push
+  witness cover what it proved; the branch can still opt in by dispatching the workflow.
 
 ## If you want to reproduce these numbers, define them first
 
@@ -325,9 +328,9 @@ the whole test tree, the test bootstrap loads runtime plugins, sibling tests rea
 docs — so no enumeration of "the inputs" is small, and the second step does **not** claim
 that a change outside some list cannot change the verdict. It claims something narrower that
 holds by construction: the proof runs *unconditionally* on every merge to the default branch
-and on a nightly schedule, and on a pull request whenever the diff touches the runtime
-package or the CI plumbing; for any other pull request the proof is deferred to the landing
-merge, so a regression surfaces on the default branch at the latest, never silently. Three
+and on a nightly schedule; on a pull request the proof is deferred to the landing merge
+(a branch can opt in by dispatching the workflow), so a regression surfaces on the default
+branch at the latest, never silently. Three
 properties make this safe, and each needs a guard of its own:
 
 - **The retained set is checked against the proof's own definition**, not maintained by

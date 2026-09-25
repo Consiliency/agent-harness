@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: pull requests never run the chronology node (agent-harness#1042)
+
+- A pull request touching CI selection plumbing no longer runs the ~50-minute CONFORM
+  chronology node (retiring the agent-harness#746 exception); like every other PR it
+  defers the node to the landing push, whose junit witness reds main if it did not run and
+  pass. The scope reason still names the touched plumbing path, static guards pin that
+  push/nightly/dispatch retain the node, and `gh workflow run test.yml --ref <branch> -f
+  chronology=true` proves it before merge when wanted.
+
 ### Faster pull-request CI (agent-harness#1029)
 
 - Pull requests run a ~2-minute wheel smoke (build, clean-venv install, entry-point
