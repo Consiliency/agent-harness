@@ -392,7 +392,20 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
             "CHRONOLOGY_FORCE": "${{ inputs.chronology }}",
         }, job
         assert not any(k.startswith(("CHRONOLOGY", "GITHUB_")) for k in (jobs[job].get("env") or {})), job
+        # A shell wrapper can re-spell any env override (#1043 r2 codex): no defaults.
+        assert "defaults" not in jobs[job], job
+        # And the backstop GitHub evaluates itself, right after the decision.
+        names = [s.get("name") for s in jobs[job]["steps"]]
+        guard = jobs[job]["steps"][names.index(step["name"]) + 1]
+        assert guard["name"] == "A non-PR run must retain the chronology node", job
+        assert set(guard) == {"name", "if", "run"}, (job, sorted(guard))
+        assert " ".join(guard["if"].split()) == (
+            "github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' "
+            "&& inputs.chronology == false) && steps.scope.outputs.chronology != 'true'"
+        ), job
+        assert "exit 1" in guard["run"], job
     assert not any(k.startswith(("CHRONOLOGY", "GITHUB_")) for k in (workflow.get("env") or {}))
+    assert "defaults" not in workflow
     offload = next(s for s in jobs["offload"]["steps"] if "dagger-offload" in s.get("uses", ""))
     assert offload["env"]["CHRONOLOGY"] == "${{ steps.scope.outputs.chronology }}"
     cleanroom = next(s for s in jobs["cleanroom"]["steps"] if s.get("run") == "bash scripts/gate_a_cleanroom.sh")
