@@ -578,6 +578,53 @@ def test_falsifier_new_test_does_not_run_host_git_filter(tmp_path, monkeypatch):
     assert seen == ["def test_trigger(): pass\n"]
 
 
+def test_falsifier_stage_overlay_does_not_run_host_fsmonitor(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    marker = tmp_path / "host-fsmonitor-ran"
+    hook = repo / ".githooks" / "fsmonitor"
+    hook.parent.mkdir()
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    subprocess.run(["git", "-C", str(repo), "add", ".githooks/fsmonitor"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "fsmonitor"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    config = tmp_path / "global.gitconfig"
+    config.write_text('[core]\n fsmonitor = .githooks/fsmonitor\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+def test_trigger(): pass\n"
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    seen = []
+
+    def capture_test(*, staged, **_kwargs):
+        seen.append((staged / path).read_text(encoding="utf-8"))
+        return 1, b"", b"", "probe stop", None
+
+    monkeypatch.setattr(review_stage, "run_bounded_falsifier_node", capture_test)
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10, output_cap_bytes=65536,
+    )
+    assert result.outcome == "error"
+    assert not marker.exists()
+    assert seen == ["def test_trigger(): pass\n"]
+
+
 def test_falsifier_source_check_does_not_run_host_git_filter(tmp_path, monkeypatch):
     from phase_loop_runtime import falsifier
 
