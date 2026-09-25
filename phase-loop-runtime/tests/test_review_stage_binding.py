@@ -378,3 +378,94 @@ def test_falsifier_records_parent_recursion_as_error(tmp_path, monkeypatch):
     assert not (repo / path).exists()
     with pytest.raises(ValueError):
         backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+
+
+def test_falsifier_expired_authorization_records_error_and_closes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path="phase-loop-runtime/tests/test_finding_F001.py",
+        expected_nodeid="phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+        diff="not a diff",
+    )
+    original_revalidate = backing.revalidate_falsifier_isolation_authorization
+    monkeypatch.setattr(
+        backing, "revalidate_falsifier_isolation_authorization",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("lease expired")),
+    )
+    try:
+        result = falsifier.run_finding_falsifier(
+            falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+            authorization=authorization, repo=repo, wall_clock_s=10,
+            output_cap_bytes=65536,
+        )
+        assert result.outcome == "error"
+        assert result.record["outcome"] == "error"
+        assert "lease expired" in (result.detail or "")
+    finally:
+        monkeypatch.setattr(backing, "revalidate_falsifier_isolation_authorization", original_revalidate)
+        backing.close_falsifier_isolation_authorization(authorization)
+    with pytest.raises(ValueError):
+        backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+
+
+def test_falsifier_exec_bit_validation_survives_noexec_mount(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    source = repo / "src.py"
+    source.chmod(0o755)
+    subprocess.run(["git", "-C", str(repo), "add", "src.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "executable"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    staged = review_stage.stage_review_tree(repo)
+    try:
+        assert (staged / "src.py").stat().st_mode & 0o111
+        with monkeypatch.context() as patch:
+            patch.setattr(review_stage.os, "access", lambda *_args, **_kwargs: False)
+            review_stage.revalidate_falsifier_staged_tree(staged=staged, reviewed_sha=head)
+    finally:
+        review_stage.remove_review_stage(staged)
+
+
+def test_early_broken_stdin_close_still_reaps_falsifier_child(tmp_path, monkeypatch):
+    original_popen = subprocess.Popen
+    launched = []
+
+    class BrokenStdin:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def write(self, _data):
+            raise BrokenPipeError("child closed stdin")
+
+        def close(self):
+            self.stream.close()
+            raise BrokenPipeError("buffered close failed")
+
+    def launch(_argv, *args, **kwargs):
+        proc = original_popen(["/usr/bin/python3", "-c", "raise SystemExit(1)"], *args, **kwargs)
+        proc.stdin = BrokenStdin(proc.stdin)
+        launched.append(proc)
+        return proc
+
+    monkeypatch.setattr(review_stage.subprocess, "Popen", launch)
+    try:
+        code, _stdout, _stderr, failure, report = review_stage._run_bounded_falsifier_node(
+            staged=tmp_path, dependencies=tmp_path,
+            nodeid="test_finding_F001.py::test_trigger",
+            wall_clock_s=5, output_cap_bytes=65536,
+        )
+        assert code == 1 and failure is None and report is None
+        assert launched[0].returncode == 1
+        assert launched[0].stdout.closed and launched[0].stderr.closed
+    finally:
+        for proc in launched:
+            proc.wait(timeout=5)

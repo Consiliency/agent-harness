@@ -292,7 +292,7 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
                     raise ValueError("falsifier staged file became a symlink")
                 payload = os.readlink(target).encode("utf-8", "surrogateescape")
             elif target.is_file():
-                actual_mode = "100755" if os.access(target, os.X_OK) else "100644"
+                actual_mode = "100755" if stat.S_IMODE(target.stat().st_mode) & 0o111 else "100644"
                 if actual_mode != mode:
                     raise ValueError("falsifier staged executable bit changed")
                 payload = target.read_bytes()
@@ -453,7 +453,10 @@ def _run_bounded_falsifier_node(
     except BrokenPipeError:
         pass
     finally:
-        proc.stdin.close()
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
     streams = {proc.stdout: bytearray(), proc.stderr: bytearray()}
     selector = selectors.DefaultSelector()
     for stream in streams:

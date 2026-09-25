@@ -112,7 +112,6 @@ def run_finding_falsifier(
 ) -> FalsifierRunResult:
     """Run the attached node and record its observed, untrusted outcome."""
     repo = Path(repo).resolve(strict=True)
-    backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
     if (isinstance(wall_clock_s, bool) or not isinstance(wall_clock_s, (int, float))
             or not math.isfinite(wall_clock_s) or wall_clock_s <= 0):
         raise ValueError("invalid falsifier wall-clock bound")
@@ -126,6 +125,7 @@ def run_finding_falsifier(
     junit_path: str | None = None
     staged: Path | None = None
     try:
+        backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
         _clean_exact_source(repo, authorization.reviewed_sha)
         backing.activate_falsifier_isolation_authorization(authorization, repo=repo)
         candidate_stage = review_stage.stage_review_tree(repo)
