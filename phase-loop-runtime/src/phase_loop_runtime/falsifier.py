@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import os
+import math
 import re
-import stat
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
-import xml.etree.ElementTree as ET
 
 from . import review_stage
 from .advisor_board import backing
@@ -23,7 +21,6 @@ if TYPE_CHECKING:
 FALSIFIER_OUTCOMES: tuple[str, ...] = (
     "red_on_head", "green_on_head", "apply_failed", "node_missing", "error",
 )
-_MAX_JUNIT_BYTES = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -64,48 +61,47 @@ def _one_new_test_diff(falsifier: FindingFalsifier) -> bool:
     if not suffix or any(character in suffix for character in "\x00\r\n"):
         return False
     lines = falsifier.diff.splitlines(keepends=True)
-    if len(lines) < 5 or lines[:4] != [
+    if len(lines) < 5 or lines[:2] != [
         f"diff --git a/{path} b/{path}\n", "new file mode 100644\n",
-        "--- /dev/null\n", f"+++ b/{path}\n",
     ]:
         return False
-    match = re.fullmatch(r"@@ -0,0 \+1,([0-9]+) @@\n", lines[4])
-    if match is None or len(lines[5:]) != int(match.group(1)):
+    position = 2
+    if lines[position].startswith("index "):
+        if not re.fullmatch(r"index [0-9a-f]{7,64}\.\.[0-9a-f]{7,64}(?: 100644)?\n", lines[position]):
+            return False
+        position += 1
+    if lines[position:position + 2] != ["--- /dev/null\n", f"+++ b/{path}\n"]:
         return False
-    return all(line.startswith("+") for line in lines[5:])
+    position += 2
+    if len(lines) <= position:
+        return False
+    match = re.fullmatch(r"@@ -0,0 \+1(?:,([0-9]+))? @@(?:[^\n]*)\n", lines[position])
+    if match is None or len(lines[position + 1:]) != int(match.group(1) or "1"):
+        return False
+    return all(line.startswith("+") for line in lines[position + 1:])
 
 
-def _outcome_from_junit(staged: Path, nodeid: str, returncode: int | None) -> str:
-    path = staged / ".falsifier-junit.xml"
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:
-        return "node_missing" if returncode in (4, 5) else "error"
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_JUNIT_BYTES:
-            return "error"
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            payload = stream.read(_MAX_JUNIT_BYTES + 1)
-        if len(payload) > _MAX_JUNIT_BYTES:
-            return "error"
-        suite = ET.fromstring(payload)
-    except (OSError, ET.ParseError, ValueError):
+def _outcome_from_report(
+    report: dict[str, object] | None, nodeid: str, returncode: int | None,
+) -> str:
+    if returncode != 0 or not isinstance(report, dict):
         return "error"
-    finally:
-        os.close(descriptor)
-    cases = suite.findall(".//testcase")
-    expected_name = nodeid.rsplit("::", 1)[-1]
-    if not cases:
-        return "node_missing" if returncode in (4, 5) else "error"
-    if len(cases) != 1 or cases[0].get("name") != expected_name:
+    if report.get("schema") != "falsifier_pytest_report.v1":
         return "error"
-    case = cases[0]
-    if case.find("skipped") is not None or case.find("error") is not None:
+    exit_code = report.get("exit")
+    calls = report.get("calls")
+    if exit_code in (4, 5) and calls == []:
+        return "node_missing"
+    if not isinstance(calls, list) or len(calls) != 1:
         return "error"
-    if case.find("failure") is not None:
-        return "red_on_head" if returncode == 1 else "error"
-    return "green_on_head" if returncode == 0 else "error"
+    call = calls[0]
+    if not isinstance(call, dict) or call.get("nodeid") != nodeid or call.get("wasxfail"):
+        return "error"
+    if call.get("outcome") == "failed" and exit_code == 1:
+        return "red_on_head"
+    if call.get("outcome") == "passed" and exit_code == 0:
+        return "green_on_head"
+    return "error"
 
 
 def run_finding_falsifier(
@@ -116,9 +112,11 @@ def run_finding_falsifier(
     """Run exactly the attached test node, never the seat's claimed result."""
     repo = Path(repo).resolve(strict=True)
     backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
-    if not isinstance(wall_clock_s, (int, float)) or wall_clock_s <= 0:
+    if (isinstance(wall_clock_s, bool) or not isinstance(wall_clock_s, (int, float))
+            or not math.isfinite(wall_clock_s) or wall_clock_s <= 0):
         raise ValueError("invalid falsifier wall-clock bound")
-    if not isinstance(output_cap_bytes, int) or output_cap_bytes <= 0:
+    if (isinstance(output_cap_bytes, bool) or not isinstance(output_cap_bytes, int)
+            or output_cap_bytes <= 0):
         raise ValueError("invalid falsifier output cap")
     diff_digest = hashlib.sha256(falsifier.diff.encode("utf-8")).hexdigest()
     outcome = "error"
@@ -158,23 +156,29 @@ def run_finding_falsifier(
                     outcome = "apply_failed"
                     detail = "new test diff did not apply"
                 else:
-                    returncode, stdout, stderr, failure = review_stage.run_bounded_falsifier_node(
+                    returncode, stdout, stderr, failure, report = review_stage.run_bounded_falsifier_node(
                         staged=staged, nodeid=falsifier.expected_nodeid,
                         wall_clock_s=float(wall_clock_s), output_cap_bytes=output_cap_bytes,
                     )
                     if failure:
                         detail = failure
                     else:
-                        outcome = _outcome_from_junit(staged, falsifier.expected_nodeid, returncode)
+                        outcome = _outcome_from_report(report, falsifier.expected_nodeid, returncode)
                         if outcome == "red_on_head":
                             red_digest = hashlib.sha256(stdout + stderr).hexdigest()
                         # The clone is removed below; no live JUnit path is retained.
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         detail = str(exc)
     finally:
-        if staged is not None:
-            review_stage.remove_review_stage(staged)
-        backing.close_falsifier_isolation_authorization(authorization)
+        try:
+            if staged is not None:
+                review_stage.remove_review_stage(staged)
+        except (OSError, ValueError) as exc:
+            outcome = "error"
+            red_digest = None
+            detail = f"falsifier stage cleanup failed: {exc}"
+        finally:
+            backing.close_falsifier_isolation_authorization(authorization)
     record: dict[str, object] = {
         "schema": "finding_falsifier.v1",
         "authorization_identity": "public_board_falsifier.v1",

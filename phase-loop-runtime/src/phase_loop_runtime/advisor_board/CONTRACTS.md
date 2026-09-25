@@ -717,7 +717,7 @@ finding IDs. The attachment is a non-field property on `PanelLegResult`; it
 does not change the serialized leg or board schema. The seat supplies text,
 never an executable command or a claimed test outcome.
 
-`run_finding_falsifier` accepts the attachment, board `seat_key`, canonical
+`run_finding_falsifier` accepts one attached falsifier, board `seat_key`, canonical
 repository, positive wall-clock/output bounds, and a single-use
 `FalsifierIsolationAuthorization` bound to the exact 40-character `reviewed_sha`.
 Its identity is `public_board_falsifier.v1`; its child has no credentials,
@@ -727,8 +727,10 @@ targets, and executable bits must equal the reviewed Git tree, including no
 ignored extra files. Only the named pytest node runs in the staged clone.
 
 The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
-`node_missing`, `error`. A failed node is RED only when JUnit confirms that
-node ran and failed within both bounds. Drift, expiry, unavailable isolation,
+`node_missing`, `error`. Pytest emits JUnit but the outcome comes from the
+parent-keyed wrapper's call-phase report, before test-registered exit handlers;
+the test-writable XML is not read as authority. A failed node is RED only
+when that named call ran and failed within both bounds. Drift, expiry, unavailable isolation,
 and incomplete evidence are `error`, never a vote. The metadata-only
 `finding_falsifier.v1` record has exactly `schema`,
 `authorization_identity`, `seat_key`, `reviewed_sha`, `finding_id`, `nodeid`,

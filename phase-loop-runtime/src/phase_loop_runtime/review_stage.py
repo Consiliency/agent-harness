@@ -34,15 +34,27 @@ separately, because ``launcher.py`` belongs to an executing phase lane.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
+import hmac
+import importlib.metadata
+import json
 import os
+import re
 import selectors
+import secrets
 import shutil
 import signal
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 floor
+    import tomli as tomllib
 
 __all__ = [
     "REVIEW_STAGE_DIR_PREFIX",
@@ -292,10 +304,94 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
         raise ValueError("falsifier staged tree is missing reviewed paths")
 
 
+def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
+    """Copy only installed distribution-owned files into a disposable import root."""
+    inventory = subprocess.run(
+        ["/usr/bin/python3", "-c",
+         "import json,sys; print(json.dumps({'paths':sys.path, "
+         "'version':list(sys.version_info[:3])}))"],
+        capture_output=True, text=True, check=True, timeout=3,
+        env={"HOME": str(Path.home()), "PATH": "/usr/bin:/bin"},
+    )
+    interpreter = json.loads(inventory.stdout)
+    paths = [path for path in interpreter["paths"] if isinstance(path, str) and path.startswith("/")]
+    version = interpreter["version"]
+    marker_environment = default_environment()
+    marker_environment["python_version"] = f"{version[0]}.{version[1]}"
+    marker_environment["python_full_version"] = ".".join(map(str, version))
+    marker_environment["extra"] = ""
+    available: dict[str, importlib.metadata.Distribution] = {}
+    for distribution in importlib.metadata.distributions(path=paths):
+        declared_name = distribution.metadata.get("Name")
+        if declared_name:
+            available.setdefault(re.sub(r"[-_.]+", "-", declared_name).lower(), distribution)
+    requirements = ["pytest"]
+    project = stage / "phase-loop-runtime" / "pyproject.toml"
+    if project.is_file():
+        payload = tomllib.loads(project.read_text(encoding="utf-8"))
+        declared = payload.get("project", {}).get("dependencies", ())
+        if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
+            raise ValueError("falsifier project dependencies are invalid")
+        requirements.extend(declared)
+    pending = list(requirements)
+    seen: set[str] = set()
+    copied_bytes = 0
+    while pending:
+        requirement = Requirement(pending.pop())
+        if requirement.marker is not None and not requirement.marker.evaluate(marker_environment):
+            continue
+        name = re.sub(r"[-_.]+", "-", requirement.name).lower()
+        if name in seen:
+            continue
+        seen.add(name)
+        distribution = available.get(name)
+        if distribution is None:
+            continue  # An unavailable import remains a typed test-run error.
+        pending.extend(distribution.requires or ())
+        root = Path(distribution.locate_file("")).resolve(strict=True)
+        for entry in distribution.files or ():
+            parts = entry.parts
+            if (not parts or entry.is_absolute() or ".." in parts
+                    or "__pycache__" in parts or entry.suffix == ".pth"):
+                continue
+            if any(part.startswith(".env") or part.endswith((".key", ".pem")) for part in parts):
+                continue
+            original = Path(distribution.locate_file(entry))
+            if original.is_symlink() or not original.is_file():
+                continue
+            source = original.resolve(strict=True)
+            if not source.is_relative_to(root):
+                continue
+            target = destination.joinpath(*parts)
+            if target.exists():
+                if target.read_bytes() != source.read_bytes():
+                    raise ValueError("falsifier dependency file collision")
+                continue
+            copied_bytes += source.stat().st_size
+            if copied_bytes > 268_435_456:
+                raise ValueError("falsifier dependency snapshot exceeds 256 MiB")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+
 def run_bounded_falsifier_node(
     *, staged: Path, nodeid: str, wall_clock_s: float, output_cap_bytes: int,
-) -> tuple[int | None, bytes, bytes, str | None]:
+) -> tuple[int | None, bytes, bytes, str | None, dict[str, object] | None]:
     """Run one pytest node in a credentialless, networkless staged-tree mount."""
+    stage = Path(staged).resolve(strict=True)
+    with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-") as temporary:
+        dependencies = Path(temporary)
+        _snapshot_falsifier_dependencies(stage, dependencies)
+        return _run_bounded_falsifier_node(
+            staged=stage, dependencies=dependencies, nodeid=nodeid,
+            wall_clock_s=wall_clock_s, output_cap_bytes=output_cap_bytes,
+        )
+
+
+def _run_bounded_falsifier_node(
+    *, staged: Path, dependencies: Path, nodeid: str,
+    wall_clock_s: float, output_cap_bytes: int,
+) -> tuple[int | None, bytes, bytes, str | None, dict[str, object] | None]:
     if wall_clock_s <= 0 or output_cap_bytes <= 0:
         raise ValueError("falsifier bounds must be positive")
     bwrap = Path("/usr/bin/bwrap")
@@ -307,37 +403,56 @@ def run_bounded_falsifier_node(
     for system_root in ("/usr", "/lib", "/lib64", "/bin"):
         if Path(system_root).exists():
             argv.extend(("--ro-bind", system_root, system_root))
-    argv.extend(("--dir", "/deps"))
-    # Bind only pytest's importable packages, never a user home or site-packages root.
-    for name in ("pytest", "_pytest", "pluggy", "iniconfig", "packaging",
-                 "exceptiongroup", "typing_extensions", "py", "tomli"):
-        spec = importlib.util.find_spec(name)
-        if spec is None or spec.origin is None:
-            continue
-        source = Path(spec.origin).resolve(strict=True)
-        if source.is_relative_to(Path("/usr")):
-            continue
-        if spec.submodule_search_locations:
-            source = source.parent
-            target = f"/deps/{name}"
-        else:
-            target = f"/deps/{name}.py"
-        argv.extend(("--ro-bind", str(source), target))
+    argv.extend(("--ro-bind", str(dependencies), "/deps"))
+    token = secrets.token_hex(24)
+    reporting_key = secrets.token_hex(32).encode("ascii")
+    # This trusted wrapper reads pytest's call-phase reports before interpreter
+    # shutdown. Test-registered atexit handlers never run; a test that aborts the
+    # process before pytest returns leaves no completed report and is an error.
+    wrapper = (
+        "import hashlib,hmac,json,os,pytest,sys\n"
+        "def main():\n"
+        " secret=sys.stdin.buffer.readline().rstrip(b'\\n')\n"
+        " sys.stdin=open('/dev/null')\n"
+        " calls=[]\n"
+        " class Reporter:\n"
+        "  def pytest_runtest_logreport(self, report):\n"
+        "   if report.when == 'call':\n"
+        "    calls.append({'nodeid': report.nodeid, 'outcome': report.outcome, "
+        "'wasxfail': bool(getattr(report, 'wasxfail', False))})\n"
+        " code=pytest.main(['-q','-c','/dev/null','--rootdir=/work','-o','addopts=',"
+        "'-p','no:cacheprovider','--junitxml=/work/.falsifier-junit.xml',"
+        "sys.argv[1]], plugins=[Reporter()])\n"
+        " sys.stdout.flush(); sys.stderr.flush()\n"
+        " payload=json.dumps({'schema':'falsifier_pytest_report.v1',"
+        "'exit':int(code),'calls':calls},separators=(',',':'))\n"
+        " signature=hmac.new(secret,payload.encode(),hashlib.sha256).hexdigest()\n"
+        " os.write(1, ('\\nFALSIFIER_RESULT::'+sys.argv[2]+':'+signature+':'+payload+'\\n').encode())\n"
+        " os._exit(0)\n"
+        "main()\n"
+    )
     argv.extend((
         "--bind", str(stage), "/work", "--tmpfs", "/tmp", "--proc", "/proc",
         "--dev", "/dev", "--dir", "/home", "--dir", "/home/falsifier",
         "--chdir", "/work", "--setenv", "HOME", "/home/falsifier",
-        "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "PYTHONPATH", "/deps",
+        "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "PYTHONPATH",
+        "/work/phase-loop-runtime/src:/work/phase-loop-runtime/tests:/deps",
         "--setenv", "PYTHONNOUSERSITE", "1", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
         "--setenv", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1",
-        str(python), "-s", "-m", "pytest", "-q", "-c", "/dev/null", "-o", "addopts=",
-        "-p", "no:cacheprovider", "--junitxml=/work/.falsifier-junit.xml", nodeid,
+        str(python), "-s", "-c", wrapper, nodeid, token,
     ))
     proc = subprocess.Popen(
-        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, start_new_session=True,
     )
-    assert proc.stdout is not None and proc.stderr is not None
+    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    try:
+        proc.stdin.write(reporting_key + b"\n")
+        proc.stdin.flush()
+    except BrokenPipeError:
+        pass
+    finally:
+        proc.stdin.close()
     streams = {proc.stdout: bytearray(), proc.stderr: bytearray()}
     selector = selectors.DefaultSelector()
     for stream in streams:
@@ -378,7 +493,26 @@ def run_bounded_falsifier_node(
         proc.wait()
         proc.stdout.close()
         proc.stderr.close()
-    return proc.returncode, bytes(streams[proc.stdout]), bytes(streams[proc.stderr]), failure
+    stdout = bytes(streams[proc.stdout])
+    stderr = bytes(streams[proc.stderr])
+    report: dict[str, object] | None = None
+    if failure is None and proc.returncode == 0:
+        marker = ("\nFALSIFIER_RESULT::" + token + ":").encode()
+        if stdout.count(marker) == 1:
+            body, framed = stdout.split(marker, 1)
+            if framed.endswith(b"\n") and b"\n" not in framed[:-1]:
+                try:
+                    signature, payload = framed[:-1].split(b":", 1)
+                    authenticated = hmac.compare_digest(
+                        signature, hmac.new(reporting_key, payload, hashlib.sha256).hexdigest().encode(),
+                    )
+                    parsed = json.loads(payload) if authenticated else None
+                except (UnicodeError, json.JSONDecodeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    report = parsed
+                    stdout = body
+    return proc.returncode, stdout, stderr, failure, report
 
 
 CLONE_DEPTH = 50
