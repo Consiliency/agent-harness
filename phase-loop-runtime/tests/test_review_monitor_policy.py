@@ -327,21 +327,31 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
 
 def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
     marker = tmp_path / "setfcap-descendant"
+    death_signal = tmp_path / "setfcap-pdeathsig"
     child_code = (
         "import os,time,pathlib; os.setsid(); "
         f"pathlib.Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
         "time.sleep(60)"
     )
-    provider_code = f"import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)"
+    provider_code = (
+        "import ctypes,subprocess,sys,time,pathlib; "
+        "sig=ctypes.c_int(); ctypes.CDLL(None).prctl(2,ctypes.byref(sig)); "
+        f"pathlib.Path({str(death_signal)!r}).write_text(str(sig.value)); "
+        f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)"
+    )
     owner_code = (
         "import os,sys,threading; from pathlib import Path; "
         "from phase_loop_runtime import panel_invoker as p; "
-        "p._EGRESS_LAUNCH_PREFIX.set(('setpriv','--bounding-set=-all,+setfcap','--inh-caps=-all','--')); "
-        f"m=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}),'test-setfcap',0,threading.Event()); "
-        f"p.launch_provider([sys.executable,'-c',{provider_code!r}],cwd='.',env=os.environ,"
-        "process_owner=m.owned_command(()),retain_caps=('setfcap',)).wait()"
+        "from phase_loop_runtime.sandbox_egress import isolated_network; "
+        f"m=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}),'test-setfcap',0,threading.Event())\n"
+        "with isolated_network(timeout_s=None) as prefix:\n"
+        " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
+        " try:\n"
+        f"  p.launch_provider([sys.executable,'-c',{provider_code!r}],cwd='.',env=os.environ,"
+        "process_owner=m.owned_command(()),retain_caps=('setfcap',),start_new_session=True).wait()\n"
+        " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
     )
-    owner = subprocess.Popen(["unshare", "--map-root-user", sys.executable, "-c", owner_code],
+    owner = subprocess.Popen([sys.executable, "-c", owner_code],
                              start_new_session=True)
     descendant = None
     try:
@@ -350,6 +360,7 @@ def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
+        assert death_signal.read_text() == str(signal.SIGKILL)
         descendant = _host_pid(marker.read_text())
         owner.kill()
         owner.wait(5)

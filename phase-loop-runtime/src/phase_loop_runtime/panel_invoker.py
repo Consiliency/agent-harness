@@ -2379,6 +2379,8 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "sub
             prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
                                          "/usr/bin/unshare", "--pid", "--fork",
                                          "--kill-child=SIGKILL", "--mount-proc"]
+            inner_setpriv = prefix.index("setpriv", position + 1)
+            prefix[inner_setpriv + 1:inner_setpriv + 1] = ["--pdeathsig", "keep"]
         else:
             # Bubblewrap drops CAP_SETPCAP before a later setpriv can use it.
             owner = list(process_owner)
