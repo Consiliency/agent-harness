@@ -1175,16 +1175,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
-def _inside_git_work_tree(path: Path) -> bool:
-    """True iff ``path`` is inside a git work tree (``git rev-parse`` says so)."""
+def _confirmed_outside_git_work_tree(path: Path) -> bool:
+    """True ONLY when git ran and positively reported that ``path`` is not in a repository.
+
+    Every other outcome -- git missing, a timeout, a ``safe.directory`` refusal, a
+    worktree whose gitdir is unreachable, unexpected output -- is "could not determine",
+    and the caller keeps the coherence check (fail closed: IF-0-LEGIBLE-1 requires it
+    for a real repository). Inherited ``GIT_*`` variables are dropped so a caller's
+    ``GIT_DIR``/``GIT_WORK_TREE`` for another repository cannot answer for this path.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     try:
         out = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return out.returncode == 0 and out.stdout.strip() == "true"
+    return out.returncode != 0 and "not a git repository" in out.stderr.lower()
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -1419,7 +1428,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             # ``/tmp`` itself -- so there is no canonical repository to check:
             # skip with a note rather than validate a shared system directory
             # (agent-harness#987 / #1053, maintainer decision 2026-09-25).
-            if not _inside_git_work_tree(status_repo):
+            if _confirmed_outside_git_work_tree(status_repo):
                 print(
                     f"validate-roadmap: note: {status_repo} is not inside a git work tree; "
                     "skipping the repository roadmap-status coherence check",
