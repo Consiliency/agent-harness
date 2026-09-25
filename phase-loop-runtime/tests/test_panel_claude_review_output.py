@@ -730,3 +730,17 @@ def test_president_route_rejects_a_flagged_record_under_the_answer_uuid_with_ano
     flagged["isApiErrorMessage"] = True
     path = _jsonl(tmp_path, [_user("u1"), flagged, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("flag", ["model", "message_error", "record_error"])
+def test_president_route_rejects_a_marked_answer_with_neither_id_nor_uuid(tmp_path, flag):
+    # agent-harness#1017 r7 (codex, claude, grok): the raw scan selected by id or uuid only.
+    answer = _asst("API Error: Request was aborted", mid=None)
+    if flag == "model":
+        answer["message"]["model"] = "<synthetic>"
+    elif flag == "message_error":
+        answer["message"]["isApiErrorMessage"] = True
+    else:
+        answer["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), answer])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""

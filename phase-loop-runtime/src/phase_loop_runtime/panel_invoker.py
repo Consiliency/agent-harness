@@ -4151,11 +4151,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     # a replay carrying an API-error or <synthetic> marker would otherwise vanish. A record belongs
     # to the answer by its message id, or by a uuid one of the answer's records carries.
     answer_uuids = {_uuid(p) for p, _ in group} - {None}
-    answer_records = [
+    answer_records = list(group) + [
         (p, m) for p, m in records[boundary + 1:]
         if m.get("role") == "assistant"
         and ((final_id is not None and m.get("id") == final_id) or _uuid(p) in answer_uuids)
-    ]
+    ]  # the group itself always, so an answer with neither id nor uuid is still checked
     if require_terminal and (
         terminal.get("stop_reason") != "end_turn"
         or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
