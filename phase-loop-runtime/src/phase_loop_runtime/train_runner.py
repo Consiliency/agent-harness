@@ -2418,7 +2418,20 @@ def _default_emit_native_fill_request(
             "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"]}
 
 
-def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch: Optional[str] = None) -> None:
+_LEDGER_UNREADABLE = object()
+
+
+def _capture_admission(ledger_path: Path, node_id: str) -> object:
+    """The node's durable record BEFORE this run appends a breadcrumb over it (the P3
+    ``running`` row), or ``_LEDGER_UNREADABLE``."""
+    try:
+        return read_ledger(ledger_path).get(node_id)
+    except (OSError, ValueError):
+        return _LEDGER_UNREADABLE
+
+
+def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch: Optional[str] = None,
+                                      admission: object = None) -> None:
     """Append a ``blocked`` row that KEEPS the node's durable admission binding.
 
     The ledger folds last-wins, so a branch-only ``blocked`` row erased ``head_sha``,
@@ -2427,12 +2440,16 @@ def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch
     and its round-10 class sweep). Every refusal of a node that is already admitted
     goes through here; a node still being built in P3 has no admission to keep.
     ``branch`` is used only when the ledger has no record for the node. A ledger that
-    cannot be read gets no row at all, never an unbound one.
+    cannot be read gets no row at all, never an unbound one. ``admission`` (from
+    ``_capture_admission``) replaces the read where this run has already appended a
+    breadcrumb over the admission.
     """
     from dataclasses import replace as _replace
 
     try:
-        latest = read_ledger(ledger_path).get(node_id)
+        if admission is _LEDGER_UNREADABLE:
+            raise OSError("ledger unreadable when the admission was captured")
+        latest = admission if admission is not None else read_ledger(ledger_path).get(node_id)
     except (OSError, ValueError):
         # Unreadable now: append NOTHING. A branch-only row would win the last-wins fold
         # once reads recover and erase the admission (agent-harness#978 round 11, codex);
@@ -3140,6 +3157,9 @@ def _run_train_unfenced(
         workspace = resolve_workspace(node)
         upstream_edges = roadmap.edges_for_downstream(node)
 
+        # A refresh of an admitted node: keep its admission for a refusal below, before the
+        # breadcrumb covers it in the last-wins fold (agent-harness#978 round 11).
+        _admission_rec = _capture_admission(ledger_path, nid) if nid in completed_nodes else None
         # Mark as running (durable breadcrumb for diagnostics)
         append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
 
@@ -3423,17 +3443,16 @@ def _run_train_unfenced(
             # agent-harness#906: when this was a REFRESH of an admitted PR, keep the prior
             # admission on the row so the next run re-enters the refresh decision (and its
             # drift check) instead of publishing fresh.
-            _prior = completed_nodes.get(nid) or {}
-            append_record(
-                ledger_path,
-                LedgerRecord(
-                    node_id=nid,
-                    status="blocked",
-                    branch=publish_result.get("branch") or _prior.get("branch"),
-                    head_sha=_prior.get("admitted_head_sha"),
-                    pr_url=_prior.get("pr_url"),
-                ),
-            )
+            # agent-harness#978 round 11 (claude): the WHOLE binding, FAB run and merge order
+            # included, via the one writer that keeps it. A fresh node has none to keep.
+            if _admission_rec is not None:
+                _append_blocked_keeping_admission(ledger_path, nid, branch=publish_result.get("branch"),
+                                                  admission=_admission_rec)
+            else:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=nid, status="blocked", branch=publish_result.get("branch")),
+                )
             return {
                 "status": "blocked",
                 "node_id": nid,
@@ -3475,10 +3494,15 @@ def _run_train_unfenced(
             workspace, head_sha, _node_fab_run_id
         )
         if _fab_block_reason is not None:
-            append_record(
-                ledger_path,
-                LedgerRecord(node_id=nid, status="blocked", branch=branch),
-            )
+            # Before this run's pr_open append. A REFRESH of an admitted node keeps its prior
+            # admission (so the next run re-enters the refresh decision); a fresh node has none.
+            if _admission_rec is not None:
+                _append_blocked_keeping_admission(ledger_path, nid, branch=branch, admission=_admission_rec)
+            else:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=nid, status="blocked", branch=branch),
+                )
             return {
                 "status": "blocked",
                 "node_id": nid,

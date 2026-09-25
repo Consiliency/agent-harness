@@ -1413,17 +1413,15 @@ def _assert_head_append_inventory(source_text: str):
         ("_run_train_unfenced", "inline", "pr_open"),
         ("_run_train_unfenced", "assigned", "merged"),
         ("_run_train_unfenced", "inline", "merged"),
-        # agent-harness#906 (PR #909): three inline `blocked` rows that carry the PRIOR
-        # admitted head (read back from the pr_open record / completed_nodes, never a new or
-        # derived head) so a failed live-head read, a rejected admission and a stale-upstream
-        # block stay classified as the admitted open PR on resume instead of letting a plain
-        # retry publish fresh. The refused-refresh row (the former fourth) and every other
-        # refusal of an admitted node now go through `_append_blocked_keeping_admission`,
-        # which re-appends the latest durable record verbatim except for `status`
-        # (agent-harness#978 round 10), so no new head enters the ledger there either.
-        # Each is pinned by a regression in test_train_prebuilt.py::TestPrebuiltRefresh or
-        # test_train_review_packet.py::test_refusal_writers_keep_the_downstream_admission.
-        ("_run_train_unfenced", "inline", "blocked"),
+        # agent-harness#906 (PR #909): two inline `blocked` rows that carry the PRIOR admitted
+        # binding in full (head, PR, FAB run, merge order; read back from the pr_open record,
+        # never a new or derived head): a failed live-head read and a stale-upstream block.
+        # Every other refusal of an admitted node -- including a refused refresh publish and a
+        # refresh's FAB-scope block, formerly inline rows here -- goes through
+        # `_append_blocked_keeping_admission`, which re-appends the latest durable record
+        # verbatim except for `status`/`ts` (agent-harness#978 rounds 10-11), so no new head
+        # enters the ledger there either. Pinned by test_train_prebuilt.py::TestPrebuiltRefresh
+        # and test_train_review_packet.py (refusal writers, helper unit test).
         ("_run_train_unfenced", "inline", "blocked"),
         ("_run_train_unfenced", "inline", "blocked"),
     ))
