@@ -732,36 +732,73 @@ def test_real_output_is_observed_then_silence_is_unknown(tmp_path, monkeypatch, 
         assert result.returncode == 0
 
 
-@pytest.mark.quarantine(reason="agent-harness#1034")
+def test_tui_repaints_are_not_novel_content():
+    """Deterministic core of agent-harness#1034: only the FIRST status frame is novel;
+    timer repaints (one by one or in one burst) never are, while real text still is."""
+    frames = [("\r\x1b[2K* Herding... (%ss . esc to interrupt)\r" % i).encode() for i in range(9)]
+    seen: set[str] = set()
+    assert panel._tui_chunk_has_novel_content(frames[0], seen)
+    assert not any(panel._tui_chunk_has_novel_content(frame, seen) for frame in frames[1:5])
+    assert not panel._tui_chunk_has_novel_content(b"".join(frames[5:]), seen)
+    assert panel._tui_chunk_has_novel_content(b"a genuinely new review sentence\n", seen)
+
+
 def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
+    """End to end, synchronized rather than timed (agent-harness#1034, #1045 r1).
+
+    The child prints one CR-terminated status frame and WAITS for `go`, which the
+    observe hook creates only once the monitor has held that frame as progress for
+    0.1 s. The child then repaints and waits for `done`, created 0.3 s after `go`.
+    Correct: the age keeps growing from the first frame (> 0.35 s at the end). Broken
+    (repaints refresh progress): the age drops from >= 0.1 s back to ~0."""
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_latest_claude_transcript_text", lambda *a, **k: "")
     monkeypatch.setattr(panel, "_latest_claude_transcript_activity", lambda *a, **k: 0)
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
+    go, done = tmp_path / "go", tmp_path / "done"
     snapshots = []
+    released = []
     observe = monitor.observe
 
     def capture(*args, **kwargs):
         observe(*args, **kwargs)
         snapshots.append(dict(monitor.record))
+        age = monitor.record["last_genuine_progress_age_s"]
+        if not go.exists() and age is not None and age >= .1:
+            released.append(time.monotonic())
+            go.touch()
+        elif released and not done.exists() and time.monotonic() - released[0] >= .3:
+            done.touch()
 
     monkeypatch.setattr(monitor, "observe", capture)
     panel._run_claude_tui_session(
         command=[sys.executable, "-c",
-                 "import time\n"
-                 "for i in range(12):\n"
-                 " print('\\r\\x1b[2K* Herding... (%ss . esc to interrupt)' % i, end='', flush=True)\n"
-                 " time.sleep(.03)\n"],
+                 "import os, sys, time\n"
+                 "line = '\\r\\x1b[2K* Herding... (%ss . esc to interrupt)\\r'\n"
+                 "go, done = sys.argv[1], sys.argv[2]\n"
+                 # The session loop does not enforce timeout_s while a review monitor is
+                 # attached (#1045 president), so the child bounds its own waits: a broken
+                 # handshake exits in 10 s and fails `released`/`done` below, never hangs CI.
+                 "deadline = time.monotonic() + 10\n"
+                 "def wait(path):\n"
+                 " while not os.path.exists(path):\n"
+                 "  if time.monotonic() > deadline: sys.exit(3)\n"
+                 "  time.sleep(.01)\n"
+                 "print(line % 0, end='', flush=True)\n"
+                 "wait(go)\n"
+                 "for i in range(1, 9): print(line % i, end='', flush=True)\n"
+                 "wait(done)\n",
+                 str(go), str(done)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
-        timeout_s=1, env=os.environ, review_monitor=monitor,
+        timeout_s=15, env=os.environ, review_monitor=monitor,  # not enforced; see the child
     )
-    assert snapshots
-    assert snapshots[0]["last_genuine_progress_age_s"] is None
-    # The existing novelty detector sees the first status line once; repainting
-    # its timer/glyphs must not refresh it for the rest of the run.
+    assert released and done.exists(), "the handshake never completed"
+    ages = [s["last_genuine_progress_age_s"] for s in snapshots
+            if s["last_genuine_progress_age_s"] is not None]
+    assert all(later >= earlier for earlier, later in zip(ages, ages[1:])), ages
     assert snapshots[-1]["observation_state"] == "progress_unobserved"
-    assert snapshots[-1]["last_genuine_progress_age_s"] > .05
+    assert snapshots[-1]["last_genuine_progress_age_s"] > .35, ages
 
 
 def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):

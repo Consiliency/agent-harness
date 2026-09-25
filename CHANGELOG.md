@@ -15,6 +15,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   push/nightly/dispatch retain the node, and `gh workflow run test.yml --ref <branch> -f
   chronology=true` proves it before merge when wanted.
 
+### Flaky TUI-animation test fixed, un-quarantined (agent-harness#1034)
+
+- `test_tui_animation_does_not_keep_progress_observed` raced wall-clock sleeps against PTY
+  delivery, so a late burst under xdist load could fail it. It is now synchronized, not
+  timed: the child prints one status frame and waits for a file the observe hook creates only
+  after the monitor has held that frame as progress for 0.1 s; it then repaints and waits for a
+  second file created 0.3 s later. A repaint that refreshed progress would drop the age from
+  >= 0.1 s back to ~0. A new unit test pins `_tui_chunk_has_novel_content` over the exact
+  frames (singly and as one burst). Making every repaint novel reds both. The quarantine mark
+  is gone.
+
 ### Faster pull-request CI (agent-harness#1029)
 
 - Pull requests run a ~2-minute wheel smoke (build, clean-venv install, entry-point
@@ -24,7 +35,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
   3.10/3.11/3.12.
 - New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
-  agent-harness#992, agent-harness#1034 and two agent-harness#987 nodes) are deselected in
+  agent-harness#992 and two agent-harness#987 nodes) are deselected in
   the hosted pull-request suite only (offload-eligible PRs, push, nightly, dispatch and
   Gate A run them),
   by a conftest collection hook (`tests/_quarantine.py`) enabled with
