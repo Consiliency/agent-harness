@@ -38,6 +38,10 @@ PKG = "phase-loop-runtime"
 CI_GUARD_GLOBS = ("tests/test_ci_*.py", "tests/test_*workflow*.py")
 CI_TRIGGERS = (".github/workflows/", "ci/", f"{PKG}/scripts/gate_a_cleanroom.sh")
 FULL_TRIGGERS = (f"{PKG}/tests/conftest.py", f"{PKG}/pyproject.toml", f"{PKG}/tests/phase_loop_test_utils.py")
+# CI never runs these two in the source checkout: it copies tests/ (and the v10 roadmap) to a
+# tree with no .git and runs them there, the installed-consumer posture in which their live
+# GitHub probes skip by design. Running them in the checkout needed a `gh` login and failed in
+# the clean env (agent-harness#1057), so they run CI's way here too (`copied_tree_cmd`).
 SUITE_IGNORES = ("tests/test_legible_roadmap_contract.py", "tests/test_legible_evidence.py")
 # The hosted lane's suite-environment install (test.yml), so local runs resolve what CI does.
 CI_TEST_DEPS = ("./phase-loop-runtime[visual]", "pytest", "pytest-xdist==3.8.0", "build==1.6.1", "setuptools>=70.1")
@@ -191,6 +195,24 @@ def clean_env(python: str) -> dict[str, str]:
     return env
 
 
+def copied_tree_run(repo: Path, pkg_root: Path, python: str, files: list[str]) -> tuple[list[str], Path, dict[str, str]]:
+    """(argv, cwd, extra env) that run ``files`` the way test.yml does: from a copy of
+    tests/ plus specs/phase-plans-v10.md in a tree with no ``.git``. The working tree's
+    src/ is put on the path so the run tests the current code, not the cached install."""
+    base = Path(tempfile.mkdtemp(prefix="local-check-legible-"))
+    import atexit
+    atexit.register(shutil.rmtree, base, True)
+    suite_root = base / PKG
+    shutil.copytree(pkg_root / "tests", suite_root / "tests")
+    (base / "specs").mkdir()
+    roadmap = repo / "specs" / "phase-plans-v10.md"
+    if roadmap.is_file():
+        shutil.copy2(roadmap, base / "specs" / roadmap.name)
+    argv = [python, "-m", "pytest", "-m", "not dotfiles_integration", "-q", "-p", "no:cacheprovider",
+            *[str(suite_root / f) for f in files]]
+    return argv, suite_root, {"PYTHONPATH": f"{suite_root / 'tests'}{os.pathsep}{pkg_root / 'src'}"}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--base", default="origin/main")
@@ -222,10 +244,12 @@ def main(argv: list[str] | None = None) -> int:
     pytest_cmd = [python, "-m", "pytest", "-m", "not dotfiles_integration", "-q", "-p", "no:cacheprovider"]
     if has_xdist:
         pytest_cmd += ["-n", "auto", "--dist", "loadfile", "--max-worker-restart=0"]
+    copied = list(SUITE_IGNORES) if tests is None else [t for t in (tests or []) if t in SUITE_IGNORES]
+    main_tests = None if tests is None else [t for t in tests if t not in SUITE_IGNORES]
     if tests is None:
         pytest_cmd += [arg for ignore in SUITE_IGNORES for arg in ("--ignore", ignore)]
-    elif tests:
-        pytest_cmd += tests
+    elif main_tests:
+        pytest_cmd += main_tests
     if tests != [] and not args.with_chronology:
         # CI runs the ~50-minute CONFORM chronology node on py3.10/Gate A only; so does this
         # only with --with-chronology, in either mode.
@@ -244,7 +268,9 @@ def main(argv: list[str] | None = None) -> int:
     uvx = shutil.which("uvx")
     lint_cmd = [uvx, RUFF_PIN.replace("==", "@"), "check", "."] if uvx else None
     print(f"  lint : {' '.join(lint_cmd) if lint_cmd else 'UNAVAILABLE (install uv for uvx; CI pins ' + RUFF_PIN + ')'}")
-    print(f"  tests: {'none selected' if tests == [] else ' '.join(pytest_cmd[3:])}")
+    print(f"  tests: {'none selected' if tests == [] else ' '.join(pytest_cmd[3:]) if main_tests != [] else '(main run: none)'}")
+    if copied:
+        print(f"  tests: {' '.join(copied)} from a copied tree, as CI runs them")
     print(f"  env  : {'host' if args.host_env else 'clean (env -i, throwaway HOME, system PATH)'}"
           f"{'' if has_xdist else '; pytest-xdist absent, running serially'}")
     if args.dry_run:
@@ -254,12 +280,18 @@ def main(argv: list[str] | None = None) -> int:
     status = 0 if lint_cmd else 1
     if lint_cmd:
         status |= subprocess.run(lint_cmd, cwd=repo).returncode
-    if tests != []:
-        env = dict(os.environ, PYTHONPATH="src:tests") if args.host_env else clean_env(python)
+    env = dict(os.environ, PYTHONPATH="src:tests") if args.host_env else clean_env(python)
+    if tests is None or main_tests:
         code = subprocess.run(pytest_cmd, cwd=pkg_root, env=env).returncode
         # 5 = nothing collected: fine when every SELECTED test was deselected by marker;
         # never for the whole suite.
         status |= 0 if code == 5 and tests is not None else code
+    if copied:
+        copied_argv, copied_cwd, copied_env = copied_tree_run(repo, pkg_root, python, copied)
+        code = subprocess.run(copied_argv, cwd=copied_cwd, env={**env, **copied_env}).returncode
+        # 5 (nothing collected) is tolerable only when this run is a strict SUBSET of CI's
+        # copied step; CI runs both files together and fails on 5 (#1059 r1).
+        status |= 0 if code == 5 and set(copied) < set(SUITE_IGNORES) else code
     print("local_check: " + ("PASS" if status == 0 else "FAIL") +
           " (CI still runs Gate A and, on main, 3.11/3.12)")
     return 1 if status else 0
