@@ -915,6 +915,40 @@ def test_falsifier_rejects_selector_expansion_before_call(tmp_path, source, sele
     assert falsifier._outcome_from_report(report, nodeid, returncode) == "error"
 
 
+def test_falsifier_rejects_item_added_after_collection_guard(tmp_path):
+    from phase_loop_runtime import falsifier
+
+    stage = tmp_path / "stage"
+    tests = stage / "phase-loop-runtime" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").write_text(
+        "import pytest\n"
+        "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "def pytest_collection_finish(session):\n"
+        "    yield\n"
+        "    session.items.append(pytest.Function.from_parent(\n"
+        "        session.items[0].parent, name='test_other'))\n",
+        encoding="utf-8",
+    )
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    (stage / path).write_text(
+        "def test_trigger():\n    assert True\n"
+        "def test_other():\n    print('UNREQUESTED_NODE_RAN')\n",
+        encoding="utf-8",
+    )
+    nodeid = f"{path}::test_trigger"
+
+    returncode, stdout, _stderr, failure, report = review_stage.run_bounded_falsifier_node(
+        staged=stage, nodeid=nodeid, wall_clock_s=30, output_cap_bytes=65536,
+    )
+
+    assert failure is None
+    assert report is not None
+    assert report["calls"] == []
+    assert b"UNREQUESTED_NODE_RAN" not in stdout
+    assert falsifier._outcome_from_report(report, nodeid, returncode) == "error"
+
+
 @pytest.mark.parametrize("conftest_source", [
     "import definitely_missing_execfind_conftest_dependency\n",
     (
@@ -958,6 +992,19 @@ def test_falsifier_rejects_selector_expansion_before_call(tmp_path, source, sele
         "    yield\n"
         "    items.clear()\n"
         "    raise pytest.UsageError('late selection failure')\n"
+    ),
+    (
+        "import pytest\n"
+        "class OuterReportFailure:\n"
+        "    @pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "    def pytest_collectreport(self, report):\n"
+        "        if report.nodeid == '':\n"
+        "            report.result.clear()\n"
+        "        yield\n"
+        "        if report.nodeid == '':\n"
+        "            raise pytest.UsageError('outer cleared matches')\n"
+        "def pytest_configure(config):\n"
+        "    config.pluginmanager.register(OuterReportFailure())\n"
     ),
 ])
 def test_falsifier_startup_failure_is_not_node_missing(tmp_path, conftest_source):
