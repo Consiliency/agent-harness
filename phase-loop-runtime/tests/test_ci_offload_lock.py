@@ -61,6 +61,11 @@ if [ -n "${SSH_STUB_DIE_AFTER:-}" ]; then
   bash -c "$*" & remote=$!
   sleep "$SSH_STUB_DIE_AFTER"; kill "$remote" 2>/dev/null; echo "ssh: link dropped" >&2; exit 255
 fi
+if [ "${SSH_STUB_DIE_ON_DAGGER_START:-}" = "1" ]; then
+  bash -c "$*" & remote=$!
+  until [ -e "$STUB_LOG.dagger_started" ]; do sleep 0.05; done
+  kill "$remote" 2>/dev/null; echo "ssh: link dropped" >&2; exit 255
+fi
 exec bash -c "$*"
 """
 
@@ -68,7 +73,12 @@ _DAGGER_STUB = """#!/usr/bin/env bash
 # dagger -m <mod> call all ... export --path=<dir>: record an interval, produce evidence.
 set -euo pipefail
 start=$(date +%s.%N)
-sleep "${DAGGER_STUB_SECONDS:-1.5}"
+if [ "${DAGGER_STUB_BLOCK:-}" = "1" ]; then
+  touch "$STUB_LOG.dagger_started"
+  until [ -e "$STUB_LOG.release" ]; do sleep 0.05; done
+else
+  sleep "${DAGGER_STUB_SECONDS:-1.5}"
+fi
 for a in "$@"; do case "$a" in --path=*) mkdir -p "${a#--path=}"; echo "stub verdicts" >"${a#--path=}/verdicts.txt";; esac; done
 echo "$start $(date +%s.%N)" >>"$STUB_LOG.dagger"
 exit "${DAGGER_STUB_EXIT:-0}"
@@ -157,18 +167,17 @@ def test_lock_is_released_when_dagger_fails(harness) -> None:
 
 def test_lock_holder_death_during_the_call_stops_the_call(harness) -> None:
     # Consiliency/agent-harness#746 r1 (codex): after `acquired` nothing watched the
-    # holder, so a dropped link released the lock under a live call that then finished
-    # green. Two runs, the first losing its holder 0.5 s in: the first must stop and
-    # fail, and its dagger must never record a completed interval. Under the full
-    # xdist suite a four-second call can finish before this script's one-second
-    # polling shell gets CPU again; keep the call outstanding long enough to test
-    # cancellation rather than the runner's scheduling latency.
-    run, intervals, _, _ = harness
+    # holder, so a dropped link released the lock under a live call. The dagger
+    # stub announces its start and blocks until cancellation; only then does the
+    # ssh stub drop the lock holder. This tests the live-call cancellation without
+    # racing the runner's scheduling latency against a fixed sleep.
+    run, intervals, _, lock = harness
     with ThreadPoolExecutor(max_workers=2) as pool:
-        a = pool.submit(run, "lost", extra={"SSH_STUB_DIE_AFTER": "0.5", "DAGGER_STUB_SECONDS": "20"})
+        a = pool.submit(run, "lost", extra={"SSH_STUB_DIE_ON_DAGGER_START": "1", "DAGGER_STUB_BLOCK": "1"})
         time.sleep(1.0)
         b = pool.submit(run, "next")
         ra, rb = a.result(), b.result()
+    assert (lock.parent / "lost.log.dagger_started").is_file(), "the call never started"
     assert ra.returncode == 1, ra.stdout + ra.stderr
     assert "lost" in ra.stderr and "stopping the call" in ra.stderr
     assert intervals("lost") == [], "the call finished after the lock was lost"
