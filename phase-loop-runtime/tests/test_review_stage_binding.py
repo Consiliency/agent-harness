@@ -512,6 +512,46 @@ def test_project_without_declared_dependencies_keeps_pytest_available(tmp_path):
     assert (dependencies / "pytest" / "__init__.py").is_file()
 
 
+@pytest.mark.parametrize("project_value", ['"not-a-table"', "[]"])
+def test_malformed_project_metadata_returns_falsifier_error_receipt(tmp_path, project_value):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    runtime = repo / "phase-loop-runtime"
+    runtime.mkdir()
+    (runtime / "pyproject.toml").write_text(
+        f"project = {project_value}\n", encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "phase-loop-runtime/pyproject.toml"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "metadata"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger",
+        diff=(f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+              f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n"
+              "+def test_trigger(): pass\n"),
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10,
+        output_cap_bytes=65536,
+    )
+    assert result.outcome == "error"
+    assert result.record["outcome"] == "error"
+    assert "project metadata" in (result.detail or "")
+    with pytest.raises(ValueError):
+        backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+
+
 @pytest.mark.parametrize("kind", ["leaf", "parent"])
 def test_falsifier_inventory_refuses_project_symlink_outside_stage(tmp_path, kind):
     outside = tmp_path / "outside"
