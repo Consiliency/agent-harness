@@ -287,7 +287,8 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
 - **IF-0-PANEL-1** — the `[panel.<task>]` lane-table schema (`lanes = [{lens, vendors}]`, the
   `lenses` declaration map, `min_distinct_vendors` for `plan` and `production_code` in the `code-review`
   table, 4 when omitted), its precedence (built-in < user < base-revision repository, table by table),
-  the landing rule (usable distinct vendors >= the minimum, plus any seats an explicit profile requires)
+  the landing rule (usable distinct vendors >= the minimum, plus any seats an explicit profile requires,
+  plus at least two usable panel seats and a president ruling)
   and the result labels (usable distinct vendors, seats, fallback-filled and unfilled lanes, effective
   minimum and source, explicitly required seats, minimum met, per-seat lens delivery).
 
@@ -1655,7 +1656,11 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   the seats that task seats today; for code review, "today" means the landing path's `DEFAULT_BOARD`.
   Falsified by:
   - an unknown key, task, vendor or lens being accepted;
-  - a declared custom lens being refused;
+  - a declared custom lens being refused, or a declared lens that reuses a built-in lens name being
+    accepted;
+  - a landing proceeding after the user file's content changed during the run;
+  - an unreadable base revision not failing closed, or anything other than `[panel.*]` being read at the
+    base revision;
   - a built-in preset task without a built-in table, or a built-in table composing different
     all-available seats than today;
   - a user table not overriding a built-in one, or a repository table not overriding a user one;
@@ -1681,12 +1686,13 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   vendor unavailable failing a seat that a listed fallback vendor could fill; by any entry point composing
   differently for the same configuration, availability and preflight outcomes.
 - [ ] EC-PANEL-4 — **An enforced distinct-vendor minimum, four by default, lowerable only as ruled.**
-  `min_distinct_vendors` is a key of the `code-review` table, valid only for the `plan` and
-  `production_code` tiers (anywhere else it is refused). A resolved table that omits it means 4. While no
+  `min_distinct_vendors` is one integer in the `code-review` table, applying to both the `plan` and
+  `production_code` tiers; it is refused in any other table. A resolved table that omits it means 4,
+  labelled with the built-in source. While no
   table sets it, the landing path is today's: `review_policy_for_tier` requires its four named seats.
   When a user or base-revision repository table sets it, a keyword-only seam beside that function gates
-  the landing on the count of distinct vendors over **usable** panel seats (seats that returned a usable
-  review; the president is not a seat), plus any seats an explicit governance profile requires (see the
+  the landing on the count of distinct vendors over **usable** panel seats (seats whose review the landing
+  path already classifies as usable; the president is not a seat), plus any seats an explicit governance profile requires (see the
   PANEL ruling), instead of on the four named seats. Every `plan` and `production_code` landing still
   needs at least two usable panel seats and a president ruling. Falsified by:
   - the no-config outcome differing from today's for the same configuration, availability and seat
@@ -1697,7 +1703,8 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
     - a landing that meets that value, has two usable panel seats and a president ruling, and has
       every seat an explicit profile requires, being refused on panel composition (for example, for a
       missing named seat);
-  - a landing with fewer than two usable panel seats, or without a president ruling;
+  - a landing proceeding with fewer than two usable panel seats, or without a president ruling;
+  - the key being accepted in any table other than `code-review`;
   - a value below 1 or above the board-vendor count being loaded or clamped instead of refused with a
     typed reason;
   - a lowering accepted from any source other than the user or base-revision repository
@@ -1705,7 +1712,8 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   - a landing proceeding without a seat an explicit profile requires.
 - [ ] EC-PANEL-5 — **Every result is labelled, and the labels are right.** The panel result, the
   `advisor-board` JSON and every landing record state:
-  - the usable distinct-vendor count and the seat count;
+  - the usable distinct-vendor count, the composed seat count and the usable seat count;
+  - each seat's lens name, and whether that lens is built-in or declared;
   - the lanes filled by fallback, and any unfilled lane;
   - the effective minimum and its source: built-in, the user file (path and content digest) or the
     repository file (path and base revision);
@@ -1744,11 +1752,14 @@ Decompose into 2 slices, each a single implementation lane.
 Shared files `panel_invoker.py`, `governed_review.py` and `cli.py` are owned by committed phases
 (HARDEN, REVIEWTRUTH, LEGLIFE, RESIDUAL) and touched by in-flight EXECFIND work.
 - The `review_policy_for_tier` seam and the label plumbing are keyword-only additive seams.
-- Two changes are declared **default-path changes**, not seams:
+- Three changes are declared **default-path changes**, not seams:
   - EC-PANEL-3's `heartbeat_only` board selection (slice 1);
-  - EC-PANEL-6's per-seat prompt assembly (slice 2).
-- Each landing keeps the owning phases' tests green. A golden that pins the frozen default board or a
-  seat's default prompt is updated in the same landing and listed in its record.
+  - replacing the global `LENS_CYCLE` backfill with per-task lanes, which changes default
+    `advisor-board` output (slice 1, PANEL-owned files);
+  - EC-PANEL-6's per-seat prompt assembly (slice 2), which makes each seat's instructions frame differ.
+- Each landing keeps the owning phases' tests green. A test or golden that pins the frozen default
+  board, the lens cycle, a missing vendor failing its seat, or identical seat instructions is updated in
+  the same landing and listed in its record.
 
 Landings touching these files take their turn in manifest queue order among landings that are ready. That
 is file ordering under PRESROUTE's touch-shape falsifier, not a phase dependency: nothing here waits on
@@ -2220,7 +2231,8 @@ operative by dispatch discipline: the named plans must cite them.
   `panel` field keeps its schema (required seat aliases or `none`). GOVSETUP's plan must cite this
   ruling, and it must:
   - treat a `panel` alias list as **explicit** only when it is set in a user or repository
-    `governance.toml`, never as a built-in profile default;
+    `governance.toml`, never as a built-in profile default. When both set one, IF-0-GOVSETUP-1's
+    precedence picks one list (repository over user), and that file's path is the one labelled;
   - treat an explicit list as seats the landing also requires, on top of EC-PANEL-4's minimum. It is a
     requirement, not a number compared with the minimum;
   - keep the built-in profiles' frozen default `panel` tables byte-equal, as EC-GOVSETUP-4 requires.
