@@ -1652,9 +1652,9 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   Precedence is built-in < user < repository, table by table. Validity:
   - a `[panel.*]` table the change adds or edits must be valid once applied onto the target head, or the
     change is refused; it never governs the change itself;
-  - a base `[panel.*]` table the change does not edit that is invalid, including a TOML parse error, is
-    replaced by its built-in table (the strictest) and labelled so; it does not block a landing the
-    built-in table admits;
+  - a base `[panel.*]` table that is invalid, including a TOML parse error, is replaced by its built-in
+    table (the strictest) and labelled `repository table invalid at base, replaced`, whether or not the
+    change edits it; its invalidity does not block a landing the built-in table admits;
   - a base revision that cannot be read at all (not an invalid file) fails closed.
 
   Unknown keys are refused only inside `[panel.*]`. "Unknown lens" means neither built-in nor declared; a
@@ -1673,9 +1673,9 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   - a landing merging after its target head changed `[panel.*]` or the repository `governance.toml`
     `panel` list since its gate, without being re-gated;
   - a change that adds or edits a `[panel.*]` table that is invalid once applied landing, or a valid
-    repair of an invalid base table being refused for that table;
-  - an invalid base table the change does not edit being used as anything other than its built-in table,
-    being labelled otherwise, or causing a landing the built-in table admits to be refused;
+    repair of an invalid base table being refused as invalid;
+  - an invalid base table being used as anything other than its built-in table, being labelled
+    otherwise, or causing a landing the built-in table admits to be refused;
   - an unreadable base revision not failing closed;
   - a key outside `[panel.*]` being refused by PANEL's loader;
   - a built-in preset task without a built-in table, or a built-in table composing different
