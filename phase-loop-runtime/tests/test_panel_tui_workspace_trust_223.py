@@ -231,12 +231,15 @@ def test_modal_lines_arriving_after_the_answer_do_not_arm_readiness(tmp_path, mo
     header + choice + cwd are on screen; the modal's REMAINING lines ("n. No, exit",
     "Enter y/n:") then arrive after the answer. They are the modal, not the editor: they
     must not arm readiness (which pasted the review into a still-unready TUI and ended in
-    ``claude_tui_pty_eof_no_output``). Deterministic: the child pauses between the pieces."""
+    ``claude_tui_pty_eof_no_output``). Deterministic: the child prints the rest of the modal
+    only after it has read the answer."""
     _fast_timing(monkeypatch, ready_deadline=3.0, stall=120)
     script = (
         "printf 'Permission Required: Accessing workspace:\\n%s\\ny. Yes, I trust this folder\\n' \"$PWD\"; "
-        "sleep 0.5; printf 'n. No, exit\\nEnter y/n:\\n'; "
-        "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; sleep 8"
+        # The rest of the modal is printed only AFTER the answer has been read, so the
+        # ordering is guaranteed, not timed (#1049 r1 codex).
+        "IFS= read -r ans; printf 'n. No, exit\\nEnter y/n:\\n'; "
+        "printf '%s' \"$ans\" > answer.txt; sleep 8"
     )
     rc, text, status, tail = _run_claude_tui_session(
         command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
