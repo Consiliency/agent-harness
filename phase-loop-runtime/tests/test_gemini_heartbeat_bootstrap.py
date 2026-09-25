@@ -396,6 +396,20 @@ def test_the_work_tree_probe_fails_closed_on_filesystem_errors(tmp_path, monkeyp
     assert panel._outside_any_git_work_tree(plain) is False
 
 
+def test_an_unreadable_repo_dir_is_maybe_a_repository(tmp_path):
+    """Implementation-agnostic (a real EACCES, nothing mocked; #1055 president)."""
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    locked = tmp_path / "locked"
+    (locked / "inner").mkdir(parents=True)
+    locked.chmod(0o000)
+    try:
+        assert panel._outside_any_git_work_tree(locked / "inner") is False
+        assert panel._outside_any_git_work_tree("bad\0path") is False  # NUL byte fails closed
+    finally:
+        locked.chmod(0o700)
+
+
 def test_review_authority_resolution_rule(tmp_path):
     """agent-harness#1053 decision 2, every branch of the one rule (#1055 r1): explicit
     authority wins; else repo_dir; a GOVERNED request ignores repo_dir; a repo_dir outside
@@ -737,7 +751,8 @@ def test_cli_preserves_requested_membership_and_policy_after_capability_admissio
 def test_default_spawn_rechecks_capability_before_scratch_effects(fixture_cli, tmp_path, monkeypatch):
     authorization = backing.prepare_review_isolation_authorization(
         gemini_board(), "input", mode="review", monitoring_policy="heartbeat_only",
-        canonical_repo_authority=Path(__file__).resolve().parents[2],
+        # A private repository, never the live checkout (agent-harness#1053).
+        canonical_repo_authority=_fixture_repo(tmp_path / "authority"),
     )
     monkeypatch.setattr(fixture_cli.module, "QUALIFIED_IMAGE_SHA256", "0" * 64)
     monkeypatch.setattr(panel, "_gc_stale_panel_scratch", lambda: pytest.fail("scratch effect"))

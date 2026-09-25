@@ -771,7 +771,8 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
         # chunks still counts -- not on elapsed time (#1047, #1048 r1).
         verdict = novel(chunk, seen, *rest)
         judged.extend(chunk)
-        if f"({last}s ".encode() in judged:
+        # The WHOLE last frame, not just its timer prefix (agent-harness#1053).
+        if f"* Herding... ({last}s . esc to interrupt)\r".encode() in judged:
             judged_last_repaint.append(True)
         return verdict
 

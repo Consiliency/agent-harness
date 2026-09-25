@@ -7,8 +7,9 @@ prefix (pytest's `--deselect` is a prefix match: agent-harness#1030 r1/r2). Push
 Gate A run them. The register is debt, not an off switch:
 
 - every mark names the issue that tracks the flake, qualified with the repo;
-- more than 5 marked NODES aborts collection (a class/module mark counts per node);
-- module-level quarantine is refused outright.
+- more than 5 marked NODES aborts collection (each parametrized case counts);
+- a quarantine inherited from a class or module is refused on every run
+  (``refuse_inherited_quarantine``), and module-level marks are also refused statically.
 
 Whether each cited issue is still OPEN is a network fact; the reviewer checks it when a mark
 is added, and the cap bounds how much can hide here meanwhile.
@@ -285,3 +286,14 @@ def test_one_mark_spread_over_many_parameters_counts_every_case(tmp_path, shape)
     result = _run(tmp_path, body, enabled=True)
     output = result.stdout + result.stderr
     assert result.returncode == 4 and "every parametrized case counts" in output, output
+
+
+def test_one_shared_mark_at_exactly_the_cap_is_accepted(tmp_path) -> None:
+    """agent-harness#1053: the cap's boundary for the shared-decorator shape -- exactly
+    QUARANTINE_CAP cases under one decorator is allowed and all are deselected."""
+    body = ('@pytest.mark.quarantine(reason="x")\n'
+            f"@pytest.mark.parametrize('v', range({QUARANTINE_CAP}))\ndef test_p(v): pass\n"
+            "def test_ok(): pass\n")
+    result = _run(tmp_path, body, enabled=True)
+    assert result.returncode == 0 and f"{QUARANTINE_CAP} deselected" in result.stdout, (
+        result.stdout + result.stderr)
