@@ -46,6 +46,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pytest
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 from phase_loop_runtime.governed_premerge import LoopResult
 from phase_loop_runtime.models import StateSnapshot
 from phase_loop_runtime.train_ledger import LedgerRecord, append_record, read_ledger
@@ -584,7 +590,6 @@ class TestInvariant4NoPhaseLoopState:
 
     def test_ledger_inside_phase_loop_raises(self, tmp_path: Path):
         """A ledger path under .phase-loop/ must raise ValueError immediately."""
-        import pytest
 
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}

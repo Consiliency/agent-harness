@@ -3086,6 +3086,21 @@ def _render_broker_inline_prompt(
             verdict,
         ))
     )
+    return _assemble_broker_inline_prompt(
+        artifact, instructions, preamble,
+        (instructions_begin, instructions_end), (artifact_begin, artifact_end),
+    )
+
+
+def _assemble_broker_inline_prompt(
+    artifact: str, instructions: str, preamble: str,
+    instruction_frames: tuple[str, str], artifact_frames: tuple[str, str],
+) -> str:
+    """Pure assembly shared by validated launches and non-authorizing preflight."""
+    artifact_bytes = artifact.encode("utf-8", errors="strict")
+    instruction_bytes = instructions.encode("utf-8", errors="strict")
+    instructions_begin, instructions_end = instruction_frames
+    artifact_begin, artifact_end = artifact_frames
     prompt = "\n".join((
         preamble,
         f"AUTHORITATIVE-INSTRUCTIONS sha256={sha256(instruction_bytes).hexdigest()} bytes={len(instruction_bytes)}",

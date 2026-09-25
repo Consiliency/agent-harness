@@ -2659,6 +2659,65 @@ Fields:
 A synthetic `_train_review_` record (`node_id="_train_review_"`) is appended
 when the train-level review panel approves. Its `status` is `"approved"`.
 
+An approval with usable-reviewer evidence may also carry the optional
+`review_packet_sha256` field, omitted on historical and non-review records.
+Reuse requires its exact immutable packet bytes and the current usable-reviewer
+floor; a legacy approval without the digest cannot authorize pending merges.
+
+The version-1 train review packet binds train order/edges, full admitted heads,
+PR identities, live base tips, unique merge bases, tree IDs, changed-path/mode/blob
+inventory, full substantive patches, acceptance and head-bound evidence.
+`--review-material FILE` declares supporting material for every exact node ID;
+local command/disposal evidence is labelled operator-supplied attestation.
+GitHub check runs are fetched by identity and checked against the admitted head.
+Optional explicit whole-subtree disposal certificates bind full inventories and
+unabridged diff hashes; they certify deletion mechanics, not generatedness.
+Operator-only removal sidecars never enter reviewer scratch.
+
+`run-train --governed --review-only --review-material FILE --preview-review DIR`
+prepares identical review material before broker construction, leases, recovery,
+admission or models. A ready receipt is not approval. The rendered prompt,
+including framing and instructions, must fit 512 KiB; the separate 1 MiB packet
+parser limit does not establish readiness. There is no truncation fallback.
+
+Trusted-opt-in FAB readmission during ordinary governed merging first freezes
+the entire prospective packet against proposed-head evidence without granting
+authority. Existing broker readmission and fresh complete durable bindings must
+then match before those identical bytes enter review/cache/native sinks. Current
+readmission eligibility is checked immediately before recovery. While FAB promotion
+is active, real repository revocation is replayed before recovery, sinks, approval
+and each merge. Review-only/native emission perform no recovery/readmission; preview
+does not consult broker evidence. No late head advancement follows train review.
+Transport readiness does not attest actual provider consumption of all content.
+
+Production stores read-back packets under `review-packets/<sha256>/` beside the
+ledger. Missing/corrupt packet storage holds. Explicit fresh material invalidates
+changed approvals; omitted material retains stored snapshots without asserting
+checks were refreshed. Native fills retain artifact/brief/composition validation.
+Partial resumes keep original merged-node sections only after validating their
+complete admission bindings (node, branch, PR, head and FAB run) and live merge
+outcomes; unavailable history holds rather than
+reconstructing scope from current main. Observed pending base/head drift before
+approval and each merge requires a fresh packet. GitHub's existing head pin
+remains independent; these reads do not atomically pin the base.
+
+Direct patch text preserves LF/TAB and reversibly escapes backslashes, CR and
+disallowed Unicode. JSON sections decode as outer escapes, JSON, then nested
+`content.text` escapes, including four-digit `\u` and supplementary eight-digit
+`\U` escapes (the latter are not standard JSON escapes).
+`raw_sha256` hashes original bytes; `escaped_sha256`
+hashes intermediate escaped text; preview `presentation_sha256` hashes the
+final rendered section. Readback integrity is not a power-loss durability
+guarantee; that recovery work is tracked in agent-harness#977.
+Packet identity, material and revocation checkpoints, including finalization,
+storage and checks immediately before review and approval, use `review_halted`
+before recovery/readmission begins and `merge_halted` afterward. The per-node
+recovery/readmission handler alone appends a blocked row, and only after that
+node's helper began; later packet holds retain the latest durable binding.
+Panel rejections and native-fill refusals remain `review_halted`; merge-loop
+refusals remain `merge_halted`. All retain the typed reason and prior merges. Malformed
+stored metadata and excessive JSON nesting yield a typed hold and preview receipt.
+
 Idempotent resume: re-running `run_train` reads the ledger to skip nodes that
 are already `pr_open` (confirmed via a live `_pr_is_open` check) or already
 `merged`. A `blocked` node in the ledger is retried on resume.

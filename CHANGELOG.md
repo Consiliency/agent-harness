@@ -400,6 +400,45 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--effort max` both launch and self-identify. NOT witnessed: the self-PTY TUI adapter
   itself, which cannot be launched from inside Claude Code.
 
+### Bound train review material (agent-harness#906, agent-harness#915)
+
+- Governed train reviews now receive immutable admitted Git changes, acceptance
+  criteria and head-bound evidence. `--review-material` supplies provenance;
+  `--governed --review-only --preview-review DIR --json` prepares the same packet
+  before any broker, lease, ledger mutation or model call.
+- Approval reuse requires the exact stored packet digest and current reviewer
+  floor. Legacy approvals re-review; partial trains without historical packets
+  hold. Native-fill and merge checks use the same packet identity.
+- Trusted FAB readmission freezes all proposed-head material before recovery or
+  delta review, then requires fresh durable admission and repository revocation
+  checks before using the identical packet. Native request emission returns on
+  cache hits; readmission failures, live-read failures and stale-upstream
+  refusals preserve the admitted FAB identity needed by their resume guards.
+- Whole deleted subtrees may use explicit, bound operator disposal attestations.
+  Certificates prove deletion mechanics, not generatedness; other substantive
+  changes stay inline. Invalid, missing or oversized material holds without
+  truncation or extra review rounds.
+- Full historical admission bindings and fresh readmission eligibility hold
+  before effects. Preview rejects traversal into protected paths; malformed
+  check identities hold. File/directory and symlink transitions retain complete
+  patches, and merge-stage refusals preserve their specific reason.
+- Readmission pre-effect refusals leave node rows untouched; malformed stored
+  packets and deeply nested JSON return diagnostic receipts. Initial Claude
+  native request and fill instructions both supply the required material.
+- Every refusal of an already-admitted node keeps its whole durable binding (PR, head,
+  FAB run, merge order). This covers a failed merged-state lookup, a failed or raising
+  downstream re-verify, a failed merge, a missing head pin, and a refused refresh publish
+  or FAB-scope block. None of them now appends a branch-only `blocked` row, which previously
+  let the next run republish the node or resume a FAB node as non-FAB. When the ledger
+  cannot be read, a refusal appends nothing. A refresh whose admission cannot be read halts
+  (`ledger_unreadable`) before writing its `running` breadcrumb over the admission.
+- Patches are always rendered as text. Previously a text file over Git's
+  `core.bigFileThreshold`, or one marked `-diff`, rendered as a binary summary with its
+  content omitted. A binary summary now holds the packet.
+- Readmission and stale native-fill refusals now carry an explicit non-human
+  `terminal_blocker`, like the other packet holds. The CLI already treated a missing blocker
+  as non-human.
+
 ### grok-4.7 is registered and becomes the grok default (agent-harness#971)
 
 - `grok-4.7` shipped 2026-09-21. The advisor-board model registry did not know it, so a
