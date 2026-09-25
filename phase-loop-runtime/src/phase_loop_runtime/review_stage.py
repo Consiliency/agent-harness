@@ -330,7 +330,7 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     project = stage / "phase-loop-runtime" / "pyproject.toml"
     if project.is_file():
         payload = tomllib.loads(project.read_text(encoding="utf-8"))
-        declared = payload.get("project", {}).get("dependencies", ())
+        declared = payload.get("project", {}).get("dependencies", [])
         if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
             raise ValueError("falsifier project dependencies are invalid")
         requirements.extend(declared)
@@ -420,7 +420,7 @@ def _run_bounded_falsifier_node(
         "  def pytest_runtest_logreport(self, report):\n"
         "   if report.when == 'call':\n"
         "    calls.append({'nodeid': report.nodeid, 'outcome': report.outcome, "
-        "'wasxfail': bool(getattr(report, 'wasxfail', False))})\n"
+        "'wasxfail': hasattr(report, 'wasxfail')})\n"
         " code=pytest.main(['-q','-c','/dev/null','--rootdir=/work','-o','addopts=',"
         "'-p','no:cacheprovider','--junitxml=/work/.falsifier-junit.xml',"
         "sys.argv[1]], plugins=[Reporter()])\n"

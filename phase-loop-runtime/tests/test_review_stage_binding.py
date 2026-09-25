@@ -408,11 +408,85 @@ def test_falsifier_expired_authorization_records_error_and_closes(tmp_path, monk
         assert result.outcome == "error"
         assert result.record["outcome"] == "error"
         assert "lease expired" in (result.detail or "")
+        monkeypatch.setattr(backing, "revalidate_falsifier_isolation_authorization", original_revalidate)
+        with pytest.raises(ValueError):
+            backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
     finally:
         monkeypatch.setattr(backing, "revalidate_falsifier_isolation_authorization", original_revalidate)
         backing.close_falsifier_isolation_authorization(authorization)
-    with pytest.raises(ValueError):
+
+
+def test_forged_falsifier_authorization_raises_before_record(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path="phase-loop-runtime/tests/test_finding_F001.py",
+        expected_nodeid="phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+        diff="not a diff",
+    )
+    forged = replace(authorization, _seal=object())
+    try:
+        with pytest.raises(ValueError, match="forged"):
+            falsifier.run_finding_falsifier(
+                falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+                authorization=forged, repo=repo, wall_clock_s=10,
+                output_cap_bytes=65536,
+            )
         backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+    finally:
+        backing.close_falsifier_isolation_authorization(authorization)
+
+
+def test_project_without_declared_dependencies_keeps_pytest_available(tmp_path):
+    stage = tmp_path / "stage"
+    (stage / "phase-loop-runtime").mkdir(parents=True)
+    (stage / "phase-loop-runtime" / "pyproject.toml").write_text(
+        '[project]\nname = "empty-dependencies"\n', encoding="utf-8",
+    )
+    review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
+
+
+def test_empty_reason_xpass_is_not_recorded_as_green(tmp_path):
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("canonical falsifier launcher absent")
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    source = (
+        "import pytest\n"
+        '@pytest.mark.xfail(reason="")\n'
+        "def test_trigger():\n"
+        "    assert True\n"
+    )
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,4 @@\n"
+        + "".join(f"+{line}\n" for line in source.splitlines())
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=30,
+        output_cap_bytes=65536,
+    )
+    assert result.outcome == "error", result.detail
+    assert result.red_output_digest is None
 
 
 def test_falsifier_exec_bit_validation_survives_noexec_mount(tmp_path, monkeypatch):
@@ -436,6 +510,8 @@ def test_falsifier_exec_bit_validation_survives_noexec_mount(tmp_path, monkeypat
 
 
 def test_early_broken_stdin_close_still_reaps_falsifier_child(tmp_path, monkeypatch):
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("canonical falsifier launcher absent")
     original_popen = subprocess.Popen
     launched = []
 

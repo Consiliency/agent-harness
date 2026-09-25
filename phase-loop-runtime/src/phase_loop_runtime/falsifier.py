@@ -112,6 +112,7 @@ def run_finding_falsifier(
 ) -> FalsifierRunResult:
     """Run the attached node and record its observed, untrusted outcome."""
     repo = Path(repo).resolve(strict=True)
+    backing._falsifier_authorization_lease(authorization)
     if (isinstance(wall_clock_s, bool) or not isinstance(wall_clock_s, (int, float))
             or not math.isfinite(wall_clock_s) or wall_clock_s <= 0):
         raise ValueError("invalid falsifier wall-clock bound")
