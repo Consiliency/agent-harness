@@ -341,6 +341,8 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     requirements = ["pytest"]
     project = stage / "phase-loop-runtime" / "pyproject.toml"
     if project.is_file():
+        if not project.resolve(strict=True).is_relative_to(stage.resolve(strict=True)):
+            raise ValueError("falsifier project path outside staged tree")
         payload = tomllib.loads(project.read_text(encoding="utf-8"))
         declared = payload.get("project", {}).get("dependencies", [])
         if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):

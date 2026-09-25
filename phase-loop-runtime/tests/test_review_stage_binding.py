@@ -456,6 +456,25 @@ def test_project_without_declared_dependencies_keeps_pytest_available(tmp_path):
     assert (dependencies / "pytest" / "__init__.py").is_file()
 
 
+@pytest.mark.parametrize("kind", ["leaf", "parent"])
+def test_falsifier_inventory_refuses_project_symlink_outside_stage(tmp_path, kind):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    project = outside / "pyproject.toml"
+    project.write_text('[project]\nname = "outside"\n', encoding="utf-8")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    if kind == "leaf":
+        runtime = stage / "phase-loop-runtime"
+        runtime.mkdir()
+        (runtime / "pyproject.toml").symlink_to(project)
+    else:
+        (stage / "phase-loop-runtime").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="outside staged tree"):
+        review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
+
+
 @pytest.mark.parametrize("target_minor_delta", [0, 1])
 def test_inventory_uses_invoking_install_when_system_python_lacks_pytest(
     tmp_path, monkeypatch, target_minor_delta,
