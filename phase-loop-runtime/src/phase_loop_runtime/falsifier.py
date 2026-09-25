@@ -141,7 +141,7 @@ def _outcome_from_report(
         return "error"
     exit_code = report.get("exit")
     calls = report.get("calls")
-    if exit_code in (4, 5) and calls == []:
+    if exit_code in (4, 5) and calls == [] and report.get("collection_failed") is False:
         return "node_missing"
     if not isinstance(calls, list) or len(calls) != 1:
         return "error"
@@ -169,7 +169,11 @@ def run_finding_falsifier(
     if (isinstance(output_cap_bytes, bool) or not isinstance(output_cap_bytes, int)
             or output_cap_bytes <= 0):
         raise ValueError("invalid falsifier output cap")
-    diff_digest = hashlib.sha256(falsifier.diff.encode("utf-8")).hexdigest()
+    try:
+        diff_digest = hashlib.sha256(falsifier.diff.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError as exc:
+        backing.close_falsifier_isolation_authorization(authorization)
+        raise ValueError("falsifier diff is not UTF-8 encodable") from exc
     outcome = "error"
     detail: str | None = None
     red_digest: str | None = None

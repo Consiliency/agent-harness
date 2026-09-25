@@ -4059,28 +4059,174 @@ def _assistant_text_from_jsonl(path: Path) -> str:
 
 
 def _final_assistant_text_from_jsonl(path: Path) -> str:
-    """Return only the final structured assistant message, never TUI chrome/input."""
-    final = ""
+    """Return the final turn's single assistant message, or "" when that cannot be proven.
+
+    The rule (agent-harness#1002): a TURN starts at the last user record that is not a replay
+    (same uuid AND same content as an earlier user record; a changed request under a reused
+    uuid is a new request). History before the turn never blocks a later answer.
+
+    Records: an exact replay of any earlier version of a record (same uuid, content and
+    completion state) is dropped, because the CLI re-journals records with changed
+    ``usage``/``parentUuid``/``promptId``; a stale open version of a stopped record is dropped
+    too. Within the turn, an explicitly open (null) stop_reason may change to a value under its
+    uuid, and the latest version wins; any other state change, or a content change after the
+    message stopped or across messages, fails closed.
+
+    The answer is the turn's last message id. It fails closed if any of its records shares a
+    uuid, a message id or its content with history (earlier messages of the turn may share a
+    history id: parallel tool calls continue one message across a tool_result), or if an
+    identity-less answer repeats any other assistant record. A message id that leaves and
+    returns, uuid and uuid-less records mixed, or a repeated uuid-less record also fails closed.
+    Blocks of one message that repeat the same text under distinct uuids are all kept, so a copy
+    of such a block under a fresh uuid is not detected.
+
+    Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
+    hold more than one message id and none an A-B-A.
+    """
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
         return ""
-    for line in lines:
+    last_line = max((i for i, text in enumerate(lines) if text.strip()), default=-1)
+    records: list[tuple[dict, dict]] = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            continue
+            if index == last_line:
+                return ""  # a writer may still be appending the latest record
+            continue  # a damaged line with valid records after it is history
         message = payload.get("message") if isinstance(payload, dict) else None
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
+            if message.get("id") is not None and not isinstance(message.get("id"), str):
+                return ""
+            if message.get("stop_reason") is not None and not isinstance(message.get("stop_reason"), str):
+                return ""
+            records.append((payload, message))
+
+    def _uuid(payload: dict) -> str | None:
+        value = payload.get("uuid")
+        return value if isinstance(value, str) and value else None
+
+    def _said(message: dict) -> str:  # what a record SAYS; accounting and links excluded
+        return json.dumps([message.get("id"), message.get("role"), message.get("content")], sort_keys=True)
+
+    def _state(message: dict) -> tuple:
+        return ("stop_reason" in message, message.get("stop_reason"))
+
+    boundary = -1
+    seen_users: set[tuple[str, str]] = set()
+    for position, (payload, message) in enumerate(records):
+        if message.get("role") != "user":
             continue
-        text = "\n".join(
-            item["text"] for item in (message.get("content") or [])
-            if isinstance(item, dict) and item.get("type") == "text"
-            and isinstance(item.get("text"), str)
-        ).strip()
-        if text:
-            final = text
-    return final
+        user_id = _uuid(payload)
+        if user_id is not None:
+            if (user_id, _said(message)) in seen_users:
+                continue  # a re-journaled user record is not a new request
+            seen_users.add((user_id, _said(message)))
+        boundary = position
+    history = [(p, m) for p, m in records[: max(boundary, 0)] if m.get("role") == "assistant"]
+    history_ids = {m.get("id") for _, m in history} - {None}
+    history_uuids = {_uuid(p) for p, _ in history} - {None}
+    history_said = {_said(m) for _, m in history}
+
+    known: dict[str, tuple[str, tuple]] = {}  # the latest version of each uuid
+    seen_versions: dict[str, set[tuple[str, tuple]]] = {}  # every version of each uuid
+    stopped_ids: set[object] = set()  # message ids that carried any stop_reason
+    turn: list[tuple[dict, dict]] = []
+    for position, (payload, message) in enumerate(records):
+        if message.get("role") != "assistant":
+            continue
+        uid, said, state = _uuid(payload), _said(message), _state(message)
+        in_turn = position > boundary
+        if uid is not None and uid in known:
+            if (said, state) in seen_versions[uid]:
+                continue  # an exact replay of this or an earlier version of the record
+            known_said, known_state = known[uid]
+            if said == known_said and state == (True, None) and known_state[1] is not None:
+                continue  # a stale open version of a stopped record; a stop never re-opens
+            previous_id = json.loads(known_said)[0]
+            if in_turn and known_said != said and (
+                    previous_id is None or previous_id != message.get("id")
+                    or previous_id in stopped_ids):
+                # A streaming block may be revised while its message is open; after the
+                # message stopped, or across messages, a changed record fails closed.
+                return ""
+            if in_turn and known_state != state and not (known_state == (True, None) and state[0]):
+                return ""  # only an explicitly open (null) stop_reason may change, to a value
+        if uid is not None:
+            known[uid] = (said, state)
+            seen_versions.setdefault(uid, set()).add((said, state))
+        if message.get("stop_reason") is not None:
+            stopped_ids.add(message.get("id"))
+        if in_turn:
+            turn.append((payload, message))
+    if not turn:
+        return ""
+    identityless = [_said(m) for p, m in turn if _uuid(p) is None]
+    if len(identityless) != len(set(identityless)):
+        return ""  # a repeated uuid-less record may be a replay
+    sequence: list[object] = []
+    for _, message in turn:
+        if not sequence or sequence[-1] != message.get("id"):
+            sequence.append(message.get("id"))
+    if len(sequence) != len(set(sequence)):
+        return ""  # a message id left and returned within the turn
+    final_id = sequence[-1]
+    if final_id is None:
+        group = [turn[-1]]  # identity-less messages are independent, never joined
+    else:
+        group = [(p, m) for p, m in turn if m.get("id") == final_id]
+    if any(_uuid(p) in history_uuids or _said(m) in history_said
+           or (m.get("id") is not None and m.get("id") in history_ids)
+           for p, m in group):
+        # A copy or update of history cannot answer a new request. Earlier messages of the
+        # turn may share a history id: the CLI writes a parallel tool call's next tool_use
+        # block under the same message id after the previous tool_result.
+        return ""
+    if final_id is None:
+        # An identity-less answer must not repeat any other assistant record, earlier in this
+        # turn or in history: a copy stripped of its message id cannot be told from a replay.
+        final_payload, final_message = group[0]
+        spoken = json.dumps([final_message.get("role"), final_message.get("content")], sort_keys=True)
+        if any(m is not final_message and m.get("role") == "assistant"
+               and (_uuid(final_payload) is None or _uuid(p) != _uuid(final_payload))
+               and json.dumps([m.get("role"), m.get("content")], sort_keys=True) == spoken
+               for p, m in records):
+            return ""
+    with_uuid = [(p, m) for p, m in group if _uuid(p) is not None]
+    if with_uuid and len(with_uuid) != len(group):
+        return ""  # uuid and uuid-less records cannot be told apart from a replay
+    if with_uuid:
+        latest: dict[str, dict] = {}
+        order: list[str] = []
+        for payload, message in group:
+            uid = _uuid(payload)
+            if uid not in latest:
+                order.append(uid)
+            latest[uid] = message
+        versions = [latest[uid] for uid in order]
+    else:
+        versions = [m for _, m in group]
+    terminal = versions[-1]
+    if "stop_reason" in terminal and terminal["stop_reason"] is None:
+        return ""  # the message has not completed
+    texts: list[str] = []
+    for message in versions:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return ""
+        if message.get("stop_reason") not in (None, "end_turn", "stop_sequence"):
+            return ""  # max_tokens, tool_use or another non-final stop
+        if any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
+            return ""
+        texts.append("\n".join(
+            item["text"] for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+        ))
+    return "\n".join(text for text in texts if text).strip(" \t\r\n")
 
 
 def _cleanup_broker_claude_transcript(

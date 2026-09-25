@@ -846,6 +846,63 @@ def test_empty_reason_xpass_is_not_recorded_as_green(tmp_path):
     assert result.red_output_digest is None
 
 
+@pytest.mark.parametrize("source, expected", [
+    ("import definitely_missing_execfind_module\ndef test_trigger():\n    assert True\n", "error"),
+    ("def test_other():\n    assert False\n", "node_missing"),
+])
+def test_falsifier_distinguishes_collection_failure_from_missing_node(tmp_path, source, expected):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    lines = source.splitlines()
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n"
+        + "".join(f"+{line}\n" for line in lines)
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=30,
+        output_cap_bytes=65536,
+    )
+    assert result.outcome == result.record["outcome"] == expected
+    assert result.red_output_digest is None
+    assert backing._falsifier_authorization_lease(authorization).closed
+
+
+def test_unencodable_falsifier_diff_closes_authorization(tmp_path):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff="\ud800",
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    with pytest.raises(ValueError):
+        falsifier.run_finding_falsifier(
+            falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+            authorization=authorization, repo=repo, wall_clock_s=30,
+            output_cap_bytes=65536,
+        )
+    assert backing._falsifier_authorization_lease(authorization).closed
+
+
 def test_falsifier_exec_bit_validation_survives_noexec_mount(tmp_path, monkeypatch):
     repo = _git_repo(tmp_path / "repo")
     source = repo / "src.py"
