@@ -56,6 +56,16 @@ def _source_repo(tmp_path):
     return repo, head
 
 
+def _advance_source_head(repo):
+    (repo / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "module.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "advanced"],
+        check=True,
+    )
+    return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+
 def _test_diff(source):
     entry = _golden()["attachment"]["falsifiers"][0]
     lines = source.strip("\n").splitlines()
@@ -92,18 +102,22 @@ def _run_falsifier(repo, head, *, source=None, diff=None, nodeid=None, wall_cloc
 def _mutate_stage(monkeypatch, mutate, *, before=False):
     module = tdd.require_module("phase_loop_runtime.falsifier")
     original = review_stage.stage_review_tree
+    applied = []
 
     def changed(repo, *args, **kwargs):
         if before:
             mutate(Path(repo))
+            applied.append(True)
         staged = original(repo, *args, **kwargs)
         if not before:
             mutate(Path(staged))
+            applied.append(True)
         return staged
 
     monkeypatch.setattr(review_stage, "stage_review_tree", changed)
     if hasattr(module, "stage_review_tree"):
         monkeypatch.setattr(module, "stage_review_tree", changed)
+    return applied
 
 
 def _track_node_launch(monkeypatch):
@@ -112,8 +126,10 @@ def _track_node_launch(monkeypatch):
     original_pytest_main = pytest.main
 
     def observed_popen(command, *args, **kwargs):
-        rendered = command if isinstance(command, str) else " ".join(map(str, command))
-        if "pytest" in rendered and "test_finding_F001.py" in rendered:
+        parts = command.split() if isinstance(command, str) else list(map(str, command))
+        rendered = " ".join(parts)
+        is_pytest = any(part == "pytest" or part.endswith("/pytest") for part in parts)
+        if is_pytest and "test_finding_F001.py" in rendered:
             launched.append(rendered)
             raise AssertionError("staged drift must refuse before launching pytest")
         return original_popen(command, *args, **kwargs)
@@ -171,6 +187,7 @@ def test_node_launch_guard_detects_attempt(monkeypatch):
         subprocess.run(["python3", "-m", "pytest", node], check=False)
     with pytest.raises(AssertionError, match="refuse before invoking"):
         pytest.main([node])
+    assert subprocess.run(["true", node], check=False).returncode == 0
     assert len(launched) == 2
 
 
@@ -236,6 +253,9 @@ def test_every_expected_case_ran():
 
 
 def test_red_output_digest_golden():
+    assert tdd.RED_COMMAND.startswith(
+        "env PHASE_LOOP_TDD_EXPECT_EXECFIND=1 PYTHONPATH="
+    )
     golden = _golden()
     entry = golden["attachment"]["falsifiers"][0]
     assert hashlib.sha256(entry["diff"].encode("utf-8")).hexdigest() == golden["record"]["diff_digest"]
@@ -475,6 +495,19 @@ def test_node_missing(tmp_path):
     tdd.run_execfind_contract("node_missing", check)
 
 
+def test_reviewed_sha_mismatch_error(tmp_path, monkeypatch):
+    def check():
+        repo, reviewed_sha = _source_repo(tmp_path)
+        assert _advance_source_head(repo) != reviewed_sha
+        launched = _track_node_launch(monkeypatch)
+        result, _ = _run_falsifier(repo, reviewed_sha)
+        assert result.outcome == "error"
+        assert result.red_output_digest is None
+        assert launched == []
+
+    tdd.run_execfind_contract("reviewed_sha_mismatch_error", check)
+
+
 def test_bound_expiry_error(tmp_path):
     def check():
         repo, head = _source_repo(tmp_path)
@@ -517,16 +550,22 @@ def test_no_network_no_credentials(tmp_path, monkeypatch):
 def test_staged_tree_only(tmp_path):
     def check():
         repo, head = _source_repo(tmp_path)
+        escaped = repo / "escaped.marker"
+        hook = repo / ".git/hooks/post-commit"
         source = (
-            "from pathlib import Path\n"
+            "from pathlib import Path\nimport pytest\n"
             "def test_trigger():\n"
             "    Path('falsifier-ran.marker').write_text('stage only')\n"
-            "    assert True\n"
+            f"    for target in ({str(escaped)!r}, {str(hook)!r}):\n"
+            "        with pytest.raises(OSError):\n"
+            "            Path(target).write_text('escape')\n"
         )
         result, _ = _run_falsifier(repo, head, source=source)
         assert result.outcome == "green_on_head"
         assert not (repo / "falsifier-ran.marker").exists()
         assert not (repo / "phase-loop-runtime/tests/test_finding_F001.py").exists()
+        assert not escaped.exists()
+        assert not hook.exists()
 
     tdd.run_execfind_contract("staged_tree_only", check)
 
@@ -535,7 +574,7 @@ def test_staged_overlay_drift_error(tmp_path, monkeypatch):
     def check():
         repo, head = _source_repo(tmp_path)
         launched = _track_node_launch(monkeypatch)
-        _mutate_stage(
+        applied = _mutate_stage(
             monkeypatch,
             lambda source: (source / "module.py").write_text("VALUE = 2\n"),
             before=True,
@@ -543,6 +582,7 @@ def test_staged_overlay_drift_error(tmp_path, monkeypatch):
         result, _ = _run_falsifier(repo, head)
         assert result.outcome == "error"
         assert result.red_output_digest is None
+        assert applied
         assert launched == []
         assert not (repo / "phase-loop-runtime/tests/test_finding_F001.py").exists()
 
@@ -553,9 +593,10 @@ def test_staged_untracked_extra_error(tmp_path, monkeypatch):
     def check():
         repo, head = _source_repo(tmp_path)
         launched = _track_node_launch(monkeypatch)
-        _mutate_stage(monkeypatch, lambda stage: (stage / "extra.tmp").write_text("extra"))
+        applied = _mutate_stage(monkeypatch, lambda stage: (stage / "extra.tmp").write_text("extra"))
         result, _ = _run_falsifier(repo, head)
         assert result.outcome == "error"
+        assert applied
         assert launched == []
         assert not (repo / "extra.tmp").exists()
 
@@ -566,11 +607,12 @@ def test_staged_ignored_extra_error(tmp_path, monkeypatch):
     def check():
         repo, head = _source_repo(tmp_path)
         launched = _track_node_launch(monkeypatch)
-        _mutate_stage(
+        applied = _mutate_stage(
             monkeypatch, lambda stage: (stage / "ignored-extra.tmp").write_text("ignored")
         )
         result, _ = _run_falsifier(repo, head)
         assert result.outcome == "error"
+        assert applied
         assert launched == []
 
     tdd.run_execfind_contract("staged_ignored_extra_error", check)
@@ -585,9 +627,10 @@ def test_staged_symlink_retarget_error(tmp_path, monkeypatch):
             (stage / "link.txt").unlink()
             (stage / "link.txt").symlink_to("target_b.txt")
 
-        _mutate_stage(monkeypatch, retarget)
+        applied = _mutate_stage(monkeypatch, retarget)
         result, _ = _run_falsifier(repo, head)
         assert result.outcome == "error"
+        assert applied
         assert launched == []
 
     tdd.run_execfind_contract("staged_symlink_retarget_error", check)
@@ -597,9 +640,10 @@ def test_staged_exec_bit_drift_error(tmp_path, monkeypatch):
     def check():
         repo, head = _source_repo(tmp_path)
         launched = _track_node_launch(monkeypatch)
-        _mutate_stage(monkeypatch, lambda stage: (stage / "script.sh").chmod(0o644))
+        applied = _mutate_stage(monkeypatch, lambda stage: (stage / "script.sh").chmod(0o644))
         result, _ = _run_falsifier(repo, head)
         assert result.outcome == "error"
+        assert applied
         assert launched == []
 
     tdd.run_execfind_contract("staged_exec_bit_drift_error", check)

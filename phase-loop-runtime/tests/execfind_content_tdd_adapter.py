@@ -42,7 +42,8 @@ EXECFIND_CASES = (
     "parser_reject_no_nodeid", "parser_reject_foreign_nodeid",
     "parser_reject_double_claim", "attachment_byte_neutral",
     "attachment_matches_frozen_contract", "outcome_vocabulary", "apply_failed",
-    "red_on_head", "green_on_head", "node_missing", "bound_expiry_error",
+    "red_on_head", "green_on_head", "node_missing", "reviewed_sha_mismatch_error",
+    "bound_expiry_error",
     "no_network_no_credentials", "staged_tree_only", "staged_overlay_drift_error",
     "staged_untracked_extra_error", "staged_ignored_extra_error",
     "staged_symlink_retarget_error", "staged_exec_bit_drift_error",
@@ -51,7 +52,7 @@ EXECFIND_CASES = (
     "inline_fixture_artifact_ref", "brokered_text_only", "prompt_over_cap_refused",
 )
 GOVERNED_CASES = (
-    "finding_bound", "finding_unbound", "finding_receipt",
+    "finding_bound", "finding_reviewed_sha_mismatch", "finding_unbound", "finding_receipt",
     "finding_receipt_digest_unresolved", "falsifier_count_bound", "finding_prose",
     "degraded_leg_whole_code",
     "falsifier_policy_optional", "falsifier_policy_required_refuses_prose",
@@ -64,6 +65,8 @@ EXPECTED_RED_NODES = frozenset(
 )
 RECEIPT_PATH = ".phase-loop/evidence/EXECFIND/content-tdd-receipt.json"
 RED_COMMAND = (
+    f"env {ACTIVATION_ENV}=1 "
+    f"PYTHONPATH=phase-loop-runtime/src{os.pathsep}phase-loop-runtime/tests "
     "python3 -m pytest -q --tb=line --color=no -p no:cacheprovider "
     + " ".join(FROZEN_TEST_FILES)
 )
@@ -162,12 +165,6 @@ def _read_red_output(parent: Path, receipt: object) -> str:
 
 
 def record_red(repo: Path, landing_ref: str, receipt_path: Path) -> int:
-    previous_activation = os.environ.get(ACTIVATION_ENV)
-    previous_pythonpath = os.environ.get("PYTHONPATH")
-    os.environ[ACTIVATION_ENV] = "1"
-    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (
-        str(repo / "phase-loop-runtime/src"), str(repo / TEST_DIR), previous_pythonpath,
-    )))
     try:
         with tempfile.TemporaryDirectory(prefix="execfind-red-") as scratch:
             staged = Path(scratch) / receipt_path.name
@@ -186,15 +183,6 @@ def record_red(repo: Path, landing_ref: str, receipt_path: Path) -> int:
     except Exception as exc:
         print(f"execfind record-red failed: {exc}", file=sys.stderr)
         return 1
-    finally:
-        if previous_activation is None:
-            os.environ.pop(ACTIVATION_ENV, None)
-        else:
-            os.environ[ACTIVATION_ENV] = previous_activation
-        if previous_pythonpath is None:
-            os.environ.pop("PYTHONPATH", None)
-        else:
-            os.environ["PYTHONPATH"] = previous_pythonpath
     print(f"execfind record-red: {receipt_path}")
     return 0
 

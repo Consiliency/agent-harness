@@ -20,7 +20,7 @@ from phase_loop_runtime.governed_review import (
     select_reviewer_pool,
 )
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
-from test_execfind_falsifier import _falsifier_text, _source_repo
+from test_execfind_falsifier import _advance_source_head, _falsifier_text, _source_repo
 
 
 def _panel(*legs):
@@ -342,6 +342,23 @@ class ExecfindFindingTests(unittest.TestCase):
 
         execfind_tdd.run_execfind_contract("finding_bound", check)
 
+    def test_finding_reviewed_sha_mismatch(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            with tempfile.TemporaryDirectory(prefix="execfind-sha-drift-") as root:
+                repo, reviewed_sha = _source_repo(Path(root))
+                self.assertNotEqual(_advance_source_head(repo), reviewed_sha)
+                gate = _execfind_gate(repo, reviewed_sha)
+            self.assertTrue(gate.ran and not gate.promoted, gate)
+            self.assertFalse(any(f.code == "finding_bound" for f in gate.findings), gate.findings)
+            self.assertTrue(any(
+                f.code == "finding_receipt" and f.severity == "block"
+                and "record_digest=" in f.reason and "record_digest=unresolved" not in f.reason
+                for f in gate.findings
+            ), gate.findings)
+
+        execfind_tdd.run_execfind_contract("finding_reviewed_sha_mismatch", check)
+
     def test_finding_unbound(self):
         def check():
             execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
@@ -576,6 +593,10 @@ class ExecfindFindingTests(unittest.TestCase):
                     {key: binding(diff_digest="0" * 64)},
                     {key: binding(red_output_digest="0" * 64)},
                 ]
+                if outcome == "red_on_head":
+                    wrong.append({key: binding({**expected, "red_output_digest": None})})
+                else:
+                    wrong.append({key: binding({**expected, "red_output_digest": "0" * 64})})
                 for invalid in wrong:
                     with self.subTest(outcome=outcome, invalid=invalid):
                         findings = reduce_findings(
