@@ -4010,9 +4010,9 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     of such a block under a fresh uuid is not detected.
 
     With ``require_terminal`` (the president route, agent-harness#1016), the answer also
-    requires its last record to stop with ``end_turn``, and no record of the answer may stop
-    with anything else (earlier blocks stay null), be a ``<synthetic>`` model record, or carry
-    ``isApiErrorMessage`` on the message or the record.
+    requires its last record to stop with ``end_turn``, and no record of the answer, including
+    a superseded version, may stop with anything else (earlier blocks stay null), be a
+    ``<synthetic>`` model record, or carry ``isApiErrorMessage`` on the message or the record.
 
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
@@ -4150,7 +4150,7 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         terminal.get("stop_reason") != "end_turn"
         or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
                or m.get("isApiErrorMessage") or p.get("isApiErrorMessage")
-               for p, m in final_records)
+               for p, m in group)  # every record of the answer, superseded versions included
     ):
         return ""  # the president route needs a genuine, completed end_turn
     if "stop_reason" in terminal and terminal["stop_reason"] is None:

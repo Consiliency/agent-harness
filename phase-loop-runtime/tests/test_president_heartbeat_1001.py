@@ -541,3 +541,40 @@ def test_cancel_wins_over_terminal_nonconforming_at_idle_poll(tmp_path, monkeypa
     rc, text, log, _ = _run_terminal_child(
         tmp_path, monkeypatch, shape="alive", interval_s=.05, cancel_on_final_read=True)
     assert rc != 0 and text == "" and log == "review_operation_cancelled", (rc, text, log)
+
+
+def test_terminal_nonconforming_turn_is_returned_at_process_exit(tmp_path, monkeypatch):
+    # agent-harness#1017 r2: with PTY EOF suppressed and the transcript interval long, only the
+    # process-exit site can see the completed nonconforming turn.
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_READY_QUIESCENCE_S", .05)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 60)
+    monitor = panel_invoker._ReviewMonitor(tmp_path / "monitor.json", "fixture", 0, threading.Event())
+    marker = tmp_path / "terminal-written"
+    real_select = panel_invoker.select.select
+    real_launch = panel_invoker.launch_provider
+    launched = []
+
+    def capture_launch(*args, **kwargs):
+        proc = real_launch(*args, **kwargs)
+        launched.append(proc)
+        return proc
+
+    def no_eof_after_terminal(readers, writers, errors, timeout):
+        if marker.exists():
+            time.sleep(.01)
+            return [], [], []
+        return real_select(readers, writers, errors, min(timeout, .01) if timeout else timeout)
+
+    with patch.object(panel_invoker.select, "select", no_eof_after_terminal), patch.object(
+        panel_invoker, "launch_provider", capture_launch,
+    ):
+        rc, text, log, _ = panel_invoker._run_claude_tui_session(
+            command=[sys.executable, "-c", _TERMINAL_CHILD, "eof"], cwd=tmp_path, prompt="rule on F001",
+            output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
+            mode="president", backstop_s=10, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
+        )
+    assert marker.exists()
+    assert (rc, text, log) == (0, "I think it is fine", "claude_tui_broker_terminal_nonconforming")
+    assert len(launched) == 1 and launched[0].poll() is not None
