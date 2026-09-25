@@ -880,6 +880,69 @@ def test_falsifier_distinguishes_collection_failure_from_missing_node(tmp_path, 
     assert backing._falsifier_authorization_lease(authorization).closed
 
 
+@pytest.mark.parametrize("source, selector", [
+    (
+        "class TestGroup:\n"
+        "    def test_a(self):\n        print('EXECUTED_A')\n"
+        "    def test_b(self):\n        print('EXECUTED_B')\n",
+        "TestGroup",
+    ),
+    (
+        "import pytest\n"
+        "@pytest.mark.parametrize('case', [1, 2])\n"
+        "def test_cases(case):\n    print('EXECUTED_CASE')\n",
+        "test_cases",
+    ),
+])
+def test_falsifier_rejects_selector_expansion_before_call(tmp_path, source, selector):
+    from phase_loop_runtime import falsifier
+
+    stage = tmp_path / "stage"
+    tests = stage / "phase-loop-runtime" / "tests"
+    tests.mkdir(parents=True)
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    (stage / path).write_text(source, encoding="utf-8")
+    nodeid = f"{path}::{selector}"
+
+    returncode, stdout, _stderr, failure, report = review_stage.run_bounded_falsifier_node(
+        staged=stage, nodeid=nodeid, wall_clock_s=30, output_cap_bytes=65536,
+    )
+
+    assert failure is None
+    assert report is not None
+    assert report["calls"] == []
+    assert b"EXECUTED_" not in stdout
+    assert falsifier._outcome_from_report(report, nodeid, returncode) == "error"
+
+
+@pytest.mark.parametrize("conftest_source", [
+    "import definitely_missing_execfind_conftest_dependency\n",
+    (
+        "import pytest\n"
+        "def pytest_configure(config):\n"
+        "    raise pytest.UsageError('startup configuration failed')\n"
+    ),
+])
+def test_falsifier_startup_failure_is_not_node_missing(tmp_path, conftest_source):
+    from phase_loop_runtime import falsifier
+
+    stage = tmp_path / "stage"
+    tests = stage / "phase-loop-runtime" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").write_text(conftest_source, encoding="utf-8")
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    (stage / path).write_text("def test_trigger():\n    assert True\n", encoding="utf-8")
+    nodeid = f"{path}::test_trigger"
+
+    returncode, _stdout, _stderr, failure, report = review_stage.run_bounded_falsifier_node(
+        staged=stage, nodeid=nodeid, wall_clock_s=30, output_cap_bytes=65536,
+    )
+
+    assert failure is None
+    assert report is not None
+    assert falsifier._outcome_from_report(report, nodeid, returncode) == "error"
+
+
 def test_unencodable_falsifier_diff_closes_authorization(tmp_path):
     from types import SimpleNamespace
 

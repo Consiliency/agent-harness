@@ -141,8 +141,11 @@ def _outcome_from_report(
         return "error"
     exit_code = report.get("exit")
     calls = report.get("calls")
-    if exit_code in (4, 5) and calls == [] and report.get("collection_failed") is False:
+    if (exit_code == 4 and calls == [] and report.get("collection_failed") is False
+            and report.get("session_started") is True and report.get("selected_count") == 0):
         return "node_missing"
+    if report.get("selection_exact") is not True:
+        return "error"
     if not isinstance(calls, list) or len(calls) != 1:
         return "error"
     call = calls[0]
