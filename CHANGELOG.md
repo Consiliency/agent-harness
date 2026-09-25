@@ -414,7 +414,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   downstream re-verify, a failed merge, a missing head pin, and a refused refresh publish
   or FAB-scope block. None of them now appends a branch-only `blocked` row, which previously
   let the next run republish the node or resume a FAB node as non-FAB. When the ledger
-  cannot be read, no row is appended at all.
+  cannot be read, a refusal appends nothing. A refresh whose admission cannot be read halts
+  (`ledger_unreadable`) before writing its `running` breadcrumb over the admission.
 - Patches are always rendered as text. Previously a text file over Git's
   `core.bigFileThreshold`, or one marked `-diff`, rendered as a binary summary with its
   content omitted. A binary summary now holds the packet.

@@ -358,6 +358,7 @@ def test_real_runner_native_stale_fill_precedes_cache(candidate, monkeypatch):
     assert run_candidate(c, monkeypatch)["status"] == "review_approved"
     result = run_candidate(c, monkeypatch, native_leg_fills=[SimpleNamespace(artifact_sha256="f" * 64)], _train_review_fn=never)
     assert result["reason"] == "native_fill_stale_request"
+    assert result["terminal_blocker"]["human_required"] is False, result
 
 
 def test_real_runner_native_emission_uses_stored_packet(candidate, monkeypatch):

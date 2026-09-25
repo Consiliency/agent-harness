@@ -2452,8 +2452,10 @@ def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch
         latest = admission if admission is not None else read_ledger(ledger_path).get(node_id)
     except (OSError, ValueError):
         # Unreadable now: append NOTHING. A branch-only row would win the last-wins fold
-        # once reads recover and erase the admission (agent-harness#978 round 11, codex);
-        # the durable binding stays, and the caller still returns its halt.
+        # once reads recover and erase the admission (agent-harness#978 round 11, codex).
+        # The binding stays the fold because no caller has appended over it: P4 callers
+        # append nothing before refusing, and P3 halts before its breadcrumb when its
+        # capture fails (round 12).
         return
     if latest is None:
         append_record(ledger_path, LedgerRecord(node_id=node_id, status="blocked", branch=branch))
@@ -3160,6 +3162,16 @@ def _run_train_unfenced(
         # A refresh of an admitted node: keep its admission for a refusal below, before the
         # breadcrumb covers it in the last-wins fold (agent-harness#978 round 11).
         _admission_rec = _capture_admission(ledger_path, nid) if nid in completed_nodes else None
+        if _admission_rec is _LEDGER_UNREADABLE:
+            # Never cover an admission this run could not capture (agent-harness#978 round 12,
+            # all seats): halt with the ledger untouched, so the admission stays the fold.
+            return {
+                "status": "blocked",
+                "node_id": nid,
+                "detail": {"reason": "ledger_unreadable",
+                           "message": "the admitted node's ledger record could not be read before refresh"},
+                "terminal_blocker": _non_human_train_blocker("ledger_unreadable"),
+            }
         # Mark as running (durable breadcrumb for diagnostics)
         append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
 

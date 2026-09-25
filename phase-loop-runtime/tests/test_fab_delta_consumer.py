@@ -1418,8 +1418,9 @@ def _assert_head_append_inventory(source_text: str):
         # never a new or derived head): a failed live-head read and a stale-upstream block.
         # Every other refusal of an admitted node -- including a refused refresh publish and a
         # refresh's FAB-scope block, formerly inline rows here -- goes through
-        # `_append_blocked_keeping_admission`, which re-appends the latest durable record
-        # verbatim except for `status`/`ts` (agent-harness#978 rounds 10-11), so no new head
+        # `_append_blocked_keeping_admission`, which re-appends the node's admission (the latest
+        # durable record, or the one P3 captured before its breadcrumb) verbatim except for
+        # `status`/`ts` (agent-harness#978 rounds 10-12), so no new head
         # enters the ledger there either. Pinned by test_train_prebuilt.py::TestPrebuiltRefresh
         # and test_train_review_packet.py (refusal writers, helper unit test).
         ("_run_train_unfenced", "inline", "blocked"),
