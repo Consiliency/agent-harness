@@ -1,9 +1,9 @@
 {
-  "base_commit": "6e7013a115d8491199c2271161377a85f5bbef1e",
-  "base_tree_digest": "5ce672466adbe56b90fb9be209785a58bfc00718",
-  "landing_commit": "6e7013a115d8491199c2271161377a85f5bbef1e",
+  "base_commit": "d7efb448f81026a09e388238925191e76a382a9c",
+  "base_tree_digest": "ed08bf9c15981afa781be8e4b6d6ad8dea0bdaad",
+  "landing_commit": "d7efb448f81026a09e388238925191e76a382a9c",
   "landing_ref": "HEAD",
-  "landing_tree_digest": "5ce672466adbe56b90fb9be209785a58bfc00718",
+  "landing_tree_digest": "ed08bf9c15981afa781be8e4b6d6ad8dea0bdaad",
   "red_argv": [
     "python3",
     "-m",
@@ -24,6 +24,8 @@
   "red_exit_status": 1,
   "red_nodeids": [
     "tests/test_execfind_falsifier.py::test_unexpected_pass_refused",
+    "tests/test_execfind_falsifier.py::test_missing_capability_strict_green_fails",
+    "tests/test_execfind_falsifier.py::test_node_launch_guard_detects_attempt",
     "tests/test_execfind_falsifier.py::test_marker_exact_match_only",
     "tests/test_execfind_falsifier.py::test_unrelated_exception_propagates",
     "tests/test_execfind_falsifier.py::test_importerror_not_capability_absence",
@@ -108,7 +110,7 @@
   "red_stderr_path": "content-tdd-receipt.red.stderr.log",
   "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "red_stdout_path": "content-tdd-receipt.red.stdout.log",
-  "red_stdout_sha256": "d99b87c85eda93c01812f7928d4b07f028acdb4930c124d63272d8e389497d47",
+  "red_stdout_sha256": "bfd7d77b29250fb66d07632da009bd95a07d3d2b17b4376326e5fd8fee9ecebe",
   "schema": "content_tdd_receipt.v1",
   "test_files": [
     {
@@ -117,7 +119,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/execfind_content_tdd_adapter.py",
-      "sha256": "0960c3071068d726b28892bbdc296553356250f4a0b971f6daed21db1fbb20c6"
+      "sha256": "2c052c62e9fc5e286a267f9e7f0ecfc3458152044e0355d9c06271bb4d5ff18d"
     },
     {
       "path": "phase-loop-runtime/tests/test_advisor_board_golden.py",
@@ -125,7 +127,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/test_execfind_falsifier.py",
-      "sha256": "516e8cb5ea556de99fd39af4c6fef86e469514523eff9d28f557990c2e673fef"
+      "sha256": "04d0f4a241e3cbc81a2237e38b9101bccb5cafe19405e11fee996eff5d08e65e"
     },
     {
       "path": "phase-loop-runtime/tests/test_governed_review.py",
