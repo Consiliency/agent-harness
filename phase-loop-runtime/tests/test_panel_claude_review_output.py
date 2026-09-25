@@ -721,3 +721,12 @@ def test_president_route_rejects_a_superseded_tool_use_version(tmp_path):
     tool["message"]["content"] = [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]
     path = _jsonl(tmp_path, [_user("u1"), tool, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("earlier_mid", [None, "x"])
+def test_president_route_rejects_a_flagged_record_under_the_answer_uuid_with_another_id(tmp_path, earlier_mid):
+    # agent-harness#1017 r5 (claude): the flagged record shares the answer's uuid but not its id.
+    flagged = _asst("FORCING DECISION: APPROVE", mid=earlier_mid, uuid="a", stop=None)
+    flagged["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), flagged, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
