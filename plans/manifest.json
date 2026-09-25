@@ -8922,6 +8922,245 @@
       "task_summary": "Reconcile agent-harness#797 A2 assumptions with observed upstream and preserve sealed history.",
       "type": "detailed",
       "updated_at": "2026-09-22T10:14:50Z"
+    },
+    {
+      "acceptance_criteria_count": 6,
+      "convergence_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-convergence.json",
+      "convergence_sha256": "14841bb74d2ca036be8ff73c083bb9ab368bfa0bfbc5c08ff7e1e91cbf1f6324",
+      "created_at": "2026-09-22T03:42:00Z",
+      "file": "plans/detailed-train-review-packet-20260922-0342.md",
+      "git_commit_created": false,
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet.md",
+      "if_gates_produced": [],
+      "implementation_status": "in_progress",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-22T03:42:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "git_commit_created": false,
+            "implementation_status": "not_started",
+            "review_status": "pending_cross_vendor_panel",
+            "run_id": "20260922T034200Z-train-review-packet"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-22T04:21:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "event": "plan_revision_recorded",
+            "git_commit_created": false,
+            "implementation_not_started": true,
+            "plan_revision": 2,
+            "plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "prior_plan_sha256": "217c56a78ae6e72865cb767ddfcade342027abf042ba221b372d2984d1371b80",
+            "reconciliation_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-r1-reconciliation.md",
+            "reconciliation_sha256": "7f0d03ac6119d937850d753ce373750ac417d50ded3281a3bacb7554eb014056"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-22T04:21:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "convergence_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-convergence.json",
+            "convergence_sha256": "14841bb74d2ca036be8ff73c083bb9ab368bfa0bfbc5c08ff7e1e91cbf1f6324",
+            "event": "qualified_plan_review_convergence",
+            "excluded_vote": "grok round 2: reported truncation; retained, not counted",
+            "git_commit_created": false,
+            "implementation_not_started": true,
+            "plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "round_2_dispositions_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-round-2-dispositions.md",
+            "round_2_dispositions_sha256": "3c6f786ebb23bb85bc818b1b758f06a81e7060dea468dc88b264985dc4d80743",
+            "round_cap": 3,
+            "scope": "Detailed plan approval only; no runtime implementation, phase completion, supplier approval, release or installation",
+            "standing_approvals": {
+              "claude": 2,
+              "codex": 2,
+              "gemini": 2,
+              "grok": 3
+            }
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-22T04:37:13.999158+00:00",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "reviewed_plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "run_id": "train-review-packet-impl-20260922",
+            "source_base": "9e60c4b8bab45cea8cb0d837fe54eb579f9cbfcc"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T04:52:04.923744+00:00",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "delta": "Remove obsolete test_launch_seam_coverage.py only; retain behavioral test_the_real_launch_carries_the_prefix.py",
+            "event": "proposed_verification_input_correction",
+            "original_command_exit_code": 4,
+            "prior_plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "proposed_plan_sha256": "66e718e667662f2b08816d23b936ace260fed49f0fd2327cd42dee0a23ca4c2d",
+            "removed_in_commit": "7112c79aa1bb6a9a1dac931467cdf6d9f197f167",
+            "review_status": "pending_implementation_board_ratification"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T06:09:55Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "event": "ordering_contract_converged_tests_first",
+            "timestamp_correction": "Initial provisional timestamp corrected to RED-input commit time; prior plan lifecycle entries unchanged",
+            "ordering_proposal_sha256": "fa4b7f3832b32bc499eecb1c86eff4fc17e1297710aa285268e73cebbb661786",
+            "input_binding_corrections_sha256": "65e97eef3cad9236326e5c17f59e449a26d773db34fa1819e7391eaa52712a66",
+            "evidence_root": "/mnt/workspace/archives/agent-harness-train-review-packet-20260922",
+            "convergence_ref": "ORDERING-CONVERGENCE.json",
+            "round_exception_ref": "ORDERING-INPUT-BINDING-EXCEPTION.md",
+            "implementation_approved": false,
+            "red_receipt": ".phase-loop/train-review-packet/implementation/ordering-red.log",
+            "red_summary": "25 failed, 4 passed; includes 24 behavioral failures and one missing prepared API",
+            "dependency": "3703355c2afe5185098747e430a3b20df057ba3a"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T08:51:06Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "event": "operational_evidence_imported",
+            "amendment_ref": "plans/train-review-packet-operational-evidence-20260922.md",
+            "amendment_sha256": "c829c03f43355e515769ba0c6de58f4b4ed49c5dc1ec6a21c9ae5f8d0ff74bcd",
+            "import_receipt_ref": "phase-loop-runtime/.phase-loop/train-review-packet/implementation/operational-import-stamp/verification.json",
+            "import_receipt_sha256": "437e28d6fbd3dd0548d0cd55ae6fe7356f5661602844cb42c86594eddd614d15",
+            "operational_source_head": "c7cdbaca30b0a7eacd1e9086c66b2e3c8d48a9bb",
+            "import_source_head": "635232bf773496fdd367d479e3c06a062934e283",
+            "verification_status": "failed",
+            "automation_summary": "622 passed, 1 skipped",
+            "full_summary": "16 failed, 6861 passed, 720 skipped; 16 per-node causes match retained baselines; skip set not compared",
+            "disposition": "Evidence imported; verification/format clarifications and implementation pending four-vendor ratification. Exact-candidate CI required; no historical verdict replaced.",
+            "pr_url": "https://github.com/Consiliency/agent-harness/pull/978"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-22T09:33:23.267206Z",
+          "by": "codex-execute-detailed",
+          "transition": "executing",
+          "metadata": {
+            "event": "current_plan_review_input_bound",
+            "plan_sha256": "a46010a6aaf7e5c0759a00d9dc25ccc3ff2d9de42fade4729419cc7b3b67562b",
+            "review_status": "pending_final_implementation_ratification",
+            "prior_approved_plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+            "implementation_round": 2,
+            "candidate_head": "0b3a54b5a85d538064d1d00ba63c12a7088f9376",
+            "review_manifest_ref": "/mnt/workspace/archives/agent-harness-train-review-packet-20260922/implementation-r2-whole-0b3a54b5/R2-TERMINAL-MANIFEST.json",
+            "review_manifest_sha256": "ede3114eeec657dc4db0946e867fb0c2548a1f70acadff616d2690485f906529",
+            "disposition": "Current format and nineteen-module verification amendments are explicit review inputs. Historical plan approval remains unchanged; implementation round 2 is not converged."
+          }
+        },
+        {
+          "at": "2026-09-22T10:57:32.350232Z",
+          "by": "codex-execute-detailed",
+          "transition": "executing",
+          "metadata": {
+            "event": "bounded_r3_repairs_verified_pending_integrated_review",
+            "plan_sha256": "a46010a6aaf7e5c0759a00d9dc25ccc3ff2d9de42fade4729419cc7b3b67562b",
+            "historical_plan_authority_unchanged": true,
+            "repair_source_head": "74ecf1de3093cce3f0b931e99f115c74227200d7",
+            "tests_first_commit": "0fde67f1a28e03e9425dfe5d64c536ef720e6b16",
+            "integrated_main_input": "f0f041045e6400d4fe2e907974c9469790078716",
+            "verification_status": "failed",
+            "prior_failed_full": {
+              "source_head": "e416ce7a6efd4cc853e1d7da897564a01fdbc40f",
+              "summary": "16 failed, 6880 passed, 720 skipped; exit 1; all 16 causes match retained baseline evidence; skip set not compared",
+              "verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-train-review-packet-impl-20260922/phase-loop-runtime/.phase-loop/train-review-packet/implementation/full-r2-e416ce7a/verification.json",
+              "verification_artifact_sha256": "e239d1e0b83eedf99dd400598ce811f457e7e062b60465cbdde594f4e6fbaf14",
+              "failure_disposition_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-train-review-packet-impl-20260922/phase-loop-runtime/.phase-loop/train-review-packet/implementation/full-r2-e416ce7a/failure-disposition.json",
+              "failure_disposition_sha256": "a7e9d1672c7850718e3656cfff40213e0a723cda5c8da6623bdeed51f5127171"
+            },
+            "preintegration_automation": {
+              "source_head": "74ecf1de3093cce3f0b931e99f115c74227200d7",
+              "summary": "645 passed, 1 skipped; suite exit 0; native v2 validation ok; 1227 inputs and clean HEAD/tree unchanged",
+              "verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-train-review-packet-impl-20260922/phase-loop-runtime/.phase-loop/train-review-packet/implementation/preintegration-r3-74ecf1de/verification.json",
+              "verification_artifact_sha256": "37921a86e22ddd33aad4c56d8d6734c0eac3198128df25cdba1f1d4a2f68737a"
+            },
+            "r3_review_status": "A: Codex and Opus PARTIALLY AGREE; Gemini and Grok AGREE; B unlaunched; no votes carried",
+            "repair_disposition_ref": "/mnt/workspace/archives/agent-harness-train-review-packet-20260922/implementation-r3-readiness-witness/R3-REPAIR-DISPOSITION-74ecf1de.md",
+            "review_status": "pending_fresh_integrated_r4_full_suite_and_required_ci",
+            "disposition": "Tests-first sibling-effect refusal repair and shipped-skill test portability correction. Full-suite failure remains failed; no historical verdict rewritten, no implementation approval or supplier allowance granted."
+          }
+        },
+        {
+          "at": "2026-09-23T00:46:59Z",
+          "by": "codex-execute-detailed",
+          "transition": "executing",
+          "metadata": {
+            "event": "r8_fable_review_reconciled_tests_first_repairs",
+            "reviewed_head": "d5493e243cb138c295699976d57b7026048c8950",
+            "review_status": "not_converged",
+            "review_terminal_manifest_sha256": "adc1e48b84da08b9c199a585fde7d67176331aa09a58e244cec69d92ab8e6528",
+            "review_disposition_url": "https://github.com/Consiliency/agent-harness/pull/978#issuecomment-5786920754",
+            "claude_default": "claude-fable-5-1/max; four completed scope reviews; historical Opus records preserved",
+            "qualified_review_runtime": "3703355c2afe5185098747e430a3b20df057ba3a; Grok 4.6/high remains explicit; candidate main defaults Grok 4.7/xhigh",
+            "tests_first_commit": "c0f9ad384c797fa572d63e2ac009764c2e39bb22",
+            "repair_source_head": "ec790caa1d15396e6ee638283cc9bf662c3364e8",
+            "red_summary": "3 failed, 5 passed, zero skipped",
+            "green_summary": "8 focused and 33 regression checks passed, zero skipped; local scoped evidence, not final candidate verification",
+            "green_receipt_sha256": "7a4ee30a9e4b8796ac145577ce07dd2c549fce1be518b5343cfffcff35f070b1",
+            "integrated_main_input": "8d3137899b44d626d9cfe76fd11aad136b71a7d8",
+            "verification_status": "failed",
+            "prior_full_head": "d5493e243cb138c295699976d57b7026048c8950",
+            "prior_full_summary": "14 failed, 6897 passed, 720 skipped; all 14 causes match retained historical evidence; no fresh-main, environment-equivalence or skip-set claim",
+            "prior_full_verification_sha256": "b736489461f09e575ec5c9fe64f70b74165ecec79cc9f2d43508ccf2ee704203",
+            "prior_full_disposition_sha256": "44895946fc3de19b07bad45b729106e12d97e1d9e5e33ee80ab8b142a81eaecf",
+            "disposition": "Source fixes retain the immutable publish anchor and actionable quoted native-fill material. Documentation follows the admission-effect boundary. Incomplete reviewer context and ambiguous scope instructions are author-owned packet defects. Fresh integrated-head verification, complete scoped inputs, four-vendor approval and CI remain pending; no prior votes transfer, supplier allowance, install, release or phase completion."
+          }
+        },
+        {
+          "at": "2026-09-23T02:57:34Z",
+          "by": "codex-execute-detailed",
+          "transition": "executing",
+          "metadata": {
+            "event": "r9_fable_review_reconciled_stale_upstream_binding_repair",
+            "reviewed_head": "0cefe61a4dabcf1fd5cfe304d6f9d21a079ee45d",
+            "review_status": "not_converged",
+            "review_terminal_manifest_sha256": "5a61c7cae78cfc53747f63014ae1446d95cf70f736dfe778b4e8a840d1df36f7",
+            "review_disposition_url": "https://github.com/Consiliency/agent-harness/pull/978#issuecomment-5788134631",
+            "claude_default": "claude-fable-5-1/max; five completed scope reviews; historical Opus records preserved",
+            "tests_first_commit": "66ae63daa51bf03354011251de9ed503ca611ad6",
+            "repair_source_head": "0fe6446f6e347154551f257e93f3a887ba20d9d3",
+            "red_summary": "6 failed, 6 passed, zero skipped; isolated tests-only worktree at original production bytes",
+            "green_summary": "Same 12 controls passed; 21 existing regressions passed; zero skips; local preintegration evidence",
+            "green_receipt_sha256": "38953028c28e6f351d9970aa22c5a2e694a3e096be37947a4f23e7ad66cfbed8",
+            "repair_index_sha256": "e5a4b5ba04075788cd891708342dd9994d769af264be1bf50881686fad59ad06",
+            "integrated_main_input": "8bb379df24041ecd8f82f6ae4171863939b8ef0e",
+            "verification_status": "failed",
+            "prior_full_head": "0cefe61a4dabcf1fd5cfe304d6f9d21a079ee45d",
+            "prior_full_summary": "16 failed, 6901 passed, 720 skipped; diagnosis retained, not green; no fresh-main, environment-equivalence or skip-set claim",
+            "prior_full_verification_sha256": "674a1e6266c7a817194754601805a2fb0a16e57859ca674a5b6cd74a2e5bdade",
+            "disposition": "The stale-upstream refusal now retains the durable FAB run ID and merge order, with reproduced normal and revoked resume controls. Smaller complete functional packets must repair missing reviewer context and name failure evidence. All twenty old reports remain retained; E/Grok has no usable verdict and no inferred cause. Fresh integrated-head verification, complete-union four-vendor review and required CI remain pending. No votes transfer, supplier allowance, install, release or phase completion."
+          }
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "plan_revision": 2,
+      "plan_sha256": "ad620f8291442a41611c6e9d4e8946621003c981ea56096c0130884865ba582e",
+      "proposed_plan_sha256": "66e718e667662f2b08816d23b936ace260fed49f0fd2327cd42dee0a23ca4c2d",
+      "reconciliation_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-r1-reconciliation.md",
+      "reconciliation_sha256": "7f0d03ac6119d937850d753ce373750ac417d50ded3281a3bacb7554eb014056",
+      "reflection_ref": ".dev-skills/handoffs/codex-plan-detailed/20260922T034200Z-train-review-packet-reflection.md",
+      "review_status": "qualified_four_vendor_convergence",
+      "roadmap_ref": null,
+      "slug": "detailed-train-review-packet-20260922-0342",
+      "status": "executing",
+      "task_summary": "Coordinator-owned admitted train review packet, zero-model preview and content-bound approval for agent-harness#906 and agent-harness#915.",
+      "type": "detailed",
+      "updated_at": "2026-09-23T02:57:34Z"
     }
   ],
   "schema_version": 1

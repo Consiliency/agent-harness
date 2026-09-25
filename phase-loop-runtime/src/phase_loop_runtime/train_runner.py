@@ -1071,6 +1071,28 @@ def _check_readmission_revocation(evidence_store=None) -> bool:
     return False
 
 
+def _train_revocation_store(workspace, record):
+    """Resolve and replay the actual repository store without creating it."""
+    from .governed_premerge import fab_promotion_enabled
+    from .train_review_packet import PacketError
+    if record.fab_run_id is None or not fab_promotion_enabled():
+        return None
+    from .convergence.broker.evidence import BrokerEvidenceStore
+    from .convergence.broker.live import repository_broker_namespace
+    try:
+        namespace = repository_broker_namespace(workspace)
+        if not namespace.is_dir():
+            raise OSError("repository evidence namespace absent")
+        store = BrokerEvidenceStore(namespace)
+        if _check_readmission_revocation(store):
+            raise PacketError("readmission_revoked: " + record.node_id)
+        return store
+    except PacketError:
+        raise
+    except Exception as exc:
+        raise PacketError(f"revocation_store_unavailable: {record.node_id}: {exc}") from exc
+
+
 def _commit_broker_readmitted_head(
     ledger_path: Path,
     record: LedgerRecord,
@@ -1330,7 +1352,9 @@ def _fab_delta_readmit(
     roadmap_digest = tx_roadmap_digest
 
     prior_committed_head = active_pub.get("committed_head_sha") or active_pub.get("expected_commit_oid") or active_pub.get("parent_head_sha")
-    if not prior_committed_head or prior_committed_head != admitted_head_sha:
+    # The publish transaction anchors C0; later admissions extend its validated
+    # provenance chain without rewriting that original transaction.
+    if not prior_committed_head or prior_committed_head != artifact.candidate.head_sha:
         _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
         return None
 
@@ -2337,7 +2361,7 @@ def _default_train_review(
     FAB (Consiliency/agent-harness#191) design §4.4 note (activation
     milestone, piece 1): this call deliberately forwards
     ``fab_promotion_check=None`` (the default — never set here). ``artifact``
-    here is `_build_train_review_bundle`'s multi-node, multi-repo BUNDLE
+    here is the immutable train review packet's multi-node, multi-repo BUNDLE
     text, reviewed as one logical cross-repo change — there is no single
     ``EquivalenceBinding`` (one repo_slug/base/head tuple) it could bind to.
     The load-bearing per-PR re-assertion instead lives at
@@ -2394,6 +2418,53 @@ def _default_emit_native_fill_request(
             "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"]}
 
 
+_LEDGER_UNREADABLE = object()
+
+
+def _capture_admission(ledger_path: Path, node_id: str) -> object:
+    """The node's durable record BEFORE this run appends a breadcrumb over it (the P3
+    ``running`` row), or ``_LEDGER_UNREADABLE``."""
+    try:
+        return read_ledger(ledger_path).get(node_id)
+    except (OSError, ValueError):
+        return _LEDGER_UNREADABLE
+
+
+def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch: Optional[str] = None,
+                                      admission: object = None) -> None:
+    """Append a ``blocked`` row that KEEPS the node's durable admission binding.
+
+    The ledger folds last-wins, so a branch-only ``blocked`` row erased ``head_sha``,
+    ``pr_url``, ``fab_run_id`` and ``merge_order``. A later run then dropped the node
+    and republished it, or resumed a FAB node as non-FAB (agent-harness#978 round 9 B1,
+    and its round-10 class sweep). Every refusal of a node that is already admitted
+    goes through here; a node still being built in P3 has no admission to keep.
+    ``branch`` is used only when the ledger has no record for the node. A ledger that
+    cannot be read gets no row at all, never an unbound one. ``admission`` (from
+    ``_capture_admission``) replaces the read where this run has already appended a
+    breadcrumb over the admission.
+    """
+    from dataclasses import replace as _replace
+
+    try:
+        if admission is _LEDGER_UNREADABLE:
+            raise OSError("ledger unreadable when the admission was captured")
+        latest = admission if admission is not None else read_ledger(ledger_path).get(node_id)
+    except (OSError, ValueError):
+        # Unreadable now: append NOTHING. A branch-only row would win the last-wins fold
+        # once reads recover and erase the admission (agent-harness#978 round 11, codex).
+        # The binding stays the fold because no caller has appended over it: P4 callers
+        # append nothing before refusing, and P3 halts before its breadcrumb when its
+        # capture fails (round 12).
+        return
+    if latest is None:
+        append_record(ledger_path, LedgerRecord(node_id=node_id, status="blocked", branch=branch))
+        return
+    # Verbatim but for the status: no head, PR, run or order can enter the ledger here
+    # (test_fab_delta_consumer's head-append inventory relies on that).
+    append_record(ledger_path, _replace(latest, status="blocked", ts=""))  # fresh append time
+
+
 def _non_human_train_blocker(summary: str) -> Dict[str, object]:
     return {
         "human_required": False,
@@ -2434,49 +2505,6 @@ def _train_canonical_repo_authority(
     return None
 
 
-def _build_train_review_bundle(
-    roadmap: "TrainRoadmap",
-    completed_nodes: Dict[str, Dict],
-    topo_order: "List[TrainNode]",
-) -> str:
-    """Build the artifact text for the train-level review panel.
-
-    Summarises all draft PRs in merge order so the panel can review the
-    cross-repo change as one logical unit.
-    """
-    # design-model-tier-taxonomy.md item 7 (CR round-3 correction): the train
-    # coordinator is a SUPERVISE-tier role, but there is NO programmatic coordinator
-    # launch that sets a model (the coordinator is the CLI/ambient session; per-node
-    # run_loop launches its own phase executors). So this does NOT bind a launch —
-    # it records the supervise tier on the coordinator's review artifact as ADVISORY
-    # PROVENANCE (the operator running the supervisor session should be on the heavy
-    # model, Opus 5).
-    from .profiles import supervise_selection
-
-    supervise = supervise_selection()
-    lines: List[str] = [
-        "# Train-level bundle review\n\n",
-        f"**Train:** `{roadmap.title}`\n\n",
-        (
-            f"_Coordinator supervise tier: `{supervise.tier}` "
-            f"(model `{supervise.model_id}`, effort `{supervise.effort}`)._\n\n"
-        ),
-        "## Draft PRs (merge order)\n\n",
-        "Review the following PRs as **one logical cross-repo change**.\n",
-        "Approve (AGREE) only if the change is correct as a unit.\n\n",
-    ]
-    for i, node in enumerate(topo_order, 1):
-        nid = node.node_id
-        info = completed_nodes.get(nid, {})
-        pr_url = info.get("pr_url", "(unknown)")
-        head_sha = info.get("head_sha") or "?"
-        short_sha = head_sha[:8] if len(head_sha) >= 8 else head_sha
-        lines.append(f"{i}. **`{nid}`** — [PR]({pr_url}) (draft `{short_sha}`)\n")
-    lines.append(
-        "\n---\n"
-        "Reject (DISAGREE) with specific blocking concerns if not ready.\n"
-    )
-    return "".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -2557,6 +2585,7 @@ def _run_train_unfenced(
     emit_native_request: bool = False,
     native_leg_fills: "Sequence[object] | None" = None,
     _emit_native_fill_request_fn: Optional[Callable] = None,
+    review_material: "Path | str | None" = None,
     # P4 seams — unused when _merge_phase_enabled is False.
     _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
@@ -2853,10 +2882,7 @@ def _run_train_unfenced(
                         # publish); if it is ever missing, fail closed rather
                         # than silently degrade to an unpinned recovery check.
                         if not rec.head_sha:
-                            append_record(
-                                ledger_path,
-                                LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
-                            )
+                            _append_blocked_keeping_admission(ledger_path, nid, branch=rec.branch)
                             return {
                                 "status": "blocked",
                                 "node_id": nid,
@@ -2875,10 +2901,7 @@ def _run_train_unfenced(
                                 workspace, rec.branch, base=_DEFAULT_BASE, head_sha=rec.head_sha
                             )
                         except Exception as _step3_exc:
-                            append_record(
-                                ledger_path,
-                                LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
-                            )
+                            _append_blocked_keeping_admission(ledger_path, nid, branch=rec.branch)
                             return {
                                 "status": "blocked",
                                 "node_id": nid,
@@ -2892,6 +2915,8 @@ def _run_train_unfenced(
                                 pr_url=rec.pr_url,
                                 head_sha=rec.head_sha,
                                 upstream_merge_sha=_recovered_sha,
+                                fab_run_id=rec.fab_run_id,
+                                merge_order=rec.merge_order,
                             )
                             append_record(ledger_path, _recovered_rec)
                             # Update in-memory view so Step 4's merged-node skip
@@ -2925,6 +2950,7 @@ def _run_train_unfenced(
                         LedgerRecord(
                             node_id=nid, status="blocked", branch=rec.branch,
                             head_sha=rec.head_sha, pr_url=rec.pr_url,
+                            fab_run_id=rec.fab_run_id, merge_order=rec.merge_order,
                         ),
                     )
                     return {
@@ -3075,18 +3101,11 @@ def _run_train_unfenced(
                     continue
                 if decision != "advanced":
                     reason, message = decision
-                    # Durable refusal: keep the admitted head + PR on the row so the next
-                    # run re-enters this decision instead of publishing fresh (see Step 3).
-                    append_record(
-                        ledger_path,
-                        LedgerRecord(
-                            node_id=nid,
-                            status="blocked",
-                            branch=completed_nodes[nid].get("branch"),
-                            head_sha=completed_nodes[nid].get("admitted_head_sha"),
-                            pr_url=completed_nodes[nid].get("pr_url"),
-                        ),
-                    )
+                    # Durable refusal: keep the whole admission (head, PR, FAB run, merge
+                    # order) so the next run re-enters this decision instead of publishing
+                    # fresh (see Step 3).
+                    _append_blocked_keeping_admission(
+                        ledger_path, nid, branch=completed_nodes[nid].get("branch"))
                     return {
                         "status": "blocked",
                         "node_id": nid,
@@ -3124,6 +3143,8 @@ def _run_train_unfenced(
                       branch=completed_nodes[nid].get("branch"),
                       head_sha=completed_nodes[nid].get("admitted_head_sha"),
                       pr_url=completed_nodes[nid].get("pr_url"),
+                      fab_run_id=nid_rec.fab_run_id,
+                      merge_order=nid_rec.merge_order,
                   ),
               )
               return {
@@ -3138,6 +3159,19 @@ def _run_train_unfenced(
         workspace = resolve_workspace(node)
         upstream_edges = roadmap.edges_for_downstream(node)
 
+        # A refresh of an admitted node: keep its admission for a refusal below, before the
+        # breadcrumb covers it in the last-wins fold (agent-harness#978 round 11).
+        _admission_rec = _capture_admission(ledger_path, nid) if nid in completed_nodes else None
+        if _admission_rec is _LEDGER_UNREADABLE:
+            # Never cover an admission this run could not capture (agent-harness#978 round 12,
+            # all seats): halt with the ledger untouched, so the admission stays the fold.
+            return {
+                "status": "blocked",
+                "node_id": nid,
+                "detail": {"reason": "ledger_unreadable",
+                           "message": "the admitted node's ledger record could not be read before refresh"},
+                "terminal_blocker": _non_human_train_blocker("ledger_unreadable"),
+            }
         # Mark as running (durable breadcrumb for diagnostics)
         append_record(ledger_path, LedgerRecord(node_id=nid, status="running"))
 
@@ -3421,17 +3455,16 @@ def _run_train_unfenced(
             # agent-harness#906: when this was a REFRESH of an admitted PR, keep the prior
             # admission on the row so the next run re-enters the refresh decision (and its
             # drift check) instead of publishing fresh.
-            _prior = completed_nodes.get(nid) or {}
-            append_record(
-                ledger_path,
-                LedgerRecord(
-                    node_id=nid,
-                    status="blocked",
-                    branch=publish_result.get("branch") or _prior.get("branch"),
-                    head_sha=_prior.get("admitted_head_sha"),
-                    pr_url=_prior.get("pr_url"),
-                ),
-            )
+            # agent-harness#978 round 11 (claude): the WHOLE binding, FAB run and merge order
+            # included, via the one writer that keeps it. A fresh node has none to keep.
+            if _admission_rec is not None:
+                _append_blocked_keeping_admission(ledger_path, nid, branch=publish_result.get("branch"),
+                                                  admission=_admission_rec)
+            else:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=nid, status="blocked", branch=publish_result.get("branch")),
+                )
             return {
                 "status": "blocked",
                 "node_id": nid,
@@ -3473,10 +3506,15 @@ def _run_train_unfenced(
             workspace, head_sha, _node_fab_run_id
         )
         if _fab_block_reason is not None:
-            append_record(
-                ledger_path,
-                LedgerRecord(node_id=nid, status="blocked", branch=branch),
-            )
+            # Before this run's pr_open append. A REFRESH of an admitted node keeps its prior
+            # admission (so the next run re-enters the refresh decision); a fresh node has none.
+            if _admission_rec is not None:
+                _append_blocked_keeping_admission(ledger_path, nid, branch=branch, admission=_admission_rec)
+            else:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(node_id=nid, status="blocked", branch=branch),
+                )
             return {
                 "status": "blocked",
                 "node_id": nid,
@@ -3589,10 +3627,7 @@ def _run_train_unfenced(
                 # carries an admitted_head_sha (Step 3 populates it for every
                 # completed_nodes entry). Fail closed instead of silently
                 # degrading to an unpinned already-merged check.
-                append_record(
-                    ledger_path,
-                    LedgerRecord(node_id=_nid_r, status="blocked", branch=_pr_branch_r),
-                )
+                _append_blocked_keeping_admission(ledger_path, _nid_r, branch=_pr_branch_r)
                 return {
                     "status": "merge_halted",
                     "node_id": _nid_r,
@@ -3608,10 +3643,7 @@ def _run_train_unfenced(
                     _ws_r, _pr_branch_r, base=_DEFAULT_BASE, head_sha=_admitted_head_sha_r
                 )
             except Exception as _merged_check_exc_r:
-                append_record(
-                    ledger_path,
-                    LedgerRecord(node_id=_nid_r, status="blocked", branch=_pr_branch_r),
-                )
+                _append_blocked_keeping_admission(ledger_path, _nid_r, branch=_pr_branch_r)
                 return {
                     "status": "merge_halted",
                     "node_id": _nid_r,
@@ -3631,47 +3663,148 @@ def _run_train_unfenced(
     # `_MIN_USABLE_REVIEWERS`, so a floor raised later (#375) auto-invalidates a
     # stored count that no longer clears it (no old-floor snapshot is trusted).
     # Pre-#358 records have `usable_reviewers is None` → re-review.
-    if review_only:
-        # agent-harness#906 D5 (review-only): do not spend a board on a bundle whose
-        # admitted head is no longer the live PR head; the merge-time
-        # `--match-head-commit` pin could never honour the approval. Governed merge
-        # runs keep today's behaviour (pinned by test_train_merge: an out-of-band open
-        # PR proceeds and fails closed at the merge pin), recorded as a plan deviation.
-        _stale = [
-            {
-                "node_id": _nid_s,
-                "admitted_head_sha": completed_nodes[_nid_s].get("admitted_head_sha"),
-                "live_head_sha": completed_nodes[_nid_s].get("head_sha"),
-            }
-            for _nid_s in sorted(out_of_band_upstreams)
-            if _nid_s in completed_nodes
-        ]
-        if _stale:
-            return {
-                "status": "review_halted",
-                "nodes": completed_nodes,
-                "reason": "stale_head",
-                "detail": {"stale": _stale},
-                "terminal_blocker": _non_human_train_blocker(
-                    "stale admitted head(s): " + ", ".join(
-                        f"{s['node_id']} admitted {s['admitted_head_sha']} live {s['live_head_sha']}"
-                        for s in _stale
-                    )
-                ),
-            }
+    from .train_review_packet import (
+        PacketError, build_review_packet, load_review_packet, recheck_packet_identities,
+        store_review_packet, prepare_review_packet, finalize_review_packet, admission_binding,
+    )
+    from .governed_premerge import fab_delta_shortcut_enabled
+    pending_nodes = [node for node in topo_order if node.node_id not in merged_shas]
+    proposed_heads = {}
+    stale = []
+    # Classify the whole pending set before preparing or mutating any sibling.
+    for node in pending_nodes:
+        rec = p4_ledger_state.get(node.node_id)
+        live_head = completed_nodes[node.node_id].get("head_sha")
+        if rec is not None and live_head != rec.head_sha:
+            if native_leg_fills:
+                return {"status": "review_halted", "reason": "native_fill_stale_request", "nodes": completed_nodes,
+                        "terminal_blocker": _non_human_train_blocker("native fill stale: a live head moved; re-emit")}
+            if review_only or emit_native_request or not rec.fab_run_id or not fab_delta_shortcut_enabled(fab_delta_shortcut):
+                stale.append({"node_id": node.node_id, "admitted_head_sha": rec.head_sha, "live_head_sha": live_head})
+            else:
+                proposed_heads[node.node_id] = live_head
+    if stale:
+        return {"status": "review_halted", "reason": "stale_head", "nodes": completed_nodes,
+                "detail": {"stale": stale}, "terminal_blocker": _non_human_train_blocker(
+                    "stale admitted head(s): " + ", ".join(row["node_id"] for row in stale))}
+    train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
+    packet_root = ledger_path.parent / "review-packets"
+    def fresh_packet_state():
+        state = read_ledger(ledger_path)
+        for nid, merged_sha in merged_shas.items():
+            if nid not in state:
+                raise PacketError("admission_identity_drift: " + nid)
+            if state[nid].status != "merged":
+                state[nid] = _replace_record(state[nid], status="merged", upstream_merge_sha=merged_sha)
+        recheck_packet_identities(packet, roadmap, state, resolve_workspace)
+        for node in pending_nodes:
+            if node.node_id not in merged_shas:
+                _train_revocation_store(resolve_workspace(node), state[node.node_id])
+        return state
+    admission_effects_started = False
+    try:
+        historical = None
+        if train_review_rec is not None and train_review_rec.review_packet_sha256 is not None:
+            historical = load_review_packet(packet_root, train_review_rec.review_packet_sha256)
+        if merged_shas and historical is None:
+            raise PacketError("historical_packet_unavailable: partial train has no bound historical packet")
+        # Recovery discovered a real merge without a ledger append. Its original
+        # admitted identity still has to match the retained historical section.
+        packet_state = dict(p4_ledger_state)
+        from dataclasses import replace as _replace_record
+        for nid, merged_sha in merged_shas.items():
+            if nid in packet_state:
+                packet_state[nid] = _replace_record(packet_state[nid], status="merged", upstream_merge_sha=merged_sha)
+        packet_builder = prepare_review_packet if proposed_heads else build_review_packet
+        packet = packet_builder(
+            roadmap, packet_state, resolve_workspace, review_material, historical=historical,
+            train_digest=coordinator_runtime.roadmap_digest if coordinator_runtime else None,
+            **({"proposed_heads": proposed_heads} if proposed_heads else {}),
+        )
+        # Every node's exact rendered bytes have passed the material barrier.
+        # Only now may real-store reads, recovery or existing readmission run.
+        for node in pending_nodes:
+            _train_revocation_store(resolve_workspace(node), packet_state[node.node_id])
+        if not review_only and not emit_native_request:
+            prior_bindings = {n.node_id: admission_binding(packet_state[n.node_id]) for n in pending_nodes}
+            for node in pending_nodes:
+                nid = node.node_id
+                workspace = resolve_workspace(node)
+                node_effects_started = False
+                try:
+                    current = read_ledger(ledger_path)
+                    rec = current[nid]
+                    # A fresh store replay immediately precedes each recovery;
+                    # earlier all-node checks do not cover a sibling's race.
+                    recheck_packet_identities(packet, roadmap, current, resolve_workspace,
+                        node_ids={nid}, prior_bindings=prior_bindings)
+                    store = _train_revocation_store(workspace, rec)
+                    if nid in proposed_heads and (store is None or not fab_delta_shortcut_enabled(fab_delta_shortcut)):
+                        raise PacketError("stale_head: readmission opt-in changed before recovery")
+                    if store is not None:
+                        node_effects_started = admission_effects_started = True
+                        _fab_recover_torn_to_admitted(workspace, rec.fab_run_id, admitted_head_sha=rec.head_sha)
+                    if nid in proposed_heads:
+                        if not fab_delta_shortcut_enabled(fab_delta_shortcut) or store is None:
+                            raise PacketError("stale_head: readmission opt-in changed")
+                        recheck_packet_identities(packet, roadmap, read_ledger(ledger_path), resolve_workspace,
+                            node_ids={nid}, prior_bindings=prior_bindings)
+                        owned = list(resolve_owned_paths(node)) if resolve_owned_paths is not None else getattr(node, "owned_paths", None)
+                        node_effects_started = admission_effects_started = True
+                        admitted = _fab_delta_readmit(workspace, ledger_path, node_id=nid, run_id=rec.fab_run_id,
+                            branch=rec.branch, pr_url=rec.pr_url, merge_order=rec.merge_order,
+                            admitted_head_sha=rec.head_sha, live_head_sha=proposed_heads[nid],
+                            delta_review_fn=_delta_review_fn or _default_delta_review, owned_paths=owned,
+                            fab_fetch_origin=fab_fetch_origin, coordinator_runtime=coordinator_runtime,
+                            evidence_store=store)
+                        if admitted != proposed_heads[nid]:
+                            raise PacketError("readmission_refused: " + nid)
+                except Exception as exc:
+                    # The helper may have durably appended and then raised.
+                    # Preserve that latest binding, never stale caller fields.
+                    reason = str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else (
+                        "readmission_revoked" if str(exc).startswith("readmission_revoked:") else "fab_readmit_failed")
+                    if node_effects_started:
+                        try:
+                            latest = read_ledger(ledger_path).get(nid)
+                            if latest is not None:
+                                append_record(ledger_path, _replace_record(latest, status="blocked"))
+                        except (OSError, ValueError) as preserve_exc:
+                            exc = PacketError(f"{exc}; durable failure evidence unavailable: {preserve_exc}")
+                    return {"status": "merge_halted" if admission_effects_started else "review_halted", "node_id": nid,
+                            "reason": reason,
+                            "detail": str(exc),
+                            "terminal_blocker": _non_human_train_blocker(str(exc))}
+        fresh = read_ledger(ledger_path)
+        for nid, merged_sha in merged_shas.items():
+            if nid not in fresh:
+                raise PacketError("admission_identity_drift: " + nid)
+            if fresh[nid].status != "merged":
+                fresh[nid] = _replace_record(fresh[nid], status="merged", upstream_merge_sha=merged_sha)
+        if proposed_heads:
+            packet = finalize_review_packet(packet, roadmap, fresh, resolve_workspace)
+        else:
+            recheck_packet_identities(packet, roadmap, fresh, resolve_workspace)
+        for node in pending_nodes:
+            rec = fresh[node.node_id]
+            _train_revocation_store(resolve_workspace(node), rec)
+            completed_nodes[node.node_id].update(branch=rec.branch, pr_url=rec.pr_url,
+                head_sha=rec.head_sha, admitted_head_sha=rec.head_sha, fab_run_id=rec.fab_run_id,
+                merge_order=rec.merge_order)
+        stored_packet = store_review_packet(packet, packet_root)
+        # Never authorize from mutable external material after this read-back.
+        packet = load_review_packet(packet_root, packet.sha256)
+        bundle_text = packet.artifact
+    except (OSError, ValueError) as exc:
+        return {"status": "merge_halted" if admission_effects_started else "review_halted", "nodes": completed_nodes,
+                "reason": str(exc).split(":", 1)[0], "detail": str(exc),
+                "terminal_blocker": _non_human_train_blocker(str(exc))}
+
     # REVIEWTRUTH early slice (D3, train): a supplied fill that does not match the bundle the
     # CURRENT ledger produces is refused typed BEFORE the approval short-circuit and before any
     # review seam — an approval recorded for an earlier bundle never launders a stale fill.
     if native_leg_fills:
-        _current_bundle = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
-        # stale request — refused here, before ANY review seam is reached (never applied to
-        # new bytes, never spending a seat).
-        from .panel_invoker import content_sha256 as _content_sha256
-
-        # Digest the bundle as it would be READ BACK from disk (universal newlines), exactly as the
-        # emit arm digested the staged artifact — a CR in a roadmap title must not false-refuse.
-        _current = _content_sha256(_current_bundle.replace("\r\n", "\n").replace("\r", "\n"))
-        _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != _current]
+        _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != packet.sha256]
         if _stale:
             return {
                 "status": "review_halted",
@@ -3683,24 +3816,57 @@ def _run_train_unfenced(
                 "terminal_blocker": {"human_required": False, "blocker_class": "review_gate_block",
                                      "blocker_summary": "native fill stale: re-emit with --emit-native-request"},
             }
-    train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
     already_approved = (
         train_review_rec is not None
         and train_review_rec.status == "approved"
-        and train_review_rec.usable_reviewers is not None
+        and type(train_review_rec.usable_reviewers) is int
         and train_review_rec.usable_reviewers >= _MIN_USABLE_REVIEWERS
+        and train_review_rec.review_packet_sha256 == packet.sha256
     )
 
-    if not already_approved:
-        bundle_text = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
-        if emit_native_request:
-            # D3 emit arm: stage the exact bundle and the fill request; spend nothing.
-            emit_fn = _emit_native_fill_request_fn if _emit_native_fill_request_fn is not None else _default_emit_native_fill_request
-            return emit_fn(
-                bundle_text,
-                canonical_repo_authority=_train_canonical_repo_authority(topo_order, resolve_workspace),
-                native_fill_dir=ledger_path.parent,
+    if already_approved and native_leg_fills:
+        # Cache reuse still validates all native request bindings against current
+        # composition. This creates no isolation authorization or reviewer seat.
+        from dataclasses import replace as _replace_board
+        from . import panel_invoker as _pi
+        from .advisor_board import backing as _backing
+        from .advisor_board.composition import FLOOR_SEATS, compose_review_board, composition_digest
+        from .governed_review import author_vendor_for_executor
+        from .train_review_packet import preflight_packet
+        try:
+            _backing.prepare_review_composition_authorization()
+            try:
+                board = compose_review_board()
+            finally:
+                _backing.clear_review_composition_authorization()
+            author = author_vendor_for_executor("train-coordinator")
+            board = _replace_board(board, seats=tuple(s for s in board.seats if s.harness != author))
+            if len(board.seats) < FLOOR_SEATS:
+                raise PacketError("native_fill_refused: composed board below floor")
+            brief = _pi._resolve_brief("review", None)
+            preflight_packet(bundle_text, instructions=brief, board=board)
+            refusal = _pi.preflight_native_leg_fills(
+                board, tuple(native_leg_fills), artifact_sha256=packet.sha256,
+                brief_sha256=_pi.content_sha256(brief), composition_sha256=composition_digest(board),
             )
+            if refusal is not None:
+                raise PacketError(f"native_fill_refused: {refusal.reason}: {refusal.detail}")
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            return {"status": "review_halted", "reason": "native_fill_refused", "detail": str(exc),
+                    "terminal_blocker": _non_human_train_blocker(str(exc))}
+
+    try:
+        fresh_packet_state()
+    except (OSError, ValueError) as exc:
+        return {"status": "merge_halted" if admission_effects_started else "review_halted",
+                "reason": str(exc).split(":", 1)[0], "detail": str(exc),
+                "terminal_blocker": _non_human_train_blocker(str(exc))}
+    if emit_native_request:
+        emit_fn = _emit_native_fill_request_fn if _emit_native_fill_request_fn is not None else _default_emit_native_fill_request
+        return emit_fn(bundle_text,
+            canonical_repo_authority=_train_canonical_repo_authority(topo_order, resolve_workspace),
+            native_fill_dir=ledger_path.parent)
+    if not already_approved:
         review_result = train_review_fn(bundle_text, run_mode)
 
         if not review_result.mergeable:
@@ -3725,6 +3891,13 @@ def _run_train_unfenced(
                 ],
             }
 
+        try:
+            fresh_packet_state()
+        except (OSError, ValueError) as exc:
+            return {"status": "merge_halted" if admission_effects_started else "review_halted", "nodes": completed_nodes,
+                    "reason": str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else "packet_recheck_unavailable", "detail": str(exc),
+                    "terminal_blocker": _non_human_train_blocker(str(exc))}
+
         # Record approval (synthetic node_id — never a real roadmap node) WITH
         # durable floor evidence (agent-harness#358). The count is the SAME measure
         # the floor enforces — `len(panel.usable_legs)` — so a resume-accept can
@@ -3748,6 +3921,7 @@ def _run_train_unfenced(
                 status="approved",
                 usable_reviewers=_usable_reviewers,
                 review_policy_version=_review_policy_version,
+                review_packet_sha256=packet.sha256 if _usable_reviewers is not None and _usable_reviewers >= _MIN_USABLE_REVIEWERS else None,
             ),
         )
     else:
@@ -3762,6 +3936,8 @@ def _run_train_unfenced(
             "nodes": completed_nodes,
             "usable_reviewers": _usable_reviewers,
             "review_policy_version": _review_policy_version,
+            "review_packet_sha256": packet.sha256,
+            "review_packet_path": str(stored_packet / "packet.md"),
         }
 
     # --- Sequential merge in topo order with downstream re-verify -----------
@@ -3819,14 +3995,8 @@ def _run_train_unfenced(
             except Exception as _inject_exc_m:
                 # Inject or reverify raised — record blocked + return merge_halted
                 # so the status-dict contract is preserved and no traceback escapes.
-                append_record(
-                    ledger_path,
-                    LedgerRecord(
-                        node_id=_nid_m,
-                        status="blocked",
-                        branch=completed_nodes.get(_nid_m, {}).get("branch"),
-                    ),
-                )
+                _append_blocked_keeping_admission(
+                    ledger_path, _nid_m, branch=completed_nodes.get(_nid_m, {}).get("branch"))
                 return {
                     "status": "merge_halted",
                     "node_id": _nid_m,
@@ -3835,14 +4005,8 @@ def _run_train_unfenced(
                 }
 
             if not _reverify_ok:
-                append_record(
-                    ledger_path,
-                    LedgerRecord(
-                        node_id=_nid_m,
-                        status="blocked",
-                        branch=completed_nodes.get(_nid_m, {}).get("branch"),
-                    ),
-                )
+                _append_blocked_keeping_admission(
+                    ledger_path, _nid_m, branch=completed_nodes.get(_nid_m, {}).get("branch"))
                 # Forward-only: DO NOT revert the already-merged upstream nodes.
                 # Use expand/contract upstream contracts to prevent this situation.
                 return {
@@ -3864,108 +4028,6 @@ def _run_train_unfenced(
         # already-merged upstream nodes remain recorded (forward-only).
         _pr_branch_m = completed_nodes[_nid_m]["branch"]
 
-        # FAB piece 3b consumer — DELTA-REVIEW SHORTCUT (handled branch). On a
-        # SINGLE-commit advance of an admitted FAB node WITH the trusted opt-in,
-        # review the committed delta and ATOMICALLY re-admit the new head BEFORE the
-        # merge — then the merge proceeds with the (updated) admitted head and the
-        # re-gate reads the extended chain. Everything else (opt-in off, multi-commit
-        # advance, non-PASS review, non-equivalent) falls through to the UNCHANGED
-        # fail-closed pr-head-advanced guard in `_live_merge_pr` — this is a pure
-        # ADDITION gated entirely by the trusted opt-in, never a weakening. Byte-
-        # neutral when off (no live-head read, no re-admission).
-        from .governed_premerge import fab_delta_shortcut_enabled, fab_promotion_enabled
-
-        _fab_run_id_shortcut = completed_nodes[_nid_m].get("fab_run_id")
-        # A raise anywhere in the FAB recovery/re-admission MUST NOT escape run_train
-        # (round 4 1a): both sites live OUTSIDE the merge-call try/except below, so an
-        # uncaught traceback here would abort run_train and violate its
-        # no-uncaught-escape contract (already-merged upstream nodes must stay
-        # recorded, forward-only). Catch → blocked + merge_halted, same as a merge
-        # failure.
-        #
-        # ah#299: gated on `fab_run_id is not None` AND the CURRENT flag. The original
-        # comment claimed byte-neutrality from the run_id alone — "no provenance ⇒ no
-        # run_id ⇒ block skipped" — but that premise is FALSE on the resume path: a
-        # flag-ON admission persists `fab_run_id` to the ledger, and a later flag-OFF
-        # RESUME restores it unconditionally. So with the flag off this block still ran,
-        # mutating the run store via torn-recovery and, on exception, halting with
-        # `fab_readmit_failed` instead of taking the ordinary non-FAB merge path — a
-        # flag-off byte-neutrality leak. Same false premise the #265 CR disproved for
-        # `_live_merge_pr`, which is why that site now keys on `fab_active`.
-        #
-        # Skipping recovery when the flag is off is SAFE: torn-recovery exists only to
-        # unblock the strict merge-time re-gate, and that re-gate is itself inert when
-        # the flag is off (`_fab_promotion_gate_before_merge` short-circuits on
-        # `not fab_promotion_enabled()`). No live consumer is left unserved.
-        if _fab_run_id_shortcut is not None and fab_promotion_enabled():
-            try:
-                from .convergence.broker.evidence import BrokerEvidenceStore
-                from .convergence.broker.live import repository_broker_namespace
-                try:
-                    _ev_store = BrokerEvidenceStore(repository_broker_namespace(_ws_m))
-                except Exception:
-                    _ev_store = None
-
-                if _check_readmission_revocation(_ev_store):
-                    return {
-                        "status": "merge_halted",
-                        "node_id": _nid_m,
-                        "reason": "readmission_revoked",
-                        "detail": "revocation active for node",
-                    }
-
-                _admitted_now = completed_nodes[_nid_m].get("admitted_head_sha")
-
-                # UNCONDITIONAL torn-state recovery before the merge re-gate (round 4
-                # 1b): a crashed prior shortcut attempt can leave a torn seat-ledger
-                # tail / torn extended provenance that the STRICT merge-time re-gate
-                # strict-reads and refuses FOREVER — EVEN with the shortcut now
-                # DISABLED (the re-gate runs for every FAB node regardless of opt-in).
-                # So recovery must run on the path the re-gate takes, not only inside
-                # the opt-in-gated shortcut. Recover to the admitted head first.
-                if _admitted_now:
-                    _fab_recover_torn_to_admitted(_ws_m, _fab_run_id_shortcut, admitted_head_sha=_admitted_now)
-                # Then — ONLY with the trusted opt-in — the delta-review shortcut
-                # re-admits a single-commit advance BEFORE the merge.
-                if fab_delta_shortcut_enabled(fab_delta_shortcut):
-                    _live_now = live_pr_head_sha_fn(_ws_m, _pr_branch_m)
-                    if _live_now and _admitted_now and _live_now != _admitted_now:
-                        _delta_review = _delta_review_fn if _delta_review_fn is not None else _default_delta_review
-                        # The node's OWNED SCOPE for the broker re-check (CR B4):
-                        # re-resolve it via the same seam the admission used. When the
-                        # train carries no explicit owned-paths resolver, pass None so
-                        # the re-admission fails closed rather than fencing on an
-                        # unprovable scope.
-                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else getattr(_node_m, "owned_paths", None)
-
-
-                        _new_admitted = _fab_delta_readmit(
-                            _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
-                            branch=_pr_branch_m, pr_url=completed_nodes[_nid_m].get("pr_url"),
-                            merge_order=completed_nodes[_nid_m].get("merge_order"),
-                            admitted_head_sha=_admitted_now, live_head_sha=_live_now,
-                            delta_review_fn=_delta_review, owned_paths=_owned_now,
-                            fab_fetch_origin=fab_fetch_origin,
-                            coordinator_runtime=coordinator_runtime,
-                        )
-
-
-                        if _new_admitted is not None:
-                            # Re-admission committed (new LedgerRecord appended) —
-                            # advance the in-memory admitted head so the merge pins to it.
-                            completed_nodes[_nid_m]["admitted_head_sha"] = _new_admitted
-                            completed_nodes[_nid_m]["head_sha"] = _new_admitted
-            except Exception as _fab_exc_m:  # noqa: BLE001 - never let FAB recovery/readmit abort run_train (round 4 1a)
-                append_record(
-                    ledger_path,
-                    LedgerRecord(node_id=_nid_m, status="blocked", branch=_pr_branch_m),
-                )
-                return {
-                    "status": "merge_halted",
-                    "node_id": _nid_m,
-                    "reason": "fab_readmit_failed",
-                    "detail": str(_fab_exc_m),
-                }
         # agent-harness#250 (N7 CR follow-up, finding 4; hardened per the defect-1
         # CR corroboration by codex+grok): thread the broker-ADMITTED head_sha the
         # same way `base` is already threaded — completed_nodes[...]["admitted_head_sha"]
@@ -3986,10 +4048,7 @@ def _run_train_unfenced(
             # this P4 merge loop. Missing it here would silently degrade
             # _live_merge_pr to an UNPINNED merge (no --match-head-commit); fail
             # closed instead of merging without a head pin.
-            append_record(
-                ledger_path,
-                LedgerRecord(node_id=_nid_m, status="blocked", branch=_pr_branch_m),
-            )
+            _append_blocked_keeping_admission(ledger_path, _nid_m, branch=_pr_branch_m)
             return {
                 "status": "merge_halted",
                 "node_id": _nid_m,
@@ -4000,6 +4059,16 @@ def _run_train_unfenced(
                     f"(agent-harness#250 N7 CR follow-up, defect 1 hardening)"
                 ),
             }
+        try:
+            fresh = read_ledger(ledger_path)
+            recheck_packet_identities(
+                packet, roadmap, fresh, resolve_workspace, node_ids={_nid_m},
+            )
+            _train_revocation_store(_ws_m, fresh[_nid_m])
+        except (OSError, ValueError) as exc:
+            return {"status": "merge_halted", "node_id": _nid_m,
+                    "reason": str(exc).split(":", 1)[0] if isinstance(exc, PacketError) else "packet_recheck_unavailable", "detail": str(exc),
+                    "terminal_blocker": _non_human_train_blocker(str(exc))}
         try:
             # agent-harness#250 (N7): pass the SAME base the broker's owned-scope
             # check validated at publish time (the module-wide _DEFAULT_BASE; no
@@ -4026,14 +4095,9 @@ def _run_train_unfenced(
                 _merge_kwargs_m["fab_fetch_origin"] = fab_fetch_origin
             _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m, **_merge_kwargs_m)
         except Exception as _merge_exc_m:
-            append_record(
-                ledger_path,
-                LedgerRecord(
-                    node_id=_nid_m,
-                    status="blocked",
-                    branch=_pr_branch_m,
-                ),
-            )
+            # The merge may have happened: keep the head pin so the next run's
+            # already-merged recovery can prove it instead of republishing.
+            _append_blocked_keeping_admission(ledger_path, _nid_m, branch=_pr_branch_m)
             return {
                 "status": "merge_halted",
                 "node_id": _nid_m,
@@ -4057,6 +4121,7 @@ def _run_train_unfenced(
                 head_sha=_node_info_m.get("head_sha"),   # draft SHA for downstream injection
                 upstream_merge_sha=_merged_sha_m,         # actual merge-commit SHA (P4)
                 merge_order=_i_m,
+                fab_run_id=_node_info_m.get("fab_run_id"),
             ),
         )
 

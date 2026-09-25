@@ -311,11 +311,16 @@ class SupervisorProvenanceTest(unittest.TestCase):
         # ADVISORY PROVENANCE (not a launch binding): the train coordinator's authored
         # review artifact records the supervise tier. This checks the recorded text
         # only — no launch request consumes it (the coordinator is the ambient session).
-        from phase_loop_runtime.train_runner import _build_train_review_bundle
+        import json
+        import tempfile
+        from phase_loop_runtime.train_review_packet import build_review_packet
         from phase_loop_runtime.train_roadmap import TrainRoadmap
 
         roadmap = TrainRoadmap(title="t", nodes=(), edges=())
-        bundle = _build_train_review_bundle(roadmap, {}, [])
+        with tempfile.TemporaryDirectory() as directory:
+            material = Path(directory) / "material.json"
+            material.write_text(json.dumps({"schema_version": 1, "nodes": {}}))
+            bundle = build_review_packet(roadmap, {}, lambda _: None, material).artifact
         self.assertIn("Coordinator supervise tier", bundle)
         self.assertIn("claude-opus-5", bundle)
 

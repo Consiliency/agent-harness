@@ -428,6 +428,16 @@ def governed_board_gate(
     invoke_fn = invoke if invoke is not None else _pi.invoke_board
     from .advisor_board.composition import composition_digest
 
+    if artifact.startswith("# Train review packet v1\n"):
+        try:
+            from .train_review_packet import preflight_packet
+            preflight_packet(artifact, instructions=_pi._resolve_brief("review", brief_ref), board=board)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return _block_result(
+                "review_isolation_unavailable", "governed_board_packet_preflight_failed",
+                f"review packet transport preflight failed: {exc}; holding (non-human)",
+            )
+
     if emit_native_request:
         # Emit arm: no authorization, no seat, no digest binding beyond the read-back bytes.
         try:
