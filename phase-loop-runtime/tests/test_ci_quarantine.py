@@ -261,3 +261,20 @@ def test_own_and_param_marks_are_not_inherited(tmp_path) -> None:
             "def test_param(v): pass\n")
     result = _run(tmp_path, body, enabled=True)
     assert result.returncode == 0 and "2 deselected" in result.stdout, result.stdout + result.stderr
+
+
+def test_module_level_quarantine_is_refused_at_collection(tmp_path) -> None:
+    """#1047: the runtime refusal covers a module pytestmark too, not just class marks."""
+    body = 'pytestmark = pytest.mark.quarantine(reason="agent-harness#1")\ndef test_a(): pass\n'
+    result = _run(tmp_path, body, enabled=False)
+    assert result.returncode == 4 and "inherited from a class or module" in result.stdout + result.stderr
+
+
+def test_one_mark_spread_over_many_parameters_counts_every_case(tmp_path) -> None:
+    """#1047: each parametrized case is a node; six quarantined cases exceed the cap."""
+    cases = ", ".join(f'pytest.param({i}, marks=pytest.mark.quarantine(reason="x"))'
+                      for i in range(QUARANTINE_CAP + 1))
+    body = f"@pytest.mark.parametrize('v', [{cases}])\ndef test_p(v): pass\ndef test_ok(): pass\n"
+    result = _run(tmp_path, body, enabled=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 4 and "every parametrized case counts" in output, output
