@@ -759,7 +759,23 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
     go, done = tmp_path / "go", tmp_path / "done"
     snapshots = []
     released = []
+    judged_last_repaint = []
+    judged = bytearray()
+    last = 8  # the child repaints frames 1..last
     observe = monitor.observe
+    novel = panel._tui_chunk_has_novel_content
+
+    def judging(chunk, seen, *rest):
+        # `done` waits until the LAST repaint has been judged -- recorded AFTER the
+        # detector returns, and matched across all judged text so a frame split over
+        # chunks still counts -- not on elapsed time (#1047, #1048 r1).
+        verdict = novel(chunk, seen, *rest)
+        judged.extend(chunk)
+        if f"({last}s ".encode() in judged:
+            judged_last_repaint.append(True)
+        return verdict
+
+    monkeypatch.setattr(panel, "_tui_chunk_has_novel_content", judging)
 
     def capture(*args, **kwargs):
         observe(*args, **kwargs)
@@ -768,11 +784,12 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
         if not go.exists() and age is not None and age >= .1:
             released.append(time.monotonic())
             go.touch()
-        elif released and not done.exists() and time.monotonic() - released[0] >= .3:
+        elif (released and judged_last_repaint and not done.exists()
+              and time.monotonic() - released[0] >= .3):
             done.touch()
 
     monkeypatch.setattr(monitor, "observe", capture)
-    panel._run_claude_tui_session(
+    result = panel._run_claude_tui_session(
         command=[sys.executable, "-c",
                  "import os, sys, time\n"
                  "line = '\\r\\x1b[2K* Herding... (%ss . esc to interrupt)\\r'\n"
@@ -781,19 +798,21 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  # attached (#1045 president), so the child bounds its own waits: a broken
                  # handshake exits in 10 s and fails `released`/`done` below, never hangs CI.
                  "deadline = time.monotonic() + 10\n"
-                 "def wait(path):\n"
+                 # Distinct exit codes name the stage that broke (#1047): 3 = go, 4 = done.
+                 "def wait(path, code):\n"
                  " while not os.path.exists(path):\n"
-                 "  if time.monotonic() > deadline: sys.exit(3)\n"
+                 "  if time.monotonic() > deadline: sys.exit(code)\n"
                  "  time.sleep(.01)\n"
                  "print(line % 0, end='', flush=True)\n"
-                 "wait(go)\n"
-                 "for i in range(1, 9): print(line % i, end='', flush=True)\n"
-                 "wait(done)\n",
+                 "wait(go, 3)\n"
+                 f"for i in range(1, {last + 1}): print(line % i, end='', flush=True)\n"
+                 "wait(done, 4)\n",
                  str(go), str(done)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
         timeout_s=15, env=os.environ, review_monitor=monitor,  # not enforced; see the child
     )
-    assert released and done.exists(), "the handshake never completed"
+    assert released, f"go never released (child exit {result[0]}; 3 = waited for go)"
+    assert judged_last_repaint and done.exists(), f"repaints never judged (child exit {result[0]}; 4 = waited for done)"
     ages = [s["last_genuine_progress_age_s"] for s in snapshots
             if s["last_genuine_progress_age_s"] is not None]
     assert all(later >= earlier for earlier, later in zip(ages, ages[1:])), ages

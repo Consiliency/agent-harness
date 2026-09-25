@@ -265,8 +265,8 @@ exception, because the next reader cannot tell it from a mistake.
   plumbing. Rule relaxed: "prove it on the PR". Reason: measured at ~88 % of the per-PR wall
   clock, the node buys no verdict the landing push does not also produce, because it proves
   a property of frozen history rather than of the diff. Owner: the operator, accepted
-  2026-09-03. Recorded: in the CHANGELOG entry for Consiliency/agent-harness#746 and the
-  scope script's header, next to the accepted limitation (a regression surfaces on main, so
+  2026-09-03. Recorded: in the CHANGELOG entry for Consiliency/agent-harness#746 (the scope
+  script's header now records its retirement, below), next to the accepted limitation (a regression surfaces on main, so
   a red landing push files a labelled issue rather than waiting for someone to notice).
   The plumbing exception was itself retired on 2026-09-25 (Consiliency/agent-harness#1042):
   it cost ~50 minutes on every CI pull request, and static guards plus the landing-push

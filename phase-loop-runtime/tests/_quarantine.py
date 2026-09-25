@@ -3,8 +3,9 @@
 A test marked ``@pytest.mark.quarantine(reason="agent-harness#N")`` is a known flake. When
 ``PHASE_LOOP_DESELECT_QUARANTINE=1`` (set by test.yml on pull_request only), collection drops
 exactly the marked items -- by marker, never by node-ID prefix -- and reports them as
-deselected. More than ``QUARANTINE_CAP`` marked nodes aborts collection: the register is
-debt, not an off switch. Any other value (test.yml passes ``0`` off pull requests; Gate A,
+deselected. More than ``QUARANTINE_CAP`` marked nodes (each parametrized case counts) aborts
+collection: the register is debt, not an off switch. A mark inherited from a class or module
+is refused on every run (``refuse_inherited_quarantine``). Any other value (test.yml passes ``0`` off pull requests; Gate A,
 publish-pypi and the offload path never set it) runs them.
 """
 from __future__ import annotations
@@ -44,8 +45,8 @@ def deselect_quarantined(config, items, environ=os.environ) -> list:
     marked = [item for item in items if _quarantined(item)]
     if len(marked) > QUARANTINE_CAP:
         raise pytest.UsageError(
-            f"{len(marked)} quarantined test nodes (cap {QUARANTINE_CAP}; a class or module "
-            "mark counts per node) -- fix one before adding another"
+            f"{len(marked)} quarantined test nodes (cap {QUARANTINE_CAP}; every parametrized "
+            "case counts) -- fix one before adding another"
         )
     if marked:
         dropped = {id(item) for item in marked}

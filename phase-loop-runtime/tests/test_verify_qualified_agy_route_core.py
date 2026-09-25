@@ -194,7 +194,7 @@ def test_the_full_check_step_is_wired_to_the_scope_decision():
     order = [s.get("name") for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]]
     assert order.index(scope["name"]) < order.index(full["name"]), order
     job = yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]
-    assert not {"if", "continue-on-error"} & set(job), sorted(job)
+    assert not {"if", "continue-on-error", "needs"} & set(job), sorted(job)  # a skipped need skips it (#1047)
     assert full["if"] == "steps.full.outputs.full == 'true'"
     assert full["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only"
 

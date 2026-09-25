@@ -149,6 +149,11 @@ def test_non_pull_request_events_always_retain_the_node(event: str) -> None:
     assert _scope(env={"GITHUB_EVENT_NAME": event}) == "chronology=true"
 
 
+def test_a_landing_push_in_its_real_environment_retains_the_node() -> None:
+    """The landing push as GitHub runs it (#1047): event push on refs/heads/main."""
+    assert _scope(env={"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}) == "chronology=true"
+
+
 def test_pull_request_without_a_base_still_defers() -> None:
     """agent-harness#1042: a PR never retains the node; the base only names plumbing."""
     assert _scope(env={"GITHUB_EVENT_NAME": "pull_request"}) == "chronology=false"
@@ -195,8 +200,9 @@ def test_pull_request_touching_only_prose_deselects_the_node(pr_repo: tuple[Path
     repo, base = pr_repo
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "prose")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"
+    assert "touches gate plumbing" not in reason, reason  # only plumbing is named (#1047)
 
 
 def test_pull_request_touching_gate_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
@@ -258,8 +264,9 @@ def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[P
         target.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "touch the runtime only")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"
+    assert "touches gate plumbing" not in reason, reason  # only plumbing is named (#1047)
 
 
 @pytest.mark.parametrize("name", ["test_\u00e9.py", "test_a\nb.py", 'test_"q".py', "test_a\tb.py"])
@@ -413,6 +420,10 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
         assert "env" not in jobs[job], job
     assert "env" not in workflow
     assert "defaults" not in workflow
+    # A job-level continue-on-error would let a failing backstop (or suite) leave the
+    # run green; the collapse jobs that read these results are pinned too (#1047).
+    for job in ("offload", "pytest", "cleanroom", "hosted", "gate"):
+        assert "continue-on-error" not in jobs[job], job
     offload = next(s for s in jobs["offload"]["steps"] if "dagger-offload" in s.get("uses", ""))
     assert offload["env"]["CHRONOLOGY"] == "${{ steps.scope.outputs.chronology }}"
     cleanroom = next(s for s in jobs["cleanroom"]["steps"] if s.get("run") == "bash scripts/gate_a_cleanroom.sh")
@@ -423,8 +434,9 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
         s for s in publish["jobs"]["build"]["steps"]
         if "bash phase-loop-runtime/scripts/gate_a_cleanroom.sh" in s.get("run", "")
     )
-    deselect = gate_a["env"]["GATE_A_DESELECT_CHRONOLOGY"]
-    assert "github.event_name == 'pull_request'" in deselect and deselect.endswith("|| '0' }}")
+    # Exact: GitHub evaluates this expression itself, so pinning its text is the release
+    # workflow's equivalent of test.yml's backstop step (#1047) -- a tag can never deselect.
+    assert gate_a["env"]["GATE_A_DESELECT_CHRONOLOGY"] == "${{ github.event_name == 'pull_request' && '1' || '0' }}"
     # A red landing push is reported, never silently absorbed: the main-red job
     # runs after the gate on main pushes and the nightly, in both outcomes, with
     # the issue-writing permission the reporter needs and without gating anything.
