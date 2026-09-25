@@ -1304,6 +1304,10 @@ class PanelLegResult:
         return getattr(self, "_needs_native_agent", None)
 
     @property
+    def finding_falsifiers(self) -> "FindingFalsifierAttachment | None":
+        return getattr(self, "_finding_falsifiers", None)
+
+    @property
     def provider_refusal_kind(self) -> str | None:
         """Typed provider refusal supplied by an adapter, never transcript text."""
         return getattr(self, "_provider_refusal_kind", None)
@@ -1350,6 +1354,26 @@ def attach_native_agent_request(
     serializers never see it; read back via the ``needs_native_agent`` property.
     Returns ``leg`` for call-site convenience."""
     object.__setattr__(leg, "_needs_native_agent", request)
+    return leg
+
+
+@dataclass(frozen=True)
+class FindingFalsifier:
+    finding_id: str
+    new_test_path: str
+    expected_nodeid: str
+    diff: str
+
+
+@dataclass(frozen=True)
+class FindingFalsifierAttachment:
+    falsifiers: tuple[FindingFalsifier, ...]
+
+
+def attach_finding_falsifiers(
+    leg: PanelLegResult, attachment: FindingFalsifierAttachment,
+) -> PanelLegResult:
+    object.__setattr__(leg, "_finding_falsifiers", attachment)
     return leg
 
 
@@ -1667,6 +1691,52 @@ def terminal_verdict(text: str) -> str | None:
     return None
 
 
+def parse_finding_falsifiers(text: str) -> FindingFalsifierAttachment:
+    """Parse fenced, single-new-test reproductions from a review leg."""
+    from .falsifier import _one_new_test_diff
+
+    lines = text.splitlines(keepends=True)
+    attachments: list[FindingFalsifier] = []
+    seen: set[str] = set()
+    finding_id: str | None = None
+    position = 0
+    while position < len(lines):
+        line = lines[position]
+        finding_line = re.match(r"^FINDING ([A-Za-z0-9_]+):", line)
+        if finding_line is not None:
+            finding_id = finding_line.group(1)
+        if not line.strip().startswith("```falsifier"):
+            position += 1
+            continue
+        if line.strip() != "```falsifier":
+            raise ValueError("malformed falsifier fence")
+        if finding_id is None:
+            raise ValueError("falsifier block has no finding id")
+        if finding_id in seen:
+            raise ValueError("finding has more than one falsifier block")
+        position += 1
+        block: list[str] = []
+        while position < len(lines) and lines[position].strip() != "```":
+            block.append(lines[position])
+            position += 1
+        if position == len(lines):
+            raise ValueError("incomplete falsifier block")
+        if not block or not block[0].startswith("nodeid: "):
+            raise ValueError("falsifier block has no nodeid")
+        nodeid = block[0][len("nodeid: "):].strip()
+        path = f"phase-loop-runtime/tests/test_finding_{finding_id}.py"
+        item = FindingFalsifier(
+            finding_id=finding_id, new_test_path=path,
+            expected_nodeid=nodeid, diff="".join(block[1:]),
+        )
+        if not _one_new_test_diff(item):
+            raise ValueError("falsifier must create only its named new test")
+        attachments.append(item)
+        seen.add(finding_id)
+        position += 1
+    return FindingFalsifierAttachment(tuple(attachments))
+
+
 # #63: panel mode. "review" is the pre-merge code-review framing (default,
 # back-compat) that requires a conforming AGREE/PARTIALLY AGREE/DISAGREE verdict;
 # "advisory" is general adversarial/advisory analysis (architecture, product,
@@ -1904,6 +1974,7 @@ _REVIEW_INSTRUCTIONS = (
     "maximum available reasoning budget. End with exactly one of: AGREE / "
     "PARTIALLY AGREE / DISAGREE — use DISAGREE only "
     "when there is a blocking defect."
+    " For an executable finding, start a line FINDING F001: then a line-start ```falsifier fence. Its first line is nodeid: phase-loop-runtime/tests/test_finding_F001.py::test_name; follow it with a unified diff creating only that new test (diff --git a/<path> b/<path>, new file mode 100644, --- /dev/null, +++ b/<path>, @@ -0,0 +1,N @@ with N added lines). Close the fence before the terminal verdict. The observed pytest outcome is advisory."
 )
 
 # #63: advisory framing — general adversarial/advisory analysis, NOT a code review.
