@@ -2418,6 +2418,30 @@ def _default_emit_native_fill_request(
             "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"]}
 
 
+def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch: Optional[str] = None) -> None:
+    """Append a ``blocked`` row that KEEPS the node's durable admission binding.
+
+    The ledger folds last-wins, so a branch-only ``blocked`` row erased ``head_sha``,
+    ``pr_url``, ``fab_run_id`` and ``merge_order``. A later run then dropped the node
+    and republished it, or resumed a FAB node as non-FAB (agent-harness#978 round 9 B1,
+    and its round-10 class sweep). Every refusal of a node that is already admitted
+    goes through here; a node still being built in P3 has no admission to keep.
+    ``branch`` is used only when the ledger has no record for the node.
+    """
+    from dataclasses import replace as _replace
+
+    try:
+        latest = read_ledger(ledger_path).get(node_id)
+    except (OSError, ValueError):
+        latest = None  # a refusal path never raises; the row is then the historical shape
+    if latest is None:
+        append_record(ledger_path, LedgerRecord(node_id=node_id, status="blocked", branch=branch))
+        return
+    # Verbatim but for the status: no head, PR, run or order can enter the ledger here
+    # (test_fab_delta_consumer's head-append inventory relies on that).
+    append_record(ledger_path, _replace(latest, status="blocked", ts=""))  # fresh append time
+
+
 def _non_human_train_blocker(summary: str) -> Dict[str, object]:
     return {
         "human_required": False,
@@ -2835,10 +2859,7 @@ def _run_train_unfenced(
                         # publish); if it is ever missing, fail closed rather
                         # than silently degrade to an unpinned recovery check.
                         if not rec.head_sha:
-                            append_record(
-                                ledger_path,
-                                LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
-                            )
+                            _append_blocked_keeping_admission(ledger_path, nid, branch=rec.branch)
                             return {
                                 "status": "blocked",
                                 "node_id": nid,
@@ -2857,10 +2878,7 @@ def _run_train_unfenced(
                                 workspace, rec.branch, base=_DEFAULT_BASE, head_sha=rec.head_sha
                             )
                         except Exception as _step3_exc:
-                            append_record(
-                                ledger_path,
-                                LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
-                            )
+                            _append_blocked_keeping_admission(ledger_path, nid, branch=rec.branch)
                             return {
                                 "status": "blocked",
                                 "node_id": nid,
@@ -3060,18 +3078,11 @@ def _run_train_unfenced(
                     continue
                 if decision != "advanced":
                     reason, message = decision
-                    # Durable refusal: keep the admitted head + PR on the row so the next
-                    # run re-enters this decision instead of publishing fresh (see Step 3).
-                    append_record(
-                        ledger_path,
-                        LedgerRecord(
-                            node_id=nid,
-                            status="blocked",
-                            branch=completed_nodes[nid].get("branch"),
-                            head_sha=completed_nodes[nid].get("admitted_head_sha"),
-                            pr_url=completed_nodes[nid].get("pr_url"),
-                        ),
-                    )
+                    # Durable refusal: keep the whole admission (head, PR, FAB run, merge
+                    # order) so the next run re-enters this decision instead of publishing
+                    # fresh (see Step 3).
+                    _append_blocked_keeping_admission(
+                        ledger_path, nid, branch=completed_nodes[nid].get("branch"))
                     return {
                         "status": "blocked",
                         "node_id": nid,
@@ -3576,10 +3587,7 @@ def _run_train_unfenced(
                 # carries an admitted_head_sha (Step 3 populates it for every
                 # completed_nodes entry). Fail closed instead of silently
                 # degrading to an unpinned already-merged check.
-                append_record(
-                    ledger_path,
-                    LedgerRecord(node_id=_nid_r, status="blocked", branch=_pr_branch_r),
-                )
+                _append_blocked_keeping_admission(ledger_path, _nid_r, branch=_pr_branch_r)
                 return {
                     "status": "merge_halted",
                     "node_id": _nid_r,
@@ -3595,10 +3603,7 @@ def _run_train_unfenced(
                     _ws_r, _pr_branch_r, base=_DEFAULT_BASE, head_sha=_admitted_head_sha_r
                 )
             except Exception as _merged_check_exc_r:
-                append_record(
-                    ledger_path,
-                    LedgerRecord(node_id=_nid_r, status="blocked", branch=_pr_branch_r),
-                )
+                _append_blocked_keeping_admission(ledger_path, _nid_r, branch=_pr_branch_r)
                 return {
                     "status": "merge_halted",
                     "node_id": _nid_r,
@@ -3632,7 +3637,8 @@ def _run_train_unfenced(
         live_head = completed_nodes[node.node_id].get("head_sha")
         if rec is not None and live_head != rec.head_sha:
             if native_leg_fills:
-                return {"status": "review_halted", "reason": "native_fill_stale_request", "nodes": completed_nodes}
+                return {"status": "review_halted", "reason": "native_fill_stale_request", "nodes": completed_nodes,
+                        "terminal_blocker": _non_human_train_blocker("native fill stale: a live head moved; re-emit")}
             if review_only or emit_native_request or not rec.fab_run_id or not fab_delta_shortcut_enabled(fab_delta_shortcut):
                 stale.append({"node_id": node.node_id, "admitted_head_sha": rec.head_sha, "live_head_sha": live_head})
             else:
@@ -3727,7 +3733,8 @@ def _run_train_unfenced(
                             exc = PacketError(f"{exc}; durable failure evidence unavailable: {preserve_exc}")
                     return {"status": "merge_halted" if admission_effects_started else "review_halted", "node_id": nid,
                             "reason": reason,
-                            "detail": str(exc)}
+                            "detail": str(exc),
+                            "terminal_blocker": _non_human_train_blocker(str(exc))}
         fresh = read_ledger(ledger_path)
         for nid, merged_sha in merged_shas.items():
             if nid not in fresh:
@@ -3948,14 +3955,8 @@ def _run_train_unfenced(
             except Exception as _inject_exc_m:
                 # Inject or reverify raised — record blocked + return merge_halted
                 # so the status-dict contract is preserved and no traceback escapes.
-                append_record(
-                    ledger_path,
-                    LedgerRecord(
-                        node_id=_nid_m,
-                        status="blocked",
-                        branch=completed_nodes.get(_nid_m, {}).get("branch"),
-                    ),
-                )
+                _append_blocked_keeping_admission(
+                    ledger_path, _nid_m, branch=completed_nodes.get(_nid_m, {}).get("branch"))
                 return {
                     "status": "merge_halted",
                     "node_id": _nid_m,
@@ -3964,14 +3965,8 @@ def _run_train_unfenced(
                 }
 
             if not _reverify_ok:
-                append_record(
-                    ledger_path,
-                    LedgerRecord(
-                        node_id=_nid_m,
-                        status="blocked",
-                        branch=completed_nodes.get(_nid_m, {}).get("branch"),
-                    ),
-                )
+                _append_blocked_keeping_admission(
+                    ledger_path, _nid_m, branch=completed_nodes.get(_nid_m, {}).get("branch"))
                 # Forward-only: DO NOT revert the already-merged upstream nodes.
                 # Use expand/contract upstream contracts to prevent this situation.
                 return {
@@ -4013,10 +4008,7 @@ def _run_train_unfenced(
             # this P4 merge loop. Missing it here would silently degrade
             # _live_merge_pr to an UNPINNED merge (no --match-head-commit); fail
             # closed instead of merging without a head pin.
-            append_record(
-                ledger_path,
-                LedgerRecord(node_id=_nid_m, status="blocked", branch=_pr_branch_m),
-            )
+            _append_blocked_keeping_admission(ledger_path, _nid_m, branch=_pr_branch_m)
             return {
                 "status": "merge_halted",
                 "node_id": _nid_m,
@@ -4063,14 +4055,9 @@ def _run_train_unfenced(
                 _merge_kwargs_m["fab_fetch_origin"] = fab_fetch_origin
             _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m, **_merge_kwargs_m)
         except Exception as _merge_exc_m:
-            append_record(
-                ledger_path,
-                LedgerRecord(
-                    node_id=_nid_m,
-                    status="blocked",
-                    branch=_pr_branch_m,
-                ),
-            )
+            # The merge may have happened: keep the head pin so the next run's
+            # already-merged recovery can prove it instead of republishing.
+            _append_blocked_keeping_admission(ledger_path, _nid_m, branch=_pr_branch_m)
             return {
                 "status": "merge_halted",
                 "node_id": _nid_m,

@@ -2422,3 +2422,56 @@ def test_unchanged_upstream_keeps_downstream_fab_guard(fab_downstream_with_upstr
         assert len(c["calls"]["review"]) == 1
     assert not c["calls"]["execute"] and not c["calls"]["publish"]
     assert len(c["seeded"]["store"].replay()) == 1
+
+
+@pytest.mark.parametrize("failure", ["reverify_false", "reverify_raises", "merge_raises", "step3_merged_lookup_raises"])
+def test_refusal_writers_keep_the_downstream_admission(fab_downstream_with_upstream, failure):
+    """agent-harness#978 round 10 (codex, grok): round nine fixed one writer of a class. Every
+    refusal of an ADMITTED node must keep its durable binding (PR, head, FAB run, merge order):
+    last-wins folding of a branch-only row made the next run republish the node or resume a
+    FAB node as non-FAB."""
+    c = fab_downstream_with_upstream
+    downstream_repo = c["fixture"].repo
+
+    def transient(*_args, **_kwargs):
+        raise RuntimeError("transient remote failure")
+
+    options = {}
+    if failure == "reverify_false":
+        options["_reverify_fn"] = lambda ws, *a, **k: ws != downstream_repo
+    elif failure == "reverify_raises":
+        options["_reverify_fn"] = lambda ws, *a, **k: transient() if ws == downstream_repo else True
+    elif failure == "merge_raises":
+        def merge(workspace, branch, **kwargs):
+            if workspace == downstream_repo:
+                transient()
+            return kwargs["head_sha"]
+        options["_merge_pr_fn"] = merge
+    else:
+        options["_pr_is_open"] = lambda ws, br: ws != downstream_repo
+        options["_pr_merged_sha_fn"] = lambda ws, *a, **k: transient() if ws == downstream_repo else None
+    result = c["run"](**options)
+    assert result["status"] in ("blocked", "merge_halted") and result["node_id"] == c["downstream"].node_id, result
+    blocked = read_ledger(c["ledger"])[c["downstream"].node_id]
+    assert blocked.status == "blocked"
+    assert {**packet.admission_binding(blocked), "merge_order": blocked.merge_order} == {
+        **packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}
+
+
+def test_git_reader_renders_every_validated_text_file_in_full(candidate, monkeypatch):
+    """agent-harness#978 round 10 (codex): a text file over ``core.bigFileThreshold`` (512 MiB
+    by default) rendered as a binary summary that passed the header checks. A 1-byte
+    threshold stands in for the size here."""
+    c = candidate
+    monkeypatch.setattr(packet, "_CONFIG", [*packet._CONFIG, "-c", "core.bigFileThreshold=1"])
+    result = c["build"]()
+    assert "actual_changed_code" in result.artifact and "Binary files" not in result.artifact
+
+
+def test_a_binary_summary_patch_holds_the_packet(candidate, monkeypatch):
+    """Defence in depth: without ``--text`` the summary is refused, never shown as a patch."""
+    c = candidate
+    monkeypatch.setattr(packet, "_CONFIG", [*packet._CONFIG, "-c", "core.bigFileThreshold=1"])
+    monkeypatch.setattr(packet, "_DIFF", [arg for arg in packet._DIFF if arg != "--text"])
+    with pytest.raises(packet.PacketError, match="binary_patch_summary"):
+        c["build"]()

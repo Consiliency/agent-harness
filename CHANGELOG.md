@@ -409,6 +409,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Readmission pre-effect refusals leave node rows untouched; malformed stored
   packets and deeply nested JSON return diagnostic receipts. Initial Claude
   native request and fill instructions both supply the required material.
+- Every refusal of an already-admitted node keeps its whole durable binding (PR, head,
+  FAB run, merge order): a failed merged-state lookup, a failed or raising downstream
+  re-verify, a failed merge and a missing head pin no longer append a branch-only
+  `blocked` row that let the next run republish the node or resume a FAB node as
+  non-FAB. Patches are always rendered as text (a text file over Git's
+  `core.bigFileThreshold` rendered as a binary summary with its content omitted); a
+  binary summary now holds the packet.
 
 ### grok-4.7 is registered and becomes the grok default (agent-harness#971)
 
