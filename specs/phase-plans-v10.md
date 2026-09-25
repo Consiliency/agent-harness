@@ -284,6 +284,9 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   field and its resolution bound.
 - **IF-0-GOVSETUP-1** — the `governance_profile.v1` schema, the resolver precedence (explicit,
   environment, repo file, user file, default) and the four named profiles.
+- **IF-0-PANEL-1** — the `[panel.<task>]` lane-table schema (`lanes = [{lens, vendors}]`,
+  `min_distinct_vendors` per landing tier), its precedence (built-in < user < repository) and the
+  result labels (distinct vendors, seats, fallback-filled and unfilled lanes, minimum met).
 
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
 
@@ -1623,6 +1626,94 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
+### Phase 18 — Panel Vendor Fallback and Lanes (PANEL)
+
+**Objective**
+Let a panel run with whatever vendor subscriptions a user actually has. Each panel task declares
+its lanes (a review lens with an ordered vendor preference); composition seats each lane from the
+first vendor that is available and authenticated, under every monitoring policy; a governed landing
+states and enforces a distinct-vendor minimum that defaults to today's four. Slice 2 makes a lane's
+lens reach the reviewer's prompt. Source: maintainer direction 2026-09-25 (see the PANEL ruling
+under Verification).
+
+**Exit criteria**
+- [ ] EC-PANEL-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0.
+- [ ] EC-PANEL-1 — **Per-task lane tables.** A `[panel.<task>]` table (`lanes` = ordered list of
+  `{lens, vendors}`, vendors an ordered preference over the board vendors) is read from the user file
+  `$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml` and the repository file
+  `.agent-harness/advisor-boards.toml`, with the president ladder's precedence (built-in < user <
+  repository). Every built-in preset task has a built-in table, and with every vendor available each
+  table composes exactly the seats that task seats today. Falsified by an unknown key, task, vendor or
+  lens being accepted; by a built-in table composing different all-available seats than today; by a
+  repository table not overriding a user table.
+- [ ] EC-PANEL-2 — **Lane fallback within the task's own lanes.** Each lane is seated by the first
+  vendor in its list that is available and authenticated; a lane no listed vendor can serve is
+  recorded unfilled, never silently dropped; a seat never carries a lens outside its task's lanes.
+  Falsified by a lane seated out of preference order; by a code-review board with only Claude
+  available seating a lens that is not a code-review lane (today's global lens cycle can seat
+  `opposing-counsel`); by an unfilled lane absent from the result.
+- [ ] EC-PANEL-3 — **One composition for every monitoring policy and entry point.** `heartbeat_only`
+  composes through the same lane fallback instead of the frozen default board; the policy preflight
+  (route checks, agy capability) applies to the composed board; `advisor-board`, the governed board
+  gate and `run-train` all use it. Falsified by a `heartbeat_only` board with one vendor unavailable
+  failing a seat that a listed fallback vendor could fill; by any entry point composing differently for
+  the same configuration and availability.
+- [ ] EC-PANEL-4 — **A distinct-vendor minimum, four by default, lowerable only as ruled.**
+  `min_distinct_vendors` per landing tier replaces the four named seats `review_policy_for_tier`
+  requires today; the shipped default for `plan` and `production_code` is 4 (today's behaviour). A user
+  or repository table may lower it for those tiers to no less than 1, and only while the board keeps at
+  least two usable seats and a president ruling. Falsified by the default differing from today's
+  landing outcome on the same board; by a `plan` or `production_code` landing with one usable seat or
+  without a president ruling; by a lowering from any source other than the user or repository table
+  being accepted.
+- [ ] EC-PANEL-5 — **Every result is labelled.** The panel result, the `advisor-board` JSON and every
+  landing record state the distinct-vendor count, the seat count, the lanes filled by fallback and any
+  unfilled lane, and whether the minimum was met. Falsified by a result or landing record lacking any
+  of these.
+- [ ] EC-PANEL-6 — **(Slice 2) A lane's lens reaches its reviewer.** The lens of each seat is present
+  in the rendered prompt that seat's route actually sends (brokered CLI, TUI and native fill); this
+  satisfies EC-LEGLIFE-4 (see the PANEL ruling). Falsified by a declared custom lens absent from that
+  seat's rendered prompt.
+- [ ] EC-PANEL-7 — **Documented.** The onboarding docs and the advisor-board capabilities card
+  document the lane tables, the fallback, the minimum and the labels, and the entry-doc check covers
+  those sections. Falsified by a documented key the loader refuses.
+
+**Scope notes**
+Decompose into 2 lanes. Lane A (slice 1) owns the lane tables, the composition and the landing
+minimum: `advisor_board/config.py` (loader), `advisor_board/composition.py` (lane fallback),
+`advisor_board/presets.py` (built-in tables), the `review_policy_for_tier` seam and the
+`heartbeat_only` board selection in `cli.py` and `governed_review.py`. Lane B (slice 2) owns the lens
+in each route's rendered prompt (`panel_invoker.py` prompt assembly only). Shared files
+`panel_invoker.py`, `governed_review.py` and `cli.py` are owned by committed phases (HARDEN,
+REVIEWTRUTH, LEGLIFE, RESIDUAL) and by in-flight EXECFIND work: this phase touches them only by
+keyword-only additive seams, and its landings serialize after theirs through the manifest, under the
+same touch-shape falsifier as PRESROUTE's scope notes.
+
+**Non-goals**
+Per-seat model selection (ids stay registry-pinned). Self-qualification of provider images
+(agent-harness#1076). Changing the president ladder (EC-PRESROUTE-3 owns it).
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (`review_policy_for_tier` seam; slice 2 prompt assembly)
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (board selection seam)
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py` (board selection seam)
+- `docs/advisor-board-capabilities-card.md`, `docs/TEAM-ONBOARDING.md`
+
+**Depends on**
+- PRESROUTE
+- GOVLEAN
+
+**Produces**
+- IF-0-PANEL-1
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
+outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+`blocker_class=contract_bug`.
+
 ## Phase Dependency DAG
 
 ```
@@ -1684,6 +1775,8 @@ Downstream semantic edges:
   PRESROUTE   → RATIFY      (ruling classes extend the president line grammar PRESROUTE freezes)
   EXECFIND    → RATIFY      (the president's residual is defined by which findings bound)
   RATIFY      → GOVSETUP    (the profile's human tier and falsifier policy are RATIFY's and EXECFIND's vocabularies)
+  PRESROUTE   → PANEL       (a lowered distinct-vendor minimum still requires the president ruling PRESROUTE routes)
+  GOVLEAN     → PANEL       (the landing tiers whose seat requirement PANEL turns into a distinct-vendor minimum are EC-GOVLEAN-5's)
 
 Lane-level writer edge:
   SCHED lane B before HARDEN  (runner.py and launcher.py; lane B may land while SCHED lane A resolves agent-harness#354; HARDEN consumes the exact SCHED_HARDEN_HANDOFF before writing either path)
@@ -2041,3 +2134,25 @@ The original EXECFIND SL-0 content receipt remains historical. Before the
 changed production disposition lands, a superseding tests-first receipt must
 freeze the new RED/GREEN advisory controls and their RED-on-main results in a
 separate evidence directory; do not rewrite the original receipt or its logs.
+
+### PANEL ruling (amendment 2026-09-25, maintainer)
+
+The maintainer ruled on 2026-09-25 that panels must work for users with any subset of vendor
+subscriptions (agy, Claude Code, Codex, Grok), per panel task, by lane. This phase is appended rather
+than folded into LEGLIFE because LEGLIFE also carries unrelated leg-lifecycle work; the roadmap grammar
+forbids editing existing phases, so the cross-phase effects are recorded here:
+
+- **EC-LEGLIFE-4 is satisfied by EC-PANEL-6.** LEGLIFE's plan references EC-PANEL-6 for "a repo can
+  declare custom seats and lenses that reach the reviewer's prompt" instead of re-implementing it.
+- **GOVSETUP consumes PANEL's minimum.** EC-GOVSETUP-1's per-tier `panel` field is expressed as
+  EC-PANEL-4's `min_distinct_vendors`, and EC-GOVSETUP-6's floor is read as two usable **seats**
+  plus a president ruling. The shipped default stays four distinct vendors, so EC-GOVSETUP-4's
+  byte-equal default holds. The one lowering route is EC-PANEL-4's user or repository table, down to one
+  vendor, and every such result is labelled (EC-PANEL-5); a governance profile still cannot lower it.
+- **Lanes are real only in slice 2.** Until EC-PANEL-6 lands, a lane's lens selects the vendor order
+  and labels the seat but does not change the reviewer's instructions; results say so.
+
+```bash
+# PANEL: a Claude-only code-review board seats only code-review lanes and is labelled one vendor
+PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_lanes.py
+```
