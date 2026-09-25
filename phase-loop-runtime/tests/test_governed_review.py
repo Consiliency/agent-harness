@@ -2,14 +2,17 @@
 import hashlib
 import json
 from pathlib import Path
+import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import execfind_content_tdd_adapter as execfind_tdd
 import phase_loop_runtime.governed_review as governed_review
 import phase_loop_runtime.panel_invoker as panel_invoker
 
 from phase_loop_runtime.closeout_validators import CloseoutContext
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+from phase_loop_runtime.advisor_board.schema import Board
 from phase_loop_runtime.governed_review import (
     author_vendor_for_executor,
     governed_planning_gate,
@@ -17,10 +20,66 @@ from phase_loop_runtime.governed_review import (
     select_reviewer_pool,
 )
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
+from test_execfind_falsifier import _falsifier_text, _source_repo
 
 
 def _panel(*legs):
     return PanelResult(legs=tuple(legs))
+
+
+def _execfind_gate(repo, head, *, diff=None):
+    golden = json.loads((
+        Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
+    ).read_text(encoding="utf-8"))
+    entry = golden["attachment"]["falsifiers"][0]
+    board = Board(name="execfind-test", purpose="code-review", seats=DEFAULT_SEATS[:3])
+    panel = PanelResult((
+        PanelLegResult("codex", "OK", "Reviewed.\nAGREE"),
+        PanelLegResult("gemini", "OK", "Reviewed.\nAGREE"),
+        PanelLegResult(
+            "claude", "OK", _falsifier_text(entry, diff=diff),
+            seat_key=golden["record"]["seat_key"],
+        ),
+    ))
+    return governed_review.governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed", reviewed_sha=head,
+        canonical_repo_authority=repo, compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
+
+
+def _count_gate(repo, head, counts):
+    golden = json.loads((
+        Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
+    ).read_text(encoding="utf-8"))
+    seed = golden["attachment"]["falsifiers"][0]
+    board = Board(name="execfind-count", purpose="code-review", seats=DEFAULT_SEATS)
+    legs = []
+    next_id = 1
+    for seat, count in zip(board.seats, counts):
+        blocks = []
+        for _ in range(count):
+            finding_id = f"F{next_id:03}"
+            path = seed["new_test_path"].replace("F001", finding_id)
+            diff = seed["diff"].replace("F001", finding_id)
+            blocks.append(
+                f"FINDING {finding_id}: BLOCKING — reproduction\n"
+                f"```falsifier\nnodeid: {path}::test_trigger\n{diff}```\n"
+            )
+            next_id += 1
+        text = "".join(blocks) + ("DISAGREE\n" if count else "AGREE\n")
+        legs.append(PanelLegResult(
+            seat.harness, "OK", text,
+            seat_key=f"{seat.harness}:{seat.model}:{seat.effort}:{seat.lens}",
+        ))
+    panel = PanelResult(tuple(legs))
+    return governed_review.governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed", reviewed_sha=head,
+        canonical_repo_authority=repo, compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
 
 
 class RunModeTest(unittest.TestCase):
@@ -216,6 +275,91 @@ class VerdictClassifierTest(unittest.TestCase):
 
 
 class ExecfindFindingTests(unittest.TestCase):
+    def test_falsifier_count_bound(self):
+        def check():
+            module = execfind_tdd.require_module("phase_loop_runtime.falsifier")
+            result_type = execfind_tdd.require_attr(module, "FalsifierRunResult")
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            seen = []
+
+            def run(*, falsifier, seat_key, authorization, repo, wall_clock_s,
+                    output_cap_bytes):
+                seen.append((seat_key, falsifier.finding_id, falsifier.expected_nodeid))
+                digest = hashlib.sha256(falsifier.diff.encode("utf-8")).hexdigest()
+                record = {
+                    "schema": "finding_falsifier.v1",
+                    "authorization_identity": "public_board_falsifier.v1",
+                    "seat_key": seat_key,
+                    "reviewed_sha": authorization.reviewed_sha,
+                    "finding_id": falsifier.finding_id,
+                    "nodeid": falsifier.expected_nodeid,
+                    "outcome": "green_on_head",
+                    "red_output_digest": None,
+                    "diff_digest": digest,
+                    "wall_clock_bound_s": float(wall_clock_s),
+                    "output_cap_bytes": int(output_cap_bytes),
+                }
+                return result_type(
+                    outcome="green_on_head", nodeid=falsifier.expected_nodeid,
+                    red_output_digest=None, diff_digest=digest, junit_path=None,
+                    detail=None, record=record,
+                )
+
+            with tempfile.TemporaryDirectory(prefix="execfind-count-") as root:
+                repo, head = _source_repo(Path(root))
+                with patch.object(module, "run_finding_falsifier", run), patch.object(
+                    governed_review, "run_finding_falsifier", run, create=True,
+                ):
+                    for counts in ((5, 0, 0, 0), (4, 4, 4, 1)):
+                        seen.clear()
+                        gate = _count_gate(repo, head, counts)
+                        self.assertTrue(gate.ran and not gate.promoted, gate)
+                        self.assertEqual(seen, [], counts)
+                    for counts in ((4, 0, 0, 0), (4, 4, 4, 0)):
+                        seen.clear()
+                        gate = _count_gate(repo, head, counts)
+                        self.assertTrue(gate.ran, gate)
+                        self.assertEqual(len(seen), sum(counts), counts)
+                        self.assertEqual(
+                            len({(seat, finding) for seat, finding, _node in seen}),
+                            sum(counts), counts,
+                        )
+
+        execfind_tdd.run_execfind_contract("falsifier_count_bound", check)
+
+    def test_finding_bound(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            with tempfile.TemporaryDirectory(prefix="execfind-bound-") as root:
+                repo, head = _source_repo(Path(root))
+                gate = _execfind_gate(repo, head)
+            self.assertFalse(gate.promoted)
+            self.assertTrue(any(
+                f.code == "finding_bound" and f.severity == "block"
+                and f.reviewed_sha == head for f in gate.findings
+            ), gate.findings)
+            self.assertFalse(any(f.code == "panel_block" for f in gate.findings))
+
+        execfind_tdd.run_execfind_contract("finding_bound", check)
+
+    def test_finding_unbound(self):
+        def check():
+            execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
+            with tempfile.TemporaryDirectory(prefix="execfind-unbound-") as root:
+                repo, head = _source_repo(Path(root))
+                diff = json.loads((
+                    Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
+                ).read_text(encoding="utf-8"))["attachment"]["falsifiers"][0]["diff"]
+                gate = _execfind_gate(repo, head, diff=diff.replace("assert False", "assert True"))
+            self.assertTrue(gate.promoted)
+            self.assertTrue(any(
+                f.code == "finding_unbound" and f.severity == "warn"
+                and f.reviewed_sha == head for f in gate.findings
+            ), gate.findings)
+            self.assertFalse(any(f.code == "panel_block" for f in gate.findings))
+
+        execfind_tdd.run_execfind_contract("finding_unbound", check)
+
     def test_finding_prose(self):
         def check():
             execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
