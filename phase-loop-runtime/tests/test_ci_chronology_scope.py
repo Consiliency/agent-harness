@@ -374,9 +374,25 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     # Every job that runs the node decides its scope with the same script and
     # feeds the decision to the runner it drives.
     jobs = workflow["jobs"]
+    # agent-harness#1042 made this pin load-bearing (no PR re-proves the node any more):
+    # each scope step is pinned EXACTLY, so an env prefix on the command
+    # (`GITHUB_EVENT_NAME=pull_request bash ...`), a forced CHRONOLOGY_FORCE, an `if:`
+    # or a `continue-on-error:` cannot make the landing push skip the node while the
+    # witness, fed the same decision, expects "absent" and passes (#1043 r1 codex).
     for job in ("offload", "pytest", "cleanroom"):
-        runs = [step.get("run", "") for step in jobs[job]["steps"]]
-        assert any("ci/chronology-scope.sh >> \"$GITHUB_OUTPUT\"" in run for run in runs), job
+        scope_steps = [step for step in jobs[job]["steps"] if "chronology-scope.sh" in step.get("run", "")
+                       and "--node" not in step.get("run", "")]
+        assert len(scope_steps) == 1, (job, scope_steps)
+        step, = scope_steps
+        assert set(step) == {"name", "id", "env", "run"}, (job, sorted(step))
+        assert step["id"] == "scope", job
+        assert step["run"] == 'bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"', job
+        assert step["env"] == {
+            "CHRONOLOGY_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+            "CHRONOLOGY_FORCE": "${{ inputs.chronology }}",
+        }, job
+        assert not any(k.startswith(("CHRONOLOGY", "GITHUB_")) for k in (jobs[job].get("env") or {})), job
+    assert not any(k.startswith(("CHRONOLOGY", "GITHUB_")) for k in (workflow.get("env") or {}))
     offload = next(s for s in jobs["offload"]["steps"] if "dagger-offload" in s.get("uses", ""))
     assert offload["env"]["CHRONOLOGY"] == "${{ steps.scope.outputs.chronology }}"
     cleanroom = next(s for s in jobs["cleanroom"]["steps"] if s.get("run") == "bash scripts/gate_a_cleanroom.sh")
