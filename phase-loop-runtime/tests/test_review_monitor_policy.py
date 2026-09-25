@@ -749,8 +749,8 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
     The child prints one CR-terminated status frame and WAITS for `go`, which the
     observe hook creates only once the monitor has held that frame as progress for
     0.1 s. The child then repaints and waits for `done`, created 0.3 s after `go`.
-    Correct: the age keeps growing from the first frame (> 0.35 s at the end). Broken
-    (repaints refresh progress): the age drops from >= 0.1 s back to ~0."""
+    Correct: the age keeps growing from the first frame and never drops. Broken (repaints
+    refresh progress): the age drops from >= 0.1 s back to ~0."""
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_latest_claude_transcript_text", lambda *a, **k: "")
@@ -818,7 +818,11 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
             if s["last_genuine_progress_age_s"] is not None]
     assert all(later >= earlier for earlier, later in zip(ages, ages[1:])), ages
     assert snapshots[-1]["observation_state"] == "progress_unobserved"
-    assert snapshots[-1]["last_genuine_progress_age_s"] > .35, ages
+    # Not an absolute threshold: a terminal observe() carries the PREVIOUS age forward, so
+    # under CI load the final age can lag wall time (agent-harness#1060 CI: 0.16 s). What
+    # the handshake guarantees is that it never fell below the 0.1 s that released `go`;
+    # with the monotonic check above, a refreshing repaint (age back to ~0) still fails.
+    assert snapshots[-1]["last_genuine_progress_age_s"] >= .1, ages
 
 
 def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
