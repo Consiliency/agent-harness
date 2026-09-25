@@ -9,11 +9,10 @@ default path is unchanged, and that the real CLI parses and previews it.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-from test_train_review_packet import candidate, never  # noqa: F401  (fixture + helper)
+from test_train_review_packet import candidate, never  # noqa: F401  (fixture, by name below; helper)
 from test_train_review_packet import synthetic_train_packet  # noqa: F401  (fixture)
 
 from phase_loop_runtime import governed_review as gr
@@ -192,9 +191,9 @@ def _cli_candidate(c, monkeypatch):
 
 
 class TestCli:
-    def test_preview_shows_the_heartbeat_board_without_effects(self, candidate, monkeypatch, capsys):
+    def test_preview_shows_the_heartbeat_board_without_effects(self, request, monkeypatch, capsys):
         from phase_loop_runtime import cli
-        c = candidate
+        c = request.getfixturevalue("candidate")
         train, ledger = _cli_candidate(c, monkeypatch)
         checked = []
         monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", lambda b, p, env=None: checked.append((b, p)))
@@ -211,9 +210,9 @@ class TestCli:
         assert checked == [(DEFAULT_BOARD, HB)]
         assert ledger.read_bytes() == before and not (ledger.parent / "broker").exists()
 
-    def test_preview_default_policy_is_bounded_with_no_fixed_board(self, candidate, monkeypatch, capsys):
+    def test_preview_default_policy_is_bounded_with_no_fixed_board(self, request, monkeypatch, capsys):
         from phase_loop_runtime import cli
-        c = candidate
+        c = request.getfixturevalue("candidate")
         train, ledger = _cli_candidate(c, monkeypatch)
         monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", never)
         args = ["run-train", "--train", str(train), "--governed", "--review-only", "--review-material",
@@ -227,9 +226,9 @@ class TestCli:
         ([], "--monitoring-policy heartbeat_only requires --governed"),
         (["--governed", "--review-only", "--emit-native-request"], "cannot combine with --emit-native-request"),
     ])
-    def test_unsupported_combinations_are_usage_errors(self, candidate, monkeypatch, capsys, extra, message):
+    def test_unsupported_combinations_are_usage_errors(self, request, monkeypatch, capsys, extra, message):
         from phase_loop_runtime import cli
-        c = candidate
+        c = request.getfixturevalue("candidate")
         train, ledger = _cli_candidate(c, monkeypatch)
         before = ledger.read_bytes()
         with pytest.raises(SystemExit) as error:
@@ -238,9 +237,9 @@ class TestCli:
         assert error.value.code == 2 and message in capsys.readouterr().err
         assert ledger.read_bytes() == before
 
-    def test_a_native_leg_is_refused_before_effects(self, candidate, monkeypatch, capsys):
+    def test_a_native_leg_is_refused_before_effects(self, request, monkeypatch, capsys):
         from phase_loop_runtime import cli
-        c = candidate
+        c = request.getfixturevalue("candidate")
         train, ledger = _cli_candidate(c, monkeypatch)
         monkeypatch.setattr(pi, "load_native_leg_fills", never)
         before = ledger.read_bytes()
@@ -252,11 +251,11 @@ class TestCli:
         assert ledger.read_bytes() == before and not (ledger.parent / "broker").exists()
 
     @pytest.mark.parametrize("flag, expected", [([], "bounded"), (["--monitoring-policy", HB], HB)])
-    def test_the_cli_hands_the_policy_to_run_train(self, candidate, monkeypatch, flag, expected):
+    def test_the_cli_hands_the_policy_to_run_train(self, request, monkeypatch, flag, expected):
         from phase_loop_runtime import cli
         from phase_loop_runtime.convergence import broker
         from phase_loop_runtime.convergence.broker import live
-        c = candidate
+        c = request.getfixturevalue("candidate")
         train, ledger = _cli_candidate(c, monkeypatch)
         monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", lambda *a, **k: None)
         monkeypatch.setattr(live, "fabpub_capability_active", lambda: False)
