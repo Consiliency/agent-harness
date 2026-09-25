@@ -1974,7 +1974,7 @@ _REVIEW_INSTRUCTIONS = (
     "maximum available reasoning budget. End with exactly one of: AGREE / "
     "PARTIALLY AGREE / DISAGREE — use DISAGREE only "
     "when there is a blocking defect."
-    " For an executable FINDING F001, use one ```falsifier fenced block with nodeid: phase-loop-runtime/tests/test_finding_F001.py::test_name followed by a diff creating only that new test; close the fence before the terminal verdict. The observed pytest outcome is advisory."
+    " For an executable finding, start a line FINDING F001: then a line-start ```falsifier fence. Its first line is nodeid: phase-loop-runtime/tests/test_finding_F001.py::test_name; follow it with a unified diff creating only that new test (diff --git a/<path> b/<path>, new file mode 100644, --- /dev/null, +++ b/<path>, @@ -0,0 +1,N @@ with N added lines). Close the fence before the terminal verdict. The observed pytest outcome is advisory."
 )
 
 # #63: advisory framing — general adversarial/advisory analysis, NOT a code review.

@@ -670,12 +670,14 @@ class TestReviewOnly:
             run_mode="governed", max_rounds=1, invoke=lambda **_kwargs: gate,
         )
         assert not loop.mergeable
+        assert loop.terminal_blocker["blocker_class"] == "review_gate_block"
         assert {f.seat_key for f in loop.findings if f.code == "finding_prose"} == set(seats)
         result, merged = _run_review(
             tmp_path, _ledger(tmp_path), review_only=True,
             review_fn=lambda _artifact, _mode: loop,
         )
         assert result["status"] == "review_halted" and merged == []
+        assert result["terminal_blocker"]["blocker_class"] == "review_gate_block"
         findings = [f for f in result["findings"] if f["code"] == "finding_prose"]
         assert {f.get("seat_key") for f in findings} == set(seats)
         assert {f.get("reviewed_sha") for f in findings} == {reviewed_sha}

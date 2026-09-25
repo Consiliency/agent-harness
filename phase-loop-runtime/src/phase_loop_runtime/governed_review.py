@@ -232,9 +232,9 @@ def _findings_from_panel(
                     seat_key=seat_key,
                 ))
             continue
-        if _leg_blocks(leg.text):
-            attachment = leg.finding_falsifiers
-            attached = {item.finding_id: item for item in attachment.falsifiers} if attachment else {}
+        attachment = leg.finding_falsifiers
+        attached = {item.finding_id: item for item in attachment.falsifiers} if attachment else {}
+        if _leg_blocks(leg.text) or attached:
             ids = tuple(dict.fromkeys(re.findall(
                 r"(?m)^FINDING ([A-Za-z0-9_]+):", leg.text,
             )))
@@ -701,24 +701,28 @@ def governed_board_gate(
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
     attachments = []
+    invalid: list[tuple[str, ValueError]] = []
     for leg in panel.legs:
-        if not leg.usable or not _leg_blocks(leg.text):
+        if not leg.usable:
             continue
         try:
             attachment = _pi.parse_finding_falsifiers(leg.text)
         except ValueError as exc:
-            seat_key = leg.seat_key or leg.leg
-            return _block_result(
-                "invalid_falsifier", "governed_invalid_falsifier",
-                f"seat {seat_key} supplied an invalid falsifier: {exc}; holding (non-human)",
-                seat_key=seat_key, reviewed_sha=reviewed_sha,
-                extra_findings=_findings_from_panel(
-                    panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
-                ),
-            )
+            invalid.append((leg.seat_key or leg.leg, exc))
+            continue
         if attachment.falsifiers:
             _pi.attach_finding_falsifiers(leg, attachment)
             attachments.append((leg, attachment))
+    if invalid:
+        seat_key, exc = invalid[0]
+        return _block_result(
+            "invalid_falsifier", "governed_invalid_falsifier",
+            f"seat {seat_key} supplied an invalid falsifier: {exc}; holding (non-human)",
+            seat_key=seat_key, reviewed_sha=reviewed_sha,
+            extra_findings=_findings_from_panel(
+                panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+            ),
+        )
     per_seat_exceeded = tuple(leg.seat_key or leg.leg for leg, attachment in attachments
                               if len(attachment.falsifiers) > 4)
     if (per_seat_exceeded
@@ -758,7 +762,8 @@ def governed_board_gate(
                         seat_key=key[0], finding_id=key[1], reviewed_sha=reviewed_sha,
                         result=result, record_digest=digest,
                     )
-                except (OSError, ValueError, TypeError, RecursionError):
+                except (OSError, ValueError, TypeError, RecursionError,
+                        RuntimeError, subprocess.SubprocessError):
                     # An unrecorded or failed operation stays an unresolved receipt.
                     pass
                 finally:

@@ -1,13 +1,15 @@
 """A prose finding stays attributable without turning a dissent into approval."""
 
 from dataclasses import asdict
+import subprocess
 
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
 from phase_loop_runtime.advisor_board.schema import Board
 from phase_loop_runtime.governed_premerge import run_governed_premerge_loop
+from phase_loop_runtime import governed_review
 from phase_loop_runtime.governed_review import _gate_result_from_panel, governed_board_gate
-from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
-from test_execfind_falsifier import _source_repo
+from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult, parse_finding_falsifiers
+from test_execfind_falsifier import _falsifier_text, _golden, _source_repo
 from test_governed_review import _count_gate
 
 
@@ -144,3 +146,91 @@ def test_falsifier_count_refusal_names_offending_seat(tmp_path):
                    for f in gate.findings)
         outcomes.append((refusal.reason, refusal.seat_key))
     assert outcomes[0] != outcomes[1]
+
+
+def test_approval_verdict_cannot_discard_a_valid_falsifier_receipt(tmp_path):
+    repo, head = _source_repo(tmp_path)
+    board = Board(name="execfind-ruling", purpose="code-review", seats=DEFAULT_SEATS)
+    report = _falsifier_text(_golden()["attachment"]["falsifiers"][0])
+    observed = {}
+    for verdict in ("DISAGREE", "PARTIALLY AGREE", "AGREE"):
+        text = report.removesuffix("DISAGREE\n") + verdict + "\n"
+        assert len(parse_finding_falsifiers(text).falsifiers) == 1
+        panel = PanelResult(tuple(
+            PanelLegResult(
+                seat.harness, "OK", text if index == 0 else "AGREE",
+                seat_key=f"{seat.harness}:{seat.model}:{seat.effort}:{seat.lens}",
+            )
+            for index, seat in enumerate(board.seats)
+        ))
+        gate = governed_board_gate(
+            artifact="Review the exact committed head.",
+            author_executor="train-coordinator", run_mode="governed",
+            reviewed_sha=head, canonical_repo_authority=repo,
+            compose=lambda: board,
+            invoke=lambda _board, _artifact, **_kwargs: panel,
+        )
+        loop = run_governed_premerge_loop(
+            artifact="Review the exact committed head.",
+            author_executor="train-coordinator", run_mode="governed",
+            max_rounds=1, invoke=lambda **_kwargs: gate,
+        )
+        receipts = tuple(f for f in gate.findings if f.code == "finding_receipt")
+        observed[verdict] = (gate.promoted, loop.mergeable, len(receipts))
+    assert observed == {
+        "DISAGREE": (False, False, 1),
+        "PARTIALLY AGREE": (False, False, 1),
+        "AGREE": (False, False, 1),
+    }
+
+
+def test_invalid_early_falsifier_keeps_later_valid_receipt(tmp_path):
+    repo, head = _source_repo(tmp_path)
+    board = Board(name="execfind-invalid", purpose="code-review", seats=DEFAULT_SEATS)
+    valid = _falsifier_text(_golden()["attachment"]["falsifiers"][0]).removesuffix("DISAGREE\n") + "AGREE\n"
+    panel = PanelResult(tuple(
+        PanelLegResult(
+            seat.harness, "OK",
+            "FINDING F002: malformed\n```falsifier bad\nDISAGREE" if index == 0 else valid if index == 1 else "AGREE",
+            seat_key=f"{seat.harness}:{seat.model}:{seat.effort}:{seat.lens}",
+        )
+        for index, seat in enumerate(board.seats)
+    ))
+    gate = governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed",
+        reviewed_sha=head, canonical_repo_authority=repo,
+        compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
+    assert gate.reason == "invalid_falsifier" and not gate.promoted
+    assert any(f.code == "finding_receipt" and f.seat_key == panel.legs[1].seat_key
+               and "record_digest=unresolved" in f.reason for f in gate.findings)
+
+
+def test_falsifier_subprocess_error_retains_unresolved_receipt(tmp_path, monkeypatch):
+    repo, head = _source_repo(tmp_path)
+    board = Board(name="execfind-error", purpose="code-review", seats=DEFAULT_SEATS)
+    report = _falsifier_text(_golden()["attachment"]["falsifiers"][0])
+    panel = PanelResult(tuple(
+        PanelLegResult(
+            seat.harness, "OK", report if index == 0 else "AGREE",
+            seat_key=f"{seat.harness}:{seat.model}:{seat.effort}:{seat.lens}",
+        )
+        for index, seat in enumerate(board.seats)
+    ))
+
+    def failed_run(**_kwargs):
+        raise subprocess.SubprocessError("staged process failed")
+
+    monkeypatch.setattr(governed_review, "run_finding_falsifier", failed_run)
+    gate = governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed",
+        reviewed_sha=head, canonical_repo_authority=repo,
+        compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
+    assert not gate.promoted
+    assert any(f.code == "finding_receipt" and "record_digest=unresolved" in f.reason
+               for f in gate.findings)
