@@ -196,6 +196,9 @@ def test_the_copied_run_exit_code_is_aggregated(lc, monkeypatch, tmp_path, selec
     monkeypatch.setattr(lc, "select", lambda pkg_root, files: (selected, ["test"]))
     monkeypatch.setattr(lc, "check_python", lambda repo: lc.sys.executable)
     monkeypatch.setattr(lc, "copied_tree_run", lambda *a: (["copied"], tmp_path, {}))
+    # Hermetic: a linter must be "available" whatever the host has (CI runners have no uvx,
+    # and a missing linter is itself a FAIL).
+    monkeypatch.setattr(lc.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     def run(cmd, *args, **kwargs):
         rc = copied_code if cmd == ["copied"] else 0
