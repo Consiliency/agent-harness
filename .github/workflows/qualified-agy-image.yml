@@ -5,19 +5,23 @@ on:
     paths:
       - 'plans/evidence/agy-*-linux-x64-qualification.json'
       - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
       - '.github/workflows/qualified-agy-image.yml'
+      - 'RELEASE_PIN'
+      - 'phase-loop-runtime/scripts/agy_full_pin_scope.sh'
   push:
     branches: [main]
     paths:
       - 'plans/evidence/agy-*-linux-x64-qualification.json'
       - 'plans/evidence/qualified-provider-images.json'
-      - 'phase-loop-runtime/src/phase_loop_runtime/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/qualify_gemini_heartbeat.py'
       - 'phase-loop-runtime/scripts/verify_qualified_agy_image.py'
       - '.github/workflows/qualified-agy-image.yml'
+      - 'RELEASE_PIN'
+      - 'phase-loop-runtime/scripts/agy_full_pin_scope.sh'
   schedule:
     - cron: '43 4 * * *'
   workflow_dispatch:
@@ -32,11 +36,46 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify qualification source pins
+      # agent-harness#1029 (maintainer ruling 2026-09-24): pull requests and pushes that
+      # touch the route check the ROUTE CORE only -- the qualification record plus the
+      # files that implement the qualified route directly -- so an ordinary runtime change
+      # no longer needs a live Gemini requalification per PR. The FULL pin set (every
+      # package source) blocks publication (publish-pypi.yml), blocks a release-cut or
+      # new-record PR, and is reported (non-blocking) nightly.
+      - name: Verify route-core qualification pins
+        run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --route-core
+      - name: Decide whether this run needs the full pin set
+        id: full
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash phase-loop-runtime/scripts/agy_full_pin_scope.sh
+      - name: Verify every qualification source pin (release cut, new record, dispatch)
+        if: steps.full.outputs.full == 'true'
         run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only
+      - name: Report full-pin drift (nightly, non-blocking)
+        # Between releases non-core drift is the expected state; the release gate
+        # carries the guarantee. Surface the drift without reddening every night.
+        if: github.event_name == 'schedule'
+        run: |
+          if ! python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only; then
+            echo "::warning::runtime sources drifted from the agy qualification record; the next release cut must requalify"
+          fi
+
+  upstream:
+    name: latest agy release asset
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Verify latest release, archive and executable
-        if: always()
         run: python phase-loop-runtime/scripts/verify_qualified_agy_image.py --upstream-only

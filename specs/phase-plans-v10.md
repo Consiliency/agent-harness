@@ -86,10 +86,10 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
    / `verdict_schema_sha256`. CONFORM's pin work is therefore NO LONGER externally gated and is
    satisfiable against merged sources; EC-CONFORM-5/6/7 are re-derived accordingly below. (Swept
    the other four assumptions against current `main`: #2 subsequently reconciled — `governed-pipeline#128`
-   CLOSED, we still ship `0.7.16`; #3 holds — `tui_adapter_required` still present in
+   CLOSED, we still ship `0.7.17`; #3 holds — `tui_adapter_required` still present in
    `panel_invoker.py`, REVIEWTRUTH unlanded; #4/#5 structurally independent of agent-harness#377. That original sweep found only #1
    stale; #2's later drift is reconciled below.)
-2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.16; it has acted on
+2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.17; it has acted on
    `governed-pipeline#128`, which is CLOSED. No phase here depends on that being resolved.
 3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
    inside Claude Code today (`tui_adapter_required`). The coordinated v10 run therefore invokes its
@@ -1262,8 +1262,9 @@ Source: agent-harness#935 (maintainer direction 2026-09-21); gap record: agent-h
   Code; by a native president fill accepted under `heartbeat_only`; by a fill whose digests do not
   bind the brief and findings it was asked to rule on.
 - [ ] EC-PRESROUTE-3 — **The ladder is ordered by seat alias, stated here once, on each
-  vendor's current registry id.** `PRESIDENT_LADDER` equals `("sol", "fable", "grok", "gemini")`
-  (Astra, Fable, Grok, Gemini) — this criterion is the ONLY place the order is written; the
+  vendor's current registry id.** `PRESIDENT_LADDER` equals `("fable", "sol", "grok", "gemini")`
+  (Opus 5.5, Astra, Grok, Gemini; amended 2026-09-24 by maintainer ruling, agent-harness#1025 —
+  previously `("sol", "fable", "grok", "gemini")`) — this criterion is the ONLY place the order is written; the
   Execution Notes, the verification recipe and the pinned tests reference it. Each alias resolves
   to its vendor's frozen registry PIN (the documented Opus substitution counts as the `fable`
   seat); at freeze the four PINs are each vendor's current id as recorded by the registry's own
@@ -1999,3 +2000,44 @@ PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/
 # GOVSETUP: the three commands and doctor agree on the effective profile
 phase-loop doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["governance_profile"]["effective"])'
 ```
+
+### EXECFIND advisory-evidence ruling (amendment 2026-09-25, maintainer)
+
+This ruling responds to the executable outcome-forgery findings on
+agent-harness#1050. A seat-authored Python test is untrusted for its own pytest
+status as well as for filesystem and network effects: it can alter pytest hooks,
+report data, or its process exit. A sandboxed run establishes which reviewed tree,
+test diff, named command, bounds, captured bytes, and reported outcome were used;
+it cannot establish that the test's assertions prove the seat's finding. The
+`finding_falsifier.v1` digest binds those observations, not their truth. Keep the
+five IF-0-EXECFIND-1 outcome literals and record fields; interpret `red_on_head`
+and `green_on_head` as **observed, untrusted pytest outcomes**, never as an
+automatic decision to bind or dismiss a finding.
+
+This supersedes the automatic-disposition clauses of EC-EXECFIND-2 and
+EC-EXECFIND-3. A valid falsifier attachment of *any* outcome, including RED and
+GREEN, becomes `finding_receipt` with block severity **pending a president
+ruling**. Its reason names the observed outcome and validated record digest; an
+invalid or missing binding uses `record_digest=unresolved` and also holds. Neither
+`finding_bound` nor `finding_unbound` is emitted from the test outcome. A GREEN
+report cannot clear a seat's blocking concern, and a RED report cannot prove it.
+The president receives the finding text, diff, outcome and receipt digest; if
+the ruling is unavailable or malformed, the gate remains held. A ruling, not a
+test status, decides whether the finding binds. This does not waive the board
+floor, seat isolation, reviewer attribution, or the existing president/human
+escalation policy. Before RATIFY supplies typed ruling resolution, EXECFIND may
+deliver the receipt/hold interface without promoting an attached finding.
+
+This also supersedes EC-EXECFIND-6's refusal to invoke the president while a
+RED node remains: the fix round carries and reruns advisory node evidence, then
+the president rules with the current result. EC-RATIFY-1 includes RED and GREEN
+`finding_receipt` cases in the president's residual, and no longer excludes a
+`finding_bound` class. EC-RATIFY-5's first reconciliation step becomes "capture
+and bind advisory test receipts" rather than "bound findings green"; its
+remaining ruling, ledger and guard steps stand. RATIFY's dependency on the
+EXECFIND receipt interface and GOVSETUP's dependency on RATIFY are unchanged.
+
+The original EXECFIND SL-0 content receipt remains historical. Before the
+changed production disposition lands, a superseding tests-first receipt must
+freeze the new RED/GREEN advisory controls and their RED-on-main results in a
+separate evidence directory; do not rewrite the original receipt or its logs.

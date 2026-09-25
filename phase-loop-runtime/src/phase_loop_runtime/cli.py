@@ -1176,6 +1176,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+def _confirmed_outside_git_work_tree(path: Path | str) -> bool:
+    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor.
+
+    Structural: git's output is never parsed. Any ``.git`` entry (directory, ``gitdir:``
+    file -- reachable or not -- or symlink) means "maybe a repository", and so does ANY
+    error: ``os.lstat`` is called directly because ``Path.exists``/``is_symlink`` swallow
+    OSError on newer Pythons (EACCES/EIO would read as "absent"), and a symlink loop in
+    ``resolve`` raises RuntimeError on Python <= 3.12 (agent-harness#1054/#1055 r2/r3).
+    """
+    try:
+        # strict=True: non-strict resolve() swallows lookup errors and returns the
+        # unresolved alias, whose lexical ancestors can miss the real repository
+        # (#1054 r4 / #1055 r3, codex). Any error -- incl. a missing path -- fails closed.
+        resolved = Path(path).resolve(strict=True)
+        for directory in (resolved, *resolved.parents):
+            try:
+                os.lstat(directory / ".git")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            return False
+    except (OSError, RuntimeError):
+        return False
+    return True
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1403,11 +1428,24 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             # specs/roadmap-status.json at all) is a silent no-op.
             candidate_path = Path(candidate)
             status_repo = candidate_path.resolve().parent.parent
-            try:
-                roadmap_lint.validate_roadmap_status_coherence(status_repo, required=True)
-            except roadmap_lint.RoadmapStatusError as exc:
-                print(f"validate-roadmap: roadmap-status coherence error: {exc}", file=sys.stderr)
-                return 1
+            # The repository is inferred as the roadmap's grandparent
+            # (<repo>/specs/<roadmap>.md). Outside a git work tree that guess is
+            # not a repository at all -- a roadmap loose in a tempdir made it
+            # ``/tmp`` itself -- so there is no canonical repository to check:
+            # skip with a note rather than validate a shared system directory
+            # (agent-harness#987 / #1053, maintainer decision 2026-09-25).
+            if _confirmed_outside_git_work_tree(status_repo):
+                print(
+                    f"validate-roadmap: note: {status_repo} is not inside a git work tree; "
+                    "skipping the repository roadmap-status coherence check",
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    roadmap_lint.validate_roadmap_status_coherence(status_repo, required=True)
+                except roadmap_lint.RoadmapStatusError as exc:
+                    print(f"validate-roadmap: roadmap-status coherence error: {exc}", file=sys.stderr)
+                    return 1
         if getattr(args, "check_assumptions", False):
             from . import roadmap_assumptions
 

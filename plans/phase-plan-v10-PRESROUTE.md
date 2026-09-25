@@ -2,14 +2,14 @@
 phase_loop_plan_version: 1
 phase: PRESROUTE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: af53a90951c1bcae1fa08ba937eba61a4ed632047f5a37d27393943667aadd94
+roadmap_sha256: 0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6
 automation:
   suite_command:
     - bash
     - -lc
     - >-
       set -euo pipefail;
-      uv run --project phase-loop-runtime python phase-loop-runtime/tests/presroute_content_tdd_adapter.py verify --repo . --landing-ref origin/main --receipt .phase-loop/evidence/PRESROUTE/content-tdd-receipt.json;
+      python3 phase-loop-runtime/scripts/verify_presroute_historical_receipt.py --repo .;
       PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q
       phase-loop-runtime/tests/test_govlean_panel_policy.py
       phase-loop-runtime/tests/test_president_wiring.py;
@@ -148,6 +148,7 @@ SL-3 — Documentation and phase reducer
 ## Execution Notes
 
 - **Binding ruling — governance supersession on PRESROUTE delivery** (agent-harness#935): from the merge to `main` of the PR that lands EC-PRESROUTE-3 and carries its phase-ledger row in the same PR, the availability ladder is the EC-PRESROUTE-3 order by seat alias; the ladder sentences of EC-GOVLEAN-5 and the 2026-08-12 supersession note become historical-descriptive from that event and are not rewritten. Until that event the GOVLEAN ladder keeps exclusive authority. Model ids are never restated in roadmap text; the registry and its `model-id-source:` markers are the only carrier.
+- **Post-landing policy amendment** (agent-harness#1025): rung `fable` now resolves to Opus 5.5 first. The SL-0 receipt proves agent-harness#998's original frozen bytes; the later amendment changed that ladder test. The historical verifier checks the unchanged receipt and RED logs in agent-harness#998's landing checkout; current tests check the amended behavior. Do not claim a separate RED commit for agent-harness#1025.
 - **Binding ruling — concurrency on PRESROUTE and EXECFIND** (agent-harness#935, maintainer 2026-09-21): the round-1 board question in the scope notes — whether the declared overlap with HARDEN, REVIEWTRUTH, LEGLIFE and RESIDUAL needs `Depends on` edges — is ratified in the negative. Declared overlap plus the touch-shape falsifier is sufficient; no edge is added and no phase is edited. The `HARDEN → PRESROUTE` edge is satisfied by the landed isolation-authorization mechanism (`advisor_board/backing.py`, `ReviewIsolationAuthorization` / `public_board_review.v1`, agent-harness#737), not by HARDEN's completion or EC-HARDEN-5. PRESROUTE may be planned and executed now, concurrently with HARDEN, REVIEWTRUTH and SCHED, by a lane other than the one holding those phases; its landings still serialize after the owning phases' landings on any shared file line both rewrite.
 - **Touch-shape falsifier (named seams)**: `panel_invoker.py`, `advisor_board/backing.py` and `cli.py` are shared with the open HARDEN/REVIEWTRUTH/LEGLIFE/RESIDUAL phases. A landing PR of this phase whose diff deletes or rewrites an existing line of a shared owned file OUTSIDE its named seams fails the phase. Named seams where rewriting an existing line is authorized: in `panel_invoker.py`, the `PRESIDENT_LADDER` tuple and the ladder alias/id sites; in `backing.py`, additive identity only (no rewrite of the review authorization); in `cli.py`, additive flag registration only. Every other touch is additive (new modules, new keyword-only seams, new guard).
 - **Lane B two stages (tests-first ownership)**: the roadmap decomposes into two lanes and assigns the two pinned tests to Lane B. Lane B runs in two stages: SL-0 is Lane B's tests-first stage (Lane B retains roadmap ownership of the tests, plus the receipt adapter, golden fixture, and receipt evidence it lands), and SL-2 is Lane B's implementation stage. EC-PRESROUTE-0's freeze forbids SL-2 from editing the SL-0 test bytes (re-verified byte-equal at merge), and Lane A (SL-1) consumes the frozen tests and golden. Splitting Lane B into a tests-first stage and an impl stage keeps Lane B's roadmap ownership of its tests while avoiding a Lane A↔Lane B cycle (Lane B's wiring test covers Lane A's `president_operation.py`, and SL-2 consumes Lane A's IF-0-PRESROUTE-1); an implementation lane owning tests does not require editing them after freeze.
@@ -171,7 +172,7 @@ SL-3 — Documentation and phase reducer
 Run after all lanes merge (the pytest commands are RED-first targets on base and expected to fail until the impl lands):
 
 ```bash
-uv run --project phase-loop-runtime python phase-loop-runtime/tests/presroute_content_tdd_adapter.py verify --repo . --landing-ref origin/main --receipt .phase-loop/evidence/PRESROUTE/content-tdd-receipt.json
+python3 phase-loop-runtime/scripts/verify_presroute_historical_receipt.py --repo .
 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k ruling_record_matches_frozen_contract
 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k ladder
 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py
@@ -192,7 +193,7 @@ Plan-artifact checks (green on the plan branch now):
 
 ## Acceptance Criteria
 
-- [ ] EC-PRESROUTE-0 — proven by `uv run --project phase-loop-runtime python phase-loop-runtime/tests/presroute_content_tdd_adapter.py verify --repo . --landing-ref origin/main --receipt .phase-loop/evidence/PRESROUTE/content-tdd-receipt.json`, which recomputes each frozen test file's sha256 and compares it byte-equal to the recorded `content_tdd_receipt.v1` receipt and rejects a missing receipt or absent recorded RED evidence (via `phase_loop_runtime.tdd_receipts.verify_content_tdd_receipt`); falsified by a path-entered one-byte mutation to either frozen test making its merge-time sha256 differ from its recorded freeze-time hash, by a missing receipt or absent recorded RED stdout/stderr for any module, or by any commit-topology assertion.
+- [ ] EC-PRESROUTE-0 — proven by `python3 phase-loop-runtime/scripts/verify_presroute_historical_receipt.py --repo .`, which checks unchanged receipt and RED-log bytes against agent-harness#998 and runs the frozen adapter in that landing checkout; falsified by drift in those bytes, a changed frozen test at that landing, or missing RED evidence. Agent-harness#1025 later amended the ladder test; current green tests prove its behavior, while the original receipt remains historical.
 - [ ] EC-PRESROUTE-1 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "operation or authorization"`; falsified by a path-entered mutation leaving a seated rung at `president_execution_route_unavailable` or producing a ruling receipt lacking the president authorization identity.
 - [ ] EC-PRESROUTE-2 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_president_wiring.py -k "launch_provider or native_fable or heartbeat or brief_binding"`; falsified by a path-entered mutation letting a rung spawn outside `launch_provider`, a native president fill accepted under `heartbeat_only`, or a fill with unchanged findings but a changed brief (mismatched `brief_digest`) accepted at resume.
 - [ ] EC-PRESROUTE-3 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py -k ladder` and `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/scripts/check_model_id_sources.py`; falsified by a path-entered mutation making `PRESIDENT_LADDER` differ from the tuple EC-PRESROUTE-3 fixes or `check_model_id_sources.py` report an unmarked id.

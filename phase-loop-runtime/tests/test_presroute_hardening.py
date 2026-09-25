@@ -4,8 +4,11 @@ Not part of the SL-0 frozen corpus.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -339,3 +342,162 @@ def test_the_gemini_rung_without_an_agy_credential_launches_into_an_empty_home(t
     home = Path(launched[0]["HOME"])
     assert home != tmp_path / "no-credential-home" and not any(home.rglob("*oauth*"))
     assert response["status"] == "failed" and response["code"] == "president_invocation_failed"
+
+
+@pytest.mark.parametrize("case", ("assume-unchanged", "skip-worktree", "head-drift", "index-drift"))
+def test_historical_receipt_rejects_evidence_drift_hidden_from_git_diff(
+    tmp_path, monkeypatch, case,
+):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    evidence = repo / verifier.EVIDENCE_DIR
+    evidence.mkdir(parents=True)
+    for rel in verifier.EVIDENCE_FILES:
+        (repo / rel).write_bytes(b"frozen evidence\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "frozen receipt"], cwd=repo, check=True)
+    landing = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    monkeypatch.setattr(verifier, "LANDING", landing)
+    monkeypatch.setattr(verifier, "worktree_root", lambda _repo: pytest.fail("checkout allocated"))
+    monkeypatch.setattr(sys, "argv", [str(script), "--repo", str(repo)])
+
+    rel = verifier.EVIDENCE_FILES[1]
+    if case == "head-drift":
+        (repo / rel).write_bytes(b"committed drift\n")
+        subprocess.run(["git", "add", rel], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                        "commit", "-qm", "changed receipt"], cwd=repo, check=True)
+        (repo / rel).write_bytes(b"frozen evidence\n")
+        subprocess.run(["git", "add", rel], cwd=repo, check=True)
+    elif case == "skip-worktree":
+        subprocess.run(["git", "update-index", "--skip-worktree", rel], cwd=repo, check=True)
+        (repo / rel).unlink()
+    elif case == "index-drift":
+        (repo / rel).write_bytes(b"staged drift\n")
+        subprocess.run(["git", "add", rel], cwd=repo, check=True)
+        (repo / rel).write_bytes(b"frozen evidence\n")
+    else:
+        subprocess.run(["git", "update-index", "--assume-unchanged", rel], cwd=repo, check=True)
+        (repo / rel).write_bytes(b"modified physical evidence\n")
+    subprocess.run(["git", "diff", "--quiet", landing, "--", rel], cwd=repo, check=True)
+    with pytest.raises(ValueError, match="frozen PRESROUTE evidence drift"):
+        verifier.main()
+
+
+def test_historical_receipt_finds_registered_worktree_with_newline_path(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "tracked").write_text("tracked\n")
+    subprocess.run(["git", "add", "tracked"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "baseline"], cwd=repo, check=True)
+    checkout = tmp_path / "with\nnewline"
+    subprocess.run(["git", "worktree", "add", "--detach", str(checkout), "HEAD"],
+                   cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    try:
+        assert verifier.registered_checkout(repo, checkout)
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(checkout)],
+                       cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+
+def test_historical_receipt_cleans_registered_checkout_after_hook_failure(tmp_path, monkeypatch):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for rel in verifier.EVIDENCE_FILES:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"frozen evidence\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "frozen receipt"], cwd=repo, check=True)
+    landing = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    monkeypatch.setattr(verifier, "LANDING", landing)
+    monkeypatch.setattr(verifier, "worktree_root", lambda _repo: Path("../scratch"))
+    nested = repo / "nested"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    monkeypatch.setattr(sys, "argv", [str(script), "--repo", "."])
+
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    hook = hooks / "post-checkout"
+    hook.write_text("#!/bin/sh\nexit 7\n")
+    hook.chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(hooks))
+    before = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo)
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        verifier.main()
+    assert excinfo.value.returncode == 7
+    assert subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo) == before
+    scratch = repo / "scratch"
+    assert scratch.is_dir() and not any(scratch.iterdir())
+
+
+def test_historical_receipt_does_not_verify_sibling_of_newline_named_repo(tmp_path, monkeypatch):
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_presroute_historical_receipt.py"
+    if not script.is_file():
+        pytest.skip("historical receipt script is absent from the standalone wheel layout")
+    spec = importlib.util.spec_from_file_location("presroute_historical_receipt", script)
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+
+    repo = tmp_path / "suite-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for rel in verifier.EVIDENCE_FILES:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"frozen evidence\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "frozen receipt"], cwd=repo, check=True)
+    landing = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    newline_repo = tmp_path / "suite-repo\n"
+    subprocess.run(["git", "worktree", "add", "--detach", str(newline_repo), "HEAD"],
+                   cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    try:
+        (newline_repo / verifier.EVIDENCE_FILES[1]).write_bytes(b"altered evidence\n")
+        raw_top = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], cwd=newline_repo)
+        assert raw_top.endswith(b"\n\n"), "the path newline and Git output delimiter must both be present"
+        monkeypatch.setattr(verifier, "LANDING", landing)
+        monkeypatch.setattr(verifier, "worktree_root", lambda _repo: pytest.fail("scratch allocated"))
+        monkeypatch.setattr(sys, "argv", [str(script), "--repo", str(newline_repo)])
+        before = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo)
+        with pytest.raises(ValueError, match="control characters"):
+            verifier.main()
+        assert subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=repo) == before
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(newline_repo)],
+                       cwd=repo, check=True, stdout=subprocess.DEVNULL)

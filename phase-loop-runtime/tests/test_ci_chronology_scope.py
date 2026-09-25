@@ -67,6 +67,14 @@ def _scope(*args: str, env: dict[str, str] | None = None, cwd: Path | None = Non
     return result.stdout.strip()
 
 
+def _scope_reason(env: dict[str, str], cwd: Path) -> tuple[str, str]:
+    """(decision line, reason line) for a pull_request scope run."""
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("CHRONOLOGY", "GITHUB_"))}
+    result = subprocess.run(["bash", str(SCOPE_SCRIPT)], check=True, capture_output=True,
+                            text=True, env={**base, **env}, cwd=str(cwd))
+    return result.stdout.strip(), result.stderr.strip()
+
+
 GATE_PLUMBING = (
     "ci/chronology-scope.sh",
     "ci/offload-gate.sh",
@@ -141,8 +149,14 @@ def test_non_pull_request_events_always_retain_the_node(event: str) -> None:
     assert _scope(env={"GITHUB_EVENT_NAME": event}) == "chronology=true"
 
 
-def test_pull_request_without_a_base_fails_closed() -> None:
-    assert _scope(env={"GITHUB_EVENT_NAME": "pull_request"}) == "chronology=true"
+def test_a_landing_push_in_its_real_environment_retains_the_node() -> None:
+    """The landing push as GitHub runs it (#1047): event push on refs/heads/main."""
+    assert _scope(env={"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"}) == "chronology=true"
+
+
+def test_pull_request_without_a_base_still_defers() -> None:
+    """agent-harness#1042: a PR never retains the node; the base only names plumbing."""
+    assert _scope(env={"GITHUB_EVENT_NAME": "pull_request"}) == "chronology=false"
 
 
 def test_force_overrides_every_scope() -> None:
@@ -186,22 +200,24 @@ def test_pull_request_touching_only_prose_deselects_the_node(pr_repo: tuple[Path
     repo, base = pr_repo
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "prose")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"
+    assert "touches gate plumbing" not in reason, reason  # only plumbing is named (#1047)
 
 
-def test_pull_request_touching_gate_plumbing_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_touching_gate_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
     repo, base = pr_repo
     target = repo / "ci" / "offload-gate.sh"
     target.parent.mkdir(parents=True)
     target.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", str(target))
     _git(repo, "commit", "-q", "-m", "touch gate plumbing")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and "ci/offload-gate.sh" in reason, reason
 
 
-def test_pull_request_renaming_plumbing_out_of_the_table_retains_the_node(
+def test_pull_request_renaming_plumbing_out_of_the_table_defers_and_names_it(
     pr_repo: tuple[Path, str],
 ) -> None:
     """Rename detection would report only the destination; the old endpoint must count."""
@@ -217,19 +233,21 @@ def test_pull_request_renaming_plumbing_out_of_the_table_retains_the_node(
     _git(repo, "mv", str(src), str(dest))
     _git(repo, "commit", "-q", "-m", "move it out of the table")
     assert _scope("--match", "tools/elsewhere.sh") == "no-match"
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and "ci/offload-gate.sh" in reason, reason
 
 
-def test_pull_request_touching_gate_a_plumbing_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_touching_gate_a_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
     repo, base = pr_repo
     script = repo / "phase-loop-runtime" / "scripts" / "gate_a_cleanroom.sh"
     script.parent.mkdir(parents=True)
     script.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", str(script))
     _git(repo, "commit", "-q", "-m", "touch Gate A plumbing")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and "gate_a_cleanroom.sh" in reason, reason
 
 
 def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[Path, str]) -> None:
@@ -246,12 +264,13 @@ def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[P
         target.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "touch the runtime only")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"
+    assert "touches gate plumbing" not in reason, reason  # only plumbing is named (#1047)
 
 
 @pytest.mark.parametrize("name", ["test_\u00e9.py", "test_a\nb.py", 'test_"q".py', "test_a\tb.py"])
-def test_pull_request_touching_a_quoted_pathname_retains_the_node(pr_repo: tuple[Path, str], name: str) -> None:
+def test_pull_request_touching_a_quoted_pathname_defers_and_names_it(pr_repo: tuple[Path, str], name: str) -> None:
     # Default core.quotePath renders these as "..." with octal escapes in
     # line-oriented output; the scope script must still see the prefix.
     repo, base = pr_repo
@@ -261,8 +280,9 @@ def test_pull_request_touching_a_quoted_pathname_retains_the_node(pr_repo: tuple
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "quoted path")
     assert _git(repo, "diff", "--name-only", f"{base}...HEAD").startswith('"'), "git did not quote the path"
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and name in reason, reason
 
 
 def _witness(junit: Path, expect: str, node: str = CHRONOLOGY_NODE) -> tuple[int, str]:
@@ -333,13 +353,13 @@ def test_witness_refuses_missing_or_malformed_junit(tmp_path: Path) -> None:
     assert _witness(_junit(tmp_path), "absent", node="no-separator")[0] == 2
 
 
-def test_pull_request_with_an_unresolvable_base_fails_closed(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_with_an_unresolvable_base_still_defers(pr_repo: tuple[Path, str]) -> None:
     repo, _base = pr_repo
     out = _scope(
         env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": "0" * 40},
         cwd=repo,
     )
-    assert out == "chronology=true"
+    assert out == "chronology=false"
 
 
 def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
@@ -361,9 +381,49 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     # Every job that runs the node decides its scope with the same script and
     # feeds the decision to the runner it drives.
     jobs = workflow["jobs"]
+    # agent-harness#1042 made this pin load-bearing (no PR re-proves the node any more):
+    # each scope step is pinned EXACTLY, so an env prefix on the command
+    # (`GITHUB_EVENT_NAME=pull_request bash ...`), a forced CHRONOLOGY_FORCE, an `if:`
+    # or a `continue-on-error:` cannot make the landing push skip the node while the
+    # witness, fed the same decision, expects "absent" and passes (#1043 r1 codex).
     for job in ("offload", "pytest", "cleanroom"):
-        runs = [step.get("run", "") for step in jobs[job]["steps"]]
-        assert any("ci/chronology-scope.sh >> \"$GITHUB_OUTPUT\"" in run for run in runs), job
+        scope_steps = [step for step in jobs[job]["steps"] if "chronology-scope.sh" in step.get("run", "")
+                       and "--node" not in step.get("run", "")]
+        assert len(scope_steps) == 1, (job, scope_steps)
+        step, = scope_steps
+        assert set(step) == {"name", "id", "env", "run"}, (job, sorted(step))
+        assert step["id"] == "scope", job
+        assert step["run"] == 'bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"', job
+        assert step["env"] == {
+            "CHRONOLOGY_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+            "CHRONOLOGY_FORCE": "${{ inputs.chronology }}",
+        }, job
+        # A shell wrapper can re-spell any env override (#1043 r2 codex): no defaults.
+        assert "defaults" not in jobs[job], job
+        # And the backstop GitHub evaluates itself, right after the decision.
+        names = [s.get("name") for s in jobs[job]["steps"]]
+        guard = jobs[job]["steps"][names.index(step["name"]) + 1]
+        assert guard["name"] == "A non-PR run must retain the chronology node", job
+        assert set(guard) == {"name", "if", "run"}, (job, sorted(guard))
+        assert " ".join(guard["if"].split()) == (
+            "github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' "
+            "&& inputs.chronology == false) && steps.scope.outputs.chronology != 'true'"
+        ), job
+        assert guard["run"] == (
+            'echo "::error::a ${{ github.event_name }} run resolved chronology='
+            '${{ steps.scope.outputs.chronology }}; it must retain the node" >&2\nexit 1\n'
+        ), job
+        # No job-level env at all: nothing (BASH_ENV, a startup file, an exit trap) can
+        # change what the scope step or the backstop executes (#1043 r3 codex). Scope:
+        # accidental edits -- a deliberate saboteur with workflow write access could as
+        # easily edit this test, so that is the review board's job, not this guard's.
+        assert "env" not in jobs[job], job
+    assert "env" not in workflow
+    assert "defaults" not in workflow
+    # A job-level continue-on-error would let a failing backstop (or suite) leave the
+    # run green; the collapse jobs that read these results are pinned too (#1047).
+    for job in ("offload", "pytest", "cleanroom", "hosted", "gate"):
+        assert "continue-on-error" not in jobs[job], job
     offload = next(s for s in jobs["offload"]["steps"] if "dagger-offload" in s.get("uses", ""))
     assert offload["env"]["CHRONOLOGY"] == "${{ steps.scope.outputs.chronology }}"
     cleanroom = next(s for s in jobs["cleanroom"]["steps"] if s.get("run") == "bash scripts/gate_a_cleanroom.sh")
@@ -374,8 +434,9 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
         s for s in publish["jobs"]["build"]["steps"]
         if "bash phase-loop-runtime/scripts/gate_a_cleanroom.sh" in s.get("run", "")
     )
-    deselect = gate_a["env"]["GATE_A_DESELECT_CHRONOLOGY"]
-    assert "github.event_name == 'pull_request'" in deselect and deselect.endswith("|| '0' }}")
+    # Exact: GitHub evaluates this expression itself, so pinning its text is the release
+    # workflow's equivalent of test.yml's backstop step (#1047) -- a tag can never deselect.
+    assert gate_a["env"]["GATE_A_DESELECT_CHRONOLOGY"] == "${{ github.event_name == 'pull_request' && '1' || '0' }}"
     # A red landing push is reported, never silently absorbed: the main-red job
     # runs after the gate on main pushes and the nightly, in both outcomes, with
     # the issue-writing permission the reporter needs and without gating anything.
@@ -425,9 +486,61 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     eligible = trusted and secret == "true" and sandbox_ready == "true"
     assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
     assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
-    for lane in ("pytest", "cleanroom"):
-        assert jobs[lane]["if"] == "needs.elig.outputs.eligible != 'true'"
+    assert jobs["pytest"]["if"] == "needs.elig.outputs.eligible != 'true'"
+    # agent-harness#1029: Gate A runs off pull requests; the wheel smoke runs on them.
+    assert jobs["cleanroom"]["if"] == (
+        "needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'"
+    )
+    assert jobs["wheel-smoke"]["if"] == (
+        "needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'"
+    )
     assert jobs["pytest"]["strategy"]["matrix"]["python-version"] == ["3.10", "3.11", "3.12"]
+    # A pull request keeps the py3.10 floor lane only; every other event keeps all three.
+    assert jobs["pytest"]["strategy"]["matrix"]["exclude"] == (
+        "${{ github.event_name == 'pull_request' && "
+        "fromJSON('[{\"python-version\":\"3.11\"},{\"python-version\":\"3.12\"}]') "
+        "|| fromJSON('[]') }}"
+    )
+
+
+@pytest.mark.parametrize("event,pytest_r,retention,cleanroom,smoke,success", [
+    ("pull_request", "success", "success", "skipped", "success", True),
+    ("pull_request", "success", "success", "skipped", "failure", False),
+    ("pull_request", "success", "success", "skipped", "skipped", False),
+    ("pull_request", "success", "success", "success", "success", False),
+    ("pull_request", "failure", "success", "skipped", "success", False),
+    ("push", "success", "success", "success", "skipped", True),
+    ("push", "success", "success", "skipped", "skipped", False),
+    ("push", "success", "success", "failure", "skipped", False),
+    ("push", "success", "success", "success", "success", False),
+    ("schedule", "success", "success", "success", "skipped", True),
+    ("schedule", "success", "failure", "success", "skipped", False),
+    ("pull_request", "success", "failure", "skipped", "success", False),
+    ("push", "failure", "success", "success", "skipped", False),
+])
+def test_hosted_collapse_requires_the_lane_for_the_event(
+    event, pytest_r, retention, cleanroom, smoke, success,
+):
+    """agent-harness#1029: exactly the event's lane ran and passed; the other skipped."""
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    hosted = jobs["hosted"]
+    assert set(hosted["needs"]) == {"elig", "pytest", "chronology-retention", "cleanroom", "wheel-smoke"}
+    step, = hosted["steps"]
+    # The script is exercised with injected values below; pin their WIRING here, or a
+    # swapped mapping (e.g. SMOKE fed from needs.pytest) would pass the behaviour rows.
+    assert step["env"] == {
+        "EVENT": "${{ github.event_name }}",
+        "PYTEST": "${{ needs.pytest.result }}",
+        "RETENTION": "${{ needs.chronology-retention.result }}",
+        "CLEANROOM": "${{ needs.cleanroom.result }}",
+        "SMOKE": "${{ needs.wheel-smoke.result }}",
+    }
+    result = subprocess.run(
+        ["bash", "-c", step["run"]], capture_output=True, text=True,
+        env={**os.environ, "EVENT": event, "PYTEST": pytest_r, "RETENTION": retention,
+             "CLEANROOM": cleanroom, "SMOKE": smoke},
+    )
+    assert (result.returncode == 0) is success, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("offload,hosted,success", [
@@ -443,3 +556,25 @@ def test_suite_gate_requires_one_real_success(offload, hosted, success):
         env={**os.environ, "OFFLOAD": offload, "HOSTED": hosted},
     )
     assert (result.returncode == 0) is success, result.stdout + result.stderr
+
+
+def test_the_wheel_smoke_keeps_gate_a_parity():
+    """agent-harness#1029: the PR stand-in must run Gate A's script and sandbox setup."""
+    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+
+    def step(job, name):
+        return next(s for s in jobs[job]["steps"] if s.get("name") == name)
+
+    prereq = "Install review sandbox prerequisites"
+    smoke_prereq = {line.strip() for line in step("wheel-smoke", prereq)["run"].splitlines()}
+    gate_prereq = {line.strip() for line in step("cleanroom", prereq)["run"].splitlines()}
+    assert {line for line in smoke_prereq if line and not line.startswith("#")} <= gate_prereq
+    for needed in ("sudo apt-get install -y bubblewrap slirp4netns iptables util-linux",
+                   "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"):
+        assert needed in smoke_prereq
+    smoke = step("wheel-smoke", "Wheel smoke — build, install, probe")
+    assert smoke["run"] == "bash scripts/gate_a_cleanroom.sh"
+    assert smoke["working-directory"] == "phase-loop-runtime"
+    assert smoke["env"] == {"PHASE_LOOP_SKIP_GATE_A_SUITE": "1"}
+    assert step("wheel-smoke", "Set up Python")["with"]["python-version"] == \
+        step("cleanroom", "Set up Python")["with"]["python-version"]
