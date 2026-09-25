@@ -197,6 +197,7 @@ def _findings_from_panel(
                 f"record_digest={digest}; president ruling required")
 
     for leg in panel.legs:
+        seat_key = leg.seat_key or leg.leg
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so
@@ -215,6 +216,7 @@ def _findings_from_panel(
                     blocker_class="review_gate_block",
                     body=leg.text,
                     reviewed_sha=reviewed_sha,
+                    seat_key=seat_key,
                 ))
             else:
                 # agent-harness#906: keep the leg's DETAIL, not only its status. Without it
@@ -227,6 +229,7 @@ def _findings_from_panel(
                     reason=f"panel leg {leg.leg} unusable ({leg.status}{detail})",
                     severity="warn",
                     reviewed_sha=reviewed_sha,
+                    seat_key=seat_key,
                 ))
             continue
         if _leg_blocks(leg.text):
@@ -243,6 +246,7 @@ def _findings_from_panel(
                             code="finding_receipt", reason=receipt_reason(leg, item),
                             severity="block", blocker_class="review_gate_block",
                             body=leg.text, reviewed_sha=reviewed_sha,
+                            seat_key=seat_key,
                         ))
                     else:
                         findings.append(ReviewFinding(
@@ -251,6 +255,7 @@ def _findings_from_panel(
                             severity="block" if falsifier_policy == "required" else "warn",
                             blocker_class="review_gate_block" if falsifier_policy == "required" else None,
                             body=leg.text, reviewed_sha=reviewed_sha,
+                            seat_key=seat_key,
                         ))
                 continue
             findings.append(ReviewFinding(
@@ -261,6 +266,7 @@ def _findings_from_panel(
                 # #80: the actual blocking review text, not just the generic reason.
                 body=leg.text,
                 reviewed_sha=reviewed_sha,
+                seat_key=seat_key,
             ))
         else:
             # A "nit" is non-blocking; recorded at `warn` severity (the rigor-v1
@@ -269,6 +275,8 @@ def _findings_from_panel(
                 code="panel_nit",
                 reason=f"panel leg {leg.leg} reviewed with non-blocking notes",
                 severity="warn",
+                reviewed_sha=reviewed_sha,
+                seat_key=seat_key,
             ))
     return tuple(findings)
 

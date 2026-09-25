@@ -293,7 +293,7 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
                     raise ValueError("falsifier staged file became a symlink")
                 payload = os.readlink(target).encode("utf-8", "surrogateescape")
             elif target.is_file():
-                actual_mode = "100755" if stat.S_IMODE(target.stat().st_mode) & 0o111 else "100644"
+                actual_mode = "100755" if target.stat().st_mode & stat.S_IXUSR else "100644"
                 if actual_mode != mode:
                     raise ValueError("falsifier staged executable bit changed")
                 payload = target.read_bytes()
@@ -344,7 +344,10 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
         if not project.resolve(strict=True).is_relative_to(stage.resolve(strict=True)):
             raise ValueError("falsifier project path outside staged tree")
         payload = tomllib.loads(project.read_text(encoding="utf-8"))
-        declared = payload.get("project", {}).get("dependencies", [])
+        project_metadata = payload.get("project", {})
+        if not isinstance(project_metadata, dict):
+            raise ValueError("falsifier project metadata is invalid")
+        declared = project_metadata.get("dependencies", [])
         if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
             raise ValueError("falsifier project dependencies are invalid")
         requirements.extend(declared)

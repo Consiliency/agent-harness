@@ -40,6 +40,19 @@ class ReviewSummaryTest(unittest.TestCase):
         events = [{"phase": "P", "a": f}, {"phase": "P", "b": f}]  # same finding echoed twice
         self.assertEqual(len(collect_review_findings(events)), 1)
 
+    def test_collect_keeps_same_finding_from_distinct_review_seats(self):
+        events = [{"phase": "P", "findings": [
+            {"kind": "review_finding", "code": "finding_prose", "reason": "finding F001 has no executable receipt",
+             "severity": "warn", "seat_key": "claude:claude-opus-5-5:max:correctness"},
+            {"kind": "review_finding", "code": "finding_prose", "reason": "finding F001 has no executable receipt",
+             "severity": "warn", "seat_key": "gemini:gemini-3.8-flash:high:alternative-approach"},
+        ]}]
+        findings = collect_review_findings(events)
+        self.assertEqual(len(findings), 2)
+        rendered = render_review_findings_summary(findings)
+        self.assertIn("claude:claude-opus-5-5:max:correctness", rendered)
+        self.assertIn("gemini:gemini-3.8-flash:high:alternative-approach", rendered)
+
     def test_render_empty_is_blank(self):
         self.assertEqual(render_review_findings_summary([]), "")
 
