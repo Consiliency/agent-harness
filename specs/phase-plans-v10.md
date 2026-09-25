@@ -289,8 +289,9 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   table, 4 when omitted), its precedence (built-in < user < base-revision repository, table by table),
   the landing rule (usable distinct vendors >= the minimum, plus any seats an explicit profile requires,
   plus at least two usable panel seats and a president ruling)
-  and the result labels (usable distinct vendors, seats, fallback-filled and unfilled lanes, effective
-  minimum and source, explicitly required seats, minimum met, per-seat lens delivery).
+  and the result labels (usable distinct vendors, composed and usable seat counts, fallback-filled and
+  unfilled lanes, effective minimum and source, explicitly required seats and the profile path, minimum
+  met, and per seat: lens name, built-in or declared, and lens delivery).
 
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
 
@@ -1646,9 +1647,10 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   `lanes` (ordered `{lens, vendors}`; `vendors` an ordered preference over the board vendors) and an
   optional `lenses` map declaring a custom lens (`name` → instruction text). It is read from the user
   file `$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml` and from the repository file
-  `.agent-harness/advisor-boards.toml` **as committed at the landing's base revision** (the merge-base
-  with the target branch, never the change under review; unreadable fails closed). Only `[panel.*]` is
-  read at the base revision. The user file is read once at run start and recorded by content digest; a
+  `.agent-harness/advisor-boards.toml` **as committed at the landing's base revision**: the target
+  branch head at gate time, never the change under review and never a stale merge-base. Unreadable fails
+  closed. Only `[panel.*]` is read at the base revision. The change's own `[panel.*]` is validated at the
+  gate, and a malformed one is refused, but it never governs the change. The user file is read once at run start and recorded by content digest; a
   landing whose user file changed during the run is refused. Precedence is built-in < user < repository,
   table by table. Unknown keys are refused only inside `[panel.*]`; "unknown lens" means neither
   built-in nor declared, and a declared lens may not reuse a built-in lens name. Every
@@ -1661,8 +1663,11 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   - a declared custom lens being refused, or a declared lens that reuses a built-in lens name being
     accepted;
   - a landing proceeding after the user file's content changed during the run;
-  - an unreadable base revision not failing closed, or anything other than `[panel.*]` being read at the
-    base revision;
+  - `[panel.*]` being read at any revision other than the target branch head at gate time (for example,
+    a stale merge-base), an unreadable base revision not failing closed, or anything other than
+    `[panel.*]` being read at the base revision;
+  - a change whose own `[panel.*]` is malformed landing;
+  - a key outside `[panel.*]` being refused by PANEL's loader;
   - a built-in preset task without a built-in table, or a built-in table composing different
     all-available seats than today;
   - a user table not overriding a built-in one, or a repository table not overriding a user one;
@@ -1726,12 +1731,16 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   Falsified by a result or landing record lacking any of these, or carrying a value that disagrees with
   the resolved configuration and the actual seat outcomes.
 - [ ] EC-PANEL-6 — **(Slice 2) Every seat's lens reaches its reviewer's instructions.** Each seat's lens
-  instruction text (built-in or declared) is inside the instructions that seat's route sends: inside
-  the digest-bound authoritative-instructions frame on the brokered and TUI routes, and in the
-  instruction channel (not metadata) on native fill. Only then is its lens delivery label `prompt`.
-  This satisfies EC-LEGLIFE-4 (see the PANEL ruling). Falsified by any seat, whether its lens is built-in
-  or declared, whose lens text is absent from those instructions or appears only outside them (in the
-  reviewed payload, or in metadata), or whose label says `prompt` when it is not there.
+  name and instruction text (built-in or declared) are inside the instructions that seat's route sends:
+  inside the digest-bound authoritative-instructions frame on the brokered and TUI routes, and in the
+  instruction channel (not metadata) on native fill. The lens narrows what the reviewer looks at; the
+  verdict protocol text is the same for every seat. Only then is the seat's lens delivery label
+  `prompt`. This satisfies EC-LEGLIFE-4 (see the PANEL ruling). Falsified by any seat, whether its lens is
+  built-in or declared, where:
+  - the lens name or text is absent from those instructions, or appears only outside them (in the
+    reviewed payload, or in metadata);
+  - the label says `prompt` when the lens is not there;
+  - the verdict protocol text differs from that of a seat without a declared lens.
 - [ ] EC-PANEL-7 — **Documented, both ways.** The onboarding docs and the advisor-board capabilities
   card document the lane tables, lens declarations, fallback, the minimum and its precedence, and the
   labels, and the entry-doc check covers those sections. Falsified by a documented key the loader
@@ -1743,8 +1752,9 @@ Decompose into 2 slices, each a single implementation lane.
 - **Slice 1** owns the lane tables and lens declarations, the composition, the landing minimum and the
   labels:
   - `advisor_board/config.py` (loader, including the base-revision read);
-  - `advisor_board/composition.py` (lane fallback; `FLOOR_SEATS` and `board_independence()` remain,
-    computed over the composed board);
+  - `advisor_board/composition.py` (lane fallback). `FLOOR_SEATS` and `board_independence()` remain,
+    computed over the composed board, as labels only: neither refuses a landing that EC-PANEL-4
+    admits.
   - `advisor_board/presets.py` (built-in tables);
   - the keyword-only seam beside `review_policy_for_tier`;
   - the `heartbeat_only` board selection in `cli.py` and `governed_review.py`.
@@ -1764,8 +1774,8 @@ Shared files `panel_invoker.py`, `governed_review.py` and `cli.py` are owned by 
   the same landing and listed in its record.
 
 Landings touching these files take their turn in manifest queue order among landings that are ready. That
-is file ordering under PRESROUTE's touch-shape falsifier, not a phase dependency: nothing here waits on
-another phase's future landings or completion.
+is file ordering under PRESROUTE's touch-shape falsifier, not a phase dependency: beyond the declared
+Depends on, nothing here waits on a shared-file owner's future landings or completion.
 
 **Non-goals**
 Per-seat model selection (ids stay registry-pinned). Re-seating a seat that fails after it was seated
@@ -1778,8 +1788,8 @@ profile schema (see the PANEL ruling).
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py`
 - `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (`review_policy_for_tier` seam; slice 2 prompt assembly)
-- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (board selection seam)
-- `phase-loop-runtime/src/phase_loop_runtime/cli.py` (board selection seam)
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (board selection, a default-path change)
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py` (board selection, a default-path change)
 - `docs/advisor-board-capabilities-card.md`, `docs/TEAM-ONBOARDING.md`
 
 **Depends on**
@@ -2233,7 +2243,8 @@ operative by dispatch discipline: the named plans must cite them.
   `panel` field keeps its schema (required seat aliases or `none`). GOVSETUP's plan must cite this
   ruling, and it must:
   - treat a `panel` alias list as **explicit** only when it is set in a user or repository
-    `governance.toml`, never as a built-in profile default. When both set one, IF-0-GOVSETUP-1's
+    `governance.toml`, never as a built-in profile default. The repository `governance.toml` is read at
+    the same base revision as `[panel.*]`, so a change cannot drop a repository raise in its own diff. When both set one, IF-0-GOVSETUP-1's
     precedence picks one list (repository over user), and that file's path is the one labelled;
   - treat an explicit list as seats the landing also requires, on top of EC-PANEL-4's minimum. It is a
     requirement, not a number compared with the minimum;
@@ -2245,6 +2256,9 @@ operative by dispatch discipline: the named plans must cite them.
   only lowering route is EC-PANEL-4's user or base-revision repository `advisor-boards.toml`, down to one
   distinct vendor. Every such landing is labelled with its effective minimum, that minimum's source and
   any explicitly required seats (EC-PANEL-5).
+- **The user file is the operator's.** Seats and implementer agents must not be able to write
+  `$XDG_CONFIG_HOME/agent-harness/`. The run-start digest refuses a mid-run edit, and each landing
+  labels the digest it used.
 - **LEGLIFE-4's "custom seat" is a declared lane.** LEGLIFE's plan uses IF-0-PANEL-1's lane and lens
   declarations instead of defining a second seat schema.
 - **Lanes are real only in slice 2.** Until EC-PANEL-6 lands, a seat's lens selects its vendor order and
