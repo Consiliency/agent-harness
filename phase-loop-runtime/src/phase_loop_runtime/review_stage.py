@@ -540,7 +540,7 @@ CLONE_DEPTH = 50
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         capture_output=True, text=True, check=check,
     ).stdout
 
