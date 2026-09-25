@@ -2530,3 +2530,59 @@ def test_the_blocked_writer_changes_only_status_and_time(tmp_path):
     tr._append_blocked_keeping_admission(ledger, "repo-b/Q.md", branch="fresh")
     assert read_ledger(ledger)["repo-b/Q.md"] == replace(read_ledger(ledger)["repo-b/Q.md"],
         status="blocked", branch="fresh", head_sha=None, pr_url=None, fab_run_id=None, merge_order=None)
+
+
+@pytest.mark.parametrize("failure", ["reverify_false", "merge_raises"])
+def test_a_refusal_repeated_across_runs_keeps_the_admission(fab_downstream_with_upstream, failure):
+    """agent-harness#1064 (F020): refuse, rerun, refuse again -- the full binding is still the
+    last-wins fold after the SECOND refusal, not only the first."""
+    c = fab_downstream_with_upstream
+    downstream_repo = c["fixture"].repo
+
+    def transient(*_args, **_kwargs):
+        raise RuntimeError("transient remote failure")
+
+    if failure == "reverify_false":
+        options = {"_reverify_fn": lambda ws, *a, **k: ws != downstream_repo}
+    else:
+        def merge(workspace, branch, **kwargs):
+            if workspace == downstream_repo:
+                transient()
+            return kwargs["head_sha"]
+        options = {"_merge_pr_fn": merge}
+    # After run 1 the upstream IS merged: GitHub, the open-PR probe and the merged-SHA
+    # lookup must say so on run 2, or the coordinator correctly holds on the mismatch.
+    upstream_repo = c["upstream_repo"]
+
+    def merged_upstream():
+        row = read_ledger(c["ledger"]).get(c["upstream"].node_id)
+        return row if row is not None and row.status == "merged" else None
+
+    live_metadata = packet.read_pr_metadata
+
+    def metadata(ws, url):
+        row = merged_upstream()
+        if row is not None and url == row.pr_url:
+            return {**live_metadata(ws, url), "state": "MERGED", "mergeCommit": {"oid": row.upstream_merge_sha}}
+        return live_metadata(ws, url)
+
+    import unittest.mock as _mock
+    patch = _mock.patch.object(packet, "read_pr_metadata", metadata)
+    patch.start()
+    try:
+        options["_pr_is_open"] = lambda ws, br: not (ws == upstream_repo and merged_upstream() is not None)
+        options["_pr_merged_sha_fn"] = lambda ws, *a, **k: (
+            merged_upstream().upstream_merge_sha if ws == upstream_repo and merged_upstream() is not None else None)
+        _repeat_refusal(c, options)
+    finally:
+        patch.stop()
+
+
+def _repeat_refusal(c, options):
+    expected = {**packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}
+    for attempt in (1, 2):
+        result = c["run"](**options)
+        assert result["status"] in ("blocked", "merge_halted") and result["node_id"] == c["downstream"].node_id, (attempt, result)
+        row = read_ledger(c["ledger"])[c["downstream"].node_id]
+        assert row.status == "blocked", attempt
+        assert {**packet.admission_binding(row), "merge_order": row.merge_order} == expected, attempt
