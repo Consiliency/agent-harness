@@ -67,6 +67,14 @@ def _scope(*args: str, env: dict[str, str] | None = None, cwd: Path | None = Non
     return result.stdout.strip()
 
 
+def _scope_reason(env: dict[str, str], cwd: Path) -> tuple[str, str]:
+    """(decision line, reason line) for a pull_request scope run."""
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("CHRONOLOGY", "GITHUB_"))}
+    result = subprocess.run(["bash", str(SCOPE_SCRIPT)], check=True, capture_output=True,
+                            text=True, env={**base, **env}, cwd=str(cwd))
+    return result.stdout.strip(), result.stderr.strip()
+
+
 GATE_PLUMBING = (
     "ci/chronology-scope.sh",
     "ci/offload-gate.sh",
@@ -141,8 +149,9 @@ def test_non_pull_request_events_always_retain_the_node(event: str) -> None:
     assert _scope(env={"GITHUB_EVENT_NAME": event}) == "chronology=true"
 
 
-def test_pull_request_without_a_base_fails_closed() -> None:
-    assert _scope(env={"GITHUB_EVENT_NAME": "pull_request"}) == "chronology=true"
+def test_pull_request_without_a_base_still_defers() -> None:
+    """agent-harness#1042: a PR never retains the node; the base only names plumbing."""
+    assert _scope(env={"GITHUB_EVENT_NAME": "pull_request"}) == "chronology=false"
 
 
 def test_force_overrides_every_scope() -> None:
@@ -190,18 +199,19 @@ def test_pull_request_touching_only_prose_deselects_the_node(pr_repo: tuple[Path
     assert out == "chronology=false"
 
 
-def test_pull_request_touching_gate_plumbing_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_touching_gate_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
     repo, base = pr_repo
     target = repo / "ci" / "offload-gate.sh"
     target.parent.mkdir(parents=True)
     target.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", str(target))
     _git(repo, "commit", "-q", "-m", "touch gate plumbing")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and "ci/offload-gate.sh" in reason, reason
 
 
-def test_pull_request_renaming_plumbing_out_of_the_table_retains_the_node(
+def test_pull_request_renaming_plumbing_out_of_the_table_defers_and_names_it(
     pr_repo: tuple[Path, str],
 ) -> None:
     """Rename detection would report only the destination; the old endpoint must count."""
@@ -217,19 +227,21 @@ def test_pull_request_renaming_plumbing_out_of_the_table_retains_the_node(
     _git(repo, "mv", str(src), str(dest))
     _git(repo, "commit", "-q", "-m", "move it out of the table")
     assert _scope("--match", "tools/elsewhere.sh") == "no-match"
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and "ci/offload-gate.sh" in reason, reason
 
 
-def test_pull_request_touching_gate_a_plumbing_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_touching_gate_a_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
     repo, base = pr_repo
     script = repo / "phase-loop-runtime" / "scripts" / "gate_a_cleanroom.sh"
     script.parent.mkdir(parents=True)
     script.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", str(script))
     _git(repo, "commit", "-q", "-m", "touch Gate A plumbing")
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and "gate_a_cleanroom.sh" in reason, reason
 
 
 def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[Path, str]) -> None:
@@ -251,7 +263,7 @@ def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[P
 
 
 @pytest.mark.parametrize("name", ["test_\u00e9.py", "test_a\nb.py", 'test_"q".py', "test_a\tb.py"])
-def test_pull_request_touching_a_quoted_pathname_retains_the_node(pr_repo: tuple[Path, str], name: str) -> None:
+def test_pull_request_touching_a_quoted_pathname_defers_and_names_it(pr_repo: tuple[Path, str], name: str) -> None:
     # Default core.quotePath renders these as "..." with octal escapes in
     # line-oriented output; the scope script must still see the prefix.
     repo, base = pr_repo
@@ -261,8 +273,9 @@ def test_pull_request_touching_a_quoted_pathname_retains_the_node(pr_repo: tuple
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "quoted path")
     assert _git(repo, "diff", "--name-only", f"{base}...HEAD").startswith('"'), "git did not quote the path"
-    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
-    assert out == "chronology=true"
+    out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
+    assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
+    assert "touches gate plumbing" in reason and name in reason, reason
 
 
 def _witness(junit: Path, expect: str, node: str = CHRONOLOGY_NODE) -> tuple[int, str]:
@@ -333,13 +346,13 @@ def test_witness_refuses_missing_or_malformed_junit(tmp_path: Path) -> None:
     assert _witness(_junit(tmp_path), "absent", node="no-separator")[0] == 2
 
 
-def test_pull_request_with_an_unresolvable_base_fails_closed(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_with_an_unresolvable_base_still_defers(pr_repo: tuple[Path, str]) -> None:
     repo, _base = pr_repo
     out = _scope(
         env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": "0" * 40},
         cwd=repo,
     )
-    assert out == "chronology=true"
+    assert out == "chronology=false"
 
 
 def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:

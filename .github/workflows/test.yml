@@ -6,8 +6,9 @@ on:
   pull_request:
   # The heavy CONFORM chronology node (~50 min, ~88% of a per-PR run) is scoped
   # by ci/chronology-scope.sh: every push to main and this nightly run RETAIN it
-  # unconditionally; a pull_request DEFERS it to the landing push unless its diff
-  # touches the gate's own selection plumbing (the script's table). The nightly
+  # unconditionally; every pull_request DEFERS it to the landing push -- incl. one
+  # touching the gate's own selection plumbing since agent-harness#1042 (dispatch
+  # this workflow on the branch with chronology=true to prove it first). The nightly
   # is the backstop that bounds how long a regression can stay invisible,
   # independent of merge traffic; the `main-red` job below is what makes a red
   # landing push visible (a labelled issue) without anyone watching this tab.
