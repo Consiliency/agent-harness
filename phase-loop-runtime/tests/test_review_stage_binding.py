@@ -456,23 +456,29 @@ def test_project_without_declared_dependencies_keeps_pytest_available(tmp_path):
     assert (dependencies / "pytest" / "__init__.py").is_file()
 
 
-def test_inventory_uses_invoking_install_when_system_python_lacks_pytest(tmp_path, monkeypatch):
+@pytest.mark.parametrize("target_minor_delta", [0, 1])
+def test_inventory_uses_invoking_install_when_system_python_lacks_pytest(
+    tmp_path, monkeypatch, target_minor_delta,
+):
     prefix = tmp_path / "toolcache"
     site = prefix / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     package = site / "pytest"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("# installed pytest\n", encoding="utf-8")
+    (package / "native.so").write_bytes(b"native extension")
     metadata = site / "pytest-9.1.1.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text("Name: pytest\nVersion: 9.1.1\n", encoding="utf-8")
-    (metadata / "RECORD").write_text("pytest/__init__.py,,\n", encoding="utf-8")
+    (metadata / "RECORD").write_text(
+        "pytest/__init__.py,,\npytest/native.so,,\n", encoding="utf-8",
+    )
     monkeypatch.setattr(sys, "prefix", str(prefix))
     monkeypatch.setattr(sys, "path", [str(site), *sys.path])
     original_run = subprocess.run
 
     def empty_system_inventory(argv, *args, **kwargs):
-        if argv[:2] == ["/usr/bin/python3", "-c"] and "import json,sys" in argv[2]:
-            version = ",".join(str(part) for part in sys.version_info[:3])
+        if argv[0] == "/usr/bin/python3" and "-c" in argv:
+            version = f"{sys.version_info.major},{sys.version_info.minor + target_minor_delta},0"
             return subprocess.CompletedProcess(
                 argv, 0, stdout=f'{{"paths":[],"version":[{version}]}}', stderr="",
             )
@@ -485,6 +491,36 @@ def test_inventory_uses_invoking_install_when_system_python_lacks_pytest(tmp_pat
     review_stage._snapshot_falsifier_dependencies(stage, dependencies)
 
     assert (dependencies / "pytest" / "__init__.py").read_text() == "# installed pytest\n"
+    assert (dependencies / "pytest" / "native.so").exists() is (target_minor_delta == 0)
+
+
+def test_falsifier_inventory_does_not_run_editable_usercustomize(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    marker = tmp_path / "host-marker"
+    source = repo / "src"
+    source.mkdir()
+    (source / "usercustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "src/usercustomize.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "customize"],
+        check=True,
+    )
+    home = tmp_path / "home"
+    site = home / ".local" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "editable.pth").write_text(
+        f"{source}\nimport usercustomize\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(repo)
+    stage = review_stage.stage_review_tree(repo, tmp_path / "stage")
+
+    review_stage._snapshot_falsifier_dependencies(stage, tmp_path / "dependencies")
+
+    assert not marker.exists()
 
 
 def test_falsifier_inventory_does_not_import_reviewed_json_from_cwd(tmp_path, monkeypatch):
