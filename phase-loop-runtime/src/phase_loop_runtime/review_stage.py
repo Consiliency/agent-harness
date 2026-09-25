@@ -93,13 +93,13 @@ def review_tree_paths(repo: Path) -> list[str] | None:
     """
     try:
         tracked = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-z"],
+            ["git", "-c", "core.fsmonitor=false", "-C", str(repo), "ls-files", "-z"],
             capture_output=True, text=True, check=False,
         )
         if tracked.returncode != 0:
             return None
         untracked = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-z", "--others", "--exclude-standard"],
+            ["git", "-c", "core.fsmonitor=false", "-C", str(repo), "ls-files", "-z", "--others", "--exclude-standard"],
             capture_output=True, text=True, check=False,
         )
         if untracked.returncode != 0:
@@ -607,14 +607,18 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
             _copy_selected(root, staged)
             return staged
 
+        git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        git_env.update(
+            GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
+        )
         subprocess.run(
             ["git", "clone", "--quiet", "--depth", str(CLONE_DEPTH), "--no-single-branch",
              f"file://{root}", str(staged)],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, env=git_env,
         )
         subprocess.run(
             ["git", "-C", str(staged), "checkout", "--quiet", "--detach", head],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, env=git_env,
         )
         _overlay_working_tree(root, staged)
         # Inside `.git` on purpose: the marker describes the clone, and anything in the
