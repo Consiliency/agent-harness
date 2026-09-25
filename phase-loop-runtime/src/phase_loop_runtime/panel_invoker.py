@@ -4486,7 +4486,9 @@ def _normalize_tui_line(line: str) -> str:
     return " ".join(line.split()).strip().lower()
 
 
-def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
+def _tui_chunk_has_novel_content(
+    chunk: bytes, seen: set[str], ignore: Callable[[str], bool] | None = None
+) -> bool:
     """True iff a PTY chunk carries SUBSTANTIVE new (non-cosmetic) terminal text.
 
     Strips ANSI escapes, splits on newline AND carriage-return (spinner overwrite),
@@ -4503,8 +4505,33 @@ def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
         norm = _normalize_tui_line(raw)
         if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
             seen.add(norm)
-            novel = True
+            # ``ignore`` lines are recorded as seen but are never progress (#992).
+            if ignore is None or not ignore(norm):
+                novel = True
     return novel
+
+
+# The workspace-trust modal's own vocabulary, normalized like any TUI line. After the
+# modal is answered, lines of the modal that were still rendering (it can arrive in
+# pieces) must not arm editor readiness (agent-harness#992).
+_TUI_TRUST_MODAL_NORMS = tuple(
+    _normalize_tui_line(text)
+    for text in (
+        _CLAUDE_TUI_TRUST_HEADER,
+        _CLAUDE_TUI_TRUST_HEADER_CURRENT,
+        _CLAUDE_TUI_TRUST_QUESTION,
+        _CLAUDE_TUI_TRUST_CHOICE,
+        _CLAUDE_TUI_TRUST_PROMPT,
+        "no, exit",
+    )
+)
+
+
+def _tui_trust_modal_line(norm: str, cwd_norms: Sequence[str]) -> bool:
+    """Is this normalized line part of the workspace-trust modal (incl. its cwd line)?"""
+    return any(token in norm for token in _TUI_TRUST_MODAL_NORMS) or any(
+        token and token in norm for token in cwd_norms
+    )
 
 
 # A single ``os.read(8192)`` can split a novel review line across two chunks; each
@@ -4677,6 +4704,10 @@ def _run_claude_tui_session(
     cwd_tokens = _cwd_trust_tokens(
         cwd
     )  # run-unique FULL-path tokens (not the bare basename)
+    cwd_norms = tuple(
+        norm for norm in (_normalize_tui_line(token) for token in cwd_tokens)
+        if len(norm) >= _TUI_PROGRESS_MIN_CHARS
+    )
 
     def _current_output() -> str:
         return (
@@ -4804,8 +4835,16 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
+                        # Between answering the trust modal and submitting, the
+                        # modal's own late-rendering lines are not editor output
+                        # (agent-harness#992): they must not arm readiness.
+                        modal_ignore = (
+                            (lambda norm: _tui_trust_modal_line(norm, cwd_norms))
+                            if trust_answered and not prompt_sent
+                            else None
+                        )
                         if complete and _tui_chunk_has_novel_content(
-                            complete, seen_tui_lines
+                            complete, seen_tui_lines, modal_ignore
                         ):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
