@@ -344,7 +344,10 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
         if not project.resolve(strict=True).is_relative_to(stage.resolve(strict=True)):
             raise ValueError("falsifier project path outside staged tree")
         payload = tomllib.loads(project.read_text(encoding="utf-8"))
-        declared = payload.get("project", {}).get("dependencies", [])
+        project_metadata = payload.get("project", {})
+        if not isinstance(project_metadata, dict):
+            raise ValueError("falsifier project metadata is invalid")
+        declared = project_metadata.get("dependencies", [])
         if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
             raise ValueError("falsifier project dependencies are invalid")
         requirements.extend(declared)
