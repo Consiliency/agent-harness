@@ -918,6 +918,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_train_sub.add_argument("--review-material", metavar="FILE", help="Version-1 head-bound train review evidence manifest.")
     run_train_sub.add_argument("--preview-review", metavar="DIR", help="With --governed --review-only: prepare a packet without broker, lease, ledger mutation or models.")
     run_train_sub.add_argument(
+        "--monitoring-policy", choices=("bounded", "heartbeat_only"), default="bounded",
+        help=("With --governed: how the train review watches its seats. heartbeat_only runs the "
+              "frozen four-vendor default board with no model deadline and no native seat, as "
+              "advisor-board --monitoring-policy heartbeat_only does. Default: bounded."),
+    )
+    run_train_sub.add_argument(
         "--emit-native-request", dest="emit_native_request", action="store_true", default=False,
         help=("With --governed --review-only: stage the train bundle and the claude seat's native-fill "
               "request under <ledger-dir>/native-fill/ and stop before any board (spends nothing)."),
@@ -4523,6 +4529,28 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     if (emit_native_request or native_leg_specs) and not review_only:
         parser.error("--emit-native-request / --native-leg require --governed --review-only")
         return 1  # unreachable
+    monitoring_policy = getattr(args, "monitoring_policy", "bounded")
+    review_board_preview = None
+    if monitoring_policy == "heartbeat_only":
+        if run_mode != "governed":
+            parser.error("--monitoring-policy heartbeat_only requires --governed")
+        if emit_native_request:
+            parser.error("--monitoring-policy heartbeat_only cannot combine with --emit-native-request "
+                         "(heartbeat-only review has no native seat)")
+        # Refuse an unsupported board before any ledger, broker or packet effect, exactly
+        # as advisor-board does (a native fill is one such route).
+        from .advisor_board.backing import resolve_review_monitoring_policy
+        from .advisor_board.fixtures import DEFAULT_BOARD
+        from .panel_invoker import _preflight_gemini_heartbeat
+        try:
+            resolve_review_monitoring_policy(monitoring_policy, DEFAULT_BOARD,
+                                             native_fill_requested=bool(native_leg_specs))
+            _preflight_gemini_heartbeat(DEFAULT_BOARD, monitoring_policy)
+        except (OSError, ValueError) as exc:
+            print(f"run-train: review monitoring policy refused: {exc}", file=sys.stderr)
+            return 2
+        review_board_preview = [{"harness": seat.harness, "model": seat.model, "effort": seat.effort}
+                                for seat in DEFAULT_BOARD.seats]
     native_leg_fills = None
     if native_leg_specs:
         from .panel_invoker import load_native_leg_fills as _load_fill
@@ -4574,7 +4602,10 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             roadmap, ledger_path, _resolve_workspace, review_material, Path(preview_output),
             train_digest=hashlib.sha256(train_path.read_bytes()).hexdigest(),
         )
-        result = {"status": "review_packet_ready" if receipt["ready"] else "review_halted", **receipt}
+        result = {"status": "review_packet_ready" if receipt["ready"] else "review_halted", **receipt,
+                  # The review this packet would get. A bounded board is composed at review
+                  # time (availability- and auth-aware), so it has no fixed seats to show.
+                  "review_monitoring_policy": monitoring_policy, "review_board": review_board_preview}
         print(json.dumps(result, sort_keys=True) if as_json else
               (f"Review packet prepared at {preview_output}; no review approval recorded." if receipt["ready"] else
                "Review packet held: " + "; ".join(receipt["errors"])))
@@ -4653,6 +4684,7 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             emit_native_request=emit_native_request,
             native_leg_fills=native_leg_fills,
             review_material=review_material,
+            review_monitoring_policy=monitoring_policy,
         )
     finally:
         try:
