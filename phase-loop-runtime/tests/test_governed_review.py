@@ -631,6 +631,7 @@ class ExecfindFindingTests(unittest.TestCase):
                         self.assertTrue(any(
                             f.code == "finding_receipt" and f.severity == "block"
                             and "record_digest=unresolved" in f.reason
+                            and "observed_outcome=" not in f.reason
                             for f in findings
                         ), findings)
 

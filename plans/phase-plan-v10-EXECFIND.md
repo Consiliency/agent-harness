@@ -53,8 +53,9 @@ inlining uses the `artifact_ref` seam (`panel_invoker.py`) under the 512 KiB tra
 attached falsifier and hand its outcome to `_findings_from_panel`. The current
 `_gate_result_from_panel` call supplies neither the repository nor run results.
 
-This plan touches only EXECFIND's roadmap Key files, includes the maintainer-ratified
-SL-0 test re-freeze after agent-harness#1050's executable forgery review, adds no
+This plan includes the roadmap, manifest and active-plan seal files in SL-0 for
+the maintainer-ratified test re-freeze after agent-harness#1050's executable
+forgery review; later lanes touch only EXECFIND's runtime Key files. It adds no
 `Depends on` edge, and does not implement RATIFY/GOVSETUP, change seat isolation or the
 completion grammar, or make falsifiers required by default. The `REVIEWTRUTH → EXECFIND`
 edge is relaxed at criterion granularity (Execution Notes): EC-EXECFIND-1..-5 execute
@@ -106,7 +107,7 @@ SL-4 — Documentation and phase reducer
 ### SL-0 — Lane B tests-first stage (content-bound frozen corpus)
 
 - **Scope**: Lane B's first stage. Freeze the falsifiers and IF-0-EXECFIND-1 golden fixture before production lands, using `content_tdd_receipt.v1` without commit-topology pins. The original receipt is historical; the maintainer-ratified advisory re-freeze changes the tests and adapter, records a second RED-on-main receipt in a separate directory, and lands before the revised SL-1/SL-2 production bytes. SL-1 and SL-2 consume the superseding receipt and do not edit its frozen files.
-- **Owned files**: `specs/phase-plans-v10.md`, `plans/phase-plan-v10-EXECFIND.md`, `plans/phase-plan-v10-RUNTIME.md`, `plans/manifest.json`, `phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py`, `specs/roadmap-assumption-probes-v10.json`, `phase-loop-runtime/tests/fixtures/roadmap-assumption-probes-v10.json`, `phase-loop-runtime/tests/test_execfind_falsifier.py`, `phase-loop-runtime/tests/test_governed_review.py`, `phase-loop-runtime/tests/test_advisor_board_golden.py`, `phase-loop-runtime/tests/execfind_content_tdd_adapter.py`, `phase-loop-runtime/tests/data/execfind_falsifier_attachment_v1.golden.json`, `.phase-loop/evidence/EXECFIND/content-tdd-receipt.json`, `.phase-loop/evidence/EXECFIND/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/EXECFIND/content-tdd-receipt.red.stderr.log`, `.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.json`, `.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.red.stderr.log`
+- **Owned files**: `specs/phase-plans-v10.md`, `plans/phase-plan-v10-EXECFIND.md`, `plans/phase-plan-v10-RUNTIME.md`, `plans/phase-plan-v10-LEGIBLE.md`, `plans/phase-plan-v10-PRESROUTE.md`, `plans/manifest.json`, `phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py`, `specs/roadmap-assumption-probes-v10.json`, `phase-loop-runtime/tests/fixtures/roadmap-assumption-probes-v10.json`, `phase-loop-runtime/tests/test_execfind_falsifier.py`, `phase-loop-runtime/tests/test_governed_review.py`, `phase-loop-runtime/tests/test_advisor_board_golden.py`, `phase-loop-runtime/tests/execfind_content_tdd_adapter.py`, `phase-loop-runtime/tests/data/execfind_falsifier_attachment_v1.golden.json`, `.phase-loop/evidence/EXECFIND/content-tdd-receipt.json`, `.phase-loop/evidence/EXECFIND/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/EXECFIND/content-tdd-receipt.red.stderr.log`, `.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.json`, `.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.red.stderr.log`
 - **Interfaces provided**: frozen EXECFIND falsifiers, the IF-0-EXECFIND-1 golden fixture, a `content_tdd_receipt.v1` receipt.
 - **Interfaces consumed**: the pre-implementation attachment/parser/decomposition/brief behavior, `phase_loop_runtime.tdd_receipts`, the `attach_native_agent_request` precedent (all pre-existing).
 - **Parallel-safe**: no (tests-first boundary; SL-1 and SL-2 consume its frozen bytes and never edit them).
