@@ -188,9 +188,15 @@ def test_the_full_check_step_is_wired_to_the_scope_decision():
     assert "continue-on-error" not in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]
     full = steps["Verify every qualification source pin (release cut, new record, dispatch)"]
     assert set(full) == {"name", "if", "run"}, sorted(full)
+    # Order and job-level keys (#1044 r1 claude): the full step must follow the scope
+    # step (else steps.full.outputs.full is empty and it silently skips), and the job
+    # itself must carry no `if:` (a skipped job reports success) or continue-on-error.
+    order = [s.get("name") for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]]
+    assert order.index(scope["name"]) < order.index(full["name"]), order
+    job = yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]
+    assert not {"if", "continue-on-error"} & set(job), sorted(job)
     assert full["if"] == "steps.full.outputs.full == 'true'"
     assert full["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only"
-    assert "continue-on-error" not in full
 
 
 @pytest.mark.parametrize("event,full", [("workflow_dispatch", "true"), ("push", "false"), ("schedule", "false")])
