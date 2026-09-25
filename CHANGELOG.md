@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Two cross-worker test races fixed, un-quarantined (agent-harness#987)
+
+- `test_validate_roadmap_cli_subcommand` wrote its roadmap straight into a bare tempdir, so
+  the CLI inferred `/tmp` itself as the repository root and failed when another worker
+  changed `/tmp`'s mtime mid-validation ("roadmap repository root changed during
+  validation"; reproduced 2/10 under /tmp churn, 0/10 after). It now uses a private
+  `repo/specs/` layout.
+- `test_real_board_preserves_diagnostics_without_retries` let the board default to the LIVE
+  checkout (digesting its tracked files but staging a clone of HEAD); it now passes a
+  private fixture repository, like its sibling test. Both quarantine marks are gone.
+
 ### Claude TUI: a trust modal rendered in pieces no longer arms editor readiness (agent-harness#992)
 
 - The workspace-trust detector answers as soon as the modal's header, choice and cwd are on
@@ -46,8 +57,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   likewise skips its standalone suite on pull requests only.
 - Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
   3.10/3.11/3.12.
-- New `quarantine(reason="agent-harness#N")` marker: known flakes (currently
-  two agent-harness#987 nodes) are deselected in
+- New `quarantine(reason="agent-harness#N")` marker: known flakes (none currently; the
+  agent-harness#987 nodes were fixed) are deselected in
   the hosted pull-request suite only (offload-eligible PRs, push, nightly, dispatch and
   Gate A run them),
   by a conftest collection hook (`tests/_quarantine.py`) enabled with

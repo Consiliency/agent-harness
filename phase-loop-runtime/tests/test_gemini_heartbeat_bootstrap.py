@@ -266,6 +266,21 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     assert not fixture_cli.attempts.exists()
 
 
+def _fixture_repo(tmp_path):
+    """A private one-commit repository for the board to digest and stage.
+
+    Without ``repo_dir`` the board digests the LIVE checkout's tracked files but stages a
+    clone of HEAD, so another xdist worker rewriting a tracked file mid-test made them
+    differ ("HARDEN review staged tree does not match authorization", agent-harness#987)."""
+    repo = tmp_path / "repo"
+    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "README.md").write_text("synthetic review authority\n")
+    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    return repo
+
+
 @pytest.mark.parametrize("mode,status,detail", [
     ("ok", "OK", None), ("empty", "EMPTY", "without review text"),
     ("malformed", "ERROR", "malformed JSON"), ("ack", "ERROR", "acknowledgement"),
@@ -277,8 +292,7 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     ("quoted-timeout", "ERROR", "malformed JSON"),
     ("denied-empty", "ERROR", "tool permission"),
     ("event", "ERROR", "malformed stream event"),
-    pytest.param("session", "ERROR", "conversation",
-                 marks=pytest.mark.quarantine(reason="agent-harness#987")),
+    ("session", "ERROR", "conversation"),
     ("count", "ERROR", "incomplete ingestion"),
     ("final", "ERROR", "terminal response"), ("truncation", "ERROR", "truncation"),
 ])
@@ -286,7 +300,7 @@ def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path,
     fixture_cli.mode.write_text(mode)
     result = panel.invoke_board(
         gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
-        stream_dir=tmp_path / "records", gateway_available=False,
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=_fixture_repo(tmp_path),
     )
     leg, = result.legs
     assert leg.status == status, (leg.status, leg.detail)
@@ -387,12 +401,7 @@ def test_heartbeat_credential_home_fallback_is_recorded_truthfully(fixture_cli, 
 
 
 def test_explicit_empty_home_is_not_reported_as_process_home_fallback(fixture_cli, tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    (repo / "README.md").write_text("synthetic review authority\n")
-    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
-    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    repo = _fixture_repo(tmp_path)
     relative_home = repo / "relative-home"
     token = relative_home / ".gemini/antigravity-cli/antigravity-oauth-token"
     token.parent.mkdir(parents=True)
