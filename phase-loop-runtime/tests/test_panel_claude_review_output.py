@@ -662,3 +662,25 @@ def test_r5_an_open_stop_reason_cannot_become_absent(tmp_path):
     del record["message"]["stop_reason"]
     path = _jsonl(tmp_path, [_user("u1"), _asst("1. Blocking\nDISAGREE", mid="m", uuid="a1", stop=None), record])
     assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_president_route_rejects_a_record_level_api_error(tmp_path):
+    record = _asst("Upstream failure", mid="m", uuid="a1")
+    record["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), record])
+    assert pi._final_assistant_text_from_jsonl(path) == "Upstream failure"
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_rejects_a_stop_sequence_on_any_block_of_the_answer(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Part one", mid="m", uuid="a", stop=None),
+                             _asst("FORCING DECISION: APPROVE", mid="m", uuid="b"),
+                             _asst("Part one", mid="m", uuid="a", stop="stop_sequence")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_accepts_open_earlier_blocks_before_the_end_turn(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Part one", mid="m", uuid="a", stop=None),
+                             _asst("FORCING DECISION: APPROVE", mid="m", uuid="b")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == (
+        "Part one\nFORCING DECISION: APPROVE")

@@ -4010,8 +4010,9 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     of such a block under a fresh uuid is not detected.
 
     With ``require_terminal`` (the president route, agent-harness#1016), the answer also
-    requires its last record to be a genuine ``end_turn``: not ``stop_sequence``, not a
-    ``<synthetic>`` model record and not an API error record.
+    requires its last record to stop with ``end_turn``, and no record of the answer may stop
+    with anything else (earlier blocks stay null), be a ``<synthetic>`` model record, or carry
+    ``isApiErrorMessage`` on the message or the record.
 
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
@@ -4145,11 +4146,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         final_records = list(group)
     versions = [m for _, m in final_records]
     terminal_payload, terminal = final_records[-1]
-    if require_terminal and not (
-        terminal.get("stop_reason") == "end_turn"
-        and terminal.get("model") != "<synthetic>"
-        and not terminal.get("isApiErrorMessage")
-        and not terminal_payload.get("isApiErrorMessage")
+    if require_terminal and (
+        terminal.get("stop_reason") != "end_turn"
+        or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
+               or m.get("isApiErrorMessage") or p.get("isApiErrorMessage")
+               for p, m in final_records)
     ):
         return ""  # the president route needs a genuine, completed end_turn
     if "stop_reason" in terminal and terminal["stop_reason"] is None:
@@ -5137,6 +5138,10 @@ def _run_claude_tui_session(
                             return _finish(1, "", "review_operation_cancelled")
                         if broker_final and _completion_ok(broker_final, mode):
                             return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                        if broker_final and mode == "president":
+                            # Same completed-journal evidence as the conforming return above,
+                            # after the same cancellation re-check: hand it to the re-ask.
+                            return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                         return _finish(
                             proc.poll() or 1,
                             review_text or transcript_text,
