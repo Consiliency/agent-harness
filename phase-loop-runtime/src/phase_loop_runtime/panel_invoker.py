@@ -3987,6 +3987,14 @@ def _assistant_text_from_jsonl(path: Path) -> str:
     return "\n".join(texts).strip()
 
 
+def _journal_content_digest(message: dict) -> bytes:
+    """Identity of what a journal record SAYS. The CLI re-journals a record under the same uuid
+    with changed accounting (``usage``) and envelope links (``parentUuid``, ``promptId``) --
+    measured on real 2.1.282 transcripts -- so those must not make a replay look changed."""
+    content = {key: message.get(key) for key in ("id", "role", "stop_reason", "content")}
+    return sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).digest()
+
+
 def _final_assistant_text_from_jsonl(path: Path) -> str:
     """Collect the final assistant message's blocks, never earlier turns or tools."""
     message_id: str | None = None
@@ -3994,25 +4002,47 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     seen_record_uuids: set[str] = set()
     seen_record_versions: set[tuple[str, bytes]] = set()
     current_group_uuids: set[str] = set()
+    # Message ids whose group has closed. Closed by a user turn: a reappearance with a NEW
+    # record uuid is a fresh answer, one without a uuid cannot be told from a replay. Closed
+    # by a different message (an interleave): any unseen reappearance is untrustworthy.
+    retired_by_user: set[str] = set()
+    retired_by_interleave: set[str] = set()
     incomplete = False
     pending_terminal = False
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
         return ""
-    for line in lines:
+    last_record = max((i for i, text in enumerate(lines) if text.strip()), default=-1)
+    for index, line in enumerate(lines):
         if not line.strip():
             continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            # A writer may still be appending the next turn. Do not approve the
-            # previous verdict while the latest record cannot be interpreted.
-            return ""
+            if index == last_record:
+                # A writer may still be appending the next turn. Do not approve the
+                # previous verdict while the latest record cannot be interpreted.
+                return ""
+            # A damaged line with valid records after it is history, not the tail: skip it,
+            # as the previous extractor did (one such line exists in real transcripts).
+            continue
         message = payload.get("message") if isinstance(payload, dict) else None
         if not isinstance(message, dict):
             continue
         if message.get("role") == "user":
+            user_id = payload.get("uuid")
+            if isinstance(user_id, str) and user_id:
+                # Keyed on the MESSAGE, not the whole record: the CLI re-journals a user
+                # record under the same uuid with changed metadata (e.g. promptId).
+                user_version = ("user:" + user_id, _journal_content_digest(message))
+                if user_version in seen_record_versions:
+                    # A replay of an earlier user turn is not a new request (agent-harness#1002 r1,
+                    # codex); a user record with a different message is an ordinary new turn.
+                    continue
+                seen_record_versions.add(user_version)
+            if message_id is not None:
+                retired_by_user.add(message_id)
             message_id, blocks, incomplete = None, {}, False
             current_group_uuids.clear()
             pending_terminal = False
@@ -4026,9 +4056,8 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         if not isinstance(record_id, str) or not record_id:
             record_id = None
         record_version = (
-            record_id,
-            sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).digest(),
-        ) if record_id is not None else None
+            (record_id, _journal_content_digest(message)) if record_id is not None else None
+        )
         if record_id in seen_record_uuids and (
             current_id is None or current_id != message_id
             or record_id not in current_group_uuids
@@ -4038,9 +4067,19 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
             continue
         if record_version in seen_record_versions:
             continue
+        if current_id is not None and current_id != message_id and (
+            current_id in retired_by_interleave
+            or (current_id in retired_by_user and record_id is None)
+        ):
+            # A closed message reappearing with a record not seen before -- an A-B-A
+            # interleave, or an identity-less replay after a new request -- cannot be proven
+            # fresh: fail closed rather than return an older verdict (agent-harness#1002 r1).
+            return ""
         # Claude can journal several content blocks under one API message id.
         # Identity-less legacy records remain independent, not guessed joins.
         if current_id is None or current_id != message_id:
+            if message_id is not None:
+                retired_by_interleave.add(message_id)
             message_id, blocks, incomplete = current_id, {}, False
             current_group_uuids.clear()
             pending_terminal = False

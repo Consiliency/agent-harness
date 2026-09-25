@@ -258,3 +258,106 @@ Path("owned.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" 
     assert pi._cleanup_broker_claude_transcript(tmp_path / "owned.jsonl", evidence)
     assert evidence["claude_transcript_cleanup_verified"]
     assert not (tmp_path / "owned.jsonl").exists()
+
+
+# agent-harness#1002 round 1 (codex, claude): replay and interleave sequences.
+def _jsonl(tmp_path, records):
+    import json as _json
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(_json.dumps(r) for r in records) + "\n")
+    return path
+
+
+def _asst(text, *, mid, uuid=None, stop="end_turn"):
+    rec = {"type": "assistant", "message": {"id": mid, "role": "assistant", "stop_reason": stop,
+                                            "content": [{"type": "text", "text": text}]}}
+    if uuid is not None:
+        rec["uuid"] = uuid
+    return rec
+
+
+def _user(uuid, text="Review"):
+    return {"type": "user", "uuid": uuid, "message": {"role": "user", "content": text}}
+
+
+def test_an_identityless_replay_after_a_new_request_is_not_the_answer(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    path = _jsonl(tmp_path, [_asst("Old review\nAGREE", mid="old"), _user("new-request", "Review again"),
+                             _asst("Old review\nAGREE", mid="old")])
+    assert _final_assistant_text_from_jsonl(path) == ""
+
+
+def test_a_replayed_request_and_answer_pair_keeps_the_answer(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    pair = [_user("request"), _asst("Complete review\nAGREE", mid="review", uuid="answer")]
+    assert _final_assistant_text_from_jsonl(_jsonl(tmp_path, pair + pair)) == "Complete review\nAGREE"
+
+
+def test_a_message_interleaved_by_another_fails_closed(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    path = _jsonl(tmp_path, [
+        _asst("REVIEW START\n1. Blocking finding", mid="final", uuid="u1", stop=None),
+        _asst("x", mid="other", uuid="u2"),
+        _asst("REVIEW END\nPARTIALLY AGREE", mid="final", uuid="u3"),
+    ])
+    assert _final_assistant_text_from_jsonl(path) == ""
+
+
+def test_a_rejournaled_user_turn_with_new_metadata_is_still_a_replay(tmp_path):
+    """The real CLI re-journals a user record under the same uuid with a different promptId."""
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    first = {**_user("request"), "promptId": "p1"}
+    again = {**_user("request"), "promptId": "p2"}
+    path = _jsonl(tmp_path, [first, _asst("Complete review\nAGREE", mid="review", uuid="answer"), again])
+    assert _final_assistant_text_from_jsonl(path) == "Complete review\nAGREE"
+
+
+def test_a_user_record_with_a_different_message_is_a_new_turn(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    path = _jsonl(tmp_path, [_user("request", "Review"), _asst("A\nAGREE", mid="m1", uuid="a1"),
+                             _user("request", "Something else"), _asst("B\nAGREE", mid="m2", uuid="a2")])
+    assert _final_assistant_text_from_jsonl(path) == "B\nAGREE"
+
+
+def test_tool_use_content_in_the_final_group_fails_closed(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    path = _jsonl(tmp_path, [
+        _asst("Review\nAGREE", mid="review", uuid="a", stop=None),
+        {"type": "assistant", "uuid": "b", "message": {"id": "review", "role": "assistant", "stop_reason": "end_turn",
+                                                       "content": [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]}},
+    ])
+    assert _final_assistant_text_from_jsonl(path) == ""
+
+
+def test_a_rejournaled_answer_with_new_accounting_is_still_a_replay(tmp_path):
+    """Measured on real CLI 2.1.282 transcripts: an assistant record re-journaled under the same
+    uuid differs only in ``message.usage`` and ``parentUuid``; it must not fail the extraction."""
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    first = _asst("Complete review\nAGREE", mid="review", uuid="answer")
+    first["message"]["usage"] = {"input_tokens": 6, "output_tokens": 40}
+    first["parentUuid"] = "p1"
+    again = _asst("Complete review\nAGREE", mid="review", uuid="answer")
+    again["message"]["usage"] = {"input_tokens": 0, "output_tokens": 0}
+    again["parentUuid"] = "p2"
+    path = _jsonl(tmp_path, [_user("request"), first, _user("later-tool-result", "result"),
+                             _asst("tool step", mid="tool", uuid="t1", stop="tool_use"), again])
+    assert _final_assistant_text_from_jsonl(path) == ""  # a replay is not the answer to the LATER request
+    path = _jsonl(tmp_path, [_user("request"), first, again])
+    assert _final_assistant_text_from_jsonl(path) == "Complete review\nAGREE"
+
+
+def test_a_rejournaled_answer_with_changed_content_fails_closed(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    first = _asst("Complete review\nAGREE", mid="review", uuid="answer")
+    edited = _asst("Complete review\nDISAGREE", mid="review", uuid="answer")
+    path = _jsonl(tmp_path, [_user("request"), first, _user("later", "x"), edited])
+    assert _final_assistant_text_from_jsonl(path) == ""
+
+
+def test_a_damaged_line_mid_journal_does_not_block_a_later_answer(tmp_path):
+    from phase_loop_runtime.panel_invoker import _final_assistant_text_from_jsonl
+    import json as _json
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join([_json.dumps(_user("r1")), '{"type": "user", "message": {"role": "us',
+                                _json.dumps(_user("r2")), _json.dumps(_asst("Review\nAGREE", mid="m", uuid="a"))]) + "\n")
+    assert _final_assistant_text_from_jsonl(path) == "Review\nAGREE"
