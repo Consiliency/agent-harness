@@ -706,3 +706,36 @@ root, rejecting failures, omissions and terminal/admission mismatches. Preserve
 failed series; diagnose a changed candidate before another attempt. Validation
 uses that host's measured helper images. These receipts do not replace the
 historical bounded-success evidence verifier.
+
+## ABDFALSIFY — Executable review findings (IF-0-EXECFIND-1)
+
+An optional `falsifier` attachment names one `FindingFalsifier` with
+`finding_id`, `new_test_path`, `expected_nodeid`, and a unified `diff` creating
+only `phase-loop-runtime/tests/test_finding_<finding_id>.py`. A
+`FindingFalsifierAttachment` contains a tuple of these entries with unique
+finding IDs. The attachment is a non-field property on `PanelLegResult`; it
+does not change the serialized leg or board schema. The seat supplies text,
+never an executable command or a claimed test outcome.
+
+`run_finding_falsifier` accepts the attachment, board `seat_key`, canonical
+repository, positive wall-clock/output bounds, and a single-use
+`FalsifierIsolationAuthorization` bound to the exact 40-character `reviewed_sha`.
+Its identity is `public_board_falsifier.v1`; its child has no credentials,
+network egress, or live-tree mount. The source must be clean at that SHA.
+Before applying the diff, the staged materialized path set, bytes, symlink
+targets, and executable bits must equal the reviewed Git tree, including no
+ignored extra files. Only the named pytest node runs in the staged clone.
+
+The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
+`node_missing`, `error`. A failed node is RED only when JUnit confirms that
+node ran and failed within both bounds. Drift, expiry, unavailable isolation,
+and incomplete evidence are `error`, never a vote. The metadata-only
+`finding_falsifier.v1` record has exactly `schema`,
+`authorization_identity`, `seat_key`, `reviewed_sha`, `finding_id`, `nodeid`,
+`outcome`, `red_output_digest`, `diff_digest`, `wall_clock_bound_s`, and
+`output_cap_bytes`. `diff_digest` hashes the offered UTF-8 diff bytes;
+`red_output_digest` hashes separately captured stdout followed by stderr
+and is null unless RED. The caller binds the record with SHA-256 over
+canonical JSON (`sort_keys=True`, compact separators, `ensure_ascii=False`).
+The full freeze and golden values live in
+`tests/data/execfind_falsifier_attachment_v1.golden.json`.

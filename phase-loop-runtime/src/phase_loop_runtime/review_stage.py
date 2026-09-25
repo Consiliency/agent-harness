@@ -34,16 +34,22 @@ separately, because ``launcher.py`` belongs to an executing phase lane.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
+import selectors
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 __all__ = [
     "REVIEW_STAGE_DIR_PREFIX",
     "review_tree_paths",
     "review_tree_manifest_sha256",
+    "revalidate_falsifier_staged_tree",
+    "run_bounded_falsifier_node",
     "stage_review_tree",
     "remove_review_stage",
     "staged_source_commit",
@@ -228,6 +234,151 @@ def review_tree_manifest_sha256(root: Path) -> str:
             + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")  # 64, fixed
         )
     return digest.hexdigest()
+
+
+def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None:
+    """Refuse any materialized stage path or byte absent from the reviewed Git tree."""
+    staged = Path(staged).resolve(strict=True)
+    if _git(staged, "rev-parse", "HEAD").strip() != reviewed_sha:
+        raise ValueError("falsifier staged HEAD differs from reviewed SHA")
+    object_format = _git(staged, "rev-parse", "--show-object-format").strip()
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("unsupported falsifier Git object format")
+    tree = subprocess.run(
+        ["git", "-C", str(staged), "ls-tree", "-rz", "--full-tree", reviewed_sha],
+        capture_output=True, check=True,
+    ).stdout
+    expected: dict[str, tuple[str, str]] = {}
+    for entry in tree.split(b"\0"):
+        if not entry:
+            continue
+        header, raw_path = entry.split(b"\t", 1)
+        mode, kind, oid = header.decode("ascii").split(" ")
+        path = raw_path.decode("utf-8", "surrogateescape")
+        if kind != "blob" or mode not in ("100644", "100755", "120000"):
+            raise ValueError("unsupported falsifier Git tree entry")
+        expected[path] = (mode, oid)
+    observed: set[str] = set()
+    for directory, dirs, files in os.walk(staged, topdown=True, followlinks=False):
+        current = Path(directory)
+        if current == staged and ".git" in dirs:
+            dirs.remove(".git")
+        for name in list(dirs):
+            if (current / name).is_symlink():
+                dirs.remove(name)
+                files.append(name)
+        for name in files:
+            target = current / name
+            rel = target.relative_to(staged).as_posix()
+            observed.add(rel)
+            if rel not in expected:
+                raise ValueError("falsifier staged tree has an extra path")
+            mode, oid = expected[rel]
+            if target.is_symlink():
+                if mode != "120000":
+                    raise ValueError("falsifier staged file became a symlink")
+                payload = os.readlink(target).encode("utf-8", "surrogateescape")
+            elif target.is_file():
+                actual_mode = "100755" if os.access(target, os.X_OK) else "100644"
+                if actual_mode != mode:
+                    raise ValueError("falsifier staged executable bit changed")
+                payload = target.read_bytes()
+            else:
+                raise ValueError("falsifier staged path is not a regular file")
+            blob = b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+            if hashlib.new(object_format, blob).hexdigest() != oid:
+                raise ValueError("falsifier staged bytes differ from reviewed Git tree")
+    if observed != expected.keys():
+        raise ValueError("falsifier staged tree is missing reviewed paths")
+
+
+def run_bounded_falsifier_node(
+    *, staged: Path, nodeid: str, wall_clock_s: float, output_cap_bytes: int,
+) -> tuple[int | None, bytes, bytes, str | None]:
+    """Run one pytest node in a credentialless, networkless staged-tree mount."""
+    if wall_clock_s <= 0 or output_cap_bytes <= 0:
+        raise ValueError("falsifier bounds must be positive")
+    bwrap = Path("/usr/bin/bwrap")
+    python = Path("/usr/bin/python3")
+    if not bwrap.is_file() or not python.is_file():
+        raise ValueError("falsifier requires canonical bwrap and python3")
+    stage = Path(staged).resolve(strict=True)
+    argv = [str(bwrap), "--unshare-all", "--die-with-parent", "--new-session", "--clearenv"]
+    for system_root in ("/usr", "/lib", "/lib64", "/bin"):
+        if Path(system_root).exists():
+            argv.extend(("--ro-bind", system_root, system_root))
+    argv.extend(("--dir", "/deps"))
+    # Bind only pytest's importable packages, never a user home or site-packages root.
+    for name in ("pytest", "_pytest", "pluggy", "iniconfig", "packaging",
+                 "exceptiongroup", "typing_extensions", "py", "tomli"):
+        spec = importlib.util.find_spec(name)
+        if spec is None or spec.origin is None:
+            continue
+        source = Path(spec.origin).resolve(strict=True)
+        if source.is_relative_to(Path("/usr")):
+            continue
+        if spec.submodule_search_locations:
+            source = source.parent
+            target = f"/deps/{name}"
+        else:
+            target = f"/deps/{name}.py"
+        argv.extend(("--ro-bind", str(source), target))
+    argv.extend((
+        "--bind", str(stage), "/work", "--tmpfs", "/tmp", "--proc", "/proc",
+        "--dev", "/dev", "--dir", "/home", "--dir", "/home/falsifier",
+        "--chdir", "/work", "--setenv", "HOME", "/home/falsifier",
+        "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "PYTHONPATH", "/deps",
+        "--setenv", "PYTHONNOUSERSITE", "1", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+        "--setenv", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1",
+        str(python), "-s", "-m", "pytest", "-q", "-c", "/dev/null", "-o", "addopts=",
+        "-p", "no:cacheprovider", "--junitxml=/work/.falsifier-junit.xml", nodeid,
+    ))
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, start_new_session=True,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    streams = {proc.stdout: bytearray(), proc.stderr: bytearray()}
+    selector = selectors.DefaultSelector()
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    deadline = time.monotonic() + wall_clock_s
+    failure: str | None = None
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = "falsifier wall-clock bound expired"
+                break
+            for key, _ in selector.select(min(remaining, 0.1)):
+                chunk = os.read(key.fileobj.fileno(), min(65536, output_cap_bytes + 1))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                streams[key.fileobj].extend(chunk)
+                if sum(len(data) for data in streams.values()) > output_cap_bytes:
+                    failure = "falsifier output cap exceeded"
+                    break
+            if failure:
+                break
+        if failure is None and proc.poll() is None:
+            remaining = deadline - time.monotonic()
+            try:
+                proc.wait(timeout=max(0, remaining))
+            except subprocess.TimeoutExpired:
+                failure = "falsifier wall-clock bound expired"
+    finally:
+        selector.close()
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+    return proc.returncode, bytes(streams[proc.stdout]), bytes(streams[proc.stderr]), failure
 
 
 CLONE_DEPTH = 50
@@ -452,5 +603,3 @@ def remove_review_stage(staged: Path) -> None:
     except OSError:
         pass
     shutil.rmtree(staged, ignore_errors=True)
-
-
