@@ -178,6 +178,7 @@ class LedgerRecord:
     # ledgers stay BYTE-FOR-BYTE unchanged.
     usable_reviewers: Optional[int] = None
     review_policy_version: Optional[str] = None
+    review_packet_sha256: Optional[str] = None
     ts: str = ""  # ISO-8601 UTC; auto-set on append if blank
 
     def __post_init__(self) -> None:
@@ -192,7 +193,7 @@ class LedgerRecord:
         # (flag-off) or non-review ledger is byte-for-byte identical to a pre-piece-3
         # / pre-#358 ledger (the serialized JSON is `sort_keys=True`, so an absent key
         # changes nothing).
-        _omit_when_none = ("fab_run_id", "usable_reviewers", "review_policy_version")
+        _omit_when_none = ("fab_run_id", "usable_reviewers", "review_policy_version", "review_packet_sha256")
         return {
             k: v
             for k, v in asdict(self).items()
@@ -298,6 +299,7 @@ def append_record(path: Path, record: LedgerRecord, *, durable: bool = False) ->
             fab_run_id=record.fab_run_id,
             usable_reviewers=record.usable_reviewers,  # agent-harness#358: preserve floor evidence
             review_policy_version=record.review_policy_version,
+            review_packet_sha256=record.review_packet_sha256,
             ts=_utc_now(),
         )
     _assert_not_phase_loop(path)
@@ -384,6 +386,7 @@ def _dict_to_record(obj: dict) -> LedgerRecord:
         fab_run_id=obj.get("fab_run_id"),
         usable_reviewers=obj.get("usable_reviewers"),  # agent-harness#358 floor evidence
         review_policy_version=obj.get("review_policy_version"),
+        review_packet_sha256=obj.get("review_packet_sha256"),
         ts=obj.get("ts", ""),
     )
 

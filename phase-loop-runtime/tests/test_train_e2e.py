@@ -24,6 +24,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import pytest
+
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 from phase_loop_runtime.governed_premerge import LoopResult
 from phase_loop_runtime.train_ledger import read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap

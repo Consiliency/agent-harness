@@ -78,6 +78,11 @@ from unittest.mock import patch
 
 import pytest
 
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet, seed_synthetic_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 from phase_loop_runtime.governed_premerge import LoopResult, REVIEW_POLICY_VERSION
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 from phase_loop_runtime.models import StateSnapshot
@@ -416,21 +421,18 @@ class TestSequentialMerge:
 # (the ledger record written at pr_open publish time), NEVER the live-
 # preferring resume value. A push landing on a branch AFTER its draft PR was
 # admitted (out-of-band) must not let the coordinator pin --match-head-commit
-# to that unchecked tip: the node itself is left `pr_open` and proceeds
-# straight to P4 merge (out_of_band_upstreams only blocks DOWNSTREAM
-# dependents, never the OOB node's own merge), so the merge-time pin is the
-# only remaining guard.
+# to that unchecked tip. Packet preparation now holds this stale admission
+# before review or merge. The real-Git race control in test_train_review_packet
+# separately verifies the admitted merge pin when live state changes after the
+# final packet identity recheck.
 
 class TestOOBResumeAdmittedHeadPin:
     def test_oob_push_after_admission_merge_pinned_to_admitted_not_live(self, tmp_path: Path):
-        """repo-b's branch received a push after its draft PR was admitted
-        (ledger head_sha='sha-admitted-b'); the live PR head now reads
-        'sha-live-oob-b'. repo-b has no downstream dependent, so
-        out_of_band_upstreams (which only blocks a STALE DOWNSTREAM) never
-        blocks repo-b's own merge — it proceeds straight to P4 merge. The
-        merge call for repo-b must receive head_sha='sha-admitted-b' — NEVER
-        the live OOB tip. FAILS at HEAD 1fc23ea (currently threads the live
-        value via completed_nodes[...]['head_sha'])."""
+        """An out-of-band push cannot reach merge on stale admitted material.
+
+        This legacy synthetic flow now terminates at the earlier packet gate;
+        it is not evidence that the later merge pin was exercised.
+        """
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
         ledger = _setup_p3_done(
@@ -467,14 +469,8 @@ class TestOOBResumeAdmittedHeadPin:
             _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
         )
 
-        assert result["status"] == "merged", f"expected a clean merge, got {result!r}"
-        assert merge_head_shas.get("repo-a") == "sha-admitted-a"
-        assert merge_head_shas.get("repo-b") == "sha-admitted-b", (
-            f"--match-head-commit must be pinned to the broker-ADMITTED head_sha "
-            f"('sha-admitted-b'), never the live out-of-band tip "
-            f"('sha-live-oob-b'); merge_pr_fn received "
-            f"{merge_head_shas.get('repo-b')!r}"
-        )
+        assert result["status"] == "review_halted" and result["reason"] == "stale_head"
+        assert merge_head_shas == {}, "observed drift refuses before any train merge"
 
     def test_missing_admitted_head_sha_fails_closed(self, tmp_path: Path):
         """A governed node reaching the P4 merge loop always carries an
@@ -778,6 +774,7 @@ class TestIdempotentResume:
             review_calls.append("called")
             return _approval_review_fn(artifact, run_mode)
 
+        seed_synthetic_packet(ledger, roadmap)
         result = run_train(
             roadmap,
             ledger,
@@ -848,6 +845,7 @@ class TestIdempotentResume:
         ]:
             append_record(ledger, rec)
 
+        seed_synthetic_packet(ledger, roadmap)
         run_train(
             roadmap,
             ledger,
@@ -1029,6 +1027,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
                 return "sha-merged-a"
             return None
 
+        seed_synthetic_packet(ledger, roadmap)
         result = run_train(
             roadmap,
             ledger,
@@ -1083,7 +1082,8 @@ class TestCrashBetweenMergeAndLedgerWrite:
                 return "sha-merged-a"
             return None
 
-        run_train(
+        seed_synthetic_packet(ledger, roadmap)
+        result = run_train(
             roadmap,
             ledger,
             run_mode="governed",
@@ -1104,6 +1104,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
         # already_approved=True from ledger (evidence-bearing) → review must NOT be
         # re-invoked. The fixture now carries usable_reviewers=2, which is what a
         # MODERN (post-#358) approval records; that is why it is honored.
+        assert result["status"] == "merged", result
         assert review_calls == [], (
             f"Review must not be called when ledger shows an evidence-bearing "
             f"approval; got {len(review_calls)} call(s)"
@@ -1155,6 +1156,7 @@ class TestCrashBetweenMergeAndLedgerWrite:
                 return "sha-merged-a"
             return None
 
+        seed_synthetic_packet(ledger, roadmap)
         run_train(
             roadmap,
             ledger,
@@ -1432,6 +1434,7 @@ class TestNotOpenMergedPrOpenResume:
                 re_injection_refs.append(ref)
             return []
 
+        seed_synthetic_packet(ledger, roadmap)
         result = run_train(
             roadmap,
             ledger,

@@ -1463,4 +1463,3 @@ def _host_pid(record: str, timeout_s: float = 5.0) -> int:
         if time.monotonic() >= deadline:
             raise AssertionError(f"no host process for {record!r}")
         time.sleep(.02)
-
