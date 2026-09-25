@@ -1,7 +1,7 @@
 """A prose finding stays attributable without turning a dissent into approval."""
 
 from phase_loop_runtime.governed_premerge import run_governed_premerge_loop
-from phase_loop_runtime.governed_review import _gate_result_from_panel
+from phase_loop_runtime.governed_review import _gate_result_from_panel, governed_board_gate
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
 
@@ -53,3 +53,17 @@ def test_four_vendor_agreement_still_promotes():
 
     assert gate.promoted
     assert gate.reason is None
+
+
+def test_invalid_falsifier_policy_refuses_before_board_composition(tmp_path):
+    def unexpected_composition():
+        raise AssertionError("invalid policy reached board composition")
+
+    gate = governed_board_gate(
+        artifact="reviewed artifact", run_mode="governed",
+        author_vendors=("codex",), canonical_repo_authority=tmp_path,
+        falsifier_policy="invalid", compose=unexpected_composition,
+    )
+
+    assert gate.ran and not gate.promoted
+    assert gate.reason == "invalid_falsifier_policy"

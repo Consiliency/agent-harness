@@ -483,6 +483,11 @@ def governed_board_gate(
 
     if run_mode != "governed":
         return GateResult(ran=False, promoted=True)
+    if falsifier_policy not in ("optional", "required"):
+        return _block_result(
+            "invalid_falsifier_policy", "governed_invalid_falsifier_policy",
+            f"unsupported falsifier policy {falsifier_policy!r}; holding (non-human)",
+        )
     if author_vendors is not None:
         authors = frozenset(v for v in author_vendors if v)
     else:
@@ -683,11 +688,6 @@ def governed_board_gate(
             _backing.reset_review_instruction_digest(token)
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
-    if falsifier_policy not in ("optional", "required"):
-        return _block_result(
-            "invalid_falsifier_policy", "governed_invalid_falsifier_policy",
-            f"unsupported falsifier policy {falsifier_policy!r}; holding (non-human)",
-        )
     attachments = []
     for leg in panel.legs:
         if not leg.usable or not _leg_blocks(leg.text):
