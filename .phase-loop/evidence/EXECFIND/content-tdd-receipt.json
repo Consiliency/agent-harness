@@ -1,9 +1,9 @@
 {
-  "base_commit": "99d57a824912b7dcfc27932ac7dc3d4d48858f4e",
-  "base_tree_digest": "38083727607a0a13feb1182e8d4b1b5a7fccc119",
-  "landing_commit": "99d57a824912b7dcfc27932ac7dc3d4d48858f4e",
+  "base_commit": "96222035944b40f4bb3f69602ff6727cc481dbb2",
+  "base_tree_digest": "a25eaf34c33b17753e0c24d583328328ccc38a19",
+  "landing_commit": "96222035944b40f4bb3f69602ff6727cc481dbb2",
   "landing_ref": "HEAD",
-  "landing_tree_digest": "38083727607a0a13feb1182e8d4b1b5a7fccc119",
+  "landing_tree_digest": "a25eaf34c33b17753e0c24d583328328ccc38a19",
   "red_argv": [
     "env",
     "PHASE_LOOP_TDD_EXPECT_EXECFIND=1",
@@ -115,7 +115,7 @@
   "red_stderr_path": "content-tdd-receipt.red.stderr.log",
   "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "red_stdout_path": "content-tdd-receipt.red.stdout.log",
-  "red_stdout_sha256": "aba4d076f9b3978929764bd514d27cf19169cb4c5cd490adb7360d2fb385362f",
+  "red_stdout_sha256": "93cef3261942c658a7dca231a8637f66e613d74cea2451007e7214e6abfc710b",
   "schema": "content_tdd_receipt.v1",
   "test_files": [
     {
@@ -124,7 +124,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/execfind_content_tdd_adapter.py",
-      "sha256": "aaacb7baae8c4f9b2111d22415c2d7c0de3e7f7b14c8bfa9c42bafe6a302a1fe"
+      "sha256": "d5eb0a476188105ebf46eca976f9084e435a2735c4d73d483ceb0ac141275e7c"
     },
     {
       "path": "phase-loop-runtime/tests/test_advisor_board_golden.py",
@@ -132,7 +132,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/test_execfind_falsifier.py",
-      "sha256": "abc51bfd74cc970329eb7242c8291912fc1c7cf2b74799c92b1b86a9c09d043b"
+      "sha256": "977cab851adef39724f42e0eb83e51c7add62e86d5788de8000b9ab19862a0d6"
     },
     {
       "path": "phase-loop-runtime/tests/test_governed_review.py",
