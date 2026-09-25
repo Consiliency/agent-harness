@@ -289,7 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     if copied:
         copied_argv, copied_cwd, copied_env = copied_tree_run(repo, pkg_root, python, copied)
         code = subprocess.run(copied_argv, cwd=copied_cwd, env={**env, **copied_env}).returncode
-        status |= 0 if code == 5 else code
+        # 5 (nothing collected) is tolerable only when this run is a strict SUBSET of CI's
+        # copied step; CI runs both files together and fails on 5 (#1059 r1).
+        status |= 0 if code == 5 and set(copied) < set(SUITE_IGNORES) else code
     print("local_check: " + ("PASS" if status == 0 else "FAIL") +
           " (CI still runs Gate A and, on main, 3.11/3.12)")
     return 1 if status else 0
