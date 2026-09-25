@@ -73,6 +73,7 @@ _DAGGER_STUB = """#!/usr/bin/env bash
 # dagger -m <mod> call all ... export --path=<dir>: record an interval, produce evidence.
 set -euo pipefail
 start=$(date +%s.%N)
+echo "$BASHPID" >"$STUB_LOG.dagger_pid"
 if [ "${DAGGER_STUB_BLOCK:-}" = "1" ]; then
   touch "$STUB_LOG.dagger_started"
   until [ -e "$STUB_LOG.release" ]; do sleep 0.05; done
@@ -178,9 +179,11 @@ def test_lock_holder_death_during_the_call_stops_the_call(harness) -> None:
         b = pool.submit(run, "next")
         ra, rb = a.result(), b.result()
     assert (lock.parent / "lost.log.dagger_started").is_file(), "the call never started"
+    lost_pid = int((lock.parent / "lost.log.dagger_pid").read_text())
     assert ra.returncode == 1, ra.stdout + ra.stderr
     assert "lost" in ra.stderr and "stopping the call" in ra.stderr
     assert intervals("lost") == [], "the call finished after the lock was lost"
+    assert not Path(f"/proc/{lost_pid}").exists(), "cancelled dagger is still running"
     assert rb.returncode == 0, rb.stdout + rb.stderr
     assert intervals("next"), "the sibling should run once the lock is free"
 
