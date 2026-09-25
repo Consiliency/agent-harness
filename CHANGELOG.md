@@ -17,11 +17,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Flaky TUI-animation test fixed, un-quarantined (agent-harness#1034)
 
-- `test_tui_animation_does_not_keep_progress_observed` judged the final snapshot's age against
-  the 50 ms read window, so output delivered late in one burst under xdist load failed it. It
-  now asserts the age never goes backwards once progress is seen (repaints would reset it) and
-  ends well past the window, with a 0.4 s gap before the repaints. Stable 16/16 under
-  concurrent load; making every repaint count as progress reds it. The quarantine mark is gone.
+- `test_tui_animation_does_not_keep_progress_observed` raced wall-clock sleeps against PTY
+  delivery, so a late burst under xdist load could fail it. It is now synchronized, not
+  timed: the child prints one status frame and waits for a file the observe hook creates only
+  after the monitor has held that frame as progress for 0.1 s; it then repaints and waits for a
+  second file created 0.3 s later. A repaint that refreshed progress would drop the age from
+  >= 0.1 s back to ~0. A new unit test pins `_tui_chunk_has_novel_content` over the exact
+  frames (singly and as one burst). Making every repaint novel reds both. The quarantine mark
+  is gone.
 
 ### Faster pull-request CI (agent-harness#1029)
 
