@@ -154,3 +154,57 @@ def test_the_clean_env_has_a_ci_runners_system_path(lc):
     assert dirs[0] == "/opt/venv/bin"
     assert {"/usr/sbin", "/sbin", "/usr/bin", "/bin"} <= set(dirs)
     assert not any(d.startswith(str(lc.Path.home())) for d in dirs), "no user dirs"
+
+
+def test_the_legible_files_run_from_a_copied_tree_like_ci(lc, tmp_path):
+    """agent-harness#1057: CI runs these two files from a copy of tests/ with no .git (their
+    live GitHub probes skip there); local_check must do the same, not run them in-checkout."""
+    pkg = tmp_path / "phase-loop-runtime"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "tests" / "test_legible_evidence.py").write_text("")
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "phase-plans-v10.md").write_text("roadmap")
+    (tmp_path / ".git").mkdir()
+    argv, cwd, env = lc.copied_tree_run(tmp_path, pkg, "/py", ["tests/test_legible_evidence.py"])
+    assert not any((d / ".git").exists() for d in (cwd, *cwd.parents)), "the copy must sit outside any repo"
+    assert (cwd.parent / "specs" / "phase-plans-v10.md").read_text() == "roadmap"
+    assert argv[-1] == str(cwd / "tests" / "test_legible_evidence.py")
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(cwd / "tests"), str(pkg / "src")]
+
+
+@pytest.mark.skipif(not WORKFLOW.is_file(), reason="CI plumbing is absent from the standalone layout")
+def test_the_copied_tree_files_are_the_ones_ci_ignores(lc):
+    text = WORKFLOW.read_text()
+    for rel in lc.SUITE_IGNORES:
+        assert f"--ignore {rel}" in text, rel
+        # ...and CI's copied-tree step runs exactly that file from the copy.
+        assert f'"$suite_root/{rel}"' in text, rel
+
+
+@pytest.mark.parametrize("selected,copied_code,expected", [
+    (None, 5, 1),                                        # full suite: CI would fail on 5
+    (["tests/test_legible_evidence.py",
+      "tests/test_legible_roadmap_contract.py"], 5, 1),  # both files = CI's whole copied step
+    (["tests/test_legible_evidence.py"], 5, 0),          # a strict subset may collect nothing
+    (None, 1, 1),                                        # a real copied failure always fails
+    (None, 0, 0),
+])
+def test_the_copied_run_exit_code_is_aggregated(lc, monkeypatch, tmp_path, selected, copied_code, expected):
+    """#1059 r1 (codex, grok, claude): exit 5 from the copied run must not turn a full-suite
+    run into PASS. Drives main() with lint 0, main run 0, copied run ``copied_code``."""
+    monkeypatch.setattr(lc, "changed_files", lambda repo, base: ["x"])
+    monkeypatch.setattr(lc, "select", lambda pkg_root, files: (selected, ["test"]))
+    monkeypatch.setattr(lc, "check_python", lambda repo: lc.sys.executable)
+    monkeypatch.setattr(lc, "copied_tree_run", lambda *a: (["copied"], tmp_path, {}))
+    # Hermetic: a linter must be "available" whatever the host has (CI runners have no uvx,
+    # and a missing linter is itself a FAIL).
+    monkeypatch.setattr(lc.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def run(cmd, *args, **kwargs):
+        rc = copied_code if cmd == ["copied"] else 0
+        if cmd[:2] == ["bash", str(Path(lc.__file__).resolve().parents[2] / "ci" / "chronology-scope.sh")]:
+            return subprocess.CompletedProcess(cmd, 0, "tests/x.py::test_node\n", "")
+        return subprocess.CompletedProcess(cmd, rc, "", "")
+
+    monkeypatch.setattr(lc.subprocess, "run", run)
+    assert lc.main(["--full"] if selected is None else []) == expected

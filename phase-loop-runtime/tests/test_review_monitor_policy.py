@@ -325,6 +325,57 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
             except ProcessLookupError: pass
 
 
+def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
+    marker = tmp_path / "setfcap-descendant"
+    death_signal = tmp_path / "setfcap-pdeathsig"
+    child_code = (
+        "import os,time,pathlib; os.setsid(); "
+        f"pathlib.Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    provider_code = (
+        "import ctypes,subprocess,sys,time,pathlib; "
+        "sig=ctypes.c_int(); ctypes.CDLL(None).prctl(2,ctypes.byref(sig)); "
+        f"pathlib.Path({str(death_signal)!r}).write_text(str(sig.value)); "
+        f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)"
+    )
+    owner_code = (
+        "import os,sys,threading; from pathlib import Path; "
+        "from phase_loop_runtime import panel_invoker as p; "
+        "from phase_loop_runtime.sandbox_egress import isolated_network; "
+        f"m=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}),'test-setfcap',0,threading.Event())\n"
+        "with isolated_network(timeout_s=None) as prefix:\n"
+        " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
+        " try:\n"
+        f"  p.launch_provider([sys.executable,'-c',{provider_code!r}],cwd='.',env=os.environ,"
+        "process_owner=m.owned_command(()),retain_caps=('setfcap',),start_new_session=True).wait()\n"
+        " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
+    )
+    owner = subprocess.Popen([sys.executable, "-c", owner_code],
+                             start_new_session=True)
+    descendant = None
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            assert owner.poll() is None
+            time.sleep(.02)
+        assert marker.exists()
+        assert int(death_signal.read_text()) == int(signal.SIGKILL)
+        descendant = _host_pid(marker.read_text())
+        owner.kill()
+        owner.wait(5)
+        deadline = time.monotonic() + 5
+        while Path(f"/proc/{descendant}").exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert not Path(f"/proc/{descendant}").exists(), "setfcap descendant escaped owner loss"
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(5)
+        if descendant is not None and Path(f"/proc/{descendant}").exists():
+            os.kill(descendant, signal.SIGKILL)
+
+
 @pytest.mark.parametrize("empty,cancelled", [(False, False), (True, False), (False, True)])
 def test_public_board_real_broker_and_fixture_cli(tmp_path, monkeypatch, empty, cancelled):
     """No factory/spawn replacement: the fixture is an executable CLI on PATH."""
@@ -1002,6 +1053,55 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
             record = json.loads(output)
             assert record["cwd"] == str(cwd)
             assert int(record["caps"], 16) == 0
+        finally:
+            panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+def test_owned_namespace_cannot_flush_parent_firewall(tmp_path):
+    from phase_loop_runtime.sandbox_egress import isolated_network
+
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "firewall-binding", 0, threading.Event())
+    command = [sys.executable, "-c",
+        "import subprocess; p=subprocess.run(['iptables','-F','OUTPUT'],capture_output=True); "
+        "print(p.returncode)"]
+    with isolated_network(timeout_s=None) as prefix:
+        token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                process_owner=monitor.owned_command(()))
+            output, error = proc.communicate(timeout=10)
+            assert proc.returncode == 0, error
+            assert int(output) != 0
+        finally:
+            panel._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+def test_owned_setfcap_starts_nested_sandbox_without_firewall_access(tmp_path):
+    from phase_loop_runtime.sandbox_egress import isolated_network
+
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "setfcap-binding", 0, threading.Event())
+    command = [sys.executable, "-c",
+        "import json,subprocess; from pathlib import Path; "
+        "caps=next(x.split()[1] for x in Path('/proc/self/status').read_text().splitlines() "
+        "if x.startswith('CapBnd:')); "
+        "inner=subprocess.run(['bwrap','--unshare-user','--ro-bind','/','/',"
+        "'--dev','/dev','--proc','/proc','--','echo','NESTED-OK'],capture_output=True,text=True); "
+        "flush=subprocess.run(['iptables','-F','OUTPUT'],capture_output=True); "
+        "print(json.dumps({'caps':caps,'inner_rc':inner.returncode,"
+        "'inner_text':inner.stdout.strip(),'flush_rc':flush.returncode}))"]
+    with isolated_network(timeout_s=None) as prefix:
+        token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                process_owner=monitor.owned_command(()), retain_caps=("setfcap",))
+            output, error = proc.communicate(timeout=10)
+            assert proc.returncode == 0, error
+            record = json.loads(output)
+            assert int(record["caps"], 16) == 1 << 31
+            assert record["inner_rc"] == 0 and record["inner_text"] == "NESTED-OK"
+            assert record["flush_rc"] != 0
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 
