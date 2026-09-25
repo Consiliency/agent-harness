@@ -159,10 +159,13 @@ def test_lock_holder_death_during_the_call_stops_the_call(harness) -> None:
     # Consiliency/agent-harness#746 r1 (codex): after `acquired` nothing watched the
     # holder, so a dropped link released the lock under a live call that then finished
     # green. Two runs, the first losing its holder 0.5 s in: the first must stop and
-    # fail, and its dagger must never record a completed interval.
+    # fail, and its dagger must never record a completed interval. Under the full
+    # xdist suite a four-second call can finish before this script's one-second
+    # polling shell gets CPU again; keep the call outstanding long enough to test
+    # cancellation rather than the runner's scheduling latency.
     run, intervals, _, _ = harness
     with ThreadPoolExecutor(max_workers=2) as pool:
-        a = pool.submit(run, "lost", extra={"SSH_STUB_DIE_AFTER": "0.5", "DAGGER_STUB_SECONDS": "4"})
+        a = pool.submit(run, "lost", extra={"SSH_STUB_DIE_AFTER": "0.5", "DAGGER_STUB_SECONDS": "20"})
         time.sleep(1.0)
         b = pool.submit(run, "next")
         ra, rb = a.result(), b.result()
