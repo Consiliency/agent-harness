@@ -2350,7 +2350,9 @@ def _default_train_review(
     native_leg_fills: "Sequence[object] | None" = None,
     monitoring_policy: str = "bounded",
 ) -> "LoopResult":
-    """Train-level governed review: one-round bounded panel review.
+    """Train-level governed review: one round on the authorized board, monitored under
+    ``monitoring_policy`` (``bounded`` by default; ``heartbeat_only`` via run-train
+    --monitoring-policy).
 
     Returns a :class:`LoopResult` with ``mergeable=True`` on approval or a
     non-human terminal blocker (``human_required=False``) on rejection.
@@ -2624,11 +2626,28 @@ def _run_train_unfenced(
         return {"status": "review_halted", "reason": "review_monitoring_policy_invalid",
                 "detail": f"unsupported review monitoring policy {review_monitoring_policy!r}",
                 "terminal_blocker": _non_human_train_blocker("review_monitoring_policy_invalid")}
-    if review_monitoring_policy == "heartbeat_only" and (emit_native_request or native_leg_fills):
-        # Refused before any effect: heartbeat-only review has no native host seat.
-        return {"status": "review_halted", "reason": "review_monitoring_unsupported_route:native_fill",
-                "detail": "heartbeat_only train review cannot emit or consume a native seat fill",
-                "terminal_blocker": _non_human_train_blocker("review_monitoring_unsupported_route:native_fill")}
+    if review_monitoring_policy == "heartbeat_only":
+        # Every refusal the review gate would make later is made HERE, before any ledger,
+        # broker, publish or packet effect, for direct callers as well as the CLI
+        # (agent-harness#1061 r1). The gate re-checks before any seat launches.
+        refusal = None
+        if run_mode != "governed":
+            refusal = "review_monitoring_requires_governed"
+        elif emit_native_request or native_leg_fills:
+            refusal = "review_monitoring_unsupported_route:native_fill"
+        else:
+            from .advisor_board.backing import resolve_review_monitoring_policy
+            from .advisor_board.fixtures import DEFAULT_BOARD
+            from .panel_invoker import _preflight_gemini_heartbeat
+            try:
+                resolve_review_monitoring_policy(review_monitoring_policy, DEFAULT_BOARD)
+                _preflight_gemini_heartbeat(DEFAULT_BOARD, review_monitoring_policy)
+            except (OSError, ValueError) as exc:
+                refusal = str(exc) or type(exc).__name__
+        if refusal is not None:
+            return {"status": "review_halted", "reason": refusal,
+                    "detail": f"heartbeat_only train review refused before any effect: {refusal}",
+                    "terminal_blocker": _non_human_train_blocker(refusal)}
 
     # A supplied converged runtime must remain credential-free and carries the
     # event-log authority/broker seams.  Legacy callers remain supported while

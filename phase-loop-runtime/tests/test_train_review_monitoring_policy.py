@@ -46,7 +46,7 @@ def _gate(tmp_path, monkeypatch, *, policy=HB, compose=None, native_leg_fills=No
     def _preflight(board, monitoring_policy, env=None):
         seen["preflight"] = (board, monitoring_policy)
         if preflight_error is not None:
-            raise ValueError(preflight_error)
+            raise preflight_error
 
     monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", _preflight)
 
@@ -105,17 +105,24 @@ class TestGate:
         assert "review_monitoring_unsupported_route:native_fill" in gate.findings[0].reason
         assert seen["composed"] == 0 and "mint_kwargs" not in seen and "invoke_kwargs" not in seen
 
-    def test_an_unsupported_board_is_refused_before_minting(self, tmp_path, monkeypatch):
-        fallback = Board(name="x", purpose="code-review", seats=DEFAULT_BOARD.seats, allow_api_key_fallback=True)
-        gate, seen = _gate(tmp_path, monkeypatch, compose=lambda: fallback)
+    @pytest.mark.parametrize("board", [
+        # agent-harness#1061 r1 (codex): an injected composer must not replace the frozen board,
+        # even with seats that would pass the policy's own route checks.
+        Board(name="default", purpose="premerge-review", seats=DEFAULT_BOARD.seats[:3], allow_api_key_fallback=False),
+        Board(name="x", purpose="code-review", seats=DEFAULT_BOARD.seats, allow_api_key_fallback=True),
+    ], ids=["three-default-seats", "api-fallback"])
+    def test_any_board_but_the_frozen_default_is_refused_before_minting(self, tmp_path, monkeypatch, board):
+        gate, seen = _gate(tmp_path, monkeypatch, compose=lambda: board)
         assert not gate.promoted
-        assert "review_monitoring_unsupported_api_fallback" in gate.findings[0].reason
-        assert "mint_kwargs" not in seen and "invoke_kwargs" not in seen
+        assert "requires the frozen four-vendor default board" in gate.findings[0].reason
+        assert "preflight" not in seen and "mint_kwargs" not in seen and "invoke_kwargs" not in seen
 
-    def test_a_failed_agy_capability_check_is_refused_before_minting(self, tmp_path, monkeypatch):
-        gate, seen = _gate(tmp_path, monkeypatch, preflight_error="gemini_heartbeat_unqualified")
-        assert not gate.promoted and "gemini_heartbeat_unqualified" in gate.findings[0].reason
-        assert "mint_kwargs" not in seen
+    @pytest.mark.parametrize("error", [ValueError("gemini_heartbeat_unqualified"), OSError("agy missing")])
+    def test_a_failed_agy_capability_check_is_refused_before_minting(self, tmp_path, monkeypatch, error):
+        gate, seen = _gate(tmp_path, monkeypatch, preflight_error=error)
+        assert seen["preflight"] == (DEFAULT_BOARD, HB)
+        assert not gate.promoted and str(error) in gate.findings[0].reason
+        assert "mint_kwargs" not in seen and "invoke_kwargs" not in seen
 
     def test_an_unknown_policy_is_refused(self, tmp_path, monkeypatch):
         gate, seen = _gate(tmp_path, monkeypatch, policy="silence_deadline", compose=lambda: DEFAULT_BOARD)
@@ -154,10 +161,37 @@ class TestTrainWiring:
             return _approval_with_panel_review_fn(artifact, run_mode)
 
         monkeypatch.setattr(tr, "_default_train_review", _capture)
+        monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", lambda *a, **k: None)
         result, merged = _run_review(tmp_path, _ledger(tmp_path), review_only=True, review_fn=None,
                                      review_monitoring_policy=HB)
         assert result["status"] == "review_approved", result
         assert seen["monitoring_policy"] == HB and merged == []
+
+    @pytest.mark.parametrize("error", [ValueError("gemini_heartbeat_unqualified"), OSError("agy missing")])
+    def test_run_train_refuses_an_unqualified_agy_route_before_any_effect(self, tmp_path, monkeypatch, error):
+        """agent-harness#1061 r1 (codex, grok): a DIRECT caller is refused before publication,
+        ledger or broker work, not only later at the review gate."""
+        def _raise(board, policy, env=None):
+            assert board is DEFAULT_BOARD and policy == HB
+            raise error
+
+        monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", _raise)
+        ledger = _ledger(tmp_path)
+        before = ledger.read_bytes()
+        publish = never
+        result, merged = _run_review(tmp_path, ledger, review_only=False, review_fn=never, publish=publish,
+                                     merge_pr=never, review_monitoring_policy=HB)
+        assert result["status"] == "review_halted" and result["reason"] == str(error), result
+        assert result["terminal_blocker"]["human_required"] is False
+        assert ledger.read_bytes() == before and merged == []
+
+    def test_run_train_refuses_heartbeat_only_outside_governed_mode(self, tmp_path):
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        result = tr.run_train(None, ledger, run_mode="autonomous", resolve_workspace=never,
+                              review_monitoring_policy=HB)
+        assert result["status"] == "review_halted"
+        assert result["reason"] == "review_monitoring_requires_governed"
+        assert not ledger.parent.exists()
 
     @pytest.mark.parametrize("route", ["emit_native_request", "native_leg_fills"])
     def test_run_train_refuses_a_native_route_before_any_effect(self, tmp_path, route):

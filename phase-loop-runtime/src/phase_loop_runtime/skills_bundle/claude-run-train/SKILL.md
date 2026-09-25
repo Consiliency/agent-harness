@@ -69,11 +69,11 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - `--preview-review DIR`: with `--governed --review-only`, prepare immutable packet
   files and a ready/hold receipt in a fresh empty directory without models or writes
   to broker, admission, lease or ledger state.
-- `--monitoring-policy heartbeat_only`: with `--governed`, run the train review the
-  way `advisor-board --monitoring-policy heartbeat_only` does: the frozen four-vendor
+- `--monitoring-policy heartbeat_only`: with `--governed`, run the train-level review
+  the way `advisor-board --monitoring-policy heartbeat_only` does: the frozen four-vendor
   default board, no model deadline, no native seat (so it cannot combine with
-  `--emit-native-request` or `--native-leg`). The preview reports the policy and those
-  seats. Default: `bounded`.
+  `--emit-native-request` or `--native-leg`). An unqualified agy route is refused before
+  any effect. The preview reports the policy and those seats. Default: `bounded`.
 
 Trusted FAB readmission in ordinary governed execution freezes all proposed-head
 material before recovery or delta review, then requires matching durable broker

@@ -4546,7 +4546,7 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             resolve_review_monitoring_policy(monitoring_policy, DEFAULT_BOARD,
                                              native_fill_requested=bool(native_leg_specs))
             _preflight_gemini_heartbeat(DEFAULT_BOARD, monitoring_policy)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             print(f"run-train: review monitoring policy refused: {exc}", file=sys.stderr)
             return 2
         review_board_preview = [{"harness": seat.harness, "model": seat.model, "effort": seat.effort}

@@ -335,9 +335,10 @@ def governed_board_gate(
 
     ``monitoring_policy="heartbeat_only"`` (agent-harness#906, ``run-train
     --monitoring-policy``) runs the review the way ``advisor-board --monitoring-policy
-    heartbeat_only`` does: the frozen default four-vendor board, no model deadline, and no
-    native host seat. It is checked here, before minting or any launch, and forwarded to
-    both the authorization and ``invoke_board``, which refuse a mismatch between the two.
+    heartbeat_only`` does: the frozen default four-vendor board (any other composition is
+    refused, even from an injected ``compose``), no model deadline, and no native host seat.
+    It is checked here, before minting or any launch, and forwarded to both the
+    authorization and ``invoke_board``, which refuse a mismatch between the two.
 
     REVIEWTRUTH early slice (EC-REVIEWTRUTH-14, plan agent-harness#918): ``emit_native_request``
     performs the same composition, author exclusion, floor and staging the invoke arm will
@@ -451,10 +452,18 @@ def governed_board_gate(
     if dropped:
         board = _replace(board, seats=seats)
     if heartbeat_only:
+        if board != DEFAULT_BOARD:
+            # Frozen composition, whatever produced it: an injected composer or author
+            # exclusion that changes the seats is refused, never reviewed (agent-harness#1061 r1).
+            return _block_result(
+                "review_isolation_unavailable", "governed_board_monitoring_policy_refused",
+                "heartbeat_only review requires the frozen four-vendor default board; "
+                f"composed {sorted(getattr(s, 'harness', '?') for s in board.seats)}; holding (non-human)",
+            )
         try:
             _backing.resolve_review_monitoring_policy(monitoring_policy, board)
             _pi._preflight_gemini_heartbeat(board, monitoring_policy)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             return _block_result(
                 "review_isolation_unavailable", "governed_board_monitoring_policy_refused",
                 f"review monitoring policy refused before any launch: {exc}; holding (non-human)",

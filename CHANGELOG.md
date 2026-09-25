@@ -8,13 +8,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### `run-train --monitoring-policy heartbeat_only` (agent-harness#906)
 
-- The train review can now run heartbeat-only, as `advisor-board --monitoring-policy heartbeat_only`
-  already could. It seats the frozen four-vendor default board with no model deadline and no
-  native host seat. The policy is forwarded to both the review authorization and `invoke_board`,
-  which refuse a mismatch between the two. A native fill (`--emit-native-request` / `--native-leg`), an
-  unsupported board or an unqualified Gemini/agy route is refused before any ledger, broker or
-  launch effect. `--preview-review` reports the policy and, under heartbeat-only, the seats.
-  The default (`bounded`) path is unchanged.
+- The train-level review can now run heartbeat-only, as `advisor-board --monitoring-policy
+  heartbeat_only` already could. It seats the frozen four-vendor default board (any other composition
+  is refused), with no model deadline and no native host seat. The policy is forwarded to both the
+  review authorization and `invoke_board`, which refuse a mismatch between the two.
+- Refused before any ledger, broker, publish or packet effect, from the CLI and from direct
+  `run_train` callers alike, and re-checked at the review gate before any seat launches:
+  - native emission or fill (`--emit-native-request` / `--native-leg`);
+  - a non-governed run;
+  - an unqualified Gemini/agy route.
+- `--preview-review` reports `review_monitoring_policy` and, under heartbeat-only, the `review_board`
+  seats. A bounded preview shows `"bounded"` and `null`.
+- The bounded review path is unchanged. Per-node governed reviews and the FAB delta-shortcut review
+  keep their own monitoring.
 
 ### `make check` runs the LEGIBLE contract files the way CI does (agent-harness#1057)
 
