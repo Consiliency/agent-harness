@@ -2458,9 +2458,11 @@ def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch
     except (OSError, ValueError):
         # Unreadable now: append NOTHING. A branch-only row would win the last-wins fold
         # once reads recover and erase the admission (agent-harness#978 round 11, codex).
-        # The binding stays the fold because no caller has appended over it: P4 callers
-        # append nothing before refusing, and P3 halts before its breadcrumb when its
-        # capture fails (round 12).
+        # For an ADMITTED node the binding stays the fold because no caller has appended
+        # over it: P4 callers append nothing before refusing, and P3 halts before its
+        # breadcrumb when its capture fails (round 12). This branch is also reachable for a
+        # fresh P3 node, whose breadcrumb is then the fold -- harmless, as a fresh node has
+        # no binding to lose (agent-harness#1064).
         return
     if latest is None:
         append_record(ledger_path, LedgerRecord(node_id=node_id, status="blocked", branch=branch))
@@ -2593,6 +2595,10 @@ def _run_train_unfenced(
     review_material: "Path | str | None" = None,
     # run-train --monitoring-policy: how the DEFAULT train review watches its seats.
     # "heartbeat_only" = no model deadline, frozen four-vendor board, no native seat.
+    # Scope (agent-harness#1065): only the default train-level review honours it. An
+    # injected ``_train_review_fn`` owns its own monitoring, and the FAB delta-shortcut
+    # review (``fab_delta_shortcut``; not exposed by the CLI) and per-node governed
+    # reviews keep theirs.
     review_monitoring_policy: str = "bounded",
     # P4 seams — unused when _merge_phase_enabled is False.
     _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
