@@ -309,8 +309,9 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
 def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     """Copy only installed distribution-owned files into a disposable import root."""
     inventory = subprocess.run(
-        ["/usr/bin/python3", "-c",
-         "import json,sys; print(json.dumps({'paths':sys.path, "
+        ["/usr/bin/python3", "-S", "-c",
+         "import json,site,sys; print(json.dumps({'paths':site.getsitepackages()+"
+         "[site.getusersitepackages()], "
          "'version':list(sys.version_info[:3])}))"],
         capture_output=True, text=True, check=True, timeout=3,
         cwd="/",
@@ -319,15 +320,15 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     interpreter = json.loads(inventory.stdout)
     paths = [path for path in interpreter["paths"] if isinstance(path, str) and path.startswith("/")]
     version = interpreter["version"]
-    if version[:2] == list(sys.version_info[:2]):
-        prefixes = (Path(sys.prefix), Path(sys.base_prefix))
-        paths = list(dict.fromkeys([
-            *(path for path in sys.path
-              if path.startswith("/")
-              and any(part in ("site-packages", "dist-packages") for part in Path(path).parts)
-              and any(Path(path).is_relative_to(prefix) for prefix in prefixes)),
-            *paths,
-        ]))
+    cross_minor = version[:2] != list(sys.version_info[:2])
+    prefixes = (Path(sys.prefix), Path(sys.base_prefix))
+    paths = list(dict.fromkeys([
+        *(path for path in sys.path
+          if path.startswith("/")
+          and any(part in ("site-packages", "dist-packages") for part in Path(path).parts)
+          and any(Path(path).is_relative_to(prefix) for prefix in prefixes)),
+        *paths,
+    ]))
     marker_environment = default_environment()
     marker_environment["python_version"] = f"{version[0]}.{version[1]}"
     marker_environment["python_full_version"] = ".".join(map(str, version))
@@ -365,6 +366,8 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
             parts = entry.parts
             if (not parts or entry.is_absolute() or ".." in parts
                     or "__pycache__" in parts or entry.suffix == ".pth"):
+                continue
+            if cross_minor and entry.suffix in (".so", ".pyd", ".dll", ".dylib"):
                 continue
             if any(part.startswith(".env") or part.endswith((".key", ".pem")) for part in parts):
                 continue
