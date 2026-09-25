@@ -3,6 +3,7 @@ import unittest
 from dataclasses import fields
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from unittest.mock import patch
 
 from harden_tdd_guard import invoke_sanctioned_review_transport
@@ -17,10 +18,18 @@ from phase_loop_runtime.panel_invoker import (
     invoke_panel,
     invoke_panel_request,
     panel_leg_timeout_seconds,
+    parse_finding_falsifiers,
 )
 
 
 class PanelInvokerTest(unittest.TestCase):
+    def test_unclosed_falsifier_fences_parse_in_bounded_time(self):
+        text = "FINDING F001: BLOCKING — test\n" + "```falsifier\n" * 10000
+        started = monotonic()
+        with self.assertRaises(ValueError):
+            parse_finding_falsifiers(text)
+        self.assertLess(monotonic() - started, 2.0)
+
     def test_available_legs_uses_injected_probe(self):
         # only codex + claude "installed"
         present = {"codex", "claude"}

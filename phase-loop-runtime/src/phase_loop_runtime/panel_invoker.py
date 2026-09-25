@@ -1695,34 +1695,45 @@ def parse_finding_falsifiers(text: str) -> FindingFalsifierAttachment:
     """Parse fenced, single-new-test reproductions from a review leg."""
     from .falsifier import _one_new_test_diff
 
-    fence = re.compile(r"(?m)^```falsifier\s*\n(.*?)^```\s*$", re.DOTALL)
+    lines = text.splitlines(keepends=True)
     attachments: list[FindingFalsifier] = []
     seen: set[str] = set()
-    previous_end = 0
-    for match in fence.finditer(text):
-        preamble = text[previous_end:match.start()]
-        finding_lines = re.findall(r"(?m)^FINDING ([A-Za-z0-9_]+):", preamble)
-        if not finding_lines:
+    finding_id: str | None = None
+    position = 0
+    while position < len(lines):
+        line = lines[position]
+        finding_line = re.match(r"^FINDING ([A-Za-z0-9_]+):", line)
+        if finding_line is not None:
+            finding_id = finding_line.group(1)
+        if "```falsifier" not in line:
+            position += 1
+            continue
+        if line.strip() != "```falsifier":
+            raise ValueError("malformed falsifier fence")
+        if finding_id is None:
             raise ValueError("falsifier block has no finding id")
-        finding_id = finding_lines[-1]
         if finding_id in seen:
             raise ValueError("finding has more than one falsifier block")
-        lines = match.group(1).splitlines(keepends=True)
-        if not lines or not lines[0].startswith("nodeid: "):
+        position += 1
+        block: list[str] = []
+        while position < len(lines) and lines[position].strip() != "```":
+            block.append(lines[position])
+            position += 1
+        if position == len(lines):
+            raise ValueError("incomplete falsifier block")
+        if not block or not block[0].startswith("nodeid: "):
             raise ValueError("falsifier block has no nodeid")
-        nodeid = lines[0][len("nodeid: "):].strip()
+        nodeid = block[0][len("nodeid: "):].strip()
         path = f"phase-loop-runtime/tests/test_finding_{finding_id}.py"
         item = FindingFalsifier(
             finding_id=finding_id, new_test_path=path,
-            expected_nodeid=nodeid, diff="".join(lines[1:]),
+            expected_nodeid=nodeid, diff="".join(block[1:]),
         )
         if not _one_new_test_diff(item):
             raise ValueError("falsifier must create only its named new test")
         attachments.append(item)
         seen.add(finding_id)
-        previous_end = match.end()
-    if text.count("```falsifier") != len(attachments):
-        raise ValueError("incomplete falsifier block")
+        position += 1
     return FindingFalsifierAttachment(tuple(attachments))
 
 
