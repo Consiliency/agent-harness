@@ -2348,6 +2348,7 @@ def _default_train_review(
     *,
     canonical_repo_authority: "Path | str | None" = None,
     native_leg_fills: "Sequence[object] | None" = None,
+    monitoring_policy: str = "bounded",
 ) -> "LoopResult":
     """Train-level governed review: one-round bounded panel review.
 
@@ -2392,7 +2393,9 @@ def _default_train_review(
         max_rounds=1,
         apply_fix=None,
         invoke=functools.partial(
-            governed_board_gate, canonical_repo_authority=canonical_repo_authority
+            governed_board_gate, canonical_repo_authority=canonical_repo_authority,
+            # run-train --monitoring-policy; the default path stays byte-identical.
+            **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
         ),
     )
 
@@ -2539,6 +2542,9 @@ def _run_train_unfenced(
     native_leg_fills: "Sequence[object] | None" = None,
     _emit_native_fill_request_fn: Optional[Callable] = None,
     review_material: "Path | str | None" = None,
+    # run-train --monitoring-policy: how the DEFAULT train review watches its seats.
+    # "heartbeat_only" = no model deadline, frozen four-vendor board, no native seat.
+    review_monitoring_policy: str = "bounded",
     # P4 seams — unused when _merge_phase_enabled is False.
     _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
@@ -2614,6 +2620,16 @@ def _run_train_unfenced(
           ``{"status": "merge_halted", "node_id": …, "reason": …}`` —
           downstream re-verify failed; upstream stays merged (forward-only).
     """
+    if review_monitoring_policy not in ("bounded", "heartbeat_only"):
+        return {"status": "review_halted", "reason": "review_monitoring_policy_invalid",
+                "detail": f"unsupported review monitoring policy {review_monitoring_policy!r}",
+                "terminal_blocker": _non_human_train_blocker("review_monitoring_policy_invalid")}
+    if review_monitoring_policy == "heartbeat_only" and (emit_native_request or native_leg_fills):
+        # Refused before any effect: heartbeat-only review has no native host seat.
+        return {"status": "review_halted", "reason": "review_monitoring_unsupported_route:native_fill",
+                "detail": "heartbeat_only train review cannot emit or consume a native seat fill",
+                "terminal_blocker": _non_human_train_blocker("review_monitoring_unsupported_route:native_fill")}
+
     # A supplied converged runtime must remain credential-free and carries the
     # event-log authority/broker seams.  Legacy callers remain supported while
     # the CLI migration is rolled out through the explicit runtime boundary.
@@ -3528,6 +3544,8 @@ def _run_train_unfenced(
                 topo_order, resolve_workspace
             ),
             native_leg_fills=tuple(native_leg_fills) if native_leg_fills else None,
+            **({"monitoring_policy": review_monitoring_policy}
+               if review_monitoring_policy != "bounded" else {}),
         )
     pr_merged_sha_fn = (
         _pr_merged_sha_fn if _pr_merged_sha_fn is not None else _live_pr_merged_sha

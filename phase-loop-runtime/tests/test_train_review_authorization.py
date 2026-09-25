@@ -565,7 +565,7 @@ class _Never:
 
 
 def _run_review(tmp_path, ledger, *, review_only, review_fn=_approval_review_fn, live=ADMITTED,
-                head=ADMITTED, pr_open=_pr_is_open_true, merge_pr=None, publish=None):
+                head=ADMITTED, pr_open=_pr_is_open_true, merge_pr=None, publish=None, **extra):
     roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
     ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
     merged: list = []
@@ -592,6 +592,7 @@ def _run_review(tmp_path, ledger, *, review_only, review_fn=_approval_review_fn,
         _merge_pr_fn=merge_pr or _merge,
         _reverify_fn=lambda *a, **k: True,
         _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+        **extra,
     )
     return result, merged
 
