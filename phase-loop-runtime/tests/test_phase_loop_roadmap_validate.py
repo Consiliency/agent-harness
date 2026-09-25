@@ -217,12 +217,18 @@ class RoadmapLintModuleTest(unittest.TestCase):
         errors = lint_roadmap_text(cyclic)
         self.assertTrue(any(e.startswith("(F)") for e in errors), errors)
 
-    @pytest.mark.quarantine(reason="agent-harness#987")
     def test_validate_roadmap_cli_subcommand(self):
+        # The CLI infers the repository as the roadmap's grandparent. A roadmap written
+        # directly into a bare tempdir made that ``/tmp`` itself, whose mtime other xdist
+        # workers change mid-validation ("root changed during validation",
+        # agent-harness#987). Give it the layout the inference expects: a private
+        # repo/specs/ directory nobody else touches.
         with tempfile.TemporaryDirectory() as td:
-            good = Path(td) / "good.md"
+            specs = Path(td) / "repo" / "specs"
+            specs.mkdir(parents=True)
+            good = specs / "good.md"
             good.write_text(_VALID_ROADMAP, encoding="utf-8")
-            bad = Path(td) / "bad.md"
+            bad = specs / "bad.md"
             bad.write_text("# Bad\n\n## Phases\n\n### Phase 1 — No Alias\n", encoding="utf-8")
 
             self.assertEqual(main(["validate-roadmap", str(good)]), 0)

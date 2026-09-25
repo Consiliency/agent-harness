@@ -99,6 +99,36 @@ def test_stream_rejections_are_fixed_and_never_review_prose(mutation, reason):
     assert metadata["provider_stream_outcome"] != "accepted"
 
 
+def _fixture_repo(tmp_path):
+    """A private one-commit repository for the board to digest and stage.
+
+    The HARDEN review authority defaults to the CURRENT DIRECTORY -- the live checkout --
+    independently of ``repo_dir``: the board digests its tracked files but stages a clone
+    of HEAD, so another xdist worker rewriting a tracked file mid-test made them differ
+    ("HARDEN review staged tree does not match authorization", agent-harness#987). Run
+    the board with this repo as the cwd (``repo_dir`` alone does not move the authority;
+    an explicit ``canonical_repo_authority`` also demands a pre-minted authorization)."""
+    repo = tmp_path / "repo"
+    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "README.md").write_text("synthetic review authority\n")
+    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    return repo
+
+
+@pytest.fixture(autouse=True)
+def _private_review_authority(tmp_path_factory, monkeypatch):
+    """Every test here runs with a private one-commit repository as its cwd.
+
+    The HARDEN review authority defaults to the cwd; left at the live checkout, a board
+    run digests the checkout's tracked files but stages a clone of HEAD, so any other
+    xdist worker (or an uncommitted edit) makes them differ -- "HARDEN review staged
+    tree does not match authorization" (agent-harness#987). Tests that need a specific
+    cwd chdir again; the last chdir wins."""
+    monkeypatch.chdir(_fixture_repo(tmp_path_factory.mktemp("authority")))
+
+
 @pytest.fixture
 def fixture_cli(tmp_path, monkeypatch):
     gh = importlib.import_module("phase_loop_runtime.gemini_heartbeat")
@@ -277,16 +307,18 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     ("quoted-timeout", "ERROR", "malformed JSON"),
     ("denied-empty", "ERROR", "tool permission"),
     ("event", "ERROR", "malformed stream event"),
-    pytest.param("session", "ERROR", "conversation",
-                 marks=pytest.mark.quarantine(reason="agent-harness#987")),
+    ("session", "ERROR", "conversation"),
     ("count", "ERROR", "incomplete ingestion"),
     ("final", "ERROR", "terminal response"), ("truncation", "ERROR", "truncation"),
 ])
-def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path, mode, status, detail):
+def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path, monkeypatch, mode, status, detail):
     fixture_cli.mode.write_text(mode)
+    repo = _fixture_repo(tmp_path)
+    monkeypatch.chdir(repo)  # the HARDEN review authority defaults to the cwd
     result = panel.invoke_board(
         gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
         stream_dir=tmp_path / "records", gateway_available=False,
+        repo_dir=repo,
     )
     leg, = result.legs
     assert leg.status == status, (leg.status, leg.detail)
@@ -387,12 +419,7 @@ def test_heartbeat_credential_home_fallback_is_recorded_truthfully(fixture_cli, 
 
 
 def test_explicit_empty_home_is_not_reported_as_process_home_fallback(fixture_cli, tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    (repo / "README.md").write_text("synthetic review authority\n")
-    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
-    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    repo = _fixture_repo(tmp_path)
     relative_home = repo / "relative-home"
     token = relative_home / ".gemini/antigravity-cli/antigravity-oauth-token"
     token.parent.mkdir(parents=True)
