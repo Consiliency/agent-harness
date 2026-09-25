@@ -369,6 +369,35 @@ class RoadmapLintModuleTest(unittest.TestCase):
             with patch.object(os, "lstat", failing_lstat):
                 self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True])
 
+    def test_a_resolution_error_on_a_symlink_alias_keeps_the_check(self):
+        """#1054 r4 (codex): non-strict resolve() swallows an I/O error on a symlink
+        alias and keeps the alias, whose lexical ancestors miss the real repository.
+        The probe resolves strictly, so any resolution error means "maybe a repository"."""
+        import errno
+        import os
+        from phase_loop_runtime.cli import _confirmed_outside_git_work_tree
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / "subdir").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            alias = Path(td) / "outside" / "link"
+            alias.parent.mkdir()
+            alias.symlink_to(repo / "subdir")
+            self.assertFalse(_confirmed_outside_git_work_tree(alias))
+            real_lstat = os.lstat
+
+            def eio_on_alias(path, *args, **kwargs):
+                if Path(path) == alias:
+                    raise OSError(errno.EIO, "injected", str(path))
+                return real_lstat(path, *args, **kwargs)
+
+            with patch.object(os, "lstat", eio_on_alias):
+                self.assertFalse(_confirmed_outside_git_work_tree(alias))
+            loop = Path(td) / "loop"
+            loop.symlink_to(loop)
+            self.assertFalse(_confirmed_outside_git_work_tree(loop))
+
     def test_an_inherited_git_dir_cannot_answer_for_the_roadmap(self):
         """GIT_DIR/GIT_WORK_TREE exported for ANOTHER repository must not make a loose
         roadmap look like it is inside a work tree (the probe ignores the environment)."""
