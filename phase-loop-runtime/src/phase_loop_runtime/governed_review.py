@@ -329,8 +329,16 @@ def governed_board_gate(
     native_leg_fills: Sequence[object] | None = None,
     emit_native_request: bool = False,
     native_fill_dir: "Path | str | None" = None,
+    monitoring_policy: str = "bounded",
 ) -> "GateResult | dict[str, object]":
     """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
+
+    ``monitoring_policy="heartbeat_only"`` (agent-harness#906, ``run-train
+    --monitoring-policy``) runs the review the way ``advisor-board --monitoring-policy
+    heartbeat_only`` does: the frozen default four-vendor board (any other composition is
+    refused, even from an injected ``compose``), no model deadline, and no native host seat.
+    It is checked here, before minting or any launch, and forwarded to both the
+    authorization and ``invoke_board``, which refuse a mismatch between the two.
 
     REVIEWTRUTH early slice (EC-REVIEWTRUTH-14, plan agent-harness#918): ``emit_native_request``
     performs the same composition, author exclusion, floor and staging the invoke arm will
@@ -391,11 +399,29 @@ def governed_board_gate(
             "(the coordinator's git toplevel or the first node's workspace); none was "
             "resolved; holding (non-human)",
         )
+    heartbeat_only = monitoring_policy == "heartbeat_only"
+    if monitoring_policy not in ("bounded", "heartbeat_only"):
+        return _block_result(
+            "review_isolation_unavailable", "governed_board_monitoring_policy_refused",
+            f"review monitoring policy {monitoring_policy!r} is not supported; holding (non-human)",
+        )
+    if heartbeat_only and (native_leg_fills or emit_native_request):
+        # CONTRACTS.md, review monitoring policy v1: heartbeat-only has no native host seat.
+        return _block_result(
+            "review_isolation_unavailable", "governed_board_monitoring_policy_refused",
+            "review_monitoring_unsupported_route:native_fill: heartbeat_only review has no "
+            "native host seat; holding (non-human)",
+        )
     from . import panel_invoker as _pi
     from .advisor_board import backing as _backing
     from .advisor_board.composition import FLOOR_SEATS, compose_review_board
+    from .advisor_board.fixtures import DEFAULT_BOARD
 
-    compose_fn = compose if compose is not None else compose_review_board
+    # heartbeat_only seats the frozen default board, as the advisor-board CLI does: an
+    # unavailable vendor then fails its own seat instead of being silently backfilled.
+    compose_fn = compose if compose is not None else (
+        (lambda: DEFAULT_BOARD) if heartbeat_only else compose_review_board
+    )
     try:
         _backing.prepare_review_composition_authorization()
         try:
@@ -425,8 +451,36 @@ def governed_board_gate(
         )
     if dropped:
         board = _replace(board, seats=seats)
+    if heartbeat_only:
+        if board != DEFAULT_BOARD:
+            # Frozen composition, whatever produced it: an injected composer or author
+            # exclusion that changes the seats is refused, never reviewed (agent-harness#1061 r1).
+            return _block_result(
+                "review_isolation_unavailable", "governed_board_monitoring_policy_refused",
+                "heartbeat_only review requires the frozen four-vendor default board; "
+                f"composed {sorted(getattr(s, 'harness', '?') for s in board.seats)}; holding (non-human)",
+            )
+        try:
+            _backing.resolve_review_monitoring_policy(monitoring_policy, board)
+            _pi._preflight_gemini_heartbeat(board, monitoring_policy)
+        except (OSError, ValueError) as exc:
+            return _block_result(
+                "review_isolation_unavailable", "governed_board_monitoring_policy_refused",
+                f"review monitoring policy refused before any launch: {exc}; holding (non-human)",
+            )
+    policy_kwargs: dict[str, object] = {"monitoring_policy": monitoring_policy} if heartbeat_only else {}
     invoke_fn = invoke if invoke is not None else _pi.invoke_board
     from .advisor_board.composition import composition_digest
+
+    if artifact.startswith("# Train review packet v1\n"):
+        try:
+            from .train_review_packet import preflight_packet
+            preflight_packet(artifact, instructions=_pi._resolve_brief("review", brief_ref), board=board)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return _block_result(
+                "review_isolation_unavailable", "governed_board_packet_preflight_failed",
+                f"review packet transport preflight failed: {exc}; holding (non-human)",
+            )
 
     if emit_native_request:
         # Emit arm: no authorization, no seat, no digest binding beyond the read-back bytes.
@@ -497,6 +551,7 @@ def governed_board_gate(
             staged_artifact,
             mode="review",
             canonical_repo_authority=canonical_repo_authority,
+            **policy_kwargs,
         )
         invoke_kwargs: dict[str, object] = {
             "repo_dir": provider_scratch,
@@ -504,6 +559,7 @@ def governed_board_gate(
             "review_authorization": authorization,
             "canonical_repo_authority": canonical_repo_authority,
             "spawn": spawn,
+            **policy_kwargs,
         }
         if brief_ref is not None:
             invoke_kwargs["brief_ref"] = brief_ref

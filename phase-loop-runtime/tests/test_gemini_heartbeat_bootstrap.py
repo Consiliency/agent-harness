@@ -60,7 +60,7 @@ def test_no_profile_does_not_change_other_providers_owner_argv(tmp_path):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "unchanged", 0, threading.Event())
     assert monitor.owned_command(("fixture", "arg")) == [
         "/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-        "--bind", "/", "/", "--dev", "/dev", "--", "fixture", "arg",
+        "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "fixture", "arg",
     ]
 
 
@@ -97,6 +97,36 @@ def test_stream_rejections_are_fixed_and_never_review_prose(mutation, reason):
     assert reason in detail
     assert "PRIVATE_FIXTURE_SENTINEL" not in detail
     assert metadata["provider_stream_outcome"] != "accepted"
+
+
+def _fixture_repo(tmp_path):
+    """A private one-commit repository for the board to digest and stage.
+
+    The HARDEN review authority defaults to the CURRENT DIRECTORY -- the live checkout --
+    independently of ``repo_dir``: the board digests its tracked files but stages a clone
+    of HEAD, so another xdist worker rewriting a tracked file mid-test made them differ
+    ("HARDEN review staged tree does not match authorization", agent-harness#987). Run
+    the board with this repo as the cwd (``repo_dir`` alone does not move the authority;
+    an explicit ``canonical_repo_authority`` also demands a pre-minted authorization)."""
+    repo = tmp_path / "repo"
+    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    (repo / "README.md").write_text("synthetic review authority\n")
+    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    return repo
+
+
+@pytest.fixture(autouse=True)
+def _private_review_authority(tmp_path_factory, monkeypatch):
+    """Every test here runs with a private one-commit repository as its cwd.
+
+    The HARDEN review authority defaults to the cwd; left at the live checkout, a board
+    run digests the checkout's tracked files but stages a clone of HEAD, so any other
+    xdist worker (or an uncommitted edit) makes them differ -- "HARDEN review staged
+    tree does not match authorization" (agent-harness#987). Tests that need a specific
+    cwd chdir again; the last chdir wins."""
+    monkeypatch.chdir(_fixture_repo(tmp_path_factory.mktemp("authority")))
 
 
 @pytest.fixture
@@ -138,7 +168,7 @@ Path({str(observation)!r}).write_text(json.dumps({{
  'argv':sys.argv, 'home':str(home), 'settings_readonly':settings_readonly,
  'settings':settings_value, 'mode':mode,
  'caps':next(x.split()[1] for x in Path('/proc/self/status').read_text().splitlines() if x.startswith('CapBnd:')),
- 'pid':int(Path('/proc/self/stat').read_text().split()[0]),
+ 'pid':os.readlink('/proc/self/ns/pid')+' '+str(os.getpid()),
  'namespace':os.readlink('/proc/self/ns/pid'), 'fd_targets':fd_targets,
  'random_available':len(os.urandom(8))==8
 }}))
@@ -147,7 +177,7 @@ if mode=='cancel':
     if child==0:
         os.setsid()
         ready=Path({str(tmp_path / 'detached')!r})
-        ready.with_suffix('.tmp').write_text(Path('/proc/self/stat').read_text().split()[0])
+        ready.with_suffix('.tmp').write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid()))
         os.replace(ready.with_suffix('.tmp'),ready)
         while True: time.sleep(.1)
     print('synthetic provider ready',file=sys.stderr,flush=True)
@@ -266,6 +296,154 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     assert not fixture_cli.attempts.exists()
 
 
+def test_repo_dir_sets_the_review_authority_not_the_cwd(fixture_cli, tmp_path, monkeypatch):
+    """agent-harness#1053 decision 2: ``repo_dir`` is the repository under review, so it is
+    also the HARDEN review authority -- the tree that is fingerprinted and staged -- rather
+    than whatever directory the process happens to run in. The cwd here is a different
+    repository; both the authorization digest and the staged tree must come from repo_dir."""
+    import phase_loop_runtime.advisor_board.backing as backing
+    import phase_loop_runtime.review_stage as review_stage
+
+    fixture_cli.mode.write_text("ok")
+    reviewed = _fixture_repo(tmp_path / "reviewed")
+    elsewhere = _fixture_repo(tmp_path / "elsewhere")
+    monkeypatch.chdir(elsewhere)
+    digested, staged = [], []
+    real_digest, real_stage = backing._staged_tree_digest, review_stage.stage_review_tree
+
+    def digest(authority):
+        digested.append(Path(authority).resolve())
+        return real_digest(authority)
+
+    def stage(repo, parent=None):
+        staged.append(Path(repo).resolve())
+        return real_stage(repo, parent)
+
+    monkeypatch.setattr(backing, "_staged_tree_digest", digest)
+    monkeypatch.setattr(review_stage, "stage_review_tree", stage)
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=reviewed,
+    )
+    leg, = result.legs
+    assert leg.status == "OK", (leg.status, leg.detail)
+    assert digested == [reviewed.resolve()], digested
+    assert staged == [reviewed.resolve()], staged
+
+
+def test_a_non_git_repo_dir_keeps_the_cwd_authority(fixture_cli, tmp_path, monkeypatch):
+    """The other half of agent-harness#1053 decision 2: a ``repo_dir`` that is not a git
+    repository cannot be fingerprinted as one, so the historical cwd authority stands (and
+    every later typed refusal is unchanged)."""
+    import phase_loop_runtime.advisor_board.backing as backing
+
+    fixture_cli.mode.write_text("ok")
+    cwd_repo = _fixture_repo(tmp_path / "cwd")
+    plain = tmp_path / "plain-dir"
+    plain.mkdir()
+    monkeypatch.chdir(cwd_repo)
+    digested = []
+    real_digest = backing._staged_tree_digest
+    monkeypatch.setattr(backing, "_staged_tree_digest",
+                        lambda authority: digested.append(Path(authority).resolve()) or real_digest(authority))
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=plain,
+    )
+    leg, = result.legs
+    assert leg.status == "OK", (leg.status, leg.detail)
+    assert digested == [cwd_repo.resolve()], digested
+
+
+def test_the_work_tree_probe_fails_closed_on_filesystem_errors(tmp_path, monkeypatch):
+    """#1055 r2 (codex, claude): an EACCES/EIO on a ``.git`` lookup, or a symlink loop,
+    means "maybe a repository" -- never "outside" (which would review the cwd instead)."""
+    import errno
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert panel._outside_any_git_work_tree(plain) is True
+    real_lstat = os.lstat
+
+    def failing_lstat(path, *args, **kwargs):
+        if Path(path).name == ".git":
+            raise PermissionError(errno.EACCES, "injected", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", failing_lstat)
+    assert panel._outside_any_git_work_tree(plain) is False
+    monkeypatch.setattr(os, "lstat", real_lstat)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    assert panel._outside_any_git_work_tree(loop) is False  # a symlink loop fails closed
+    # #1055 r3 (codex): an I/O error while RESOLVING a symlink alias into a repository
+    # must not leave the unresolved alias (whose ancestors miss the repo) -> "outside".
+    repo = _fixture_repo(tmp_path / "aliased")
+    (repo / "child").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(repo / "child")
+    assert panel._outside_any_git_work_tree(alias) is False
+
+    def eio_on_alias(path, *args, **kwargs):
+        if Path(path) == alias:
+            raise OSError(errno.EIO, "injected", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", eio_on_alias)
+    assert panel._outside_any_git_work_tree(alias) is False
+    monkeypatch.setattr(os, "lstat", real_lstat)
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("loop")))
+    assert panel._outside_any_git_work_tree(plain) is False
+
+
+def test_an_unreadable_repo_dir_is_maybe_a_repository(tmp_path):
+    """Implementation-agnostic (a real EACCES, nothing mocked; #1055 president)."""
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    locked = tmp_path / "locked"
+    (locked / "inner").mkdir(parents=True)
+    locked.chmod(0o000)
+    try:
+        assert panel._outside_any_git_work_tree(locked / "inner") is False
+        assert panel._outside_any_git_work_tree("bad\0path") is False  # NUL byte fails closed
+    finally:
+        locked.chmod(0o700)
+
+
+def test_review_authority_resolution_rule(tmp_path):
+    """agent-harness#1053 decision 2, every branch of the one rule (#1055 r1): explicit
+    authority wins; else repo_dir; a GOVERNED request ignores repo_dir; a repo_dir outside
+    any work tree falls back to the cwd; a real repository whose resolution fails does NOT
+    fall back (it reaches the typed refusal). Exactly one resolution per call."""
+    repo = _fixture_repo(tmp_path / "r")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    worktree_file = tmp_path / "wt"
+    worktree_file.mkdir()
+    (worktree_file / ".git").write_text("gitdir: /nonexistent\n")
+    seen = []
+
+    def resolve(value):
+        seen.append(value)
+        if value == worktree_file:
+            raise ValueError("HARDEN review has no canonical repository authority")
+        return Path(value or "/cwd")
+
+    def rule(explicit, repo_dir, governed=False):
+        seen.clear()
+        result = panel._resolve_review_authority(explicit, repo_dir, governed=governed, resolve=resolve)
+        assert len(seen) == 1, seen
+        return result, seen[0]
+
+    assert rule(tmp_path / "explicit", repo)[1] == tmp_path / "explicit"
+    assert rule(None, repo)[1] == repo
+    assert rule(None, repo, governed=True)[1] is None
+    assert rule(None, plain)[1] is None
+    assert rule(None, None)[1] is None
+    with pytest.raises(ValueError, match="no canonical repository authority"):
+        panel._resolve_review_authority(None, worktree_file, governed=False, resolve=resolve)
+
+
 @pytest.mark.parametrize("mode,status,detail", [
     ("ok", "OK", None), ("empty", "EMPTY", "without review text"),
     ("malformed", "ERROR", "malformed JSON"), ("ack", "ERROR", "acknowledgement"),
@@ -277,14 +455,18 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     ("quoted-timeout", "ERROR", "malformed JSON"),
     ("denied-empty", "ERROR", "tool permission"),
     ("event", "ERROR", "malformed stream event"),
-    ("session", "ERROR", "conversation"), ("count", "ERROR", "incomplete ingestion"),
+    ("session", "ERROR", "conversation"),
+    ("count", "ERROR", "incomplete ingestion"),
     ("final", "ERROR", "terminal response"), ("truncation", "ERROR", "truncation"),
 ])
-def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path, mode, status, detail):
+def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path, monkeypatch, mode, status, detail):
     fixture_cli.mode.write_text(mode)
+    repo = _fixture_repo(tmp_path)
+    monkeypatch.chdir(repo)  # the HARDEN review authority defaults to the cwd
     result = panel.invoke_board(
         gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
         stream_dir=tmp_path / "records", gateway_available=False,
+        repo_dir=repo,
     )
     leg, = result.legs
     assert leg.status == status, (leg.status, leg.detail)
@@ -385,12 +567,7 @@ def test_heartbeat_credential_home_fallback_is_recorded_truthfully(fixture_cli, 
 
 
 def test_explicit_empty_home_is_not_reported_as_process_home_fallback(fixture_cli, tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    (repo / "README.md").write_text("synthetic review authority\n")
-    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
-    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                        "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    repo = _fixture_repo(tmp_path)
     relative_home = repo / "relative-home"
     token = relative_home / ".gemini/antigravity-cli/antigravity-oauth-token"
     token.parent.mkdir(parents=True)
@@ -412,12 +589,16 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     cancel = threading.Event()
     detached = tmp_path / "detached"
     control_errors = []
+    detached_pidfd = []
     def cancel_when_launched():
         try:
             until = time.monotonic() + 30  # synthetic admission only
             while not detached.exists():
                 if time.monotonic() >= until: raise AssertionError("fixture did not launch")
                 time.sleep(.02)
+            # Pin the detached child while it is ALIVE: after cancellation a (namespace
+            # inode, local PID) pair can be reused by another test's process.
+            detached_pidfd.append(os.pidfd_open(_host_pid(detached.read_text())))
         except Exception as exc:
             control_errors.append(exc)
         finally:
@@ -435,7 +616,16 @@ def test_real_broker_cancel_reclaims_private_profile_and_detached_child(fixture_
     assert leg.status == "UNAVAILABLE" and leg.text == ""
     assert leg.detail == "review_operation_cancelled"
     assert leg.harden_isolation_evidence["provider_agy_home_cleanup_verified"]
-    assert not Path(f"/proc/{int(detached.read_text())}").exists()
+    # the pinned detached child is gone (its pidfd is readable once it has exited)
+    import select
+    assert detached_pidfd, "the detached child was never pinned"
+    try:
+        until = time.monotonic() + 5
+        while not select.select([detached_pidfd[0]], [], [], 0)[0]:
+            assert time.monotonic() < until, "detached child survived cancellation"
+            time.sleep(.02)
+    finally:
+        os.close(detached_pidfd[0])
     assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
     verdict, = [json.loads(p.read_text()) for p in (tmp_path / "records").glob("*.verdict.json")]
     assert verdict["status"] == "UNAVAILABLE" and verdict["text"] == ""
@@ -561,7 +751,8 @@ def test_cli_preserves_requested_membership_and_policy_after_capability_admissio
 def test_default_spawn_rechecks_capability_before_scratch_effects(fixture_cli, tmp_path, monkeypatch):
     authorization = backing.prepare_review_isolation_authorization(
         gemini_board(), "input", mode="review", monitoring_policy="heartbeat_only",
-        canonical_repo_authority=Path(__file__).resolve().parents[2],
+        # A private repository, never the live checkout (agent-harness#1053).
+        canonical_repo_authority=_fixture_repo(tmp_path / "authority"),
     )
     monkeypatch.setattr(fixture_cli.module, "QUALIFIED_IMAGE_SHA256", "0" * 64)
     monkeypatch.setattr(panel, "_gc_stale_panel_scratch", lambda: pytest.fail("scratch effect"))
@@ -840,9 +1031,10 @@ panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heart
             assert time.monotonic() < until, "synthetic provider never admitted"
             time.sleep(.02)
         info = json.loads(fixture_cli.observation.read_text())
-        for pid in (info["pid"], int(detached.read_text())):
+        provider_pid = _host_pid(info["pid"])
+        for pid in (provider_pid, _host_pid(detached.read_text())):
             pidfds.append(os.pidfd_open(pid))
-        namespace = os.stat(f"/proc/{info['pid']}/ns/pid")
+        namespace = os.stat(f"/proc/{provider_pid}/ns/pid")
         assert namespace.st_ino != os.stat("/proc/self/ns/pid").st_ino
         worker.kill()
         worker.wait(10)
@@ -1243,3 +1435,31 @@ def test_qualification_refuses_an_empty_network_rule_set(monkeypatch):
     monkeypatch.setattr(sandbox_egress, "egress_rules", lambda: [])
     with pytest.raises(ValueError, match="rule set is empty"):
         _qualification_validator().__globals__["inspect_network"](os.getpid())
+
+
+def _host_pid(record: str, timeout_s: float = 5.0) -> int:
+    """Host PID for a ``"<pid-namespace link> <namespace-local pid>"`` record.
+
+    Inside the owner wrapper /proc is the namespace's OWN procfs (agent-harness#1003), so a
+    process can only report its namespace-local PID; the host PID is resolved from outside
+    through the host /proc (the process whose pid namespace matches and whose innermost
+    ``NSpid`` is that PID).
+    """
+    link, local = record.split()
+    deadline = time.monotonic() + timeout_s
+    while True:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                if os.readlink(f"/proc/{entry}/ns/pid") != link:
+                    continue
+                nspid = next(line for line in Path(f"/proc/{entry}/status").read_text().splitlines()
+                             if line.startswith("NSpid:"))
+            except (OSError, StopIteration):
+                continue
+            if nspid.split()[-1] == local:
+                return int(entry)
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"no host process for {record!r}")
+        time.sleep(.02)

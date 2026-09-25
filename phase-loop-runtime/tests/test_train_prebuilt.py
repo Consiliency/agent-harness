@@ -25,6 +25,11 @@ from unittest.mock import patch
 
 import pytest
 
+from test_train_review_packet import synthetic_train_packet as synthetic_train_packet
+
+# Control-flow fixtures only; real Git binding lives in test_train_review_packet.
+pytestmark = pytest.mark.usefixtures("synthetic_train_packet")
+
 from phase_loop_runtime.train_ledger import read_ledger
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
 from phase_loop_runtime.train_runner import (
@@ -553,6 +558,82 @@ class TestPrebuiltRefresh:
         assert result["detail"]["reason"] == "remote_drift"
         assert published == {}, "no publish_fn call: refused before admission"
         assert read_ledger(ledger)["repo-a/specs/plan-a.md"].status == "blocked"
+
+    # agent-harness#978 rounds 11-12: a refused refresh keeps the WHOLE admission.
+    def _fab_ordered_admission(self, tmp_path: Path) -> tuple[Path, LedgerRecord]:
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        admitted = LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/train-repo-a",
+            head_sha=ADMITTED, pr_url="https://gh.com/repo-a/pr/1", merge_order=3, fab_run_id="run-a",
+        )
+        append_record(ledger, admitted)
+        return ledger, admitted
+
+    @staticmethod
+    def _binding(record):
+        return (record.branch, record.head_sha, record.pr_url, record.fab_run_id, record.merge_order)
+
+    def test_refused_refresh_publish_keeps_fab_run_and_order(self, tmp_path: Path):
+        ledger, admitted = self._fab_ordered_admission(tmp_path)
+
+        def _publish_refused(workspace, owned_paths, **kw):
+            return {"status": "blocked", "reason": "admission_rejected", "branch": "feat/train-repo-a"}
+
+        result = self._run(tmp_path, ledger, {}, head="sha-new-a", publish=_publish_refused)
+        assert result["status"] == "blocked", result
+        assert result["detail"]["reason"] == "admission_rejected", "blocked at the publish site, not earlier"
+        row = read_ledger(ledger)[admitted.node_id]
+        assert row.status == "blocked" and self._binding(row) == self._binding(admitted)
+
+    def test_refresh_fab_scope_block_keeps_the_admission(self, tmp_path: Path, monkeypatch):
+        from phase_loop_runtime import train_runner as tr
+        ledger, admitted = self._fab_ordered_admission(tmp_path)
+        monkeypatch.setattr(tr, "_resolve_admission_fab_run_id", lambda *a, **k: (None, "fab_scope_torn"))
+        result = self._run(tmp_path, ledger, {}, head="sha-new-a")
+        assert result["status"] == "blocked" and result["detail"]["reason"] == "fab_scope_torn", result
+        row = read_ledger(ledger)[admitted.node_id]
+        assert row.status == "blocked" and self._binding(row) == self._binding(admitted)
+
+    def test_a_fresh_node_never_inherits_a_dead_admission(self, tmp_path: Path, monkeypatch):
+        """PR closed: Step 3 drops the admission and P3 rebuilds. A refused publish must not
+        copy the dead record's head, PR, run or order forward."""
+        from phase_loop_runtime import train_runner as tr
+        from test_train_merge import _pr_is_open_false
+        ledger, admitted = self._fab_ordered_admission(tmp_path)
+        captured = []
+        real_capture = tr._capture_admission
+        monkeypatch.setattr(tr, "_capture_admission", lambda *a: captured.append(a) or real_capture(*a))
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+
+        def _publish_refused(workspace, owned_paths, **kw):
+            return {"status": "blocked", "reason": "admission_rejected", "branch": "feat/train-repo-a"}
+
+        result = run_train(
+            roadmap, ledger, run_mode="autonomous", resolve_workspace=lambda n: ws_map[n.node_id],
+            _run_loop=lambda *a, **kw: (None, []), _publish=_publish_refused,
+            _set_upstream_ref_fn=lambda *a, **kw: [], _preflight_fn=_preflight_pass,
+            _pr_is_open=_pr_is_open_false, _live_pr_head_sha_fn=lambda ws, br: ADMITTED,
+            _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"], _workspace_head_fn=lambda ws: "sha-new-a",
+            _is_ancestor_fn=lambda ws, a, b: True, _merge_phase_enabled=True,
+            _pr_merged_sha_fn=lambda *a, **k: None,
+        )
+        assert result["status"] == "blocked", result
+        assert result["detail"]["reason"] == "admission_rejected", "blocked at the publish site, not earlier"
+        assert captured == [], "a fresh node's stale record is never captured"
+        row = read_ledger(ledger)[admitted.node_id]
+        assert row.status == "blocked" and (row.head_sha, row.pr_url, row.fab_run_id, row.merge_order) == (None,) * 4
+
+    def test_an_uncapturable_admission_halts_before_the_breadcrumb(self, tmp_path: Path, monkeypatch):
+        from phase_loop_runtime import train_runner as tr
+        ledger, admitted = self._fab_ordered_admission(tmp_path)
+        before = ledger.read_bytes()
+        monkeypatch.setattr(tr, "_capture_admission", lambda *a: tr._LEDGER_UNREADABLE)
+        published: dict = {}
+        result = self._run(tmp_path, ledger, published, head="sha-new-a")
+        assert result["status"] == "blocked" and result["detail"]["reason"] == "ledger_unreadable", result
+        assert result["terminal_blocker"]["human_required"] is False
+        assert published == {} and ledger.read_bytes() == before, "no breadcrumb over the admission"
 
     def test_unobserved_live_head_is_refused_before_any_admission(self, tmp_path: Path):
         """A live read that returns nothing is not 'no drift' (PR #909 r1, claude)."""

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-loop-runtime"  # PyPI dist name; NOT "agent-harness" (an unrelated third-party PyPI project)
-version = "0.7.16"
+version = "0.7.18"
 description = "Harness-neutral phase-loop orchestration runtime and CLI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -154,6 +154,7 @@ phase_loop_runtime = [
 [tool.pytest.ini_options]
 markers = [
     "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
+    "quarantine(reason): known flake tracked by an OPEN issue; deselected on pull-request CI only (agent-harness#1029)",
 ]
 
 [tool.setuptools.data-files]

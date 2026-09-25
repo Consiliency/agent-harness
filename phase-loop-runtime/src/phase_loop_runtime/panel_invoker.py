@@ -242,8 +242,14 @@ class _ReviewMonitor:
             raise _ReviewOperationCancelled("review_operation_cancelled")
         # The PID namespace's init owns even descendants that start a new session.
         # Kernel parent-death notification kills the namespace on abrupt owner loss.
+        # ``--proc /proc`` gives the new PID namespace its OWN procfs (agent-harness#1003):
+        # with the host /proc bind-mounted instead, a provider that starts its own
+        # bubblewrap sandbox -- codex's workspace-write sandbox -- resolves its children's
+        # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
+        # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
+        # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev",
+                "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
                 *(gemini_profile.mount_args if gemini_profile is not None else ()),
                 "--", *command]
 
@@ -504,8 +510,9 @@ PRESIDENT_LADDER: tuple[str, ...] = (
     # EC-PRESROUTE-3: the seat-alias order. Each rung is a review-policy SEAT alias, not
     # a model id; it resolves to its vendor's registry PIN through
     # DEFAULT_REVIEW_SEAT_ALIASES, where the ``model-id-source:`` markers live.
-    "sol",
+    # Maintainer ruling 2026-09-24: the Anthropic seat (Opus 5.5) is the default first rung.
     "fable",
+    "sol",
     "grok",
     "gemini",
 )
@@ -1721,6 +1728,57 @@ def _canonical_review_repo_authority(repo_dir: Path | str | None) -> Path:
     return Path(root).resolve()
 
 
+def _outside_any_git_work_tree(path: Path | str) -> bool:
+    """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor.
+
+    Structural: git's output is never parsed. Any ``.git`` entry (directory, ``gitdir:``
+    file -- reachable or not -- or symlink) means "maybe a repository", and so does ANY
+    error: ``os.lstat`` is called directly because ``Path.exists``/``is_symlink`` swallow
+    OSError on newer Pythons (EACCES/EIO would read as "absent"), and a symlink loop in
+    ``resolve`` raises RuntimeError on Python <= 3.12 (agent-harness#1054/#1055 r2/r3).
+    """
+    try:
+        # strict=True: non-strict resolve() swallows lookup errors and returns the
+        # unresolved alias, whose lexical ancestors can miss the real repository
+        # (#1054 r4 / #1055 r3, codex). Any error -- incl. a missing path -- fails closed.
+        resolved = Path(path).resolve(strict=True)
+        for directory in (resolved, *resolved.parents):
+            try:
+                os.lstat(directory / ".git")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            return False
+    except (OSError, RuntimeError, ValueError):  # ValueError: an embedded NUL byte
+        return False
+    return True
+
+
+def _resolve_review_authority(
+    canonical_repo_authority: Path | str | None,
+    repo_dir: Path | str | None,
+    *,
+    governed: bool,
+    resolve: Callable[[Path | str | None], Path] | None = None,
+) -> Path:
+    """The HARDEN review authority -- the tree fingerprinted AND staged -- resolved once.
+
+    Order (agent-harness#1053, maintainer decision 2026-09-25): an explicit
+    ``canonical_repo_authority``; else ``repo_dir``, the repository under review; else the
+    process cwd. ``repo_dir`` is not consulted for a GOVERNED request (a pre-minted
+    authorization is bound to its own authority). A ``repo_dir`` falls back to the cwd only
+    when it is structurally outside any git work tree -- it cannot be fingerprinted as a
+    repository -- so a real repository whose resolution FAILS (git missing, refused, timed
+    out) reaches the typed refusal instead of silently reviewing the cwd. Each call makes
+    exactly one resolution (a frozen static-import probe pins that single ``git`` call).
+    """
+    resolve = resolve or _canonical_review_repo_authority
+    if canonical_repo_authority is not None or repo_dir is None or governed:
+        return resolve(canonical_repo_authority)
+    if _outside_any_git_work_tree(repo_dir):
+        return resolve(None)
+    return resolve(repo_dir)
+
+
 def _completion_ok(text: str, mode: str = "review") -> bool:
     """Is a leg's output a COMPLETE response for this mode?
 
@@ -2328,7 +2386,7 @@ def _provider_launch_prefix(cwd, retain_caps=()):
         # its cwd -- codex's own sandbox does -- then fails with ENOENT before any inference
         # (agent-harness#908 board round 4, finding (f); reproduced with the real codex CLI:
         # `--wd` -> exit 1 "No such file or directory (os error 2)", path-based chdir -> OK).
-        # `env --chdir` runs after nsenter and setpriv, so the chdir is a plain path lookup in
+        # `env --chdir` runs after nsenter and capability setup, so the chdir is a plain path lookup in
         # the namespace the provider will live in; the cwd attested as ``provider_cwd_sha256``
         # is unchanged. A plain nested user+mount namespace does NOT reproduce the failure --
         # the fchdir()ed cwd stays reachable there -- so the class needs the provider's own
@@ -2362,10 +2420,28 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "sub
     """
     prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
-        # Enter the network namespace before creating the ownership PID namespace,
-        # but drop capabilities only AFTER both namespaces exist.
         position = prefix.index("setpriv") if "setpriv" in prefix else len(prefix)
-        prefix[position:position] = process_owner
+        if tuple(retain_caps) not in ((), ("setfcap",)):
+            raise ValueError("unsupported owned provider capability policy")
+        if retain_caps:
+            # Keep Codex in the holder's user namespace so its own sandbox can
+            # create another one. The unshare supervisor owns the PID namespace;
+            # the inner setpriv still drops every capability except SETFCAP.
+            prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
+                                         "/usr/bin/unshare", "--pid", "--fork",
+                                         "--kill-child=SIGKILL", "--mount-proc"]
+            inner_setpriv = prefix.index("setpriv", position + 1)
+            prefix[inner_setpriv + 1:inner_setpriv + 1] = ["--pdeathsig", "keep"]
+        else:
+            # Bubblewrap drops CAP_SETPCAP before a later setpriv can use it.
+            owner = list(process_owner)
+            if owner[0] != "/usr/bin/bwrap":
+                raise ValueError("unsupported owned provider")
+            owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
+                          "--gid", str(os.getgid()), "--cap-drop", "ALL"]
+            if position < len(prefix):
+                del prefix[position:prefix.index("--", position) + 1]
+            prefix[position:position] = owner
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
@@ -3010,6 +3086,21 @@ def _render_broker_inline_prompt(
             verdict,
         ))
     )
+    return _assemble_broker_inline_prompt(
+        artifact, instructions, preamble,
+        (instructions_begin, instructions_end), (artifact_begin, artifact_end),
+    )
+
+
+def _assemble_broker_inline_prompt(
+    artifact: str, instructions: str, preamble: str,
+    instruction_frames: tuple[str, str], artifact_frames: tuple[str, str],
+) -> str:
+    """Pure assembly shared by validated launches and non-authorizing preflight."""
+    artifact_bytes = artifact.encode("utf-8", errors="strict")
+    instruction_bytes = instructions.encode("utf-8", errors="strict")
+    instructions_begin, instructions_end = instruction_frames
+    artifact_begin, artifact_end = artifact_frames
     prompt = "\n".join((
         preamble,
         f"AUTHORITATIVE-INSTRUCTIONS sha256={sha256(instruction_bytes).hexdigest()} bytes={len(instruction_bytes)}",
@@ -3897,96 +3988,186 @@ def _assistant_text_from_jsonl(path: Path) -> str:
 
 
 def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
-    """Collect the final assistant message's blocks, never earlier turns or tools."""
-    message_id: str | None = None
-    blocks: dict[str | int, str] = {}
-    seen_record_uuids: set[str] = set()
-    seen_record_versions: set[tuple[str, bytes]] = set()
-    current_group_uuids: set[str] = set()
-    incomplete = False
-    pending_terminal = False
-    terminal = False
+    """Return the final turn's single assistant message, or "" when that cannot be proven.
+
+    The rule (agent-harness#1002): a TURN starts at the last user record that is not a replay
+    (same uuid AND same content as an earlier user record; a changed request under a reused
+    uuid is a new request). History before the turn never blocks a later answer.
+
+    Records: an exact replay of any earlier version of a record (same uuid, content and
+    completion state) is dropped, because the CLI re-journals records with changed
+    ``usage``/``parentUuid``/``promptId``; a stale open version of a stopped record is dropped
+    too. Within the turn, an explicitly open (null) stop_reason may change to a value under its
+    uuid, and the latest version wins; any other state change, or a content change after the
+    message stopped or across messages, fails closed.
+
+    The answer is the turn's last message id. It fails closed if any of its records shares a
+    uuid, a message id or its content with history (earlier messages of the turn may share a
+    history id: parallel tool calls continue one message across a tool_result), or if an
+    identity-less answer repeats any other assistant record. A message id that leaves and
+    returns, uuid and uuid-less records mixed, or a repeated uuid-less record also fails closed.
+    Blocks of one message that repeat the same text under distinct uuids are all kept, so a copy
+    of such a block under a fresh uuid is not detected.
+
+    With ``require_terminal`` (the president route, agent-harness#1016), the answer also
+    requires its last record to be a genuine ``end_turn``: not ``stop_sequence``, not a
+    ``<synthetic>`` model record and not an API error record.
+
+    Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
+    hold more than one message id and none an A-B-A.
+    """
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
         return ""
-    for line in lines:
+    last_line = max((i for i, text in enumerate(lines) if text.strip()), default=-1)
+    records: list[tuple[dict, dict]] = []
+    for index, line in enumerate(lines):
         if not line.strip():
             continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            # A writer may still be appending the next turn. Do not approve the
-            # previous verdict while the latest record cannot be interpreted.
-            return ""
+            if index == last_line:
+                return ""  # a writer may still be appending the latest record
+            continue  # a damaged line with valid records after it is history
         message = payload.get("message") if isinstance(payload, dict) else None
-        if not isinstance(message, dict):
+        if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
+            if message.get("id") is not None and not isinstance(message.get("id"), str):
+                return ""
+            if message.get("stop_reason") is not None and not isinstance(message.get("stop_reason"), str):
+                return ""
+            records.append((payload, message))
+
+    def _uuid(payload: dict) -> str | None:
+        value = payload.get("uuid")
+        return value if isinstance(value, str) and value else None
+
+    def _said(message: dict) -> str:  # what a record SAYS; accounting and links excluded
+        return json.dumps([message.get("id"), message.get("role"), message.get("content")], sort_keys=True)
+
+    def _state(message: dict) -> tuple:
+        return ("stop_reason" in message, message.get("stop_reason"))
+
+    boundary = -1
+    seen_users: set[tuple[str, str]] = set()
+    for position, (payload, message) in enumerate(records):
+        if message.get("role") != "user":
             continue
-        if message.get("role") == "user":
-            message_id, blocks, incomplete = None, {}, False
-            current_group_uuids.clear()
-            pending_terminal = False
-            terminal = False
-            continue
+        user_id = _uuid(payload)
+        if user_id is not None:
+            if (user_id, _said(message)) in seen_users:
+                continue  # a re-journaled user record is not a new request
+            seen_users.add((user_id, _said(message)))
+        boundary = position
+    history = [(p, m) for p, m in records[: max(boundary, 0)] if m.get("role") == "assistant"]
+    history_ids = {m.get("id") for _, m in history} - {None}
+    history_uuids = {_uuid(p) for p, _ in history} - {None}
+    history_said = {_said(m) for _, m in history}
+
+    known: dict[str, tuple[str, tuple]] = {}  # the latest version of each uuid
+    seen_versions: dict[str, set[tuple[str, tuple]]] = {}  # every version of each uuid
+    stopped_ids: set[object] = set()  # message ids that carried any stop_reason
+    turn: list[tuple[dict, dict]] = []
+    for position, (payload, message) in enumerate(records):
         if message.get("role") != "assistant":
             continue
-        current_id = message.get("id")
-        if not isinstance(current_id, str) or not current_id:
-            current_id = None
-        record_id = payload.get("uuid")
-        if not isinstance(record_id, str) or not record_id:
-            record_id = None
-        record_version = (
-            record_id,
-            sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).digest(),
-        ) if record_id is not None else None
-        if record_id in seen_record_uuids and (
-            current_id is None or current_id != message_id
-            or record_id not in current_group_uuids
-        ):
-            if record_version not in seen_record_versions:
+        uid, said, state = _uuid(payload), _said(message), _state(message)
+        in_turn = position > boundary
+        if uid is not None and uid in known:
+            if (said, state) in seen_versions[uid]:
+                continue  # an exact replay of this or an earlier version of the record
+            known_said, known_state = known[uid]
+            if said == known_said and state == (True, None) and known_state[1] is not None:
+                continue  # a stale open version of a stopped record; a stop never re-opens
+            previous_id = json.loads(known_said)[0]
+            if in_turn and known_said != said and (
+                    previous_id is None or previous_id != message.get("id")
+                    or previous_id in stopped_ids):
+                # A streaming block may be revised while its message is open; after the
+                # message stopped, or across messages, a changed record fails closed.
                 return ""
-            continue
-        if record_version in seen_record_versions:
-            continue
-        # Claude can journal several content blocks under one API message id.
-        # Identity-less legacy records remain independent, not guessed joins.
-        if current_id is None or current_id != message_id:
-            message_id, blocks, incomplete = current_id, {}, False
-            current_group_uuids.clear()
-            pending_terminal = False
-            terminal = False
+            if in_turn and known_state != state and not (known_state == (True, None) and state[0]):
+                return ""  # only an explicitly open (null) stop_reason may change, to a value
+        if uid is not None:
+            known[uid] = (said, state)
+            seen_versions.setdefault(uid, set()).add((said, state))
+        if message.get("stop_reason") is not None:
+            stopped_ids.add(message.get("id"))
+        if in_turn:
+            turn.append((payload, message))
+    if not turn:
+        return ""
+    identityless = [_said(m) for p, m in turn if _uuid(p) is None]
+    if len(identityless) != len(set(identityless)):
+        return ""  # a repeated uuid-less record may be a replay
+    sequence: list[object] = []
+    for _, message in turn:
+        if not sequence or sequence[-1] != message.get("id"):
+            sequence.append(message.get("id"))
+    if len(sequence) != len(set(sequence)):
+        return ""  # a message id left and returned within the turn
+    final_id = sequence[-1]
+    if final_id is None:
+        group = [turn[-1]]  # identity-less messages are independent, never joined
+    else:
+        group = [(p, m) for p, m in turn if m.get("id") == final_id]
+    if any(_uuid(p) in history_uuids or _said(m) in history_said
+           or (m.get("id") is not None and m.get("id") in history_ids)
+           for p, m in group):
+        # A copy or update of history cannot answer a new request. Earlier messages of the
+        # turn may share a history id: the CLI writes a parallel tool call's next tool_use
+        # block under the same message id after the previous tool_result.
+        return ""
+    if final_id is None:
+        # An identity-less answer must not repeat any other assistant record, earlier in this
+        # turn or in history: a copy stripped of its message id cannot be told from a replay.
+        final_payload, final_message = group[0]
+        spoken = json.dumps([final_message.get("role"), final_message.get("content")], sort_keys=True)
+        if any(m is not final_message and m.get("role") == "assistant"
+               and (_uuid(final_payload) is None or _uuid(p) != _uuid(final_payload))
+               and json.dumps([m.get("role"), m.get("content")], sort_keys=True) == spoken
+               for p, m in records):
+            return ""
+    with_uuid = [(p, m) for p, m in group if _uuid(p) is not None]
+    if with_uuid and len(with_uuid) != len(group):
+        return ""  # uuid and uuid-less records cannot be told apart from a replay
+    if with_uuid:
+        latest: dict[str, tuple[dict, dict]] = {}
+        order: list[str] = []
+        for payload, message in group:
+            uid = _uuid(payload)
+            if uid not in latest:
+                order.append(uid)
+            latest[uid] = (payload, message)
+        final_records = [latest[uid] for uid in order]
+    else:
+        final_records = list(group)
+    versions = [m for _, m in final_records]
+    terminal_payload, terminal = final_records[-1]
+    if require_terminal and not (
+        terminal.get("stop_reason") == "end_turn"
+        and terminal.get("model") != "<synthetic>"
+        and not terminal.get("isApiErrorMessage")
+        and not terminal_payload.get("isApiErrorMessage")
+    ):
+        return ""  # the president route needs a genuine, completed end_turn
+    if "stop_reason" in terminal and terminal["stop_reason"] is None:
+        return ""  # the message has not completed
+    texts: list[str] = []
+    for message in versions:
         content = message.get("content")
         if not isinstance(content, list):
             return ""
-        if "stop_reason" in message:
-            stop_reason = message["stop_reason"]
-            pending_terminal = stop_reason is None
-            terminal = (
-                stop_reason == "end_turn"
-                and message.get("model") != "<synthetic>"
-                and not message.get("isApiErrorMessage")
-                and not payload.get("isApiErrorMessage")
-            )
-            incomplete |= stop_reason not in (None, "end_turn", "stop_sequence")
-        else:
-            terminal = False
-        incomplete |= any(
-            isinstance(item, dict) and item.get("type") == "tool_use"
-            for item in content
-        )
-        text = "\n".join(
+        if message.get("stop_reason") not in (None, "end_turn", "stop_sequence"):
+            return ""  # max_tokens, tool_use or another non-final stop
+        if any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
+            return ""
+        texts.append("\n".join(
             item["text"] for item in content
-            if isinstance(item, dict) and item.get("type") == "text"
-            and isinstance(item.get("text"), str)
-        )
-        key = record_id if record_id is not None else len(blocks)
-        blocks[key] = text
-        if record_id is not None and record_version is not None:
-            seen_record_uuids.add(record_id)
-            current_group_uuids.add(record_id)
-            seen_record_versions.add(record_version)
-    return "" if incomplete or pending_terminal or (require_terminal and not terminal) else "\n".join(text for text in blocks.values() if text).strip(" \t\r\n")
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+        ))
+    return "\n".join(text for text in texts if text).strip(" \t\r\n")
 
 
 def _cleanup_broker_claude_transcript(
@@ -4547,7 +4728,9 @@ def _normalize_tui_line(line: str) -> str:
     return " ".join(line.split()).strip().lower()
 
 
-def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
+def _tui_chunk_has_novel_content(
+    chunk: bytes, seen: set[str], ignore: Callable[[str], bool] | None = None
+) -> bool:
     """True iff a PTY chunk carries SUBSTANTIVE new (non-cosmetic) terminal text.
 
     Strips ANSI escapes, splits on newline AND carriage-return (spinner overwrite),
@@ -4564,8 +4747,48 @@ def _tui_chunk_has_novel_content(chunk: bytes, seen: set[str]) -> bool:
         norm = _normalize_tui_line(raw)
         if len(norm) >= _TUI_PROGRESS_MIN_CHARS and norm not in seen:
             seen.add(norm)
-            novel = True
+            # ``ignore`` lines are recorded as seen but are never progress (#992).
+            if ignore is None or not ignore(norm):
+                novel = True
     return novel
+
+
+# The workspace-trust modal's own vocabulary, normalized like any TUI line. After the
+# modal is answered, lines of the modal that were still rendering (it can arrive in
+# pieces) must not arm editor readiness (agent-harness#992).
+_TUI_TRUST_MODAL_NORMS = tuple(
+    _normalize_tui_line(text)
+    for text in (
+        _CLAUDE_TUI_TRUST_HEADER,
+        _CLAUDE_TUI_TRUST_HEADER_CURRENT,
+        _CLAUDE_TUI_TRUST_QUESTION,
+        _CLAUDE_TUI_TRUST_CHOICE,
+        _CLAUDE_TUI_TRUST_PROMPT,
+        "no, exit",
+        # The rest of the live Claude Code 2.1.282 selector modal (captured 2026-09-25,
+        # agent-harness#1053): its explanation, link and footer can also arrive after the
+        # answer and are not editor output either.
+        # Short fragments, so a paragraph WRAPPED at the terminal width still matches line by
+        # line (#1060 r1, claude): e.g. at 80 columns the explanation breaks mid-sentence.
+        "your own code",
+        "well-known open source",
+        "work from your team",
+        "take a moment to review",
+        "folder first",
+        "read, edit, and execute",
+        "execute files here",
+        "security guide",
+        "enter to confirm",
+        "esc to cancel",
+    )
+)
+
+
+def _tui_trust_modal_line(norm: str, cwd_norms: Sequence[str]) -> bool:
+    """Is this normalized line part of the workspace-trust modal (incl. its cwd line)?"""
+    return any(token in norm for token in _TUI_TRUST_MODAL_NORMS) or any(
+        token and token in norm for token in cwd_norms
+    )
 
 
 # A single ``os.read(8192)`` can split a novel review line across two chunks; each
@@ -4738,6 +4961,10 @@ def _run_claude_tui_session(
     cwd_tokens = _cwd_trust_tokens(
         cwd
     )  # run-unique FULL-path tokens (not the bare basename)
+    cwd_norms = tuple(
+        norm for norm in (_normalize_tui_line(token) for token in cwd_tokens)
+        if len(norm) >= _TUI_PROGRESS_MIN_CHARS
+    )
 
     def _current_output() -> str:
         return (
@@ -4870,8 +5097,16 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
+                        # Between answering the trust modal and submitting, the
+                        # modal's own late-rendering lines are not editor output
+                        # (agent-harness#992): they must not arm readiness.
+                        modal_ignore = (
+                            (lambda norm: _tui_trust_modal_line(norm, cwd_norms))
+                            if trust_answered and not prompt_sent
+                            else None
+                        )
                         if complete and _tui_chunk_has_novel_content(
-                            complete, seen_tui_lines
+                            complete, seen_tui_lines, modal_ignore
                         ):
                             now_novel = time.monotonic()
                             last_heartbeat = now_novel
@@ -8545,8 +8780,19 @@ def invoke_board(
                     review_instruction_token = set_review_instruction_digest(
                         _resolve_brief(mode, brief_ref)
                     )
-                    canonical_repo_authority = _canonical_review_repo_authority(
-                        canonical_repo_authority
+                    # The repository under review is the authority: an explicit
+                    # ``canonical_repo_authority`` first, then ``repo_dir`` when it IS a
+                    # git repository, and only then the process cwd -- so the fingerprinted
+                    # and staged tree is the one the caller named (agent-harness#1053,
+                    # maintainer decision 2026-09-25). A non-git ``repo_dir`` cannot be
+                    # fingerprinted as a repository and keeps the historical cwd authority,
+                    # so every later typed refusal is unchanged. Falling back to
+                    # ``repo_dir`` does NOT make this a governed request:
+                    # ``governed_review_request`` above keys on the caller's explicit
+                    # authority / authorization only.
+                    canonical_repo_authority = _resolve_review_authority(
+                        canonical_repo_authority, repo_dir,
+                        governed=governed_review_request,
                     )
                 except (OSError, UnicodeError, ValueError) as exc:
                     return review_refusal(str(exc))

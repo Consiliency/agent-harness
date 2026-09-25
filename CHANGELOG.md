@@ -6,15 +6,325 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Qualified agy 1.2.9 entry image (agent-harness#1008)
+### Claude final-message extraction (agent-harness#960)
+
+- Retain every text block of the final logical assistant message, grouped by API
+  message identity. Drop exact same-uuid re-journals of a record, and fail closed
+  when the final message copies or updates an earlier turn's record. Exclude
+  thinking and tool content, and reject incomplete or new-turn boundaries instead
+  of reusing a stale verdict. Review and president PTY controls preserve the full
+  message and existing owned-transcript cleanup.
+
+### Test hardening from the 0.7.18 president rulings (agent-harness#1064, agent-harness#1065, agent-harness#1070)
+
+- Train refusals: a refusal repeated across two runs keeps the whole admission binding, and the
+  refresh-refusal tests assert that they were blocked at their own publish site.
+- `run-train --monitoring-policy`: a direct `run_train` with an unknown policy and a CLI run with an
+  unqualified agy route are each refused before any effect. The fence test records its probes. The
+  policy's scope (the default train-level review only) is stated where it is declared.
+- The agy qualification observer tests kill their whole process session (no leaked provider), tolerate
+  a reaped pid, and pin that the owner walk examines pid 1. Tests and comments only; no runtime
+  behaviour changes.
+
+### Qualified agy 1.2.11 entry image (agent-harness#1008)
+
+- Admit the latest 1.2.11 Linux x64 image for brokered Gemini heartbeat-only
+  review after real completion, cancellation and owner-loss qualification.
+  The 1.2.10 image now refuses before launch. The current-image record and CI
+  provenance check bind the source, official archive and executable; automatic
+  fleet updates remain tracked by agent-harness#1008.
+
+## [0.7.18] - 2026-09-25
+
+### Bound train review material (agent-harness#906, agent-harness#915; PR agent-harness#978)
+
+- Governed train reviews now receive immutable admitted Git changes, acceptance
+  criteria and head-bound evidence. `--review-material` supplies provenance;
+  `--governed --review-only --preview-review DIR --json` prepares the same packet
+  before any broker, lease, ledger mutation or model call.
+- Approval reuse requires the exact stored packet digest and current reviewer
+  floor. Legacy approvals re-review; partial trains without historical packets
+  hold. Native-fill and merge checks use the same packet identity.
+- Trusted FAB readmission freezes all proposed-head material before recovery or
+  delta review, then requires fresh durable admission and repository revocation
+  checks before using the identical packet. Native request emission returns on
+  cache hits; readmission failures, live-read failures and stale-upstream
+  refusals preserve the admitted FAB identity needed by their resume guards.
+- Whole deleted subtrees may use explicit, bound operator disposal attestations.
+  Certificates prove deletion mechanics, not generatedness; other substantive
+  changes stay inline. Invalid, missing or oversized material holds without
+  truncation or extra review rounds.
+- Full historical admission bindings and fresh readmission eligibility hold
+  before effects. Preview rejects traversal into protected paths; malformed
+  check identities hold. File/directory and symlink transitions retain complete
+  patches, and merge-stage refusals preserve their specific reason.
+- Readmission pre-effect refusals leave node rows untouched; malformed stored
+  packets and deeply nested JSON return diagnostic receipts. Initial Claude
+  native request and fill instructions both supply the required material.
+- Every refusal of an already-admitted node keeps its whole durable binding (PR, head,
+  FAB run, merge order), so the next run neither republishes the node nor resumes a FAB node
+  as non-FAB. This covers a failed merged-state lookup, a failed or raising downstream
+  re-verify, a failed merge, a missing head pin, and a refused refresh publish or FAB-scope
+  block. When the ledger cannot be read, a refusal appends nothing. A refresh whose
+  admission cannot be read halts (`ledger_unreadable`) before writing its `running`
+  breadcrumb over the admission.
+- Patches are always rendered as text, so a text file over Git's `core.bigFileThreshold`
+  or marked `-diff` is reviewed in full. A binary summary holds the packet.
+- Packet, readmission and stale native-fill refusals carry an explicit non-human
+  `terminal_blocker`.
+
+### `run-train --monitoring-policy heartbeat_only` (agent-harness#906; PR agent-harness#1061)
+
+- The train-level review can now run heartbeat-only, as `advisor-board --monitoring-policy
+  heartbeat_only` already could. It seats the frozen four-vendor default board (any other composition
+  is refused), with no model deadline and no native host seat. The policy is forwarded to both the
+  review authorization and `invoke_board`, which refuse a mismatch between the two.
+- Refused before any ledger, broker, publish or packet effect, from the CLI and from direct
+  `run_train` callers alike, and re-checked at the review gate before any seat launches:
+  - native emission or fill (`--emit-native-request` / `--native-leg`);
+  - a non-governed run;
+  - an unqualified Gemini/agy route.
+- `--preview-review` reports `review_monitoring_policy` and, under heartbeat-only, the `review_board`
+  seats. A bounded preview shows `"bounded"` and `null`.
+- The bounded review path is unchanged. Per-node governed reviews and the FAB delta-shortcut review
+  keep their own monitoring.
+
+### `make check` runs the LEGIBLE contract files the way CI does (agent-harness#1057; PR agent-harness#1059)
+
+- CI never runs `tests/test_legible_roadmap_contract.py` or `tests/test_legible_evidence.py`
+  in the source checkout: it copies `tests/` and the v10 roadmap to a tree with no `.git` and
+  runs them there, where their live GitHub probes skip by design. `make check` ran them in the
+  checkout, so 10 assumption-probe cases needed a `gh` login and failed in its clean
+  environment. They now run from a copied tree exactly as in CI (with the working tree's
+  `src/` on the path), and a drift test ties the list to `test.yml`'s ignores.
+
+### Review follow-ups: live trust-modal vocabulary, fail-closed probes, test hardening (agent-harness#1053; PR agent-harness#1060)
+
+- The Claude TUI trust-modal readiness filter (agent-harness#1049) now also recognizes the rest
+  of the live Claude Code 2.1.282 modal -- its explanation, "Security guide" link and "Enter to
+  confirm · Esc to cancel" footer -- captured from a real session; before, those lines arriving
+  after the answer could still arm editor readiness.
+- The work-tree probes behind `validate-roadmap` (agent-harness#1054) and the board's
+  review-authority rule (agent-harness#1055) also fail closed on a path with an embedded NUL byte.
+- Test hardening: a real-permission (unmocked) probe test in both places; the alias test
+  resolves `TMPDIR` and skips when it sits inside a repository; `git init` in those tests drops
+  inherited `GIT_*`; the remaining live-checkout review authority in the Gemini tests uses a
+  private repository; the TUI handshake waits for the whole last frame; the quarantine cap is
+  pinned at its boundary for one shared decorator; the chronology plumbing reason is one
+  constant checked against the script; stale docstring and CHANGELOG wording corrected.
+
+### Review board: `repo_dir` is the review target (agent-harness#1053; PR agent-harness#1055)
+
+- `invoke_board(repo_dir=...)` now makes that repository the HARDEN review authority -- the tree
+  the authorization fingerprints and the one staged for the seats -- instead of whatever
+  directory the process runs in (maintainer decision on agent-harness#1053). An explicit
+  `canonical_repo_authority` still takes precedence, and a governed request (one carrying a
+  pre-minted authorization) is not moved by `repo_dir`. A `repo_dir` outside any git work tree
+  (no `.git` entry at it or any ancestor) cannot be fingerprinted and keeps the historical cwd
+  authority; a real repository whose resolution fails reaches the typed refusal rather than
+  silently reviewing the cwd. Passing `repo_dir` does not make a request "governed".
+
+### `validate-roadmap`: no repository check outside a git work tree (agent-harness#1053; PR agent-harness#1054)
+
+- `validate-roadmap` infers a roadmap's repository as its grandparent
+  (`<repo>/specs/<roadmap>.md`). For a roadmap outside any git work tree that guess is not a
+  repository -- a roadmap loose in a tempdir made it `/tmp` itself, whose timestamps other
+  processes change mid-check. It now skips the repository roadmap-status coherence check there
+  with a note on stderr -- but only when no `.git` entry (directory, or a worktree/submodule
+  `gitdir:` file even with an unreachable target) exists at that directory or any ancestor.
+  The test is structural: git's output is not parsed (it is localized and can echo any path),
+  git need not be installed, and `GIT_*` variables play no part; any error keeps the check.
+  Inside a git work tree the check runs exactly as before, with `required=True`, as
+  IF-0-LEGIBLE-1 requires of canonical validation.
+  Maintainer decision on agent-harness#1053.
+
+### Two cross-worker test races fixed, un-quarantined (agent-harness#987; PR agent-harness#1051)
+
+- `test_validate_roadmap_cli_subcommand` wrote its roadmap straight into a bare tempdir, so
+  the CLI inferred `/tmp` itself as the repository root and failed when another worker
+  changed `/tmp`'s mtime mid-validation ("roadmap repository root changed during
+  validation"; reproduced 2/10 under /tmp churn, 0/10 after). It now uses a private
+  `repo/specs/` layout.
+- `test_real_board_preserves_diagnostics_without_retries` let the board default to the LIVE
+  checkout (digesting its tracked files but staging a clone of HEAD). The HARDEN review
+  authority follows the cwd, so every test in that file now runs with a private one-commit
+  repository as its cwd (an autouse fixture). Both quarantine marks are gone.
+
+### Claude TUI: a trust modal rendered in pieces no longer arms editor readiness (agent-harness#992; PR agent-harness#1049)
+
+- The workspace-trust detector answers as soon as the modal's header, choice and cwd are on
+  screen. When the modal rendered in pieces, its remaining lines ("n. No, exit", "Enter
+  y/n:") arrived after the answer and counted as new editor output, arming readiness: the
+  review was pasted into a TUI that was not ready, and the leg ended as
+  `claude_tui_pty_eof_no_output` instead of `claude_tui_editor_not_ready`. Between the
+  answer and the submit, lines of the modal's own vocabulary (and its cwd line) are now
+  recorded as seen but never count as progress. This was the xdist flake in
+  `test_modal_answered_but_editor_never_ready_is_editor_not_ready` (reproduced 2/32 under
+  load; 32/32 after); a new test reproduces it deterministically. The quarantine mark is gone.
+
+### CI: pull requests never run the chronology node (agent-harness#1042; PR agent-harness#1043)
+
+- A pull request touching CI selection plumbing no longer runs the ~50-minute CONFORM
+  chronology node (retiring the agent-harness#746 exception); like every other PR it
+  defers the node to the landing push, whose junit witness reds main if it did not run and
+  pass. The scope reason still names the touched plumbing path, static guards pin that
+  push/nightly/dispatch retain the node, and `gh workflow run test.yml --ref <branch> -f
+  chronology=true` proves it before merge when wanted.
+
+### Flaky TUI-animation test fixed, un-quarantined (agent-harness#1034; PR agent-harness#1045)
+
+- `test_tui_animation_does_not_keep_progress_observed` raced wall-clock sleeps against PTY
+  delivery, so a late burst under xdist load could fail it. It is now synchronized, not
+  timed: the child prints one status frame and waits for a file the observe hook creates only
+  after the monitor has held that frame as progress for 0.1 s; it then repaints and waits for a
+  second file created 0.3 s later. A repaint that refreshed progress would drop the age from
+  >= 0.1 s back to ~0. A new unit test pins `_tui_chunk_has_novel_content` over the exact
+  frames (singly and as one burst). Making every repaint novel reds both. The quarantine mark
+  is gone.
+
+### Faster pull-request CI (agent-harness#1029; PRs agent-harness#1030, agent-harness#1037)
+
+- Pull requests run a ~2-minute wheel smoke (build, clean-venv install, entry-point
+  and probe checks) instead of the ~19-minute Gate A clean room; Gate A still runs
+  on every push to main, nightly, on dispatch and on release tags. `publish-pypi.yml`
+  likewise skips its standalone suite on pull requests only.
+- Pull requests run the py3.10 floor lane only; push, nightly and dispatch keep
+  3.10/3.11/3.12.
+- New `quarantine(reason="agent-harness#N")` marker: known flakes (none currently; the
+  agent-harness#987 nodes were fixed) are deselected in
+  the hosted pull-request suite only (offload-eligible PRs, push, nightly, dispatch and
+  Gate A run them),
+  by a conftest collection hook (`tests/_quarantine.py`) enabled with
+  `PHASE_LOOP_DESELECT_QUARANTINE=1` -- exact by marker, never a node-ID prefix, and
+  more than 5 marked nodes aborts collection. `tests/test_ci_quarantine.py` requires a
+  cited issue, refuses module-level quarantine, and runs the real hook on prefix-sibling,
+  double-mark and backslash-id fixtures.
+
+### `make check`: the local pre-PR check (agent-harness#1029; PR agent-harness#1031)
+
+- New `phase-loop-runtime/scripts/local_check.py` (`make check` / `make check-full` at the
+  repository root): CI's pinned ruff lint plus the tests a diff can reach -- changed test
+  files, tests importing a changed module, the CI guard tests when workflow/`ci/` plumbing
+  changed, the whole suite when shared test config changed. Tests run under `env -i` with a
+  throwaway HOME and a CI runner's system PATH in a cached venv built from CI's install line
+  (`phase-loop-runtime/.local-check-venv/`, rebuilt from scratch when the deps,
+  `pyproject.toml` or the target Python change; `LOCAL_CHECK_PYTHON` overrides it), so
+  host-dependent passes surface before CI. Imports are parsed (multi-line forms count) and
+  renames select importers of both paths; a run that could not lint is a FAIL. It does not
+  replace CI: selection misses golden/subprocess consumers (`--full` covers them), and Gate A
+  and 3.11/3.12 still run in CI.
+
+### agy source pins: full check once per release (agent-harness#1029; PR agent-harness#1032)
+
+- `qualified-agy-image` now checks, on pull requests and pushes that touch the route (other
+  than a release cut or a qualification-evidence change; see below), only the qualification
+  record and the route's core files
+  (`verify_qualified_agy_image.py --route-core`: `gemini_heartbeat.py`,
+  `qualify_gemini_heartbeat.py`, a tripwire for direct edits). An ordinary runtime change
+  no longer needs a live Gemini requalification per PR.
+- The full pin set (every package source) blocks publication (`publish-pypi.yml`, before
+  the build), blocks a release-cut PR (merging it changes `RELEASE_PIN`) or a PR that
+  changes the qualification evidence (`scripts/agy_full_pin_scope.sh`, judged on the merge
+  commit), and is reported as a non-blocking warning nightly. The latest-upstream-release
+  check moves to its own nightly/manual job.
+
+### The agy requalification observer follows the nested provider namespace (agent-harness#1066; PR agent-harness#1067)
+
+- Since agent-harness#1052, an ordinary owned provider runs in a nested user namespace with no
+  capabilities. The release requalification (`scripts/qualify_gemini_heartbeat.py`) entered the
+  PROVIDER's user namespace to read the egress rules, so every operation failed at "network rule
+  observation". The observer now enters the provider's network namespace with the user
+  namespace that owns it. The qualified 1.2.10 route was then requalified on the 0.7.18 tree:
+  completion, cancellation and owner-loss all passed, and the redacted record is regenerated.
+
+### Review seats keep their sandbox where Bubblewrap drops `CAP_SETPCAP` (agent-harness#1052)
+
+- On hosts such as dev0, owned review seats exited 127 because Bubblewrap dropped `CAP_SETPCAP`
+  before the later `setpriv` bounding-set change. Ordinary seats now run in a nested Bubblewrap
+  user namespace with an empty capability set. Codex stays in the filtered holder namespace under an
+  owned PID supervisor with only `CAP_SETFCAP`, so its own sandbox can start. The parent-death signal
+  survives the inner capability drop, and filtered network, cwd and heartbeat ownership are unchanged.
+
+### EXECFIND: falsifier results are advisory evidence (agent-harness#1041, agent-harness#1056)
+
+- The EXECFIND phase's tests-first corpus and content-bound RED receipt are frozen (agent-harness#1041).
+  Ordinary CI skips the deliberate RED cases until the phase is implemented.
+- A seat-authored falsifier can manipulate pytest reporting inside its sandbox, so the EXECFIND
+  contract now specifies that an attached RED or GREEN result neither binds nor dismisses a finding
+  by itself. Every result is an attributed, advisory `finding_receipt` that holds for a president
+  ruling, and missing or invalid provenance also holds (agent-harness#1056; the v10 roadmap and
+  EXECFIND plan are amended and resealed). The EXECFIND plan also gains a promotion guard: an
+  unresolved usable terminal `DISAGREE` must not promote under the optional prose policy
+  (agent-harness#1068, PR agent-harness#1069). This is contract, plan and tests only; EXECFIND is
+  not yet implemented.
+
+### PRESROUTE receipt proof stays executable after the Opus-first amendment (agent-harness#1035)
+
+- PRESROUTE's tests-first receipt is checked against its historical landing in a temporary
+  checkout; the current president tests then run on the present tree. No route, deadline,
+  isolation or policy change.
+
+### Test reliability (agent-harness#1040, agent-harness#1044, agent-harness#1048)
+
+- The CI-offload lock-loss cancellation test is event-ordered instead of timed (agent-harness#1040).
+- The agy scope step keys are pinned and class-decorator quarantine is flagged (agent-harness#1044).
+- The president follow-ups from agent-harness#1043/#1044/#1045 (agent-harness#1047, PR agent-harness#1048):
+  no required CI job may carry a job-level `continue-on-error`, `publish-pypi.yml`'s chronology
+  deselect expression is pinned so a tag can never deselect the node, and the quarantine and
+  TUI-handshake tests are tightened. Tests and one doc sentence only.
+
+## [0.7.17] - 2026-09-24
+
+### Opus 5.5 is the default first president rung (agent-harness#1025)
+
+- The built-in `PRESIDENT_LADDER` is now `fable, sol, grok, gemini` — Claude Opus 5.5, GPT-6
+  Astra, Grok 4.7, Gemini 3.8 Flash — by maintainer ruling (2026-09-24), amending
+  EC-PRESROUTE-3 (previously `sol, fable, grok, gemini`). A configured `[president] ladder`
+  (user or repository, agent-harness#1004) still overrides it. Note: until agent-harness#1016
+  lands, a brokered Claude-TUI president under `heartbeat_only` can stay active after a
+  completed turn whose ruling grammar is malformed (no format re-ask); rulings filled natively
+  under Claude Code are unaffected.
+
+### Qualified agy 1.2.10 entry image (agent-harness#1008)
+
+- Admit the newly published 1.2.10 Linux x64 image for brokered Gemini
+  heartbeat-only review after separate real completion, cancellation and
+  owner-loss qualification. Hosts must install 1.2.10 with this runtime update;
+  the 1.2.9 image now refuses before launch. The current-image record and CI
+  provenance check bind the new source, archive and
+  executable; automatic fleet updates remain tracked by agent-harness#1008.
+
+### The installer resolves a pin to one commit before installing (agent-harness#980)
+
+- `install-agent-harness.sh` used to install the runtime from the ref and then clone the skills
+  with `git clone --branch <ref>`, which rejects a commit SHA. A fresh full-SHA pin therefore
+  left a new runtime with no matching skills. The installer now fetches the ref into the skill
+  checkout first (`init` + `fetch`, which accepts a branch, a tag or a full SHA), installs the
+  runtime from the commit that fetch resolved, and checks out that same commit for the skills.
+  An unresolvable ref fails before anything is installed, and a directory the run created is
+  removed again.
+
+### Qualified agy 1.2.9 entry image (superseded before release; agent-harness#1008)
 
 - Replace the admitted Linux x64 `agy` 1.2.7 image with 1.2.9 for brokered
   Gemini heartbeat-only review after real completion, cancellation and owner-loss
-  qualification. Hosts must install 1.2.9 with this runtime update; both the
-  previous image and unknown future images refuse before provider launch. The
+  qualification. This was an interim pin before 1.2.10; while it was current,
+  the 1.2.7 and unknown images refused before provider launch. The
   repository's current-image record and CI provenance check expose the source,
   archive and executable binding; automatic fleet updates remain tracked by
   agent-harness#1008.
+
+### The heartbeat owner wrapper gives its PID namespace its own /proc (agent-harness#1003)
+
+- Under `monitoring_policy="heartbeat_only"`, the owner wrapper (`_ReviewMonitor.owned_command`)
+  put the provider in a new PID namespace but bind-mounted the host `/proc`. A provider that
+  starts its own bubblewrap sandbox from a process that is not the namespace's first -- codex's
+  `workspace-write` sandbox launched through a shell -- then resolved `/proc/<pid>/ns` in the
+  wrong PID namespace and failed before running anything (`bwrap: open /proc/26/ns/ns failed`).
+  Reproduced through `launch_provider` on bubblewrap 0.9.0 / Linux 7.0, with and without the
+  egress prefix. The wrapper now mounts `--proc /proc`. The owner's identity checks read the
+  host `/proc` from outside and are unchanged; three tests that learned host PIDs by reading
+  `/proc/self/stat` inside the namespace now resolve them from outside.
 
 ### President launches run under heartbeat monitoring and broker isolation (agent-harness#1001)
 
@@ -54,13 +364,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   already allowlisted. The API-key variables are scrub-only: grok stays subscription-only,
   so `VENDOR_API_KEY_VARS` (the injection map) is unchanged.
 
-### Claude final-message extraction (agent-harness#960)
+### A sandboxed codex review seat can run commands in its staged tree (agent-harness#999)
 
-- Retain every text block of the final logical assistant message, grouped by API
-  message identity with replayed journal records deduplicated. Exclude thinking
-  and tool content, and reject incomplete or new-turn boundaries instead of
-  reusing a stale verdict. Review and president PTY controls preserve the full
-  message and existing owned-transcript cleanup.
+- A codex seat reviewing a staged tree (agent-harness#848) could not run anything: codex
+  >= 0.156 executes commands through the code-mode host, which stayed disabled. The brokered
+  codex argv now lifts `code_mode_host` alongside `shell_tool`, only when a tree is staged; the
+  sealed (no-tree) argv and its pinned controls are unchanged.
+- The sandboxed seat can no longer write `/tmp` or `$TMPDIR`
+  (`sandbox_workspace_write.exclude_slash_tmp` / `exclude_tmpdir_env_var`), so it cannot
+  overwrite a sibling seat's verdict in the round's scratch directory. Reads are not confined.
+- Under the egress prefix the staged-tree codex leg keeps exactly one bounding capability,
+  `CAP_SETFCAP`, which codex's own bubblewrap sandbox needs to map uid 0
+  (`sandbox_egress.SEAT_RETAINABLE_CAPS`); every other seat keeps an empty bounding set, and
+  `iptables -F OUTPUT` stays refused inside the namespace. The recorded controls gain
+  `tmp-not-writable` and `bounding-set-setfcap-only`.
 
 ### v10 PRESROUTE: the president execution route (agent-harness#952, agent-harness#752)
 
@@ -70,9 +387,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   its own brief, completion grammar (`FINDING <id>: BLOCKING|DEFERRED — <reason>` …
   `FORCING DECISION:`) and authorization (`PresidentIsolationAuthorization`, minted beside —
   never through — the review authorization, and revalidated before each rung launches).
-- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini`, each
-  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the brokered provider
-  route (`launch_provider` only); `fable` is filled natively by the driving Claude Code session
+- **Ladder reordered by seat alias** (EC-PRESROUTE-3): `sol`, `fable`, `grok`, `gemini` (amended
+  to `fable` first in this release, above), each
+  resolving to its registry PIN. `sol`/`grok`/`gemini` launch through the single provider
+  launch site (`launch_provider` only); agent-harness#1009 (above) later adds the heartbeat
+  monitor and the parent Unix broker / egress isolation to those launches. `fable` is filled natively by the driving Claude Code session
   (deferred, then resumed with `native_president_fill`, both digests checked against the
   persisted pending request) and through the self-PTY session elsewhere.
 - **Durable ruling record** (EC-PRESROUTE-5): every ruling on a call with a review stream is
@@ -176,7 +495,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The clean-room/binding Gate A job is NOT in scope here: `scripts/gate_a_cleanroom.sh` is
   unchanged and is invoked as its own shell command with no `-n auto`.
 
-### Opus 5.5 replaces every Fable default
+### The native-fill hint names the seat's model (agent-harness#994)
+
+- The advisor-board CLI's hint for an unfilled native seat hard-coded "run a native Fable
+  Agent". It now prints the model from the seat's own native request, so after
+  agent-harness#991 it names Opus 5.5.
+
+### Opus 5.5 replaces every Fable default (agent-harness#991)
 
 - `claude-opus-5-5` is registered and replaces `claude-fable-5-1` wherever Fable was the
   DEFAULT, by maintainer direction (2026-09-23, "for now"): the Claude panel leg
@@ -188,10 +513,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The review-policy seat NAME stays `fable`. `DEFAULT_REVIEW_SEAT_ALIASES` gains
   `claude-opus-5-5 -> fable`, the same way `gpt-6-astra` still answers to `sol`; without it
   every board fails the landing policy's seat-name check. Because the president ladder
-  names that seat rather than a model, its first rung now resolves to Opus 5.5 with no
-  ladder change (verified by `seat_for_rung` on both default boards). A seated president
-  rung still has no production execution route today (`president_execution_route_unavailable`,
-  pre-existing and unchanged).
+  names that seat rather than a model, its `fable` rung resolves to Opus 5.5 with no
+  ladder change (verified by `seat_for_rung` on both default boards). The built-in ladder
+  order is `fable, sol, grok, gemini` as of this release (see "Opus 5.5 is the default first
+  president rung", above), so Opus 5.5 is the first rung by default. When this change merged
+  a seated president rung still had no production execution route
+  (`president_execution_route_unavailable`); agent-harness#998 (PRESROUTE, above) adds it in
+  this release.
 - Fable is NOT retired: `claude-fable-5-1` stays registered, aliased and selectable per seat.
 - `build_bundle.PRESERVE_LITERALS` gains `claude-opus-5-5` (placed before `claude-opus-5`,
   a prefix of it, since sentinel substitution runs in order) and `Claude Opus 5.5`, so the
@@ -251,6 +579,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   probed against its own CLI and this change carries no evidence about them.
 - The comments now record the probe as a MEASUREMENT WITH A DATE rather than as a
   standing property of grok, which is what let the original clamp outlive its evidence.
+
 ### Reconcile live LEGIBLE assumption 2 (agent-harness#797)
 
 - Align the governed-pipeline issue-state and package-pin probes with its closed
@@ -423,6 +752,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   overwritten and not restored. No kernel-aware check is attempted.
 - Lease-break detection is unchanged: it is observed through `F_GETLEASE`, never
   through signal delivery.
+
+### Release record: 0.7.16 published (agent-harness#954)
+
+- `docs/releases/outside-agent-release-handoff.md` records the 0.7.16 publication (signed
+  tag, workflow and job ids, PyPI digests, fresh install).
+
+### Roadmap: v10 concurrency ruling (agent-harness#949, source agent-harness#948)
+
+- PRESROUTE and EXECFIND steps 1–5 may run concurrently with HARDEN, REVIEWTRUTH and SCHED
+  (maintainer ratification, Option A). Roadmap and seals only; no runtime behaviour changes.
 
 ## [0.7.16] - 2026-09-21
 ### Claude native review task delivery (agent-harness#937)
