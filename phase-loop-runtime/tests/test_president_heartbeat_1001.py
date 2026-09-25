@@ -11,6 +11,7 @@ Not part of the PRESROUTE SL-0 frozen corpus.
 """
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import threading
@@ -313,65 +314,6 @@ while True: time.sleep(.1)
         assert rc != 0
 
 
-def test_cancel_wins_over_terminal_nonconforming_process_exit(tmp_path, monkeypatch):
-    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
-    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_READY_QUIESCENCE_S", .05)
-    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 60)
-    cancel = threading.Event()
-    monitor = panel_invoker._ReviewMonitor(tmp_path / "monitor.json", "fixture", 0, cancel)
-    marker = tmp_path / "terminal-written"
-    real_select = panel_invoker.select.select
-    real_extract = panel_invoker._final_assistant_text_from_jsonl
-    real_launch = panel_invoker.launch_provider
-    launched = []
-
-    def capture_launch(*args, **kwargs):
-        proc = real_launch(*args, **kwargs)
-        launched.append(proc)
-        return proc
-
-    def no_eof_after_terminal(readers, writers, errors, timeout):
-        if marker.exists():
-            time.sleep(.01)
-            return [], [], []
-        return real_select(readers, writers, errors, timeout)
-
-    def cancel_at_final_read(path, *, require_terminal=False):
-        text = real_extract(path, require_terminal=require_terminal)
-        if require_terminal and text:
-            cancel.set()
-        return text
-
-    script = r'''
-import json, os, sys, time, tty
-from pathlib import Path
-tty.setraw(0)
-print("Claude Code ready for your message", flush=True)
-wire = b""
-while not wire.endswith(b"\x1bOM"):
-    wire += os.read(0, 65536)
-Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
-    "message": {"id": "fixture-message", "role": "assistant", "stop_reason": "end_turn",
-                "content": [{"type": "text", "text": "I think it is fine"}]}}) + "\n")
-Path("terminal-written").touch()
-time.sleep(.05)
-'''
-    with patch.object(panel_invoker.select, "select", no_eof_after_terminal), patch.object(
-        panel_invoker, "_final_assistant_text_from_jsonl", cancel_at_final_read,
-    ), patch.object(
-        panel_invoker, "launch_provider", capture_launch,
-    ):
-        rc, text, log, _ = panel_invoker._run_claude_tui_session(
-            command=[sys.executable, "-c", script], cwd=tmp_path, prompt="rule on F001",
-            output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
-            mode="president", backstop_s=10, review_monitor=monitor,
-            allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
-        )
-    assert marker.exists()
-    assert rc != 0 and text == "" and log == "review_operation_cancelled", (rc, text, log)
-    assert len(launched) == 1 and launched[0].poll() is not None
-
-
 def test_the_seam_predicate_does_not_depend_on_import_order():
     # native seat r1 F1: the production launch site is captured in panel_invoker itself.
     assert panel_invoker._PRODUCTION_LAUNCH_PROVIDER is panel_invoker.launch_provider
@@ -479,7 +421,7 @@ while not wire.endswith(b"\x1bOM"):
     wire += os.read(0, 65536)
 Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
     "message": {"id": "fixture-message", "role": "assistant", "stop_reason": "end_turn",
-                "content": [{"type": "text", "text": "I think it is fine"}]}}) + "\n")
+                "content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
 Path("terminal-written").touch()
 if sys.argv[1] == "eof":
     sys.exit(0)  # the PTY hangs up; the read path sees EOF before the loop polls the process
@@ -491,7 +433,12 @@ while True:
 '''
 
 
-def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_final_read):
+_NONCONFORMING = "I think it is fine"
+_CONFORMING = "No blocking findings.\nFORCING DECISION: APPROVE"
+
+
+def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_final_read,
+                        text=_NONCONFORMING, suppress_eof=False):
     # agent-harness#1017 r1: pin the PTY-EOF nonconforming return and the cancellation
     # re-checks at the EOF and idle-poll broker-final sites.
     monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
@@ -509,16 +456,28 @@ def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_f
         return proc
 
     def extract(path, *, require_terminal=False):
-        text = real_extract(path, require_terminal=require_terminal)
-        if cancel_on_final_read and require_terminal and text:
+        final = real_extract(path, require_terminal=require_terminal)
+        if cancel_on_final_read and require_terminal and final:
             cancel.set()  # cancellation lands during the final read
-        return text
+        return final
 
-    with patch.object(panel_invoker, "_final_assistant_text_from_jsonl", extract), patch.object(
+    marker = tmp_path / "terminal-written"
+    real_select = panel_invoker.select.select
+
+    def no_eof_after_terminal(readers, writers, errors, timeout):
+        # Cap every real select at 10 ms; the "late-exit" child outlives that by 200 ms.
+        if marker.exists():
+            time.sleep(.01)
+            return [], [], []
+        return real_select(readers, writers, errors, min(timeout, .01) if timeout else timeout)
+
+    select_patch = (patch.object(panel_invoker.select, "select", no_eof_after_terminal)
+                    if suppress_eof else contextlib.nullcontext())
+    with select_patch, patch.object(panel_invoker, "_final_assistant_text_from_jsonl", extract), patch.object(
         panel_invoker, "launch_provider", capture_launch,
     ):
         result = panel_invoker._run_claude_tui_session(
-            command=[sys.executable, "-c", _TERMINAL_CHILD, shape], cwd=tmp_path, prompt="rule on F001",
+            command=[sys.executable, "-c", _TERMINAL_CHILD, shape, text], cwd=tmp_path, prompt="rule on F001",
             output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
             mode="president", backstop_s=10, review_monitor=monitor,
             allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
@@ -534,50 +493,34 @@ def test_terminal_nonconforming_turn_is_returned_at_pty_eof(tmp_path, monkeypatc
     assert (rc, text, log) == (0, "I think it is fine", "claude_tui_broker_terminal_nonconforming")
 
 
-def test_cancel_wins_over_terminal_nonconforming_at_pty_eof(tmp_path, monkeypatch):
+@pytest.mark.parametrize("answer", [_NONCONFORMING, _CONFORMING])
+def test_cancel_wins_over_a_terminal_turn_at_pty_eof(tmp_path, monkeypatch, answer):
     rc, text, log, _ = _run_terminal_child(
-        tmp_path, monkeypatch, shape="eof", interval_s=60, cancel_on_final_read=True)
+        tmp_path, monkeypatch, shape="eof", interval_s=60, cancel_on_final_read=True, text=answer)
     assert rc != 0 and text == "" and log == "review_operation_cancelled", (rc, text, log)
 
 
-def test_cancel_wins_over_terminal_nonconforming_at_idle_poll(tmp_path, monkeypatch):
+@pytest.mark.parametrize("answer", [_NONCONFORMING, _CONFORMING])
+def test_cancel_wins_over_a_terminal_turn_at_idle_poll(tmp_path, monkeypatch, answer):
     rc, text, log, _ = _run_terminal_child(
-        tmp_path, monkeypatch, shape="alive", interval_s=.05, cancel_on_final_read=True)
+        tmp_path, monkeypatch, shape="alive", interval_s=.05, cancel_on_final_read=True, text=answer)
     assert rc != 0 and text == "" and log == "review_operation_cancelled", (rc, text, log)
 
 
 def test_terminal_nonconforming_turn_is_returned_at_process_exit(tmp_path, monkeypatch):
     # agent-harness#1017 r2: with PTY EOF suppressed and the transcript interval long, only the
     # process-exit site can see the completed nonconforming turn.
-    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_SUBMIT_DELAY_S", .1)
-    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_READY_QUIESCENCE_S", .05)
-    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 60)
-    monitor = panel_invoker._ReviewMonitor(tmp_path / "monitor.json", "fixture", 0, threading.Event())
-    marker = tmp_path / "terminal-written"
-    real_select = panel_invoker.select.select
-    real_launch = panel_invoker.launch_provider
-    launched = []
-
-    def capture_launch(*args, **kwargs):
-        proc = real_launch(*args, **kwargs)
-        launched.append(proc)
-        return proc
-
-    def no_eof_after_terminal(readers, writers, errors, timeout):
-        if marker.exists():
-            time.sleep(.01)
-            return [], [], []
-        return real_select(readers, writers, errors, min(timeout, .01) if timeout else timeout)
-
-    with patch.object(panel_invoker.select, "select", no_eof_after_terminal), patch.object(
-        panel_invoker, "launch_provider", capture_launch,
-    ):
-        rc, text, log, _ = panel_invoker._run_claude_tui_session(
-            command=[sys.executable, "-c", _TERMINAL_CHILD, "late-exit"], cwd=tmp_path, prompt="rule on F001",
-            output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
-            mode="president", backstop_s=10, review_monitor=monitor,
-            allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",
-        )
-    assert marker.exists()
+    rc, text, log, _ = _run_terminal_child(
+        tmp_path, monkeypatch, shape="late-exit", interval_s=60, cancel_on_final_read=False,
+        suppress_eof=True)
     assert (rc, text, log) == (0, "I think it is fine", "claude_tui_broker_terminal_nonconforming")
-    assert len(launched) == 1 and launched[0].poll() is not None
+
+
+@pytest.mark.parametrize("answer", [_NONCONFORMING, _CONFORMING])
+def test_cancel_wins_over_a_terminal_turn_at_process_exit(tmp_path, monkeypatch, answer):
+    # agent-harness#1017 r4: replaces the original process-exit cancel test, whose uncapped
+    # select and 50 ms child could route through EOF. EOF is suppressed; the child exits late.
+    rc, text, log, _ = _run_terminal_child(
+        tmp_path, monkeypatch, shape="late-exit", interval_s=60, cancel_on_final_read=True,
+        text=answer, suppress_eof=True)
+    assert rc != 0 and text == "" and log == "review_operation_cancelled", (rc, text, log)
