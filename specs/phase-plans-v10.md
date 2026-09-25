@@ -2000,3 +2000,44 @@ PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/
 # GOVSETUP: the three commands and doctor agree on the effective profile
 phase-loop doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["governance_profile"]["effective"])'
 ```
+
+### EXECFIND advisory-evidence ruling (amendment 2026-09-25, maintainer)
+
+This ruling responds to the executable outcome-forgery findings on
+agent-harness#1050. A seat-authored Python test is untrusted for its own pytest
+status as well as for filesystem and network effects: it can alter pytest hooks,
+report data, or its process exit. A sandboxed run establishes which reviewed tree,
+test diff, named command, bounds, captured bytes, and reported outcome were used;
+it cannot establish that the test's assertions prove the seat's finding. The
+`finding_falsifier.v1` digest binds those observations, not their truth. Keep the
+five IF-0-EXECFIND-1 outcome literals and record fields; interpret `red_on_head`
+and `green_on_head` as **observed, untrusted pytest outcomes**, never as an
+automatic decision to bind or dismiss a finding.
+
+This supersedes the automatic-disposition clauses of EC-EXECFIND-2 and
+EC-EXECFIND-3. A valid falsifier attachment of *any* outcome, including RED and
+GREEN, becomes `finding_receipt` with block severity **pending a president
+ruling**. Its reason names the observed outcome and validated record digest; an
+invalid or missing binding uses `record_digest=unresolved` and also holds. Neither
+`finding_bound` nor `finding_unbound` is emitted from the test outcome. A GREEN
+report cannot clear a seat's blocking concern, and a RED report cannot prove it.
+The president receives the finding text, diff, outcome and receipt digest; if
+the ruling is unavailable or malformed, the gate remains held. A ruling, not a
+test status, decides whether the finding binds. This does not waive the board
+floor, seat isolation, reviewer attribution, or the existing president/human
+escalation policy. Before RATIFY supplies typed ruling resolution, EXECFIND may
+deliver the receipt/hold interface without promoting an attached finding.
+
+This also supersedes EC-EXECFIND-6's refusal to invoke the president while a
+RED node remains: the fix round carries and reruns advisory node evidence, then
+the president rules with the current result. EC-RATIFY-1 includes RED and GREEN
+`finding_receipt` cases in the president's residual, and no longer excludes a
+`finding_bound` class. EC-RATIFY-5's first reconciliation step becomes "capture
+and bind advisory test receipts" rather than "bound findings green"; its
+remaining ruling, ledger and guard steps stand. RATIFY's dependency on the
+EXECFIND receipt interface and GOVSETUP's dependency on RATIFY are unchanged.
+
+The original EXECFIND SL-0 content receipt remains historical. Before the
+changed production disposition lands, a superseding tests-first receipt must
+freeze the new RED/GREEN advisory controls and their RED-on-main results in a
+separate evidence directory; do not rewrite the original receipt or its logs.
