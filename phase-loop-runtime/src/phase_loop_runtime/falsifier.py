@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
+import os
 import re
 import subprocess
 import tempfile
@@ -173,7 +174,9 @@ def run_finding_falsifier(
         try:
             if staged is not None:
                 review_stage.remove_review_stage(staged)
-        except (OSError, ValueError) as exc:
+                if os.path.lexists(staged):
+                    raise OSError("stage remains after removal")
+        except Exception as exc:
             outcome = "error"
             red_digest = None
             detail = f"falsifier stage cleanup failed: {exc}"

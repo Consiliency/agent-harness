@@ -181,3 +181,107 @@ def test_a_readonly_stage_is_actually_removable(tmp_path):
 def test_remove_review_stage_is_quiet_on_a_missing_path(tmp_path):
     """Cleanup runs on failure paths; it must never mask the original error."""
     review_stage.remove_review_stage(tmp_path / "never-created")
+
+
+def test_remove_review_stage_handles_deep_readonly_tree(tmp_path):
+    staged = tmp_path / "deep-stage"
+    staged.mkdir()
+    directory_fd = os.open(staged, os.O_RDONLY | os.O_DIRECTORY)
+    depth = 1100
+    try:
+        for _ in range(depth):
+            os.mkdir("d", dir_fd=directory_fd)
+            child_fd = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=directory_fd)
+            os.fchmod(directory_fd, 0o500)
+            os.close(directory_fd)
+            directory_fd = child_fd
+    finally:
+        os.close(directory_fd)
+    try:
+        review_stage.remove_review_stage(staged)
+        assert not staged.exists()
+    finally:
+        if staged.exists():
+            for level in range(depth, -1, -1):
+                directory = staged.joinpath(*(["d"] * level))
+                if directory.exists():
+                    directory.chmod(0o700)
+                    if level < depth:
+                        (directory / "d").rmdir()
+            staged.rmdir()
+
+
+def test_remove_review_stage_does_not_chmod_symlink_target(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep\n", encoding="utf-8")
+    outside.chmod(0o500)
+    staged = tmp_path / "stage"
+    staged.mkdir()
+    (staged / "link").symlink_to(outside, target_is_directory=True)
+
+    review_stage.remove_review_stage(staged)
+
+    assert not staged.exists()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+    assert outside.stat().st_mode & 0o777 == 0o500
+
+
+def test_remove_review_stage_handles_unreadable_directory(tmp_path):
+    staged = tmp_path / "stage"
+    locked = staged / "locked"
+    locked.mkdir(parents=True)
+    (locked / "file.txt").write_text("seat residue\n", encoding="utf-8")
+    locked.chmod(0o000)
+    staged.chmod(0o000)
+
+    try:
+        review_stage.remove_review_stage(staged)
+        assert not staged.exists()
+    finally:
+        if staged.exists():
+            staged.chmod(0o700)
+            locked.chmod(0o700)
+            review_stage.remove_review_stage(staged)
+
+
+def test_falsifier_cleanup_residue_is_an_error(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path="phase-loop-runtime/tests/test_finding_F001.py",
+        expected_nodeid="phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+        diff="not a diff",
+    )
+    staged_paths = []
+    original_stage = review_stage.stage_review_tree
+    original_remove = review_stage.remove_review_stage
+
+    def capture_stage(source):
+        staged = original_stage(source)
+        staged_paths.append(staged)
+        return staged
+
+    monkeypatch.setattr(review_stage, "stage_review_tree", capture_stage)
+    monkeypatch.setattr(review_stage, "remove_review_stage", lambda _staged: None)
+    try:
+        result = falsifier.run_finding_falsifier(
+            falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+            authorization=authorization, repo=repo, wall_clock_s=10,
+            output_cap_bytes=65536,
+        )
+        assert result.outcome == "error"
+        assert result.red_output_digest is None
+        assert "cleanup" in (result.detail or "")
+        assert staged_paths and staged_paths[0].exists()
+        with pytest.raises(ValueError):
+            backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+    finally:
+        for staged in staged_paths:
+            original_remove(staged)

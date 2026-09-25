@@ -43,6 +43,7 @@ import selectors
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -709,31 +710,100 @@ def _overlay_working_tree(root: Path, staged: Path) -> None:
 def remove_review_stage(staged: Path) -> None:
     """Remove a stage created by :func:`stage_review_tree`.
 
-    Always use this rather than a bare ``shutil.rmtree``: the stage is deliberately
-    read-only (``0o500`` directories), and ``rmtree`` cannot unlink through a
-    directory it may not write. Restoring the mode on the way down is what makes
-    cleanup reliable; without it a stage leaks on every run.
+    Walk iteratively through directory descriptors so a seat-created deep tree
+    cannot exceed Python's recursion limit or escape through a symlink.
 
     Never raises: cleanup runs on failure paths, where losing the original error to
-    a cleanup error would be worse than leaking a temp dir.
+    a cleanup error would be worse. Callers that need proof of removal must check
+    the path after this best-effort operation.
     """
     staged = Path(staged)
-    if staged.is_symlink():
-        # Never traverse or chmod through a symlinked root: that would change
-        # permissions on a directory outside the stage.
-        staged.unlink(missing_ok=True)
+    try:
+        mode = staged.lstat().st_mode
+    except OSError:
         return
-    if not staged.exists():
-        return
-    for path in sorted(staged.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        if path.is_symlink():
-            continue
+    if not stat.S_ISDIR(mode):
         try:
-            path.chmod(0o700)
+            staged.unlink()
         except OSError:
             pass
+        return
+
+    if not (hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
+            and os.open in os.supports_dir_fd):
+        for path in sorted(staged.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if not path.is_symlink():
+                try:
+                    path.chmod(0o700)
+                except OSError:
+                    pass
+        try:
+            staged.chmod(0o700)
+        except OSError:
+            pass
+        shutil.rmtree(staged, ignore_errors=True)
+        return
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    anchor: int | None = None
+    current: int | None = None
+
+    def open_relative(parts: tuple[str, ...]) -> int:
+        assert anchor is not None
+        fd = os.dup(anchor)
+        try:
+            for part in parts:
+                child = os.open(part, flags, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            return fd
+        except OSError:
+            os.close(fd)
+            raise
+
     try:
+        # The isolated child has exited before cleanup, so it cannot swap the root.
         staged.chmod(0o700)
+        anchor = os.open(staged, flags)
+        os.fchmod(anchor, 0o700)
+        current = os.dup(anchor)
+        stack: list[tuple[tuple[str, ...], list[str]]] = [
+            ((), os.listdir(current)),
+        ]
+        while stack:
+            parts, names = stack[-1]
+            if names:
+                name = names.pop()
+                try:
+                    child_mode = os.stat(name, dir_fd=current, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISDIR(child_mode):
+                    try:
+                        child = os.open(name, flags, dir_fd=current)
+                    except PermissionError:
+                        os.chmod(name, 0o700, dir_fd=current)
+                        child = os.open(name, flags, dir_fd=current)
+                    os.fchmod(child, 0o700)
+                    os.close(current)
+                    current = child
+                    stack.append((parts + (name,), os.listdir(current)))
+                else:
+                    os.unlink(name, dir_fd=current)
+                continue
+            os.close(current)
+            current = None
+            stack.pop()
+            if stack:
+                current = open_relative(stack[-1][0])
+                os.rmdir(parts[-1], dir_fd=current)
+        os.close(anchor)
+        anchor = None
+        staged.rmdir()
     except OSError:
         pass
-    shutil.rmtree(staged, ignore_errors=True)
+    finally:
+        if current is not None:
+            os.close(current)
+        if anchor is not None:
+            os.close(anchor)
