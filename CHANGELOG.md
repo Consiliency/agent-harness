@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `make check` runs the LEGIBLE contract files the way CI does (agent-harness#1057)
+
+- CI never runs `tests/test_legible_roadmap_contract.py` or `tests/test_legible_evidence.py`
+  in the source checkout: it copies `tests/` and the v10 roadmap to a tree with no `.git` and
+  runs them there, where their live GitHub probes skip by design. `make check` ran them in the
+  checkout, so 10 assumption-probe cases needed a `gh` login and failed in its clean
+  environment. They now run from a copied tree exactly as in CI (with the working tree's
+  `src/` on the path), and a drift test ties the list to `test.yml`'s ignores.
+
 ### Review board: `repo_dir` is the review target (agent-harness#1053)
 
 - `invoke_board(repo_dir=...)` now makes that repository the HARDEN review authority -- the tree
