@@ -112,6 +112,16 @@ phase-loop run-train --train train.md --governed --review-only \
 phase-loop run-train --train train.md --governed
 ```
 
+Add `--monitoring-policy heartbeat_only` to the review commands to run the train-level
+review the way `advisor-board --monitoring-policy heartbeat_only` does. It seats the
+frozen four-vendor default board with no model deadline, and a vendor that is down
+fails its own seat rather than being replaced. There is no native host seat, so it
+cannot combine with `--emit-native-request` or `--native-leg`. Unsupported routes and
+an unqualified Gemini/agy route are refused before any ledger or broker effect, and
+are checked again before any seat launches. With `--preview-review`, the receipt reports
+`review_monitoring_policy` and the `review_board` seats. The default, `bounded`,
+composes the board at review time. Per-node governed reviews are not affected.
+
 Use `--ledger-dir DIR` consistently for a nondefault coordinator ledger. Preview
 reads existing admission state and GitHub metadata before any broker, lease,
 recovery, admission, or model call. It writes `packet.md`, `packet.json`, optional
