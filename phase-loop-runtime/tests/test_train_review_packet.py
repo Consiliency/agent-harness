@@ -2475,3 +2475,32 @@ def test_a_binary_summary_patch_holds_the_packet(candidate, monkeypatch):
     monkeypatch.setattr(packet, "_DIFF", [arg for arg in packet._DIFF if arg != "--text"])
     with pytest.raises(packet.PacketError, match="binary_patch_summary"):
         c["build"]()
+
+
+def test_an_unreadable_ledger_gets_no_unbound_blocked_row(fab_downstream_with_upstream, monkeypatch):
+    """agent-harness#978 round 11 (codex): a refusal that cannot read the ledger must not append
+    a branch-only row; once reads recover it would win the fold and erase the admission."""
+    from phase_loop_runtime import train_runner as tr
+    c = fab_downstream_with_upstream
+    downstream_repo = c["fixture"].repo
+    real_read = tr.read_ledger
+    state = {"refusing": False}
+
+    def reverify(ws, *args, **kwargs):
+        if ws == downstream_repo:
+            state["refusing"] = True  # the refusal writer's read comes next
+            return False
+        return True
+
+    def flaky_read(path, *args, **kwargs):
+        if state["refusing"]:
+            state["refusing"] = False
+            raise OSError("transient read failure")
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(tr, "read_ledger", flaky_read)
+    result = c["run"](_reverify_fn=reverify)
+    assert result["status"] == "merge_halted" and result["node_id"] == c["downstream"].node_id, result
+    after = real_read(c["ledger"])[c["downstream"].node_id]
+    assert {**packet.admission_binding(after), "merge_order": after.merge_order} == {
+        **packet.admission_binding(c["initial"]), "merge_order": c["initial"].merge_order}

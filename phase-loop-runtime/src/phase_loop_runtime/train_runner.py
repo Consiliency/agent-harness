@@ -2426,14 +2426,18 @@ def _append_blocked_keeping_admission(ledger_path: Path, node_id: str, *, branch
     and republished it, or resumed a FAB node as non-FAB (agent-harness#978 round 9 B1,
     and its round-10 class sweep). Every refusal of a node that is already admitted
     goes through here; a node still being built in P3 has no admission to keep.
-    ``branch`` is used only when the ledger has no record for the node.
+    ``branch`` is used only when the ledger has no record for the node. A ledger that
+    cannot be read gets no row at all, never an unbound one.
     """
     from dataclasses import replace as _replace
 
     try:
         latest = read_ledger(ledger_path).get(node_id)
     except (OSError, ValueError):
-        latest = None  # a refusal path never raises; the row is then the historical shape
+        # Unreadable now: append NOTHING. A branch-only row would win the last-wins fold
+        # once reads recover and erase the admission (agent-harness#978 round 11, codex);
+        # the durable binding stays, and the caller still returns its halt.
+        return
     if latest is None:
         append_record(ledger_path, LedgerRecord(node_id=node_id, status="blocked", branch=branch))
         return
