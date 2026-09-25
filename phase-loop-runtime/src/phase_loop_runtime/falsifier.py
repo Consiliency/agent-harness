@@ -9,7 +9,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from . import review_stage
 from .advisor_board import backing
@@ -109,7 +109,7 @@ def run_finding_falsifier(
     authorization: backing.FalsifierIsolationAuthorization, repo: Path,
     wall_clock_s: float, output_cap_bytes: int,
 ) -> FalsifierRunResult:
-    """Run exactly the attached test node, never the seat's claimed result."""
+    """Run the attached node and record its observed, untrusted outcome."""
     repo = Path(repo).resolve(strict=True)
     backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
     if (isinstance(wall_clock_s, bool) or not isinstance(wall_clock_s, (int, float))
@@ -197,16 +197,3 @@ def run_finding_falsifier(
         red_output_digest=red_digest, diff_digest=diff_digest,
         junit_path=junit_path, detail=detail, record=record,
     )
-
-
-def bound_findings_repair_context(findings: Iterable[object]) -> tuple[tuple[str, str], ...]:
-    """Project bound node IDs and RED digests for a later repair step."""
-    return tuple(
-        (str(getattr(finding, "nodeid")), str(getattr(finding, "red_output_digest")))
-        for finding in findings if getattr(finding, "code", None) == "finding_bound"
-    )
-
-
-def president_blocked_by_red_findings(findings: Iterable[object]) -> bool:
-    """An unresolved bound RED finding cannot be sent to a president."""
-    return any(getattr(finding, "code", None) == "finding_bound" for finding in findings)

@@ -727,11 +727,14 @@ targets, and executable bits must equal the reviewed Git tree, including no
 ignored extra files. Only the named pytest node runs in the staged clone.
 
 The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
-`node_missing`, `error`. Pytest emits JUnit but the outcome comes from the
-parent-keyed wrapper's call-phase report, before test-registered exit handlers;
-the test-writable XML is not read as authority. A failed node is RED only
-when that named call ran and failed within both bounds. Drift, expiry, unavailable isolation,
-and incomplete evidence are `error`, never a vote. The metadata-only
+`node_missing`, `error`. Pytest emits JUnit, but the recorded outcome comes from
+the wrapper's reported call-phase result; the test-writable XML is not read as
+authority. Seat-authored Python runs in the wrapper's process and can forge
+the reported status, including a parent-keyed frame. RED and GREEN are therefore
+observed, untrusted results: neither binds nor dismisses a finding. Drift,
+expiry, unavailable isolation, and incomplete evidence are `error`; every
+valid attached result remains a blocking `finding_receipt` pending a president
+ruling. The metadata-only
 `finding_falsifier.v1` record has exactly `schema`,
 `authorization_identity`, `seat_key`, `reviewed_sha`, `finding_id`, `nodeid`,
 `outcome`, `red_output_digest`, `diff_digest`, `wall_clock_bound_s`, and
