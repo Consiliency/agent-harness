@@ -236,6 +236,183 @@ class RoadmapLintModuleTest(unittest.TestCase):
             self.assertEqual(main(["validate-roadmap", str(bad)]), 1)
 
 
+    def test_validate_roadmap_skips_coherence_outside_a_git_work_tree(self):
+        """agent-harness#1053: a roadmap loose in a non-git directory has no canonical
+        repository; the inferred grandparent (here a bare tempdir, in the wild ``/tmp``)
+        must not be validated as one. A coherence validator that would fail proves the
+        check is skipped, not merely passing."""
+        import phase_loop_runtime.roadmap_lint as roadmap_lint_module
+
+        calls = []
+
+        def _refuse(repo, required=False):
+            calls.append((repo, required))
+            raise roadmap_lint_module.RoadmapStatusError("must not run outside git")
+
+        with tempfile.TemporaryDirectory() as td:
+            specs = Path(td) / "loose" / "specs"
+            specs.mkdir(parents=True)
+            good = specs / "good.md"
+            good.write_text(_VALID_ROADMAP, encoding="utf-8")
+            err = io.StringIO()
+            with patch.object(roadmap_lint_module, "validate_roadmap_status_coherence", _refuse), \
+                    contextlib.redirect_stderr(err):
+                self.assertEqual(main(["validate-roadmap", str(good)]), 0)
+        self.assertEqual(calls, [])
+        self.assertIn("not inside a git work tree", err.getvalue())
+
+    def test_validate_roadmap_runs_coherence_inside_a_git_work_tree(self):
+        """The other half: inside a git work tree the check still runs, required=True."""
+        import phase_loop_runtime.roadmap_lint as roadmap_lint_module
+
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / "specs").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            good = repo / "specs" / "good.md"
+            good.write_text(_VALID_ROADMAP, encoding="utf-8")
+            with patch.object(roadmap_lint_module, "validate_roadmap_status_coherence",
+                              lambda repo, required=False: calls.append((Path(repo).resolve(), required))):
+                self.assertEqual(main(["validate-roadmap", str(good)]), 0)
+            self.assertEqual(calls, [(repo.resolve(), True)])
+
+
+    def _run_with_git(self, roadmap, git_script=None, extra_env=None):
+        """validate-roadmap with a spy coherence validator; optionally a fake ``git`` first
+        on PATH (``None`` script = git missing entirely). Returns the spy's calls."""
+        import os
+        import phase_loop_runtime.roadmap_lint as roadmap_lint_module
+
+        calls = []
+        env = dict(os.environ)
+        with tempfile.TemporaryDirectory() as bindir:
+            if git_script is not None:
+                fake = Path(bindir) / "git"
+                fake.write_text("#!/bin/sh\n" + git_script, encoding="utf-8")
+                fake.chmod(0o755)
+                env["PATH"] = bindir + os.pathsep + "/usr/bin:/bin"
+            elif extra_env is None:
+                env["PATH"] = bindir  # no git anywhere
+            env.update(extra_env or {})
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(roadmap_lint_module, "validate_roadmap_status_coherence",
+                                 lambda repo, required=False: calls.append(required)), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["validate-roadmap", str(roadmap)]), 0)
+        return calls
+
+    def _real_repo_roadmap(self, td):
+        repo = Path(td) / "repo"
+        (repo / "specs").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        roadmap = repo / "specs" / "good.md"
+        roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+        return roadmap
+
+    def test_an_undeterminable_git_answer_keeps_the_coherence_check(self):
+        """#1054 r1 (all four seats): git missing, a safe.directory refusal or odd git
+        output must keep the check inside a real repository (fail closed). The probe is
+        structural now, so these hold without git being consulted at all."""
+        with tempfile.TemporaryDirectory() as td:
+            roadmap = self._real_repo_roadmap(td)
+            self.assertEqual(self._run_with_git(roadmap, git_script=None), [True], "git missing")
+            dubious = "echo \"fatal: detected dubious ownership in repository\" >&2; exit 128\n"
+            self.assertEqual(self._run_with_git(roadmap, git_script=dubious), [True], "safe.directory")
+            self.assertEqual(self._run_with_git(roadmap, git_script="echo false\n"), [True], "odd output")
+
+    def test_structural_cases_from_review_round_2(self):
+        """#1054 r2: an unreachable worktree ``.git`` FILE keeps the check; a repository
+        whose path contains "not a git repository" keeps the check; a loose roadmap is
+        skipped whatever the locale (no git output is parsed)."""
+        with tempfile.TemporaryDirectory() as td:
+            wt = Path(td) / "wt"
+            (wt / "specs").mkdir(parents=True)
+            (wt / ".git").write_text("gitdir: /nonexistent/.git/worktrees/wt\n", encoding="utf-8")
+            roadmap = wt / "specs" / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True], "unreachable gitdir file")
+
+            named = Path(td) / "not a git repository"
+            (named / "specs").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(named)], check=True)
+            roadmap = named / "specs" / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True], "phrase in path")
+
+            loose = Path(td) / "loose" / "specs"
+            loose.mkdir(parents=True)
+            roadmap = loose / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            self.assertEqual(self._run_with_git(roadmap, extra_env={
+                "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de"}), [], "localized")
+
+    def test_a_filesystem_error_while_probing_keeps_the_check(self):
+        """#1054 r3 (codex): pathlib predicates swallow OSError on newer Pythons, so the
+        probe uses os.lstat; an EACCES/EIO on a ``.git`` lookup means "maybe a repository"
+        and the check must run -- injected beneath pathlib, at os.lstat itself."""
+        import errno
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            specs = Path(td) / "loose" / "specs"
+            specs.mkdir(parents=True)
+            roadmap = specs / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            real_lstat = os.lstat
+
+            def failing_lstat(path, *args, **kwargs):
+                if Path(path).name == ".git":
+                    raise OSError(errno.EIO, "injected I/O error", str(path))
+                return real_lstat(path, *args, **kwargs)
+
+            with patch.object(os, "lstat", failing_lstat):
+                self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True])
+
+    def test_a_resolution_error_on_a_symlink_alias_keeps_the_check(self):
+        """#1054 r4 (codex): non-strict resolve() swallows an I/O error on a symlink
+        alias and keeps the alias, whose lexical ancestors miss the real repository.
+        The probe resolves strictly, so any resolution error means "maybe a repository"."""
+        import errno
+        import os
+        from phase_loop_runtime.cli import _confirmed_outside_git_work_tree
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / "subdir").mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            alias = Path(td) / "outside" / "link"
+            alias.parent.mkdir()
+            alias.symlink_to(repo / "subdir")
+            self.assertFalse(_confirmed_outside_git_work_tree(alias))
+            real_lstat = os.lstat
+
+            def eio_on_alias(path, *args, **kwargs):
+                if Path(path) == alias:
+                    raise OSError(errno.EIO, "injected", str(path))
+                return real_lstat(path, *args, **kwargs)
+
+            with patch.object(os, "lstat", eio_on_alias):
+                self.assertFalse(_confirmed_outside_git_work_tree(alias))
+            loop = Path(td) / "loop"
+            loop.symlink_to(loop)
+            self.assertFalse(_confirmed_outside_git_work_tree(loop))
+
+    def test_an_inherited_git_dir_cannot_answer_for_the_roadmap(self):
+        """GIT_DIR/GIT_WORK_TREE exported for ANOTHER repository must not make a loose
+        roadmap look like it is inside a work tree (the probe ignores the environment)."""
+        with tempfile.TemporaryDirectory() as td:
+            other = Path(td) / "other"
+            subprocess.run(["git", "init", "-q", str(other)], check=True)
+            specs = Path(td) / "loose" / "specs"
+            specs.mkdir(parents=True)
+            roadmap = specs / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            calls = self._run_with_git(roadmap, extra_env={
+                "GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other)})
+            self.assertEqual(calls, [])
+
+
 _SECOND_PHASE = """### Phase 2 — Delivery (DELIVERY)
 **Objective**
 Ship the change.

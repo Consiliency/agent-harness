@@ -327,7 +327,7 @@ class ExecfindFindingTests(unittest.TestCase):
 
         execfind_tdd.run_execfind_contract("falsifier_count_bound", check)
 
-    def test_finding_bound(self):
+    def test_red_receipt_requires_ruling(self):
         def check():
             execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
             with tempfile.TemporaryDirectory(prefix="execfind-bound-") as root:
@@ -335,12 +335,19 @@ class ExecfindFindingTests(unittest.TestCase):
                 gate = _execfind_gate(repo, head)
             self.assertFalse(gate.promoted)
             self.assertTrue(any(
-                f.code == "finding_bound" and f.severity == "block"
-                and f.reviewed_sha == head for f in gate.findings
+                f.code == "finding_receipt" and f.severity == "block"
+                and f.reviewed_sha == head
+                and "observed_outcome=red_on_head" in f.reason
+                and "record_digest=" in f.reason
+                and "record_digest=unresolved" not in f.reason
+                for f in gate.findings
+            ), gate.findings)
+            self.assertFalse(any(
+                f.code in ("finding_bound", "finding_unbound") for f in gate.findings
             ), gate.findings)
             self.assertFalse(any(f.code == "panel_block" for f in gate.findings))
 
-        execfind_tdd.run_execfind_contract("finding_bound", check)
+        execfind_tdd.run_execfind_contract("red_receipt_requires_ruling", check)
 
     def test_finding_reviewed_sha_mismatch(self):
         def check():
@@ -359,7 +366,7 @@ class ExecfindFindingTests(unittest.TestCase):
 
         execfind_tdd.run_execfind_contract("finding_reviewed_sha_mismatch", check)
 
-    def test_finding_unbound(self):
+    def test_green_receipt_requires_ruling(self):
         def check():
             execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
             with tempfile.TemporaryDirectory(prefix="execfind-unbound-") as root:
@@ -368,14 +375,21 @@ class ExecfindFindingTests(unittest.TestCase):
                     Path(__file__).parent / "data/execfind_falsifier_attachment_v1.golden.json"
                 ).read_text(encoding="utf-8"))["attachment"]["falsifiers"][0]["diff"]
                 gate = _execfind_gate(repo, head, diff=diff.replace("assert False", "assert True"))
-            self.assertTrue(gate.promoted)
+            self.assertFalse(gate.promoted)
             self.assertTrue(any(
-                f.code == "finding_unbound" and f.severity == "warn"
-                and f.reviewed_sha == head for f in gate.findings
+                f.code == "finding_receipt" and f.severity == "block"
+                and f.reviewed_sha == head
+                and "observed_outcome=green_on_head" in f.reason
+                and "record_digest=" in f.reason
+                and "record_digest=unresolved" not in f.reason
+                for f in gate.findings
+            ), gate.findings)
+            self.assertFalse(any(
+                f.code in ("finding_bound", "finding_unbound") for f in gate.findings
             ), gate.findings)
             self.assertFalse(any(f.code == "panel_block" for f in gate.findings))
 
-        execfind_tdd.run_execfind_contract("finding_unbound", check)
+        execfind_tdd.run_execfind_contract("green_receipt_requires_ruling", check)
 
     def test_finding_prose(self):
         def check():
@@ -497,6 +511,7 @@ class ExecfindFindingTests(unittest.TestCase):
                 )
                 self.assertTrue(any(
                     f.code == "finding_receipt" and f.severity == "block"
+                    and f"observed_outcome={outcome}" in f.reason
                     and f"record_digest={digest}" in f.reason
                     and f.body == leg.text
                     for f in findings
@@ -538,10 +553,7 @@ class ExecfindFindingTests(unittest.TestCase):
             )
             key = (record["seat_key"], record["finding_id"])
 
-            for outcome, expected_code in (
-                ("red_on_head", "finding_bound"),
-                ("green_on_head", "finding_unbound"),
-            ):
+            for outcome in ("red_on_head", "green_on_head"):
                 expected = dict(record)
                 expected["outcome"] = outcome
                 if outcome == "green_on_head":
@@ -573,7 +585,16 @@ class ExecfindFindingTests(unittest.TestCase):
                     panel, reviewed_sha=record["reviewed_sha"],
                     falsifier_runs={key: binding()},
                 )
-                self.assertTrue(any(f.code == expected_code for f in valid), valid)
+                self.assertTrue(any(
+                    f.code == "finding_receipt" and f.severity == "block"
+                    and f"observed_outcome={outcome}" in f.reason
+                    and "record_digest=" in f.reason
+                    and "record_digest=unresolved" not in f.reason
+                    for f in valid
+                ), valid)
+                self.assertFalse(any(
+                    f.code in ("finding_bound", "finding_unbound") for f in valid
+                ), valid)
                 wrong = [
                     {},
                     {(key[0], "F002"): binding()},
@@ -610,6 +631,7 @@ class ExecfindFindingTests(unittest.TestCase):
                         self.assertTrue(any(
                             f.code == "finding_receipt" and f.severity == "block"
                             and "record_digest=unresolved" in f.reason
+                            and "observed_outcome=" not in f.reason
                             for f in findings
                         ), findings)
 

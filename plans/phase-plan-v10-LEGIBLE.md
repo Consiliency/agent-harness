@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGIBLE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 3e465669d4a30be1334e40c6998a6f5aae610d7204b94346bdd27ab1f0c4a9b0
+roadmap_sha256: 0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6
 legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1

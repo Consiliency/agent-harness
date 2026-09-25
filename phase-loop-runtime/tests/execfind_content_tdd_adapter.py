@@ -52,7 +52,8 @@ EXECFIND_CASES = (
     "inline_fixture_artifact_ref", "brokered_text_only", "prompt_over_cap_refused",
 )
 GOVERNED_CASES = (
-    "finding_bound", "finding_reviewed_sha_mismatch", "finding_unbound", "finding_receipt",
+    "red_receipt_requires_ruling", "finding_reviewed_sha_mismatch",
+    "green_receipt_requires_ruling", "finding_receipt",
     "finding_receipt_digest_unresolved", "falsifier_count_bound", "finding_prose",
     "degraded_leg_whole_code",
     "falsifier_policy_optional", "falsifier_policy_required_refuses_prose",
@@ -112,7 +113,7 @@ EXPECTED_GREEN_NODES = frozenset({
     "phase-loop-runtime/tests/test_governed_review.py::VerdictClassifierTest::test_real_block_verdicts_block",
 })
 EXPECTED_FROZEN_NODES = EXPECTED_RED_NODES | EXPECTED_GREEN_NODES
-RECEIPT_PATH = ".phase-loop/evidence/EXECFIND/content-tdd-receipt.json"
+RECEIPT_PATH = ".phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.json"
 RED_COMMAND = (
     f"env {ACTIVATION_ENV}=1 "
     f"PYTHONPATH=phase-loop-runtime/src{os.pathsep}phase-loop-runtime/tests "

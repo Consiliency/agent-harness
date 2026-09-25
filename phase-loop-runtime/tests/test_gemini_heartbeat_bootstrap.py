@@ -296,6 +296,140 @@ def test_supplied_capability_does_not_also_require_the_ambient_image(fixture_cli
     assert not fixture_cli.attempts.exists()
 
 
+def test_repo_dir_sets_the_review_authority_not_the_cwd(fixture_cli, tmp_path, monkeypatch):
+    """agent-harness#1053 decision 2: ``repo_dir`` is the repository under review, so it is
+    also the HARDEN review authority -- the tree that is fingerprinted and staged -- rather
+    than whatever directory the process happens to run in. The cwd here is a different
+    repository; both the authorization digest and the staged tree must come from repo_dir."""
+    import phase_loop_runtime.advisor_board.backing as backing
+    import phase_loop_runtime.review_stage as review_stage
+
+    fixture_cli.mode.write_text("ok")
+    reviewed = _fixture_repo(tmp_path / "reviewed")
+    elsewhere = _fixture_repo(tmp_path / "elsewhere")
+    monkeypatch.chdir(elsewhere)
+    digested, staged = [], []
+    real_digest, real_stage = backing._staged_tree_digest, review_stage.stage_review_tree
+
+    def digest(authority):
+        digested.append(Path(authority).resolve())
+        return real_digest(authority)
+
+    def stage(repo, parent=None):
+        staged.append(Path(repo).resolve())
+        return real_stage(repo, parent)
+
+    monkeypatch.setattr(backing, "_staged_tree_digest", digest)
+    monkeypatch.setattr(review_stage, "stage_review_tree", stage)
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=reviewed,
+    )
+    leg, = result.legs
+    assert leg.status == "OK", (leg.status, leg.detail)
+    assert digested == [reviewed.resolve()], digested
+    assert staged == [reviewed.resolve()], staged
+
+
+def test_a_non_git_repo_dir_keeps_the_cwd_authority(fixture_cli, tmp_path, monkeypatch):
+    """The other half of agent-harness#1053 decision 2: a ``repo_dir`` that is not a git
+    repository cannot be fingerprinted as one, so the historical cwd authority stands (and
+    every later typed refusal is unchanged)."""
+    import phase_loop_runtime.advisor_board.backing as backing
+
+    fixture_cli.mode.write_text("ok")
+    cwd_repo = _fixture_repo(tmp_path / "cwd")
+    plain = tmp_path / "plain-dir"
+    plain.mkdir()
+    monkeypatch.chdir(cwd_repo)
+    digested = []
+    real_digest = backing._staged_tree_digest
+    monkeypatch.setattr(backing, "_staged_tree_digest",
+                        lambda authority: digested.append(Path(authority).resolve()) or real_digest(authority))
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=plain,
+    )
+    leg, = result.legs
+    assert leg.status == "OK", (leg.status, leg.detail)
+    assert digested == [cwd_repo.resolve()], digested
+
+
+def test_the_work_tree_probe_fails_closed_on_filesystem_errors(tmp_path, monkeypatch):
+    """#1055 r2 (codex, claude): an EACCES/EIO on a ``.git`` lookup, or a symlink loop,
+    means "maybe a repository" -- never "outside" (which would review the cwd instead)."""
+    import errno
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert panel._outside_any_git_work_tree(plain) is True
+    real_lstat = os.lstat
+
+    def failing_lstat(path, *args, **kwargs):
+        if Path(path).name == ".git":
+            raise PermissionError(errno.EACCES, "injected", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", failing_lstat)
+    assert panel._outside_any_git_work_tree(plain) is False
+    monkeypatch.setattr(os, "lstat", real_lstat)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    assert panel._outside_any_git_work_tree(loop) is False  # a symlink loop fails closed
+    # #1055 r3 (codex): an I/O error while RESOLVING a symlink alias into a repository
+    # must not leave the unresolved alias (whose ancestors miss the repo) -> "outside".
+    repo = _fixture_repo(tmp_path / "aliased")
+    (repo / "child").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(repo / "child")
+    assert panel._outside_any_git_work_tree(alias) is False
+
+    def eio_on_alias(path, *args, **kwargs):
+        if Path(path) == alias:
+            raise OSError(errno.EIO, "injected", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", eio_on_alias)
+    assert panel._outside_any_git_work_tree(alias) is False
+    monkeypatch.setattr(os, "lstat", real_lstat)
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("loop")))
+    assert panel._outside_any_git_work_tree(plain) is False
+
+
+def test_review_authority_resolution_rule(tmp_path):
+    """agent-harness#1053 decision 2, every branch of the one rule (#1055 r1): explicit
+    authority wins; else repo_dir; a GOVERNED request ignores repo_dir; a repo_dir outside
+    any work tree falls back to the cwd; a real repository whose resolution fails does NOT
+    fall back (it reaches the typed refusal). Exactly one resolution per call."""
+    repo = _fixture_repo(tmp_path / "r")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    worktree_file = tmp_path / "wt"
+    worktree_file.mkdir()
+    (worktree_file / ".git").write_text("gitdir: /nonexistent\n")
+    seen = []
+
+    def resolve(value):
+        seen.append(value)
+        if value == worktree_file:
+            raise ValueError("HARDEN review has no canonical repository authority")
+        return Path(value or "/cwd")
+
+    def rule(explicit, repo_dir, governed=False):
+        seen.clear()
+        result = panel._resolve_review_authority(explicit, repo_dir, governed=governed, resolve=resolve)
+        assert len(seen) == 1, seen
+        return result, seen[0]
+
+    assert rule(tmp_path / "explicit", repo)[1] == tmp_path / "explicit"
+    assert rule(None, repo)[1] == repo
+    assert rule(None, repo, governed=True)[1] is None
+    assert rule(None, plain)[1] is None
+    assert rule(None, None)[1] is None
+    with pytest.raises(ValueError, match="no canonical repository authority"):
+        panel._resolve_review_authority(None, worktree_file, governed=False, resolve=resolve)
+
+
 @pytest.mark.parametrize("mode,status,detail", [
     ("ok", "OK", None), ("empty", "EMPTY", "without review text"),
     ("malformed", "ERROR", "malformed JSON"), ("ack", "ERROR", "acknowledgement"),
