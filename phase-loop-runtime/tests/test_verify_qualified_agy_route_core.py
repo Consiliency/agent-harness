@@ -178,15 +178,25 @@ def test_the_full_check_step_is_wired_to_the_scope_decision():
     """agent-harness#1036: the full step runs exactly when the scope says so, and blocks."""
     steps = {s.get("name"): s for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]}
     scope = steps["Decide whether this run needs the full pin set"]
+    # Exact key set: a later `if:` or `continue-on-error:` on the scope step would skip or
+    # mask the decision while the job stays green (agent-harness#1038).
+    assert set(scope) == {"name", "id", "env", "run"}, sorted(scope)
     assert scope["id"] == "full" and scope["run"] == "bash phase-loop-runtime/scripts/agy_full_pin_scope.sh"
     # Without EVENT the case falls through to full=false and the full check never runs.
     assert scope["env"] == {"EVENT": "${{ github.event_name }}",
                             "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}"}
     assert "continue-on-error" not in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]
     full = steps["Verify every qualification source pin (release cut, new record, dispatch)"]
+    assert set(full) == {"name", "if", "run"}, sorted(full)
+    # Order and job-level keys (#1044 r1 claude): the full step must follow the scope
+    # step (else steps.full.outputs.full is empty and it silently skips), and the job
+    # itself must carry no `if:` (a skipped job reports success) or continue-on-error.
+    order = [s.get("name") for s in yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]["steps"]]
+    assert order.index(scope["name"]) < order.index(full["name"]), order
+    job = yaml.safe_load(QUALIFIED.read_text())["jobs"]["verify"]
+    assert not {"if", "continue-on-error"} & set(job), sorted(job)
     assert full["if"] == "steps.full.outputs.full == 'true'"
     assert full["run"] == "python phase-loop-runtime/scripts/verify_qualified_agy_image.py --source-only"
-    assert "continue-on-error" not in full
 
 
 @pytest.mark.parametrize("event,full", [("workflow_dispatch", "true"), ("push", "false"), ("schedule", "false")])
@@ -196,8 +206,10 @@ def test_other_events(tmp_path, event, full):
 
 
 def test_a_merge_commit_that_is_not_the_pr_merge_ref_fails_closed(tmp_path):
-    """#1037 r1 (codex): a merge on the PR branch (parents: PR history, base) has HEAD^2, but
-    HEAD^1 is the PR's own history -- comparing to it would miss the PR's RELEASE_PIN change."""
+    """#1037 r1 (codex): a merge commit that is not GitHub's synthetic merge for THIS PR --
+    HEAD is not $GITHUB_SHA, or HEAD^2 is not the PR head -- must fail closed rather than
+    diff against whatever its first parent happens to be. The fixture's merge stands in
+    for such a commit; only the exact (GITHUB_SHA, PR_HEAD_SHA) pair is accepted."""
     repo = _merge_commit(tmp_path, {"RELEASE_PIN": "v3\n"})
     merge = _rev(repo, "HEAD")
     assert _scope(repo, "pull_request", github_sha="0" * 40).returncode == 1

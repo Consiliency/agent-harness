@@ -61,7 +61,8 @@ def test_the_textual_register_is_capped() -> None:
 
 
 def _module_level_quarantine(text: str) -> bool:
-    """Does a module- or class-level `pytestmark` assignment mention quarantine?
+    """Does a module- or class-level `pytestmark` assignment -- or a class DECORATOR --
+    mention quarantine? Either quarantines many tests with one mark.
 
     Parsed, not regexed: a list entry containing `]` hid a later mark from the old regex
     (agent-harness#1036, F012). Unparsable files fall back to a plain text search."""
@@ -81,6 +82,10 @@ def _module_level_quarantine(text: str) -> bool:
             yield from module_scope(ast.iter_child_nodes(node))
 
     for node in module_scope(tree.body):
+        # `@pytest.mark.quarantine(...)` on a class marks every method (agent-harness#1038).
+        if isinstance(node, ast.ClassDef) and any(
+                "quarantine" in ast.unparse(d) for d in node.decorator_list):
+            return True
         if isinstance(node, ast.Assign):
             targets = node.targets
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
@@ -184,11 +189,11 @@ def test_disabled_runs_everything(tmp_path) -> None:
 
 @pytest.mark.parametrize("marked,aborts", [(QUARANTINE_CAP, False), (QUARANTINE_CAP + 1, True)])
 def test_the_node_cap_aborts_collection(tmp_path, marked, aborts) -> None:
-    """A class mark counts per node; one over the cap is a usage error (exit 4), at the cap
+    """One over the cap is a usage error (exit 4), at the cap
     it is not -- an unmarked test keeps a non-aborting run from exiting 5 (r3 claude)."""
-    methods = "".join(f"    def test_{i}(self): pass\n" for i in range(marked))
-    body = ('@pytest.mark.quarantine(reason="x")\nclass TestMany:\n' + methods
-            + "\ndef test_unmarked(): pass\n")
+    # Each test marked on itself (a class-wide mark is refused outright, agent-harness#1044).
+    body = "".join(f'@pytest.mark.quarantine(reason="x")\ndef test_{i}(): pass\n' for i in range(marked))
+    body += "def test_unmarked(): pass\n"
     result = _run(tmp_path, body, enabled=True)
     output = result.stdout + result.stderr
     if aborts:
@@ -222,8 +227,37 @@ def test_the_real_conftest_deselects_every_marked_node(tmp_path) -> None:
     ("pytestmark += [pytest.mark.quarantine]\n", True),
     ("def f():\n    pytestmark = pytest.mark.quarantine\n", False),                 # not module scope
     ("class T:\n    pytestmark = pytest.mark.quarantine\n", True),                  # whole class
+    ("@pytest.mark.quarantine(reason='x')\nclass TestMany:\n    def test_a(self): pass\n", True),
+    ("if True:\n    @pytest.mark.quarantine(reason='x')\n    class T:\n        pass\n", True),
+    ("@pytest.mark.quarantine(reason='x')\ndef test_one(): pass\n", False),         # one test: allowed
+    ("class T:\n    @pytest.mark.quarantine(reason='x')\n    def test_m(self): pass\n", False),
     ("with ctx():\n    pytestmark = [pytest.mark.quarantine]\n", True),
     ("pytestmark = [pytest.mark.slow]\n", False),
 ])
 def test_module_level_quarantine_detection(source, flagged) -> None:
     assert _module_level_quarantine(source) is flagged
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_inherited_quarantine_is_refused_on_every_run(tmp_path, enabled) -> None:
+    """agent-harness#1044 r1 (codex): an aliased class decorator evades the text scan, so the
+    collection hook refuses any quarantine a test inherits, whether or not deselection is on."""
+    body = ("from pytest import mark\n"
+            "group_mark = mark.quarantine(reason='agent-harness#1')\n"
+            "@group_mark\n"
+            "class TestMany:\n"
+            "    def test_a(self): pass\n"
+            "    def test_b(self): pass\n"
+            "def test_unmarked(): pass\n")
+    result = _run(tmp_path, body, enabled=enabled)
+    output = result.stdout + result.stderr
+    assert result.returncode == 4 and "inherited from a class or module" in output, output
+
+
+def test_own_and_param_marks_are_not_inherited(tmp_path) -> None:
+    body = ('@pytest.mark.quarantine(reason="agent-harness#1")\n'
+            "def test_own(): pass\n"
+            '@pytest.mark.parametrize("v", [pytest.param(1, marks=pytest.mark.quarantine(reason="x")), 2])\n'
+            "def test_param(v): pass\n")
+    result = _run(tmp_path, body, enabled=True)
+    assert result.returncode == 0 and "2 deselected" in result.stdout, result.stdout + result.stderr
