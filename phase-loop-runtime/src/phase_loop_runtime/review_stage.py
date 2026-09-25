@@ -308,10 +308,11 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
 def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     """Copy only installed distribution-owned files into a disposable import root."""
     inventory = subprocess.run(
-        ["/usr/bin/python3", "-c",
+        ["/usr/bin/python3", "-I", "-c",
          "import json,sys; print(json.dumps({'paths':sys.path, "
          "'version':list(sys.version_info[:3])}))"],
         capture_output=True, text=True, check=True, timeout=3,
+        cwd="/",
         env={"HOME": str(Path.home()), "PATH": "/usr/bin:/bin"},
     )
     interpreter = json.loads(inventory.stdout)
