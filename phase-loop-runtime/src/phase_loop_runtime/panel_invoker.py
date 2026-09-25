@@ -1748,7 +1748,7 @@ def _outside_any_git_work_tree(path: Path | str) -> bool:
             except (FileNotFoundError, NotADirectoryError):
                 continue
             return False
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: an embedded NUL byte
         return False
     return True
 
@@ -4592,6 +4592,21 @@ _TUI_TRUST_MODAL_NORMS = tuple(
         _CLAUDE_TUI_TRUST_CHOICE,
         _CLAUDE_TUI_TRUST_PROMPT,
         "no, exit",
+        # The rest of the live Claude Code 2.1.282 selector modal (captured 2026-09-25,
+        # agent-harness#1053): its explanation, link and footer can also arrive after the
+        # answer and are not editor output either.
+        # Short fragments, so a paragraph WRAPPED at the terminal width still matches line by
+        # line (#1060 r1, claude): e.g. at 80 columns the explanation breaks mid-sentence.
+        "your own code",
+        "well-known open source",
+        "work from your team",
+        "take a moment to review",
+        "folder first",
+        "read, edit, and execute",
+        "execute files here",
+        "security guide",
+        "enter to confirm",
+        "esc to cancel",
     )
 )
 

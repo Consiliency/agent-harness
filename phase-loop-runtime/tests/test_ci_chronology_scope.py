@@ -52,6 +52,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# The scope script's reason text for a PR touching gate plumbing: one constant, asserted
+# to appear in the script, so the positive and negative checks cannot drift apart.
+PLUMBING_REASON = "touches gate plumbing"
+
+
+def test_the_plumbing_reason_is_the_scripts_own_text() -> None:
+    assert SCOPE_SCRIPT.read_text(encoding="utf-8").count(PLUMBING_REASON) == 1
+
+
 def _scope(*args: str, env: dict[str, str] | None = None, cwd: Path | None = None) -> str:
     base = {k: v for k, v in os.environ.items() if not k.startswith(("CHRONOLOGY", "GITHUB_"))}
     if env:
@@ -202,7 +211,7 @@ def test_pull_request_touching_only_prose_deselects_the_node(pr_repo: tuple[Path
     _git(repo, "commit", "-q", "-am", "prose")
     out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"
-    assert "touches gate plumbing" not in reason, reason  # only plumbing is named (#1047)
+    assert PLUMBING_REASON not in reason, reason  # only plumbing is named (#1047)
 
 
 def test_pull_request_touching_gate_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
@@ -214,7 +223,7 @@ def test_pull_request_touching_gate_plumbing_defers_and_names_it(pr_repo: tuple[
     _git(repo, "commit", "-q", "-m", "touch gate plumbing")
     out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
-    assert "touches gate plumbing" in reason and "ci/offload-gate.sh" in reason, reason
+    assert PLUMBING_REASON in reason and "ci/offload-gate.sh" in reason, reason
 
 
 def test_pull_request_renaming_plumbing_out_of_the_table_defers_and_names_it(
@@ -235,7 +244,7 @@ def test_pull_request_renaming_plumbing_out_of_the_table_defers_and_names_it(
     assert _scope("--match", "tools/elsewhere.sh") == "no-match"
     out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
-    assert "touches gate plumbing" in reason and "ci/offload-gate.sh" in reason, reason
+    assert PLUMBING_REASON in reason and "ci/offload-gate.sh" in reason, reason
 
 
 def test_pull_request_touching_gate_a_plumbing_defers_and_names_it(pr_repo: tuple[Path, str]) -> None:
@@ -247,7 +256,7 @@ def test_pull_request_touching_gate_a_plumbing_defers_and_names_it(pr_repo: tupl
     _git(repo, "commit", "-q", "-m", "touch Gate A plumbing")
     out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
-    assert "touches gate plumbing" in reason and "gate_a_cleanroom.sh" in reason, reason
+    assert PLUMBING_REASON in reason and "gate_a_cleanroom.sh" in reason, reason
 
 
 def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[Path, str]) -> None:
@@ -266,7 +275,7 @@ def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[P
     _git(repo, "commit", "-q", "-m", "touch the runtime only")
     out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"
-    assert "touches gate plumbing" not in reason, reason  # only plumbing is named (#1047)
+    assert PLUMBING_REASON not in reason, reason  # only plumbing is named (#1047)
 
 
 @pytest.mark.parametrize("name", ["test_\u00e9.py", "test_a\nb.py", 'test_"q".py', "test_a\tb.py"])
@@ -282,7 +291,7 @@ def test_pull_request_touching_a_quoted_pathname_defers_and_names_it(pr_repo: tu
     assert _git(repo, "diff", "--name-only", f"{base}...HEAD").startswith('"'), "git did not quote the path"
     out, reason = _scope_reason({"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, repo)
     assert out == "chronology=false"  # agent-harness#1042: deferred to the landing push
-    assert "touches gate plumbing" in reason and name in reason, reason
+    assert PLUMBING_REASON in reason and name in reason, reason
 
 
 def _witness(junit: Path, expect: str, node: str = CHRONOLOGY_NODE) -> tuple[int, str]:
