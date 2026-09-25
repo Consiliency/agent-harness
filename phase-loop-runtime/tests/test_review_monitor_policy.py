@@ -732,8 +732,15 @@ def test_real_output_is_observed_then_silence_is_unknown(tmp_path, monkeypatch, 
         assert result.returncode == 0
 
 
-@pytest.mark.quarantine(reason="agent-harness#1034")
 def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
+    """Repainting a status line's timer/glyphs must not refresh genuine progress.
+
+    agent-harness#1034: the old assertion read the FINAL snapshot's age against the 50 ms
+    read window, so output delivered late in one burst (xdist load) left it inside the
+    window. Timing now separates the two behaviours by a wide margin: the first status
+    line, a 0.4 s pause, then repaints. Correct: the age counts from the FIRST line and
+    never goes backwards. Broken (repaints refresh): it drops back to ~0 at each repaint.
+    Monotonicity does not depend on when the bytes arrive, only on how they are judged."""
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_latest_claude_transcript_text", lambda *a, **k: "")
@@ -750,18 +757,26 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
     panel._run_claude_tui_session(
         command=[sys.executable, "-c",
                  "import time\n"
-                 "for i in range(12):\n"
-                 " print('\\r\\x1b[2K* Herding... (%ss . esc to interrupt)' % i, end='', flush=True)\n"
-                 " time.sleep(.03)\n"],
+                 "line = '\\r\\x1b[2K* Herding... (%ss . esc to interrupt)'\n"
+                 "print(line % 0, end='', flush=True)\n"
+                 "time.sleep(.4)\n"
+                 "for i in range(1, 9):\n"
+                 " print(line % i, end='', flush=True)\n"
+                 " time.sleep(.03)\n"
+                 "time.sleep(.3)\n"],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
-        timeout_s=1, env=os.environ, review_monitor=monitor,
+        timeout_s=5, env=os.environ, review_monitor=monitor,
     )
     assert snapshots
     assert snapshots[0]["last_genuine_progress_age_s"] is None
-    # The existing novelty detector sees the first status line once; repainting
-    # its timer/glyphs must not refresh it for the rest of the run.
+    ages = [s["last_genuine_progress_age_s"] for s in snapshots
+            if s["last_genuine_progress_age_s"] is not None]
+    assert ages, "the first status line was never seen as progress"
+    assert all(later >= earlier - 1e-3 for earlier, later in zip(ages, ages[1:])), ages
     assert snapshots[-1]["observation_state"] == "progress_unobserved"
-    assert snapshots[-1]["last_genuine_progress_age_s"] > .05
+    # Well past the 50 ms read window (4x), measured from the FIRST line: repaints at
+    # >= 0.4 s would otherwise have reset it close to zero.
+    assert snapshots[-1]["last_genuine_progress_age_s"] > .2, ages
 
 
 def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
