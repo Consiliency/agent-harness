@@ -4146,16 +4146,22 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         final_records = list(group)
     versions = [m for _, m in final_records]
     terminal_payload, terminal = final_records[-1]
-    # Every record of the answer, superseded versions included. An identity-less answer's group
-    # is only its last record, so also scan the turn's other versions under its uuid.
-    answer_records = list(group)
-    if final_id is None and _uuid(terminal_payload) is not None:
-        answer_records += [(p, m) for p, m in turn
-                           if _uuid(p) == _uuid(terminal_payload) and m is not terminal]
+    # The president route checks every raw in-turn record of the answer: superseded versions and
+    # exact replays included. The replay rule compares only id, role, content and stop state, so
+    # a replay carrying an API-error or <synthetic> marker would otherwise vanish. A record belongs
+    # to the answer by its message id, or by a uuid one of the answer's records carries.
+    answer_uuids = {_uuid(p) for p, _ in group} - {None}
+    answer_records = [
+        (p, m) for p, m in records[boundary + 1:]
+        if m.get("role") == "assistant"
+        and ((final_id is not None and m.get("id") == final_id) or _uuid(p) in answer_uuids)
+    ]
     if require_terminal and (
         terminal.get("stop_reason") != "end_turn"
         or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
                or m.get("isApiErrorMessage") or p.get("isApiErrorMessage")
+               or not isinstance(m.get("content"), list)
+               or any(isinstance(item, dict) and item.get("type") == "tool_use" for item in m["content"])
                for p, m in answer_records)
     ):
         return ""  # the president route needs a genuine, completed end_turn

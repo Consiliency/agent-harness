@@ -698,3 +698,26 @@ def test_president_route_rejects_a_flag_on_a_superseded_version(tmp_path, flag, 
         open_["isApiErrorMessage"] = True
     path = _jsonl(tmp_path, [_user("u1"), open_, _asst("FORCING DECISION: APPROVE", mid=mid, uuid="a")])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("flag", ["model", "message_error", "record_error"])
+def test_president_route_rejects_a_marked_exact_replay_of_the_answer(tmp_path, flag):
+    # agent-harness#1017 r6 (codex): the replay rule ignores these markers, so the marked copy
+    # is dropped as an exact replay unless the president gate scans raw records.
+    answer = _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")
+    marked = _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")
+    if flag == "model":
+        marked["message"]["model"] = "<synthetic>"
+    elif flag == "message_error":
+        marked["message"]["isApiErrorMessage"] = True
+    else:
+        marked["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), answer, marked])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_rejects_a_superseded_tool_use_version(tmp_path):
+    tool = _asst("", mid="m", uuid="a", stop=None)
+    tool["message"]["content"] = [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]
+    path = _jsonl(tmp_path, [_user("u1"), tool, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
