@@ -81,6 +81,29 @@ def test_two_reviewer_floor_does_not_override_prose_dissent():
     assert result.reason == "non_convergence"
 
 
+def test_optional_prose_dissent_reaches_next_round_repair():
+    dissent = "FINDING F001: blocking prose concern\nDISAGREE"
+    gates = iter((
+        _gate_result_from_panel(_four_vendor_panel(claude_text=dissent), reviewed_sha="a" * 40),
+        _gate_result_from_panel(_four_vendor_panel(claude_text="AGREE"), reviewed_sha="a" * 40),
+    ))
+    repairs = []
+
+    def apply_fix(round_number, artifact, findings):
+        repairs.append((round_number, artifact, findings))
+        return "repaired artifact"
+
+    result = run_governed_premerge_loop(
+        artifact="reviewed artifact", author_executor="train-coordinator",
+        run_mode="governed", max_rounds=2,
+        invoke=lambda **_kwargs: next(gates), apply_fix=apply_fix,
+    )
+    assert result.mergeable and result.rounds == 2
+    assert len(repairs) == 1 and repairs[0][:2] == (1, "reviewed artifact")
+    assert any(f.code == "finding_prose" and f.body == dissent
+               for f in repairs[0][2])
+
+
 def test_four_vendor_agreement_still_promotes():
     panel = _four_vendor_panel(claude_text="AGREE")
     gate = _gate_result_from_panel(panel, reviewed_sha="a" * 40)
@@ -89,6 +112,14 @@ def test_four_vendor_agreement_still_promotes():
     assert gate.reason is None
     assert {finding.seat_key for finding in gate.findings} == {leg.seat_key for leg in panel.legs}
     assert all(finding.reviewed_sha == "a" * 40 for finding in gate.findings)
+
+
+def test_inline_falsifier_fence_mention_is_not_an_attachment():
+    text = (
+        "FINDING F001: The brief says to start a line with ```falsifier, "
+        "but this sentence only quotes it.\nAGREE"
+    )
+    assert parse_finding_falsifiers(text).falsifiers == ()
 
 
 def test_invalid_falsifier_policy_refuses_before_board_composition(tmp_path):

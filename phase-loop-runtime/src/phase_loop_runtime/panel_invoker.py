@@ -1705,7 +1705,7 @@ def parse_finding_falsifiers(text: str) -> FindingFalsifierAttachment:
         finding_line = re.match(r"^FINDING ([A-Za-z0-9_]+):", line)
         if finding_line is not None:
             finding_id = finding_line.group(1)
-        if "```falsifier" not in line:
+        if not line.strip().startswith("```falsifier"):
             position += 1
             continue
         if line.strip() != "```falsifier":
