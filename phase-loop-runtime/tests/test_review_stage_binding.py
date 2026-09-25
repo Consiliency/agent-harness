@@ -930,6 +930,71 @@ def test_falsifier_source_does_not_accept_alternate_git_index(tmp_path, monkeypa
         falsifier._clean_exact_source(repo, head)
 
 
+def test_falsifier_source_rejects_tracked_file_through_ancestor_symlink(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text("ignored\n", encoding="utf-8")
+    tracked = repo / "ignored" / "tracked.py"
+    tracked.write_text("committed bytes\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-f", "ignored/tracked.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "tracked"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    outside = tmp_path / "outside"
+    (repo / "ignored").rename(outside)
+    (repo / "ignored").symlink_to(outside, target_is_directory=True)
+    assert b" D " in subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"])
+
+    with pytest.raises(ValueError, match="not clean"):
+        falsifier._clean_exact_source(repo, head)
+    monkeypatch.setattr(review_stage, "stage_review_tree", lambda _repo: pytest.fail("stage was launched"))
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path="phase-loop-runtime/tests/test_finding_F001.py",
+        expected_nodeid="phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+        diff="not a diff",
+    )
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10, output_cap_bytes=65536,
+    )
+    assert result.outcome == "error"
+    assert backing._falsifier_authorization_lease(authorization).closed
+
+
+def test_falsifier_missing_source_records_error_and_closes_authorization(tmp_path):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    moved = tmp_path / "moved"
+    repo.rename(moved)
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path="phase-loop-runtime/tests/test_finding_F001.py",
+        expected_nodeid="phase-loop-runtime/tests/test_finding_F001.py::test_trigger",
+        diff="not a diff",
+    )
+
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10, output_cap_bytes=65536,
+    )
+    assert result.outcome == result.record["outcome"] == "error"
+    assert result.red_output_digest is None
+    assert backing._falsifier_authorization_lease(authorization).closed
+
+
 def test_falsifier_refuses_repo_exposed_by_system_mount_before_staging(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
