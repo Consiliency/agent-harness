@@ -285,3 +285,67 @@ def test_falsifier_cleanup_residue_is_an_error(tmp_path, monkeypatch):
     finally:
         for staged in staged_paths:
             original_remove(staged)
+
+
+def test_deep_authenticated_report_does_not_crash_parent(tmp_path, monkeypatch):
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("canonical falsifier launcher absent")
+    original_popen = subprocess.Popen
+    emitter = (
+        "import hashlib,hmac,sys\n"
+        "key=sys.stdin.buffer.readline().rstrip(b'\\n')\n"
+        "payload=(b'{\"schema\":\"falsifier_pytest_report.v1\",\"deep\":'"
+        "+b'['*1200+b'0'+b']'*1200+b'}')\n"
+        "signature=hmac.new(key,payload,hashlib.sha256).hexdigest().encode()\n"
+        "sys.stdout.buffer.write(b'\\nFALSIFIER_RESULT::'+sys.argv[1].encode()"
+        "+b':'+signature+b':'+payload+b'\\n')\n"
+    )
+
+    def launch(_argv, *args, **kwargs):
+        return original_popen(["/usr/bin/python3", "-c", emitter, _argv[-1]], *args, **kwargs)
+
+    monkeypatch.setattr(review_stage.subprocess, "Popen", launch)
+    code, _stdout, _stderr, failure, report = review_stage._run_bounded_falsifier_node(
+        staged=tmp_path, dependencies=tmp_path, nodeid="test_finding_F001.py::test_trigger",
+        wall_clock_s=5, output_cap_bytes=65536,
+    )
+    assert code == 0 and failure is None
+    assert report is None
+
+
+def test_falsifier_records_parent_recursion_as_error(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    source = "def test_trigger():\n    assert True\n"
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,2 @@\n"
+        "+def test_trigger():\n+    assert True\n"
+    )
+    entry = SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+
+    def overflow(**_kwargs):
+        raise RecursionError("nested seat report")
+
+    monkeypatch.setattr(review_stage, "run_bounded_falsifier_node", overflow)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=10,
+        output_cap_bytes=65536,
+    )
+    assert result.outcome == "error"
+    assert "nested seat report" in (result.detail or "")
+    assert result.red_output_digest is None
+    assert not (repo / path).exists()
+    with pytest.raises(ValueError):
+        backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)

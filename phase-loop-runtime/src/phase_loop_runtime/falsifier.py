@@ -168,7 +168,7 @@ def run_finding_falsifier(
                         if outcome == "red_on_head":
                             red_digest = hashlib.sha256(stdout + stderr).hexdigest()
                         # The clone is removed below; no live JUnit path is retained.
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as exc:
         detail = str(exc)
     finally:
         try:

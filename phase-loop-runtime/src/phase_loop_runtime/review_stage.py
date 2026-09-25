@@ -508,7 +508,7 @@ def _run_bounded_falsifier_node(
                         signature, hmac.new(reporting_key, payload, hashlib.sha256).hexdigest().encode(),
                     )
                     parsed = json.loads(payload) if authenticated else None
-                except (UnicodeError, json.JSONDecodeError):
+                except (ValueError, RecursionError):
                     parsed = None
                 if isinstance(parsed, dict):
                     report = parsed
