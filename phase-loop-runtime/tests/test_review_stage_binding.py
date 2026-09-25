@@ -936,6 +936,29 @@ def test_falsifier_rejects_selector_expansion_before_call(tmp_path, source, sele
         "    items.clear()\n"
         "    raise pytest.UsageError('collection selection failed')\n"
     ),
+    (
+        "import pytest\n"
+        "class LateReportFailure:\n"
+        "    @pytest.hookimpl(trylast=True)\n"
+        "    def pytest_collectreport(self, report):\n"
+        "        if report.nodeid == '':\n"
+        "            raise pytest.UsageError('root report processing failed')\n"
+        "def pytest_configure(config):\n"
+        "    config.pluginmanager.register(LateReportFailure())\n"
+    ),
+    (
+        "import pytest\n"
+        "def pytest_itemcollected(item):\n"
+        "    raise pytest.UsageError('item collection aborted')\n"
+    ),
+    (
+        "import pytest\n"
+        "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    yield\n"
+        "    items.clear()\n"
+        "    raise pytest.UsageError('late selection failure')\n"
+    ),
 ])
 def test_falsifier_startup_failure_is_not_node_missing(tmp_path, conftest_source):
     from phase_loop_runtime import falsifier
