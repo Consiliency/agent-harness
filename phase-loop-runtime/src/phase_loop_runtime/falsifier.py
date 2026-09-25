@@ -78,6 +78,10 @@ def _clean_exact_source(repo: Path, sha: str) -> None:
     if len(paths) != len(set(paths)) or set(paths) != set(expected):
         raise ValueError("falsifier source is not clean")
     for rel in paths:
+        parts = Path(rel).parts
+        if any((repo.joinpath(*parts[:depth])).is_symlink()
+               for depth in range(1, len(parts))):
+            raise ValueError("falsifier source is not clean")
         target = repo / rel
         mode, oid = expected[rel]
         if target.is_symlink():
@@ -156,7 +160,7 @@ def run_finding_falsifier(
     wall_clock_s: float, output_cap_bytes: int,
 ) -> FalsifierRunResult:
     """Run the attached node and record its observed, untrusted outcome."""
-    repo = Path(repo).resolve(strict=True)
+    repo = Path(repo)
     backing._falsifier_authorization_lease(authorization)
     if (isinstance(wall_clock_s, bool) or not isinstance(wall_clock_s, (int, float))
             or not math.isfinite(wall_clock_s) or wall_clock_s <= 0):
@@ -171,6 +175,7 @@ def run_finding_falsifier(
     junit_path: str | None = None
     staged: Path | None = None
     try:
+        repo = repo.resolve(strict=True)
         backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
         if review_stage._falsifier_repo_exposed_by_system_mount(repo):
             raise ValueError("canonical repository exposed by falsifier system mount")
@@ -214,7 +219,7 @@ def run_finding_falsifier(
                     if outcome == "red_on_head":
                         red_digest = hashlib.sha256(stdout + stderr).hexdigest()
                     # The clone is removed below; no live JUnit path is retained.
-    except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError, RuntimeError) as exc:
         detail = str(exc)
     finally:
         try:
