@@ -121,12 +121,22 @@ def test_new_turn_or_nonfinal_message_cannot_reuse_prior_verdict(tmp_path, bound
     assert _extract(tmp_path, [_assistant("Old review\nAGREE"), boundary]) == ""
 
 
-def test_user_boundary_prevents_id_reuse_from_joining_turns(tmp_path):
+def test_user_boundary_prevents_turns_from_joining(tmp_path):
+    # r3: the fixture used to reuse one message id across the boundary; the API never reuses
+    # an id, so that now fails closed (pinned below) and this keeps the boundary property.
+    assert _extract(tmp_path, [
+        _assistant("Old review", uuid="one", message_id="old"),
+        {"type": "user", "message": {"role": "user", "content": "Continue"}},
+        _assistant("New review\nDISAGREE", uuid="two"),
+    ]) == "New review\nDISAGREE"
+
+
+def test_a_history_message_id_reused_under_a_new_uuid_fails_closed(tmp_path):
     assert _extract(tmp_path, [
         _assistant("Old review", uuid="one"),
         {"type": "user", "message": {"role": "user", "content": "Continue"}},
         _assistant("New review\nDISAGREE", uuid="two"),
-    ]) == "New review\nDISAGREE"
+    ]) == ""
 
 
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "tool_use"])
@@ -412,3 +422,102 @@ def test_r2_a_completed_record_rewritten_under_its_uuid_fails_closed(tmp_path):
     v1 = _assistant("1. Blocking\nDISAGREE", uuid="r1", stop_reason="end_turn")
     v2 = _assistant("No findings\nAGREE", uuid="r1", stop_reason="end_turn")
     assert _extract(tmp_path, [_user("u1"), v1, v2, v1]) == ""
+
+
+# Round 3 (agent-harness#1002): a record in the final turn that copies or updates history
+# fails closed, history rewrites never block a later answer, and a changed request is a turn.
+
+
+def test_r3_a_changed_request_under_a_reused_user_uuid_is_a_new_turn(tmp_path):
+    path = _jsonl(tmp_path, [_user("u", "Review A"), _asst("Old\nAGREE", mid="m", uuid="a"),
+                             _user("u", "Review B")])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_an_identityless_copy_of_history_cannot_replace_the_answer(tmp_path):
+    old = {"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn",
+                                            "content": [{"type": "text", "text": "Old\nAGREE"}]}}
+    current = {"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn",
+                                                "content": [{"type": "text", "text": "Current\nDISAGREE"}]}}
+    path = _jsonl(tmp_path, [old, _user("u2", "Review again"), current, old])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+    path = _jsonl(tmp_path, [old, _user("u2", "Review again"), old])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_a_rewrite_in_history_does_not_block_a_later_answer(tmp_path):
+    path = _jsonl(tmp_path, [
+        _asst("Old\nAGREE", mid="m1", uuid="a1"), _asst("Rewritten\nDISAGREE", mid="m1", uuid="a1"),
+        _user("u2", "Independent new review"), _asst("Current\nDISAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == "Current\nDISAGREE"
+
+
+@pytest.mark.parametrize("text", ["Old review\nDISAGREE", "No findings\nAGREE"])
+def test_r3_a_completed_message_id_copied_under_a_fresh_uuid_fails_closed(tmp_path, text):
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review the change"), _asst("Old review\nDISAGREE", mid="msg_1", uuid="a1"),
+        _user("u2", "Review again"), _asst(text, mid="msg_1", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_a_fresh_uuid_copy_after_the_current_answer_fails_closed(tmp_path):
+    path = _jsonl(tmp_path, [
+        _asst("Old review\nAGREE", mid="review"), _user("request-2", "Review again"),
+        _asst("Current review\nDISAGREE", mid="review", uuid="answer-2"),
+        _asst("Old review\nAGREE", mid="review", uuid="old-copy"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_a_message_cannot_be_rewritten_after_a_non_final_stop(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("1. Blocking\nDISAGREE", mid="m", uuid="r1", stop="max_tokens"),
+        _asst("No findings\nAGREE", mid="m", uuid="r1"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_a_history_record_completed_after_a_new_request_is_not_the_answer(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("Old\nAGREE", mid="m", uuid="a1", stop=None),
+        _user("u2", "Review again"), _asst("Old\nAGREE", mid="m", uuid="a1"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_a_same_uuid_update_from_null_to_end_turn_completes_the_message(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("Findings\nAGREE", mid="m", uuid="a1", stop=None),
+        _asst("Findings\nAGREE", mid="m", uuid="a1"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == "Findings\nAGREE"
+
+
+def test_r3_a_raw_separator_in_a_later_user_record_still_moves_the_boundary(tmp_path):
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps(_asst("Old\nAGREE", mid="m", uuid="a1")) + "\n"
+                    + json.dumps(_user("u2", "Review \u2028 again"), ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+@pytest.mark.parametrize("bad_id", [["m"], {"id": "m"}, 7])
+def test_r3_a_non_string_message_id_fails_closed(tmp_path, bad_id):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Findings\nAGREE", mid=bad_id, uuid="a1")])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r3_a_parallel_tool_call_continuing_across_a_tool_result_keeps_the_answer(tmp_path):
+    # Measured shape (Claude Code 2.1.282): the second tool_use block of one message is written
+    # after the first tool_result, so a message id legitimately spans that user record.
+    tool = {"type": "tool_use", "id": "t", "name": "x", "input": {}}
+    first = {"type": "assistant", "uuid": "b1", "message": {"id": "m1", "role": "assistant",
+                                                             "stop_reason": "tool_use", "content": [tool]}}
+    second = {"type": "assistant", "uuid": "b2", "message": {"id": "m1", "role": "assistant",
+                                                              "stop_reason": "tool_use", "content": [tool]}}
+    result = {"type": "user", "uuid": "r1", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}}
+    path = _jsonl(tmp_path, [_user("u1"), first, result, second, _asst("Done\nAGREE", mid="m2", uuid="b3")])
+    assert pi._final_assistant_text_from_jsonl(path) == "Done\nAGREE"
