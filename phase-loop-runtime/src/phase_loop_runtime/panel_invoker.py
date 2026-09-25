@@ -4577,9 +4577,15 @@ _TUI_TRUST_MODAL_NORMS = tuple(
         # The rest of the live Claude Code 2.1.282 selector modal (captured 2026-09-25,
         # agent-harness#1053): its explanation, link and footer can also arrive after the
         # answer and are not editor output either.
-        "like your own code, a well-known open source project, or work from your team",
-        "take a moment to review what's in this folder first",
-        "be able to read, edit, and execute files here",
+        # Short fragments, so a paragraph WRAPPED at the terminal width still matches line by
+        # line (#1060 r1, claude): e.g. at 80 columns the explanation breaks mid-sentence.
+        "your own code",
+        "well-known open source",
+        "work from your team",
+        "take a moment to review",
+        "folder first",
+        "read, edit, and execute",
+        "execute files here",
         "security guide",
         "enter to confirm",
         "esc to cancel",

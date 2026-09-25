@@ -275,6 +275,12 @@ def test_every_line_of_the_live_modal_is_modal_vocabulary():
     for line in _LIVE_MODAL_2_1_282:
         norm = pi._normalize_tui_line(line)
         assert pi._tui_trust_modal_line(norm, cwd_norms), line
+    # The same modal WRAPPED at 80 and 100 columns: every piece is still the modal.
+    import textwrap
+    for width in (80, 100):
+        for line in _LIVE_MODAL_2_1_282[2:4]:
+            for piece in textwrap.wrap(line, width):
+                assert pi._tui_trust_modal_line(pi._normalize_tui_line(piece), cwd_norms), (width, piece)
     for editor_line in ("Try \"fix typecheck errors\"", "? for shortcuts", "Welcome to Claude Code"):
         assert not pi._tui_trust_modal_line(pi._normalize_tui_line(editor_line), cwd_norms), editor_line
 
