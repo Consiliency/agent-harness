@@ -211,6 +211,35 @@ def test_remove_review_stage_handles_deep_readonly_tree(tmp_path):
             staged.rmdir()
 
 
+def test_remove_review_stage_walk_is_linear_in_depth(tmp_path, monkeypatch):
+    staged = tmp_path / "linear-stage"
+    staged.mkdir()
+    depth = 160
+    directory_fd = os.open(staged, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(depth):
+            os.mkdir("d", dir_fd=directory_fd)
+            child_fd = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+    finally:
+        os.close(directory_fd)
+    original_open = os.open
+    opens = 0
+
+    def counted_open(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        return original_open(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(review_stage.os, "open", counted_open)
+        patch.setattr(review_stage.os, "supports_dir_fd", os.supports_dir_fd | {counted_open})
+        review_stage.remove_review_stage(staged)
+    assert not staged.exists()
+    assert opens < 5 * depth, f"cleanup opened {opens} directories at depth {depth}"
+
+
 def test_remove_review_stage_does_not_chmod_symlink_target(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -295,7 +324,7 @@ def test_deep_authenticated_report_does_not_crash_parent(tmp_path, monkeypatch):
         "import hashlib,hmac,sys\n"
         "key=sys.stdin.buffer.readline().rstrip(b'\\n')\n"
         "payload=(b'{\"schema\":\"falsifier_pytest_report.v1\",\"deep\":'"
-        "+b'['*1200+b'0'+b']'*1200+b'}')\n"
+        "+b'['*10000+b'0'+b']'*10000+b'}')\n"
         "signature=hmac.new(key,payload,hashlib.sha256).hexdigest().encode()\n"
         "sys.stdout.buffer.write(b'\\nFALSIFIER_RESULT::'+sys.argv[1].encode()"
         "+b':'+signature+b':'+payload+b'\\n')\n"

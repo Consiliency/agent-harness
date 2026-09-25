@@ -748,18 +748,9 @@ def remove_review_stage(staged: Path) -> None:
     anchor: int | None = None
     current: int | None = None
 
-    def open_relative(parts: tuple[str, ...]) -> int:
-        assert anchor is not None
-        fd = os.dup(anchor)
-        try:
-            for part in parts:
-                child = os.open(part, flags, dir_fd=fd)
-                os.close(fd)
-                fd = child
-            return fd
-        except OSError:
-            os.close(fd)
-            raise
+    def identity(fd: int) -> tuple[int, int]:
+        details = os.fstat(fd)
+        return details.st_dev, details.st_ino
 
     try:
         # The isolated child has exited before cleanup, so it cannot swap the root.
@@ -767,11 +758,11 @@ def remove_review_stage(staged: Path) -> None:
         anchor = os.open(staged, flags)
         os.fchmod(anchor, 0o700)
         current = os.dup(anchor)
-        stack: list[tuple[tuple[str, ...], list[str]]] = [
-            ((), os.listdir(current)),
+        stack: list[tuple[str | None, tuple[int, int], list[str]]] = [
+            (None, identity(current), os.listdir(current)),
         ]
         while stack:
-            parts, names = stack[-1]
+            name_in_parent, directory_identity, names = stack[-1]
             if names:
                 name = names.pop()
                 try:
@@ -787,20 +778,33 @@ def remove_review_stage(staged: Path) -> None:
                     os.fchmod(child, 0o700)
                     os.close(current)
                     current = child
-                    stack.append((parts + (name,), os.listdir(current)))
+                    stack.append((name, identity(current), os.listdir(current)))
                 else:
                     os.unlink(name, dir_fd=current)
                 continue
+            if len(stack) == 1:
+                os.close(current)
+                current = None
+                stack.pop()
+                break
+            parent = os.open("..", flags, dir_fd=current)
+            try:
+                if identity(parent) != stack[-2][1]:
+                    raise OSError("stage parent changed during cleanup")
+                child_identity = os.stat(name_in_parent, dir_fd=parent, follow_symlinks=False)
+                if (child_identity.st_dev, child_identity.st_ino) != directory_identity:
+                    raise OSError("stage child changed during cleanup")
+            except OSError:
+                os.close(parent)
+                raise
             os.close(current)
-            current = None
+            current = parent
             stack.pop()
-            if stack:
-                current = open_relative(stack[-1][0])
-                os.rmdir(parts[-1], dir_fd=current)
+            os.rmdir(name_in_parent, dir_fd=current)
         os.close(anchor)
         anchor = None
         staged.rmdir()
-    except OSError:
+    except (OSError, MemoryError):
         pass
     finally:
         if current is not None:
