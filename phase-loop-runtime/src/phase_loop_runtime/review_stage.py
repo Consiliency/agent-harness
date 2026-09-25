@@ -276,7 +276,12 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
             raise ValueError("unsupported falsifier Git tree entry")
         expected[path] = (mode, oid)
     observed: set[str] = set()
-    for directory, dirs, files in os.walk(staged, topdown=True, followlinks=False):
+    def reject_unenumerable(error):
+        raise ValueError("falsifier staged tree cannot be enumerated") from error
+
+    for directory, dirs, files in os.walk(
+        staged, topdown=True, followlinks=False, onerror=reject_unenumerable,
+    ):
         current = Path(directory)
         if current == staged and ".git" in dirs:
             dirs.remove(".git")
