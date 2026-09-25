@@ -284,15 +284,9 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
   field and its resolution bound.
 - **IF-0-GOVSETUP-1** — the `governance_profile.v1` schema, the resolver precedence (explicit,
   environment, repo file, user file, default) and the four named profiles.
-- **IF-0-PANEL-1** — the `[panel.<task>]` lane-table schema (`lanes = [{lens, vendors}]`, the
-  `lenses` declaration map, `min_distinct_vendors` for `plan` and `production_code` in the `code-review`
-  table, 4 when omitted), its precedence (built-in < user < base-revision repository, table by table),
-  the landing rule (with no table setting the minimum, today's four named seats; otherwise usable distinct
-  vendors >= the minimum, plus any seats an explicit profile requires; always at least two usable panel
-  seats and a president ruling)
-  and the result labels (usable distinct vendors, composed and usable seat counts, fallback-filled and
-  unfilled lanes, effective minimum and source, explicitly required seats and the profile path, minimum
-  met, and per seat: lens name, built-in or declared, and lens delivery).
+- **IF-0-PANEL-1** — the `[panel.<task>]` lane-table and lens-declaration schema, its sources and
+  precedence (EC-PANEL-1), the landing rule (EC-PANEL-4) and the result labels (EC-PANEL-5), as those
+  criteria state them.
 
 ## Absorbed Roadmaps (bookkeeping — this roadmap SUPERSEDES these)
 
@@ -1646,35 +1640,43 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
 - [ ] EC-PANEL-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0.
 - [ ] EC-PANEL-1 — **Per-task lane tables with declarable lenses.** A `[panel.<task>]` table holds
   `lanes` (ordered `{lens, vendors}`; `vendors` an ordered preference over the board vendors) and an
-  optional `lenses` map declaring a custom lens (`name` → instruction text). It is read from the user
-  file `$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml` and from the repository file
-  `.agent-harness/advisor-boards.toml` **as committed at the landing's base revision**: the target
-  branch head at gate time, never the change under review and never a stale merge-base. Unreadable fails
-  closed. Only `[panel.*]` is read from that file. The change's `[panel.*]`, applied onto the target head,
-  is validated at the gate: if malformed, the change is refused, and it never governs the change. A base
-  `[panel.*]` that is readable but invalid governs as the built-in tables (the strictest), labelled
-  so, and does not block a landing those admit. A landing whose target head changed `[panel.*]` or the
-  repository `governance.toml` `panel` list after its gate is re-gated before it merges. The user file is read once at run start and recorded by content digest; a
-  landing whose user file changed during the run is refused. Precedence is built-in < user < repository,
-  table by table. Unknown keys are refused only inside `[panel.*]`; "unknown lens" means neither
-  built-in nor declared, and a declared lens may not reuse a built-in lens name. Every
-  built-in preset task has a built-in table. With every vendor available, each table composes exactly
-  the seats that task seats today; for code review, "today" means the landing path's `DEFAULT_BOARD`.
-  Falsified by:
+  optional `lenses` map declaring a custom lens (`name` → instruction text). Sources:
+  - the user file `$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`, read once at run start and
+    recorded by content digest; a landing whose user file changed during the run is refused;
+  - the repository file `.agent-harness/advisor-boards.toml`, of which PANEL's loader reads only
+    `[panel.*]`. For a landing it is read at the **base revision**: the target branch head at gate time,
+    never the change under review and never a stale merge-base. A landing whose target head changed
+    `[panel.*]` or the repository `governance.toml` `panel` list after its gate is re-gated before it
+    merges.
+
+  Precedence is built-in < user < repository, table by table. Validity:
+  - a `[panel.*]` table the change adds or edits must be valid once applied onto the target head, or the
+    change is refused; it never governs the change itself;
+  - a base `[panel.*]` table the change does not edit that is invalid, including a TOML parse error, is
+    replaced by its built-in table (the strictest) and labelled so; it does not block a landing the
+    built-in table admits;
+  - a base revision that cannot be read at all (not an invalid file) fails closed.
+
+  Unknown keys are refused only inside `[panel.*]`. "Unknown lens" means neither built-in nor declared; a
+  declared lens may not reuse a built-in lens name. Every built-in preset task has a built-in table. With every vendor available, each table
+  composes exactly the seats that task seats today; for code review, "today" means the landing path's
+  `DEFAULT_BOARD`. Falsified by:
   - an unknown key, task, vendor or lens being accepted, or any malformed `[panel.*]` value being
     accepted instead of refused with a typed reason (a wrong type, an empty or duplicate-bearing
     `vendors` list, or empty lens text);
   - a declared custom lens being refused, or a declared lens that reuses a built-in lens name being
     accepted;
   - a landing proceeding after the user file's content changed during the run;
-  - `[panel.*]` being read at any revision other than the target branch head at gate time (for example,
-    a stale merge-base), an unreadable base revision not failing closed, or anything other than
-    `[panel.*]` being read from the repository `advisor-boards.toml`;
-  - a change whose `[panel.*]`, applied onto the target head, is malformed, landing;
-  - a readable but invalid base `[panel.*]` governing as anything other than the built-in tables, or
-    blocking a landing the built-in tables admit;
+  - PANEL's loader reading `[panel.*]` for a landing at any revision other than the target branch head at
+    gate time (for example, a stale merge-base), or reading anything other than `[panel.*]` from the
+    repository file;
   - a landing merging after its target head changed `[panel.*]` or the repository `governance.toml`
     `panel` list since its gate, without being re-gated;
+  - a change that adds or edits a `[panel.*]` table that is invalid once applied landing, or a valid
+    repair of an invalid base table being refused for that table;
+  - an invalid base table the change does not edit being used as anything other than its built-in table,
+    being labelled otherwise, or causing a landing the built-in table admits to be refused;
+  - an unreadable base revision not failing closed;
   - a key outside `[panel.*]` being refused by PANEL's loader;
   - a built-in preset task without a built-in table, or a built-in table composing different
     all-available seats than today;
@@ -1703,14 +1705,15 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
 - [ ] EC-PANEL-4 — **An enforced distinct-vendor minimum, four by default, lowerable only as ruled.**
   `min_distinct_vendors` is one integer in the `code-review` table, applying to both the `plan` and
   `production_code` tiers; it is refused in any other table. A resolved table that omits it means 4,
-  labelled with the built-in source. While no
-  table sets it, the landing path is today's: `review_policy_for_tier` requires its four named seats.
+  labelled with the built-in source. While the resolved `code-review` table does not set it, the landing
+  path is today's: `review_policy_for_tier` requires its four named seats.
   When the resolved `code-review` table sets it (from the user or base-revision repository file), a
   keyword-only seam beside that function gates
   the landing on the count of distinct vendors over **usable** panel seats (seats whose review the landing
-  path already classifies as usable; the president is not a seat), plus any seats an explicit governance profile requires (see the
-  PANEL ruling), instead of on the four named seats. Every `plan` and `production_code` landing still
-  needs at least two usable panel seats and a president ruling. Falsified by:
+  path already classifies as usable; the president is not a seat) instead of on the four named seats. In
+  both cases the landing also requires any seats an explicit governance profile names (see the PANEL
+  ruling), and every `plan` and `production_code` landing needs at least two usable panel seats and a
+  president ruling. Falsified by:
   - the no-config outcome differing from today's for the same configuration, availability and seat
     outcomes;
   - a resolved `code-review` table that omits the key having an effective minimum other than 4;
@@ -1752,7 +1755,8 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   - the lens name or text is absent from those instructions, or appears only outside them (in the
     reviewed payload, or in metadata);
   - the label says `prompt` when the lens is not there;
-  - the verdict protocol text differs from that of a seat without a declared lens.
+  - the lens is not under the fixed subordinate heading, or is not followed by the precedence statement;
+  - the verdict protocol text differs between any two seats.
 - [ ] EC-PANEL-7 — **Documented, both ways.** The onboarding docs and the advisor-board capabilities
   card document the lane tables, lens declarations, fallback, the minimum and its precedence, and the
   labels, and the entry-doc check covers those sections. They point a single-vendor user to the
@@ -1881,7 +1885,7 @@ Downstream semantic edges:
   PRESROUTE   → PANEL       (a lowered distinct-vendor minimum still requires the president ruling PRESROUTE routes)
   GOVLEAN     → PANEL       (the landing tiers whose seat requirement PANEL turns into a distinct-vendor minimum are EC-GOVLEAN-5's)
 
-Governance ruling (amendment 2026-09-25, PANEL): GOVSETUP's plan, LEGLIFE's EC-LEGLIFE-4 closeout and REVIEWTRUTH's EC-REVIEWTRUTH-5 closeout are dispatch-gated behind PANEL (slice 1 for GOVSETUP, slice 2 for LEGLIFE-4 and REVIEWTRUTH-5), as recorded in the PANEL ruling under Verification. The grammar forbids the forward edges, so, as for the 2026-08-13 GOVLEAN ruling, the gate is operative through the named plans citing the ruling.
+Governance ruling (amendment 2026-09-25, PANEL): GOVSETUP's plan, LEGLIFE's EC-LEGLIFE-4 closeout, and REVIEWTRUTH's EC-REVIEWTRUTH-5 lane and closeout are dispatch-gated behind PANEL (slice 1 for GOVSETUP and the REVIEWTRUTH-5 lane, slice 2 for the LEGLIFE-4 and REVIEWTRUTH-5 closeouts), as recorded in the PANEL ruling under Verification. The grammar forbids the forward edges, so, as for the 2026-08-13 GOVLEAN ruling, the gate is operative through the named plans citing the ruling.
 
 Lane-level writer edge:
   SCHED lane B before HARDEN  (runner.py and launcher.py; lane B may land while SCHED lane A resolves agent-harness#354; HARDEN consumes the exact SCHED_HARDEN_HANDOFF before writing either path)
@@ -2279,8 +2283,9 @@ operative by dispatch discipline: the named plans must cite them.
   the reviewer's prompt, and ratification counts lens coverage only for seats whose prompt carried it")
   stays REVIEWTRUTH's criterion. Its prompt half is implemented by EC-PANEL-6. Its coverage half stays
   REVIEWTRUTH's work, and it counts only seats whose EC-PANEL-5 lens delivery label is `prompt`.
-  REVIEWTRUTH's plan must cite this ruling. Dispatch holds REVIEWTRUTH's EC-5 closeout until PANEL
-  slice 2 lands; REVIEWTRUTH's other criteria do not wait on PANEL.
+  REVIEWTRUTH's plan must cite this ruling. Dispatch holds REVIEWTRUTH's EC-5 lane until that plan cites
+  this ruling and PANEL slice 1 (which creates the label) has landed, and holds its EC-5 closeout until
+  PANEL slice 2 lands. REVIEWTRUTH's other criteria do not wait on PANEL.
 - **LEGLIFE-4's "custom seat" is a declared lane.** LEGLIFE's plan uses IF-0-PANEL-1's lane and lens
   declarations instead of defining a second seat schema.
 - **Lanes are real only in slice 2.** Until EC-PANEL-6 lands, a seat's lens selects its vendor order and
