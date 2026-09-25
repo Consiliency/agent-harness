@@ -347,6 +347,28 @@ class RoadmapLintModuleTest(unittest.TestCase):
             self.assertEqual(self._run_with_git(roadmap, extra_env={
                 "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de"}), [], "localized")
 
+    def test_a_filesystem_error_while_probing_keeps_the_check(self):
+        """#1054 r3 (codex): pathlib predicates swallow OSError on newer Pythons, so the
+        probe uses os.lstat; an EACCES/EIO on a ``.git`` lookup means "maybe a repository"
+        and the check must run -- injected beneath pathlib, at os.lstat itself."""
+        import errno
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            specs = Path(td) / "loose" / "specs"
+            specs.mkdir(parents=True)
+            roadmap = specs / "good.md"
+            roadmap.write_text(_VALID_ROADMAP, encoding="utf-8")
+            real_lstat = os.lstat
+
+            def failing_lstat(path, *args, **kwargs):
+                if Path(path).name == ".git":
+                    raise OSError(errno.EIO, "injected I/O error", str(path))
+                return real_lstat(path, *args, **kwargs)
+
+            with patch.object(os, "lstat", failing_lstat):
+                self.assertEqual(self._run_with_git(roadmap, extra_env={}), [True])
+
     def test_an_inherited_git_dir_cannot_answer_for_the_roadmap(self):
         """GIT_DIR/GIT_WORK_TREE exported for ANOTHER repository must not make a loose
         roadmap look like it is inside a work tree (the probe ignores the environment)."""

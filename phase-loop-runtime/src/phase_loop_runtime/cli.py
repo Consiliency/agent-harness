@@ -1175,24 +1175,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
-def _confirmed_outside_git_work_tree(path: Path) -> bool:
+def _confirmed_outside_git_work_tree(path: Path | str) -> bool:
     """True ONLY when no ``.git`` entry exists at ``path`` or any ancestor.
 
-    Structural, not a parse of git's output: git's messages are localized and may echo
-    a path that contains any phrase (agent-harness#1054 r2), and a missing, refused or
-    timed-out git says nothing about the tree. Any ``.git`` entry -- a directory, or the
-    ``gitdir:`` FILE of a linked worktree or submodule even when its target is
-    unreachable -- and any error while looking counts as "maybe a repository", so the
-    caller keeps the coherence check (fail closed: IF-0-LEGIBLE-1 requires it for a
-    real repository). Environment such as ``GIT_DIR`` plays no part.
+    Structural: git's output is never parsed. Any ``.git`` entry (directory, ``gitdir:``
+    file -- reachable or not -- or symlink) means "maybe a repository", and so does ANY
+    error: ``os.lstat`` is called directly because ``Path.exists``/``is_symlink`` swallow
+    OSError on newer Pythons (EACCES/EIO would read as "absent"), and a symlink loop in
+    ``resolve`` raises RuntimeError on Python <= 3.12 (agent-harness#1054/#1055 r2/r3).
     """
     try:
         resolved = Path(path).resolve()
         for directory in (resolved, *resolved.parents):
-            marker = directory / ".git"
-            if marker.exists() or marker.is_symlink():
-                return False
-    except OSError:
+            try:
+                os.lstat(directory / ".git")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            return False
+    except (OSError, RuntimeError):
         return False
     return True
 
