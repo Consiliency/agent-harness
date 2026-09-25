@@ -3993,10 +3993,11 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     The rule (agent-harness#1002): a TURN starts at the last user record that is not a replay
     (same uuid AND same content as an earlier user record; a changed request under a reused
     uuid is a new request). History before the turn never blocks a later answer. In the turn:
-    an exact replay of an earlier record (same uuid, content and completion state) is dropped,
+    an exact replay of any earlier version of a record (same uuid, content and completion state)
+    is dropped,
     because the CLI re-journals records with changed ``usage``/``parentUuid``/``promptId``;
-    a record that changes completion state under its uuid is an update, and the latest version
-    wins. The answer is the turn's last message id; if any of its records shares a uuid, a
+    a record that changes an explicitly open (null) completion state under its uuid is an update,
+    and the latest version wins; any other state change fails closed. The answer is the turn's last message id; if any of its records shares a uuid, a
     message id or its content with history, it is a copy and fails closed. (Earlier messages
     of the turn may share a history id: parallel tool calls continue one message across a
     tool_result.) A message id that leaves and returns, a record rewritten
@@ -4050,8 +4051,10 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     history_ids = {m.get("id") for _, m in history} - {None}
     history_uuids = {_uuid(p) for p, _ in history} - {None}
     history_said = {_said(m) for _, m in history}
+    history_spoken = {json.dumps([m.get("role"), m.get("content")], sort_keys=True) for _, m in history}
 
-    known: dict[str, tuple[str, tuple]] = {}
+    known: dict[str, tuple[str, tuple]] = {}  # the latest version of each uuid
+    seen_versions: dict[str, set[tuple[str, tuple]]] = {}  # every version of each uuid
     stopped_ids: set[object] = set()  # message ids that carried any stop_reason
     turn: list[tuple[dict, dict]] = []
     for position, (payload, message) in enumerate(records):
@@ -4060,9 +4063,9 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         uid, said, state = _uuid(payload), _said(message), _state(message)
         in_turn = position > boundary
         if uid is not None and uid in known:
+            if (said, state) in seen_versions[uid]:
+                continue  # an exact replay of this or an earlier version of the record
             known_said, known_state = known[uid]
-            if (known_said, known_state) == (said, state):
-                continue  # an exact replay
             previous_id = json.loads(known_said)[0]
             if in_turn and known_said != said and (
                     previous_id is None or previous_id != message.get("id")
@@ -4070,8 +4073,11 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
                 # A streaming block may be revised while its message is open; after the
                 # message stopped, or across messages, a changed record fails closed.
                 return ""
+            if in_turn and known_state != state and known_state != (True, None):
+                return ""  # only an explicitly open (null) stop_reason may change
         if uid is not None:
             known[uid] = (said, state)
+            seen_versions.setdefault(uid, set()).add((said, state))
         if message.get("stop_reason") is not None:
             stopped_ids.add(message.get("id"))
         if in_turn:
@@ -4093,7 +4099,10 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     else:
         group = [(p, m) for p, m in turn if m.get("id") == final_id]
     if any(_uuid(p) in history_uuids or _said(m) in history_said
-           or (m.get("id") is not None and m.get("id") in history_ids) for p, m in group):
+           or (m.get("id") is not None and m.get("id") in history_ids)
+           or (m.get("id") is None and json.dumps(
+               [m.get("role"), m.get("content")], sort_keys=True) in history_spoken)
+           for p, m in group):
         # A copy or update of history cannot answer a new request. Earlier messages of the
         # turn may share a history id: the CLI writes a parallel tool call's next tool_use
         # block under the same message id after the previous tool_result.

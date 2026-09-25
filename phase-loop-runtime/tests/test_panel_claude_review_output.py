@@ -498,8 +498,9 @@ def test_r3_a_same_uuid_update_from_null_to_end_turn_completes_the_message(tmp_p
 def test_r3_a_raw_separator_in_a_later_user_record_still_moves_the_boundary(tmp_path):
     path = tmp_path / "t.jsonl"
     path.write_text(json.dumps(_asst("Old\nAGREE", mid="m", uuid="a1")) + "\n"
-                    + json.dumps(_user("u2", "Review \u2028 again"), ensure_ascii=False) + "\n",
-                    encoding="utf-8")
+                    + json.dumps(_user("u2", "Review \u2028 again"), ensure_ascii=False) + "\n"
+                    + json.dumps({"type": "summary", "summary": "s"}) + "\n",
+                    encoding="utf-8")  # the trailing line keeps a splitlines() break from being the tail
     assert pi._final_assistant_text_from_jsonl(path) == ""
 
 
@@ -521,3 +522,53 @@ def test_r3_a_parallel_tool_call_continuing_across_a_tool_result_keeps_the_answe
         {"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}}
     path = _jsonl(tmp_path, [_user("u1"), first, result, second, _asst("Done\nAGREE", mid="m2", uuid="b3")])
     assert pi._final_assistant_text_from_jsonl(path) == "Done\nAGREE"
+
+
+# Round 4 (agent-harness#1002): replays of superseded versions, stop-state rewrites, stripped
+# identity, and the two fail-closed clauses no earlier test reached.
+
+
+def test_r4_a_replay_of_the_open_version_after_completion_keeps_the_answer(tmp_path):
+    open_ = _asst("Review\nAGREE", mid="m", uuid="a", stop=None)
+    path = _jsonl(tmp_path, [_user("u"), open_, _asst("Review\nAGREE", mid="m", uuid="a"), open_])
+    assert pi._final_assistant_text_from_jsonl(path) == "Review\nAGREE"
+
+
+def test_r4_a_replay_of_a_superseded_block_does_not_revert_it(tmp_path):
+    first = _asst("1. Blocking\nDISAGREE", mid="m", uuid="a1", stop=None)
+    path = _jsonl(tmp_path, [_user("u1"), first, _asst("No findings", mid="m", uuid="a1", stop=None),
+                             first, _asst("REVIEW END", mid="m", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path) == "No findings\nREVIEW END"
+
+
+@pytest.mark.parametrize("before", ["max_tokens", _MISSING])
+def test_r4_only_an_open_stop_reason_may_change(tmp_path, before):
+    first = _asst("1. Blocking\nDISAGREE", mid="m", uuid="r1")
+    if before is _MISSING:
+        del first["message"]["stop_reason"]
+    else:
+        first["message"]["stop_reason"] = before
+    path = _jsonl(tmp_path, [_user("u1"), first, _asst("1. Blocking\nDISAGREE", mid="m", uuid="r1")])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+@pytest.mark.parametrize("tail_uuid", [None, "fresh"])
+@pytest.mark.parametrize("current", [True, False])
+def test_r4_a_history_answer_stripped_of_its_id_cannot_become_the_answer(tmp_path, tail_uuid, current):
+    records = [_asst("Old review\nAGREE", mid="old", uuid="a0"), _user("u2", "Review again")]
+    if current:
+        records.append(_asst("Current review\nDISAGREE", mid="new", uuid="a1"))
+    records.append(_asst("Old review\nAGREE", mid=None, uuid=tail_uuid))
+    assert pi._final_assistant_text_from_jsonl(_jsonl(tmp_path, records)) == ""
+
+
+def test_r4_a_repeated_identityless_record_in_the_turn_fails_closed(tmp_path):
+    path = _jsonl(tmp_path, [_user("u2"), _asst("Old\nAGREE", mid=None), _asst("Current\nDISAGREE", mid=None),
+                             _asst("Old\nAGREE", mid=None)])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_r4_uuid_and_uuidless_records_of_the_final_message_fail_closed(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Current\nDISAGREE", mid="m", uuid="a1", stop=None),
+                             _asst("Old\nAGREE", mid="m")])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
