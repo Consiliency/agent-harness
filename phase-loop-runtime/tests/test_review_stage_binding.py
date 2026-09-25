@@ -1005,6 +1005,54 @@ def test_falsifier_stage_ignores_ambient_git_dir_and_replace_ref(tmp_path, monke
         review_stage.remove_review_stage(staged)
 
 
+def test_falsifier_stage_refuses_unenumerable_extra_directory(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    staged = review_stage.stage_review_tree(repo)
+    hidden = staged / "hidden_extra"
+    hidden.mkdir()
+    (hidden / "injected.py").write_text("hostile bytes\n", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def refuse_hidden(path):
+        if Path(path) == hidden:
+            raise PermissionError("cannot enumerate staged directory")
+        return real_scandir(path)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(review_stage.os, "scandir", refuse_hidden)
+            with pytest.raises(ValueError, match="enumerat"):
+                review_stage.revalidate_falsifier_staged_tree(staged=staged, reviewed_sha=head)
+    finally:
+        review_stage.remove_review_stage(staged)
+
+
+def test_falsifier_authorization_ignores_ambient_git_repository_controls(tmp_path, monkeypatch):
+    from phase_loop_runtime.advisor_board import backing
+
+    repo_a = _git_repo(tmp_path / "repo-a")
+    repo_b = tmp_path / "repo-b"
+    subprocess.run(["git", "clone", "-q", str(repo_a), str(repo_b)], check=True)
+    head = subprocess.check_output(["git", "-C", str(repo_a), "rev-parse", "HEAD"], text=True).strip()
+    authorization_a = backing.prepare_falsifier_isolation_authorization(repo=repo_a, reviewed_sha=head)
+    try:
+        monkeypatch.setenv("GIT_DIR", str(repo_a / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(repo_a))
+        with pytest.raises(ValueError, match="repository drifted"):
+            backing.revalidate_falsifier_isolation_authorization(authorization_a, repo=repo_b)
+
+        authorization_b = backing.prepare_falsifier_isolation_authorization(repo=repo_b, reviewed_sha=head)
+        try:
+            monkeypatch.delenv("GIT_DIR")
+            monkeypatch.delenv("GIT_WORK_TREE")
+            backing.revalidate_falsifier_isolation_authorization(authorization_b, repo=repo_b)
+        finally:
+            backing.close_falsifier_isolation_authorization(authorization_b)
+    finally:
+        backing.close_falsifier_isolation_authorization(authorization_a)
+
+
 @pytest.mark.parametrize("variable", ["extras", "dependency_groups"])
 def test_falsifier_unsupported_dependency_marker_records_error(tmp_path, variable):
     from types import SimpleNamespace

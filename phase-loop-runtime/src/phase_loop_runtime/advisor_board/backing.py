@@ -919,6 +919,7 @@ def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=3,
+            env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
         ).strip()
     except (OSError, subprocess.SubprocessError):
         raise ValueError("HARDEN review has no canonical repository authority") from None
