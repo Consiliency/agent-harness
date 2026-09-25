@@ -292,7 +292,7 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
                     raise ValueError("falsifier staged file became a symlink")
                 payload = os.readlink(target).encode("utf-8", "surrogateescape")
             elif target.is_file():
-                actual_mode = "100755" if os.access(target, os.X_OK) else "100644"
+                actual_mode = "100755" if stat.S_IMODE(target.stat().st_mode) & 0o111 else "100644"
                 if actual_mode != mode:
                     raise ValueError("falsifier staged executable bit changed")
                 payload = target.read_bytes()
@@ -330,7 +330,7 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
     project = stage / "phase-loop-runtime" / "pyproject.toml"
     if project.is_file():
         payload = tomllib.loads(project.read_text(encoding="utf-8"))
-        declared = payload.get("project", {}).get("dependencies", ())
+        declared = payload.get("project", {}).get("dependencies", [])
         if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
             raise ValueError("falsifier project dependencies are invalid")
         requirements.extend(declared)
@@ -420,7 +420,7 @@ def _run_bounded_falsifier_node(
         "  def pytest_runtest_logreport(self, report):\n"
         "   if report.when == 'call':\n"
         "    calls.append({'nodeid': report.nodeid, 'outcome': report.outcome, "
-        "'wasxfail': bool(getattr(report, 'wasxfail', False))})\n"
+        "'wasxfail': hasattr(report, 'wasxfail')})\n"
         " code=pytest.main(['-q','-c','/dev/null','--rootdir=/work','-o','addopts=',"
         "'-p','no:cacheprovider','--junitxml=/work/.falsifier-junit.xml',"
         "sys.argv[1]], plugins=[Reporter()])\n"
@@ -453,7 +453,10 @@ def _run_bounded_falsifier_node(
     except BrokenPipeError:
         pass
     finally:
-        proc.stdin.close()
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
     streams = {proc.stdout: bytearray(), proc.stderr: bytearray()}
     selector = selectors.DefaultSelector()
     for stream in streams:

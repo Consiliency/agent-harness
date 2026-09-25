@@ -1249,9 +1249,9 @@ def prepare_falsifier_isolation_authorization(
     return authorization
 
 
-def revalidate_falsifier_isolation_authorization(
-    authorization: FalsifierIsolationAuthorization | None, *, repo: Path,
-) -> None:
+def _falsifier_authorization_lease(
+    authorization: FalsifierIsolationAuthorization | None,
+) -> _ReviewInvocationLease:
     if (
         not isinstance(authorization, FalsifierIsolationAuthorization)
         or authorization._seal is not _AUTHORIZATION_SEAL
@@ -1259,10 +1259,17 @@ def revalidate_falsifier_isolation_authorization(
         or not authorization.child_credentialless
         or authorization.child_network_egress
         or authorization.live_tree_exposed
-        or authorization.canonical_repo_sha256 != _canonical_repo_digest(repo)
     ):
         raise ValueError("missing, forged, or mismatched falsifier authorization")
-    lease = _lease_for(authorization)  # type: ignore[arg-type]
+    return _lease_for(authorization)  # type: ignore[arg-type]
+
+
+def revalidate_falsifier_isolation_authorization(
+    authorization: FalsifierIsolationAuthorization | None, *, repo: Path,
+) -> None:
+    lease = _falsifier_authorization_lease(authorization)
+    if authorization.canonical_repo_sha256 != _canonical_repo_digest(repo):
+        raise ValueError("falsifier authorization repository drifted")
     with lease.lock:
         if lease.closed or (
             not lease.active
