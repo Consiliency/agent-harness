@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Review board: `repo_dir` is the review target (agent-harness#1053)
+
+- `invoke_board(repo_dir=...)` now makes that repository the HARDEN review authority -- the tree
+  the authorization fingerprints and the one staged for the seats -- instead of whatever
+  directory the process runs in (maintainer decision on agent-harness#1053). An explicit
+  `canonical_repo_authority` still takes precedence, and a governed request (one carrying a
+  pre-minted authorization) is not moved by `repo_dir`. A `repo_dir` outside any git work tree
+  (no `.git` entry at it or any ancestor) cannot be fingerprinted and keeps the historical cwd
+  authority; a real repository whose resolution fails reaches the typed refusal rather than
+  silently reviewing the cwd. Passing `repo_dir` does not make a request "governed".
+
 ### Two cross-worker test races fixed, un-quarantined (agent-harness#987)
 
 - `test_validate_roadmap_cli_subcommand` wrote its roadmap straight into a bare tempdir, so
