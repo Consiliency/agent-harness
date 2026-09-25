@@ -80,4 +80,4 @@ FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::t
 FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_finding_reviewed_sha_mismatch
 FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_green_receipt_requires_ruling
 FAILED phase-loop-runtime/tests/test_governed_review.py::ExecfindFindingTests::test_red_receipt_requires_ruling
-39 failed, 46 passed in 4.12s
+39 failed, 46 passed in 4.18s
