@@ -209,6 +209,8 @@ def test_red_output_digest_golden():
 
 def test_frozen_inventory_exact():
     assert tdd.scan_inventory(_receipt()) is None
+    collected = {node.removeprefix("phase-loop-runtime/") for node in tdd.EXPECTED_RED_NODES}
+    assert tdd.scan_inventory(_receipt(nodes=collected)) is None
     missing = set(tdd.FROZEN_FILES) - {tdd.FROZEN_TEST_FILES[1]}
     assert "inventory" in tdd.scan_inventory(_receipt(files=missing))
     missing_node = set(tdd.EXPECTED_RED_NODES) - {next(iter(tdd.EXPECTED_RED_NODES))}

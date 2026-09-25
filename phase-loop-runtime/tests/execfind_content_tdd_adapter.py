@@ -128,7 +128,12 @@ def scan_inventory(receipt: object) -> str | None:
     paths = {path for path, _digest in receipt.test_files}
     if paths != FROZEN_FILES or len(receipt.test_files) != len(FROZEN_FILES):
         return "receipt test_files inventory differs from the frozen corpus"
-    nodes = set(receipt.red_nodeids)
+    # pytest --collect-only reports paths relative to its configured rootdir
+    # (phase-loop-runtime), while failure summaries use repo-relative paths.
+    nodes = {
+        f"phase-loop-runtime/{node}" if node.startswith("tests/") else node
+        for node in receipt.red_nodeids
+    }
     if not EXPECTED_RED_NODES <= nodes:
         return "receipt omits a frozen RED node id"
     return None
