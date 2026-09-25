@@ -4432,6 +4432,12 @@
           "roadmap_sha256": "0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1056"
+        },
+        {
+          "plan_sha256": "a17ba6ba864762bb6338aed89ddb1cbb841005a13e776d78f087436fa9d514d9",
+          "roadmap_sha256": "0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1056"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
@@ -4653,6 +4659,12 @@
         },
         {
           "plan_sha256": "5747f4d9ca4cd8c1e7f92f6bd9a7c76a703d719ddf63b64617a7ed7fa6114dc6",
+          "roadmap_sha256": "0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1056"
+        },
+        {
+          "plan_sha256": "cbb5e75ba7a832245bade95c6efc6a4f035d351cef2952b9a4d79eb8b6c412fa",
           "roadmap_sha256": "0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1056"
@@ -8633,56 +8645,56 @@
         {
           "at": "2026-09-20T10:58:24Z",
           "by": "claude-plan-detailed",
+          "transition": "committed",
           "metadata": {
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "planning_artifact_only": true,
             "recorded_as": "proposed",
             "repair_note": "original event used a non-vocabulary literal under a `status` key; rewritten to the runtime vocabulary by Consiliency/agent-harness#922"
-          },
-          "transition": "committed"
+          }
         },
         {
           "at": "2026-09-20T12:37:03Z",
           "by": "claude-execute-detailed",
+          "transition": "executing",
           "metadata": {
-            "implementation_pr": "Consiliency/agent-harness#921",
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
             "maintainer_ratified_at": "2026-09-20T12:02:56Z",
-            "plan_pr": "Consiliency/agent-harness#918",
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
-            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
-            "record_pr": "Consiliency/agent-harness#919",
             "recorded_as": "ratified",
+            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
+            "plan_pr": "Consiliency/agent-harness#918",
+            "record_pr": "Consiliency/agent-harness#919",
             "red_lane_pr": "Consiliency/agent-harness#920",
+            "implementation_pr": "Consiliency/agent-harness#921",
             "repair_note": "the ratification was recorded under a `status` key with a non-vocabulary literal; execution began when PR 921 was opened"
-          },
-          "transition": "executing"
+          }
         },
         {
           "at": "2026-09-20T16:39:04Z",
           "by": "claude-execute-detailed",
+          "transition": "completed",
           "metadata": {
-            "final_review_four_vendor_agree": true,
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
             ],
             "landed": {
-              "commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
               "pr": "Consiliency/agent-harness#921",
+              "commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
               "record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a"
             },
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "final_review_four_vendor_agree": true,
             "residuals": "Consiliency/agent-harness#915 items 3-7"
-          },
-          "transition": "completed"
+          }
         }
       ],
       "owner_skill": "claude-plan-detailed",
@@ -8758,6 +8770,12 @@
         },
         {
           "plan_sha256": "58db8db6e11290a7123a81fb52992bf08cf32e2f281dbbdbe979d1849e4fb05b",
+          "roadmap_sha256": "0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1056"
+        },
+        {
+          "plan_sha256": "f473d1717f132f6f076da966f20209e659f9dffcc178e1fae6af1a67bc50ed9b",
           "roadmap_sha256": "0d5f3093325306034a6bf5d011da843ef1f23f8cb48e217fa84c2c29d42ef1e6",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1056"
