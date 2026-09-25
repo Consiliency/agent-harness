@@ -73,6 +73,7 @@ __all__ = [
 ]
 
 REVIEW_STAGE_DIR_PREFIX = "pl-panel-stage-"
+_FALSIFIER_SYSTEM_ROOTS = (Path("/usr"), Path("/lib"), Path("/lib64"), Path("/bin"))
 
 # Fixed name of the staged tree INSIDE the authorized staged dir. Fixed, not
 # caller-chosen, so the authorization's digest and the validator refer to the same
@@ -408,6 +409,12 @@ def run_bounded_falsifier_node(
         )
 
 
+def _falsifier_repo_exposed_by_system_mount(repo: Path) -> bool:
+    source = Path(repo).resolve()
+    return any(root.exists() and source.is_relative_to(root.resolve())
+               for root in _FALSIFIER_SYSTEM_ROOTS)
+
+
 def _run_bounded_falsifier_node(
     *, staged: Path, dependencies: Path, nodeid: str,
     wall_clock_s: float, output_cap_bytes: int,
@@ -420,9 +427,9 @@ def _run_bounded_falsifier_node(
         raise ValueError("falsifier requires canonical bwrap and python3")
     stage = Path(staged).resolve(strict=True)
     argv = [str(bwrap), "--unshare-all", "--die-with-parent", "--new-session", "--clearenv"]
-    for system_root in ("/usr", "/lib", "/lib64", "/bin"):
-        if Path(system_root).exists():
-            argv.extend(("--ro-bind", system_root, system_root))
+    for system_root in _FALSIFIER_SYSTEM_ROOTS:
+        if system_root.exists():
+            argv.extend(("--ro-bind", str(system_root), str(system_root)))
     argv.extend(("--ro-bind", str(dependencies), "/deps"))
     token = secrets.token_hex(24)
     reporting_key = secrets.token_hex(32).encode("ascii")
@@ -545,6 +552,7 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
     return subprocess.run(
         ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         capture_output=True, text=True, check=check,
+        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
     ).stdout
 
 

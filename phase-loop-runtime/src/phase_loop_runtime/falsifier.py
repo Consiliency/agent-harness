@@ -40,6 +40,7 @@ def _git(repo: Path, *args: str) -> bytes:
     return subprocess.run(
         ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         capture_output=True, check=True,
+        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
     ).stdout
 
 
@@ -61,11 +62,26 @@ def _clean_exact_source(repo: Path, sha: str) -> None:
             if kind != b"blob":
                 raise ValueError("falsifier source contains an unsupported Git entry")
             expected[os.fsdecode(raw_path)] = mode.decode(), oid.decode()
+    index: dict[str, tuple[str, str]] = {}
+    for entry in _git(repo, "ls-files", "--stage", "-z").split(b"\0"):
+        if entry:
+            header, raw_path = entry.split(b"\t", 1)
+            mode, oid, stage = header.split(b" ")
+            path = os.fsdecode(raw_path)
+            if stage != b"0" or path in index:
+                raise ValueError("falsifier source is not clean")
+            index[path] = mode.decode(), oid.decode()
+    if index != expected:
+        raise ValueError("falsifier source is not clean")
     indexed = _git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
     paths = [os.fsdecode(path) for path in indexed.split(b"\0") if path]
     if len(paths) != len(set(paths)) or set(paths) != set(expected):
         raise ValueError("falsifier source is not clean")
     for rel in paths:
+        parts = Path(rel).parts
+        if any((repo.joinpath(*parts[:depth])).is_symlink()
+               for depth in range(1, len(parts))):
+            raise ValueError("falsifier source is not clean")
         target = repo / rel
         mode, oid = expected[rel]
         if target.is_symlink():
@@ -144,7 +160,7 @@ def run_finding_falsifier(
     wall_clock_s: float, output_cap_bytes: int,
 ) -> FalsifierRunResult:
     """Run the attached node and record its observed, untrusted outcome."""
-    repo = Path(repo).resolve(strict=True)
+    repo = Path(repo)
     backing._falsifier_authorization_lease(authorization)
     if (isinstance(wall_clock_s, bool) or not isinstance(wall_clock_s, (int, float))
             or not math.isfinite(wall_clock_s) or wall_clock_s <= 0):
@@ -159,17 +175,19 @@ def run_finding_falsifier(
     junit_path: str | None = None
     staged: Path | None = None
     try:
+        repo = repo.resolve(strict=True)
         backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+        if review_stage._falsifier_repo_exposed_by_system_mount(repo):
+            raise ValueError("canonical repository exposed by falsifier system mount")
         _clean_exact_source(repo, authorization.reviewed_sha)
         backing.activate_falsifier_isolation_authorization(authorization, repo=repo)
-        candidate_stage = review_stage.stage_review_tree(repo)
-        if (candidate_stage.is_symlink()
-                or candidate_stage.parent.resolve() != Path(tempfile.gettempdir()).resolve()
-                or not candidate_stage.name.startswith(review_stage.REVIEW_STAGE_DIR_PREFIX)
-                or candidate_stage.resolve() == repo
-                or repo in candidate_stage.resolve().parents):
+        staged = review_stage.stage_review_tree(repo)
+        if (staged.is_symlink()
+                or staged.parent.resolve() != Path(tempfile.gettempdir()).resolve()
+                or not staged.name.startswith(review_stage.REVIEW_STAGE_DIR_PREFIX)
+                or staged.resolve() == repo
+                or repo in staged.resolve().parents):
             raise ValueError("falsifier stage is not an independent clone")
-        staged = candidate_stage
         review_stage.revalidate_falsifier_staged_tree(
             staged=staged, reviewed_sha=authorization.reviewed_sha,
         )
@@ -201,11 +219,13 @@ def run_finding_falsifier(
                     if outcome == "red_on_head":
                         red_digest = hashlib.sha256(stdout + stderr).hexdigest()
                     # The clone is removed below; no live JUnit path is retained.
-    except (OSError, subprocess.SubprocessError, ValueError, RecursionError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError, RuntimeError) as exc:
         detail = str(exc)
     finally:
         try:
             if staged is not None:
+                if staged.resolve() == repo:
+                    raise OSError("refusing to remove canonical repository as falsifier stage")
                 review_stage.remove_review_stage(staged)
                 if os.path.lexists(staged):
                     raise OSError("stage remains after removal")

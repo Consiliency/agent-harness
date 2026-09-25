@@ -196,13 +196,24 @@ class TestTrainWiring:
             raise ValueError("gemini_heartbeat_unqualified")
 
         monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", _raise)
-        monkeypatch.setattr(live, "is_git_repository", never)
-        monkeypatch.setattr(live, "fabpub_capability_active", never)
-        monkeypatch.setattr(tr, "run_train_generation_leases", never)
+        # Record every fence probe (agent-harness#1065 F010): a stub that raises could be
+        # swallowed by a broad except; a recorded call cannot.
+        probes: list[str] = []
+
+        def _probe(name):
+            def _record(*_a, **_k):
+                probes.append(name)
+                raise AssertionError(f"{name} must not run before the refusal")
+            return _record
+
+        monkeypatch.setattr(live, "is_git_repository", _probe("is_git_repository"))
+        monkeypatch.setattr(live, "fabpub_capability_active", _probe("fabpub_capability_active"))
+        monkeypatch.setattr(tr, "run_train_generation_leases", _probe("run_train_generation_leases"))
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
         result = tr.run_train(parse_train_roadmap(PREBUILT_1NODE_MD), ledger, run_mode="governed",
-                              resolve_workspace=never, review_monitoring_policy=HB)
+                              resolve_workspace=_probe("resolve_workspace"), review_monitoring_policy=HB)
         assert result["reason"] == "gemini_heartbeat_unqualified" and not ledger.parent.exists()
+        assert probes == [], probes
 
     def test_run_train_refuses_heartbeat_only_outside_governed_mode(self, tmp_path):
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
@@ -323,3 +334,34 @@ class TestCli:
         cli.main(["run-train", "--train", str(train), "--governed", "--review-only", *flag,
                   "--workspace", "repo-a=" + str(c["repo"]), "--ledger-dir", str(ledger.parent)])
         assert seen["review_monitoring_policy"] == expected
+
+
+def test_run_train_refuses_an_unknown_policy_before_any_effect(tmp_path):
+    """agent-harness#1065 (F029): the invalid-policy refusal at the public boundary."""
+    ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+    result = tr.run_train(None, ledger, run_mode="governed", resolve_workspace=never,
+                          review_monitoring_policy="silence_deadline")
+    assert result["status"] == "review_halted" and result["reason"] == "review_monitoring_policy_invalid"
+    assert result["terminal_blocker"]["human_required"] is False
+    assert not ledger.parent.exists()
+
+
+def test_the_cli_refuses_an_unqualified_agy_route_before_effects(request, monkeypatch, capsys):
+    """agent-harness#1065 (F029): the agy-capability refusal on its own, not via the native-leg path."""
+    from phase_loop_runtime import cli
+    c = request.getfixturevalue("candidate")
+    train, ledger = _cli_candidate(c, monkeypatch)
+
+    calls = []
+
+    def _unqualified(board, policy, env=None):
+        calls.append(policy)
+        raise ValueError("gemini_heartbeat_unqualified")
+
+    monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", _unqualified)
+    before = ledger.read_bytes()
+    rc = cli.main(["run-train", "--train", str(train), "--governed", "--review-only", "--monitoring-policy", HB,
+                   "--workspace", "repo-a=" + str(c["repo"]), "--ledger-dir", str(ledger.parent)])
+    assert rc == 2 and "gemini_heartbeat_unqualified" in capsys.readouterr().err
+    assert calls == [HB], "the refusal came from the agy preflight itself"
+    assert ledger.read_bytes() == before and not (ledger.parent / "broker").exists()

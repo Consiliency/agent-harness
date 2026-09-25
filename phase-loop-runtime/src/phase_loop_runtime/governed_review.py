@@ -287,11 +287,13 @@ def _block_result(
     detail: str,
     *,
     extra_findings: tuple[ReviewFinding, ...] = (),
+    seat_key: str | None = None,
+    reviewed_sha: str | None = None,
 ) -> GateResult:
     """A fail-closed governed result: held (not promoted), non-degraded block.
 
-    ``extra_findings`` (agent-harness#906) carries the per-leg diagnostics behind a
-    structural hold so the reason each leg was unusable survives. ``panel`` stays
+    ``extra_findings`` (agent-harness#906) carries per-leg diagnostics or review
+    findings behind a structural hold so their seat attribution survives. ``panel`` stays
     ``None`` on purpose: ``run_governed_premerge_loop``'s reviewer-floor guard keys on
     ``gate.panel``, and attaching a zero-usable panel here would relabel the hold
     ``below_reviewer_floor`` with the wrong remedy.
@@ -306,6 +308,8 @@ def _block_result(
             reason=detail,
             severity="block",
             blocker_class="review_gate_block",
+            seat_key=seat_key,
+            reviewed_sha=reviewed_sha,
         ),) + tuple(extra_findings),
     )
 
@@ -703,18 +707,33 @@ def governed_board_gate(
         try:
             attachment = _pi.parse_finding_falsifiers(leg.text)
         except ValueError as exc:
+            seat_key = leg.seat_key or leg.leg
             return _block_result(
                 "invalid_falsifier", "governed_invalid_falsifier",
-                f"seat {leg.seat_key} supplied an invalid falsifier: {exc}; holding (non-human)",
+                f"seat {seat_key} supplied an invalid falsifier: {exc}; holding (non-human)",
+                seat_key=seat_key, reviewed_sha=reviewed_sha,
+                extra_findings=_findings_from_panel(
+                    panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+                ),
             )
         if attachment.falsifiers:
             _pi.attach_finding_falsifiers(leg, attachment)
             attachments.append((leg, attachment))
-    if (any(len(attachment.falsifiers) > 4 for _, attachment in attachments)
+    per_seat_exceeded = tuple(leg.seat_key or leg.leg for leg, attachment in attachments
+                              if len(attachment.falsifiers) > 4)
+    if (per_seat_exceeded
             or sum(len(attachment.falsifiers) for _, attachment in attachments) > 12):
+        involved_seats = per_seat_exceeded or tuple(leg.seat_key or leg.leg
+                                                    for leg, _ in attachments)
         return _block_result(
             "falsifier_count_exceeded", "governed_falsifier_count_exceeded",
-            "falsifier count exceeds four per seat or twelve per board; holding (non-human)",
+            f"falsifier count exceeds four per seat or twelve per board "
+            f"(seats: {', '.join(involved_seats)}); holding (non-human)",
+            seat_key=involved_seats[0] if len(involved_seats) == 1 else None,
+            reviewed_sha=reviewed_sha,
+            extra_findings=_findings_from_panel(
+                panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+            ),
         )
     falsifier_runs: dict[tuple[str, str], FalsifierRunBinding] = {}
     if reviewed_sha is not None:

@@ -581,6 +581,7 @@ class TestPrebuiltRefresh:
 
         result = self._run(tmp_path, ledger, {}, head="sha-new-a", publish=_publish_refused)
         assert result["status"] == "blocked", result
+        assert result["detail"]["reason"] == "admission_rejected", "blocked at the publish site, not earlier"
         row = read_ledger(ledger)[admitted.node_id]
         assert row.status == "blocked" and self._binding(row) == self._binding(admitted)
 
@@ -618,6 +619,7 @@ class TestPrebuiltRefresh:
             _pr_merged_sha_fn=lambda *a, **k: None,
         )
         assert result["status"] == "blocked", result
+        assert result["detail"]["reason"] == "admission_rejected", "blocked at the publish site, not earlier"
         assert captured == [], "a fresh node's stale record is never captured"
         row = read_ledger(ledger)[admitted.node_id]
         assert row.status == "blocked" and (row.head_sha, row.pr_url, row.fab_run_id, row.merge_order) == (None,) * 4

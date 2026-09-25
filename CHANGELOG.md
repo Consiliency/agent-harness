@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Test hardening from the 0.7.18 president rulings (agent-harness#1064, agent-harness#1065, agent-harness#1070)
+
+- Train refusals: a refusal repeated across two runs keeps the whole admission binding, and the
+  refresh-refusal tests assert that they were blocked at their own publish site.
+- `run-train --monitoring-policy`: a direct `run_train` with an unknown policy and a CLI run with an
+  unqualified agy route are each refused before any effect. The fence test records its probes. The
+  policy's scope (the default train-level review only) is stated where it is declared.
+- The agy qualification observer tests kill their whole process session (no leaked provider), tolerate
+  a reaped pid, and pin that the owner walk examines pid 1. Tests and comments only; no runtime
+  behaviour changes.
+
 ### Qualified agy 1.2.11 entry image (agent-harness#1008)
 
 - Admit the latest 1.2.11 Linux x64 image for brokered Gemini heartbeat-only
