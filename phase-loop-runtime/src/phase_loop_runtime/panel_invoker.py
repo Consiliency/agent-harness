@@ -1304,6 +1304,10 @@ class PanelLegResult:
         return getattr(self, "_needs_native_agent", None)
 
     @property
+    def finding_falsifiers(self) -> "FindingFalsifierAttachment | None":
+        return getattr(self, "_finding_falsifiers", None)
+
+    @property
     def provider_refusal_kind(self) -> str | None:
         """Typed provider refusal supplied by an adapter, never transcript text."""
         return getattr(self, "_provider_refusal_kind", None)
@@ -1350,6 +1354,26 @@ def attach_native_agent_request(
     serializers never see it; read back via the ``needs_native_agent`` property.
     Returns ``leg`` for call-site convenience."""
     object.__setattr__(leg, "_needs_native_agent", request)
+    return leg
+
+
+@dataclass(frozen=True)
+class FindingFalsifier:
+    finding_id: str
+    new_test_path: str
+    expected_nodeid: str
+    diff: str
+
+
+@dataclass(frozen=True)
+class FindingFalsifierAttachment:
+    falsifiers: tuple[FindingFalsifier, ...]
+
+
+def attach_finding_falsifiers(
+    leg: PanelLegResult, attachment: FindingFalsifierAttachment,
+) -> PanelLegResult:
+    object.__setattr__(leg, "_finding_falsifiers", attachment)
     return leg
 
 
@@ -1667,6 +1691,41 @@ def terminal_verdict(text: str) -> str | None:
     return None
 
 
+def parse_finding_falsifiers(text: str) -> FindingFalsifierAttachment:
+    """Parse fenced, single-new-test reproductions from a review leg."""
+    from .falsifier import _one_new_test_diff
+
+    fence = re.compile(r"(?m)^```falsifier\s*\n(.*?)^```\s*$", re.DOTALL)
+    attachments: list[FindingFalsifier] = []
+    seen: set[str] = set()
+    previous_end = 0
+    for match in fence.finditer(text):
+        preamble = text[previous_end:match.start()]
+        finding_lines = re.findall(r"(?m)^FINDING ([A-Za-z0-9_]+):", preamble)
+        if not finding_lines:
+            raise ValueError("falsifier block has no finding id")
+        finding_id = finding_lines[-1]
+        if finding_id in seen:
+            raise ValueError("finding has more than one falsifier block")
+        lines = match.group(1).splitlines(keepends=True)
+        if not lines or not lines[0].startswith("nodeid: "):
+            raise ValueError("falsifier block has no nodeid")
+        nodeid = lines[0][len("nodeid: "):].strip()
+        path = f"phase-loop-runtime/tests/test_finding_{finding_id}.py"
+        item = FindingFalsifier(
+            finding_id=finding_id, new_test_path=path,
+            expected_nodeid=nodeid, diff="".join(lines[1:]),
+        )
+        if not _one_new_test_diff(item):
+            raise ValueError("falsifier must create only its named new test")
+        attachments.append(item)
+        seen.add(finding_id)
+        previous_end = match.end()
+    if text.count("```falsifier") != len(attachments):
+        raise ValueError("incomplete falsifier block")
+    return FindingFalsifierAttachment(tuple(attachments))
+
+
 # #63: panel mode. "review" is the pre-merge code-review framing (default,
 # back-compat) that requires a conforming AGREE/PARTIALLY AGREE/DISAGREE verdict;
 # "advisory" is general adversarial/advisory analysis (architecture, product,
@@ -1904,6 +1963,7 @@ _REVIEW_INSTRUCTIONS = (
     "maximum available reasoning budget. End with exactly one of: AGREE / "
     "PARTIALLY AGREE / DISAGREE — use DISAGREE only "
     "when there is a blocking defect."
+    " For an executable FINDING F001, use one ```falsifier fenced block with nodeid: phase-loop-runtime/tests/test_finding_F001.py::test_name followed by a diff creating only that new test; close the fence before the terminal verdict. The observed pytest outcome is advisory."
 )
 
 # #63: advisory framing — general adversarial/advisory analysis, NOT a code review.
