@@ -8,8 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Qualified agy 1.2.11 entry image (agent-harness#1008)
 
-- Google published agy 1.2.11 on 2026-09-25, and agy auto-updates, so hosts moved to it and the
-  Gemini seat refused before launch (only 1.2.10 was qualified); boards dropped to three vendors.
+- Google published agy 1.2.11 on 2026-09-25. The maintainer host's agy auto-updated to it, and its
+  Gemini seat then refused before launch (only 1.2.10 was qualified), so boards there ran without a
+  Gemini seat. Other hosts whose agy auto-updates are affected the same way.
   1.2.11 is now the admitted Linux x64 image (SHA256 `ec7cf797…`, new help digest). Its release
   asset matches the vendor-published digest, and its executable is byte-identical to the
   auto-updated binary. A live completion, cancellation and owner-loss qualification passed
