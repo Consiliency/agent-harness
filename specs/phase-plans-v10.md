@@ -1655,7 +1655,9 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   built-in preset task has a built-in table. With every vendor available, each table composes exactly
   the seats that task seats today; for code review, "today" means the landing path's `DEFAULT_BOARD`.
   Falsified by:
-  - an unknown key, task, vendor or lens being accepted;
+  - an unknown key, task, vendor or lens being accepted, or any malformed `[panel.*]` value being
+    accepted instead of refused with a typed reason (a wrong type, an empty or duplicate-bearing
+    `vendors` list, or empty lens text);
   - a declared custom lens being refused, or a declared lens that reuses a built-in lens name being
     accepted;
   - a landing proceeding after the user file's content changed during the run;
@@ -1705,8 +1707,8 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
       missing named seat);
   - a landing proceeding with fewer than two usable panel seats, or without a president ruling;
   - the key being accepted in any table other than `code-review`;
-  - a value below 1 or above the board-vendor count being loaded or clamped instead of refused with a
-    typed reason;
+  - any value other than an integer from 1 to the board-vendor count (for example 0, 5, 2.5, `true` or
+    `"2"`) being loaded, coerced or clamped instead of refused with a typed reason;
   - a lowering accepted from any source other than the user or base-revision repository
     `advisor-boards.toml` (a governance profile cannot lower it);
   - a landing proceeding without a seat an explicit profile requires.
