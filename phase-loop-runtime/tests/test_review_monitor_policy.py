@@ -360,7 +360,7 @@ def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
-        assert death_signal.read_text() == str(signal.SIGKILL)
+        assert int(death_signal.read_text()) == int(signal.SIGKILL)
         descendant = _host_pid(marker.read_text())
         owner.kill()
         owner.wait(5)
