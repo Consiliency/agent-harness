@@ -2386,7 +2386,7 @@ def _provider_launch_prefix(cwd, retain_caps=()):
         # its cwd -- codex's own sandbox does -- then fails with ENOENT before any inference
         # (agent-harness#908 board round 4, finding (f); reproduced with the real codex CLI:
         # `--wd` -> exit 1 "No such file or directory (os error 2)", path-based chdir -> OK).
-        # `env --chdir` runs after nsenter and setpriv, so the chdir is a plain path lookup in
+        # `env --chdir` runs after nsenter and capability setup, so the chdir is a plain path lookup in
         # the namespace the provider will live in; the cwd attested as ``provider_cwd_sha256``
         # is unchanged. A plain nested user+mount namespace does NOT reproduce the failure --
         # the fchdir()ed cwd stays reachable there -- so the class needs the provider's own
@@ -2420,10 +2420,28 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "sub
     """
     prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
     if process_owner:
-        # Enter the network namespace before creating the ownership PID namespace,
-        # but drop capabilities only AFTER both namespaces exist.
         position = prefix.index("setpriv") if "setpriv" in prefix else len(prefix)
-        prefix[position:position] = process_owner
+        if tuple(retain_caps) not in ((), ("setfcap",)):
+            raise ValueError("unsupported owned provider capability policy")
+        if retain_caps:
+            # Keep Codex in the holder's user namespace so its own sandbox can
+            # create another one. The unshare supervisor owns the PID namespace;
+            # the inner setpriv still drops every capability except SETFCAP.
+            prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
+                                         "/usr/bin/unshare", "--pid", "--fork",
+                                         "--kill-child=SIGKILL", "--mount-proc"]
+            inner_setpriv = prefix.index("setpriv", position + 1)
+            prefix[inner_setpriv + 1:inner_setpriv + 1] = ["--pdeathsig", "keep"]
+        else:
+            # Bubblewrap drops CAP_SETPCAP before a later setpriv can use it.
+            owner = list(process_owner)
+            if owner[0] != "/usr/bin/bwrap":
+                raise ValueError("unsupported owned provider")
+            owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
+                          "--gid", str(os.getgid()), "--cap-drop", "ALL"]
+            if position < len(prefix):
+                del prefix[position:prefix.index("--", position) + 1]
+            prefix[position:position] = owner
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
