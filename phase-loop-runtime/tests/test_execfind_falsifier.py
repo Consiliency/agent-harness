@@ -158,7 +158,7 @@ def _canonical_red_output():
 def _receipt(*, files=None, nodes=None, stdout="red.stdout.log", stderr="red.stderr.log"):
     return SimpleNamespace(
         test_files=tuple((name, "a" * 64) for name in (tdd.FROZEN_FILES if files is None else files)),
-        red_nodeids=tuple(tdd.EXPECTED_RED_NODES if nodes is None else nodes),
+        red_nodeids=tuple(tdd.EXPECTED_FROZEN_NODES if nodes is None else nodes),
         red_stdout_path=stdout,
         red_stderr_path=stderr,
         landing_commit="f" * 40,
@@ -196,6 +196,10 @@ def test_marker_exact_match_only():
     assert tdd.scan_red_output(valid) is None
     mutated = valid.replace("EXECFIND_RED::grammar\n", "EXECFIND_RED::grammar_extra\n")
     assert "markers" in tdd.scan_red_output(mutated)
+    uppercase_suffix = valid.replace("EXECFIND_RED::grammar\n", "EXECFIND_RED::grammarEXTRA\n")
+    assert "markers" in tdd.scan_red_output(uppercase_suffix)
+    punctuation_suffix = valid.replace("EXECFIND_RED::grammar\n", "EXECFIND_RED::grammar.bad\n")
+    assert "markers" in tdd.scan_red_output(punctuation_suffix)
     repeated = valid + f"\n{tdd.RED_ANCHOR_MARKER} EXECFIND_RED::grammar\n"
     assert "markers" in tdd.scan_red_output(repeated)
 
@@ -273,11 +277,19 @@ def test_red_output_digest_golden():
 def test_frozen_inventory_exact():
     assert tdd.scan_inventory(_receipt()) is None
     collected = {node.removeprefix("phase-loop-runtime/") for node in tdd.EXPECTED_RED_NODES}
+    collected |= {node.removeprefix("phase-loop-runtime/") for node in tdd.EXPECTED_GREEN_NODES}
     assert tdd.scan_inventory(_receipt(nodes=collected)) is None
     missing = set(tdd.FROZEN_FILES) - {tdd.FROZEN_TEST_FILES[1]}
     assert "inventory" in tdd.scan_inventory(_receipt(files=missing))
-    missing_node = set(tdd.EXPECTED_RED_NODES) - {next(iter(tdd.EXPECTED_RED_NODES))}
+    missing_node = collected - {next(iter(tdd.EXPECTED_RED_NODES)).removeprefix("phase-loop-runtime/")}
     assert "node id" in tdd.scan_inventory(_receipt(nodes=missing_node))
+    missing_control = collected - {"tests/test_execfind_falsifier.py::test_unexpected_pass_refused"}
+    assert "node id" in tdd.scan_inventory(_receipt(nodes=missing_control))
+    missing_golden = collected - {
+        "tests/test_advisor_board_golden.py::ExecfindGoldenBytesTest::"
+        "test_attached_falsifier_leaves_leg_golden_bytes_unchanged"
+    }
+    assert "node id" in tdd.scan_inventory(_receipt(nodes=missing_golden))
 
 
 def test_outcome_vocabulary():

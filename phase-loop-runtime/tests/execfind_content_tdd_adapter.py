@@ -63,6 +63,55 @@ EXPECTED_RED_NODES = frozenset(
 ) | frozenset(
     f"{FROZEN_TEST_FILES[1]}::ExecfindFindingTests::test_{case}" for case in GOVERNED_CASES
 )
+EXPECTED_GREEN_NODES = frozenset({
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::ConcurrencyProofTests::test_invoke_board_max_concurrency_1_is_sequential",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::ConcurrencyProofTests::test_invoke_board_runs_seats_concurrently",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::ConcurrencyProofTests::test_invoke_panel_max_concurrency_1_is_sequential",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::ConcurrencyProofTests::test_invoke_panel_runs_legs_concurrently",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::ConcurrencyProofTests::test_max_concurrency_1_preserves_order_and_results",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::ExecfindGoldenBytesTest::test_attached_falsifier_leaves_leg_golden_bytes_unchanged",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenApiStabilityTests::test_default_board_yields_four_legs_in_board_order",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenApiStabilityTests::test_invoke_board_default_matches_invoke_panel_usable_semantics",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenPerLegLaunchTests::test_claude_argv_and_env_equal_legacy",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenPerLegLaunchTests::test_codex_argv_env_and_timeout_equal_legacy",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenPerLegLaunchTests::test_gemini_default_board_and_legacy_panel_share_flash_invocation",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenPerLegLaunchTests::test_per_leg_timeout_is_a_pure_function_of_the_staged_artifact",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_every_leg_launched_once_and_results_in_order_both_paths",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_failure_semantics_empty_on_ok_becomes_empty_both_paths",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_failure_semantics_raise_degrades_both_paths",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_failure_semantics_unknown_status_degrades_both_paths",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_mixed_per_leg_outcomes_classify_identically",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_ok_results_are_byte_identical_except_seat_key",
+    "phase-loop-runtime/tests/test_advisor_board_golden.py::GoldenWholeBoardBehaviorTests::test_seat_key_is_the_sole_documented_delta",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_every_expected_case_ran",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_frozen_inventory_exact",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_importerror_not_capability_absence",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_marker_exact_match_only",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_missing_capability_strict_green_fails",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_node_launch_guard_detects_attempt",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_red_output_digest_golden",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_rejected_recording_no_receipt",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_unexpected_pass_refused",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_unrelated_exception_propagates",
+    "phase-loop-runtime/tests/test_execfind_falsifier.py::test_verify_rescans_red_log",
+    "phase-loop-runtime/tests/test_governed_review.py::AutonomousShortCircuitTest::test_autonomous_makes_zero_panel_calls",
+    "phase-loop-runtime/tests/test_governed_review.py::GovernedGateTest::test_block_finding_holds_promotion",
+    "phase-loop-runtime/tests/test_governed_review.py::GovernedGateTest::test_deferred_claude_leg_is_a_warn_never_a_block",
+    "phase-loop-runtime/tests/test_governed_review.py::GovernedGateTest::test_deferred_leg_does_not_mask_a_real_disagree",
+    "phase-loop-runtime/tests/test_governed_review.py::GovernedGateTest::test_no_block_promotes_with_nits_recorded",
+    "phase-loop-runtime/tests/test_governed_review.py::GovernedGateTest::test_rejected_reason_as_text_would_block",
+    "phase-loop-runtime/tests/test_governed_review.py::GovernedGateTest::test_repo_dir_is_forwarded_to_panel_invoker",
+    "phase-loop-runtime/tests/test_governed_review.py::ReviewerPoolTest::test_author_vendor_mapping",
+    "phase-loop-runtime/tests/test_governed_review.py::ReviewerPoolTest::test_author_vendor_only_degrades",
+    "phase-loop-runtime/tests/test_governed_review.py::ReviewerPoolTest::test_no_disjoint_reviewer_blocks_fail_closed",
+    "phase-loop-runtime/tests/test_governed_review.py::ReviewerPoolTest::test_pool_excludes_author_vendor",
+    "phase-loop-runtime/tests/test_governed_review.py::ReviewerPoolTest::test_zero_authed_degrades",
+    "phase-loop-runtime/tests/test_governed_review.py::RunModeTest::test_closeout_context_run_mode_defaults_autonomous",
+    "phase-loop-runtime/tests/test_governed_review.py::RunModeTest::test_default_is_autonomous",
+    "phase-loop-runtime/tests/test_governed_review.py::VerdictClassifierTest::test_approving_phrasings_do_not_block",
+    "phase-loop-runtime/tests/test_governed_review.py::VerdictClassifierTest::test_real_block_verdicts_block",
+})
+EXPECTED_FROZEN_NODES = EXPECTED_RED_NODES | EXPECTED_GREEN_NODES
 RECEIPT_PATH = ".phase-loop/evidence/EXECFIND/content-tdd-receipt.json"
 RED_COMMAND = (
     f"env {ACTIVATION_ENV}=1 "
@@ -70,7 +119,7 @@ RED_COMMAND = (
     "python3 -m pytest -q --tb=line --color=no -p no:cacheprovider "
     + " ".join(FROZEN_TEST_FILES)
 )
-_MARKERS = re.compile(r"EXECFIND_RED::([a-z0-9_]+)")
+_MARKERS = re.compile(r"EXECFIND_RED::(\S+)")
 _FAILED = re.compile(r"(?m)^FAILED\s+(\S+::\S+)")
 
 
@@ -136,12 +185,12 @@ def scan_inventory(receipt: object) -> str | None:
         return "receipt test_files inventory differs from the frozen corpus"
     # pytest --collect-only reports paths relative to its configured rootdir
     # (phase-loop-runtime), while failure summaries use repo-relative paths.
-    nodes = {
+    nodes = [
         f"phase-loop-runtime/{node}" if node.startswith("tests/") else node
         for node in receipt.red_nodeids
-    }
-    if not EXPECTED_RED_NODES <= nodes:
-        return "receipt omits a frozen RED node id"
+    ]
+    if len(nodes) != len(EXPECTED_FROZEN_NODES) or set(nodes) != EXPECTED_FROZEN_NODES:
+        return "receipt node ids differ from the frozen corpus"
     return None
 
 
