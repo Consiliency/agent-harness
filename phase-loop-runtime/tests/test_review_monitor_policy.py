@@ -760,15 +760,20 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
     snapshots = []
     released = []
     judged_last_repaint = []
+    judged = bytearray()
+    last = 8  # the child repaints frames 1..last
     observe = monitor.observe
     novel = panel._tui_chunk_has_novel_content
 
-    def judging(chunk, seen):
-        # `done` waits until the LAST repaint has actually been judged, not on elapsed
-        # time (#1047): a stalled child can no longer skip the repaints' evaluation.
-        if b"(8s " in chunk:
+    def judging(chunk, seen, *rest):
+        # `done` waits until the LAST repaint has been judged -- recorded AFTER the
+        # detector returns, and matched across all judged text so a frame split over
+        # chunks still counts -- not on elapsed time (#1047, #1048 r1).
+        verdict = novel(chunk, seen, *rest)
+        judged.extend(chunk)
+        if f"({last}s ".encode() in judged:
             judged_last_repaint.append(True)
-        return novel(chunk, seen)
+        return verdict
 
     monkeypatch.setattr(panel, "_tui_chunk_has_novel_content", judging)
 
@@ -800,7 +805,7 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  "  time.sleep(.01)\n"
                  "print(line % 0, end='', flush=True)\n"
                  "wait(go, 3)\n"
-                 "for i in range(1, 9): print(line % i, end='', flush=True)\n"
+                 f"for i in range(1, {last + 1}): print(line % i, end='', flush=True)\n"
                  "wait(done, 4)\n",
                  str(go), str(done)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",

@@ -270,11 +270,18 @@ def test_module_level_quarantine_is_refused_at_collection(tmp_path) -> None:
     assert result.returncode == 4 and "inherited from a class or module" in result.stdout + result.stderr
 
 
-def test_one_mark_spread_over_many_parameters_counts_every_case(tmp_path) -> None:
-    """#1047: each parametrized case is a node; six quarantined cases exceed the cap."""
-    cases = ", ".join(f'pytest.param({i}, marks=pytest.mark.quarantine(reason="x"))'
-                      for i in range(QUARANTINE_CAP + 1))
-    body = f"@pytest.mark.parametrize('v', [{cases}])\ndef test_p(v): pass\ndef test_ok(): pass\n"
+@pytest.mark.parametrize("shape", ["per-case marks", "one shared mark"])
+def test_one_mark_spread_over_many_parameters_counts_every_case(tmp_path, shape) -> None:
+    """#1047: each parametrized case is a node; QUARANTINE_CAP + 1 quarantined cases exceed
+    the cap, whether each case carries its own mark or one decorator covers them all."""
+    if shape == "per-case marks":
+        cases = ", ".join(f'pytest.param({i}, marks=pytest.mark.quarantine(reason="x"))'
+                          for i in range(QUARANTINE_CAP + 1))
+        body = f"@pytest.mark.parametrize('v', [{cases}])\ndef test_p(v): pass\n"
+    else:
+        body = ('@pytest.mark.quarantine(reason="x")\n'
+                f"@pytest.mark.parametrize('v', range({QUARANTINE_CAP + 1}))\ndef test_p(v): pass\n")
+    body += "def test_ok(): pass\n"
     result = _run(tmp_path, body, enabled=True)
     output = result.stdout + result.stderr
     assert result.returncode == 4 and "every parametrized case counts" in output, output
