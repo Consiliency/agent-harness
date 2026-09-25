@@ -40,6 +40,7 @@ def _git(repo: Path, *args: str) -> bytes:
     return subprocess.run(
         ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         capture_output=True, check=True,
+        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
     ).stdout
 
 

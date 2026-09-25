@@ -909,6 +909,27 @@ def test_falsifier_source_rejects_dirty_index_even_with_clean_worktree(tmp_path,
         falsifier._clean_exact_source(repo, head)
 
 
+def test_falsifier_source_does_not_accept_alternate_git_index(tmp_path, monkeypatch):
+    from phase_loop_runtime import falsifier
+
+    repo = _git_repo(tmp_path / "repo")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    source = repo / "src.py"
+    source.write_text("staged replacement\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "src.py"], check=True)
+    source.write_text("live tree file\n", encoding="utf-8")
+    assert subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"]).strip()
+    alternate = tmp_path / "alternate-index"
+    subprocess.run(
+        ["git", "-C", str(repo), "read-tree", "HEAD"], check=True,
+        env={**os.environ, "GIT_INDEX_FILE": str(alternate)},
+    )
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate))
+
+    with pytest.raises(ValueError, match="not clean"):
+        falsifier._clean_exact_source(repo, head)
+
+
 def test_falsifier_refuses_repo_exposed_by_system_mount_before_staging(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
