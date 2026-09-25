@@ -777,13 +777,21 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  "import os, sys, time\n"
                  "line = '\\r\\x1b[2K* Herding... (%ss . esc to interrupt)\\r'\n"
                  "go, done = sys.argv[1], sys.argv[2]\n"
+                 # The session loop does not enforce timeout_s while a review monitor is
+                 # attached (#1045 president), so the child bounds its own waits: a broken
+                 # handshake exits in 10 s and fails `released`/`done` below, never hangs CI.
+                 "deadline = time.monotonic() + 10\n"
+                 "def wait(path):\n"
+                 " while not os.path.exists(path):\n"
+                 "  if time.monotonic() > deadline: sys.exit(3)\n"
+                 "  time.sleep(.01)\n"
                  "print(line % 0, end='', flush=True)\n"
-                 "while not os.path.exists(go): time.sleep(.01)\n"
+                 "wait(go)\n"
                  "for i in range(1, 9): print(line % i, end='', flush=True)\n"
-                 "while not os.path.exists(done): time.sleep(.01)\n",
+                 "wait(done)\n",
                  str(go), str(done)],
         cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
-        timeout_s=15, env=os.environ, review_monitor=monitor,
+        timeout_s=15, env=os.environ, review_monitor=monitor,  # not enforced; see the child
     )
     assert released and done.exists(), "the handshake never completed"
     ages = [s["last_genuine_progress_age_s"] for s in snapshots
