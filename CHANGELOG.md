@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.19] - 2026-09-26
+
 ### Closeout audit recognises the required skill handoff root (agent-harness#1084)
 
 - `phase-loop-closeout-audit` no longer reports `unknown_ignored` for the repo-local
@@ -21,6 +23,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   thinking and tool content, and reject incomplete or new-turn boundaries instead
   of reusing a stale verdict. Review and president PTY controls preserve the full
   message and existing owned-transcript cleanup.
+
+### Claude president format re-ask on a completed nonconforming turn (agent-harness#1016, agent-harness#1017)
+
+- The brokered Claude TUI adapter now returns an explicitly completed (`end_turn`) final
+  message that lacks `FORCING DECISION:`, so the existing president policy can make its one
+  format re-ask instead of the adapter waiting. Synthetic errors, `stop_sequence`, `max_tokens`,
+  tool use, pending turns, a new user turn and partial JSON stay fail closed, and cancellation is
+  re-checked before every broker-final return.
+
+### v10 roadmap: PANEL phase (agent-harness#1078, agent-harness#1079)
+
+- `specs/phase-plans-v10.md` gains Phase 18 (PANEL): panel vendor fallback by lane and a
+  distinct-vendor landing minimum, resealed with appended `plan_current_authority.v1` rows.
+  Roadmap only; no runtime behaviour changes yet.
 
 ### Test hardening from the 0.7.18 president rulings (agent-harness#1064, agent-harness#1065, agent-harness#1070)
 
