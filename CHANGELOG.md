@@ -20,13 +20,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   is refused before any probe. The JSON carries `board: "advisory"`, `composed_board`,
   `mode: "advisory"`, `gating: false` and the contract id and digest. Native fills bind the
   contract digest, so an advisory fill is refused by a default run and the reverse.
-- The runtime enforces it too. `invoke_board` refuses any landing path (a landing tier, review
-  policy, president seam or president fill) whose brief is the advisory contract, with
-  `advisory_contract_not_landing_evidence`, before any seat, fill or president runs. The governed
-  board gate holds with the same code before composition.
-- `--advisory` allows only the `GIT_*` variables that change no repository location,
-  configuration or program (editor, pager, prompt, ssh, identity, trace). Any other `GIT_*`
-  variable, including unknown ones, is refused before the run.
+- The runtime enforces it too. `invoke_board` raises `AdvisoryLandingRefused`
+  (`advisory_contract_not_landing_evidence`, deliberately not a `PresidentPolicyError`,
+  `ValueError`, `OSError` or `RuntimeError`) on any landing path (a landing tier, review policy,
+  president seam or president fill) whose brief is an advisory contract, before any seat, fill or
+  president runs. The governed board gate holds with the distinct category
+  `advisory_not_landing_evidence` before composition. Both resolve the brief once and pin that
+  text for the rest of the call, so a brief file replaced or created after the check cannot
+  change what runs. The match is against every advisory contract digest ever shipped.
+- `--advisory` removes every inherited `GIT_*` variable for the run, prints one note naming them,
+  and restores them afterwards: the run never uses the caller's repository, and the git probes of
+  its private authority must not be redirected or reconfigured. `HOME`, `XDG_CONFIG_HOME` and
+  `PATH` still select git's global config and binary, as for every board run.
 - Refusals are actionable: on a non-Linux host, and outside a git repository, the existing
   `review isolation unavailable` line is followed by a hint line. The default command, with no new
   flag, is unchanged.

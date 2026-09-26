@@ -218,10 +218,11 @@ phase-loop advisor-board research-bundle.md --advisory --json
 bundle's own charter scopes the analysis, and the verdict protocol still takes precedence. It
 runs through the same HARDEN review operation and sandbox as the default board, against a private
 scratch authority with no staged tree, so it needs no git repository. It is **non-gating**:
-`--landing-tier`, `--native-president`, capture and any `GIT_*` variable other than the
-editor/pager/prompt/ssh/identity/trace ones are refused with it, and `invoke_board` and the
-governed gate refuse any landing path whose brief is the advisory contract
-(`advisory_contract_not_landing_evidence`). Its JSON adds
+`--landing-tier`, `--native-president` and capture are refused with it, and `invoke_board`
+(`AdvisoryLandingRefused`) and the governed gate (hold `advisory_not_landing_evidence`) refuse any
+landing path whose brief is an advisory contract (`advisory_contract_not_landing_evidence`).
+Inherited `GIT_*` variables are removed for the run and named in one stderr note; `HOME`,
+`XDG_CONFIG_HOME` and `PATH` still select git's global config and binary. Its JSON adds
 `board: "advisory"`, `composed_board` (the composition it ran), `mode: "advisory"`,
 `gating: false` and `contract: {id, sha256}`. Seats run only on Linux. On any other host, the
 refusal is followed by a hint line.

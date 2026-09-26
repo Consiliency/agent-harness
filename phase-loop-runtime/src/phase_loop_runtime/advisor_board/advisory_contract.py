@@ -49,16 +49,34 @@ ADVISORY_CONTRACT = (
 
 ADVISORY_CONTRACT_SHA256 = sha256(ADVISORY_CONTRACT.encode("utf-8")).hexdigest()
 
-# The typed refusal for any landing path whose review brief is the advisory contract.
+# Every advisory contract text ever shipped, by digest. A fill or brief written under an older
+# contract is still advisory, so editing ADVISORY_CONTRACT must ADD its new digest here, never
+# replace the old one (a golden test fails until it does).
+ADVISORY_CONTRACT_DIGESTS: frozenset[str] = frozenset({
+    "b74710e890632b1931967be6629cce10f70fc31094297f08c0e2507f7e0203ce",  # advisory.v1
+})
+
+# The typed refusal for any landing path whose review brief is an advisory contract.
 ADVISORY_NOT_LANDING_EVIDENCE = "advisory_contract_not_landing_evidence"
 
 
+class AdvisoryLandingRefused(Exception):
+    """A landing path was asked to run under an advisory contract (agent-harness#802).
+
+    Deliberately not a ``PresidentPolicyError``, ``ValueError``, ``OSError`` or
+    ``RuntimeError``: a caller that falls back on any of those (a tierless retry, another
+    board) must not swallow this refusal.
+    """
+
+    code = ADVISORY_NOT_LANDING_EVIDENCE
+
+
 def is_advisory_brief(brief: str) -> bool:
-    """True when ``brief`` is the advisory contract: such a review is never landing evidence."""
-    return sha256(brief.encode("utf-8", errors="replace")).hexdigest() == ADVISORY_CONTRACT_SHA256
+    """True when ``brief`` is any shipped advisory contract: such a review is never landing evidence."""
+    return sha256(brief.encode("utf-8", errors="replace")).hexdigest() in ADVISORY_CONTRACT_DIGESTS
 
 
 __all__ = [
-    "ADVISORY_CONTRACT", "ADVISORY_CONTRACT_ID", "ADVISORY_CONTRACT_SHA256",
-    "ADVISORY_NOT_LANDING_EVIDENCE", "is_advisory_brief",
+    "ADVISORY_CONTRACT", "ADVISORY_CONTRACT_DIGESTS", "ADVISORY_CONTRACT_ID", "ADVISORY_CONTRACT_SHA256",
+    "ADVISORY_NOT_LANDING_EVIDENCE", "AdvisoryLandingRefused", "is_advisory_brief",
 ]

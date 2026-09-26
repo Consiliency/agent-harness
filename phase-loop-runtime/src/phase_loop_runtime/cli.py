@@ -1144,10 +1144,10 @@ def build_parser() -> argparse.ArgumentParser:
     advisor_board_sub.add_argument(
         "--advisory", action="store_true", default=False,
         help=("Review a standalone document (research bundle, memo, roadmap, plan) under the advisory "
-              "contract: the bundle's own charter scopes the analysis, no git repository is needed or "
-              "exposed, and the result is labelled non-gating. Refused with --landing-tier, "
-              "--native-president, agy canary capture, or any inherited GIT_* variable that can "
-              "redirect or reconfigure git (only editor/pager/prompt/identity/trace ones are allowed)."),
+              "contract: the bundle's own charter scopes the analysis, no git repository is needed "
+              "and the caller's repository is not staged, and the result is labelled non-gating. "
+              "Refused with --landing-tier, --native-president or agy canary capture. Inherited GIT_* "
+              "variables are ignored for the run (a note names them)."),
     )
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
@@ -1936,27 +1936,6 @@ def _native_agent_request_json(leg: object) -> dict | None:
     return to_dict() if callable(to_dict) else None
 
 
-# The HARDEN authority probes run ``git -C <authority>`` with the inherited environment, and
-# they are not ours to change. A GIT_* variable can redirect them (GIT_DIR, GIT_WORK_TREE,
-# GIT_OBJECT_DIRECTORY, ...), reconfigure them (GIT_CONFIG_*, GIT_CONFIG_PARAMETERS) or replace
-# the git programs (GIT_EXEC_PATH), so an advisory run allows only the GIT_* variables below,
-# which change none of that, and refuses every other one: an unknown or future variable is
-# refused, never trusted.
-_ADVISORY_ALLOWED_GIT_ENV = frozenset({
-    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_TERMINAL_PROMPT", "GIT_ASKPASS",
-    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_MERGE_AUTOEDIT", "GIT_FLUSH",
-    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
-    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
-})
-
-
-def _advisory_refused_git_env(environ) -> list[str]:
-    return sorted(
-        k for k in environ
-        if k.startswith("GIT_") and k not in _ADVISORY_ALLOWED_GIT_ENV and not k.startswith("GIT_TRACE")
-    )
-
-
 def _advisory_labels(brief: str, *, composed_board: str | None = None) -> dict[str, object]:
     """The result labels of an ``--advisory`` run: advisory, non-gating, and which contract."""
     from .advisor_board.advisory_contract import ADVISORY_CONTRACT_ID
@@ -2035,16 +2014,23 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 print(f"advisor-board: --advisory is non-gating and cannot be combined with {flag}",
                       file=sys.stderr)
                 return 2
-        # The HARDEN authority probes inherit the environment (see _ADVISORY_ALLOWED_GIT_ENV).
-        inherited_git = _advisory_refused_git_env(os.environ)
-        if inherited_git:
-            print(f"advisor-board: --advisory cannot run with {', '.join(inherited_git)} set: it could "
-                  "redirect or reconfigure the git probes of the private review authority; unset it and retry",
-                  file=sys.stderr)
-            return 2
         if _advisory_root is None:
-            with tempfile.TemporaryDirectory(prefix="advisor-board-advisory-") as advisory_root:
-                return _advisor_board_command(args=args, _advisory_root=Path(advisory_root))
+            # The HARDEN authority probes run ``git -C <authority>`` with this process's
+            # environment, and a GIT_* variable can redirect them (GIT_DIR, GIT_OBJECT_DIRECTORY),
+            # reconfigure them (GIT_CONFIG_*) or replace git's programs (GIT_EXEC_PATH). An
+            # advisory run never uses the caller's repository, so nothing it does depends on
+            # any GIT_* variable: every one is removed for the run and restored afterwards.
+            # HOME, XDG_CONFIG_HOME and PATH still select git's global config and binary, as
+            # they do for every board run.
+            removed_git = {name: os.environ.pop(name) for name in sorted(os.environ) if name.startswith("GIT_")}
+            if removed_git:
+                print(f"advisor-board: --advisory ignores the inherited {', '.join(removed_git)} for this run "
+                      "(it never uses the caller's repository)", file=sys.stderr)
+            try:
+                with tempfile.TemporaryDirectory(prefix="advisor-board-advisory-") as advisory_root:
+                    return _advisor_board_command(args=args, _advisory_root=Path(advisory_root))
+            finally:
+                os.environ.update(removed_git)
 
     from .advisor_board.backing import (
         clear_review_composition_authorization,
@@ -2211,7 +2197,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         else:
             print(f"advisor-board: native fill requested for seat {record['seat_key']} — write the review to "
                   f"{Path(record['request_path']).parent / 'review.md'} and re-run with --native-leg claude={Path(record['request_path']).parent}"
-                  + (" --advisory (advisory contract; the fill is non-gating)" if advisory else ""))
+                  + (" --advisory" if advisory else ""))
+            if advisory:
+                print("advisor-board: advisory contract: this fill is non-gating and a default run refuses it")
         return 0
     native_leg_fills: tuple = ()
     native_leg_specs = list(getattr(args, "native_legs", []) or [])

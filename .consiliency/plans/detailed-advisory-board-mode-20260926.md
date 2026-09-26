@@ -44,13 +44,16 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
    - `--advisory` with `--landing-tier` or `--native-president` is a usage error (exit 2) before
      any probe, so an advisory run can never carry a president ruling or a landing policy.
    - `--advisory` with agy canary capture is refused (capture is a governed exact-four run).
-   - Inherited `GIT_*` is allowlisted, not denylisted. The HARDEN authority probes run
-     `git -C <authority>` with the inherited environment and are not changed here, so their
-     environment cannot be stripped. An advisory run allows only the GIT_* variables that change
-     no repository location, configuration or program: editor, pager, prompt, askpass, ssh,
-     author/committer identity, `GIT_MERGE_AUTOEDIT`, `GIT_FLUSH` and `GIT_TRACE*`. Every other
-     GIT_* variable is refused before the run, including unknown or future ones (for example
-     `GIT_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_CONFIG_*`, `GIT_CONFIG_PARAMETERS`, `GIT_EXEC_PATH`).
+   - Inherited `GIT_*` (round 2). The HARDEN authority probes run `git -C <authority>` in this
+     process with its environment. An advisory run never uses the caller's repository, so
+     nothing it does depends on any `GIT_*` variable: the CLI removes every one from the process
+     environment before the authority is built or any probe runs, prints one stderr note naming
+     them, and restores them when the command returns. Nothing is refused, so ordinary shell and
+     CI variables (`GIT_OPTIONAL_LOCKS`, `GIT_PS1_*`, Jenkins `GIT_COMMIT`/`GIT_BRANCH`, GitLab
+     `GIT_DEPTH`/`GIT_STRATEGY`, `GIT_LFS_SKIP_SMUDGE`) no longer stop the run, and redirecting
+     ones (`GIT_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_CONFIG_*`, `GIT_EXEC_PATH`) never reach the
+     probes. Scope: this covers the `GIT_` namespace only. `HOME`, `XDG_CONFIG_HOME` and `PATH`
+     still select git's global config and binary, as they do for every board run.
    - The JSON carries `"board": "advisory"`, `"mode": "advisory"`, `"gating": false` and the
      contract id and digest. Text output says "advisory, non-gating". The default JSON is unchanged.
    - Native fills bind the brief digest, so a fill emitted under the advisory contract is refused
@@ -59,10 +62,28 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
    - **Runtime enforcement** (round 1, maintainer ruling). `invoke_board` refuses, as its first
      step, any call that carries a landing path (`landing_tier`, `review_policy`,
      `president_invoke` or `native_president_fill`) while its resolved brief is the advisory
-     contract: `PresidentPolicyError("advisory_contract_not_landing_evidence")`, before the
-     artifact is resolved, before any authorization, fill preflight, president or seat. The
-     governed gate (`governed_board_gate`, which is tierless) holds with the same code before
-     composition. The match is the SHA-256 of the resolved brief against `advisory.v1`.
+     contract: `AdvisoryLandingRefused` (code `advisory_contract_not_landing_evidence`), before
+     the artifact is resolved, before any authorization, fill preflight, president or seat. The
+     error type is deliberately outside `PresidentPolicyError`/`ValueError`/`OSError`/
+     `RuntimeError`, so no existing fallback swallows it. The governed gate
+     (`governed_board_gate`, which is tierless) holds with the distinct category
+     `advisory_not_landing_evidence` before composition.
+   - **One read** (round 2). Both entry points resolve the brief once and pin that text (or its
+     failure) in a context variable for the rest of the call; every later `_resolve_brief` of the
+     same ref in that context returns the pinned bytes. A file replaced after the check, a ref
+     created after an unreadable check, or a one-shot pipe cannot change what runs. Worker threads
+     that re-read are still bound by the HARDEN instruction digest minted from the pinned text.
+   - **Identity** (round 2). The match is against `ADVISORY_CONTRACT_DIGESTS`, every advisory
+     contract digest ever shipped (today only `advisory.v1`). A golden test fails when the
+     contract text changes until its new digest is added, so an old advisory fill stays advisory.
+   - **Landing-path sweep** (round 2). Production callers of `invoke_board`: the CLI (tierless
+     unless `--landing-tier`, which `--advisory` refuses), `runner._run_legible_panel` (a
+     landing tier on GOVLEAN-switched repos; on pre-switch repos tierless, but with a
+     runner-authored brief that is never the advisory contract), and the governed gate's
+     injected invoke (covered by the gate's own check). The gate's production callers
+     (`train_runner`, `legible_evidence`) pass no brief, so they run the built-in review brief. `governed_planning_gate` and
+     `governed_premerge` use `invoke_panel` with the built-in instructions and take no caller
+     brief. No other tierless promoter of a `PanelResult` takes a caller brief.
    - **Exposure-probe coverage, disclosed.** An advisory run's canonical-repo exposure probe
      targets the scratch authority, not the repository the caller runs from. Probing that
      repository as well needs a second probe target inside `ParentUnixBroker`, a broker internal
@@ -70,7 +91,10 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
      re-check that the brokered child cannot see it. The child's bwrap mount set is fixed
      (`/usr`, `/lib*`, the broker socket dir, the staged review dir) and does not take the
      authority as an input; the probe is a canary on that, not the boundary. Default-board runs
-     still probe their repository.
+     still probe their repository. That fixed set includes `/usr` and `/lib*`, so a repository
+     under them (a container `WORKDIR /usr/src/app`, say) is readable by every seat whatever the
+     authority; a default run from it refuses because its canary fires, an advisory run from it
+     does not. This predates this change and applies to any repository not under review.
 5. **Mac.** The sandbox stays Linux-only. The existing refusal lines are unchanged and each is
    followed by a hint: on a non-Linux host, run the board on a Linux host; in a
    directory that is not a git repository, run from the repository under review or pass
@@ -102,8 +126,9 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
   JSON key set);
 - the brokered seat prompt (one staged brief per board) carries the advisory contract as its
   authoritative frame, and the code-review brief is absent;
-- `--advisory` with a landing tier, native president, capture or an inherited `GIT_DIR`-class
-  variable is refused before any probe;
+- `--advisory` with a landing tier, native president or capture is refused before any probe;
+  inherited `GIT_*` is removed for the run and no probe seam sees it;
+- runtime: every landing path refuses an advisory brief (`AdvisoryLandingRefused`), resolved once;
 - an advisory native fill is refused by the review preflight;
 - a no-repo run mints a real authorization against a scratch authority with no staged tree, and
   that authorization revalidates.

@@ -311,6 +311,12 @@ def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None) -> 
 _UNSET: object = object()  # "no digest bound" — distinct from any token value
 
 
+def _pi_brief_pinned(brief_ref: str) -> bool:
+    from .panel_invoker import _brief_pinned
+
+    return _brief_pinned(brief_ref)
+
+
 def governed_board_gate(
     *,
     artifact: str,
@@ -399,22 +405,26 @@ def governed_board_gate(
             "(the coordinator's git toplevel or the first node's workspace); none was "
             "resolved; holding (non-human)",
         )
-    if brief_ref is not None:
-        # agent-harness#802: a governed gate is a landing path; the advisory contract is never
-        # landing evidence. Refused before composition, minting or any launch.
-        from .advisor_board.advisory_contract import ADVISORY_NOT_LANDING_EVIDENCE, is_advisory_brief
-        from .panel_invoker import _resolve_brief
+    if brief_ref is not None and not _pi_brief_pinned(brief_ref):
+        # agent-harness#802: a governed gate is a landing path. It resolves its brief ONCE,
+        # holds an advisory contract before composition, minting or any launch, and runs on
+        # that exact text: every later resolution in this call, the invoker's included,
+        # returns the pinned bytes.
+        from .advisor_board.advisory_contract import AdvisoryLandingRefused
+        from .panel_invoker import _pin_landing_brief, _unpin_brief
 
+        call = {name: value for name, value in locals().items() if name in _GOVERNED_BOARD_GATE_PARAMS}
         try:
-            advisory = is_advisory_brief(_resolve_brief("review", brief_ref))
-        except (OSError, UnicodeError, ValueError):
-            advisory = False  # the existing fail-closed brief resolution below handles it
-        if advisory:
+            pin_token = _pin_landing_brief("review", brief_ref)
+        except AdvisoryLandingRefused as exc:
             return _block_result(
-                "review_isolation_unavailable", ADVISORY_NOT_LANDING_EVIDENCE,
-                "the review brief is the advisory contract (advisory.v1): an advisory review is "
-                "non-gating and cannot be governed landing evidence; holding (non-human)",
+                "advisory_not_landing_evidence", exc.code,
+                f"{exc}; holding (non-human)",
             )
+        try:
+            return _GOVERNED_BOARD_GATE(**call)
+        finally:
+            _unpin_brief(pin_token)
     heartbeat_only = monitoring_policy == "heartbeat_only"
     if monitoring_policy not in ("bounded", "heartbeat_only"):
         return _block_result(
@@ -596,3 +606,13 @@ def governed_board_gate(
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
     return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+
+
+# agent-harness#802: the landing-brief pin re-enters the real gate with the same arguments.
+_GOVERNED_BOARD_GATE = governed_board_gate
+_GOVERNED_BOARD_GATE_PARAMS = frozenset(
+    governed_board_gate.__code__.co_varnames[
+        : governed_board_gate.__code__.co_argcount + governed_board_gate.__code__.co_kwonlyargcount
+    ]
+)
+

@@ -32,12 +32,18 @@ from phase_loop_runtime import cli
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import backing as backing_mod
 from phase_loop_runtime.advisor_board import composition as comp_mod
-from phase_loop_runtime.advisor_board.advisory_contract import ADVISORY_CONTRACT, ADVISORY_CONTRACT_ID
+from phase_loop_runtime.advisor_board.advisory_contract import (
+    ADVISORY_CONTRACT,
+    ADVISORY_CONTRACT_DIGESTS,
+    ADVISORY_CONTRACT_ID,
+    AdvisoryLandingRefused,
+)
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
 _REAL_COMPOSE = comp_mod.compose_review_board
 _REAL_PREPARE_COMPOSITION = backing_mod.prepare_review_composition_authorization
 _REAL_INVOKE_BOARD = pi.invoke_board
+_REAL_PREPARE_ISOLATION = backing_mod.prepare_review_isolation_authorization
 _REAL_RESOLVE_ARTIFACT = pi._resolve_artifact
 _VENDORS = {"codex", "gemini", "claude", "grok"}
 _REVIEW_BRIEF = pi._mode_instructions("review")
@@ -84,24 +90,32 @@ class _Run:
         self.composition_authorizations = 0
         self.prepare_calls: list[dict] = []
         self.invoke_calls: list[dict] = []
+        self.git_env_seen: list[tuple[str, frozenset]] = []
         self.board = _hermetic_board()
 
+        def seen(seam: str) -> None:
+            self.git_env_seen.append((seam, frozenset(k for k in os.environ if k.startswith("GIT_"))))
+
         def compose(*args, **kwargs):
+            seen("compose")
             self.compose_calls.append((args, kwargs))
             return self.board
 
         def prepare_composition():
+            seen("prepare_composition")
             self.composition_authorizations += 1
 
         real_prepare = backing_mod.prepare_review_isolation_authorization
 
         def prepare(board, artifact, **kwargs):
+            seen("prepare")
             self.prepare_calls.append({"artifact": artifact, **kwargs})
             if real_authorization:
                 return real_prepare(board, artifact, **kwargs)
             return object()
 
         def invoke(board, artifact, **kwargs):
+            seen("invoke")
             kwargs = dict(kwargs)
             kwargs["_brief_text"] = (
                 Path(kwargs["brief_ref"]).read_text(encoding="utf-8") if kwargs.get("brief_ref") else None
@@ -140,7 +154,14 @@ def bundle(tmp_path) -> Path:
 
 
 @pytest.fixture
-def outside_git(tmp_path, monkeypatch) -> Path:
+def no_git_env(monkeypatch) -> None:
+    """Scrub inherited GIT_* (a pre-commit hook exports GIT_INDEX_FILE, for example)."""
+    for name in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
+@pytest.fixture
+def outside_git(tmp_path, monkeypatch, no_git_env) -> Path:
     """A cwd with no ``.git`` at it or any ancestor (``/tmp`` is not inside a repository)."""
     cwd = tmp_path / "no-repo"
     cwd.mkdir()
@@ -149,16 +170,7 @@ def outside_git(tmp_path, monkeypatch) -> Path:
     if probe.returncode == 0:
         pytest.skip(f"tmp_path is inside a git repository: {probe.stdout.strip()}")
     monkeypatch.chdir(cwd)
-    for name in [k for k in os.environ if k.startswith("GIT_")]:
-        monkeypatch.delenv(name)
     return cwd
-
-
-@pytest.fixture
-def no_git_env(monkeypatch) -> None:
-    """Scrub inherited GIT_* (a pre-commit hook exports GIT_INDEX_FILE, for example)."""
-    for name in [k for k in os.environ if k.startswith("GIT_")]:
-        monkeypatch.delenv(name)
 
 
 # --- flag parsing --------------------------------------------------------------------------
@@ -306,29 +318,61 @@ _REDIRECTING_GIT_ENV = [
     "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS", "GIT_EXEC_PATH",
     "GIT_SOME_FUTURE_VARIABLE",
 ]
+# Inherited in ordinary shells and CI jobs; an advisory run must not refuse them.
+_ORDINARY_GIT_ENV = {
+    "GIT_OPTIONAL_LOCKS": "0", "GIT_PS1_SHOWDIRTYSTATE": "1", "GIT_EDITOR": "vi", "GIT_PAGER": "less",
+    "GIT_COMMIT": "0" * 40, "GIT_BRANCH": "origin/main", "GIT_URL": "https://example.invalid/r.git",
+    "GIT_DEPTH": "20", "GIT_STRATEGY": "fetch", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_TRACE": "0",
+}
+
+
+def _assert_git_free_run(run, err, names):
+    """The run went ahead; the note names what was ignored; no probe seam saw any GIT_*."""
+    assert f"--advisory ignores the inherited {', '.join(sorted(names))} for this run" in err
+    assert run.invoke_calls, err
+    assert {seam for seam, _env in run.git_env_seen} >= {"prepare_composition", "compose", "prepare", "invoke"}
+    assert all(env == frozenset() for _seam, env in run.git_env_seen), run.git_env_seen
 
 
 @pytest.mark.parametrize("name", _REDIRECTING_GIT_ENV)
-def test_advisory_refuses_an_inherited_git_redirect_before_any_probe(monkeypatch, bundle, outside_git, name):
-    """The HARDEN probes run ``git -C <authority>`` with the inherited environment. Any GIT_*
-    variable outside the editor/pager/prompt/identity/trace allowlist could redirect,
-    reconfigure or replace them, so it is refused before the run starts (unknown ones too)."""
-    monkeypatch.setenv(name, str(_REPO_ROOT / ".git") if name != "GIT_WORK_TREE" else str(_REPO_ROOT))
+def test_advisory_strips_an_inherited_git_redirect_before_any_probe(monkeypatch, bundle, outside_git, name):
+    """The HARDEN probes run ``git -C <authority>`` with the process environment, so an
+    advisory run removes every GIT_* before the authority is built and restores it after."""
+    value = str(_REPO_ROOT / ".git") if name != "GIT_WORK_TREE" else str(_REPO_ROOT)
+    monkeypatch.setenv(name, value)
     run = _Run(monkeypatch)
     rc, out, err = run(["advisor-board", str(bundle), "--advisory", "--json"])
-    assert rc == 2 and out == ""
-    assert f"--advisory cannot run with {name} set" in err
-    assert run.compose_calls == [] and run.composition_authorizations == 0 and run.invoke_calls == []
+    assert rc == 0, err
+    _assert_git_free_run(run, err, [name])
+    [invoked] = run.invoke_calls
+    assert invoked["_authority_tracked"] == ["ADVISORY-AUTHORITY"]
+    assert os.environ[name] == value  # restored for the caller
+    assert json.loads(out)["gating"] is False
 
 
-@pytest.mark.parametrize("name", ["GIT_EDITOR", "GIT_PAGER", "GIT_TERMINAL_PROMPT", "GIT_SSH_COMMAND",
-                                  "GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL", "GIT_TRACE", "GIT_TRACE_PACKET"])
-def test_advisory_allows_git_variables_that_redirect_nothing(monkeypatch, bundle, outside_git, name):
-    monkeypatch.setenv(name, "0")
+def test_advisory_runs_under_ordinary_shell_and_ci_git_variables(monkeypatch, bundle, outside_git):
+    for name, value in _ORDINARY_GIT_ENV.items():
+        monkeypatch.setenv(name, value)
     run = _Run(monkeypatch)
     rc, _out, err = run(["advisor-board", str(bundle), "--advisory", "--json"])
     assert rc == 0, err
-    assert run.invoke_calls
+    _assert_git_free_run(run, err, list(_ORDINARY_GIT_ENV))
+    assert {k: os.environ[k] for k in _ORDINARY_GIT_ENV} == _ORDINARY_GIT_ENV
+
+
+def test_advisory_without_git_variables_prints_no_note(monkeypatch, bundle, outside_git):
+    rc, _out, err = _Run(monkeypatch)(["advisor-board", str(bundle), "--advisory", "--json"])
+    assert rc == 0 and "ignores the inherited" not in err
+
+
+def test_default_run_keeps_its_git_environment(monkeypatch, bundle, no_git_env):
+    """The default (code-review) run uses the caller's repository and is not changed."""
+    monkeypatch.chdir(_repo_root())
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "0")
+    run = _Run(monkeypatch)
+    rc, _out, err = run(["advisor-board", str(bundle), "--json"])
+    assert rc == 0 and "ignores the inherited" not in err
+    assert all(env == frozenset({"GIT_OPTIONAL_LOCKS"}) for _seam, env in run.git_env_seen)
 
 
 def test_advisory_refuses_agy_canary_capture(monkeypatch, bundle, outside_git):
@@ -393,6 +437,8 @@ def test_advisory_native_fill_is_refused_by_the_default_review(tmp_path, monkeyp
 
 @_linux_only
 def test_advisory_run_outside_any_repository_mints_a_real_no_tree_authorization(monkeypatch, bundle, outside_git):
+    # A redirect aimed at the caller's repository cannot reach the real authority probes.
+    monkeypatch.setenv("GIT_DIR", str(_REPO_ROOT / ".git"))
     run = _Run(monkeypatch, real_authorization=True)
     rc, out, err = run(["advisor-board", str(bundle), "--advisory", "--json"])
     assert rc == 0, err
@@ -479,6 +525,7 @@ def test_non_linux_refusal_names_the_linux_sandbox(monkeypatch, bundle, no_git_e
 
 _TIERS = ("plan", "production_code", "tests_only", "docs_only")
 _NOT_LANDING = "advisory_contract_not_landing_evidence"
+_ADVISORY_REFUSED = AdvisoryLandingRefused
 
 
 class _NoEffects:
@@ -509,7 +556,7 @@ def _brief(tmp_path, text: str) -> str:
 def _outcome(call):
     try:
         result = call()
-    except pi.PresidentPolicyError as exc:
+    except (pi.PresidentPolicyError, AdvisoryLandingRefused) as exc:
         return ("raised", exc.code)
     return ("result", tuple((leg.status, leg.detail) for leg in result.legs))
 
@@ -524,7 +571,7 @@ _LANDINGS = [(f"tier-{tier}", {"landing_tier": tier}) for tier in _TIERS] + [
 @pytest.mark.parametrize("landing", [kw for _id, kw in _LANDINGS], ids=[i for i, _kw in _LANDINGS])
 def test_invoke_board_refuses_an_advisory_brief_on_every_landing_path(tmp_path, monkeypatch, landing):
     probe = _NoEffects(monkeypatch)
-    with pytest.raises(pi.PresidentPolicyError) as refused:
+    with pytest.raises(AdvisoryLandingRefused) as refused:
         _REAL_INVOKE_BOARD(_hermetic_board(), _BUNDLE, brief_ref=_brief(tmp_path, ADVISORY_CONTRACT),
                            spawn=probe.spawn, base_env={}, **landing)
     assert refused.value.code == _NOT_LANDING
@@ -545,7 +592,7 @@ def test_invoke_board_refuses_an_advisory_native_fill_on_a_landing_path(tmp_path
     assert fill.brief_sha256 == sha256(ADVISORY_CONTRACT.encode()).hexdigest()
     probe = _NoEffects(monkeypatch)
     for tier in _TIERS:
-        with pytest.raises(pi.PresidentPolicyError) as refused:
+        with pytest.raises(AdvisoryLandingRefused) as refused:
             _REAL_INVOKE_BOARD(_hermetic_board(), _BUNDLE, brief_ref=_brief(tmp_path, ADVISORY_CONTRACT),
                                native_leg_fills=(fill,), landing_tier=tier, spawn=probe.spawn,
                                base_env={"CLAUDECODE": "1"})
@@ -603,8 +650,177 @@ def test_governed_gate_refuses_an_advisory_brief_before_composition(tmp_path):
                   canonical_repo_authority=_REPO_ROOT, compose=compose, invoke=invoke)
     held = governed_review.governed_board_gate(brief_ref=_brief(tmp_path, ADVISORY_CONTRACT), **kwargs)
     assert held.promoted is False and calls == []
+    assert held.reason == "advisory_not_landing_evidence"
     assert [f.code for f in held.findings] == [_NOT_LANDING]
     # Positive control: another brief reaches composition.
     other = governed_review.governed_board_gate(brief_ref=_brief(tmp_path, _REVIEW_BRIEF), **kwargs)
     assert calls == ["compose"] and other.promoted is False
     assert _NOT_LANDING not in [f.code for f in other.findings]
+
+
+# --- round 2: identity, error type, one read ------------------------------------------------
+
+_ADVISORY_V1_SHA256 = "b74710e890632b1931967be6629cce10f70fc31094297f08c0e2507f7e0203ce"
+
+
+def test_every_shipped_advisory_contract_digest_is_recognised():
+    """Golden: editing ADVISORY_CONTRACT fails here until its new digest is ADDED to
+    ADVISORY_CONTRACT_DIGESTS (and this pin moves) -- an older fill or brief stays advisory."""
+    assert sha256(ADVISORY_CONTRACT.encode("utf-8")).hexdigest() == _ADVISORY_V1_SHA256
+    assert _ADVISORY_V1_SHA256 in ADVISORY_CONTRACT_DIGESTS
+
+
+def test_an_older_shipped_contract_is_still_refused_on_a_landing(tmp_path, monkeypatch):
+    from phase_loop_runtime.advisor_board import advisory_contract
+
+    older = "ADVISORY REVIEW CONTRACT (advisory.v0, a hypothetical earlier text)\n"
+    monkeypatch.setattr(advisory_contract, "ADVISORY_CONTRACT_DIGESTS",
+                        ADVISORY_CONTRACT_DIGESTS | {sha256(older.encode()).hexdigest()})
+    with pytest.raises(AdvisoryLandingRefused):
+        _REAL_INVOKE_BOARD(_hermetic_board(), _BUNDLE, brief_ref=_brief(tmp_path, older),
+                           landing_tier="production_code", spawn=lambda *_a, **_k: ("OK", "AGREE"), base_env={})
+
+
+def test_the_refusal_is_not_swallowed_by_a_caller_catching_the_existing_types(tmp_path):
+    """A caller that falls back on PresidentPolicyError / ValueError / OSError / RuntimeError
+    (a tierless retry, another board) must still see the advisory refusal."""
+    assert not issubclass(AdvisoryLandingRefused, (pi.PresidentPolicyError, ValueError, OSError, RuntimeError))
+    fell_back = False
+    with pytest.raises(AdvisoryLandingRefused):
+        try:
+            _REAL_INVOKE_BOARD(_hermetic_board(), _BUNDLE, brief_ref=_brief(tmp_path, ADVISORY_CONTRACT),
+                               landing_tier="plan", spawn=lambda *_a, **_k: ("OK", "AGREE"), base_env={})
+        except (pi.PresidentPolicyError, ValueError, OSError, RuntimeError):
+            fell_back = True
+    assert fell_back is False
+
+
+class _SwapAfterCheck:
+    """Replace the brief file the moment the landing check has read it."""
+
+    def __init__(self, monkeypatch, path: Path, replacement: str | None) -> None:
+        from phase_loop_runtime.advisor_board import advisory_contract
+
+        self.later_reads: list[object] = []
+        real_is_advisory = advisory_contract.is_advisory_brief
+        real_resolve = pi._resolve_brief
+        checked: list[bool] = []
+
+        def is_advisory(text):
+            verdict = real_is_advisory(text)
+            if not checked:
+                checked.append(True)
+                path.write_text(replacement, encoding="utf-8") if replacement is not None else None
+            return verdict
+
+        def resolve(mode, brief_ref):
+            try:
+                value = real_resolve(mode, brief_ref)
+            except (OSError, ValueError) as exc:
+                value = exc
+            if checked and brief_ref == str(path):
+                self.later_reads.append(value)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+        monkeypatch.setattr(advisory_contract, "is_advisory_brief", is_advisory)
+        monkeypatch.setattr(pi, "_resolve_brief", resolve)
+
+
+def test_invoke_board_runs_on_the_brief_it_checked_not_a_replaced_file(tmp_path, monkeypatch):
+    brief = Path(_brief(tmp_path, _REVIEW_BRIEF))
+    swap = _SwapAfterCheck(monkeypatch, brief, ADVISORY_CONTRACT)
+    _outcome(lambda: _REAL_INVOKE_BOARD(
+        _hermetic_board(), _BUNDLE, brief_ref=str(brief), landing_tier="plan",
+        president_invoke=lambda _m, _p: {}, spawn=lambda *_a, **_k: ("OK", "AGREE"), base_env={},
+    ))
+    assert brief.read_text(encoding="utf-8") == ADVISORY_CONTRACT  # the file WAS replaced
+    assert swap.later_reads, "nothing re-resolved the brief after the check"
+    assert all(read == _REVIEW_BRIEF for read in swap.later_reads)
+
+
+def test_a_brief_unreadable_at_the_check_stays_unreadable_for_the_call(tmp_path, monkeypatch):
+    missing = tmp_path / "late-brief.md"
+    from phase_loop_runtime.advisor_board import advisory_contract
+
+    seen: list[object] = []
+    real_resolve = pi._resolve_brief
+    real_pin = pi._pin_landing_brief
+
+    def pin(mode, brief_ref):
+        token = real_pin(mode, brief_ref)
+        missing.write_text(ADVISORY_CONTRACT, encoding="utf-8")  # appears after the check
+        return token
+
+    def resolve(mode, brief_ref):
+        try:
+            value = real_resolve(mode, brief_ref)
+        except (OSError, ValueError) as exc:
+            seen.append(exc)
+            raise
+        seen.append(value)
+        return value
+
+    monkeypatch.setattr(pi, "_pin_landing_brief", pin)
+    monkeypatch.setattr(pi, "_resolve_brief", resolve)
+    assert advisory_contract.is_advisory_brief(ADVISORY_CONTRACT)
+    _outcome(lambda: _REAL_INVOKE_BOARD(
+        _hermetic_board(), _BUNDLE, brief_ref=str(missing), landing_tier="plan",
+        president_invoke=lambda _m, _p: {}, spawn=lambda *_a, **_k: ("OK", "AGREE"), base_env={},
+    ))
+    assert seen and all(isinstance(value, ValueError) for value in seen)
+
+
+def test_governed_gate_binds_the_brief_it_checked_not_a_replaced_file(tmp_path, monkeypatch):
+    from phase_loop_runtime import governed_review
+
+    brief = Path(_brief(tmp_path, _REVIEW_BRIEF))
+    swap = _SwapAfterCheck(monkeypatch, brief, ADVISORY_CONTRACT)
+    bound: list[str] = []
+    real_bind = backing_mod.set_review_instruction_digest
+    monkeypatch.setattr(backing_mod, "set_review_instruction_digest",
+                        lambda text: (bound.append(text), real_bind(text))[1])
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", lambda *a, **k: object())
+    invoked: list[str] = []
+
+    def invoke(board, artifact, **kwargs):
+        invoked.append(pi._resolve_brief("review", kwargs["brief_ref"]))
+        return _CANNED
+
+    gate = governed_review.governed_board_gate(
+        artifact=_BUNDLE, author_executor="claude", run_mode="governed",
+        canonical_repo_authority=_REPO_ROOT, brief_ref=str(brief),
+        compose=_hermetic_board, invoke=invoke,
+    )
+    assert brief.read_text(encoding="utf-8") == ADVISORY_CONTRACT
+    assert bound == [_REVIEW_BRIEF] and invoked == [_REVIEW_BRIEF], gate
+    assert all(read == _REVIEW_BRIEF for read in swap.later_reads)
+
+
+@_linux_only
+def test_an_advisory_fill_with_a_different_brief_is_refused_by_the_digest_preflight(tmp_path, monkeypatch, bundle, outside_git):
+    """The other way an advisory fill could reach a landing: under a non-advisory brief. The
+    landing check passes (the brief is not advisory) and the invoker's digest preflight refuses
+    the fill before any seat."""
+    monkeypatch.setenv("CLAUDECODE", "1")
+    rc, out, _err = _Run(monkeypatch)(
+        ["advisor-board", str(bundle), "--advisory", "--emit-native-request",
+         "--native-fill-dir", str(tmp_path / "fills"), "--json"])
+    assert rc == 0
+    request_dir = Path(json.loads(out)["request_path"]).parent
+    (request_dir / pi.NATIVE_FILL_REVIEW_FILE).write_text("advice\n\nAGREE\n", encoding="utf-8")
+    fill = pi.load_native_leg_fills(f"claude={request_dir}")
+    [claude_seat] = [seat for seat in _hermetic_board().seats if (seat.harness or "") == "claude"]
+    from phase_loop_runtime.advisor_board.schema import Board
+
+    grounded = Board(name="grounded", purpose="code-review", seats=(claude_seat,))
+    monkeypatch.chdir(_REPO_ROOT)
+    # The real HARDEN factory: the fill preflight runs after its lookup and revalidation.
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", _REAL_PREPARE_ISOLATION)
+    result = _REAL_INVOKE_BOARD(
+        grounded, _BUNDLE, brief_ref=_brief(tmp_path, _REVIEW_BRIEF), landing_tier="docs_only",
+        native_leg_fills=(fill,), base_env={"CLAUDECODE": "1"},
+    )
+    details = [leg.detail for leg in result.legs]
+    assert details == [f"native_fill_refused:{pi.NATIVE_FILL_DIGEST_MISMATCH}:{claude_seat.seat_key}"], details
