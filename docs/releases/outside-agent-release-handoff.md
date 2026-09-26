@@ -55,7 +55,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - Content above the `v0.7.18` tag commit (`20c602a2`):
   - the qualified agy 1.2.11 entry image (agent-harness#1074); the 1.2.10 image now refuses
     before launch. This removed the harness-side blocker for the dotfiles consumer
-    (agent-harness#1008), confirmed on Dev0 after publication (see below). The route was
+    (agent-harness#1008), as reported by Dev0 after publication (cited below). The route was
     requalified live on this release tree (validated 3, `route_qualified` true; all 214
     source pins verified), with no observer or route change;
   - Claude final-message extraction (agent-harness#1002, agent-harness#960) and the president
@@ -84,8 +84,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   - A first `uv pip install phase-loop-runtime==0.7.19` minutes after the publish did not
     resolve `0.7.19`. A later `uv pip install --no-cache --refresh
     --index-url https://pypi.org/simple phase-loop-runtime==0.7.19` did, and imports `0.7.19`.
-    That install's distribution metadata lists the console scripts and plugin entry points
-    recorded under Package Surface Inventory below.
+    Both installs report the same console scripts and plugin entry points in their distribution
+    metadata; they are recorded under Package Surface Inventory below.
 - GitHub release: `v0.7.19`, published 2026-09-26T06:04:24Z, not a draft and not a
   prerelease (`gh release view`): https://github.com/Consiliency/agent-harness/releases/tag/v0.7.19.
 - Consumer confirmation: on 2026-09-26 Dev0 reported, for both of its users, `0.7.19`
@@ -264,13 +264,14 @@ without rebuilding, and equal to the digests PyPI reports. The pre-tag local bui
 candidate (`uv build` under `umask 022`, `Consiliency/agent-harness#519`) measured wheel
 `c4b99457bd1973b917b3ec9be45ec1fa05304b6c9ac9d1b49509ca4870621ce7` and sdist
 `4553444e025e92d5ca0640064c1df78334a9984969c233a8c65a977a2f4db0bc`. The published tuples differ.
-The prepared archives were not retained, so their members were not compared. To measure what
-the archive digests do and do not depend on, the tagged commit `18a324a4` was rebuilt locally
+The prepared archives were not retained, so their members were not compared. To test whether a
+digest difference implies a content difference, the tagged commit `18a324a4` was rebuilt locally
 (`uv build` under `umask 022`). The rebuild's digests also differ from the published ones: wheel
 `bb3e6121d954382e10ab4ba0d8876041b87f44ac1581daee8d4900188f2db5d9`, sdist `cbde38b05e12c3b1d5a23dc48067c28ec16778e357e706c3ac444cb41623dc7f`. Yet every archive member's content is byte-identical to the published
-archives (per-member sha256): all 471 wheel files and all 965 sdist regular files, with none
-added or missing. The digest difference therefore lies in archive metadata (timestamps,
-headers), not in file contents.
+archives: per-member sha256, compared over the union of member paths, so all 471 wheel files
+and all 965 sdist regular files match, with none added or missing. The rebuild's digest
+difference is therefore not in file contents; which archive-level bytes differ was not
+measured.
 
 - direct-wheel sha256: `291d7d95fd9c02f73253675d6baaf4739ea29bfb81d6312d5c5db6812f1e643a`
 - direct-sdist sha256: `a42184a7df40c79b53775c32ff688e794a20786303cf23027106adfa9ed99a3a`
@@ -367,8 +368,8 @@ this metadata document.
 
 File counts and top-level entries were measured on the published `0.7.19` artifacts (workflow
 `36219660271`) and are identical to the prepared measurement. The console and plugin entry
-points were read from the metadata of the index-installed `0.7.19` distribution (see
-Release-Check Evidence).
+points were read from the distribution metadata of the sha256-checked published wheel's install,
+and match the index install's (see the fresh-install bullets under Release-Check Evidence).
 
 - Wheel artifact: `phase_loop_runtime-0.7.19-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.19.tar.gz`
