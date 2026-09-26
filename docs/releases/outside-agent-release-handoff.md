@@ -84,8 +84,9 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   - A first `uv pip install phase-loop-runtime==0.7.19` minutes after the publish did not
     resolve `0.7.19`. A later `uv pip install --no-cache --refresh
     --index-url https://pypi.org/simple phase-loop-runtime==0.7.19` did, and imports `0.7.19`.
-    Both installs report the same console scripts and plugin entry points in their distribution
-    metadata; they are recorded under Package Surface Inventory below.
+    The later install's distribution metadata lists the same console scripts and plugin entry
+    points as the sha256-checked published wheel's install; they are recorded under Package
+    Surface Inventory below.
 - GitHub release: `v0.7.19`, published 2026-09-26T06:04:24Z, not a draft and not a
   prerelease (`gh release view`): https://github.com/Consiliency/agent-harness/releases/tag/v0.7.19.
 - Consumer confirmation: on 2026-09-26 Dev0 reported, for both of its users, `0.7.19`
@@ -267,7 +268,7 @@ candidate (`uv build` under `umask 022`, `Consiliency/agent-harness#519`) measur
 The prepared archives were not retained, so their members were not compared. To test whether a
 digest difference implies a content difference, the tagged commit `18a324a4` was rebuilt locally
 (`uv build` under `umask 022`). The rebuild's digests also differ from the published ones: wheel
-`bb3e6121d954382e10ab4ba0d8876041b87f44ac1581daee8d4900188f2db5d9`, sdist `cbde38b05e12c3b1d5a23dc48067c28ec16778e357e706c3ac444cb41623dc7f`. Yet every archive member's content is byte-identical to the published
+`bb3e6121d954382e10ab4ba0d8876041b87f44ac1581daee8d4900188f2db5d9`, sdist `cbde38b05e12c3b1d5a23dc48067c28ec16778e357e706c3ac444cb41623dc7f`. Yet every regular-file member's content is byte-identical to the published
 archives: per-member sha256, compared over the union of member paths, so all 471 wheel files
 and all 965 sdist regular files match, with none added or missing. The rebuild's digest
 difference is therefore not in file contents; which archive-level bytes differ was not
@@ -368,7 +369,8 @@ this metadata document.
 
 File counts and top-level entries were measured on the published `0.7.19` artifacts (workflow
 `36219660271`) and are identical to the prepared measurement. The console and plugin entry
-points were read from the distribution metadata of the sha256-checked published wheel's install,
+points were read from the distribution metadata of the published wheel's install (checked
+against the direct-wheel sha256 under Sealed Implementation Evidence),
 and match the index install's (see the fresh-install bullets under Release-Check Evidence).
 
 - Wheel artifact: `phase_loop_runtime-0.7.19-py3-none-any.whl`
