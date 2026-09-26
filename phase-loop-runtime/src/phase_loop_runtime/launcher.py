@@ -2339,6 +2339,7 @@ def _launch_claude_agent_view(
             lifecycle.session_id,
             cwd=cwd,
             exclude=lifecycle.preexisting_session_ids,
+            verified=lifecycle.binding_verified,
             timeout_s=float(spec.launch_timeout_seconds) if spec.launch_timeout_seconds else None,
             on_poll=_heartbeat,
         )

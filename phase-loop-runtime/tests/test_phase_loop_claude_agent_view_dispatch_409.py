@@ -271,10 +271,10 @@ class WaitForTerminalTest(unittest.TestCase):
 
     def test_a_record_that_registers_before_the_limit_is_bound(self):
         # The missing count runs from launch: polls before first registration count.
-        listings = [[]] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("done")]]
+        listings = [[]] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("working")], [_record("done")]]
         lifecycle, polled = self._wait(listings)
         self.assertEqual(lifecycle.state, "done")
-        self.assertEqual(len(polled), AGENT_VIEW_OBSERVER_FAILURE_LIMIT)
+        self.assertEqual(len(polled), AGENT_VIEW_OBSERVER_FAILURE_LIMIT + 1)
 
     def test_a_record_that_never_registers_fails_closed_at_the_limit(self):
         lifecycle, polled = self._wait([[]] * AGENT_VIEW_OBSERVER_FAILURE_LIMIT + [[_record("done")]])
@@ -323,7 +323,7 @@ class AmbiguousBindingTest(unittest.TestCase):
             launched = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
         waited = adapter.wait_for_terminal(
             launched.session_id, cwd="/repo", exclude=launched.preexisting_session_ids,
-            sleep=clock.sleep, clock=clock,
+            verified=launched.binding_verified, sleep=clock.sleep, clock=clock,
         )
         return launched, waited
 
@@ -350,6 +350,44 @@ class AmbiguousBindingTest(unittest.TestCase):
         self.assertNotEqual(waited.state, "done")
         self.assertEqual(waited.blocker.reason, "agent_view_session_missing")
         self.assertEqual(waited.session_id, ASSIGNED[:8])
+
+    def test_post_snapshot_same_prefix_finished_session_is_never_reported(self):
+        # Round 3 (codex): empty snapshot; an unrelated session B in the same cwd with the
+        # same short id registers AFTER the snapshot, already `done`; A registers later.
+        other = _record("done", session_id=self.OLDER)
+        launched, waited = self._launch_then_wait([
+            [],                               # pre-launch snapshot: nothing
+            [other],                          # launch-time lookup: only B, already done
+        ])
+        self.assertEqual(launched.state, "blocked")
+        self.assertEqual(launched.blocker.reason, "agent_view_binding_unverifiable")
+        self.assertIn("may still be running", launched.blocker.summary)
+        self.assertNotEqual(launched.session_id, ASSIGNED)
+
+    def test_post_snapshot_finished_session_first_seen_in_the_wait_fails_closed(self):
+        other = _record("done", session_id=self.OLDER)
+        launched, waited = self._launch_then_wait([
+            [],                               # snapshot
+            [],                               # launch-time lookup: nothing yet
+            [other],                          # wait poll 1: B appears, already done
+            [other, _record("done")],         # A would appear later, never reached
+        ])
+        self.assertEqual(launched.state, "running")
+        self.assertFalse(launched.binding_verified)
+        self.assertEqual(waited.blocker.reason, "agent_view_binding_unverifiable")
+        self.assertNotEqual(waited.state, "done")
+
+    def test_a_same_prefix_session_in_another_cwd_never_matches(self):
+        elsewhere = _record("done", session_id=self.OLDER, cwd="/elsewhere")
+        launched, waited = self._launch_then_wait([
+            [],                                       # snapshot
+            [elsewhere],                              # launch lookup: only the other-cwd one
+            [elsewhere, _record("working")],          # A registers
+            [elsewhere, _record("done")],
+        ])
+        self.assertEqual(launched.state, "running")
+        self.assertEqual(waited.state, "done")
+        self.assertEqual(waited.session_id, ASSIGNED)
 
     def test_launch_refuses_before_starting_when_existing_sessions_cannot_be_listed(self):
         calls = []
@@ -633,6 +671,7 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertIsNone(adapter.wait_kwargs["timeout_s"])
         # Sessions listed before the launch stay excluded while waiting (round 2).
         self.assertEqual(adapter.wait_kwargs["exclude"], _ScriptedAdapter.PREEXISTING)
+        self.assertIs(adapter.wait_kwargs["verified"], False)
         self.assertTrue((run_dir / "heartbeat.json").is_file())
 
     def test_running_is_never_reported_as_a_successful_launch(self):

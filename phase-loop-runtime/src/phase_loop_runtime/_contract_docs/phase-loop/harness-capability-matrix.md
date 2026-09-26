@@ -425,7 +425,13 @@ never writes trust silently).
 Binding and observer: the launch binds only the session id `claude --bg` prints.
 Sessions listed before the launch are never bound, even if one shares the short id
 and the new session registers late. An id matching more than one new session fails
-closed as ambiguous, and a resolved id is pinned to the full session id. The wait
+closed as ambiguous, and a resolved id is pinned to the full session id. Because
+`claude --bg` prints only the short id, a candidate must also be in the launch cwd
+(realpath) and must not already be finished when first seen; otherwise the launch
+fails closed as `agent_view_binding_unverifiable`. Residual: an unrelated same-cwd
+session registered after the snapshot, sharing the short id and still unfinished when
+first seen, would be bound. The CLI's dispatcher refuses a short id that collides with
+a live job (`short-alive`), which should prevent that, but this is unverified live. The wait
 has no deadline and no silence termination. Only the observer failing ends it
 early, fail-closed and without stopping the session: 12 successful listings that do
 not show the session (counted from launch; listing errors neither add nor reset),

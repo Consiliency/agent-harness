@@ -19,6 +19,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     sessions cannot be listed, the launch refuses before starting anything.
   - A short id matching more than one new session fails closed as ambiguous. Once it
     resolves uniquely, the full session id is pinned.
+  - `claude --bg` prints only the short id, so a candidate must also be in the launch cwd
+    (realpath on both sides), and must not already be finished (done, failed or stopped)
+    when first seen after the launch. Otherwise the launch fails closed as
+    `agent_view_binding_unverifiable`, with how to find and stop the launched session.
+  - Residual: an unrelated session in the same cwd, registered after the snapshot, sharing
+    the short id and still unfinished when first seen, would be bound. Reading the CLI, its
+    dispatcher refuses a new job whose short id collides with a live one (`short-alive`),
+    which should turn that case into a launch refusal; this is not verified live. The guard
+    can also fail closed on our own session if it registers late and finishes before it is
+    first seen.
 - **Waiting.** The launch waits until Agent View reports a terminal state. There is no default
   deadline and no silence termination; `launch_timeout_seconds` applies only when set. Only
   the observer failing ends the wait early, fail-closed:

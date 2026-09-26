@@ -106,6 +106,9 @@ class AgentViewLifecycleResult:
     blocker: BlockerSummary | None = None
     # Full ids of sessions already listed before this launch; never bound to it.
     preexisting_session_ids: frozenset[str] = frozenset()
+    # True once the bound record was first observed NOT yet finished (see
+    # _TERMINAL_AT_FIRST_SIGHT); until then the binding is unverified.
+    binding_verified: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -398,12 +401,18 @@ class ClaudeAgentViewAdapter:
                     ),
                 )
             try:
-                session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id, exclude=preexisting)
+                session = _find_bound_session(
+                    self.list_sessions(cwd=cwd).sessions, session_id, exclude=preexisting, cwd=cwd
+                )
             except AmbiguousSessionError as exc:
                 return _ambiguous_lifecycle(session_id, cwd, exc)
             if session:
+                if session.state in _TERMINAL_AT_FIRST_SIGHT:
+                    return _unverifiable_lifecycle(session, cwd)
                 # Pinned from here on: the full session id, never the short one.
-                return replace(_lifecycle_from_session(session), preexisting_session_ids=preexisting)
+                return replace(
+                    _lifecycle_from_session(session), preexisting_session_ids=preexisting, binding_verified=True
+                )
             return replace(
                 _lifecycle_from_parts(
                     session_id=session_id,
@@ -436,6 +445,7 @@ class ClaudeAgentViewAdapter:
         timeout_s: float | None = None,
         on_poll: Callable[[AgentViewSession | None], None] | None = None,
         exclude: frozenset[str] = frozenset(),
+        verified: bool = False,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> AgentViewLifecycleResult:
@@ -450,7 +460,10 @@ class ClaudeAgentViewAdapter:
         record (counting from launch, so a record that has not registered yet counts too;
         a listing error neither adds to nor resets this count, and seeing the record
         resets it), or AGENT_VIEW_LISTING_ERROR_LIMIT consecutive `claude agents` failures.
-        Sessions in `exclude` (listed before the launch) never match. The session is not stopped
+        Sessions in `exclude` (listed before the launch) never match, nor does a record
+        whose cwd is not the launch cwd. Until `verified`, the first sighting of the
+        bound record must not already be finished (done/failed/stopped); if it is, the
+        wait fails closed as `agent_view_binding_unverifiable`. The session is not stopped
         then, and the result names it with its attach/stop commands. A short printed
         id that matches more than one listed session fails closed as ambiguous; once it
         resolves uniquely, the full session id is pinned.
@@ -464,13 +477,19 @@ class ClaudeAgentViewAdapter:
             session = None
             if listed.ok:
                 try:
-                    session = _find_bound_session(listed.sessions, bound, exclude=exclude)
+                    session = _find_bound_session(listed.sessions, bound, exclude=exclude, cwd=cwd)
                 except AmbiguousSessionError as exc:
                     return _ambiguous_lifecycle(bound, cwd, exc)
             if on_poll is not None:
                 on_poll(session)
             if session is not None:
                 missing = listing_errors = 0
+                if not verified:
+                    # First sight of the bound record: a session this launch just started
+                    # cannot already be finished, so one that is cannot be verified as ours.
+                    if session.state in _TERMINAL_AT_FIRST_SIGHT:
+                        return _unverifiable_lifecycle(session, cwd)
+                    verified = True
                 # Pin the full id once the short printed id has resolved uniquely.
                 bound = session.session_id or bound
                 if session.state in {"done", "failed", "stopped", "blocked"}:
@@ -825,18 +844,58 @@ def _session_key(session: AgentViewSession) -> str:
     return session.session_id or session.id or ""
 
 
+# `claude --bg` prints only the SHORT id (banner and attach/logs/stop hints), so a
+# record matching it is verified as this launch's session only if it is first seen
+# not yet finished; one already finished when first seen is some other session.
+_TERMINAL_AT_FIRST_SIGHT = frozenset({"done", "failed", "stopped"})
+
+
+def _same_dir(left: str | Path | None, right: str | Path | None) -> bool:
+    if left is None or right is None:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except (OSError, RuntimeError):
+        return str(left) == str(right)
+
+
+def _unverifiable_lifecycle(session: AgentViewSession, cwd: str | Path | None) -> AgentViewLifecycleResult:
+    key = _session_key(session) or "unknown"
+    return _lifecycle_from_parts(
+        session_id=key,
+        state="blocked",
+        cwd=str(cwd) if cwd is not None else None,
+        started_at=None,
+        completed_at=_utc_now(),
+        stop_result=None,
+        blocker=BlockerSummary(
+            "agent_view_binding_unverifiable",
+            f"The only listed session matching the printed id was already {session.state} when first seen, so it "
+            "cannot be verified as the one this launch started. The launched session may still be running: find it "
+            "with `claude agents` and inspect or stop it with `claude attach <id>` / `claude stop <id>`.",
+        ),
+    )
+
+
 def _find_bound_session(
-    sessions: tuple[AgentViewSession, ...], session_id: str, *, exclude: frozenset[str] = frozenset()
+    sessions: tuple[AgentViewSession, ...],
+    session_id: str,
+    *,
+    exclude: frozenset[str] = frozenset(),
+    cwd: str | Path | None = None,
 ) -> AgentViewSession | None:
     """The one listed session named by `session_id`, None if absent.
 
-    Sessions in `exclude` (listed before the launch) never match. Raises
+    Sessions in `exclude` (listed before the launch) never match, and when `cwd` is
+    given neither does one whose cwd differs (realpath on both sides). Raises
     AmbiguousSessionError when more than one distinct session matches (a short id
     shared by an older record): binding the first would reduce the wrong session.
     """
     matches: dict[str, AgentViewSession] = {}
     for session in sessions:
         if _session_key(session) in exclude:
+            continue
+        if cwd is not None and not _same_dir(session.cwd, cwd):
             continue
         if session.session_id == session_id or session.id == session_id:
             matches[_session_key(session) or session_id] = session
