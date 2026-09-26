@@ -54,7 +54,7 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
             "auth_posture": "subscription_local",
             "billing_posture": "subscription_included",
         })
-        self.assertIn(["claude", "--bg", "--name", "c2-bg-test", "--permission-mode", "plan", "do work"], calls)
+        self.assertIn(["claude", "--bg", "--name", "c2-bg-test", "--permission-mode", "plan", "--", "do work"], calls)
         rendered = json.dumps(lifecycle.to_json(), sort_keys=True)
         self.assertNotIn("raw transcript", rendered)
         self.assertNotIn("logs\":", rendered)

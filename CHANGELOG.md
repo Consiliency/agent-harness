@@ -16,7 +16,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   deadline and no silence termination, and `launch_timeout_seconds` applies only when set. It
   then returns the session's final assistant message from its transcript as the launch output.
   Only a `done` session with a readable final message succeeds. A session waiting for input
-  (`blocked`) fails closed and is left attachable.
+  (`blocked`) fails closed and is left attachable. Approval bypass is not defaulted:
+  unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
+  or the session stops `blocked` on its first Bash prompt.
 - The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
   and its context goes through `context.md` instead of one argv entry.
 - `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.

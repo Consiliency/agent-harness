@@ -62,8 +62,10 @@ def test_golden_delta_is_only_final_schema_exclusion():
     statuses.insert(2, "executing")
     command[index] = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     # The second permitted delta (agent-harness#409/#1099): the Agent View argv no longer
-    # renders the root-unsupported `--cwd` and now carries the print route's tool policy.
+    # renders the root-unsupported `--cwd`, carries the print route's tool policy, and ends
+    # its options with `--` so a variadic option cannot swallow the prompt.
     agent_view = golden["claude_agent_view_solo"]["command"]
+    agent_view.remove("--")
     for flag in ("--allowedTools", "--disallowedTools"):
         at = agent_view.index(flag)
         del agent_view[at:at + 2]

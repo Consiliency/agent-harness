@@ -90,7 +90,18 @@ class LaunchCommandTest(unittest.TestCase):
         self.assertEqual(command[command.index("--session-id") + 1], ASSIGNED)
         self.assertEqual(command[command.index("--allowedTools") + 1], "Bash,Read")
         self.assertEqual(command[command.index("--disallowedTools") + 1], "AskUserQuestion")
-        self.assertEqual(command[-1], "do work")
+        # The prompt follows the end-of-options marker, so a variadic option such as
+        # --disallowedTools cannot swallow it (the failed agent-harness#1099 proof run).
+        self.assertEqual(command[-2:], ["--", "do work"])
+
+    def test_variadic_options_never_precede_a_bare_prompt(self):
+        variadic = {"--tools", "--allowedTools", "--disallowedTools", "--add-dir"}
+        command = ClaudeAgentViewAdapter().launch_command(
+            "do work", tools="Read", allowed_tools="Bash", disallowed_tools="Agent", add_dirs=["/ctx"]
+        )
+        prompt_at = command.index("do work")
+        self.assertEqual(command[prompt_at - 1], "--")
+        self.assertTrue(variadic & set(command[:prompt_at]))
 
     def test_launch_session_id_parses_the_backgrounded_banner(self):
         self.assertEqual(_launch_session_id("backgrounded · 1a2b3c4d\n"), "1a2b3c4d")
