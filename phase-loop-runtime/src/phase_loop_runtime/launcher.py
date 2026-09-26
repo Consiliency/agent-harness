@@ -14,7 +14,6 @@ import tempfile
 import threading
 import time
 import urllib.parse
-import uuid
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -2288,7 +2287,6 @@ def _launch_claude_agent_view(
     started_at = _utc_now()
     cwd = Path(spec.wrapped_cwd or os.getcwd())
     adapter = adapter if adapter is not None else ClaudeAgentViewAdapter()
-    assigned_session_id = str(uuid.uuid4())
     context_text = spec.prompt_bundle.render_context()
     # The rendered context can exceed the per-argument ARG_MAX, so, like the print
     # route's context-file delivery, the session is pointed at a file instead.
@@ -2302,13 +2300,14 @@ def _launch_claude_agent_view(
         "model": spec.selected_model,
         "effort": spec.selected_effort,
         "permission": _command_option(spec.command, "--permission-mode"),
-        "session_id": assigned_session_id,
         "allowed_tools": _command_option(spec.command, "--allowedTools"),
         "disallowed_tools": _command_option(spec.command, "--disallowedTools"),
         "add_dirs": [Path(context_path).parent] if context_path is not None else None,
     }
     command = adapter.launch_command(prompt, cwd=cwd, **launch_options)
-    lifecycle = adapter.launch_background(prompt, cwd=cwd, **launch_options)
+    # `claude --bg` ignores --session-id (it manages the id itself), so the session is
+    # bound by the id the launch prints, never by cwd.
+    lifecycle = adapter.launch_background(prompt, cwd=cwd, bind_printed_id=True, **launch_options)
     timed_out = False
     if lifecycle.state in {"running", "unknown"} and lifecycle.blocker is None:
         started_monotonic = time.monotonic()

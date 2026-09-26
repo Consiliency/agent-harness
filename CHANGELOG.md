@@ -11,14 +11,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
   root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
   returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
-- The launch now pre-assigns `--session-id` and binds only that session, never another one in
-  the same cwd. It waits until Agent View reports a terminal state. There is no default
+- The launch binds only the session whose id `claude --bg` prints (the CLI ignores
+  `--session-id` under `--bg`), never another one in the same cwd, and ends its options with
+  `--` so the variadic tool flags cannot swallow the prompt. It waits until Agent View reports a terminal state. There is no default
   deadline and no silence termination, and `launch_timeout_seconds` applies only when set. It
   then returns the session's final assistant message from its transcript as the launch output.
   Only a `done` session with a readable final message succeeds. A session waiting for input
   (`blocked`) fails closed and is left attachable. Approval bypass is not defaulted:
   unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
-  or the session stops `blocked` on its first Bash prompt.
+  or the session stops `blocked` on its first Bash prompt. The CLI also refuses `--bg` with
+  `bypassPermissions` until the operator has accepted the bypass disclaimer once
+  interactively (`claude --dangerously-skip-permissions`); the launch blocker now carries that
+  refusal line.
 - The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
   and its context goes through `context.md` instead of one argv entry.
 - `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.
