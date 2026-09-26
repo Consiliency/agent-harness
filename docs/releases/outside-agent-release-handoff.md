@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.18`
-- Runtime `phase_loop_runtime.__version__`: `0.7.18`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.18`
+- Version: `0.7.19`
+- Runtime `phase_loop_runtime.__version__`: `0.7.19`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.19`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.18`
+- Validator version: `0.7.19`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,28 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.19` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.18` tag commit (`20c602a2`):
+  - the qualified agy 1.2.11 entry image (agent-harness#1074); the 1.2.10 image now refuses
+    before launch. This unblocks the dotfiles consumer (agent-harness#1008). The route was
+    requalified live on this release tree (validated 3, `route_qualified` true; all 214
+    source pins verified), with no observer or route change;
+  - Claude final-message extraction (agent-harness#1002, agent-harness#960) and the president
+    format re-ask on a completed nonconforming turn (agent-harness#1017, agent-harness#1016);
+  - the closeout audit's recognition of the skill handoff root (agent-harness#1085,
+    agent-harness#1084);
+  - test hardening from the 0.7.18 president rulings (agent-harness#1073);
+  - the v10 roadmap PANEL phase (agent-harness#1079; roadmap only);
+  - the 0.7.18 published record (agent-harness#1072).
+- Release tracking: agent-harness#1087; the appended plan-authority rows cite it.
+- Tag: not yet created. The signed `v0.7.19` tag push, which publishes to PyPI, is
+  maintainer-gated.
+
+### Previous release: 0.7.18 (published)
 
 - `publication_status=published`
 - `0.7.18` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -206,7 +228,21 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.18 (published)
+### This release: 0.7.19 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
+record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
+and the published digests are recorded here after the tag push. As for `0.7.15`–`0.7.18`,
+the published digests are expected to differ, because archive bytes are
+timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `c4b99457bd1973b917b3ec9be45ec1fa05304b6c9ac9d1b49509ca4870621ce7`
+- prepared direct-sdist sha256: `4553444e025e92d5ca0640064c1df78334a9984969c233a8c65a977a2f4db0bc`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.18 (published)
 
 The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
 `36137860560` from its build of the tagged commit `20c602a2`, verified by the publish job
@@ -295,23 +331,23 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the published `0.7.18` artifacts (workflow `36137860560`); identical to the
-prepared measurement.
+Measured on the prepared `0.7.19` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.18-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.18.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.18.data`, `phase_loop_runtime-0.7.18.dist-info`
+- Wheel artifact: `phase_loop_runtime-0.7.19-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.19.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.19.data`, `phase_loop_runtime-0.7.19.dist-info`
 - Wheel file count: `471`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `964` regular files (`1099` archive members including directories)
+- Sdist file count: `965` regular files (`1100` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
 `0.7.18` is published (PyPI, trusted-publish workflow `36137860560`), so governed-pipeline
-may consume it as an authoritative
-validator by pinning `phase-loop-runtime==0.7.18`, then calling:
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.18`. Once
+`0.7.19` is published (tag push → PyPI; this document records it as `prepared` until then),
+the pin may move to `phase-loop-runtime==0.7.19`. In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -358,6 +394,10 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
+- For `0.7.18`: the package was not published from this handoff; trusted workflow
+  `36137860560` published it from the signed `v0.7.18` tag (verified tag object
+  `a8fc8cd88f138d9109850a6054ef0de8a8e44e6d`), pushed on the maintainer's explicit
+  instruction.
 - For `0.7.17`: the package was not published from this handoff; trusted workflow
   `36078445981` published it from the signed `v0.7.17` tag (verified tag object
   `74353e228e4a8b7400d09bfee817d16ae347e7fc`), pushed on the maintainer's explicit
@@ -371,7 +411,7 @@ merge verdict.
 - For `0.7.14`: the package was not published from this handoff; trusted workflow
   `32783112944` published it from the signed `v0.7.14` tag (verified tag object
   `2de6c06973b84890b62184fa023d387f6044a43c`).
-- For `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
+- For `0.7.18`, `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
   workflow and it completed successfully; none was
   dispatched from a handoff.
 - Production governed-pipeline enforcement is not claimed by this handoff.

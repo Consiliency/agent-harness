@@ -86,10 +86,10 @@ A finished roadmap and an unstarted one are indistinguishable by reading.
    / `verdict_schema_sha256`. CONFORM's pin work is therefore NO LONGER externally gated and is
    satisfiable against merged sources; EC-CONFORM-5/6/7 are re-derived accordingly below. (Swept
    the other four assumptions against current `main`: #2 subsequently reconciled — `governed-pipeline#128`
-   CLOSED, we still ship `0.7.18`; #3 holds — `tui_adapter_required` still present in
+   CLOSED, we still ship `0.7.19`; #3 holds — `tui_adapter_required` still present in
    `panel_invoker.py`, REVIEWTRUTH unlanded; #4/#5 structurally independent of agent-harness#377. That original sweep found only #1
    stale; #2's later drift is reconciled below.)
-2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.18; it has acted on
+2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.19; it has acted on
    `governed-pipeline#128`, which is CLOSED. No phase here depends on that being resolved.
 3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
    inside Claude Code today (`tui_adapter_required`). The coordinated v10 run therefore invokes its

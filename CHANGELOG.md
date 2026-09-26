@@ -8,21 +8,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
 
-- When a Claude answer hits `max_tokens`, the CLI journals an `isMeta` resume record and
-  continues under a new message id. That record no longer counts as a new request. The
-  extractor joins the capped message(s) with the continuation, instead of returning only the
-  tail and silently dropping a review's findings. A continuation whose head cannot be rebuilt
-  soundly fails closed. On the president route, a `max_tokens` stop is allowed only on a
-  message the answer continues.
+- When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit
+  hit…", `isMeta`) and continues under a new message id. That record no longer counts as a new
+  request: the extractor joins the capped message(s) with the continuation, instead of returning
+  only the tail and silently dropping a review's findings. Any other meta record after a cap, a
+  resume that continues nothing, and a continuation crossing a tool call all fail closed. On the
+  president route, a `max_tokens` stop is allowed only on a message the answer continues.
 
-### Closeout audit recognises the required skill handoff root (agent-harness#1084)
+## [0.7.19] - 2026-09-26
+
+### Closeout audit recognises the required skill handoff root (agent-harness#1084; PR agent-harness#1085)
 
 - `phase-loop-closeout-audit` no longer reports `unknown_ignored` for the repo-local
   `.dev-skills/handoffs/` root that the skills must write and keep ignored. Only that exact
   root counts, as returned by `skill_paths.resolve_handoff_root`: the same name nested
   elsewhere, a bare file of that name, or a spoofed variant still blocks.
 
-### Claude final-message extraction (agent-harness#960)
+### Claude final-message extraction (agent-harness#960; PR agent-harness#1002)
 
 - Retain every text block of the final logical assistant message, grouped by API
   message identity. Drop exact same-uuid re-journals of a record, and fail closed
@@ -31,7 +33,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   of reusing a stale verdict. Review and president PTY controls preserve the full
   message and existing owned-transcript cleanup.
 
-### Test hardening from the 0.7.18 president rulings (agent-harness#1064, agent-harness#1065, agent-harness#1070)
+### Claude president format re-ask on a completed nonconforming turn (agent-harness#1016; PR agent-harness#1017)
+
+- The brokered Claude TUI adapter now returns an explicitly completed (`end_turn`) final
+  message that lacks `FORCING DECISION:`, so the existing president policy can make its one
+  format re-ask instead of the adapter waiting. Synthetic errors, `stop_sequence`, `max_tokens`,
+  tool use, pending turns, a new user turn and partial JSON stay fail closed, and cancellation is
+  re-checked before every broker-final return.
+
+### v10 roadmap: PANEL phase (agent-harness#1078; PR agent-harness#1079)
+
+- `specs/phase-plans-v10.md` gains Phase 18 (PANEL): panel vendor fallback by lane and a
+  distinct-vendor landing minimum, resealed with appended `plan_current_authority.v1` rows.
+  Roadmap only; no runtime behaviour changes yet.
+
+### Test hardening from the 0.7.18 president rulings (agent-harness#1064, agent-harness#1065, agent-harness#1070; PR agent-harness#1073)
 
 - Train refusals: a refusal repeated across two runs keeps the whole admission binding, and the
   refresh-refusal tests assert that they were blocked at their own publish site.
@@ -42,7 +58,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   a reaped pid, and pin that the owner walk examines pid 1. Tests and comments only; no runtime
   behaviour changes.
 
-### Qualified agy 1.2.11 entry image (agent-harness#1008)
+### Qualified agy 1.2.11 entry image (agent-harness#1008; PR agent-harness#1074)
 
 - Admit the latest 1.2.11 Linux x64 image for brokered Gemini heartbeat-only
   review after real completion, cancellation and owner-loss qualification.
