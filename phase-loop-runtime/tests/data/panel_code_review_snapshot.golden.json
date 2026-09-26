@@ -1,0 +1,446 @@
+{
+  "import_time": {
+    "fixtures.DEFAULT_BOARD": {
+      "allow_api_key_fallback": false,
+      "name": "default",
+      "purpose": "premerge-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "red-team",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternative-approach",
+          "model_pin": "gemini/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "correctness",
+          "model_pin": "claude/ultra"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "grok",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "grok/heavy"
+        }
+      ]
+    },
+    "presets.CODE_REVIEW_BOARD": {
+      "allow_api_key_fallback": false,
+      "name": "code-review",
+      "purpose": "code-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "grok",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "grok/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "correctness",
+          "model_pin": "claude/ultra"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "red-team",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternative-approach",
+          "model_pin": "gemini/regular"
+        }
+      ]
+    },
+    "resolver._STANDIN_CODE_REVIEW": {
+      "allow_api_key_fallback": false,
+      "name": "code-review",
+      "purpose": "code-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "grok",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "grok/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "correctness",
+          "model_pin": "claude/ultra"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "red-team",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternative-approach",
+          "model_pin": "gemini/regular"
+        }
+      ]
+    }
+  },
+  "model_normalization": "profiles.TIER_MODELS <vendor>/<tier>",
+  "preset_tasks": {
+    "brainstorm": {
+      "allow_api_key_fallback": false,
+      "name": "brainstorm",
+      "purpose": "brainstorm",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "claude/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "supportive",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "lateral",
+          "model_pin": "gemini/regular"
+        }
+      ]
+    },
+    "code-review": {
+      "allow_api_key_fallback": false,
+      "name": "code-review",
+      "purpose": "code-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "grok",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "grok/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "correctness",
+          "model_pin": "claude/ultra"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "red-team",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternative-approach",
+          "model_pin": "gemini/regular"
+        }
+      ]
+    },
+    "default": {
+      "allow_api_key_fallback": false,
+      "name": "default",
+      "purpose": "premerge-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "red-team",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternative-approach",
+          "model_pin": "gemini/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "correctness",
+          "model_pin": "claude/ultra"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "grok",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "grok/heavy"
+        }
+      ]
+    },
+    "doc-edit": {
+      "allow_api_key_fallback": false,
+      "name": "doc-edit",
+      "purpose": "doc-edit",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "medium",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "copyedit",
+          "model_pin": "claude/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "medium",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "structure",
+          "model_pin": "codex/heavy"
+        }
+      ]
+    },
+    "general": {
+      "allow_api_key_fallback": false,
+      "name": "general",
+      "purpose": "general",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "adversarial",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternative",
+          "model_pin": "gemini/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "completeness",
+          "model_pin": "claude/ultra"
+        }
+      ]
+    },
+    "legal-brainstorm": {
+      "allow_api_key_fallback": false,
+      "name": "legal-brainstorm",
+      "purpose": "legal-brainstorm",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "aggressive",
+          "model_pin": "claude/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "conservative",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "creative",
+          "model_pin": "gemini/regular"
+        }
+      ]
+    },
+    "legal-review": {
+      "allow_api_key_fallback": false,
+      "name": "legal-review",
+      "purpose": "legal-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "opposing-counsel",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "risk-liability",
+          "model_pin": "gemini/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "authority-verification",
+          "model_pin": "claude/ultra"
+        }
+      ]
+    },
+    "legal-strategy-review": {
+      "allow_api_key_fallback": false,
+      "name": "legal-strategy-review",
+      "purpose": "legal-strategy-review",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "codex",
+          "host_leg": false,
+          "lens": "red-team",
+          "model_pin": "codex/heavy"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "high",
+          "harness": "gemini",
+          "host_leg": false,
+          "lens": "alternatives",
+          "model_pin": "gemini/regular"
+        },
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "downside-ethics",
+          "model_pin": "claude/ultra"
+        }
+      ]
+    },
+    "solo": {
+      "allow_api_key_fallback": false,
+      "name": "solo",
+      "purpose": "general",
+      "research_enabled": false,
+      "seats": [
+        {
+          "auth": "subscription",
+          "backing": "homebrew",
+          "effort": "max",
+          "harness": "claude",
+          "host_leg": false,
+          "lens": "completeness",
+          "model_pin": "claude/ultra"
+        }
+      ]
+    }
+  },
+  "schema": "panel_code_review_snapshot.v1"
+}
