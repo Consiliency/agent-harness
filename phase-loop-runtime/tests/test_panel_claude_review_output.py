@@ -807,13 +807,13 @@ def test_1077_a_chain_of_three_is_joined_in_order(tmp_path):
 
 
 def test_1077_a_continuation_whose_head_is_not_capped_fails_closed(tmp_path):
-    # A resume record after a NON-capped message is an ordinary meta record: it does not
-    # continue anything, so it starts a new request and the answer is the later message.
+    # A CLI resume record after a NON-capped message continues nothing and cannot be a
+    # genuine request either, so the journal is ambiguous and fails closed (#1088 r1).
     path = _jsonl(tmp_path, [
         _user("u1"), _asst("done\nAGREE", mid="m1", uuid="a1"),
         _resume(), _asst("unrelated", mid="m2", uuid="a2"),
     ])
-    assert pi._final_assistant_text_from_jsonl(path) == "unrelated"
+    assert pi._final_assistant_text_from_jsonl(path) == ""
 
 
 def test_1077_a_capped_head_with_a_tool_call_fails_closed(tmp_path):
@@ -848,3 +848,61 @@ def test_1077_the_president_route_still_rejects_a_marked_capped_head(tmp_path, m
         head["isApiErrorMessage"] = True
     path = _jsonl(tmp_path, [_user("u1"), head, _resume(), _asst("FORCING DECISION: APPROVE", mid="m2", uuid="a2")])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+
+# agent-harness#1088 round 1: each reviewer sequence, on both routes.
+
+def _meta(uuid, text):
+    return {"type": "user", "uuid": uuid, "isMeta": True, "message": {"role": "user", "content": text}}
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088_an_unrecognised_meta_record_after_a_cap_fails_closed(tmp_path, terminal):
+    # codex r1 (1): an isMeta record that is not the CLI's resume must not join two answers.
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review change A."), _asst("A head", mid="m1", uuid="a1", stop="max_tokens"),
+        _meta("u2", "New request: review change B only."), _asst("B answer", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088_a_stale_open_replay_does_not_hide_the_cap(tmp_path, terminal):
+    # codex r1 (2) / grok: the head is joined, not dropped as history.
+    head = _asst("HEAD: blocking finding", mid="m1", uuid="a1", stop="max_tokens")
+    stale = _asst("HEAD: blocking finding", mid="m1", uuid="a1", stop=None)
+    path = _jsonl(tmp_path, [_user("u1"), head, stale, _resume(), _asst("TAIL\nDISAGREE", mid="m2", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "HEAD: blocking finding\nTAIL\nDISAGREE"
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088_an_exact_replay_of_the_resume_is_not_a_new_request(tmp_path, terminal):
+    # codex r1 (3): #1002's exact-user-replay rule holds for resume records too.
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("HEAD", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume("r1"), _asst("TAIL\nAGREE", mid="m2", uuid="a2"), _resume("r1"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "HEAD\nTAIL\nAGREE"
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088_a_continuation_that_crosses_a_tool_call_fails_closed(tmp_path, terminal):
+    # grok r1: the head would otherwise be history behind the tool_result boundary.
+    tool = _asst("", mid="m2", uuid="a2", stop="tool_use")
+    tool["message"]["content"] = [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]
+    result = {"type": "user", "uuid": "t1", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}}
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("BLOCKING: auth missing", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), tool, result, _asst("AGREE", mid="m3", uuid="a3"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+def test_1088_the_resume_text_may_arrive_as_a_text_block(tmp_path):
+    resume = {"type": "user", "uuid": "r1", "isMeta": True, "message": {"role": "user", "content": [
+        {"type": "text", "text": "Output token limit hit. Resume directly."}]}}
+    path = _jsonl(tmp_path, [_user("u1"), _asst("head", mid="m1", uuid="a1", stop="max_tokens"),
+                             resume, _asst("tail\nAGREE", mid="m2", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path) == "head\ntail\nAGREE"
