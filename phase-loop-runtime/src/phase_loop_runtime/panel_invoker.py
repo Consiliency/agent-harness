@@ -1847,59 +1847,84 @@ _TOOL_DENIED_RE = re.compile(
 # `MODEL_CAPACITY_EXHAUSTED` (server capacity, not the account's quota) and NOT a bare
 # `RESOURCE_EXHAUSTED`: that is also agy's per-minute 429, which it retries in-process and
 # recovers from (tests/test_phase_loop_launcher.py has exactly that transcript).
+# Each entry is the WHOLE line the CLI prints, with its variable parts constrained (a
+# datetime, a path) — board r2 (agent-harness#1102): a prefix match let a reviewer's own
+# line that merely BEGINS with a sourced fragment count as the CLI's line.
+_CODEX_RESET_DT = r"[A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M"
+_CODEX_USAGE_TAIL_FRAGMENTS = (
+    # every fragment below sits next to "hit your usage limit" in the codex binary
+    r"Upgrade to Plus to continue using Codex(?: \(https://chatgpt\.com/explore/plus\))?",
+    r"Upgrade to Pro \(https://chatgpt\.com/explore/pro\)",
+    r"[Vv]isit https://chatgpt\.com/codex/settings/usage to purchase more credits",
+    r"To get more access now, send a request to your admin",
+    r"(?:or )?[Tt]ry again at " + _CODEX_RESET_DT,
+)
 _PROVIDER_USAGE_LIMIT_SENTENCES = (
     # codex
-    r"You['’]ve hit your usage limit\b",
-    r"You hit your spend cap\b",
-    # Claude Code
-    r"You['’]ve hit your (?:limit|monthly spend limit|team['’]s shared budget|"
-    r"channel['’]s monthly spend limit)\b",
-    r"You['’]ve reached your [\w.-]+ limit\.",
-    r"Usage limit reached\b",
-    r"You['’]re out of usage credits\b",
+    r"You['’]ve hit your usage limit(?:[ ,.]+(?:"
+    + "|".join(_CODEX_USAGE_TAIL_FRAGMENTS) + r"))*[ ,.]*",
+    r"You hit your spend cap set by the owner of your workspace\. "
+    r"Ask an owner to increase your spend cap to continue\.",
+    # Claude Code (each a complete string in the binary; the suffixes are its adjacent ones)
+    r"You['’]ve hit your (?:monthly spend limit|channel['’]s monthly spend limit|"
+    r"team['’]s shared budget)\.?(?: (?:Switch to another model|/model to switch models\.))?",
+    r"You['’]ve reached your Fable limit\.",
+    r"Usage limit reached",
+    r"You['’]re out of usage credits\.?(?: (?:Switch to another model|"
+    r"/model to switch models\.))?",
     # grok
-    r"You hit your (?:free usage|weekly) limit\.",
-    r"You['’]ve hit the rate limit for your plan\.",
-    r"You['’]ve reached your free Grok Build usage limit\b",
-    # agy (UI / status tokens)
-    r"(?:AI: )?Out of credits\b",
-    r"Quota exhausted\b",
+    r"You hit your (?:free usage|weekly) limit\.(?: (?:Upgrade to a higher tier for more usage|"
+    r"Purchase credits to keep using Grok Build|Unlock all features with SuperGrok\.))?",
+    r"You['’]ve hit the rate limit for your plan\. Upgrade your account or try again later\.",
+    r"You['’]ve reached your free Grok Build usage limit for now\.(?: Get SuperGrok for much "
+    r"higher limits, or try again later: https://grok\.com/supergrok\?referrer=grok-build)?",
+    # agy (UI / status tokens, printed as-is)
+    r"(?:AI: )?Out of credits",
+    r"Quota exhausted",
+    r"(?:stop_?reason\s*[:=]\s*)?STOP_REASON_QUOTA_EXHAUSTED",
 )
 # agent-harness#1098 item 2: an ENVIRONMENT / STARTUP failure the CLI printed instead of a
 # review. On dev0 a codex seat returned OK with the text "error building bubblewrap command:
 # app-server socket directory must be a user-owned directory with mode 0700", and the claude
 # TUI refused "Temp directory /tmp/claude-0 is owned by uid 65534, expected 0. Refusing to
 # use it". Sourced from the codex / Claude Code binaries; nothing is sourced for grok or agy.
+# A path is a bounded non-greedy run anchored by the sentence's fixed tail, so a path with
+# spaces ("/tmp/claude cache") is still a path.
+_CLAUDE_TMP_PATH = r"/[^\n]{0,1000}?"
+_CLAUDE_TMPDIR_HINT = (
+    r"(?: Set CLAUDE_CODE_TMPDIR to a directory you control, or ask an administrator to "
+    r"remove it\.)?"
+)
 _PROVIDER_ENV_FAILURE_SENTENCES = (
-    # codex
-    r"error building bubblewrap command\b",
-    r"app-server socket directory must be a user-owned directory\b",
-    # Claude Code: the three temp-dir refusals it throws before starting.
-    r"(?:Temp )?directory \S+ is owned by uid \d+, expected \d+\. Refusing to use it",
-    r"(?:Temp )?directory \S+ is not a directory \(may be an attacker-planted symlink\)\. "
-    r"Refusing to use it",
-    r"(?:Temp )?directory \S+ is not readable \(.*?\)\. Refusing to use it",
+    # codex: its only sourced bubblewrap reason, with or without the wrapper prefix
+    r"(?:error building bubblewrap command: )?app-server socket directory must be a "
+    r"user-owned directory with mode 0700\.?",
+    # Claude Code: the three temp-dir refusals it throws before starting, verbatim.
+    r"(?:Temp d|D)irectory " + _CLAUDE_TMP_PATH + r" is owned by uid \d+, expected \d+\. "
+    r"Refusing to use it(?: — another user may have pre-created it\.)?" + _CLAUDE_TMPDIR_HINT,
+    r"(?:Temp d|D)irectory " + _CLAUDE_TMP_PATH + r" is not a directory \(may be an "
+    r"attacker-planted symlink\)\. Refusing to use it\." + _CLAUDE_TMPDIR_HINT,
+    r"(?:Temp d|D)irectory " + _CLAUDE_TMP_PATH + r" is not readable \(its mode may have been "
+    r"altered, or a path component denies search\)\. Refusing to use it — restore its "
+    r"permissions \(chmod 0700\) or remove it\." + _CLAUDE_TMPDIR_HINT,
 )
-# A signature counts only where the CLI puts it: at the START of a line, optionally after an
-# `ERROR:` tag or a TUI glyph. Never mid-sentence, in backticks, or in a `>` quote — that is
-# a review QUOTING it (routine: this panel reviews the code that matches these strings).
-_PROVIDER_LINE_PREFIX = r"^[ \t│┃•●■⎿]*(?:(?:ERROR|Error|error)\s*:\s*)?"
-_PROVIDER_USAGE_LIMIT_RE = re.compile(
-    _PROVIDER_LINE_PREFIX + "(?:" + "|".join(_PROVIDER_USAGE_LIMIT_SENTENCES) + ")"
-    r"|\bSTOP_REASON_QUOTA_EXHAUSTED\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-_PROVIDER_ENV_FAILURE_RE = re.compile(
-    _PROVIDER_LINE_PREFIX + "(?:" + "|".join(_PROVIDER_ENV_FAILURE_SENTENCES) + ")",
-    re.IGNORECASE | re.MULTILINE,
-)
+
+
+def _whole_line_re(sentences: tuple[str, ...]) -> re.Pattern[str]:
+    # Column 0 (a tail scan must not count an INDENTED echoed prompt/docstring line), an
+    # optional `ERROR:` tag the CLI adds, the whole sentence, then nothing but whitespace.
+    return re.compile(
+        r"^(?:(?:ERROR|Error|error): )?(?:" + "|".join(sentences) + r")[ \t]*$", re.MULTILINE
+    )
+
+
+_PROVIDER_USAGE_LIMIT_RE = _whole_line_re(_PROVIDER_USAGE_LIMIT_SENTENCES)
+_PROVIDER_ENV_FAILURE_RE = _whole_line_re(_PROVIDER_ENV_FAILURE_SENTENCES)
 # The same sentences ANYWHERE: only for a Claude PTY tail, which `_sanitized_pty_tail`
-# collapses to one line (so no line starts survive) and which is only ever read for a leg
-# that already failed.
-_PROVIDER_USAGE_LIMIT_ANY_RE = re.compile(
-    "|".join(_PROVIDER_USAGE_LIMIT_SENTENCES) + r"|\bSTOP_REASON_QUOTA_EXHAUSTED\b", re.IGNORECASE
-)
-_PROVIDER_ENV_FAILURE_ANY_RE = re.compile("|".join(_PROVIDER_ENV_FAILURE_SENTENCES), re.IGNORECASE)
+# collapses to one line (so no line starts survive), only for a leg that already failed
+# WITHOUT review text (see `_exec_claude_tui_leg`).
+_PROVIDER_USAGE_LIMIT_ANY_RE = re.compile("|".join(_PROVIDER_USAGE_LIMIT_SENTENCES))
+_PROVIDER_ENV_FAILURE_ANY_RE = re.compile("|".join(_PROVIDER_ENV_FAILURE_SENTENCES))
 # The provider's own reset time when it prints one: codex " or try again at %b %-d, %Y
 # %-I:%M %p" / " Try again at "; claude "until your limit resets at …" / "resets at …".
 _PROVIDER_USAGE_RESET_RE = re.compile(
@@ -1921,9 +1946,10 @@ _LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer <redacted>"),
     (re.compile(
-        r"\b(?:sk-(?:ant-)?|xai-|gh[pousr]_|github_pat_|xox[abceoprs]-|AIza|ya29\.|AKIA)"
-        r"[A-Za-z0-9_.-]{8,}"
+        r"\b(?:sk-(?:ant-)?|sk_live_|sess-|xai-|gh[pousr]_|github_pat_|glpat-|hf_|"
+        r"xox[abceoprs]-|AIza|ya29\.|AKIA)[A-Za-z0-9_.-]{8,}"
     ), "<redacted>"),
+    (re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted>"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
     (re.compile(r"(?:/var)?/home/[^/\s]+|/Users/[^/\s]+|/root(?=/|\b)"), "~"),
@@ -1936,11 +1962,9 @@ def _log_tail(text: str, lines: int = _PROVIDER_FAILURE_LOG_TAIL_LINES) -> str:
 
 
 def _is_bare_verdict_line(line: str) -> bool:
-    s = _LEADING_MARKUP_RE.sub("", line.strip()).strip().strip("*`").strip()
-    if s.upper().startswith("VERDICT:"):
-        s = s[len("VERDICT:"):].strip()
-    match = _VERDICT_RE.match(s)
-    return bool(match) and not s[match.end():].strip(" .—-:")
+    # The SAME parser `_completion_ok` uses (`**Verdict:** AGREE`, `- AGREE`, …), so the two
+    # can never disagree about what a verdict line is.
+    return terminal_verdict(line) is not None
 
 
 _LEADING_VERDICT_RE = re.compile(
@@ -1950,13 +1974,13 @@ _LEADING_VERDICT_RE = re.compile(
 
 def _output_is_provider_failure(body: str, pattern: re.Pattern[str]) -> bool:
     """True iff ``body`` IS a provider failure message, whatever its length: every
-    substantive line is either a line the CLI printed — ``pattern``
-    anchored at its start, optionally after ``ERROR:`` or a leading ``VERDICT —`` — or a bare
-    verdict, and at least one is the former. Any line of the reviewer's own prose (a review
-    that quotes the string, mid-sentence, in backticks, or on a line of its own beside other
-    findings, or in a ``` fence, whose marker lines are themselves not failure lines) makes
-    it a review, which keeps its conforming-verdict OK."""
-    lines = [line for line in (body or "").splitlines() if line.strip()]
+    substantive line is either a WHOLE line the CLI printed — ``pattern`` is a whole-line
+    sentence shape, optionally after ``ERROR:`` or a leading ``VERDICT —`` — or a verdict
+    line, and at least one is the former. Any line of the reviewer's own prose (a review
+    that quotes the string mid-sentence, in backticks, in a ``` fence, beside other
+    findings, or on a line that STARTS with a sourced fragment and continues) makes it a
+    review, which keeps its conforming-verdict OK."""
+    lines = [line.rstrip() for line in (body or "").splitlines() if line.strip()]
     hits = 0
     for line in lines:
         if pattern.match(_LEADING_VERDICT_RE.sub("", line)):
@@ -2040,7 +2064,10 @@ def _leg_failure_detail(
         else:
             pattern = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
         for candidate in (_log_tail(log_text), str(review_text)):
-            hits = [line for line in candidate.splitlines() if pattern.search(line)]
+            hits = [
+                line for line in candidate.splitlines()
+                if pattern.search(_LEADING_VERDICT_RE.sub("", line.rstrip()))
+            ]
             if hits:
                 source = hits[-1]
                 break
@@ -4263,11 +4290,11 @@ def _classify_leg(
     ``DEGRADED`` (the reason rides ``detail``, see ``_leg_failure_detail``). Both are scanned
     over the log TAIL only and AFTER the review-mode early-OK, so the invariant above holds
     for them too: a conforming review whose prose discusses a usage limit stays ``OK``.
-    The single exception is a body that IS an environment failure — every substantive line
-    is a line the CLI printed (its sourced env-failure sentence at the line's start) or a
-    bare verdict, at any length (``_output_is_provider_failure``): the CLI could not run,
-    so any verdict it printed is not a review. A review that QUOTES the string (mid-
-    sentence, in backticks, in a fence, or beside its own findings) is not that. It is checked BEFORE the early-OK and
+    The single exception is a body that IS a provider failure (environment OR usage) —
+    every substantive line is a WHOLE sourced line the CLI printed or a verdict line, at any
+    length (``_output_is_provider_failure``): the CLI could not run, so any verdict it printed
+    is not a review. A review that QUOTES the string (mid-sentence, in backticks, in a fence,
+    beside its own findings, or on a line that begins with it and goes on) is not that. It is checked BEFORE the early-OK and
     fails CLOSED — the text is kept, so the governed gate reads it as non-conforming (BLOCK),
     never as a clean review and never as an empty-text WARN. In advisory and president mode
     (both keep the auth-scan-first order) a body that IS a usage banner is likewise not a
@@ -4278,7 +4305,11 @@ def _classify_leg(
     body = (review_text or "").strip()
     if _PROVIDER_TRUNCATION_MARKER.search(body):
         return "DEGRADED"
-    if _output_is_provider_failure(body, _PROVIDER_ENV_FAILURE_RE):
+    # A body that IS the CLI's failure (env OR usage) plus at most a verdict is not a review,
+    # in EVERY mode — checked before the early-OK (board r2: a usage banner + AGREE was OK).
+    if _output_is_provider_failure(body, _PROVIDER_ENV_FAILURE_RE) or _output_is_provider_failure(
+        body, _PROVIDER_USAGE_LIMIT_RE
+    ):
         return "DEGRADED"
     if rc == 0 and body and mode == "review" and _completion_ok(body, mode):
         return "OK"
@@ -4287,7 +4318,6 @@ def _classify_leg(
         _AUTH_SIGNATURE.search(log_text or "")
         or _PROVIDER_USAGE_LIMIT_RE.search(tail)
         or _PROVIDER_ENV_FAILURE_RE.search(tail)
-        or (mode != "review" and _output_is_provider_failure(body, _PROVIDER_USAGE_LIMIT_RE))
     ):
         return "DEGRADED"
     if rc != 0:
@@ -5528,8 +5558,12 @@ def _sanitized_pty_tail(terminal_bytes: bytes, max_chars: int = 600) -> str:
     text = _ANSI_OSC_RE.sub("", text)
     text = _ANSI_CSI_RE.sub("", text)
     text = _TUI_CTRL_RE.sub("", text)
-    # max_chars > len ⇒ redact the COMPLETE text with no head-truncation, then tail-slice.
-    redacted = _redacted_stderr_excerpt(text, max_chars=len(text) + 8)
+    # Redact the WHOLE window (every credential shape `detail` redacts, not only key=value)
+    # before the tail-slice, so the cut can never strand a token's suffix without the prefix
+    # the pattern needs (board r2, agent-harness#1102). The window is bounded first (the
+    # buffer is a whole session); a remnant stranded at ITS edge is far outside the tail.
+    text = text[-(max_chars + 8192):]
+    redacted = _redact_leg_detail(_redacted_stderr_excerpt(text, max_chars=len(text) + 8))
     return redacted[-max_chars:].strip()
 
 
@@ -6893,14 +6927,17 @@ def _exec_claude_tui_leg(
     # caller-owned sink so this function's (status, text) shape stays unchanged. The
     # tail is where the CLI's own refusal lands (e.g. the shared-/tmp "Temp directory …
     # is owned by uid …" that surfaced only as ``claude_tui_pty_eof_no_output``).
-    # The PTY tail is one collapsed line, so its signatures are matched unanchored; it is
-    # only read for a leg that already failed. A typed provider failure is DEGRADED (as on
-    # every other route); any other status is left as it was.
+    # The PTY tail is one collapsed line, so its signatures are matched unanchored. That is
+    # only safe when the screen can hold nothing but the CLI's own output: a leg that failed
+    # WITHOUT review text (the Claude seat's on-screen prose could quote a sentence) and was
+    # not reclaimed on time (a TIMEOUT stays a TIMEOUT). A typed provider failure is then
+    # DEGRADED, as on every other route.
     if failure_detail_sink is not None and status != "OK":
+        typed_ok = status != "TIMEOUT" and not str(review_text or "").strip()
         tail_detail = _leg_failure_detail(
-            status, rc if rc else 1, review_text, pty_tail, anchored=False
+            status, rc if rc else 1, review_text, pty_tail, anchored=not typed_ok
         )
-        if tail_detail and tail_detail.startswith("provider_"):
+        if tail_detail and tail_detail.startswith("provider_") and typed_ok:
             status = "DEGRADED"
             failure_detail_sink.append(tail_detail)
         elif tail_detail:

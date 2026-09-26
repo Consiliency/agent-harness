@@ -64,10 +64,8 @@ CONFORMING_REVIEW_ABOUT_LIMITS = (
 @pytest.mark.parametrize("line", [
     CODEX_USAGE_BANNER,                                                   # measured, codex
     "You've hit your usage limit. Upgrade to Plus to continue using Codex",  # codex binary
-    "You hit your spend cap set by the owner of your workspace.",          # codex binary
-    # claude: the binary holds "You've hit your" and "resets" as separate fragments; this
-    # composed line is a SHAPE example, not a verbatim string.
-    "You've hit your limit \u00b7 resets 3pm",
+    "You hit your spend cap set by the owner of your workspace. Ask an owner to increase "
+    "your spend cap to continue.",                                         # codex binary
     "You've hit your monthly spend limit.",                                # claude binary
     "You've hit your team's shared budget. Switch to another model",       # claude binary
     "You've reached your Fable limit.",                                    # claude binary
@@ -296,13 +294,13 @@ def test_detail_redacts_additional_token_shapes(secret):
 def test_the_final_labelled_detail_is_bounded_and_control_stripped():
     """The bound is on the STORED string, label included, and a terminal escape in a CLI
     line never reaches the operator's terminal via `advisor-board`."""
-    long_banner = CODEX_USAGE_BANNER.replace(
-        "Visit", "Visit \x1b[2J\x07\x1bZ\x9b2J\x00 " + "https://example.invalid/" + "z" * 2000
-    )
-    log = "user\nprompt\n" + long_banner + "\n"
+    path = "/tmp/\x1b[2J\x07\x1bZ\x9b2J\x00" + "z" * 950
+    line = f"Temp directory {path} is owned by uid 65534, expected 0. Refusing to use it"
+    log = "user\nprompt\n" + line + "\n"
     status = pi._classify_leg(1, "", log)
+    assert status == "DEGRADED"
     detail = pi._leg_failure_detail(status, 1, "", log)
-    assert detail.startswith("provider_usage_limit (resets Oct 1st, 2026 1:42 PM): ")
+    assert detail.startswith("provider_environment_failure: Temp directory /tmp/")
     assert len(detail) <= pi._LEG_DETAIL_MAX_CHARS
     assert not re.search(r"[\x00-\x1f\x7f-\x9f]", detail), repr(detail)
 
@@ -538,3 +536,166 @@ def test_multiline_tool_denial_keeps_the_harness_explanation(monkeypatch, tmp_pa
     rc, text, log = pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={})
     detail = pi._leg_failure_detail(pi._classify_leg(rc, text, log), rc, text, log)
     assert detail and "TOOL-DENIAL" in detail and "auto-denied" in detail
+
+
+# --- board round 2 (agent-harness#1102) ------------------------------------------------
+
+@pytest.mark.parametrize("body", [
+    # codex r2: a reviewer line that BEGINS with a sourced fragment and goes on
+    "App-server socket directory must be a user-owned directory with mode 0700; this "
+    "implementation enforces that requirement correctly.\nAGREE",
+    # grok r2
+    "error building bubblewrap command is now classified before the early-OK path.\n\nAGREE",
+    # claude r2 F2
+    "Error building bubblewrap command output is now typed DEGRADED before the early-OK.\n\nAGREE",
+    "You've hit your usage limit handling is now typed, which is right.\n\nAGREE",
+])
+def test_review_line_that_starts_with_a_sourced_fragment_stays_ok(body):
+    assert pi._classify_leg(0, body, body, mode="review") == "OK"
+
+
+@pytest.mark.parametrize("mode,suffix", [("advisory", ""), ("review", "\n\nAGREE")])
+def test_temp_dir_path_with_spaces_is_still_detected(mode, suffix):
+    body = (
+        "Temp directory /tmp/claude cache is owned by uid 65534, expected 0. Refusing to use it"
+        + suffix
+    )
+    assert pi._classify_leg(0, body, "", mode=mode) == "DEGRADED"
+
+
+@pytest.mark.parametrize("mode", ["review", "advisory", "president"])
+def test_usage_banner_plus_verdict_is_not_a_review(mode):
+    """grok r2 FAIL-OPEN: in review mode the usage body check ran only for non-review
+    modes and after the early-OK, so banner + AGREE was OK."""
+    body = "You've hit your usage limit. Upgrade to Plus to continue using Codex\n\nAGREE"
+    assert pi._classify_leg(0, body, "", mode=mode) == "DEGRADED"
+
+
+def test_review_mode_usage_banner_body_with_nonzero_rc_is_typed_degraded():
+    """claude r2 F1: grok prints its banner on stdout; review mode used to leave it ERROR."""
+    assert pi._classify_leg(1, "You hit your weekly limit.", "", mode="review") == "DEGRADED"
+
+
+def test_pty_tail_redacts_a_token_that_straddles_the_cut():
+    """codex r2: the 600-char cut ran BEFORE the token patterns, stranding `abcd…` after
+    removing its `xai-` prefix."""
+    raw = b"fatal: rejected xai-abcdefghijklmnopqrst " + b"y" * 579
+    tail = pi._sanitized_pty_tail(raw)
+    assert "abcdefghijklmnopqrst" not in tail, tail[:80]
+    raw = b"auth Bearer abcdefghijklmnopqrstuvwx " + b"y" * 590
+    assert "mnopqrstuvwx" not in pi._sanitized_pty_tail(raw)
+
+
+@pytest.mark.parametrize("body", [
+    "You've reached your context limit. Trim the prompt and retry with a smaller diff so the "
+    "seat can finish.",
+    "out of credits handling: the seat should retry later with a smaller bundle, please.",
+    "The agy stream reported STOP_REASON_QUOTA_EXHAUSTED once, which the adapter handles.",
+])
+def test_advisory_prose_near_a_sourced_sentence_stays_ok(body):
+    assert pi._classify_leg(0, body, body, mode="advisory") == "OK"
+
+
+def test_only_the_sourced_model_name_counts_for_reached_your_limit():
+    assert pi._PROVIDER_USAGE_LIMIT_RE.search("You've reached your Fable limit.")
+    assert not pi._PROVIDER_USAGE_LIMIT_RE.search("You've reached your context limit.")
+    # agy prints "Out of credits"; grok's lowercase matcher-list entry is not printed output
+    assert pi._PROVIDER_USAGE_LIMIT_RE.search("Out of credits")
+    assert not pi._PROVIDER_USAGE_LIMIT_RE.search("out of credits")
+
+
+def test_env_failure_with_a_markup_verdict_line_is_degraded():
+    """claude r2: the verdict-line test is terminal_verdict's parser, so markup verdicts
+    `_completion_ok` accepts are verdict lines here too."""
+    body = CODEX_BWRAP_FAILURE + "\n\n**Verdict:** AGREE"
+    assert pi.terminal_verdict(body) is not None
+    assert pi._classify_leg(0, body, "", mode="review") == "DEGRADED"
+
+
+def test_an_indented_echoed_line_in_the_tail_does_not_type_the_failure():
+    """claude r2: a test docstring / prompt line with leading spaces inside the 20-line
+    window used to type a stream disconnect as a usage limit."""
+    log = (
+        "user\n    ERROR: You've hit your usage limit. Visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more credits.\n"
+        "ERROR: stream disconnected before completion: connection reset\n"
+    )
+    status = pi._classify_leg(1, "", log)
+    assert status == "ERROR"
+    assert pi._leg_failure_detail(status, 1, "", log) == (
+        "ERROR: stream disconnected before completion: connection reset"
+    )
+
+
+def _claude_session(monkeypatch, result):
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kw: result)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+
+
+def test_claude_pty_prose_quoting_a_sentence_does_not_retype_a_leg_with_text(monkeypatch, tmp_path):
+    """claude r2 F4: the Claude seat's on-screen review prose can quote a sourced sentence;
+    with review text present the tail is matched only as whole CLI lines and the status is
+    left alone."""
+    _claude_session(monkeypatch, (
+        1, "partial review mentioning the classifier", "claude_tui_pty_eof_no_output",
+        "…maps Usage limit reached to DEGRADED…",
+    ))
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    sink: list[str] = []
+    status, _ = pi._exec_claude_tui_leg(
+        tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink,
+    )
+    assert status == "ERROR", "a leg WITH review text was retyped from its on-screen prose"
+    assert not any(d.startswith("provider_") for d in sink)
+
+
+def test_direct_default_spawn_returns_the_claude_sink_detail(monkeypatch):
+    """claude r2 F5: the `_default_spawn` claude branch's sink wiring, end to end."""
+    _claude_session(monkeypatch, (
+        1, "", "claude_tui_pty_eof_no_output",
+        pi._sanitized_pty_tail(CLAUDE_TMPDIR_REFUSAL.encode()),
+    ))
+    spawned = pi._default_spawn("claude", "ARTIFACT", mode="review")
+    assert len(spawned) == 3, spawned
+    status, _text, detail = spawned
+    assert status == "DEGRADED"
+    assert detail.startswith("provider_environment_failure: Temp directory /tmp/claude-0")
+
+
+def test_cli_prints_the_finalized_detail(tmp_path):
+    """claude r2 F6: a detail from ANY route (here a raw exception string) is sanitized at
+    the print site."""
+    from phase_loop_runtime.advisor_board import composition as comp_mod
+    from phase_loop_runtime.cli import main as cli_main
+
+    real_compose = comp_mod.compose_review_board
+    raw = "boom \x1b[2J token=abcdefghijklmnopqrstuv " + "q" * 3000
+    result = pi.PanelResult(legs=(
+        pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:a"),
+        pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:a"),
+        pi.PanelLegResult(leg="claude", status="OK", text="AGREE", seat_key="claude:a"),
+        pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=raw, seat_key="codex:a"),
+    ))
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("review me\n")
+    with (
+        unittest.mock.patch.object(
+            comp_mod, "compose_review_board",
+            side_effect=lambda *a, **k: real_compose(
+                is_available=lambda v: v in {"codex", "gemini", "claude", "grok"}
+            ),
+        ),
+        unittest.mock.patch.object(pi, "invoke_board", return_value=result),
+    ):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            cli_main(["advisor-board", str(artifact)])
+    for stream in (out.getvalue(), err.getvalue()):
+        codex_lines = [line for line in stream.splitlines() if "codex:a" in line]
+        assert codex_lines, stream
+        for line in codex_lines:
+            assert "\x1b" not in line and "abcdefghijklmnopqrstuv" not in line
+            assert len(line) <= pi._LEG_DETAIL_MAX_CHARS + 80

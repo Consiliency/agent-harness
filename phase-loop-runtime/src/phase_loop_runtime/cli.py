@@ -2452,8 +2452,13 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         f"advisor-board: {board_label} — independence={independence.level} "
         f"({independence.distinct_vendors} distinct vendors / {independence.seats} seats)"
     )
+    from .panel_invoker import _finalize_leg_detail
+
     for leg in result.legs:
-        detail = f" — {leg.detail}" if leg.detail else ""
+        # Every detail reaching the terminal is redacted, control-stripped and bounded here,
+        # whatever route produced it (idempotent for details already finalized).
+        shown = _finalize_leg_detail(leg.detail)
+        detail = f" — {shown}" if shown else ""
         print(f"  [{leg.status}] {leg.seat_key}{detail}")
         # Print each reviewer's actual verdict text so the board can be reconciled
         # from the command's output (not just leg statuses).
@@ -2480,7 +2485,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             fill = f" → run a native {request.model} Agent to fill this seat" if request else ""
             # agent-harness#1096: say WHY the seat failed (a usage limit, an environment
             # failure, the CLI's own error line), not only its status.
-            why = f" — {leg.detail}" if leg.detail else ""
+            shown = _finalize_leg_detail(leg.detail)
+            why = f" — {shown}" if shown else ""
             print(f"advisor-board:   [{leg.status}] {leg.seat_key}{why}{fill}", file=sys.stderr)
     if not usable:
         print(

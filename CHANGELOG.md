@@ -211,12 +211,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the Claude TUI seat. The excerpt comes from the end of the log, not the start, which for
   codex is the echoed prompt. `advisor-board` prints the detail on its stderr shortfall lines.
   The Claude PTY tail kept for diagnostics is now 600 characters, up from 200, so the
-  CLI's refusal fits in it.
+  CLI's refusal fits in it. The whole window is redacted before the tail is cut. A Claude
+  leg is retyped from its tail only when it produced no review text and did not time out.
+  `advisor-board` prints every detail through the same redact-and-bound exit.
 - A conforming review that only discusses limits, auth or these failures keeps `OK`, as does
-  an advisory that gives advice about rate limits. Signatures are the sourced sentences only,
-  and count only at the start of a line (optionally after `ERROR:`). They are matched in the
-  last 20 lines of the log, or in a body that is itself the failure. A quote in backticks, in
-  a fence, mid-sentence, or next to the reviewer's own prose does not count.
+  an advisory that gives advice about rate limits. A signature is the WHOLE line the CLI
+  prints: the sourced sentence, with only its variable parts (a datetime, a path, which may
+  contain spaces) left open. It must start at column 0, optionally after `ERROR:`. Signatures
+  are matched in the last 20 lines of the log, or in a body that is itself the failure: a
+  usage banner or env failure plus at most a verdict, in every mode, checked before the
+  review-mode early-OK. A quote in backticks, in a fence, mid-sentence, next to the
+  reviewer's own prose, or on a line that begins with the sentence and goes on, does not
+  count.
 
 ## [0.7.19] - 2026-09-26
 
