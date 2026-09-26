@@ -416,6 +416,13 @@ A background session needs the exact workspace trusted beforehand; trust recorde
 for a parent directory does not carry over. Unattended Agent View dispatch into a
 new checkout therefore needs that one-time trust acceptance first.
 
+Settings principle: the Agent View route honors the operator's own Claude
+settings and workspace trust as-is. It inherits the operator's environment
+(`HOME`, config dir), passes no `--settings` or `--setting-sources`, and never
+injects permission settings such as `skipDangerousModePermissionPrompt`; it
+neither weakens nor adds permission settings, so a launch refuses exactly when the
+operator's own `claude` would.
+
 ### Frozen Claude Failure Inventory
 
 The proof-blocking Claude cases are explicit parity failures, not vague

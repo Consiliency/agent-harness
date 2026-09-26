@@ -113,7 +113,9 @@ proof-blocked until a disposable roadmap proof completes on the Agent View route
 waits for it to finish with no deadline, and reduces its final message
 (agent-harness#409); a session that stops for input is reported blocked and left
 attachable, so unattended plan or roadmap runs need `--bypass-approvals`. Never
-fall back to the billing-sensitive print route. Manual TUI reentry and manual-import closeout remain
+fall back to the billing-sensitive print route. The route honors the operator's own
+Claude settings and workspace trust as-is: it neither weakens nor adds permission
+settings, so the launch refuses exactly when the operator's `claude` would. Manual TUI reentry and manual-import closeout remain
 supported through `.phase-loop/` state. ThawedCode stays grouped with
 Claude only for docs and manual imports; do not claim a separate live
 ThawedCode automation contract unless a later roadmap proves it.
