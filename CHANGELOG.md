@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Closeout audit recognises the required skill handoff root (agent-harness#1084)
+
+- `phase-loop-closeout-audit` no longer reports `unknown_ignored` for the repo-local
+  `.dev-skills/handoffs/` root that the skills must write and keep ignored. Only that exact
+  root counts, as returned by `skill_paths.resolve_handoff_root`: the same name nested
+  elsewhere, a bare file of that name, or a spoofed variant still blocks.
+
 ### Claude final-message extraction (agent-harness#960)
 
 - Retain every text block of the final logical assistant message, grouped by API

@@ -174,6 +174,17 @@ _TOOL_CACHE_DIR_NAMES = frozenset(
 )
 _TOOL_CACHE_DIR_SUFFIXES = (".egg-info",)
 
+def _handoff_root_relpath() -> str:
+    # Taken from the resolver itself rather than restated, so the audit cannot drift from
+    # where the skills are told to write (phase_loop_runtime.skill_paths).
+    from .skill_paths import resolve_handoff_root
+
+    anchor = Path("/")
+    return resolve_handoff_root(anchor).relative_to(anchor.resolve()).as_posix()
+
+
+_HANDOFF_ROOT = _handoff_root_relpath()
+
 
 def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
     """Grade one gitignored path by WHO produced it.
@@ -209,6 +220,15 @@ def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
             return IgnoredOutputVerdict(
                 RUNNER_OWNED, False, f"runner lifecycle state under {entry}"
             )
+
+    # agent-harness#1084: the repo-local skill handoff root is lifecycle state the skills
+    # are REQUIRED to write and to keep ignored. Only the exact root the resolver returns
+    # (repo root, directory form or a path under it) earns this; the same name nested
+    # anywhere else, or a bare file of that name, still blocks.
+    if norm == _HANDOFF_ROOT + "/" or norm.startswith(_HANDOFF_ROOT + "/"):
+        return IgnoredOutputVerdict(
+            RUNNER_OWNED, False, f"required skill handoff under {_HANDOFF_ROOT}/"
+        )
 
     # A cache name only earns trust as a DIRECTORY. Git renders a collapsed
     # directory with a trailing slash and a file without one, so a bare `.venv`
