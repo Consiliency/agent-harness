@@ -11,6 +11,7 @@ from unittest import mock
 from phase_loop_runtime.claude_agent_view import (
     AGENT_VIEW_LISTING_ERROR_LIMIT,
     AGENT_VIEW_OBSERVER_FAILURE_LIMIT,
+    AGENT_VIEW_SNAPSHOT_ATTEMPTS,
     claude_global_config_path,
     workspace_folder_trust,
     workspace_trust_state,
@@ -123,7 +124,7 @@ class LaunchSpecPermissionTest(unittest.TestCase):
         from phase_loop_runtime.prompts import build_prompt
 
         roadmap = Path("/repo/specs/phase-plans-v1.md")
-        for action in ("plan", "roadmap", "execute"):
+        for action in ("plan", "roadmap", "execute", "repair"):
             with self.subTest(action=action), _pinned_env():
                 spec = build_launch_spec(build_launch_request(
                     executor="claude", action=action, repo=Path("/repo"), roadmap=roadmap, phase="ADAPTER",
@@ -148,7 +149,7 @@ class LaunchSpecPermissionTest(unittest.TestCase):
         from phase_loop_runtime.prompts import build_prompt
 
         roadmap = Path("/repo/specs/phase-plans-v1.md")
-        for action in ("plan", "roadmap", "execute"):
+        for action in ("plan", "roadmap", "execute", "repair"):
             with self.subTest(action=action), _pinned_env():
                 spec = build_launch_spec(build_launch_request(
                     executor="claude", action=action, repo=Path("/repo"), roadmap=roadmap, phase="ADAPTER",
@@ -158,7 +159,10 @@ class LaunchSpecPermissionTest(unittest.TestCase):
                     json_output=True, bypass_approvals=True,
                     claude_execution_mode="solo", phase_team_eligibility=_pinned_claude_eligibility(),
                 ))
-                self.assertEqual(spec.command[spec.command.index("--permission-mode") + 1], "bypassPermissions")
+                mode_at = spec.command.index("--permission-mode")
+                self.assertEqual(spec.command[mode_at + 1], "bypassPermissions")
+                # The mode is an option, so it must precede the end-of-options marker.
+                self.assertLess(mode_at, spec.command.index("--"))
                 self.assertNotIn("--allowedTools", spec.command)
 
 
@@ -400,11 +404,35 @@ class AmbiguousBindingTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 1, stdout="down")
             raise AssertionError(f"launched despite unknown pre-existing sessions: {command}")
 
-        adapter = ClaudeAgentViewAdapter(runner=run)
+        slept = []
+        adapter = ClaudeAgentViewAdapter(runner=run, sleep=slept.append)
         with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
                 mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
             lifecycle = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
         self.assertEqual(lifecycle.blocker.reason, "agent_view_preexisting_unknown")
+        # A bounded retry, then refusal: AGENT_VIEW_SNAPSHOT_ATTEMPTS listings, no launch.
+        self.assertEqual(calls.count(["claude", "agents", "--json", "--all"]), AGENT_VIEW_SNAPSHOT_ATTEMPTS)
+        self.assertEqual(len(slept), AGENT_VIEW_SNAPSHOT_ATTEMPTS - 1)
+
+    def test_a_transient_snapshot_failure_is_retried_then_launches(self):
+        listings = iter([None, None, [], [_record("working")]])
+
+        def run(command, **kwargs):
+            if command == ["claude", "--bg", "--help"]:
+                return subprocess.CompletedProcess(command, 0, stdout="Usage\n")
+            if command == ["claude", "agents", "--json", "--all"]:
+                current = next(listings)
+                if current is None:
+                    return subprocess.CompletedProcess(command, 1, stdout="down")
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(current))
+            return subprocess.CompletedProcess(command, 0, stdout=f"backgrounded · {ASSIGNED[:8]}\n")
+
+        adapter = ClaudeAgentViewAdapter(runner=run, sleep=lambda s: None)
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
+            lifecycle = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
+        self.assertIsNone(lifecycle.blocker)
+        self.assertEqual(lifecycle.session_id, ASSIGNED)
 
     def test_wait_refuses_an_ambiguous_short_id_instead_of_reducing_the_older_session(self):
         clock = _Clock(step=5.0)
@@ -432,6 +460,7 @@ class AmbiguousBindingTest(unittest.TestCase):
     def test_strict_parse_ignores_other_session_mentions_and_ansi(self):
         self.assertEqual(_launch_session_id("backgrounded · \x1b[36m93efedda\x1b[39m\n", strict=True), "93efedda")
         self.assertEqual(_launch_session_id("backgrounded · 93efedda.\n", strict=True), "93efedda")
+        self.assertEqual(_launch_session_id("backgrounded · 93efedda: started\n", strict=True), "93efedda")
         self.assertIsNone(_launch_session_id("session: deadbeef finished earlier\n", strict=True))
         self.assertIsNone(_launch_session_id(json.dumps({"id": "deadbeef"}), strict=True))
 
@@ -656,7 +685,9 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         # The context goes through a file, not a single argv entry.
         self.assertEqual((run_dir / "context.md").read_text(encoding="utf-8"), "workflow context\n")
         self.assertIn(str(run_dir / "context.md"), adapter.prompt)
-        self.assertEqual(adapter.launch_kwargs["add_dirs"], [run_dir])
+        # context.md lives inside the cwd, so no --add-dir grant is added (round 3).
+        self.assertIsNone(adapter.launch_kwargs["add_dirs"])
+        self.assertNotIn("--add-dir", result.command)
         # The session is bound by its printed id and the spec's tool policy is carried.
         self.assertTrue(adapter.launch_kwargs["bind_printed_id"])
         self.assertNotIn("--session-id", result.command)
@@ -673,6 +704,41 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertEqual(adapter.wait_kwargs["exclude"], _ScriptedAdapter.PREEXISTING)
         self.assertIs(adapter.wait_kwargs["verified"], False)
         self.assertTrue((run_dir / "heartbeat.json").is_file())
+
+    def test_non_bypass_launch_renders_no_permission_mode(self):
+        # Round 3 (claude): the converse of B2 at the LAUNCH path, for execute/repair specs
+        # built without --bypass-approvals (the spec carries no --permission-mode).
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        adapter = _ScriptedAdapter(text="done")
+        spec = LaunchSpec(
+            executor="claude",
+            command=["claude", "--bg", "--disallowedTools", "AskUserQuestion", "--", "x"],
+            prompt_bundle=_PromptBundle(), injection_metadata=None, delivery_mode="agent_view",
+            dispatch_decision=None, available=True, selected_model="claude-opus-5-5", selected_effort="high",
+            wrapped_cwd=tmp.name, claude_route="claude_agent_view",
+        )
+        result = _launch_claude_agent_view(spec, log_path=Path(tmp.name) / "run" / "launch.log", adapter=adapter)
+        self.assertIsNone(adapter.launch_kwargs["permission"])
+        self.assertNotIn("--permission-mode", result.command)
+        self.assertEqual(result.command[-2], "--")
+
+    def test_context_outside_the_cwd_gets_the_one_scoped_grant(self):
+        cwd = tempfile.TemporaryDirectory()
+        runs = tempfile.TemporaryDirectory()
+        self.addCleanup(cwd.cleanup)
+        self.addCleanup(runs.cleanup)
+        adapter = _ScriptedAdapter(text="done")
+        spec = LaunchSpec(
+            executor="claude", command=["claude", "--bg", "--", "x"], prompt_bundle=_PromptBundle(),
+            injection_metadata=None, delivery_mode="agent_view", dispatch_decision=None, available=True,
+            selected_model="claude-opus-5-5", selected_effort="high", wrapped_cwd=cwd.name,
+            claude_route="claude_agent_view",
+        )
+        run_dir = Path(runs.name) / "run"
+        result = _launch_claude_agent_view(spec, log_path=run_dir / "launch.log", adapter=adapter)
+        self.assertEqual(adapter.launch_kwargs["add_dirs"], [run_dir])
+        self.assertEqual(result.command[result.command.index("--add-dir") + 1], str(run_dir))
 
     def test_running_is_never_reported_as_a_successful_launch(self):
         # The exact #409 failure: the runner saw rc=0 for a session that was still running.

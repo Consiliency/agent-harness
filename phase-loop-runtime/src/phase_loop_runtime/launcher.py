@@ -2307,7 +2307,7 @@ def _launch_claude_agent_view(
         "effort": spec.selected_effort,
         "permission": _command_option(spec.command, "--permission-mode"),
         "disallowed_tools": _command_option(spec.command, "--disallowedTools"),
-        "add_dirs": [Path(context_path).parent] if context_path is not None else None,
+        "add_dirs": _agent_view_context_grant(context_path, cwd),
     }
     command = adapter.launch_command(prompt, cwd=cwd, **launch_options)
     # `claude --bg` ignores --session-id (it manages the id itself), so the session is
@@ -2401,6 +2401,23 @@ def _launch_claude_agent_view(
         claude_route_result=route_result.to_json(),
         timed_out=timed_out,
     )
+
+
+def _agent_view_context_grant(context_path: str | None, cwd: Path) -> list[Path] | None:
+    """`--add-dir` for the run's context directory, only when it is OUTSIDE the cwd.
+
+    `--add-dir` is a grant (the CLI form of permissions.additionalDirectories), so the
+    route adds it only when the session could not otherwise read its own context.md.
+    The normal run directory (`.phase-loop/runs/...` inside the repo) needs none.
+    """
+    if context_path is None:
+        return None
+    context_dir = Path(context_path).parent
+    try:
+        context_dir.resolve().relative_to(cwd.resolve())
+    except ValueError:
+        return [context_dir]
+    return None
 
 
 def _agent_view_route_status(lifecycle_state: str) -> str:

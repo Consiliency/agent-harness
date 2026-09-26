@@ -22,6 +22,9 @@ AGENT_VIEW_OBSERVER_FAILURE_LIMIT = 12
 # evidence about the session, so it gets a longer tolerance (~5 min at the default
 # poll) than a listing that works but no longer shows the bound record.
 AGENT_VIEW_LISTING_ERROR_LIMIT = 60
+# Pre-launch snapshot of existing sessions: a few attempts before refusing.
+AGENT_VIEW_SNAPSHOT_ATTEMPTS = 3
+AGENT_VIEW_SNAPSHOT_RETRY_DELAY_S = 1.0
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 SECRET_LIKE_KEYS = {
     "api_key",
@@ -167,11 +170,13 @@ class ClaudeAgentViewAdapter:
         claude_bin: str = "claude",
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         config_path: Path | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.claude_bin = claude_bin
         self._runner = runner
         # Operator's Claude global config (per-folder trust); None = the real one.
         self._config_path = config_path
+        self._sleep = sleep
 
     def list_command(self) -> list[str]:
         return [self.claude_bin, "agents", "--json", "--all"]
@@ -344,6 +349,13 @@ class ClaudeAgentViewAdapter:
             # session registers late. Snapshot the full ids first; if that is impossible,
             # refuse before starting anything.
             before = self.list_sessions(cwd=None)
+            for _ in range(AGENT_VIEW_SNAPSHOT_ATTEMPTS - 1):
+                if before.ok:
+                    break
+                # A bounded retry for a transient `claude agents` failure; nothing has
+                # been launched yet, so refusing afterwards costs no session.
+                self._sleep(AGENT_VIEW_SNAPSHOT_RETRY_DELAY_S)
+                before = self.list_sessions(cwd=None)
             if not before.ok:
                 return AgentViewLifecycleResult(
                     session_id="preflight",

@@ -423,7 +423,8 @@ slot paths and an opt-in, user-run `phase-loop setup --trust-workspaces`; the ha
 never writes trust silently).
 
 Binding and observer: the launch binds only the session id `claude --bg` prints.
-Sessions listed before the launch are never bound, even if one shares the short id
+Sessions listed before the launch (snapshotted with a bounded retry of 3
+attempts before refusing) are never bound, even if one shares the short id
 and the new session registers late. An id matching more than one new session fails
 closed as ambiguous, and a resolved id is pinned to the full session id. Because
 `claude --bg` prints only the short id, a candidate must also be in the launch cwd
@@ -434,7 +435,8 @@ first seen, would be bound. The CLI's dispatcher refuses a short id that collide
 a live job (`short-alive`), which should prevent that, but this is unverified live. The wait
 has no deadline and no silence termination. Only the observer failing ends it
 early, fail-closed and without stopping the session: 12 successful listings that do
-not show the session (counted from launch; listing errors neither add nor reset),
+not show the session (counted from launch; seeing the session resets the count;
+listing errors neither add to nor reset it),
 or 60 consecutive `claude agents` failures. The blocker then names the session's
 attach/stop commands.
 
@@ -444,9 +446,11 @@ settings and workspace trust as-is. It inherits the operator's environment
 `--allowedTools` allow rules, and it injects no setting such as
 `skipDangerousModePermissionPrompt`. It passes a `--permission-mode` only when
 explicitly requested (`--bypass-approvals` gives `bypassPermissions`); otherwise the
-session inherits the operator's configured mode. Its only additions restrict: the
-`--disallowedTools` deny list, plus `--add-dir` for the run's context directory. A
-launch therefore refuses or prompts exactly when the operator's own `claude` would.
+session inherits the operator's configured mode. It adds the restrictive
+`--disallowedTools` deny list. Its one possible grant is `--add-dir` for the run's
+context directory, and only when that directory lies outside the launch cwd; the
+normal `.phase-loop/runs/...` directory inside the repo gets none. A launch
+therefore refuses or prompts exactly when the operator's own `claude` would.
 
 ### Frozen Claude Failure Inventory
 

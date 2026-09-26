@@ -16,7 +16,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - Only the CLI's own launch forms are parsed, with ANSI stripped.
   - Sessions already listed before the launch are snapshotted and never bound, even when an
     older one shares the printed short id and the new session registers late. If existing
-    sessions cannot be listed, the launch refuses before starting anything.
+    sessions cannot be listed after 3 attempts, the launch refuses before starting anything.
   - A short id matching more than one new session fails closed as ambiguous. Once it
     resolves uniquely, the full session id is pinned.
   - `claude --bg` prints only the short id, so a candidate must also be in the launch cwd
@@ -49,9 +49,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     gives `bypassPermissions`. Otherwise the session inherits the operator's configured
     mode. So unattended runs of any action must pass `--bypass-approvals`, or the session
     stops `blocked` at the first prompt the operator's mode requires.
-  - It only restricts: `--disallowedTools` keeps an unattended session from stalling on
-    AskUserQuestion or plan approval, or from fanning out.
-  - Its context goes through `context.md` instead of one argv entry.
+  - It adds the restrictive `--disallowedTools`, which keeps an unattended session from
+    stalling on AskUserQuestion or plan approval, or from fanning out.
+  - Its context goes through `context.md` instead of one argv entry. The one possible grant
+    is `--add-dir` for that file's directory, added only when it lies outside the launch cwd.
+    The normal `.phase-loop/runs/...` directory inside the repo gets none.
 - **Trust.** Before `claude --bg`, the launch reads (never writes) the operator's per-folder
   Claude trust for the exact cwd. A trusted parent folder does not count. When the folder is
   not trusted, the launch refuses before any subprocess, with the fix: run `claude` in that
