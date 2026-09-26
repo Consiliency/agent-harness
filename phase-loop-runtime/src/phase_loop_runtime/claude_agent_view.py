@@ -685,17 +685,16 @@ def _lifecycle_from_parts(
 
 
 def _cli_refusal_suffix(output: str) -> str:
-    """The CLI's own one-line refusal (e.g. the --bg bypassPermissions disclaimer gate).
+    """The CLI's own reason for refusing a `--bg` launch, as one short line.
 
-    Only a short line that reads as a CLI error or a `--bg` precondition is surfaced;
-    anything else stays redacted like the rest of the launch output.
+    A launch that exits non-zero never started a session, so its output is the CLI's
+    refusal, not session text. Only the first non-empty line is kept (ANSI stripped,
+    capped) so the blocker says why without carrying anything else.
     """
     for line in str(output or "").splitlines():
-        text = line.strip()
-        if text and len(text) <= 300 and (
-            text.lower().startswith(("error:", "error ")) or text.startswith("--bg ")
-        ):
-            return f" CLI: {text}"
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()
+        if text:
+            return f" CLI: {text[:300]}"
     return ""
 
 

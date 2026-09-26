@@ -408,12 +408,9 @@ session's final assistant message from its transcript as the launch output. A
 `launch.json` and `terminal-summary.json` (agent-harness#1099). The first such
 proof (2026-09-26) failed at launch: `--allowedTools`/`--disallowedTools` are
 variadic and swallowed the trailing prompt, so the launch now ends its options with
-`--`. The second attempt also exited non-zero within a second with no session: the
-CLI refuses `--bg` with `bypassPermissions` until the operator has accepted the
-bypass disclaimer once interactively (`claude --dangerously-skip-permissions`), and
-this host had not. That is a one-time human precondition for unattended
-`--bypass-approvals` runs on this route; the launch blocker now carries the CLI's
-refusal line.
+`--`. The second attempt also exited non-zero within a second with no session;
+the launch output was redacted, so its cause was not observed. The launch blocker
+now carries the CLI's first refusal line.
 
 ### Frozen Claude Failure Inventory
 
