@@ -1,0 +1,69 @@
+{
+  "runtime_source_commit": "f551b39db895fa568978a20e6d3969d9d2dcdb88",
+  "cases": [
+    {
+      "captured_processes": 3,
+      "case": "conforming",
+      "conforms": true,
+      "final_assistant_end_turn_with_text": true,
+      "owned_transcripts_removed": true,
+      "processes_reaped": true,
+      "raw_receipt_sha256": "6ab888bcf9096ec0aafb09f7f808a7360f8f8c74bbcda88803e9a486fa201654",
+      "ruling_text_sha256": "455e2f813df86394b458dccc50a7688a3dcbd9478cf43e241788b7600d00b20f",
+      "session_ids_distinct": true,
+      "status": "ok",
+      "transcript_count": 1,
+      "turns": [
+        {
+          "final_text_blocks": 1,
+          "message_id_sha256": "c11edca16086d4b6791bff37ee306b34b930d620845f5f8f67f20f3b2d714aa1",
+          "stop_reason": "end_turn"
+        }
+      ]
+    },
+    {
+      "captured_processes": 6,
+      "case": "nonconforming",
+      "conforms": true,
+      "final_assistant_end_turn_with_text": true,
+      "format_reasks": 1,
+      "owned_transcripts_removed": true,
+      "processes_reaped": true,
+      "raw_receipt_sha256": "a7aab7c3163d026fcddfcf4b84499e0117afb2bfb21e5ab2af54e84b2225be7d",
+      "session_ids_distinct": true,
+      "status": "ok",
+      "transcript_count": 2,
+      "turns": [
+        {
+          "conforms": false,
+          "final_text_blocks": 1,
+          "message_id_sha256": "6fc1fad1e5d0f5051fca7f8599bd22661e026853d8852dc42b90869fd86dd186",
+          "prompt_kind": "deliberately_nonconforming",
+          "status": "ok",
+          "stop_reason": "end_turn",
+          "text_chars": 4,
+          "text_sha256": "283e91eb85d58ffc2ad922884b644c41b54140660f6d1fda3c403d543eedd839"
+        },
+        {
+          "conforms": true,
+          "final_text_blocks": 1,
+          "message_id_sha256": "73dff1981766983f053537bbae27958c25aa31ed60a80f55e581312c3a20c457",
+          "prompt_kind": "format_reask",
+          "status": "ok",
+          "stop_reason": "end_turn",
+          "text_chars": 263,
+          "text_sha256": "8583495ddc4b243098824a61efe2e6b44abd9c50177a9efed902f91d371f4aa2"
+        }
+      ]
+    }
+  ],
+  "local_receipts_root": "/mnt/workspace/archives/agent-harness-pr1017-live-president-f551-20260924",
+  "local_script_sha256": "ca6560b200b95c701644b76d56c7a4cba888321a72cba28206549e66da29bf0a",
+  "method": "Read-only observer wrapped launch_provider and owned-transcript cleanup, delegated to the original functions, and retained metadata only. It ran the exact candidate source without the private review-runner repairs. The nonconforming case used a deliberate challenge prompt for the first live turn; invoke_president made the policy format re-ask in a fresh brokered session.",
+  "model_deadline_s": null,
+  "monitoring_policy": "heartbeat_only",
+  "route": "brokered_claude_subscription_tui",
+  "schema": "claude_president_terminal_live_diagnostic.v1",
+  "silence_deadline_s": null,
+  "source_sha256": "df5e50b1aecd4a0c272004702e9e35dcdb9c0a3115b2ae2a2f24ba69c248f88f"
+}

@@ -3987,7 +3987,7 @@ def _assistant_text_from_jsonl(path: Path) -> str:
     return "\n".join(texts).strip()
 
 
-def _final_assistant_text_from_jsonl(path: Path) -> str:
+def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
     """Return the final turn's single assistant message, or "" when that cannot be proven.
 
     The rule (agent-harness#1002): a TURN starts at the last user record that is not a replay
@@ -4009,6 +4009,12 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     Blocks of one message that repeat the same text under distinct uuids are all kept, so a copy
     of such a block under a fresh uuid is not detected.
 
+    With ``require_terminal`` (the president route, agent-harness#1016), any damaged line fails
+    closed, the answer's last record must stop with ``end_turn``, and no assistant record of the
+    final turn (superseded versions and replays included) may stop with anything else (earlier
+    blocks stay null), carry a tool call, be a ``<synthetic>`` model record, or carry
+    ``isApiErrorMessage`` on the message or the record.
+
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
     """
@@ -4024,8 +4030,11 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            if index == last_line:
-                return ""  # a writer may still be appending the latest record
+            if index == last_line or require_terminal:
+                # A writer may still be appending the latest record. The president route owns a
+                # fresh transcript per call, so any damaged line there (for example a half-written
+                # newer request) fails closed rather than being skipped as history.
+                return ""
             continue  # a damaged line with valid records after it is history
         message = payload.get("message") if isinstance(payload, dict) else None
         if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
@@ -4129,17 +4138,35 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     if with_uuid and len(with_uuid) != len(group):
         return ""  # uuid and uuid-less records cannot be told apart from a replay
     if with_uuid:
-        latest: dict[str, dict] = {}
+        latest: dict[str, tuple[dict, dict]] = {}
         order: list[str] = []
         for payload, message in group:
             uid = _uuid(payload)
             if uid not in latest:
                 order.append(uid)
-            latest[uid] = message
-        versions = [latest[uid] for uid in order]
+            latest[uid] = (payload, message)
+        final_records = [latest[uid] for uid in order]
     else:
-        versions = [m for _, m in group]
-    terminal = versions[-1]
+        final_records = list(group)
+    versions = [m for _, m in final_records]
+    terminal_payload, terminal = final_records[-1]
+    # The president route checks every raw assistant record of the final turn: the answer's
+    # superseded versions and exact replays included (the replay rule ignores API-error and
+    # <synthetic> markers), and earlier messages of the turn too. After the last user record
+    # (a tool_result is a user record) a genuine final answer has no tool call, marker or
+    # non-final stop anywhere in its turn, so any of them fails closed on this route.
+    answer_records = list(group) + [
+        (p, m) for p, m in records[boundary + 1:] if m.get("role") == "assistant"
+    ]
+    if require_terminal and (
+        terminal.get("stop_reason") != "end_turn"
+        or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
+               or m.get("isApiErrorMessage") or p.get("isApiErrorMessage")
+               or not isinstance(m.get("content"), list)
+               or any(isinstance(item, dict) and item.get("type") == "tool_use" for item in m["content"])
+               for p, m in answer_records)
+    ):
+        return ""  # the president route needs a genuine, completed end_turn
     if "stop_reason" in terminal and terminal["stop_reason"] is None:
         return ""  # the message has not completed
     texts: list[str] = []
@@ -4977,7 +5004,12 @@ def _run_claude_tui_session(
     def _broker_final() -> str:
         if not allow_transcript_final or broker_transcript_path is None:
             return ""
-        return _final_assistant_text_from_jsonl(broker_transcript_path)
+        # A president may need a format re-ask. Hand its completed API turn to
+        # invoke_president even when the text lacks the required ruling grammar;
+        # never treat a streaming or partial transcript as that completed turn.
+        return _final_assistant_text_from_jsonl(
+            broker_transcript_path, require_terminal=mode == "president",
+        )
 
     def _pending_tool_uses() -> tuple[str, ...]:
         # Brokered Claude has an empty tool surface, so only the exact assistant
@@ -5115,8 +5147,15 @@ def _run_claude_tui_session(
                             return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = transcript_salvage or _transcript_text()
                         broker_final = _broker_final()
+                        if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
+                            review_monitor.observe(terminal="user_cancel")
+                            return _finish(1, "", "review_operation_cancelled")
                         if broker_final and _completion_ok(broker_final, mode):
                             return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                        if broker_final and mode == "president":
+                            # Same completed-journal evidence as the conforming return above,
+                            # after the same cancellation re-check: hand it to the re-ask.
+                            return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                         return _finish(
                             proc.poll() or 1,
                             review_text or transcript_text,
@@ -5236,16 +5275,26 @@ def _run_claude_tui_session(
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
                 broker_final = _broker_final()
+                if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
+                    review_monitor.observe(terminal="user_cancel")
+                    return _finish(1, "", "review_operation_cancelled")
                 if broker_final and _completion_ok(broker_final, mode):
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                if broker_final and mode == "president":
+                    return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
                 broker_final = _broker_final()
+                if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
+                    review_monitor.observe(terminal="user_cancel")
+                    return _finish(1, "", "review_operation_cancelled")
                 if broker_final and _completion_ok(broker_final, mode):
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
+                if broker_final and mode == "president":
+                    return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                 detail = "claude_tui_missing_canonical_output"
                 return _finish(
                     proc.returncode or 1, review_text or transcript_text, detail

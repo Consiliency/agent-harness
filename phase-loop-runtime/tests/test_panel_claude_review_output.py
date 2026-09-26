@@ -28,9 +28,11 @@ def _assistant(text, *, message_id="review", uuid=None, stop_reason=_MISSING):
     return record
 
 
-def _extract(tmp_path, records, *, ensure_ascii=True):
+def _extract(tmp_path, records, *, ensure_ascii=True, require_terminal=False):
     path = tmp_path / "owned.jsonl"
     path.write_text("".join(json.dumps(record, ensure_ascii=ensure_ascii) + "\n" for record in records))
+    if require_terminal:
+        return pi._final_assistant_text_from_jsonl(path, require_terminal=True)
     return pi._final_assistant_text_from_jsonl(path)
 
 
@@ -102,6 +104,56 @@ def test_replayed_null_block_does_not_undo_terminal_record(tmp_path):
     first = _assistant("Finding", uuid="first", stop_reason=None)
     terminal = _assistant("REVIEW END\nDISAGREE", uuid="last", stop_reason="end_turn")
     assert _extract(tmp_path, [first, terminal, first]) == "Finding\nREVIEW END\nDISAGREE"
+
+
+def test_president_terminal_status_ignores_replayed_null_block(tmp_path):
+    first = _assistant("Finding", uuid="first", stop_reason=None)
+    terminal = _assistant("I think it is fine", uuid="last", stop_reason="end_turn")
+    assert _extract(tmp_path, [first, terminal, first], require_terminal=True) == (
+        "Finding\nI think it is fine"
+    )
+
+
+def test_president_terminal_status_ignores_replayed_old_turn(tmp_path):
+    old = _assistant("Old ruling", message_id="old", uuid="old", stop_reason="end_turn")
+    current = _assistant("Current unfinished ruling", message_id="current", uuid="current")
+    assert _extract(tmp_path, [
+        old, {"type": "user", "message": {"role": "user", "content": "New request"}},
+        current, old,
+    ], require_terminal=True) == ""
+
+
+def test_president_terminal_status_requires_explicit_completion(tmp_path):
+    assert _extract(tmp_path, [_assistant("Current ruling", uuid="current")],
+                    require_terminal=True) == ""
+
+
+def test_president_terminal_status_reopened_by_changed_record(tmp_path):
+    terminal = _assistant("Ruling", uuid="ruling", stop_reason="end_turn")
+    revised = _assistant("Ruling revised", uuid="ruling")
+    assert _extract(tmp_path, [terminal, revised], require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("stop_reason", [None, "max_tokens", "tool_use", "stop_sequence"])
+def test_president_terminal_status_rejects_incomplete_or_unsupported_stop(tmp_path, stop_reason):
+    assert _extract(tmp_path, [_assistant("Ruling", stop_reason=stop_reason)],
+                    require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("error_field", ["model", "isApiErrorMessage"])
+def test_president_terminal_status_rejects_synthetic_errors(tmp_path, error_field):
+    record = _assistant("API Error: Request was aborted", stop_reason="end_turn")
+    record["message"][error_field] = "<synthetic>" if error_field == "model" else True
+    assert _extract(tmp_path, [record], require_terminal=True) == ""
+
+
+def test_president_terminal_status_rejects_new_user_or_partial_json(tmp_path):
+    terminal = _assistant("Ruling", stop_reason="end_turn")
+    user = {"type": "user", "message": {"role": "user", "content": "New request"}}
+    assert _extract(tmp_path, [terminal, user], require_terminal=True) == ""
+    path = tmp_path / "owned.jsonl"
+    path.write_text(json.dumps(terminal) + "\n{\"type\":")
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
 
 
 def test_changed_record_with_same_uuid_can_reopen_completion(tmp_path):
@@ -610,3 +662,114 @@ def test_r5_an_open_stop_reason_cannot_become_absent(tmp_path):
     del record["message"]["stop_reason"]
     path = _jsonl(tmp_path, [_user("u1"), _asst("1. Blocking\nDISAGREE", mid="m", uuid="a1", stop=None), record])
     assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_president_route_rejects_a_record_level_api_error(tmp_path):
+    record = _asst("Upstream failure", mid="m", uuid="a1")
+    record["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), record])
+    assert pi._final_assistant_text_from_jsonl(path) == "Upstream failure"
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_rejects_a_stop_sequence_on_any_block_of_the_answer(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Part one", mid="m", uuid="a", stop=None),
+                             _asst("FORCING DECISION: APPROVE", mid="m", uuid="b"),
+                             _asst("Part one", mid="m", uuid="a", stop="stop_sequence")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_accepts_open_earlier_blocks_before_the_end_turn(tmp_path):
+    path = _jsonl(tmp_path, [_user("u1"), _asst("Part one", mid="m", uuid="a", stop=None),
+                             _asst("FORCING DECISION: APPROVE", mid="m", uuid="b")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == (
+        "Part one\nFORCING DECISION: APPROVE")
+
+
+@pytest.mark.parametrize("mid", ["m", None])
+@pytest.mark.parametrize("flag", ["model", "message_error", "record_error"])
+def test_president_route_rejects_a_flag_on_a_superseded_version(tmp_path, flag, mid):
+    open_ = _asst("FORCING DECISION: APPROVE", mid=mid, uuid="a", stop=None)
+    if flag == "model":
+        open_["message"]["model"] = "<synthetic>"
+    elif flag == "message_error":
+        open_["message"]["isApiErrorMessage"] = True
+    else:
+        open_["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), open_, _asst("FORCING DECISION: APPROVE", mid=mid, uuid="a")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("flag", ["model", "message_error", "record_error"])
+def test_president_route_rejects_a_marked_exact_replay_of_the_answer(tmp_path, flag):
+    # agent-harness#1017 r6 (codex): the replay rule ignores these markers, so the marked copy
+    # is dropped as an exact replay unless the president gate scans raw records.
+    answer = _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")
+    marked = _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")
+    if flag == "model":
+        marked["message"]["model"] = "<synthetic>"
+    elif flag == "message_error":
+        marked["message"]["isApiErrorMessage"] = True
+    else:
+        marked["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), answer, marked])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_rejects_a_superseded_tool_use_version(tmp_path):
+    tool = _asst("", mid="m", uuid="a", stop=None)
+    tool["message"]["content"] = [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]
+    path = _jsonl(tmp_path, [_user("u1"), tool, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("earlier_mid", [None, "x"])
+def test_president_route_rejects_a_flagged_record_under_the_answer_uuid_with_another_id(tmp_path, earlier_mid):
+    # agent-harness#1017 r5 (claude): the flagged record shares the answer's uuid but not its id.
+    flagged = _asst("FORCING DECISION: APPROVE", mid=earlier_mid, uuid="a", stop=None)
+    flagged["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), flagged, _asst("FORCING DECISION: APPROVE", mid="m", uuid="a")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+@pytest.mark.parametrize("flag", ["model", "message_error", "record_error"])
+def test_president_route_rejects_a_marked_answer_with_neither_id_nor_uuid(tmp_path, flag):
+    # agent-harness#1017 r7 (codex, claude, grok): the raw scan selected by id or uuid only.
+    answer = _asst("API Error: Request was aborted", mid=None)
+    if flag == "model":
+        answer["message"]["model"] = "<synthetic>"
+    elif flag == "message_error":
+        answer["message"]["isApiErrorMessage"] = True
+    else:
+        answer["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), answer])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+def test_president_route_rejects_a_damaged_newer_request_followed_by_metadata(tmp_path):
+    # agent-harness#1017 r8 (codex): the damaged user line is not the last line, so the review
+    # route skips it as history; the president route must fail closed instead.
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps(_user("u1", "First request")) + "\n"
+                    + json.dumps(_asst("I think it is fine", mid="m1", uuid="a1")) + "\n"
+                    + '{"type":"user","uuid":"u2","message":{"role":"user","content":\n'
+                    + json.dumps({"type": "progress"}) + "\n")
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+    assert pi._final_assistant_text_from_jsonl(path) == "I think it is fine"  # review route unchanged
+
+
+@pytest.mark.parametrize("earlier", ["stop_sequence", "tool_use", "synthetic", "api_error"])
+def test_president_route_rejects_a_bad_earlier_message_in_the_final_turn(tmp_path, earlier):
+    # agent-harness#1017 r8 differential sweep: an earlier message of the final turn that is not
+    # a clean completed block means the turn is not a genuine single completed answer.
+    first = _asst("partial", mid="m1", uuid="a1", stop=None)
+    if earlier == "stop_sequence":
+        first["message"]["stop_reason"] = "stop_sequence"
+    elif earlier == "tool_use":
+        first["message"]["content"] = [{"type": "tool_use", "id": "t", "name": "x", "input": {}}]
+    elif earlier == "synthetic":
+        first["message"]["model"] = "<synthetic>"
+    else:
+        first["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), first, _asst("FORCING DECISION: APPROVE", mid="m2", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
