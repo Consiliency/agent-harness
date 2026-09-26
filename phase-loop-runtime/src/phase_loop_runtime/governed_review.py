@@ -399,6 +399,22 @@ def governed_board_gate(
             "(the coordinator's git toplevel or the first node's workspace); none was "
             "resolved; holding (non-human)",
         )
+    if brief_ref is not None:
+        # agent-harness#802: a governed gate is a landing path; the advisory contract is never
+        # landing evidence. Refused before composition, minting or any launch.
+        from .advisor_board.advisory_contract import ADVISORY_NOT_LANDING_EVIDENCE, is_advisory_brief
+        from .panel_invoker import _resolve_brief
+
+        try:
+            advisory = is_advisory_brief(_resolve_brief("review", brief_ref))
+        except (OSError, UnicodeError, ValueError):
+            advisory = False  # the existing fail-closed brief resolution below handles it
+        if advisory:
+            return _block_result(
+                "review_isolation_unavailable", ADVISORY_NOT_LANDING_EVIDENCE,
+                "the review brief is the advisory contract (advisory.v1): an advisory review is "
+                "non-gating and cannot be governed landing evidence; holding (non-human)",
+            )
     heartbeat_only = monitoring_policy == "heartbeat_only"
     if monitoring_policy not in ("bounded", "heartbeat_only"):
         return _block_result(

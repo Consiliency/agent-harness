@@ -11,6 +11,8 @@ analysis, never promoted into the instruction frame.
 """
 from __future__ import annotations
 
+from hashlib import sha256
+
 ADVISORY_CONTRACT_ID = "advisory.v1"
 
 ADVISORY_CONTRACT = (
@@ -45,4 +47,18 @@ ADVISORY_CONTRACT = (
     "approval.\n"
 )
 
-__all__ = ["ADVISORY_CONTRACT", "ADVISORY_CONTRACT_ID"]
+ADVISORY_CONTRACT_SHA256 = sha256(ADVISORY_CONTRACT.encode("utf-8")).hexdigest()
+
+# The typed refusal for any landing path whose review brief is the advisory contract.
+ADVISORY_NOT_LANDING_EVIDENCE = "advisory_contract_not_landing_evidence"
+
+
+def is_advisory_brief(brief: str) -> bool:
+    """True when ``brief`` is the advisory contract: such a review is never landing evidence."""
+    return sha256(brief.encode("utf-8", errors="replace")).hexdigest() == ADVISORY_CONTRACT_SHA256
+
+
+__all__ = [
+    "ADVISORY_CONTRACT", "ADVISORY_CONTRACT_ID", "ADVISORY_CONTRACT_SHA256",
+    "ADVISORY_NOT_LANDING_EVIDENCE", "is_advisory_brief",
+]

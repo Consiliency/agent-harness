@@ -1145,7 +1145,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--advisory", action="store_true", default=False,
         help=("Review a standalone document (research bundle, memo, roadmap, plan) under the advisory "
               "contract: the bundle's own charter scopes the analysis, no git repository is needed or "
-              "exposed, and the result is labelled non-gating. Refused with --landing-tier."),
+              "exposed, and the result is labelled non-gating. Refused with --landing-tier, "
+              "--native-president, agy canary capture, or any inherited GIT_* variable that can "
+              "redirect or reconfigure git (only editor/pager/prompt/identity/trace ones are allowed)."),
     )
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
@@ -1934,7 +1936,25 @@ def _native_agent_request_json(leg: object) -> dict | None:
     return to_dict() if callable(to_dict) else None
 
 
-_ADVISORY_REFUSED_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+# The HARDEN authority probes run ``git -C <authority>`` with the inherited environment, and
+# they are not ours to change. A GIT_* variable can redirect them (GIT_DIR, GIT_WORK_TREE,
+# GIT_OBJECT_DIRECTORY, ...), reconfigure them (GIT_CONFIG_*, GIT_CONFIG_PARAMETERS) or replace
+# the git programs (GIT_EXEC_PATH), so an advisory run allows only the GIT_* variables below,
+# which change none of that, and refuses every other one: an unknown or future variable is
+# refused, never trusted.
+_ADVISORY_ALLOWED_GIT_ENV = frozenset({
+    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_TERMINAL_PROMPT", "GIT_ASKPASS",
+    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_MERGE_AUTOEDIT", "GIT_FLUSH",
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+})
+
+
+def _advisory_refused_git_env(environ) -> list[str]:
+    return sorted(
+        k for k in environ
+        if k.startswith("GIT_") and k not in _ADVISORY_ALLOWED_GIT_ENV and not k.startswith("GIT_TRACE")
+    )
 
 
 def _advisory_labels(brief: str, *, composed_board: str | None = None) -> dict[str, object]:
@@ -2015,12 +2035,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 print(f"advisor-board: --advisory is non-gating and cannot be combined with {flag}",
                       file=sys.stderr)
                 return 2
-        # The HARDEN authority probes inherit the environment, and these override ``git -C``:
-        # the scratch authority would silently resolve to the caller's repository.
-        inherited_git = sorted(k for k in _ADVISORY_REFUSED_GIT_ENV if os.environ.get(k))
+        # The HARDEN authority probes inherit the environment (see _ADVISORY_ALLOWED_GIT_ENV).
+        inherited_git = _advisory_refused_git_env(os.environ)
         if inherited_git:
-            print(f"advisor-board: --advisory cannot run with {', '.join(inherited_git)} set: it would "
-                  "redirect the private review authority to another repository; unset it and retry",
+            print(f"advisor-board: --advisory cannot run with {', '.join(inherited_git)} set: it could "
+                  "redirect or reconfigure the git probes of the private review authority; unset it and retry",
                   file=sys.stderr)
             return 2
         if _advisory_root is None:
@@ -2115,7 +2134,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         # Composition performs vendor auth probes.  Bind its independent pre-effect
         # authority before composition, then mint the exact board authority below.
         try:
-            if _advisory_root is not None:
+            if advisory:
+                assert _advisory_root is not None
                 canonical_repo_authority = _advisory_review_authority(_advisory_root)
             else:
                 canonical_repo_authority = Path(subprocess.check_output(
@@ -2190,7 +2210,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             print(json.dumps(record, indent=2, sort_keys=True))
         else:
             print(f"advisor-board: native fill requested for seat {record['seat_key']} — write the review to "
-                  f"{Path(record['request_path']).parent / 'review.md'} and re-run with --native-leg claude={Path(record['request_path']).parent}")
+                  f"{Path(record['request_path']).parent / 'review.md'} and re-run with --native-leg claude={Path(record['request_path']).parent}"
+                  + (" --advisory (advisory contract; the fill is non-gating)" if advisory else ""))
         return 0
     native_leg_fills: tuple = ()
     native_leg_specs = list(getattr(args, "native_legs", []) or [])

@@ -20,6 +20,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   is refused before any probe. The JSON carries `board: "advisory"`, `composed_board`,
   `mode: "advisory"`, `gating: false` and the contract id and digest. Native fills bind the
   contract digest, so an advisory fill is refused by a default run and the reverse.
+- The runtime enforces it too. `invoke_board` refuses any landing path (a landing tier, review
+  policy, president seam or president fill) whose brief is the advisory contract, with
+  `advisory_contract_not_landing_evidence`, before any seat, fill or president runs. The governed
+  board gate holds with the same code before composition.
+- `--advisory` allows only the `GIT_*` variables that change no repository location,
+  configuration or program (editor, pager, prompt, ssh, identity, trace). Any other `GIT_*`
+  variable, including unknown ones, is refused before the run.
 - Refusals are actionable: on a non-Linux host, and outside a git repository, the existing
   `review isolation unavailable` line is followed by a hint line. The default command, with no new
   flag, is unchanged.

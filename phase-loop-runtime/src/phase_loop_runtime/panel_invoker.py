@@ -2008,6 +2008,27 @@ def _resolve_brief(mode: str, brief_ref: str | None) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _refuse_advisory_landing(mode: str | None, brief_ref: str) -> None:
+    """agent-harness#802: a review run under the advisory contract is never landing evidence.
+
+    Called by ``invoke_board`` before anything else when a landing path (a tier, a review
+    policy, or a president seam or fill) is requested, so no seat, fill or president can
+    run. An unreadable brief is left to the existing fail-closed resolution below.
+    """
+    from .advisor_board.advisory_contract import ADVISORY_NOT_LANDING_EVIDENCE, is_advisory_brief
+
+    try:
+        brief = _resolve_brief(mode or "review", brief_ref)
+    except (OSError, UnicodeError, ValueError):
+        return
+    if is_advisory_brief(brief):
+        raise PresidentPolicyError(
+            ADVISORY_NOT_LANDING_EVIDENCE,
+            "the review brief is the advisory contract (advisory.v1): an advisory review is "
+            "non-gating and cannot run on a landing path",
+        )
+
+
 def _maybe_warn_inline_size(artifact: str, *, from_ref: bool) -> None:
     """Soft steer: WARN once (never refuse, never mutate) when an INLINE artifact
     exceeds ``_MAX_INLINE_ARTIFACT_BYTES``, pointing the caller at ``artifact_ref``.
@@ -8635,6 +8656,11 @@ def invoke_board(
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
     """
+    if brief_ref is not None and (
+        landing_tier is not None or review_policy is not None
+        or president_invoke is not None or native_president_fill is not None
+    ):
+        _refuse_advisory_landing(mode, brief_ref)
     try:
         if review_authorization is not None and getattr(review_authorization, "monitoring_policy", "bounded") != monitoring_policy:
             raise ValueError("review_monitoring_policy_mismatch")
