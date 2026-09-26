@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "2aa0d35177b360f313f309f4cd71477435e646079d5cfd7c64be19728f69b16e",
+      "raw_receipt_sha256": "a101103204362391a4499be869104227ab740421a0f1d227210dd20629a4280b",
       "record_sha256": {
-        "broker": "e087b02325b0d97da2e26d8baa11f8ed761953245addd7914bc61687551866ec",
-        "monitoring": "7f617632a4b5b7eb518f95ac57576d8eb662a83e9c7f37bfc239b6c00b74e75b",
-        "observer": "17bcd52360d6a1c605237e6ceb4d4bdf39484d07c74ffcf167e305ffc25221be",
-        "result": "ca8aee7565934798c58cba047391b1364e77faaa16249122e0f298eaae34605c"
+        "broker": "e2ce527cbe3f0cdab849b2acf7b0cf8329637673025697c6479f163f1f4cf16d",
+        "monitoring": "e51fd16784fe6ffb83492fe5425512a61f8541aeff1f5825f82bf1f7abd94921",
+        "observer": "69543b17731a653c6d6be239bcaf73ca5a4d8564edf54773150d14bfccd7e38c",
+        "result": "8693c18d1986ff127adab9b48a9b346b8651a67fc2169edc5c824fc3f6200557"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "c80387c59e0b8a50c854dfa9478f7af262c6355562d139ffa05c292d88e12ee9",
+      "raw_receipt_sha256": "7780a8ea68543b3b29b6299dad4b32829d0975ab39b5cba7288a6adfee14628c",
       "record_sha256": {
-        "broker": "f7df6e5d786b8e4c984d45fb19a8c37382af0a60393d13c306a191098ac08550",
-        "monitoring": "66d6074c2f196c35a60c9b26c4468244adbc1c6439425fab97771fdc5e17250a",
-        "observer": "8a16a8cd6777067fbc4afec99b105ff0983936237064061c1a5b9f65abbfe59d",
+        "broker": "d571c8036f4a9bd0d1c75e14186fb59f7d5b6340dd7328ac7bc6919ea840c973",
+        "monitoring": "ed4fd12ad9ab29f8db7e466d4cb56101c135349c162c3ff714985a7d51f97a3f",
+        "observer": "558a2850dd7cd42d2d7f6d2b7ed6e36d09e1c7f9242193b4db79712ee8a3a2b3",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "4d812581784715422c7691ab088057de1bc7c3ad524e1b5bddfec2b05b201559",
+      "raw_receipt_sha256": "58a9efd8210bc80bef9fd6df033b8d943099bfd231a5d13c615706a057c8db38",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "44e274297bc64dd2abf822428f9dcdd78ce384a704ea9bbbb1d5abd66ced381a",
-        "observer": "d701c115d8ffdd3c58a65df49e4ab6975eee634d2976ac9fe9ac2591da8930f5",
+        "monitoring": "c451a404b52b101fc0fb4b377de813a298e96419a5b6a9b3a1fc3169d3d601e3",
+        "observer": "04af933047ec86ae79f2300c43777e97ac3e673ce6769572863f0c1775dd7ac1",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -196,7 +196,7 @@
   "route": "brokered_subscription_heartbeat_only",
   "schema": "agy_1211_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "aa828f7f4f49099bd7b153330ce2356e30551f8cc67866d3ce5460e2f59c6903",
+    "__init__.py": "f7bcaa29652fe171715ec907951ded2cd44c36427d1496534ea28bfd188ba167",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "e9a503543374ccb83e41535c9fee012fe849b9397003d87aec9ff8fdb653bc73",
     "advisor_board/__init__.py": "7a746aa1ccf9cca9e6344c0d09a34c464cd1bd82044e469f56c2fa5b1b641ff8",
@@ -227,7 +227,7 @@
     "claude_channel_sidecar.py": "cf85ec7992d6035dcac5758b7bccaf238821f1463f2741cd551fb2eb906fe715",
     "cli.py": "12e6fe1e934c5d3a16a954d51b2eec5cd5b552871ec1d36436c1476fd84afe2c",
     "closeout.py": "219ea8d93f15dfc61d885e3a33efcc841b08f46a86108bce979bf4fcaae7eab6",
-    "closeout_classifier.py": "71d62abc529dcdf2fa221bf1f056e9684db9ef87e48f31afa316e57ad51e5fb1",
+    "closeout_classifier.py": "f364b2d62e717272335bf3101cf64926c8ca76fc998a0c93b6b711656cc386c2",
     "closeout_evidence_audit.py": "7ff11eb393ea1ecb1c1a2f042dc75653ffea99eb978f178619970b1ef517ffc0",
     "closeout_validation.py": "9a1e75678152eea16780a20f1562036783f83eb9f5deb1d0372ed925aa844772",
     "closeout_validators.py": "a0368fbd4d66524fe051c39238e75e395c7ec5ca681c54d9aafc213666b06927",
@@ -320,7 +320,7 @@
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "59b6efb213c53a69d65809e01d46e523a8079668c7e3da314d3310570254808d",
-    "panel_invoker.py": "c2516d4e0ead60c83e87134ea37c312b4d375b4ebf5a96e434afb55340f3f461",
+    "panel_invoker.py": "81b69374838278445187e0c1b2c16f286e6f5c45c0ade8fdaf1dc598f375ad29",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
     "pipeline_adapter/__init__.py": "a7a88428e2b814b7621bbd5421e1c564491ab0ab41dea59d3011906f26df8a6a",
@@ -353,7 +353,7 @@
     "review_stage.py": "b49548413af2c51a7308488524fccb0772a1610a5cc23d8301b71cb9dd845c9c",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "7c6b80ae69923bbd0a2371cf0651b17e26b6a2dab131a2af91af8d930074e4e0",
+    "roadmap_assumptions.py": "17dc68a53456e0db5e018441ed8fbc67be3d07d360f8ef9d225fce03fb5514f0",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
@@ -403,7 +403,7 @@
     "train_ledger.py": "f61fcdcdadb1e7fddb5faa9bca22968fff29f7a67cdb6a06dd1e2805ad91d870",
     "train_review_packet.py": "2bb2bc606fdb40dce80f78c2cca0d5f4c943ec1e7ce38651183e3563d9c40555",
     "train_roadmap.py": "3bffaa55051a5e19b4f1fd80ace602d86a5c1d6724876373c45c81bf4be17afd",
-    "train_runner.py": "0cc7bbd557abfceced626c90bb1fa98e3949a80f552d05a892b3d5f84837345d",
+    "train_runner.py": "f8ded00ff6978dddd57a7a3da00be441cf69b5ce27dbf868b511cd1416696adc",
     "verification_evidence.py": "518ad9c8406f24569898a0d2a1992ea6535897c4475490ef73f0e7d8fde8ae26",
     "verification_evidence_validator.py": "5645070f5928c87523a844d7711f35e4bb1312ae8fdca09d27f737bf879f62e3",
     "visual_avatar_evidence_validator.py": "e23fc612d5a15d67a09b1c2874471c45f984f1ee86830f80573b923e76f3ea79",
