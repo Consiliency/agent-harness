@@ -10,6 +10,9 @@ from unittest import mock
 
 from phase_loop_runtime.claude_agent_view import (
     AGENT_VIEW_OBSERVER_FAILURE_LIMIT,
+    claude_global_config_path,
+    workspace_folder_trust,
+    workspace_trust_state,
     AgentViewLifecycleResult,
     ClaudeAgentViewAdapter,
     _launch_session_id,
@@ -110,6 +113,12 @@ class LaunchCommandTest(unittest.TestCase):
 
 
 class LaunchBindingTest(unittest.TestCase):
+    def setUp(self):
+        # Folder trust is covered by FolderTrustTest; these tests are about the lifecycle.
+        patcher = mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _launch(self, runner):
         adapter = ClaudeAgentViewAdapter(runner=runner)
         with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"):
@@ -205,6 +214,55 @@ class WaitForTerminalTest(unittest.TestCase):
     def test_explicit_timeout_is_honored(self):
         lifecycle, _ = self._wait([[_record("working")]], timeout_s=12.0)
         self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_timeout")
+
+
+class FolderTrustTest(unittest.TestCase):
+    """Exact-folder trust preflight, read from the operator's Claude config (never written)."""
+
+    def _config(self, projects):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / ".claude.json"
+        path.write_text(json.dumps({"projects": projects}), encoding="utf-8")
+        return path
+
+    def test_trusted_exact_folder(self):
+        config = self._config({"/work/repo": {"hasTrustDialogAccepted": True}})
+        self.assertEqual(workspace_folder_trust(Path("/work/repo"), config_path=config), "trusted")
+        state = workspace_trust_state(Path("/work/repo"), config_path=config)
+        self.assertEqual((state["status"], state["workspace"]), ("trusted", "trusted"))
+
+    def test_untrusted_folder_blocks_even_with_a_clean_mcp_config(self):
+        config = self._config({"/work/repo": {"hasTrustDialogAccepted": False}})
+        state = workspace_trust_state(Path("/work/repo"), config_path=config)
+        self.assertEqual(state, {"status": "blocked", "workspace": "untrusted", "mcp": "absent"})
+
+    def test_parent_only_trust_does_not_carry_over(self):
+        # Observed on the agent-harness#1099 proof: a trusted parent, an untrusted child.
+        config = self._config({"/work": {"hasTrustDialogAccepted": True}})
+        self.assertEqual(workspace_folder_trust(Path("/work/repo"), config_path=config), "untrusted")
+
+    def test_missing_config_is_unknown_and_blocks(self):
+        state = workspace_trust_state(Path("/work/repo"), config_path=Path("/nonexistent/.claude.json"))
+        self.assertEqual((state["status"], state["workspace"]), ("blocked", "unknown"))
+
+    def test_config_path_follows_claude_config_dir(self):
+        self.assertEqual(claude_global_config_path({"CLAUDE_CONFIG_DIR": "/cfg", "HOME": "/h"}), Path("/cfg/.claude.json"))
+        self.assertEqual(claude_global_config_path({"HOME": "/h"}), Path("/h/.claude.json"))
+
+    def test_untrusted_folder_refuses_before_any_subprocess_with_an_actionable_hint(self):
+        config = self._config({"/work": {"hasTrustDialogAccepted": True}})
+        runner = mock.Mock()
+        adapter = ClaudeAgentViewAdapter(runner=runner, config_path=config)
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"):
+            lifecycle = adapter.launch_background("do work", cwd="/work/repo", bind_printed_id=True)
+        runner.assert_not_called()
+        self.assertEqual(lifecycle.blocker.reason, "trust_preflight_blocked")
+        self.assertEqual(
+            lifecycle.blocker.summary,
+            "Workspace /work/repo is not trusted in your Claude settings. Run `claude` in /work/repo once, "
+            "accept the trust prompt, then re-run this command.",
+        )
 
 
 class TranscriptPathTest(unittest.TestCase):

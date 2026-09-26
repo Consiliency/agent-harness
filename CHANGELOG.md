@@ -24,6 +24,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   a launch that exits non-zero never started a session. For example, a background session
   refuses to start in a workspace that has not been trusted interactively once
   (`Workspace not trusted`), and trust recorded for a parent directory does not carry over.
+- Before `claude --bg`, the launch now reads (never writes) the operator's per-folder Claude
+  trust for the exact cwd and refuses up front with an actionable hint when it is not trusted.
+  `workspace_trust_state` no longer reports `trusted` just because `.mcp.json` is fine.
 - The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
   and its context goes through `context.md` instead of one argv entry.
 - `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.

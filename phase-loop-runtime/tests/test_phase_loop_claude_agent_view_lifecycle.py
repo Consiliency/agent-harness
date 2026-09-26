@@ -10,6 +10,12 @@ from phase_loop_runtime.launcher import LaunchSpec, _agent_view_route_status, _l
 
 
 class ClaudeAgentViewLifecycleTest(unittest.TestCase):
+    def setUp(self):
+        # Folder trust is covered by FolderTrustTest; these tests are about the lifecycle.
+        patcher = mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_background_launch_returns_metadata_only_lifecycle_shape(self):
         calls = []
 
