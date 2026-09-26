@@ -1452,9 +1452,10 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
                 model=request.model_selection.model,
                 effort=request.model_selection.effort,
                 permission=permission_mode,
-                # Same tool policy the print route binds, so an unattended session
-                # cannot stall on AskUserQuestion / plan approval or fan out.
-                allowed_tools=",".join(claude_policy.allowed_tools) if claude_policy.allowed_tools else CLAUDE_ADAPTER_ALLOWED_TOOLS,
+                # Only the RESTRICTIVE half of the print route's tool policy, so an
+                # unattended session cannot stall on AskUserQuestion / plan approval or
+                # fan out. Never `--allowedTools`: those are permission allow rules that
+                # would widen the operator's own settings (agent-harness#1101 round 1).
                 disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
             ),
             prompt_bundle=prompt_bundle,
@@ -2276,8 +2277,8 @@ def _launch_claude_agent_view(
     """Run one phase-loop action as a Claude Agent View background session.
 
     agent-harness#409: `claude --bg` returns as soon as the session starts, so the
-    launch binds a pre-assigned session id, waits for that exact session to reach a
-    terminal state, and returns its final assistant message as the output the runner
+    launch binds the session whose id `claude --bg` prints, waits for that exact
+    session to reach a terminal state, and returns its final assistant message as the output the runner
     reduces. Only a `done` session with a readable final message is a successful
     launch; a running, blocked (needs input), failed or unbound session is not.
     There is no default deadline and no silence-based termination: the wait ends
@@ -2300,7 +2301,6 @@ def _launch_claude_agent_view(
         "model": spec.selected_model,
         "effort": spec.selected_effort,
         "permission": _command_option(spec.command, "--permission-mode"),
-        "allowed_tools": _command_option(spec.command, "--allowedTools"),
         "disallowed_tools": _command_option(spec.command, "--disallowedTools"),
         "add_dirs": [Path(context_path).parent] if context_path is not None else None,
     }
@@ -2353,7 +2353,13 @@ def _launch_claude_agent_view(
             "agent_view_needs_input",
             f"Agent View session {lifecycle.session_id} is waiting for input; attach with `claude attach {lifecycle.session_id}`.",
         )
-    route_status = "blocked" if blocker is not None else _agent_view_route_status(lifecycle.state)
+    # Success is exactly: the bound session is `done` and its final message was read.
+    succeeded = lifecycle.state == "done" and blocker is None and bool(final_text)
+    route_status = "done" if succeeded else (
+        "blocked" if blocker is not None else _agent_view_route_status(lifecycle.state)
+    )
+    if route_status == "done" and not succeeded:
+        route_status = "blocked"
     route_text = final_text if route_status == "done" else (
         blocker.summary if blocker is not None else _agent_view_route_text(lifecycle)
     )

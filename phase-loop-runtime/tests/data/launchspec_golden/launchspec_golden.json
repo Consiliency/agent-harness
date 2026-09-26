@@ -80,8 +80,6 @@
       "high",
       "--permission-mode",
       "bypassPermissions",
-      "--allowedTools",
-      "Bash,Read,Edit,MultiEdit,Write,Glob,Grep,LS",
       "--disallowedTools",
       "Agent,TaskCreate,TaskUpdate,TaskList,TeamCreate,TeamDelete,SendMessage,EnterWorktree,ExitWorktree,AskUserQuestion,ExitPlanMode,ToolSearch,advisor",
       "--",

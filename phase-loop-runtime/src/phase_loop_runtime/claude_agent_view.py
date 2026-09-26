@@ -18,6 +18,11 @@ AGENT_VIEW_POLL_INTERVAL_S = 5.0
 # absent) before the wait fails closed. This bounds a broken observer, never a
 # working session: a listed, running session resets the count.
 AGENT_VIEW_OBSERVER_FAILURE_LIMIT = 12
+# `claude agents` itself failing (non-zero, non-JSON) is an observer outage, not
+# evidence about the session, so it gets a longer tolerance (~5 min at the default
+# poll) than a listing that works but no longer shows the bound record.
+AGENT_VIEW_LISTING_ERROR_LIMIT = 60
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 SECRET_LIKE_KEYS = {
     "api_key",
     "authorization",
@@ -186,8 +191,8 @@ class ClaudeAgentViewAdapter:
         disallowed_tools: str | None = None,
     ) -> list[str]:
         # `cwd` is the launch directory the caller runs this command from. The root
-        # `claude` command has no `--cwd` option (only `claude agents` does), and an
-        # unknown option fails the launch, so it is never rendered here.
+        # `claude` command has no `--cwd` option (only `claude agents` does), so it is
+        # never rendered here.
         command = [self.claude_bin, "--bg"]
         if safe_mode:
             command.append("--safe-mode")
@@ -350,7 +355,7 @@ class ClaudeAgentViewAdapter:
                 ),
             )
 
-        session_id = _launch_session_id(result.stdout)
+        session_id = _launch_session_id(result.stdout, strict=bind_printed_id)
         if bind_printed_id:
             # Exact binding only (agent-harness#409): the session is the one this launch
             # printed, never another session that happens to share the cwd. The record
@@ -368,8 +373,12 @@ class ClaudeAgentViewAdapter:
                         "claude --bg did not print the id of the session it started.",
                     ),
                 )
-            session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id)
+            try:
+                session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id)
+            except AmbiguousSessionError as exc:
+                return _ambiguous_lifecycle(session_id, cwd, exc)
             if session:
+                # Pinned from here on: the full session id, never the short one.
                 return _lifecycle_from_session(session)
             return _lifecycle_from_parts(
                 session_id=session_id,
@@ -408,36 +417,61 @@ class ClaudeAgentViewAdapter:
         waiting for input, which nothing unattended can supply, so it returns too and
         the session is left attachable. A running session is never timed out on
         silence: `timeout_s` applies only when the caller passes one, and it is None
-        by default. Only the OBSERVER failing (the listing failing, or the record
-        never appearing) for AGENT_VIEW_OBSERVER_FAILURE_LIMIT consecutive polls ends
-        the wait, fail-closed.
+        by default. Only the OBSERVER failing ends the wait early, fail-closed: a working
+        listing that stops showing the bound record for AGENT_VIEW_OBSERVER_FAILURE_LIMIT
+        consecutive polls, or `claude agents` itself failing for
+        AGENT_VIEW_LISTING_ERROR_LIMIT consecutive polls. The session is not stopped
+        then, and the result names it with its attach/stop commands. A short printed
+        id that matches more than one listed session fails closed as ambiguous; once it
+        resolves uniquely, the full session id is pinned.
         """
         started = clock()
-        failures = 0
-        last_blocker: BlockerSummary | None = None
+        missing = 0
+        listing_errors = 0
+        bound = session_id
         while True:
             listed = self.list_sessions(cwd=None)
-            session = _find_bound_session(listed.sessions, session_id) if listed.ok else None
+            session = None
+            if listed.ok:
+                try:
+                    session = _find_bound_session(listed.sessions, bound)
+                except AmbiguousSessionError as exc:
+                    return _ambiguous_lifecycle(bound, cwd, exc)
             if on_poll is not None:
                 on_poll(session)
             if session is not None:
-                failures = 0
+                missing = listing_errors = 0
+                # Pin the full id once the short printed id has resolved uniquely.
+                bound = session.session_id or bound
                 if session.state in {"done", "failed", "stopped", "blocked"}:
                     return _lifecycle_from_session(session)
             else:
-                failures += 1
-                last_blocker = listed.blocker or BlockerSummary(
-                    "agent_view_session_missing", "claude agents did not list the launched background session."
-                )
-                if failures >= AGENT_VIEW_OBSERVER_FAILURE_LIMIT:
+                if listed.ok:
+                    missing += 1
+                    listing_errors = 0
+                    blocker = BlockerSummary(
+                        "agent_view_session_missing", "claude agents did not list the launched background session."
+                    )
+                else:
+                    listing_errors += 1
+                    blocker = listed.blocker or BlockerSummary(
+                        "agents_list_failed", "claude agents did not return a successful session list."
+                    )
+                if missing >= AGENT_VIEW_OBSERVER_FAILURE_LIMIT or listing_errors >= AGENT_VIEW_LISTING_ERROR_LIMIT:
+                    # The OBSERVER gave up, not the session: it may still be running.
+                    # Fail closed, but say so and hand over the attach/stop commands.
                     return _lifecycle_from_parts(
-                        session_id=session_id,
+                        session_id=bound,
                         state="blocked",
                         cwd=str(cwd) if cwd is not None else None,
                         started_at=None,
                         completed_at=_utc_now(),
                         stop_result=None,
-                        blocker=last_blocker,
+                        blocker=BlockerSummary(
+                            blocker.reason,
+                            f"{blocker.summary} The session may still be running: inspect it with "
+                            f"`claude attach {bound}` or stop it with `claude stop {bound}`.",
+                        ),
                     )
             if timeout_s is not None and clock() - started >= timeout_s:
                 return _lifecycle_from_parts(
@@ -750,11 +784,41 @@ def _cli_refusal_suffix(output: str) -> str:
     return ""
 
 
+class AmbiguousSessionError(Exception):
+    def __init__(self, session_id: str, count: int) -> None:
+        super().__init__(f"{count} listed sessions match {session_id}")
+        self.session_id = session_id
+        self.count = count
+
+
 def _find_bound_session(sessions: tuple[AgentViewSession, ...], session_id: str) -> AgentViewSession | None:
+    """The one listed session named by `session_id`, None if absent.
+
+    Raises AmbiguousSessionError when more than one distinct session matches (a short
+    id shared by an older record): binding the first would reduce the wrong session.
+    """
+    matches: dict[str, AgentViewSession] = {}
     for session in sessions:
         if session.session_id == session_id or session.id == session_id:
-            return session
-    return None
+            matches[session.session_id or session.id or session_id] = session
+    if len(matches) > 1:
+        raise AmbiguousSessionError(session_id, len(matches))
+    return next(iter(matches.values()), None)
+
+
+def _ambiguous_lifecycle(session_id: str, cwd: str | Path | None, exc: AmbiguousSessionError) -> AgentViewLifecycleResult:
+    return _lifecycle_from_parts(
+        session_id=session_id,
+        state="blocked",
+        cwd=str(cwd) if cwd is not None else None,
+        started_at=None,
+        completed_at=_utc_now(),
+        stop_result=None,
+        blocker=BlockerSummary(
+            "agent_view_session_ambiguous",
+            f"{exc.count} Agent View sessions match the printed id {session_id}; refusing to guess which one this launch started.",
+        ),
+    )
 
 
 def session_transcript_path(
@@ -775,7 +839,11 @@ def session_transcript_path(
         candidate = project_dir_for_cwd(spelling) / f"{session_id}.jsonl"
         if candidate.is_file():
             return candidate
-    root = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
+    if projects_root is not None:
+        root = projects_root
+    else:
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        root = (Path(config_dir) if config_dir else Path.home() / ".claude") / "projects"
     matches = sorted(root.glob(f"*/{session_id}.jsonl"))
     return matches[0] if len(matches) == 1 else None
 
@@ -792,9 +860,25 @@ def _find_session(sessions: tuple[AgentViewSession, ...], *, session_id: str | N
     return sessions[0] if len(sessions) == 1 else None
 
 
-def _launch_session_id(output: str) -> str | None:
-    text = str(output or "").strip()
+def _launch_session_id(output: str, *, strict: bool = False) -> str | None:
+    """The session id `claude --bg` printed.
+
+    `strict` accepts only the CLI's own launch forms (`backgrounded · <id>` or a
+    `claude attach|logs|stop <id>` hint), so unrelated text that mentions some other
+    session can never be bound. ANSI styling is stripped first: the CLI colours the id
+    even when stdout is a pipe.
+    """
+    text = _ANSI_ESCAPE.sub("", str(output or "")).strip()
     if not text:
+        return None
+    if strict:
+        for pattern in (
+            r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9._:-]+)",
+            r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9._:-]+)\b",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
         return None
     try:
         payload = json.loads(text)

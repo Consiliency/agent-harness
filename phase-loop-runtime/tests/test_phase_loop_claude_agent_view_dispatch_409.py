@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from phase_loop_runtime.claude_agent_view import (
+    AGENT_VIEW_LISTING_ERROR_LIMIT,
     AGENT_VIEW_OBSERVER_FAILURE_LIMIT,
     claude_global_config_path,
     workspace_folder_trust,
@@ -95,7 +96,7 @@ class LaunchCommandTest(unittest.TestCase):
         self.assertEqual(command[command.index("--allowedTools") + 1], "Bash,Read")
         self.assertEqual(command[command.index("--disallowedTools") + 1], "AskUserQuestion")
         # The prompt follows the end-of-options marker, so a variadic option such as
-        # --disallowedTools cannot swallow it (the failed agent-harness#1099 proof run).
+        # --disallowedTools cannot swallow it.
         self.assertEqual(command[-2:], ["--", "do work"])
 
     def test_variadic_options_never_precede_a_bare_prompt(self):
@@ -110,6 +111,35 @@ class LaunchCommandTest(unittest.TestCase):
     def test_launch_session_id_parses_the_backgrounded_banner(self):
         self.assertEqual(_launch_session_id("backgrounded · 1a2b3c4d\n"), "1a2b3c4d")
         self.assertEqual(_launch_session_id("run `claude attach 1a2b3c4d` to reopen"), "1a2b3c4d")
+
+
+class LaunchSpecPermissionTest(unittest.TestCase):
+    """agent-harness#1101 round 1 (claude B1, grok): the route adds no permission grant."""
+
+    def test_non_bypass_agent_view_spec_renders_no_allow_rules(self):
+        from _launchspec_golden_cases import _pinned_claude_eligibility, _pinned_env
+        from phase_loop_runtime.launcher import build_launch_request, build_launch_spec
+        from phase_loop_runtime.profiles import resolve_profile_for_executor
+        from phase_loop_runtime.prompts import build_prompt
+
+        roadmap = Path("/repo/specs/phase-plans-v1.md")
+        for action in ("plan", "roadmap", "execute"):
+            with self.subTest(action=action), _pinned_env():
+                spec = build_launch_spec(build_launch_request(
+                    executor="claude", action=action, repo=Path("/repo"), roadmap=roadmap, phase="ADAPTER",
+                    plan=Path("/repo/plans/phase-plan-v1-ADAPTER.md"),
+                    model_selection=resolve_profile_for_executor(action=action, executor="claude"),
+                    prompt_bundle=build_prompt(action, roadmap, phase="ADAPTER"),
+                    json_output=True, bypass_approvals=False,
+                    claude_execution_mode="solo", phase_team_eligibility=_pinned_claude_eligibility(),
+                ))
+                self.assertEqual(spec.claude_route, "claude_agent_view")
+                self.assertNotIn("--allowedTools", spec.command)
+                self.assertNotIn("--dangerously-skip-permissions", spec.command)
+                self.assertIn("--disallowedTools", spec.command)
+                if action in ("plan", "roadmap"):
+                    # No bypass unless explicitly requested: these prompt on Bash.
+                    self.assertEqual(spec.command[spec.command.index("--permission-mode") + 1], "acceptEdits")
 
 
 class LaunchBindingTest(unittest.TestCase):
@@ -144,7 +174,7 @@ class LaunchBindingTest(unittest.TestCase):
         self.assertEqual(lifecycle.blocker.reason, "agent_view_session_unbound")
 
     def test_cli_refusal_line_is_surfaced(self):
-        # The host precondition that blocked the agent-harness#1099 proof runs.
+        # Any CLI refusal line is surfaced; this one is a real --bg precondition message.
         refusal = ("--bg with bypassPermissions requires accepting the disclaimer first. "
                    "Run `claude --dangerously-skip-permissions` once interactively.")
 
@@ -199,21 +229,132 @@ class WaitForTerminalTest(unittest.TestCase):
         self.assertEqual(lifecycle.state, "blocked")
         self.assertFalse(any(command[:2] == ["claude", "stop"] for command in calls))
 
-    def test_observer_failure_fails_closed_after_the_limit(self):
-        lifecycle, polled = self._wait([None])
+    def test_listing_outage_fails_closed_after_the_longer_limit_and_names_the_live_session(self):
+        lifecycle, polled = self._wait([[_record("working")], None])
         self.assertEqual(lifecycle.state, "blocked")
         self.assertEqual(lifecycle.blocker.reason, "agents_list_failed")
+        self.assertEqual(len(polled), 1 + AGENT_VIEW_LISTING_ERROR_LIMIT)
+        # The observer gave up, not the session: say so, with the pinned full id.
+        self.assertIn("may still be running", lifecycle.blocker.summary)
+        self.assertIn(f"claude attach {ASSIGNED}", lifecycle.blocker.summary)
+        self.assertIn(f"claude stop {ASSIGNED}", lifecycle.blocker.summary)
+
+    def test_missing_record_fails_closed_after_the_shorter_limit(self):
+        lifecycle, polled = self._wait([[]])
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_session_missing")
         self.assertEqual(len(polled), AGENT_VIEW_OBSERVER_FAILURE_LIMIT)
+        self.assertIn("may still be running", lifecycle.blocker.summary)
 
     def test_a_listed_session_resets_the_observer_failure_count(self):
-        listings = [None] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("working")]]
-        listings += [None] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("done")]]
+        listings = [[]] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("working")]]
+        listings += [None] * (AGENT_VIEW_LISTING_ERROR_LIMIT - 1) + [[_record("done")]]
         lifecycle, _ = self._wait(listings)
         self.assertEqual(lifecycle.state, "done")
 
     def test_explicit_timeout_is_honored(self):
         lifecycle, _ = self._wait([[_record("working")]], timeout_s=12.0)
         self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_timeout")
+
+
+class AmbiguousBindingTest(unittest.TestCase):
+    """agent-harness#1101 round 1 (codex): a short id shared by two listed sessions."""
+
+    OLDER = "0f1e2d3c-0000-4000-8000-000000000001"
+
+    def test_launch_refuses_an_ambiguous_short_id(self):
+        listing = [_record("done", session_id=self.OLDER), _record("working")]
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner([listing]))
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
+            lifecycle = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
+        self.assertEqual(lifecycle.state, "blocked")
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_session_ambiguous")
+
+    def test_wait_refuses_an_ambiguous_short_id_instead_of_reducing_the_older_session(self):
+        clock = _Clock(step=5.0)
+        listing = [_record("done", session_id=self.OLDER), _record("working")]
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner([listing]))
+        lifecycle = adapter.wait_for_terminal(ASSIGNED[:8], cwd="/repo", sleep=clock.sleep, clock=clock)
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_session_ambiguous")
+        self.assertNotEqual(lifecycle.state, "done")
+
+    def test_once_resolved_the_full_id_is_pinned(self):
+        # Poll 1 resolves the short id uniquely; poll 2 adds an older `done` record that
+        # shares it. The pinned full id keeps the wait on the launched session.
+        clock = _Clock(step=5.0)
+        listings = [
+            [_record("working")],
+            [_record("done", session_id=self.OLDER), _record("working")],
+            [_record("done", session_id=self.OLDER), _record("done")],
+        ]
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner(listings))
+        lifecycle = adapter.wait_for_terminal(ASSIGNED[:8], cwd="/repo", sleep=clock.sleep, clock=clock)
+        self.assertEqual(lifecycle.state, "done")
+        self.assertEqual(lifecycle.session_id, ASSIGNED)
+        self.assertEqual(clock.now, 10.0)
+
+    def test_strict_parse_ignores_other_session_mentions_and_ansi(self):
+        self.assertEqual(_launch_session_id("backgrounded · \x1b[36m93efedda\x1b[39m\n", strict=True), "93efedda")
+        self.assertIsNone(_launch_session_id("session: deadbeef finished earlier\n", strict=True))
+        self.assertIsNone(_launch_session_id(json.dumps({"id": "deadbeef"}), strict=True))
+
+    def test_launch_subprocess_runs_in_the_workspace(self):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs.get("cwd")))
+            if command == ["claude", "--bg", "--help"]:
+                return subprocess.CompletedProcess(command, 0, stdout="Usage\n")
+            if command[:2] == ["claude", "--bg"]:
+                return subprocess.CompletedProcess(command, 0, stdout=f"backgrounded · {ASSIGNED[:8]}\n")
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps([_record("working")]))
+
+        adapter = ClaudeAgentViewAdapter(runner=run)
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
+            adapter.launch_background("do work", cwd="/work/repo", bind_printed_id=True)
+        launch_cwds = [cwd for command, cwd in calls if command[:2] == ["claude", "--bg"] and command != ["claude", "--bg", "--help"]]
+        self.assertEqual(launch_cwds, ["/work/repo"])
+
+
+class RealTranscriptReadTest(unittest.TestCase):
+    """agent-harness#1101 round 1 (claude N2, codex): the real final-message read path."""
+
+    def _write(self, root, cwd, records):
+        from phase_loop_runtime.panel_invoker import _claude_project_dir_for_cwd
+
+        project = root / _claude_project_dir_for_cwd(cwd).name
+        project.mkdir(parents=True)
+        path = project / f"{ASSIGNED}.jsonl"
+        path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+        return path
+
+    def _run(self, records):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        projects = home / ".claude" / "projects"
+        self._write(projects, "/work/repo", records)
+        with mock.patch.dict("os.environ", {"HOME": str(home)}), mock.patch("pathlib.Path.home", return_value=home):
+            return ClaudeAgentViewAdapter().final_text(ASSIGNED, cwd="/work/repo")
+
+    def test_final_message_is_read_from_a_real_transcript(self):
+        records = [
+            {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "run the phase"}},
+            {"type": "assistant", "uuid": "a1", "message": {"id": "m1", "role": "assistant", "stop_reason": "tool_use",
+                                                            "content": [{"type": "text", "text": "working"}]}},
+            {"type": "assistant", "uuid": "a2", "message": {"id": "m2", "role": "assistant", "stop_reason": "end_turn",
+                                                            "content": [{"type": "text", "text": "automation:\n  status: planned"}]}},
+        ]
+        self.assertEqual(self._run(records), "automation:\n  status: planned")
+
+    def test_an_ambiguous_transcript_yields_nothing(self):
+        # An identity-less replay of an earlier answer after a new request is not an
+        # answer (agent-harness#1002); the launch then fails closed as transcript_missing.
+        old = {"type": "assistant", "message": {"id": "old", "role": "assistant", "stop_reason": "end_turn",
+                                                "content": [{"type": "text", "text": "old answer"}]}}
+        records = [old, {"type": "user", "uuid": "u2", "message": {"role": "user", "content": "again"}}, old]
+        self.assertEqual(self._run(records), "")
 
 
 class FolderTrustTest(unittest.TestCase):
@@ -357,7 +498,10 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertTrue(adapter.launch_kwargs["bind_printed_id"])
         self.assertNotIn("--session-id", result.command)
         self.assertEqual(result.command[-2], "--")
-        self.assertEqual(adapter.launch_kwargs["allowed_tools"], "Bash,Read")
+        # Never an allow rule, even if a spec carried one (round 1, B1): only the
+        # restrictive half of the tool policy reaches the session.
+        self.assertNotIn("allowed_tools", adapter.launch_kwargs)
+        self.assertNotIn("--allowedTools", result.command)
         self.assertEqual(adapter.launch_kwargs["disallowed_tools"], "AskUserQuestion")
         self.assertEqual(adapter.launch_kwargs["permission"], "bypassPermissions")
         # No deadline unless the operator configured one.
