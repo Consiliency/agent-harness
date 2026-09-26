@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -155,9 +156,12 @@ class ClaudeAgentViewAdapter:
         *,
         claude_bin: str = "claude",
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        config_path: Path | None = None,
     ) -> None:
         self.claude_bin = claude_bin
         self._runner = runner
+        # Operator's Claude global config (per-folder trust); None = the real one.
+        self._config_path = config_path
 
     def list_command(self) -> list[str]:
         return [self.claude_bin, "agents", "--json", "--all"]
@@ -273,13 +277,18 @@ class ClaudeAgentViewAdapter:
 
     def prepare_launch(self, prompt: str, *, cwd: str | Path, **kwargs: Any) -> LaunchPreflightResult:
         command = tuple(self.launch_command(prompt, cwd=cwd, **kwargs))
-        trust_state = workspace_trust_state(Path(cwd))
+        trust_state = workspace_trust_state(Path(cwd), config_path=self._config_path)
         if trust_state["status"] != "trusted":
+            summary = (
+                workspace_trust_hint(Path(cwd))
+                if trust_state["workspace"] != "trusted"
+                else "Agent View launch blocked before claude --bg because workspace or MCP trust is not ready."
+            )
             return LaunchPreflightResult(
                 trusted=False,
                 trust_state=trust_state,
                 command=command,
-                blocker=BlockerSummary("trust_preflight_blocked", "Agent View launch blocked before claude --bg because workspace or MCP trust is not ready."),
+                blocker=BlockerSummary("trust_preflight_blocked", summary),
             )
         if shutil.which(self.claude_bin) is None:
             return LaunchPreflightResult(
@@ -563,19 +572,62 @@ class ClaudeAgentViewAdapter:
         return CommandResult(command=tuple(command), returncode=result.returncode, output="", blocker=blocker)
 
 
-def workspace_trust_state(cwd: Path) -> dict[str, str]:
+def claude_global_config_path(env: dict[str, str] | None = None) -> Path:
+    """The operator's Claude global config, where per-folder trust is recorded.
+
+    Mirrors the CLI: `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, else
+    `~/.claude.json`. Read only; the runtime never records trust.
+    """
+    environment = os.environ if env is None else env
+    config_dir = environment.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir) / ".claude.json"
+    return Path(environment.get("HOME") or Path.home()) / ".claude.json"
+
+
+def workspace_folder_trust(cwd: Path, *, config_path: Path | None = None) -> str:
+    """`trusted`, `untrusted` or `unknown` for the EXACT folder, from the operator's config.
+
+    A background session refuses a folder whose own entry has not accepted the trust
+    prompt; trust recorded for a parent folder does not carry over, so only the exact
+    path (as given, or resolved) counts.
+    """
+    path = config_path if config_path is not None else claude_global_config_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unknown"
+    projects = payload.get("projects") if isinstance(payload, dict) else None
+    if not isinstance(projects, dict):
+        return "untrusted"
+    for spelling in dict.fromkeys((str(cwd), str(Path(cwd).resolve()))):
+        entry = projects.get(spelling.rstrip("/") or "/")
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True:
+            return "trusted"
+    return "untrusted"
+
+
+def workspace_trust_hint(cwd: Path) -> str:
+    return (
+        f"Workspace {cwd} is not trusted in your Claude settings. Run `claude` in {cwd} once, "
+        "accept the trust prompt, then re-run this command."
+    )
+
+
+def workspace_trust_state(cwd: Path, *, config_path: Path | None = None) -> dict[str, str]:
+    workspace = workspace_folder_trust(cwd, config_path=config_path)
     mcp_path = cwd / ".mcp.json"
     mcp_status = "absent"
     if mcp_path.exists():
         try:
             payload = json.loads(mcp_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            return {"status": "blocked", "workspace": "trusted", "mcp": "invalid_json"}
+            return {"status": "blocked", "workspace": workspace, "mcp": "invalid_json"}
         rendered = json.dumps(payload, sort_keys=True)
         if "pmcp" in rendered and "pending" in rendered.lower():
-            return {"status": "blocked", "workspace": "trusted", "mcp": "pmcp_pending_approval"}
+            return {"status": "blocked", "workspace": workspace, "mcp": "pmcp_pending_approval"}
         mcp_status = "present"
-    return {"status": "trusted", "workspace": "trusted", "mcp": mcp_status}
+    return {"status": "trusted" if workspace == "trusted" else "blocked", "workspace": workspace, "mcp": mcp_status}
 
 
 def _session_from_payload(payload: dict[str, Any]) -> AgentViewSession:
