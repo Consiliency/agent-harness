@@ -1040,12 +1040,14 @@ def test_1088r3_a_cut_inside_the_verdict_line_fails_closed(tmp_path, terminal):
 
 
 @pytest.mark.parametrize("terminal", [False, True])
-def test_1088r3_a_head_ending_on_a_newline_keeps_a_one_line_tail(tmp_path, terminal):
+def test_1088r4_a_one_line_tail_fails_closed_even_after_a_head_newline(tmp_path, terminal):
+    # r4 (codex 1, grok 4, claude 4b): a newline at the end of an earlier piece may be one the
+    # extractor inserted, so it no longer vouches for the verdict line (r3 accepted this).
     path = _jsonl(tmp_path, [
         _user("u1", "Review A"), _asst("Findings...\n", mid="m1", uuid="a1", stop="max_tokens"),
         _resume(), _asst("AGREE", mid="m2", uuid="a2"),
     ])
-    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "Findings...\n\nAGREE"
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
 
 
 @pytest.mark.parametrize("terminal", [False, True])
@@ -1064,3 +1066,84 @@ def test_1088r3_a_resume_after_an_uncapped_message_fails_closed(tmp_path, termin
         _resume(), _asst("TAIL\nDISAGREE", mid="m2", uuid="a2"),
     ])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+# --- r4: one replay rule for the region and the turn; the verdict line needs a newline
+# inside the final piece.
+
+def _asst_items(texts, *, mid, uuid, stop):
+    record = _asst("", mid=mid, uuid=uuid, stop=stop)
+    record["message"]["content"] = [{"type": "text", "text": text} for text in texts]
+    return record
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("head", [["DIS", ""], ["Findings\nDIS", ""]])
+def test_1088r4_an_empty_text_item_does_not_open_the_verdict_guard(tmp_path, terminal, head):
+    # codex r4 (1) / grok r4 (4) / claude r4 (4b).
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst_items(head, mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst("AGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r4_a_final_piece_padded_with_unicode_blank_fails_closed(tmp_path, terminal):
+    # claude r4 (4a): a no-break space is blank to the verdict reader.
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("Findings...\nVERDICT: DIS", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst("AGREE\n\u00a0", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r4_a_replayed_history_cap_does_not_flip_a_plain_answer(tmp_path, terminal):
+    # grok r4 (1)/(2): the replayed cap is history, not a cap in the region, so the result is
+    # main's on both routes. (The president route rejects any raw non-final stop after the
+    # boundary, replays included, as main does since agent-harness#1016.)
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("OLD", mid="m1", uuid="a1", stop="max_tokens"),
+        _user("u2", "Review B"), _asst("OLD", mid="m1", uuid="a1", stop="max_tokens"),
+        _asst("B answer\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ("" if terminal else "B answer\nAGREE")
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("copy", ["exact", "stale_open"])
+def test_1088r4_a_history_copy_as_the_head_piece_fails_closed_without_raising(tmp_path, terminal, copy):
+    # codex r4 (2) / grok r4 (1): the copy is not a piece, so the region is RESUME, M2 -> "".
+    stop = "max_tokens" if copy == "exact" else "end_turn"
+    again = _asst("HEAD", mid="m1", uuid="a1", stop=stop if copy == "exact" else None)
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("HEAD", mid="m1", uuid="a1", stop=stop),
+        _user("u2", "Review B"), again, _resume(), _asst("TAIL\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("copy", ["exact", "stale_open"])
+def test_1088r4_a_history_copy_as_a_middle_piece_fails_closed_without_raising(tmp_path, terminal, copy):
+    # claude r4 blocking: M1, RESUME, [copy of history], RESUME, M3 has an empty piece -> "".
+    old = _asst("Z review\nAGREE", mid="mh", uuid="h1")
+    again = _asst("Z review\nAGREE", mid="mh", uuid="h1", stop="end_turn" if copy == "exact" else None)
+    path = _jsonl(tmp_path, [
+        _user("u0", "Review Z"), old, _user("u1", "Review A"),
+        _asst("BLOCKING: auth missing\n", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume("r1"), again, _resume("r2"), _asst("tail\nDISAGREE", mid="m3", uuid="a3"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r4_a_history_copy_inside_a_piece_is_ignored(tmp_path, terminal):
+    # claude r4 (fix note): under the one replay rule, M1, RESUME, [copy], M3 is canonical.
+    path = _jsonl(tmp_path, [
+        _user("u0", "Review Z"), _asst("Z review\nAGREE", mid="mh", uuid="h1"), _user("u1", "Review A"),
+        _asst("HEAD", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst("Z review\nAGREE", mid="mh", uuid="h1"), _asst("tail\nDISAGREE", mid="m3", uuid="a3"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "HEAD\ntail\nDISAGREE"

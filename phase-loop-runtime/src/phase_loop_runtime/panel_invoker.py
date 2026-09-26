@@ -4010,7 +4010,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     uuid, and the latest version wins; any other state change, or a content change after the
     message stopped or across messages, fails closed.
 
-    The answer is the turn's last message id. It fails closed if any of its records shares a
+    The answer is the turn's last message id, or, when it was continued past the output cap
+    (agent-harness#1077), the canonical chain after the last genuine request -- capped message,
+    the CLI's resume prompt, ..., final message -- joined, provided its last line lies after a
+    newline inside the final piece. Any other cap or resume shape there fails closed.
+    Each message fails closed if any of its records shares a
     uuid, a message id or its content with history (earlier messages of the turn may share a
     history id: parallel tool calls continue one message across a tool_result), or if an
     identity-less answer repeats any other assistant record. A message id that leaves and
@@ -4099,33 +4103,41 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     # message, resume, ..., final message, with exact replays ignored and nothing else in
     # between. If the region holds a cap or a resume in any other shape, the answer cannot be
     # rebuilt soundly and fails closed. With no cap or resume there, extraction is unchanged.
+    # Assistant records that are exact replays or stale open copies of an earlier version,
+    # anywhere in the journal: the same two rules the turn loop below applies, so the region
+    # and the turn agree on which records are live.
+    replayed: set[int] = set()
+    replay_known: dict[str, tuple[str, tuple]] = {}
+    replay_versions: dict[str, set[tuple[str, tuple]]] = {}
+    for position, (payload, message) in enumerate(records):
+        uid = _uuid(payload)
+        if message.get("role") != "assistant" or uid is None:
+            continue
+        said, state = _said(message), _state(message)
+        if uid in replay_known and ((said, state) in replay_versions[uid] or (
+                said == replay_known[uid][0] and state == (True, None) and replay_known[uid][1][1] is not None)):
+            replayed.add(position)
+            continue
+        replay_known[uid] = (said, state)
+        replay_versions.setdefault(uid, set()).add((said, state))
     requests = [pos for pos in fresh_users
                 if records[pos][0].get("isMeta") is not True and not _is_tool_result(records[pos][1])]
     request = requests[-1] if requests else -1
+    fresh = set(fresh_users)
     events: list[tuple[str, object]] = []
-    region_known: dict[str, tuple[str, tuple]] = {}
-    region_versions: dict[str, set[tuple[str, tuple]]] = {}
+    capped_seen = False
     for position in range(request + 1, len(records)):
         payload, message = records[position]
         if message.get("role") == "user":
-            if position not in fresh_users:
+            if position not in fresh:
                 continue  # an exact replay
-            events.append(("resume", None) if _is_resume(payload, message) else ("user", None))
-            continue
-        uid, said, state = _uuid(payload), _said(message), _state(message)
-        if uid is not None and uid in region_known:
-            if (said, state) in region_versions[uid]:
-                continue
-            if said == region_known[uid][0] and state == (True, None) and region_known[uid][1][1] is not None:
-                continue
-        if uid is not None:
-            region_known[uid] = (said, state)
-            region_versions.setdefault(uid, set()).add((said, state))
-        events.append(("assistant", message.get("id")))
+            resume = _is_resume(payload, message)
+            capped_seen = capped_seen or resume
+            events.append(("resume", None) if resume else ("user", None))
+        elif position not in replayed:
+            capped_seen = capped_seen or message.get("stop_reason") == "max_tokens"
+            events.append(("assistant", message.get("id")))
     continued: list[object] = []  # the message ids of a canonical continued answer, in order
-    capped_seen = any(kind == "resume" for kind, _ in events) or any(
-        m.get("role") == "assistant" and m.get("stop_reason") == "max_tokens"
-        for _, m in records[request + 1:])
     if capped_seen:
         groups: list[list[tuple[str, object]]] = [[]]
         for kind, value in events:
@@ -4195,6 +4207,8 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     if len(sequence) != len(set(sequence)):
         return ""  # a message id left and returned within the turn
     final_id = sequence[-1]
+    if continued and continued != sequence:
+        return ""  # the turn must be exactly the continued pieces, in order
     chain: list[object] = list(continued) if continued else [final_id]
 
     def _message_text(message_id: object, *, final: bool) -> str | None:
@@ -4202,6 +4216,8 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
             group = [turn[-1]]  # identity-less messages are independent, never joined
         else:
             group = [(p, m) for p, m in turn if m.get("id") == message_id]
+        if not group:
+            return None
         if any(_uuid(p) in history_uuids or _said(m) in history_said
                or (m.get("id") is not None and m.get("id") in history_ids)
                for p, m in group):
@@ -4290,13 +4306,12 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         if text is None:
             return ""
         parts.append(text)
-    if len(parts) > 1:
-        # The model resumes mid-thought, so a cut can split a line. The verdict is read
-        # from the last line, which must lie wholly inside the final piece.
-        final_text = parts[-1].strip(" \t\r\n")
-        earlier = "\n".join(part for part in parts[:-1] if part)
-        if not final_text or ("\n" not in final_text and not earlier.endswith("\n")):
-            return ""
+    if len(parts) > 1 and len([line for line in parts[-1].split("\n") if line.strip()]) < 2:
+        # The model resumes mid-thought, so a cut can split a line, and the verdict is read
+        # from the last line. That line must start after a newline inside the final piece;
+        # a newline at the end of an earlier piece does not count, as the extractor may
+        # have inserted it.
+        return ""
     return "\n".join(part for part in parts if part).strip(" \t\r\n")
 
 
