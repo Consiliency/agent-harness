@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
+
+- When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit
+  hit…", `isMeta`) and continues under a new message id. That record no longer counts as a new
+  request: the extractor joins the capped message(s) with the continuation, instead of returning
+  only the tail and silently dropping a review's findings. Only the exact shape the CLI writes is
+  joined: after the last genuine request, capped message, resume, …, final message. A cap or
+  resume in any other shape there (another meta record, a tool call, a cap without a resume)
+  fails closed, and so does a join whose last line is not wholly inside the final piece (a cut
+  mid-verdict). Turns with no cap or resume are extracted exactly as before. On the president
+  route, a `max_tokens` stop is allowed only on a message the answer continues.
+
 ## [0.7.19] - 2026-09-26
 
 ### Closeout audit recognises the required skill handoff root (agent-harness#1084; PR agent-harness#1085)
