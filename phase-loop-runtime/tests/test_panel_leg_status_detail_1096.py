@@ -65,7 +65,9 @@ CONFORMING_REVIEW_ABOUT_LIMITS = (
     "You've hit your usage limit. Upgrade to Plus to continue using Codex",  # codex binary
     "You hit your spend cap set by the owner of your workspace.",          # codex binary
     "Increase your spend cap to continue.",                                # codex binary
-    "You've hit your limit · resets 3pm",                             # claude binary
+    # claude: the binary holds "You've hit your" and "resets" as separate fragments; this
+    # composed line is a SHAPE example, not a verbatim string.
+    "You've hit your limit \u00b7 resets 3pm",
     "You've hit your monthly spend limit.",                                # claude binary
     "You've hit your team's shared budget. Switch to another model",       # claude binary
     "You've reached your Fable limit.",                                    # claude binary
@@ -79,7 +81,6 @@ CONFORMING_REVIEW_ABOUT_LIMITS = (
     "AI: Out of credits",                                                  # agy binary (UI)
     "Quota exhausted",                                                     # agy binary (UI)
     "stop_reason: STOP_REASON_QUOTA_EXHAUSTED",                            # agy binary
-    '[{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}]',             # agy/gemini fixture
 ])
 def test_sourced_usage_limit_wording_is_recognised(line):
     assert pi._PROVIDER_USAGE_LIMIT_RE.search(line), line
@@ -93,6 +94,15 @@ def test_sourced_environment_failure_wording_is_recognised(line):
 def test_server_capacity_is_not_a_usage_limit():
     """MODEL_CAPACITY_EXHAUSTED is the provider's capacity, not the account's quota."""
     assert not pi._PROVIDER_USAGE_LIMIT_RE.search("MODEL_CAPACITY_EXHAUSTED")
+
+
+def test_a_recovered_per_minute_429_is_not_a_usage_limit():
+    """agy retries a per-minute 429 in-process and then answers; the transcript keeps the
+    RESOURCE_EXHAUSTED line (tests/test_phase_loop_launcher.py). Not an exhausted quota."""
+    line = '[{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}]'
+    assert not pi._PROVIDER_USAGE_LIMIT_RE.search(line)
+    body = "A substantive advisory answer that covers the question in full detail."
+    assert pi._classify_leg(0, body, line, mode="advisory") == "OK"
 
 
 # --- classifier + detail ------------------------------------------------------------
