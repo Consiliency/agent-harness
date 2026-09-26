@@ -409,6 +409,40 @@ class TestIgnoredOutputAudit(unittest.TestCase):
                             f"spoofed runner dir must block: {result}")
             self.assertTrue(result[UNKNOWN_IGNORED])
 
+    def test_the_required_skill_handoff_root_does_not_block(self):
+        """agent-harness#1084: the handoff the skills must write, at the exact root the
+        resolver returns, passes the audit end to end; the ignore entry is the one the
+        skills direct.
+        """
+        from phase_loop_runtime.skill_paths import resolve_handoff_root
+
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".gitignore").write_text(
+                ".phase-loop/\n.ruff_cache/\n__pycache__/\n.venv/\nscratch/\n.dev-skills/handoffs/\n")
+            root = resolve_handoff_root(repo)
+            self.assertEqual(root, repo.resolve() / ".dev-skills" / "handoffs")
+            (root / "codex-execute-phase").mkdir(parents=True)
+            (root / "codex-execute-phase" / "latest.md").write_text("from: codex-execute-phase\n")
+            result = audit_ignored_outputs(repo)
+            self.assertFalse(result["blocks"], result)
+            self.assertEqual(result[UNKNOWN_IGNORED], [])
+
+    def test_only_the_exact_handoff_root_is_recognised(self):
+        for path in (".dev-skills/handoffs/", ".dev-skills/handoffs/claude-plan-phase/latest.md"):
+            verdict = classify_ignored_output(path)
+            self.assertEqual(verdict.provenance, RUNNER_OWNED, path)
+            self.assertFalse(verdict.blocks, path)
+        for path in (
+            ".dev-skills/handoffs",           # a FILE of that name
+            ".dev-skills/",                   # the parent, not the handoff root
+            ".dev-skills/other/x.md",
+            "nested/.dev-skills/handoffs/x",  # the name elsewhere in the tree
+            " .dev-skills/handoffs/x",        # leading whitespace
+            ".dev-skills/handoffs2/x",
+        ):
+            self.assertEqual(classify_ignored_output(path).provenance, UNKNOWN_IGNORED, path)
+
     def test_an_unknown_ignored_output_makes_the_audit_block(self):
         with TemporaryDirectory() as tmp:
             repo = self._repo(tmp)
