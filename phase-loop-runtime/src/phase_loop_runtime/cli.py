@@ -1956,7 +1956,8 @@ def _advisory_review_authority(root: Path) -> Path:
     tracked file to prove the seat cannot see it. A standalone document has no repository, so
     an advisory run mints its authority against this scratch repository instead of the
     caller's: one tracked placeholder, no commit, and nothing of the caller's is staged or
-    exposed.
+    exposed. ``GIT_*`` is dropped for the two writes here; the HARDEN authority probes that
+    later read this path use the inherited environment, as they do for any repository.
     """
     authority = root / "authority"
     authority.mkdir(mode=0o700)
@@ -1969,7 +1970,7 @@ def _advisory_review_authority(root: Path) -> Path:
         "Private review authority for one advisory advisor-board run. It holds no reviewed content.\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "-C", str(authority), "add", "ADVISORY-AUTHORITY"], check=True, env=git_env,
+    subprocess.run(["git", "-C", str(authority), "add", "-f", "ADVISORY-AUTHORITY"], check=True, env=git_env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return authority.resolve()
 
