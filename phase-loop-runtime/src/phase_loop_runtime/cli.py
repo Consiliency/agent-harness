@@ -2341,7 +2341,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             # stale when the claude seat default moved off Fable (agent-harness#991).
             request = leg.needs_native_agent
             fill = f" → run a native {request.model} Agent to fill this seat" if request else ""
-            print(f"advisor-board:   [{leg.status}] {leg.seat_key}{fill}", file=sys.stderr)
+            # agent-harness#1096: say WHY the seat failed (a usage limit, an environment
+            # failure, the CLI's own error line), not only its status.
+            why = f" — {leg.detail}" if leg.detail else ""
+            print(f"advisor-board:   [{leg.status}] {leg.seat_key}{why}{fill}", file=sys.stderr)
     if not usable:
         print(
             f"advisor-board: only {usable_count} usable review leg(s) < floor {FLOOR_SEATS} "
