@@ -207,6 +207,22 @@ configuration below. Named presets and custom boards are library interfaces;
 they are not operator controls for this command. CLI configuration is follow-up
 [agent-harness#927](https://github.com/Consiliency/agent-harness/issues/927).
 
+**Advisory runs over a standalone document** (agent-harness#802):
+
+```sh
+phase-loop advisor-board research-bundle.md --advisory --json
+```
+
+`--advisory` reviews a research bundle, memo, roadmap or plan under the advisory contract
+(`advisory.v1`, `advisor_board/advisory_contract.py`) instead of the code-review brief. The
+bundle's own charter scopes the analysis, and the verdict protocol still takes precedence. It
+runs through the same HARDEN review operation and sandbox as the default board, against a private
+scratch authority with no staged tree, so it needs no git repository. It is **non-gating**:
+`--landing-tier`, `--native-president` and capture are refused with it. Its JSON adds
+`board: "advisory"`, `composed_board` (the composition it ran), `mode: "advisory"`,
+`gating: false` and `contract: {id, sha256}`. Seats run only on Linux. On any other host, the
+refusal is followed by a hint line.
+
 Runtime entry point: `panel_invoker.invoke_board(board, artifact, ...)`. Legacy
 callers keep using `panel_invoker.invoke_panel(...)` unchanged.
 

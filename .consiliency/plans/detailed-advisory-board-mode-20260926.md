@@ -50,7 +50,7 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
      by the default review preflight (and vice versa).
    - The governed gate, the runner and `run-train` do not read the flag.
 5. **Mac.** The sandbox stays Linux-only. The existing refusal lines are unchanged and each is
-   followed by a hint: on a non-Linux host, run the board on a Linux host (for example dev0); in a
+   followed by a hint: on a non-Linux host, run the board on a Linux host; in a
    directory that is not a git repository, run from the repository under review or pass
    `--advisory` for a standalone document.
 
