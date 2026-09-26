@@ -1934,6 +1934,9 @@ def _native_agent_request_json(leg: object) -> dict | None:
     return to_dict() if callable(to_dict) else None
 
 
+_ADVISORY_REFUSED_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
 def _advisory_labels(brief: str, *, composed_board: str | None = None) -> dict[str, object]:
     """The result labels of an ``--advisory`` run: advisory, non-gating, and which contract."""
     from .advisor_board.advisory_contract import ADVISORY_CONTRACT_ID
@@ -2012,6 +2015,14 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 print(f"advisor-board: --advisory is non-gating and cannot be combined with {flag}",
                       file=sys.stderr)
                 return 2
+        # The HARDEN authority probes inherit the environment, and these override ``git -C``:
+        # the scratch authority would silently resolve to the caller's repository.
+        inherited_git = sorted(k for k in _ADVISORY_REFUSED_GIT_ENV if os.environ.get(k))
+        if inherited_git:
+            print(f"advisor-board: --advisory cannot run with {', '.join(inherited_git)} set: it would "
+                  "redirect the private review authority to another repository; unset it and retry",
+                  file=sys.stderr)
+            return 2
         if _advisory_root is None:
             with tempfile.TemporaryDirectory(prefix="advisor-board-advisory-") as advisory_root:
                 return _advisor_board_command(args=args, _advisory_root=Path(advisory_root))

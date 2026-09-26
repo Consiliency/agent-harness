@@ -44,11 +44,18 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
    - `--advisory` with `--landing-tier` or `--native-president` is a usage error (exit 2) before
      any probe, so an advisory run can never carry a president ruling or a landing policy.
    - `--advisory` with agy canary capture is refused (capture is a governed exact-four run).
+   - `--advisory` with `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` or `GIT_INDEX_FILE` set is
+     refused: the HARDEN probes inherit the environment and would resolve the scratch authority to
+     another repository.
    - The JSON carries `"board": "advisory"`, `"mode": "advisory"`, `"gating": false` and the
      contract id and digest. Text output says "advisory, non-gating". The default JSON is unchanged.
    - Native fills bind the brief digest, so a fill emitted under the advisory contract is refused
      by the default review preflight (and vice versa).
    - The governed gate, the runner and `run-train` do not read the flag.
+   - Scope of that guarantee: it holds at the CLI surface. A library caller of `invoke_board`
+     can already pass any `brief_ref` together with a `landing_tier`, and a landing record binds
+     the brief digest it ran with. A runtime refusal of a landing whose brief is the advisory
+     contract is a follow-up proposal, not part of this change.
 5. **Mac.** The sandbox stays Linux-only. The existing refusal lines are unchanged and each is
    followed by a hint: on a non-Linux host, run the board on a Linux host; in a
    directory that is not a git repository, run from the repository under review or pass
@@ -72,13 +79,16 @@ HARDEN review authority. On macOS it refuses with a bare "requires Linux".
 
 ## Tests
 
-`phase-loop-runtime/tests/test_advisor_board_advisory_mode.py`:
+`phase-loop-runtime/tests/test_advisor_board_advisory_cli_802.py` (the existing
+`test_advisor_board_advisory_mode.py` covers the #107 panel advisory mode and is unchanged):
 
 - flag parsing;
 - default path unchanged (compose called with no kwargs, `brief_ref` absent, review digest,
   JSON key set);
-- every seat's brokered prompt carries the advisory contract as its authoritative frame;
-- `--advisory` with a landing tier or native president is refused before any probe;
+- the brokered seat prompt (one staged brief per board) carries the advisory contract as its
+  authoritative frame, and the code-review brief is absent;
+- `--advisory` with a landing tier, native president, capture or an inherited `GIT_DIR`-class
+  variable is refused before any probe;
 - an advisory native fill is refused by the review preflight;
 - a no-repo run mints a real authorization against a scratch authority with no staged tree, and
   that authorization revalidates.
