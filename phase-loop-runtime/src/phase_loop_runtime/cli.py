@@ -2022,11 +2022,15 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             # any GIT_* variable: every one is removed for the run and restored afterwards.
             # HOME, XDG_CONFIG_HOME and PATH still select git's global config and binary, as
             # they do for every board run.
-            removed_git = {name: os.environ.pop(name) for name in sorted(os.environ) if name.startswith("GIT_")}
-            if removed_git:
-                print(f"advisor-board: --advisory ignores the inherited {', '.join(removed_git)} for this run "
-                      "(it never uses the caller's repository)", file=sys.stderr)
+            removed_git: dict[str, str] = {}
             try:
+                # Pop inside the try: the environment is restored even if the note's write raises.
+                for name in sorted(os.environ):
+                    if name.startswith("GIT_"):
+                        removed_git[name] = os.environ.pop(name)
+                if removed_git:
+                    print(f"advisor-board: --advisory ignores the inherited {', '.join(removed_git)} for this run "
+                          "(it never uses the caller's repository)", file=sys.stderr)
                 with tempfile.TemporaryDirectory(prefix="advisor-board-advisory-") as advisory_root:
                     return _advisor_board_command(args=args, _advisory_root=Path(advisory_root))
             finally:

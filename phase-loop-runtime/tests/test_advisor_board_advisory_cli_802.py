@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 from hashlib import sha256
 from pathlib import Path
@@ -358,6 +359,27 @@ def test_advisory_runs_under_ordinary_shell_and_ci_git_variables(monkeypatch, bu
     assert rc == 0, err
     _assert_git_free_run(run, err, list(_ORDINARY_GIT_ENV))
     assert {k: os.environ[k] for k in _ORDINARY_GIT_ENV} == _ORDINARY_GIT_ENV
+
+
+@pytest.mark.parametrize("error", [ValueError("I/O operation on closed file."), BrokenPipeError(32, "Broken pipe")],
+                         ids=["closed-stderr", "broken-pipe"])
+def test_git_variables_are_restored_when_the_note_cannot_be_written(monkeypatch, bundle, outside_git, error):
+    """An in-process caller keeps its GIT_* even when writing the note raises; the error
+    propagates exactly as before and nothing is composed."""
+    monkeypatch.setenv("GIT_DIR", str(_REPO_ROOT / ".git"))
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "0")
+
+    class _FailingStderr(io.StringIO):
+        def write(self, _text):
+            raise error
+
+    run = _Run(monkeypatch)
+    monkeypatch.setattr(sys, "stderr", _FailingStderr())
+    with pytest.raises(type(error)):
+        cli.main(["advisor-board", str(bundle), "--advisory", "--json"])
+    assert os.environ["GIT_DIR"] == str(_REPO_ROOT / ".git")
+    assert os.environ["GIT_OPTIONAL_LOCKS"] == "0"
+    assert run.compose_calls == [] and run.invoke_calls == []
 
 
 def test_advisory_without_git_variables_prints_no_note(monkeypatch, bundle, outside_git):
