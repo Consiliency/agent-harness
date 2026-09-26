@@ -200,18 +200,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   found, not a full sentence, and a recovered per-minute `RESOURCE_EXHAUSTED` 429 is
   deliberately not treated as a usage limit.
 - A seat whose output is an environment failure (codex's bubblewrap socket-directory error,
-  Claude Code's "Temp directory … is owned by uid …" refusal) is never `OK`. It is `DEGRADED`
-  with detail `provider_environment_failure: …`. Its text is kept, so the governed gate treats
+  Claude Code's "Temp directory … is owned by uid …" refusal) is never `OK`, at any length.
+  This applies when every substantive line of the body is a line the CLI printed, or a bare
+  verdict. It is `DEGRADED`, on every route including the Claude TUI seat, with detail
+  `provider_environment_failure: …`. Its text is kept, so the governed gate treats
   it as a non-conforming review and blocks, rather than passing it.
-- Every failed leg now carries a short, credential-redacted excerpt of the CLI's last error
-  line in `detail`. This includes brokered codex and grok seats, which used to drop it, and
+- Every failed leg now carries a credential-redacted, control-stripped excerpt of the CLI's
+  last error line in `detail`. The whole stored string, label included, is capped at 1000
+  characters on every route. This includes brokered codex and grok seats, which used to drop it, and
   the Claude TUI seat. The excerpt comes from the end of the log, not the start, which for
   codex is the echoed prompt. `advisor-board` prints the detail on its stderr shortfall lines.
   The Claude PTY tail kept for diagnostics is now 600 characters, up from 200, so the
   CLI's refusal fits in it.
-- A conforming review that only discusses limits or auth keeps `OK`. Signatures are matched
-  only in the log tail, or in a body short enough to be the failure itself (500 characters or
-  fewer).
+- A conforming review that only discusses limits, auth or these failures keeps `OK`, as does
+  an advisory that gives advice about rate limits. Signatures are the sourced sentences only,
+  and count only at the start of a line (optionally after `ERROR:`). They are matched in the
+  last 20 lines of the log, or in a body that is itself the failure. A quote in backticks, in
+  a fence, mid-sentence, or next to the reviewer's own prose does not count.
 
 ## [0.7.19] - 2026-09-26
 

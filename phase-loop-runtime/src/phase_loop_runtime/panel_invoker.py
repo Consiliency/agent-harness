@@ -1838,71 +1838,95 @@ _TOOL_DENIED_RE = re.compile(
 # seat died with "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/
 # settings/usage to purchase more credits or try again at Oct 1st, 2026 1:42 PM." and
 # surfaced as a bare ERROR with no detail: `_AUTH_SIGNATURE`'s "usage limit (reached|
-# exceeded)" does not match that wording. Every phrase below is copied from the CLI's own
-# binary strings (codex 0.157.1, Claude Code 2.1.x, grok-native, agy) or the measured
-# banner, never guessed. agy has no sourced print-mode SENTENCE, only its status/UI tokens
-# (`STOP_REASON_QUOTA_EXHAUSTED`, "Quota exhausted", "Out of credits"). Deliberately NOT
+# exceeded)" does not match that wording.
+#
+# Each alternative is a SENTENCE the CLI itself prints, copied from its binary strings (codex
+# 0.157.1, Claude Code 2.1.x, grok-native, agy) or the measured banner — never a paraphrase,
+# and never a generic phrase ("if you hit the rate limit, back off" is advice, not a banner).
+# agy has no sourced print-mode sentence, only its status/UI tokens. Deliberately NOT
 # `MODEL_CAPACITY_EXHAUSTED` (server capacity, not the account's quota) and NOT a bare
 # `RESOURCE_EXHAUSTED`: that is also agy's per-minute 429, which it retries in-process and
-# recovers from (tests/test_phase_loop_launcher.py has exactly that transcript). Only ever scanned over a log TAIL or a failure-shaped body (see
-# `_output_is_provider_failure`), never a whole transcript.
-_PROVIDER_USAGE_LIMIT_RE = re.compile(
-    # codex "You've hit your usage limit[. …]"; claude "You've hit your (monthly spend)
-    # limit" / "team's shared budget"; grok "You hit your free usage limit." / "weekly limit."
-    # / "You've hit the rate limit for your plan."
-    r"\byou(?:['’]ve| have)? hit (?:your|the) [\w'’ -]{0,40}?"
-    r"(?:limit|budget|spend cap)\b|"
-    # claude "You've reached your <model> limit."; grok "…reached your free Grok Build usage limit"
-    r"\byou(?:['’]ve| have) reached your [\w'’ -]{0,40}?limit\b|"
-    # codex spend-cap variants; claude "Usage limit reached" / "You're out of usage credits";
-    # grok "usage balance exhausted" / "run out of credits"; agy "Out of credits"
-    r"\bincrease your spend cap to continue\b|\busage limit reached\b|"
-    r"\byou(?:['’]re| are) out of usage credits\b|\busage balance exhausted\b|"
-    r"\bout of credits\b|"
-    # agy status tokens (see above)
-    r"\bquota exhausted\b|\bSTOP_REASON_QUOTA_EXHAUSTED\b",
-    re.IGNORECASE,
-)
-# The provider's own reset time when it prints one: codex " or try again at %b %-d, %Y
-# %-I:%M %p" / " Try again at "; claude "until your limit resets at …" / "resets at …".
-_PROVIDER_USAGE_RESET_RE = re.compile(
-    r"(?:try again at|resets at)\s+(?P<when>[^\n]{1,60}?)\s*\.?\s*$",
-    re.IGNORECASE | re.MULTILINE,
+# recovers from (tests/test_phase_loop_launcher.py has exactly that transcript).
+_PROVIDER_USAGE_LIMIT_SENTENCES = (
+    # codex
+    r"You['’]ve hit your usage limit\b",
+    r"You hit your spend cap\b",
+    # Claude Code
+    r"You['’]ve hit your (?:limit|monthly spend limit|team['’]s shared budget|"
+    r"channel['’]s monthly spend limit)\b",
+    r"You['’]ve reached your [\w.-]+ limit\.",
+    r"Usage limit reached\b",
+    r"You['’]re out of usage credits\b",
+    # grok
+    r"You hit your (?:free usage|weekly) limit\.",
+    r"You['’]ve hit the rate limit for your plan\.",
+    r"You['’]ve reached your free Grok Build usage limit\b",
+    # agy (UI / status tokens)
+    r"(?:AI: )?Out of credits\b",
+    r"Quota exhausted\b",
 )
 # agent-harness#1098 item 2: an ENVIRONMENT / STARTUP failure the CLI printed instead of a
 # review. On dev0 a codex seat returned OK with the text "error building bubblewrap command:
 # app-server socket directory must be a user-owned directory with mode 0700", and the claude
 # TUI refused "Temp directory /tmp/claude-0 is owned by uid 65534, expected 0. Refusing to
 # use it". Sourced from the codex / Claude Code binaries; nothing is sourced for grok or agy.
-_PROVIDER_ENV_FAILURE_RE = re.compile(
-    r"\berror building bubblewrap command\b|"
-    r"\bapp-server socket directory must be a user-owned directory\b|"
-    r"\btemp directory \S+ is owned by uid \d+, expected \d+|"
-    r"\btemp directory \S+ is not (?:a directory|readable)\b.*?refusing to use it|"
-    r"\brefusing to use daemon dir\b",
-    re.IGNORECASE,
+_PROVIDER_ENV_FAILURE_SENTENCES = (
+    # codex
+    r"error building bubblewrap command\b",
+    r"app-server socket directory must be a user-owned directory\b",
+    # Claude Code: the three temp-dir refusals it throws before starting.
+    r"(?:Temp )?directory \S+ is owned by uid \d+, expected \d+\. Refusing to use it",
+    r"(?:Temp )?directory \S+ is not a directory \(may be an attacker-planted symlink\)\. "
+    r"Refusing to use it",
+    r"(?:Temp )?directory \S+ is not readable \(.*?\)\. Refusing to use it",
 )
-# A body this short that carries one of the signatures above is the failure itself, not a
-# review ABOUT it. A real review quoting the phrase (routine: this panel reviews the very
-# code that matches it) is far longer and keeps its conforming-verdict OK.
-_PROVIDER_FAILURE_BODY_MAX_CHARS = 500
+# A signature counts only where the CLI puts it: at the START of a line, optionally after an
+# `ERROR:` tag or a TUI glyph. Never mid-sentence, in backticks, or in a `>` quote — that is
+# a review QUOTING it (routine: this panel reviews the code that matches these strings).
+_PROVIDER_LINE_PREFIX = r"^[ \t│┃•●■⎿]*(?:(?:ERROR|Error|error)\s*:\s*)?"
+_PROVIDER_USAGE_LIMIT_RE = re.compile(
+    _PROVIDER_LINE_PREFIX + "(?:" + "|".join(_PROVIDER_USAGE_LIMIT_SENTENCES) + ")"
+    r"|\bSTOP_REASON_QUOTA_EXHAUSTED\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PROVIDER_ENV_FAILURE_RE = re.compile(
+    _PROVIDER_LINE_PREFIX + "(?:" + "|".join(_PROVIDER_ENV_FAILURE_SENTENCES) + ")",
+    re.IGNORECASE | re.MULTILINE,
+)
+# The same sentences ANYWHERE: only for a Claude PTY tail, which `_sanitized_pty_tail`
+# collapses to one line (so no line starts survive) and which is only ever read for a leg
+# that already failed.
+_PROVIDER_USAGE_LIMIT_ANY_RE = re.compile(
+    "|".join(_PROVIDER_USAGE_LIMIT_SENTENCES) + r"|\bSTOP_REASON_QUOTA_EXHAUSTED\b", re.IGNORECASE
+)
+_PROVIDER_ENV_FAILURE_ANY_RE = re.compile("|".join(_PROVIDER_ENV_FAILURE_SENTENCES), re.IGNORECASE)
+# The provider's own reset time when it prints one: codex " or try again at %b %-d, %Y
+# %-I:%M %p" / " Try again at "; claude "until your limit resets at …" / "resets at …".
+_PROVIDER_USAGE_RESET_RE = re.compile(
+    r"(?:try again at|resets at)\s+(?P<when>[^\n]{1,60}?)\s*\.?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 # Only the END of a log is the CLI's own error: codex's `log_text` is stdout+stderr with the
 # whole prompt echoed FIRST, so a bundle that merely contains a signature must not count.
 _PROVIDER_FAILURE_LOG_TAIL_LINES = 20
-_LEG_DETAIL_MAX_CHARS = 400
+# ONE bound on the final stored `detail` (label + excerpt), every route.
+_LEG_DETAIL_MAX_CHARS = 1000
 _LEG_ERROR_LINE_RE = re.compile(
     r"\berror\b|\bfatal\b|\brefus|\bdenied\b|\blimit\b|\bexhausted\b|\bfailed\b|"
     r"\bexception\b|\btraceback\b|\bpanic",
     re.IGNORECASE,
 )
+_LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # Credential shapes `runner._redacted_stderr_excerpt` (key=value only) does not cover.
 _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer <redacted>"),
-    (re.compile(r"\b(?:sk-(?:ant-)?|ghp_|gho_|ghs_|github_pat_|xox[abpors]-|AIza)[A-Za-z0-9_-]{8,}"),
-     "<redacted>"),
+    (re.compile(
+        r"\b(?:sk-(?:ant-)?|xai-|gh[pousr]_|github_pat_|xox[abceoprs]-|AIza|ya29\.|AKIA)"
+        r"[A-Za-z0-9_.-]{8,}"
+    ), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted>"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
-    (re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|/root(?=/|\b)"), "~"),
+    (re.compile(r"(?:/var)?/home/[^/\s]+|/Users/[^/\s]+|/root(?=/|\b)"), "~"),
 )
 
 
@@ -1911,25 +1935,46 @@ def _log_tail(text: str, lines: int = _PROVIDER_FAILURE_LOG_TAIL_LINES) -> str:
     return "\n".join(kept[-lines:])
 
 
+def _is_bare_verdict_line(line: str) -> bool:
+    s = _LEADING_MARKUP_RE.sub("", line.strip()).strip().strip("*`").strip()
+    if s.upper().startswith("VERDICT:"):
+        s = s[len("VERDICT:"):].strip()
+    match = _VERDICT_RE.match(s)
+    return bool(match) and not s[match.end():].strip(" .—-:")
+
+
+_LEADING_VERDICT_RE = re.compile(
+    r"^\s*(?:VERDICT:\s*)?(?:PARTIALLY AGREE|DISAGREE|AGREE)\s*[—–:-]\s*", re.IGNORECASE
+)
+
+
 def _output_is_provider_failure(body: str, pattern: re.Pattern[str]) -> bool:
-    """True iff ``body`` IS a provider failure message: too short to be a review, and
-    carrying ``pattern``. Deliberately NOT "its first line carries it": a long review of
-    this very code may open by quoting the string, and that must stay a review."""
-    stripped = (body or "").strip()
-    return len(stripped) <= _PROVIDER_FAILURE_BODY_MAX_CHARS and bool(pattern.search(stripped))
+    """True iff ``body`` IS a provider failure message, whatever its length: every
+    substantive line is either a line the CLI printed — ``pattern``
+    anchored at its start, optionally after ``ERROR:`` or a leading ``VERDICT —`` — or a bare
+    verdict, and at least one is the former. Any line of the reviewer's own prose (a review
+    that quotes the string, mid-sentence, in backticks, or on a line of its own beside other
+    findings, or in a ``` fence, whose marker lines are themselves not failure lines) makes
+    it a review, which keeps its conforming-verdict OK."""
+    lines = [line for line in (body or "").splitlines() if line.strip()]
+    hits = 0
+    for line in lines:
+        if pattern.match(_LEADING_VERDICT_RE.sub("", line)):
+            hits += 1
+        elif not _is_bare_verdict_line(line):
+            return False
+    return hits > 0
 
 
-def _provider_failure_kind(review_text: str, log_text: str) -> str | None:
+def _provider_failure_kind(review_text: str, log_text: str, *, anchored: bool = True) -> str | None:
     """The typed provider failure a leg's output shows, or None. Never consulted for a
     leg that classified OK."""
+    usage = _PROVIDER_USAGE_LIMIT_RE if anchored else _PROVIDER_USAGE_LIMIT_ANY_RE
+    env = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
     tail = _log_tail(log_text)
-    if _PROVIDER_USAGE_LIMIT_RE.search(tail) or _output_is_provider_failure(
-        review_text, _PROVIDER_USAGE_LIMIT_RE
-    ):
+    if usage.search(tail) or _output_is_provider_failure(review_text, _PROVIDER_USAGE_LIMIT_RE):
         return "provider_usage_limit"
-    if _PROVIDER_ENV_FAILURE_RE.search(tail) or _output_is_provider_failure(
-        review_text, _PROVIDER_ENV_FAILURE_RE
-    ):
+    if env.search(tail) or _output_is_provider_failure(review_text, _PROVIDER_ENV_FAILURE_RE):
         return "provider_environment_failure"
     return None
 
@@ -1938,7 +1983,8 @@ def _redact_leg_detail(line: str) -> str:
     from .redaction import _FORBIDDEN_METADATA_PATTERNS
     from .runner import _redacted_stderr_excerpt  # lazy: avoid a panel_invoker<->runner cycle
 
-    redacted = _redacted_stderr_excerpt(line, max_chars=len(line) + 8)
+    redacted = _LEG_DETAIL_CTRL_RE.sub(" ", _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", line)))
+    redacted = _redacted_stderr_excerpt(redacted, max_chars=len(redacted) + 8)
     for pattern, replacement in _LEG_DETAIL_SECRET_RES:
         redacted = pattern.sub(replacement, redacted)
     # `detail` reaches governed-review finding reasons; keep it clear of the closeout
@@ -1948,44 +1994,51 @@ def _redact_leg_detail(line: str) -> str:
     return redacted
 
 
-def _leg_failure_excerpt(text: str, max_chars: int = _LEG_DETAIL_MAX_CHARS) -> str:
-    """A bounded, credential-redacted excerpt of a failed CLI's FINAL error line(s).
+def _finalize_leg_detail(detail: str | None) -> str | None:
+    """The ONE exit for a CLI-derived ``detail``: redacted (again — idempotent), control-
+    stripped, and bounded as a whole, label included."""
+    if not detail:
+        return None
+    redacted = _redact_leg_detail(detail)
+    if len(redacted) > _LEG_DETAIL_MAX_CHARS:
+        redacted = redacted[: _LEG_DETAIL_MAX_CHARS - 3] + "..."
+    return redacted or None
+
+
+def _leg_failure_excerpt(text: str) -> str:
+    """A credential-redacted excerpt of a failed CLI's FINAL error line.
 
     A single-line harness diagnostic ("timeout after 900s", the TOOL-DENIAL message) is
-    kept whole up to the historical 2000-char bound; a multi-line CLI log contributes only
-    the last line that looks like an error (else its last line) — never the head, which for
-    codex is the echoed prompt."""
-    text = _ANSI_OSC_RE.sub("", text or "")
-    text = _ANSI_CSI_RE.sub("", text)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    kept whole (the final bound applies); a multi-line CLI log contributes only the last
+    line OF ITS TAIL that looks like an error (else its last line) — never the head, which
+    for codex is the echoed prompt."""
+    lines = [line.strip() for line in _log_tail(text).splitlines() if line.strip()]
     if not lines:
         return ""
-    if len(lines) == 1:
-        return _redact_leg_detail(lines[0])[:2000]
-    chosen = next(
+    chosen = lines[0] if len(lines) == 1 else next(
         (line for line in reversed(lines) if _LEG_ERROR_LINE_RE.search(line)), lines[-1]
     )
-    redacted = _redact_leg_detail(chosen)
-    return redacted if len(redacted) <= max_chars else redacted[: max_chars - 3] + "..."
+    return _redact_leg_detail(chosen)
 
 
 def _leg_failure_detail(
-    status: str, rc: int, review_text: str, log_text: str
+    status: str, rc: int, review_text: str, log_text: str, *, anchored: bool = True
 ) -> str | None:
     """``PanelLegResult.detail`` for a failed leg: the typed provider failure (if any) plus
     the CLI's own final error line. None for an OK leg, and for an rc==0 non-conforming
     review with nothing typed to say (its text already carries the evidence)."""
     if status == "OK":
         return None
-    kind = _provider_failure_kind(review_text, log_text)
+    kind = _provider_failure_kind(review_text, log_text, anchored=anchored)
     if kind is None and rc == 0 and str(review_text).strip():
         return None
     source = log_text if str(log_text).strip() else review_text
     if kind is not None:
         # Excerpt the line that actually carries the signature, not a later unrelated one.
-        pattern = (
-            _PROVIDER_USAGE_LIMIT_RE if kind == "provider_usage_limit" else _PROVIDER_ENV_FAILURE_RE
-        )
+        if kind == "provider_usage_limit":
+            pattern = _PROVIDER_USAGE_LIMIT_RE if anchored else _PROVIDER_USAGE_LIMIT_ANY_RE
+        else:
+            pattern = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
         for candidate in (_log_tail(log_text), str(review_text)):
             hits = [line for line in candidate.splitlines() if pattern.search(line)]
             if hits:
@@ -1993,14 +2046,14 @@ def _leg_failure_detail(
                 break
     excerpt = _leg_failure_excerpt(str(source))
     if kind is None:
-        return excerpt or None
+        return _finalize_leg_detail(excerpt)
     reset = None
     if kind == "provider_usage_limit":
-        match = _PROVIDER_USAGE_RESET_RE.search(str(source))
+        match = _PROVIDER_USAGE_RESET_RE.search(_redact_leg_detail(str(source)))
         if match:
-            reset = _redact_leg_detail(match.group("when").strip())
+            reset = match.group("when").strip()
     label = f"{kind} (resets {reset})" if reset else kind
-    return f"{label}: {excerpt}" if excerpt else label
+    return _finalize_leg_detail(f"{label}: {excerpt}" if excerpt else label)
 # The gemini/agy leg runs HEADLESS, where a tool permission cannot be prompted for and is
 # auto-denied — the CLI then produces NO output at all and exits rc==0, so the whole leg
 # silently vanishes. (That is how the gemini seat stayed dead for 6 of 11 rounds of the
@@ -3637,6 +3690,7 @@ _GEMINI_BROKER_DETAILS = frozenset({
     # agent-harness#1098: an otherwise-accepted response whose body IS a provider
     # environment failure (``_classify_leg`` fails it closed before the early-OK).
     "Gemini broker response is a provider environment failure",
+    "Gemini broker response is a provider usage limit",
 })
 
 
@@ -4209,9 +4263,11 @@ def _classify_leg(
     ``DEGRADED`` (the reason rides ``detail``, see ``_leg_failure_detail``). Both are scanned
     over the log TAIL only and AFTER the review-mode early-OK, so the invariant above holds
     for them too: a conforming review whose prose discusses a usage limit stays ``OK``.
-    The single exception is a body that IS an environment failure (a body too short to be
-    a review that carries the CLI's own env-failure string): the CLI could
-    not run, so any verdict it printed is not a review. It is checked BEFORE the early-OK and
+    The single exception is a body that IS an environment failure — every substantive line
+    is a line the CLI printed (its sourced env-failure sentence at the line's start) or a
+    bare verdict, at any length (``_output_is_provider_failure``): the CLI could not run,
+    so any verdict it printed is not a review. A review that QUOTES the string (mid-
+    sentence, in backticks, in a fence, or beside its own findings) is not that. It is checked BEFORE the early-OK and
     fails CLOSED — the text is kept, so the governed gate reads it as non-conforming (BLOCK),
     never as a clean review and never as an empty-text WARN. In advisory and president mode
     (both keep the auth-scan-first order) a body that IS a usage banner is likewise not a
@@ -6837,13 +6893,20 @@ def _exec_claude_tui_leg(
     # caller-owned sink so this function's (status, text) shape stays unchanged. The
     # tail is where the CLI's own refusal lands (e.g. the shared-/tmp "Temp directory …
     # is owned by uid …" that surfaced only as ``claude_tui_pty_eof_no_output``).
+    # The PTY tail is one collapsed line, so its signatures are matched unanchored; it is
+    # only read for a leg that already failed. A typed provider failure is DEGRADED (as on
+    # every other route); any other status is left as it was.
     if failure_detail_sink is not None and status != "OK":
-        tail_detail = _leg_failure_detail(status, rc if rc else 1, review_text, pty_tail)
-        if tail_detail:
-            failure_detail_sink.append(
-                tail_detail if tail_detail.startswith("provider_") or not log_text
-                else f"{log_text}: {tail_detail}"
-            )
+        tail_detail = _leg_failure_detail(
+            status, rc if rc else 1, review_text, pty_tail, anchored=False
+        )
+        if tail_detail and tail_detail.startswith("provider_"):
+            status = "DEGRADED"
+            failure_detail_sink.append(tail_detail)
+        elif tail_detail:
+            combined = _finalize_leg_detail(f"{log_text}: {tail_detail}" if log_text else tail_detail)
+            if combined:
+                failure_detail_sink.append(combined)
     return status, text
 
 
@@ -7533,7 +7596,8 @@ def _exec_leg(
                     "a path OUTSIDE the staged review dir (the leg's only --add-dir), "
                     "sometimes `command`. See the CLI's own message below for which. "
                     # One line, so the leg-detail excerpt keeps this explanation whole.
-                    f"CLI said: {' '.join(log_text.split())[:400]}"
+                    # Redacted BEFORE the cut, so a cut never strands a partial secret.
+                    f"CLI said: {_redact_leg_detail(' '.join(log_text.split()))[:400]}"
                 )
             soft_empty = rc == 0 and not review_text.strip()
             # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —
@@ -8098,6 +8162,8 @@ def _default_spawn(
                     if leg == "gemini" and status != "OK":
                         if not log and _output_is_provider_failure(text, _PROVIDER_ENV_FAILURE_RE):
                             log = "Gemini broker response is a provider environment failure"
+                        elif not log and _output_is_provider_failure(text, _PROVIDER_USAGE_LIMIT_RE):
+                            log = "Gemini broker response is a provider usage limit"
                         if log not in _GEMINI_BROKER_DETAILS:
                             raise ValueError("gemini_broker_diagnostic_invalid")
                         gemini_detail = log

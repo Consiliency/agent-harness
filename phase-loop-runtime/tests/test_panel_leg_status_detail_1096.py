@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import sys
 import textwrap
 import time
@@ -64,7 +65,6 @@ CONFORMING_REVIEW_ABOUT_LIMITS = (
     CODEX_USAGE_BANNER,                                                   # measured, codex
     "You've hit your usage limit. Upgrade to Plus to continue using Codex",  # codex binary
     "You hit your spend cap set by the owner of your workspace.",          # codex binary
-    "Increase your spend cap to continue.",                                # codex binary
     # claude: the binary holds "You've hit your" and "resets" as separate fragments; this
     # composed line is a SHAPE example, not a verbatim string.
     "You've hit your limit \u00b7 resets 3pm",
@@ -77,7 +77,6 @@ CONFORMING_REVIEW_ABOUT_LIMITS = (
     "You hit your weekly limit.",                                          # grok binary
     "You've hit the rate limit for your plan. Upgrade your account or try again later.",
     "You've reached your free Grok Build usage limit for now.",            # grok binary
-    "usage balance exhausted",                                             # grok binary
     "AI: Out of credits",                                                  # agy binary (UI)
     "Quota exhausted",                                                     # agy binary (UI)
     "stop_reason: STOP_REASON_QUOTA_EXHAUSTED",                            # agy binary
@@ -135,7 +134,6 @@ def test_long_conforming_review_quoting_an_env_failure_stays_ok():
         + f"Quoting the fixture: `{CODEX_BWRAP_FAILURE}` is matched only as a whole body.\n"
         + "AGREE"
     )
-    assert len(body) > pi._PROVIDER_FAILURE_BODY_MAX_CHARS
     assert pi._classify_leg(0, body, body, mode="review") == "OK"
 
 
@@ -145,12 +143,12 @@ def test_long_conforming_review_that_OPENS_by_quoting_an_env_failure_stays_ok():
         f"The `{CODEX_BWRAP_FAILURE}` path is now typed.\n"
         + "Detailed finding about the classifier ordering. " * 15 + "\nAGREE"
     )
-    assert len(body) > pi._PROVIDER_FAILURE_BODY_MAX_CHARS
     assert pi._classify_leg(0, body, body, mode="review") == "OK"
 
 
 def test_gemini_broker_env_failure_detail_is_in_the_fixed_vocabulary():
     assert "Gemini broker response is a provider environment failure" in pi._GEMINI_BROKER_DETAILS
+    assert "Gemini broker response is a provider usage limit" in pi._GEMINI_BROKER_DETAILS
 
 
 @pytest.mark.parametrize("body", [
@@ -165,6 +163,59 @@ def test_environment_failure_output_with_rc0_is_never_ok(body, mode):
     assert status != "OK", f"an environment failure was reported as a review: {body!r}"
     detail = pi._leg_failure_detail(status, 0, body, "")
     assert detail is not None and detail.startswith("provider_environment_failure: ")
+
+
+# --- board round 1 (agent-harness#1102): the length rule failed both directions ---------
+
+def test_short_review_quoting_env_string_in_backticks_stays_ok():
+    body = "The `error building bubblewrap command` diagnostic is handled correctly.\n\nAGREE"
+    for mode in ("review", "advisory"):
+        assert pi._classify_leg(0, body, body, mode=mode) == "OK", mode
+
+
+def test_short_review_quoting_env_line_beside_its_own_prose_stays_ok():
+    body = (
+        "The bubblewrap failure is handled.\n\n" + CODEX_BWRAP_FAILURE + "\n\nAGREE"
+    )
+    assert pi._classify_leg(0, body, "", mode="review") == "OK"
+
+
+@pytest.mark.parametrize("body", [
+    "Handled:\n```\n" + CODEX_BWRAP_FAILURE + "\n```\nAGREE",
+    # nothing but a fenced quote and a verdict: a fence is QUOTED text, never the CLI's line
+    "```\n" + CODEX_BWRAP_FAILURE + "\n```\n\nAGREE",
+])
+def test_short_review_quoting_env_line_in_a_fence_stays_ok(body):
+    assert pi._classify_leg(0, body, "", mode="review") == "OK"
+
+
+@pytest.mark.parametrize("mode,suffix", [("advisory", ""), ("review", "\n\nAGREE")])
+def test_long_env_failure_only_body_is_degraded(mode, suffix):
+    body = "\n".join([CODEX_BWRAP_FAILURE] * 5) + suffix
+    assert len(body) > 500
+    assert pi._classify_leg(0, body, "", mode=mode) == "DEGRADED"
+    detail = pi._leg_failure_detail("DEGRADED", 0, body, "")
+    assert detail.startswith("provider_environment_failure: ")
+
+
+@pytest.mark.parametrize("mode", ["advisory", "review"])
+def test_long_temp_dir_refusal_is_degraded(mode):
+    body = (
+        "Temp directory /" + "p" * 431 + " is owned by uid 65534, expected 0. Refusing to use it"
+    ) + ("\n\nAGREE" if mode == "review" else "")
+    assert len(body) > 500
+    assert pi._classify_leg(0, body, "", mode=mode) == "DEGRADED"
+
+
+@pytest.mark.parametrize("body", [
+    "Batch the calls; if you hit the rate limit, back off and retry.",
+    # advice that STARTS a line with the generic shape but is not a sourced sentence
+    "You hit the context limit quickly with this design; trim the prompt and retry.",
+])
+@pytest.mark.parametrize("echo", [False, True])
+def test_advisory_advice_about_limits_is_not_a_usage_limit(body, echo):
+    log = f"user\nprompt\ncodex\n{body}" if echo else ""
+    assert pi._classify_leg(0, body, log, mode="advisory") == "OK"
 
 
 def test_advisory_usage_banner_body_is_not_a_substantive_advisory():
@@ -195,6 +246,28 @@ def test_signature_only_in_the_echoed_prompt_head_does_not_type_the_failure():
     assert detail == "ERROR: stream disconnected before completion: connection reset"
 
 
+def test_prompt_echo_and_provider_error_in_the_same_tail_window():
+    """A short prompt puts its echo INSIDE the 20-line tail with the provider's output.
+    Prompt prose that mentions a banner (mid-sentence, in backticks) must neither type the
+    failure nor be chosen as the excerpt."""
+    log = (
+        "user\nPlease check how we handle `You've hit your usage limit` banners; the "
+        "error path failed last week.\n"
+        "ERROR: stream disconnected before completion: connection reset\n"
+    )
+    status = pi._classify_leg(1, "", log)
+    assert status == "ERROR"
+    assert pi._leg_failure_detail(status, 1, "", log) == (
+        "ERROR: stream disconnected before completion: connection reset"
+    )
+    # ...and the reverse: the provider banner types it even with error-ish prompt text around.
+    log = "user\nThe error path failed; see the limit handling.\n" + CODEX_USAGE_BANNER + "\n"
+    status = pi._classify_leg(1, "", log)
+    assert status == "DEGRADED"
+    detail = pi._leg_failure_detail(status, 1, "", log)
+    assert detail.startswith("provider_usage_limit (resets Oct 1st, 2026 1:42 PM): ERROR: You've")
+
+
 def test_detail_is_redacted_and_bounded():
     secret_log = (
         "user\nsome prompt\n"
@@ -208,6 +281,30 @@ def test_detail_is_redacted_and_bounded():
                    "sk-ant-api03", "/home/alice"):
         assert leaked not in detail, f"{leaked!r} leaked into detail: {detail!r}"
     assert len(detail) <= pi._LEG_DETAIL_MAX_CHARS
+
+
+@pytest.mark.parametrize("secret", [
+    "xoxc-1234567890-abcdefghij", "xoxe-1234567890-abcdefghij", "ghu_abcdefghijklmnop",
+    "ghr_abcdefghijklmnop", "xai-abcdefghijklmnopqrst", "/var/home/alice/.config",
+])
+def test_detail_redacts_additional_token_shapes(secret):
+    detail = pi._leg_failure_detail("ERROR", 1, "", f"user\nprompt\nfatal: rejected {secret}\n")
+    assert detail is not None
+    assert secret not in detail and "alice" not in detail, detail
+
+
+def test_the_final_labelled_detail_is_bounded_and_control_stripped():
+    """The bound is on the STORED string, label included, and a terminal escape in a CLI
+    line never reaches the operator's terminal via `advisor-board`."""
+    long_banner = CODEX_USAGE_BANNER.replace(
+        "Visit", "Visit \x1b[2J\x07\x1bZ\x9b2J\x00 " + "https://example.invalid/" + "z" * 2000
+    )
+    log = "user\nprompt\n" + long_banner + "\n"
+    status = pi._classify_leg(1, "", log)
+    detail = pi._leg_failure_detail(status, 1, "", log)
+    assert detail.startswith("provider_usage_limit (resets Oct 1st, 2026 1:42 PM): ")
+    assert len(detail) <= pi._LEG_DETAIL_MAX_CHARS
+    assert not re.search(r"[\x00-\x1f\x7f-\x9f]", detail), repr(detail)
 
 
 def test_detail_never_carries_a_raw_diff_hunk():
@@ -349,8 +446,29 @@ def test_claude_tui_refusal_reaches_the_detail_sink(monkeypatch, tmp_path):
     status, _text = pi._exec_claude_tui_leg(
         tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink,
     )
-    assert status != "OK"
+    assert status == "DEGRADED", "a typed environment failure is DEGRADED on every route"
     assert sink and sink[-1].startswith("provider_environment_failure: Temp directory /tmp/claude-0")
+
+
+def test_claude_sink_prefix_is_redacted_and_bounded(monkeypatch, tmp_path):
+    """The untyped sink detail is `<log_text>: <tail>`; the prefix goes through the same
+    redaction and final bound as everything else."""
+    marker = "claude_tui_failed token=abcdefghijklmnopqrstuv " + "y" * 3000
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kw: (
+        1, "", marker, "fatal: something broke"
+    ))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    sink: list[str] = []
+    pi._exec_claude_tui_leg(
+        tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink,
+    )
+    assert sink, "the untyped failure lost its detail"
+    assert "abcdefghijklmnopqrstuv" not in sink[-1]
+    assert len(sink[-1]) <= pi._LEG_DETAIL_MAX_CHARS
 
 
 def test_claude_tui_ok_leaves_the_sink_empty(monkeypatch, tmp_path):
