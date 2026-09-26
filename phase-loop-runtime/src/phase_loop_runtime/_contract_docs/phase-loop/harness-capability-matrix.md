@@ -392,6 +392,20 @@ with a subscription-backed local session, then observed the disposable
 is a live-dispatch proof blocker, not an auth blocker; keep Claude manual TUI
 reentry and manual imports available through the shared state ledger.
 
+That smoke ran on the print route, which BASELINE later demoted to explicit,
+billing-sensitive compatibility, so it is not the proof to repeat. The async
+route for unattended dispatch is Agent View. Until agent-harness#409 it could not
+carry a phase: it rendered a `--cwd` option the root `claude` command rejects,
+could not parse the `backgrounded · <id>` banner, and returned as soon as
+`claude --bg` started, so the runner verified an unchanged tree. The route now
+pre-assigns `--session-id`, binds only that session, waits for a terminal Agent
+View state with no default deadline or silence termination, and returns the
+session's final assistant message from its transcript as the launch output. A
+`blocked` session (waiting for input) fails closed and stays attachable; unattended
+`plan`/`roadmap` actions therefore need `--bypass-approvals`. `claude_solo` stays
+`proof-blocked` until a disposable roadmap proof on this route records
+`launch.json` and `terminal-summary.json` (agent-harness#1099).
+
 ### Frozen Claude Failure Inventory
 
 The proof-blocking Claude cases are explicit parity failures, not vague

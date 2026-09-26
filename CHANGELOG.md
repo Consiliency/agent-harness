@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099)
+
+- `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
+  root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
+  returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
+- The launch now pre-assigns `--session-id` and binds only that session, never another one in
+  the same cwd. It waits until Agent View reports a terminal state. There is no default
+  deadline and no silence termination, and `launch_timeout_seconds` applies only when set. It
+  then returns the session's final assistant message from its transcript as the launch output.
+  Only a `done` session with a readable final message succeeds. A session waiting for input
+  (`blocked`) fails closed and is left attachable.
+- The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
+  and its context goes through `context.md` instead of one argv entry.
+- `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.
+
 ### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
 
 - When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit

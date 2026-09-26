@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from phase_loop_runtime.claude_channel_sidecar import ChannelSidecar, build_server
-from phase_loop_runtime.claude_agent_view import AgentViewLifecycleResult, BlockerSummary
+from phase_loop_runtime.claude_agent_view import AgentViewLifecycleResult, BlockerSummary, ClaudeAgentViewAdapter
 from phase_loop_runtime.launcher import (
     build_launch_request,
     build_launch_spec,
@@ -314,20 +314,30 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertNotIn("-p", spec.command)
         self.assertNotIn("--output-format", spec.command)
 
-    def test_agent_view_launch_returns_async_route_result(self):
-        class FakeAgentViewAdapter:
+    def test_agent_view_launch_waits_for_the_session_and_returns_its_final_message(self):
+        # agent-harness#409: a running session is not a finished launch.
+        def lifecycle(state, cwd):
+            return AgentViewLifecycleResult(
+                session_id="agent-1",
+                state=state,
+                cwd=str(cwd),
+                logs_ref="claude logs agent-1",
+                started_at="2026-06-19T12:00:00Z",
+                completed_at=None,
+                stop_result=None,
+                auth_posture="subscription_local",
+                billing_posture="subscription_included",
+            )
+
+        class FakeAgentViewAdapter(ClaudeAgentViewAdapter):
             def launch_background(self, prompt, *, cwd, **kwargs):
-                return AgentViewLifecycleResult(
-                    session_id="agent-1",
-                    state="running",
-                    cwd=str(cwd),
-                    logs_ref="claude logs agent-1",
-                    started_at="2026-06-19T12:00:00Z",
-                    completed_at=None,
-                    stop_result=None,
-                    auth_posture="subscription_local",
-                    billing_posture="subscription_included",
-                )
+                return lifecycle("running", cwd)
+
+            def wait_for_terminal(self, session_id, *, cwd=None, **kwargs):
+                return lifecycle("done", cwd)
+
+            def final_text(self, session_id, *, cwd):
+                return "final closeout"
 
         with patch.dict(os.environ, {"PHASE_LOOP_CLAUDE_ROUTE": "agent_view"}, clear=False):
             spec = build_launch_spec(self._request(Path("/tmp/repo")))
@@ -336,7 +346,8 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.claude_route, "claude_agent_view")
-        self.assertEqual(result.claude_route_result["status"], "working")
+        self.assertEqual(result.claude_route_result["status"], "done")
+        self.assertEqual(result.output, "final closeout")
         self.assertEqual(result.claude_route_result["session_id"], "agent-1")
         self.assertEqual(result.claude_route_result["artifacts"][0]["logs_ref"], "claude logs agent-1")
         self.assertNotIn("-p", result.command)
@@ -345,7 +356,7 @@ class ClaudeRouteSelectionTest(unittest.TestCase):
         self.assertNotIn("Bearer", rendered)
 
     def test_agent_view_failed_launch_returns_blocked_route_result(self):
-        class FakeAgentViewAdapter:
+        class FakeAgentViewAdapter(ClaudeAgentViewAdapter):
             def launch_background(self, prompt, *, cwd, **kwargs):
                 return AgentViewLifecycleResult(
                     session_id="agent-1",

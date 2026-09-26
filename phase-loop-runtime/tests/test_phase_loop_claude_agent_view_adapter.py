@@ -63,8 +63,6 @@ class ClaudeAgentViewAdapterTest(unittest.TestCase):
                 "--bg",
                 "--name",
                 "c2-bg-test",
-                "--cwd",
-                "/repo",
                 "--model",
                 "sonnet",
                 "--effort",

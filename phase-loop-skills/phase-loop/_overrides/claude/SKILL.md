@@ -107,9 +107,13 @@ Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeou
 - `<harness>-phase-loop dry-run`: use `phase-loop dry-run --max-phases <N>`.
 - `<harness>-phase-loop sync-skills`: use `phase-loop sync-skills --check`, and use `--apply` only when the operator explicitly wants bridge repair.
 
-Claude Code uses the shared runner contract, but autonomous live dispatch is
-proof-blocked until the authenticated non-interactive planning smoke completes
-inside the runner timeout. Manual TUI reentry and manual-import closeout remain
+Claude Code uses the shared runner contract, but autonomous live dispatch stays
+proof-blocked until a disposable roadmap proof completes on the Agent View route
+(`PHASE_LOOP_CLAUDE_ROUTE=agent_view`). That route binds the session it launches,
+waits for it to finish with no deadline, and reduces its final message
+(agent-harness#409); a session that stops for input is reported blocked and left
+attachable, so unattended plan or roadmap runs need `--bypass-approvals`. Never
+fall back to the billing-sensitive print route. Manual TUI reentry and manual-import closeout remain
 supported through `.phase-loop/` state. ThawedCode stays grouped with
 Harness only for docs and manual imports; do not claim a separate live
 ThawedCode automation contract unless a later roadmap proves it.
