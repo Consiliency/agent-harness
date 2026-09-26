@@ -48,7 +48,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - `0.7.19` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
@@ -65,8 +65,22 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   - the v10 roadmap PANEL phase (agent-harness#1079; roadmap only);
   - the 0.7.18 published record (agent-harness#1072).
 - Release tracking: agent-harness#1087; the appended plan-authority rows cite it.
-- Tag: not yet created. The signed `v0.7.19` tag push, which publishes to PyPI, is
-  maintainer-gated.
+- Tag: signed `v0.7.19` (tag object `6c7e41c64081755b029118dd291f30572df9ce0c`, verified: good
+  ED25519 signature; GitHub verification `valid`) → `18a324a4daf42f55160fc625ceac702a09825c11`
+  (agent-harness#1089's landing on `main`). Created and pushed by the maintainer's agent on the
+  maintainer's explicit instruction to push the signed tag (2026-09-26).
+- Publication: trusted-publish workflow run `36219660271` (job `108342384869` build + verify
+  wheel + sdist; job `108350468813` publish to PyPI, trusted publishing), triggered by that tag
+  push; completed successfully. PyPI reports exactly the `SHA256SUMS` digests recorded under
+  Sealed Implementation Evidence below. A fresh Python 3.10 venv with the published wheel
+  installed imports `0.7.19`, carries the agy 1.2.11 qualification
+  (`gemini_heartbeat.QUALIFIED_IMAGE_SHA256 = ec7cf797…`), and `phase-loop --help` loads.
+  Measured by installing the wheel from its PyPI file URL after checking its sha256: pypi.org's
+  simple index had not yet listed `0.7.19` minutes after the publish. GitHub release:
+  https://github.com/Consiliency/agent-harness/releases/tag/v0.7.19.
+- Fleet adoption: the dotfiles pin bump to `v0.7.19` is a separate client-repo change and is
+  not claimed here. The dotfiles consumer's re-check on the 1.2.11 image is tracked on
+  agent-harness#1008 and agent-harness#940.
 
 ### Previous release: 0.7.18 (published)
 
@@ -228,18 +242,20 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.19 (prepared)
+### This release: 0.7.19 (published)
 
-The digests below are from the pre-tag local build of the release candidate, produced by
-`uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`). They are a preparation measurement, not a publication
-record: the publishing workflow rebuilds from the tagged commit and verifies `SHA256SUMS`,
-and the published digests are recorded here after the tag push. As for `0.7.15`–`0.7.18`,
-the published digests are expected to differ, because archive bytes are
-timestamp/toolchain-dependent.
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`36219660271` from its build of the tagged commit `18a324a4`, verified by the publish job
+without rebuilding, and equal to the digests PyPI reports. The pre-tag local build of the
+candidate (`uv build` under `umask 022`, `Consiliency/agent-harness#519`) measured wheel
+`c4b99457bd1973b917b3ec9be45ec1fa05304b6c9ac9d1b49509ca4870621ce7` and sdist
+`4553444e025e92d5ca0640064c1df78334a9984969c233a8c65a977a2f4db0bc`. The published tuples differ
+because archive bytes are timestamp/toolchain-dependent. That was a preparation measurement,
+not a content discrepancy in the runtime: the package surface inventory below was re-measured
+on the published artifacts and is identical to the prepared measurement.
 
-- prepared direct-wheel sha256: `c4b99457bd1973b917b3ec9be45ec1fa05304b6c9ac9d1b49509ca4870621ce7`
-- prepared direct-sdist sha256: `4553444e025e92d5ca0640064c1df78334a9984969c233a8c65a977a2f4db0bc`
+- direct-wheel sha256: `291d7d95fd9c02f73253675d6baaf4739ea29bfb81d6312d5c5db6812f1e643a`
+- direct-sdist sha256: `a42184a7df40c79b53775c32ff688e794a20786303cf23027106adfa9ed99a3a`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.18 (published)
@@ -331,7 +347,8 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.19` build described above.
+Measured on the published `0.7.19` artifacts (workflow `36219660271`); identical to the
+prepared measurement.
 
 - Wheel artifact: `phase_loop_runtime-0.7.19-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.19.tar.gz`
@@ -344,10 +361,9 @@ Measured on the prepared `0.7.19` build described above.
 
 ## Governed-Pipeline Pinning
 
-`0.7.18` is published (PyPI, trusted-publish workflow `36137860560`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.18`. Once
-`0.7.19` is published (tag push → PyPI; this document records it as `prepared` until then),
-the pin may move to `phase-loop-runtime==0.7.19`. In either case, call:
+`0.7.19` is published (PyPI, trusted-publish workflow `36219660271`), so governed-pipeline
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.19`, then
+calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
