@@ -414,7 +414,12 @@ now carries the CLI's first refusal line. With it, the third attempt reported th
 cause: `Workspace not trusted. Run claude in <repo> once and accept the trust prompt`.
 A background session needs the exact workspace trusted beforehand; trust recorded
 for a parent directory does not carry over. Unattended Agent View dispatch into a
-new checkout therefore needs that one-time trust acceptance first.
+new checkout therefore needs that one-time trust acceptance first. The launch now
+reads (never writes) that per-folder trust before `claude --bg` and refuses up front
+with the fix: run `claude` in that folder once and accept the trust prompt. The live
+proof is parked until the workspace-trust design lands (agent-harness#1104: reusable
+slot paths and an opt-in, user-run `phase-loop setup --trust-workspaces`; the harness
+never writes trust silently).
 
 Settings principle: the Agent View route honors the operator's own Claude
 settings and workspace trust as-is. It inherits the operator's environment

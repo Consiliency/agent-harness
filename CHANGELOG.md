@@ -13,9 +13,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
 - The launch binds only the session whose id `claude --bg` prints (the CLI ignores
   `--session-id` under `--bg`), never another one in the same cwd, and ends its options with
-  `--` so the variadic tool flags cannot swallow the prompt. It waits until Agent View reports a terminal state. There is no default
-  deadline and no silence termination, and `launch_timeout_seconds` applies only when set. It
-  then returns the session's final assistant message from its transcript as the launch output.
+  `--` so the variadic tool flags cannot swallow the prompt. It waits until Agent View reports
+  a terminal state. There is no default deadline and no silence termination, and
+  `launch_timeout_seconds` applies only when set. It then returns the session's final assistant message from its transcript as the launch output.
   Only a `done` session with a readable final message succeeds. A session waiting for input
   (`blocked`) fails closed and is left attachable. Approval bypass is not defaulted:
   unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
@@ -29,7 +29,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `workspace_trust_state` no longer reports `trusted` just because `.mcp.json` is fine.
 - The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
   and its context goes through `context.md` instead of one argv entry.
-- `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.
+- The route honors the operator's own Claude settings and workspace trust as-is. It neither
+  weakens nor adds permission settings: no `--settings`, no `--setting-sources`, no injected
+  `skipDangerousModePermissionPrompt`.
+- `claude_solo` stays `proof-blocked`. The live proof is parked until the workspace-trust design
+  lands (agent-harness#1104); agent-harness#1099 stays open.
 
 ### `advisor-board --advisory`: a non-gating review of a standalone document (agent-harness#802; agent-harness#1098 items 1 and 3)
 
