@@ -3987,6 +3987,15 @@ def _assistant_text_from_jsonl(path: Path) -> str:
     return "\n".join(texts).strip()
 
 
+# The exact prompt Claude Code journals (isMeta) after an answer stops at max_tokens
+# (measured on 2.1.282 journals, 24 of 24). A different wording is not recognised, and a
+# meta record after a cap then fails closed rather than joining two answers.
+_CLAUDE_RESUME_PROMPT = (
+    "Output token limit hit. Resume directly \u2014 no apology, no recap of what you were doing. "
+    "Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."
+)
+
+
 def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
     """Return the final turn's single assistant message, or "" when that cannot be proven.
 
@@ -4055,23 +4064,33 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         return ("stop_reason" in message, message.get("stop_reason"))
 
     # agent-harness#1077: when an answer hits the output cap, the CLI journals the capped
-    # message (stop_reason max_tokens), then an isMeta user record asking it to resume
-    # ("Output token limit hit. Resume directly…"), then the continuation under a NEW message
-    # id. That resume record is not a new request. The cap is read from each record's
-    # effective state (exact replays and stale open versions are ignored, as below), and
-    # any OTHER isMeta record straight after a cap is ambiguous and fails closed.
+    # message (stop_reason max_tokens), then an isMeta user record carrying its exact resume
+    # prompt, then the continuation under a NEW message id. One pass classifies every user
+    # record so replay, resume and boundary rules cannot disagree:
+    # - an exact user replay (same uuid and content) is skipped with no effect at all;
+    # - the exact resume prompt after an effective max_tokens stop continues the answer;
+    #   anywhere else it cannot be placed and fails closed;
+    # - any other isMeta record straight after a cap is ambiguous and fails closed;
+    # - every other user record is a turn boundary.
+    # The effective stop ignores exact assistant replays and stale open versions, as below.
     def _is_resume(payload: dict, message: dict) -> bool:
         if payload.get("isMeta") is not True:
             return False
         content = message.get("content")
-        texts = [content] if isinstance(content, str) else [
-            item.get("text", "") for item in content or []
-            if isinstance(item, dict) and item.get("type") == "text"
-        ] if isinstance(content, list) else []
-        return any(isinstance(t, str) and t.lstrip().startswith("Output token limit hit") for t in texts)
+        if isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict) \
+                and content[0].get("type") == "text":
+            content = content[0].get("text")
+        return isinstance(content, str) and content.strip() == _CLAUDE_RESUME_PROMPT
+
+    def _is_tool_result(message: dict) -> bool:
+        content = message.get("content")
+        return isinstance(content, list) and bool(content) and all(
+            isinstance(item, dict) and item.get("type") == "tool_result" for item in content)
 
     continuation_positions: set[int] = set()
-    resume_positions: set[int] = set()
+    boundary = -1
+    request_boundary = -1  # the last boundary that is a request, not a tool result
+    seen_users: set[tuple[str, str]] = set()
     effective_stop: object = None
     stop_by_uuid: dict[str, tuple[str, tuple]] = {}
     versions_by_uuid: dict[str, set[tuple[str, tuple]]] = {}
@@ -4088,33 +4107,23 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
                 versions_by_uuid.setdefault(uid, set()).add((said, state))
             effective_stop = message.get("stop_reason")
             continue
-        if _is_resume(payload, message):
-            resume_positions.add(position)
-            if effective_stop == "max_tokens":
-                continuation_positions.add(position)
-        elif payload.get("isMeta") is True and effective_stop == "max_tokens":
-            return ""  # an unrecognised meta record right after a cap: cannot tell resume from request
-        effective_stop = None
-
-    boundary = -1
-    seen_users: set[tuple[str, str]] = set()
-    for position, (payload, message) in enumerate(records):
-        if message.get("role") != "user":
-            continue
-        if _uuid(payload) is not None and (_uuid(payload), _said(message)) in seen_users:
-            continue  # a re-journaled user record (resume records included) is not a new request
-        if position in resume_positions:
-            if position not in continuation_positions:
-                return ""  # a resume that continues no capped message cannot be placed
-            if _uuid(payload) is not None:
-                seen_users.add((_uuid(payload), _said(message)))  # so its re-journal is a replay
-            continue  # a resume-after-max_tokens prompt continues the same answer
         user_id = _uuid(payload)
         if user_id is not None:
             if (user_id, _said(message)) in seen_users:
                 continue  # a re-journaled user record is not a new request
             seen_users.add((user_id, _said(message)))
+        if _is_resume(payload, message):
+            if effective_stop != "max_tokens":
+                return ""  # a resume that continues no capped message cannot be placed
+            continuation_positions.add(position)
+            effective_stop = None
+            continue  # the same answer continues
+        if payload.get("isMeta") is True and effective_stop == "max_tokens":
+            return ""  # an unrecognised meta record right after a cap: resume or request?
         boundary = position
+        if not _is_tool_result(message):
+            request_boundary = position
+        effective_stop = None
     history = [(p, m) for p, m in records[: max(boundary, 0)] if m.get("role") == "assistant"]
     history_ids = {m.get("id") for _, m in history} - {None}
     history_uuids = {_uuid(p) for p, _ in history} - {None}
@@ -4187,17 +4196,13 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
             return ""
         chain.insert(0, sequence[index - 1])
 
-    # Every resume after the last genuine request must sit between two members of the chain;
-    # otherwise the head it continued is outside the answer (for example across a tool call)
-    # and returning the rest would be a truncated answer.
-    genuine = [pos for pos, (p, m) in enumerate(records)
-               if m.get("role") == "user" and pos not in resume_positions and p.get("isMeta") is not True
-               and not (isinstance(m.get("content"), list) and m["content"]
-                        and all(isinstance(i, dict) and i.get("type") == "tool_result" for i in m["content"]))]
-    last_genuine = genuine[-1] if genuine else -1
+    # Every resume after the last REQUEST boundary must sit between two members of the chain;
+    # otherwise the head it continued lies outside the answer (for example behind a tool
+    # call) and returning the rest would be a truncated answer. A continuation before the
+    # last request is history and never blocks a later answer.
     spans = [(_first_last(chain[i])[1], _first_last(chain[i + 1])[0])
              for i in range(len(chain) - 1)] if None not in chain else []
-    if any(pos > last_genuine and not any(lo < pos < hi for lo, hi in spans)
+    if any(pos > request_boundary and not any(lo < pos < hi for lo, hi in spans)
            for pos in continuation_positions):
         return ""
 
