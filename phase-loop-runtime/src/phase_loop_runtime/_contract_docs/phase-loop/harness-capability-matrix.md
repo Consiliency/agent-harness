@@ -398,7 +398,8 @@ route for unattended dispatch is Agent View. Until agent-harness#409 it could no
 carry a phase: it rendered a `--cwd` option the root `claude` command rejects,
 could not parse the `backgrounded · <id>` banner, and returned as soon as
 `claude --bg` started, so the runner verified an unchanged tree. The route now
-pre-assigns `--session-id`, binds only that session, waits for a terminal Agent
+binds only the session whose id `claude --bg` prints (the CLI ignores
+`--session-id` under `--bg`), waits for a terminal Agent
 View state with no default deadline or silence termination, and returns the
 session's final assistant message from its transcript as the launch output. A
 `blocked` session (waiting for input) fails closed and stays attachable; unattended
@@ -406,9 +407,13 @@ session's final assistant message from its transcript as the launch output. A
 `proof-blocked` until a disposable roadmap proof on this route records
 `launch.json` and `terminal-summary.json` (agent-harness#1099). The first such
 proof (2026-09-26) failed at launch: `--allowedTools`/`--disallowedTools` are
-variadic and swallowed the trailing prompt, so `claude --bg` exited non-zero within
-a second and no session started. The launch now ends its options with `--`; the
-proof has not been re-run.
+variadic and swallowed the trailing prompt, so the launch now ends its options with
+`--`. The second attempt also exited non-zero within a second with no session: the
+CLI refuses `--bg` with `bypassPermissions` until the operator has accepted the
+bypass disclaimer once interactively (`claude --dangerously-skip-permissions`), and
+this host had not. That is a one-time human precondition for unattended
+`--bypass-approvals` runs on this route; the launch blocker now carries the CLI's
+refusal line.
 
 ### Frozen Claude Failure Inventory
 

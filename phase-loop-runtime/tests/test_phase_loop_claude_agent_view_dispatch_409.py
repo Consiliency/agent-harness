@@ -76,18 +76,19 @@ class _Clock:
 
 
 class LaunchCommandTest(unittest.TestCase):
-    def test_launch_command_binds_session_and_tool_policy_and_never_renders_cwd(self):
+    def test_launch_command_carries_tool_policy_and_never_renders_cwd_or_session_id(self):
         command = ClaudeAgentViewAdapter().launch_command(
             "do work",
             cwd="/repo",
-            session_id=ASSIGNED,
             permission="bypassPermissions",
             allowed_tools="Bash,Read",
             disallowed_tools="AskUserQuestion",
         )
         # The root `claude` command has no --cwd option; rendering it fails the launch.
         self.assertNotIn("--cwd", command)
-        self.assertEqual(command[command.index("--session-id") + 1], ASSIGNED)
+        # `claude --bg` ignores --session-id ("--bg manages the session id"), so binding
+        # uses the printed id instead.
+        self.assertNotIn("--session-id", command)
         self.assertEqual(command[command.index("--allowedTools") + 1], "Bash,Read")
         self.assertEqual(command[command.index("--disallowedTools") + 1], "AskUserQuestion")
         # The prompt follows the end-of-options marker, so a variadic option such as
@@ -112,20 +113,41 @@ class LaunchBindingTest(unittest.TestCase):
     def _launch(self, runner):
         adapter = ClaudeAgentViewAdapter(runner=runner)
         with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"):
-            return adapter.launch_background("do work", cwd="/repo", session_id=ASSIGNED)
+            return adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
 
     def test_another_session_in_the_same_cwd_is_never_adopted(self):
         # The #409 trace: two records for the worktree and the adapter guessed.
         other = _record("done", session_id="99999999-0000-4000-8000-000000000000")
         lifecycle = self._launch(_listing_runner([[other]]))
-        self.assertEqual(lifecycle.session_id, ASSIGNED)
+        self.assertEqual(lifecycle.session_id, ASSIGNED[:8])
         self.assertEqual(lifecycle.state, "running")
         self.assertIsNone(lifecycle.blocker)
 
-    def test_a_printed_id_for_a_different_session_fails_closed(self):
-        lifecycle = self._launch(_listing_runner([[]], launch_stdout="backgrounded · deadbeef\n"))
+    def test_the_printed_session_is_bound_to_its_full_id_once_listed(self):
+        other = _record("done", session_id="99999999-0000-4000-8000-000000000000")
+        lifecycle = self._launch(_listing_runner([[other, _record("working")]]))
+        self.assertEqual(lifecycle.session_id, ASSIGNED)
+        self.assertEqual(lifecycle.state, "running")
+
+    def test_no_printed_id_fails_closed(self):
+        lifecycle = self._launch(_listing_runner([[_record("working")]], launch_stdout="started\n"))
         self.assertEqual(lifecycle.state, "blocked")
         self.assertEqual(lifecycle.blocker.reason, "agent_view_session_unbound")
+
+    def test_cli_refusal_line_is_surfaced(self):
+        # The host precondition that blocked the agent-harness#1099 proof runs.
+        refusal = ("--bg with bypassPermissions requires accepting the disclaimer first. "
+                   "Run `claude --dangerously-skip-permissions` once interactively.")
+
+        def run(command, **kwargs):
+            if command == ["claude", "--bg", "--help"]:
+                return subprocess.CompletedProcess(command, 0, stdout="Usage: claude\n")
+            return subprocess.CompletedProcess(command, 1, stdout=refusal + "\nsecret transcript line\n")
+
+        lifecycle = self._launch(run)
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_failed")
+        self.assertIn("requires accepting the disclaimer", lifecycle.blocker.summary)
+        self.assertNotIn("secret transcript", lifecycle.blocker.summary)
 
 
 class WaitForTerminalTest(unittest.TestCase):
@@ -206,7 +228,7 @@ class _ScriptedAdapter(ClaudeAgentViewAdapter):
 
     def _lifecycle(self, state, blocker=None):
         return AgentViewLifecycleResult(
-            session_id=self.launch_kwargs["session_id"], state=state, cwd="/repo", logs_ref=None,
+            session_id="agent-1", state=state, cwd="/repo", logs_ref=None,
             started_at=None, completed_at=None, stop_result=None, blocker=blocker,
         )
 
@@ -264,8 +286,10 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertEqual((run_dir / "context.md").read_text(encoding="utf-8"), "workflow context\n")
         self.assertIn(str(run_dir / "context.md"), adapter.prompt)
         self.assertEqual(adapter.launch_kwargs["add_dirs"], [run_dir])
-        # Session identity is pre-assigned and the spec's tool policy is carried.
-        self.assertEqual(result.command[result.command.index("--session-id") + 1], adapter.launch_kwargs["session_id"])
+        # The session is bound by its printed id and the spec's tool policy is carried.
+        self.assertTrue(adapter.launch_kwargs["bind_printed_id"])
+        self.assertNotIn("--session-id", result.command)
+        self.assertEqual(result.command[-2], "--")
         self.assertEqual(adapter.launch_kwargs["allowed_tools"], "Bash,Read")
         self.assertEqual(adapter.launch_kwargs["disallowed_tools"], "AskUserQuestion")
         self.assertEqual(adapter.launch_kwargs["permission"], "bypassPermissions")
@@ -302,7 +326,7 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertEqual(adapter.wait_kwargs["timeout_s"], 60.0)
         self.assertEqual(result.returncode, 1)
         self.assertTrue(result.timed_out)
-        self.assertEqual(adapter.stopped, [adapter.launch_kwargs["session_id"]])
+        self.assertEqual(adapter.stopped, ["agent-1"])
 
 
 if __name__ == "__main__":

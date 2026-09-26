@@ -178,7 +178,6 @@ class ClaudeAgentViewAdapter:
         safe_mode: bool = False,
         strict_mcp_config: bool = False,
         tools: str | list[str] | None = None,
-        session_id: str | None = None,
         allowed_tools: str | None = None,
         disallowed_tools: str | None = None,
     ) -> list[str]:
@@ -190,10 +189,6 @@ class ClaudeAgentViewAdapter:
             command.append("--safe-mode")
         if name:
             command.extend(["--name", name])
-        if session_id:
-            # A pre-assigned id binds the exact session this launch created
-            # (agent-harness#409): the waiter and transcript ingest key on it.
-            command.extend(["--session-id", session_id])
         if model:
             command.extend(["--model", model])
         if effort:
@@ -310,6 +305,7 @@ class ClaudeAgentViewAdapter:
         return LaunchPreflightResult(trusted=True, trust_state=trust_state, command=command)
 
     def launch_background(self, prompt: str, *, cwd: str | Path, **kwargs: Any) -> AgentViewLifecycleResult:
+        bind_printed_id = bool(kwargs.pop("bind_printed_id", False))
         preflight = self.prepare_launch(prompt, cwd=cwd, **kwargs)
         if not preflight.trusted:
             return AgentViewLifecycleResult(
@@ -339,18 +335,20 @@ class ClaudeAgentViewAdapter:
                 started_at=None,
                 completed_at=_utc_now(),
                 stop_result=None,
-                blocker=BlockerSummary("agent_view_launch_failed", "claude --bg did not launch a background session."),
+                blocker=BlockerSummary(
+                    "agent_view_launch_failed",
+                    "claude --bg did not launch a background session." + _cli_refusal_suffix(result.stdout),
+                ),
             )
 
         session_id = _launch_session_id(result.stdout)
-        assigned = kwargs.get("session_id")
-        if assigned:
-            # Exact binding only (agent-harness#409): never adopt another session that
-            # happens to share the cwd. The record may not be listed yet; the waiter
-            # binds it by the assigned id.
-            if session_id and not _same_session(session_id, assigned):
+        if bind_printed_id:
+            # Exact binding only (agent-harness#409): the session is the one this launch
+            # printed, never another session that happens to share the cwd. The record
+            # may not be listed yet; the waiter binds it by the printed id.
+            if not session_id:
                 return _lifecycle_from_parts(
-                    session_id=assigned,
+                    session_id="launch",
                     state="blocked",
                     cwd=str(cwd),
                     started_at=None,
@@ -358,14 +356,14 @@ class ClaudeAgentViewAdapter:
                     stop_result=None,
                     blocker=BlockerSummary(
                         "agent_view_session_unbound",
-                        "claude --bg reported a session other than the one this launch assigned.",
+                        "claude --bg did not print the id of the session it started.",
                     ),
                 )
-            session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, assigned)
+            session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id)
             if session:
                 return _lifecycle_from_session(session)
             return _lifecycle_from_parts(
-                session_id=assigned,
+                session_id=session_id,
                 state="running",
                 cwd=str(cwd),
                 started_at=_utc_now(),
@@ -686,9 +684,19 @@ def _lifecycle_from_parts(
     )
 
 
-def _same_session(reported: str, assigned: str) -> bool:
-    """True when a printed id names the assigned session (full id or its short prefix)."""
-    return reported == assigned or (len(reported) >= 8 and assigned.startswith(reported))
+def _cli_refusal_suffix(output: str) -> str:
+    """The CLI's own one-line refusal (e.g. the --bg bypassPermissions disclaimer gate).
+
+    Only a short line that reads as a CLI error or a `--bg` precondition is surfaced;
+    anything else stays redacted like the rest of the launch output.
+    """
+    for line in str(output or "").splitlines():
+        text = line.strip()
+        if text and len(text) <= 300 and (
+            text.lower().startswith(("error:", "error ")) or text.startswith("--bg ")
+        ):
+            return f" CLI: {text}"
+    return ""
 
 
 def _find_bound_session(sessions: tuple[AgentViewSession, ...], session_id: str) -> AgentViewSession | None:
