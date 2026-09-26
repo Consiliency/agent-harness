@@ -21,7 +21,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
   or the session stops `blocked` on its first Bash prompt.
 - A refused `claude --bg` launch now reports the CLI's first output line in its blocker, since
-  a launch that exits non-zero never started a session.
+  a launch that exits non-zero never started a session. For example, a background session
+  refuses to start in a workspace that has not been trusted interactively once
+  (`Workspace not trusted`), and trust recorded for a parent directory does not carry over.
 - The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
   and its context goes through `context.md` instead of one argv entry.
 - `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.

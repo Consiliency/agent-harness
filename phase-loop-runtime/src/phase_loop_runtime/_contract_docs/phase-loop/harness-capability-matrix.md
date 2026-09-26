@@ -410,7 +410,11 @@ proof (2026-09-26) failed at launch: `--allowedTools`/`--disallowedTools` are
 variadic and swallowed the trailing prompt, so the launch now ends its options with
 `--`. The second attempt also exited non-zero within a second with no session;
 the launch output was redacted, so its cause was not observed. The launch blocker
-now carries the CLI's first refusal line.
+now carries the CLI's first refusal line. With it, the third attempt reported the
+cause: `Workspace not trusted. Run claude in <repo> once and accept the trust prompt`.
+A background session needs the exact workspace trusted beforehand; trust recorded
+for a parent directory does not carry over. Unattended Agent View dispatch into a
+new checkout therefore needs that one-time trust acceptance first.
 
 ### Frozen Claude Failure Inventory
 
