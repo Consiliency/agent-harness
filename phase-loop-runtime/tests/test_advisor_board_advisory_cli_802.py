@@ -227,12 +227,14 @@ def test_advisory_text_output_is_labelled_non_gating(monkeypatch, bundle, outsid
     assert out.splitlines()[0].startswith("advisor-board: advisory (non-gating; composed from code-review)")
 
 
-@pytest.mark.parametrize("harness", sorted(_VENDORS))
-def test_each_seat_route_frames_the_contract_as_its_authoritative_instructions(tmp_path, harness):
-    """Each brokered seat's prompt is rendered from the staged ``review-instructions.md``
-    (``_resolve_brief("review", brief_ref)``) and the staged bundle. The contract must sit
-    inside the digest-bound AUTHORITATIVE-INSTRUCTIONS frame and the bundle (with its charter)
-    inside the UNTRUSTED frame; the sealed preamble keeps the verdict protocol."""
+def test_the_seat_prompt_frames_the_contract_as_its_authoritative_instructions(tmp_path):
+    """The invoker stages ONE ``review-instructions.md`` per board, from
+    ``_resolve_brief("review", brief_ref)``, and every brokered seat's prompt is rendered from
+    it and the staged bundle by ``_render_broker_inline_prompt`` (the harness does not enter
+    the rendering), so one rendering covers every seat. The contract must sit inside the
+    digest-bound AUTHORITATIVE-INSTRUCTIONS frame and the bundle (with its charter) inside the
+    UNTRUSTED frame; the code-review brief is absent and the sealed preamble keeps the
+    verdict protocol."""
     brief = tmp_path / "advisory-contract.md"
     brief.write_text(ADVISORY_CONTRACT, encoding="utf-8")
     instructions = pi._resolve_brief("review", str(brief))
@@ -265,6 +267,37 @@ def test_native_fill_request_carries_the_contract(tmp_path, monkeypatch, bundle,
 
 
 # --- non-gating: an advisory run can never reach a landing ---------------------------------
+
+
+@pytest.mark.parametrize("name", ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"])
+def test_advisory_refuses_an_inherited_git_redirect_before_any_probe(monkeypatch, bundle, outside_git, name):
+    """``GIT_DIR`` and friends override ``git -C``: the HARDEN probes would resolve the private
+    authority to another repository, so the run is refused before it starts."""
+    monkeypatch.setenv(name, str(_REPO_ROOT / ".git") if name != "GIT_WORK_TREE" else str(_REPO_ROOT))
+    run = _Run(monkeypatch)
+    rc, out, err = run(["advisor-board", str(bundle), "--advisory", "--json"])
+    assert rc == 2 and out == ""
+    assert f"--advisory cannot run with {name} set" in err
+    assert run.compose_calls == [] and run.composition_authorizations == 0 and run.invoke_calls == []
+
+
+def test_advisory_refuses_agy_canary_capture(monkeypatch, bundle, outside_git):
+    """Capture is a governed exact-four run; an advisory run never produces capture evidence."""
+    from phase_loop_runtime import agy_canary_evidence
+
+    closed: list[bool] = []
+
+    class _Capture:
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(agy_canary_evidence, "consume_capture_environment", lambda: _Capture())
+    run = _Run(monkeypatch)
+    rc, out, err = run(["advisor-board", str(bundle), "--advisory", "--json",
+                        "--agy-canary-private-board-name", "board.json"])
+    assert rc == 2 and out == ""
+    assert "cannot be --advisory" in err and closed == [True]
+    assert run.compose_calls == [] and run.invoke_calls == []
 
 
 @pytest.mark.parametrize("extra", [["--landing-tier", "plan"], ["--landing-tier", "production_code"],
