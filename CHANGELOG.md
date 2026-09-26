@@ -19,10 +19,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Only a `done` session with a readable final message succeeds. A session waiting for input
   (`blocked`) fails closed and is left attachable. Approval bypass is not defaulted:
   unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
-  or the session stops `blocked` on its first Bash prompt. The CLI also refuses `--bg` with
-  `bypassPermissions` until the operator has accepted the bypass disclaimer once
-  interactively (`claude --dangerously-skip-permissions`); the launch blocker now carries that
-  refusal line.
+  or the session stops `blocked` on its first Bash prompt.
+- A refused `claude --bg` launch now reports the CLI's first output line in its blocker, since
+  a launch that exits non-zero never started a session.
 - The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
   and its context goes through `context.md` instead of one argv entry.
 - `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.

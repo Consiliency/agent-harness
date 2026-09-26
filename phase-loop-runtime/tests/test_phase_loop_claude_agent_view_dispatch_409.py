@@ -149,6 +149,15 @@ class LaunchBindingTest(unittest.TestCase):
         self.assertIn("requires accepting the disclaimer", lifecycle.blocker.summary)
         self.assertNotIn("secret transcript", lifecycle.blocker.summary)
 
+    def test_any_first_refusal_line_is_surfaced_ansi_stripped(self):
+        def run(command, **kwargs):
+            if command == ["claude", "--bg", "--help"]:
+                return subprocess.CompletedProcess(command, 0, stdout="Usage: claude\n")
+            return subprocess.CompletedProcess(command, 1, stdout="\n\x1b[31mmodel not available\x1b[39m\nmore\n")
+
+        lifecycle = self._launch(run)
+        self.assertTrue(lifecycle.blocker.summary.endswith(" CLI: model not available"))
+
 
 class WaitForTerminalTest(unittest.TestCase):
     def _wait(self, listings, **kwargs):
