@@ -12,6 +12,7 @@ status so a verbose auth error is never mistaken for a real review.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import math
 import mimetypes
@@ -2000,12 +2001,56 @@ def _resolve_brief(mode: str, brief_ref: str | None) -> str:
     ``brief_ref`` path raises ``ValueError`` naming it (fail-closed)."""
     if brief_ref is None:
         return _mode_instructions(mode)
+    pinned = _PINNED_BRIEF.get()
+    if pinned is not None and pinned[0] == brief_ref:
+        if isinstance(pinned[1], BaseException):
+            raise pinned[1].with_traceback(None)
+        return pinned[1]  # type: ignore[return-value]
     path = Path(brief_ref)
     if not path.is_file():
         raise ValueError(
             f"brief_ref path does not exist (fail-closed, not silent-empty): {brief_ref}"
         )
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+# agent-harness#802: the brief text a landing path checked, pinned for the rest of that call so
+# every later resolution in the same context returns exactly those bytes (or re-raises the same
+# failure) instead of re-reading the file. Worker threads that re-read are bound by the HARDEN
+# instruction digest, which is minted from the pinned text.
+_PINNED_BRIEF: contextvars.ContextVar[tuple[str, object] | None] = contextvars.ContextVar(
+    "phase_loop_pinned_brief", default=None,
+)
+
+
+def _brief_pinned(brief_ref: str) -> bool:
+    pinned = _PINNED_BRIEF.get()
+    return pinned is not None and pinned[0] == brief_ref
+
+
+def _pin_landing_brief(mode: str, brief_ref: str) -> contextvars.Token:
+    """Resolve ``brief_ref`` once for a landing path; refuse an advisory contract; pin the result.
+
+    An unreadable brief pins its failure, so it cannot become readable later in the same call.
+    """
+    from .advisor_board.advisory_contract import AdvisoryLandingRefused, is_advisory_brief
+
+    value: object
+    try:
+        value = _resolve_brief(mode, brief_ref)
+    except (OSError, UnicodeError, ValueError) as exc:
+        value = exc
+    else:
+        if is_advisory_brief(value):
+            raise AdvisoryLandingRefused(
+                "the review brief is an advisory contract: an advisory review is non-gating and "
+                "cannot run on a landing path"
+            )
+    return _PINNED_BRIEF.set((brief_ref, value))
+
+
+def _unpin_brief(token: contextvars.Token) -> None:
+    _PINNED_BRIEF.reset(token)
 
 
 def _maybe_warn_inline_size(artifact: str, *, from_ref: bool) -> None:
@@ -8635,6 +8680,18 @@ def invoke_board(
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
     """
+    if brief_ref is not None and not _brief_pinned(brief_ref) and (
+        landing_tier is not None or review_policy is not None
+        or president_invoke is not None or native_president_fill is not None
+    ):
+        # agent-harness#802: a landing path resolves its brief ONCE, refuses an advisory
+        # contract (AdvisoryLandingRefused, before any effect), and runs on that exact text.
+        call = {name: value for name, value in locals().items() if name in _INVOKE_BOARD_PARAMS}
+        token = _pin_landing_brief(mode or "review", brief_ref)
+        try:
+            return _INVOKE_BOARD(**call)
+        finally:
+            _unpin_brief(token)
     try:
         if review_authorization is not None and getattr(review_authorization, "monitoring_policy", "bounded") != monitoring_policy:
             raise ValueError("review_monitoring_policy_mismatch")
@@ -9678,3 +9735,13 @@ def invoke_board(
         finally:
             if capture_control_token is not None:
                 _INJECTED_CAPTURE_CONTROL.reset(capture_control_token)
+
+
+# agent-harness#802: the landing-brief pin re-enters the real invoker with the same arguments,
+# independent of any later rebinding of the public name.
+_INVOKE_BOARD = invoke_board
+_INVOKE_BOARD_PARAMS = frozenset(
+    invoke_board.__code__.co_varnames[
+        : invoke_board.__code__.co_argcount + invoke_board.__code__.co_kwonlyargcount
+    ]
+)
