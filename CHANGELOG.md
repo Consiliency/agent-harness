@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `advisor-board --advisory`: a non-gating review of a standalone document (agent-harness#802; agent-harness#1098 items 1 and 3)
+
+- `phase-loop advisor-board <bundle> --advisory` reviews a research bundle, memo, roadmap or plan
+  under the advisory contract (`advisory.v1`) instead of the code-review brief. The contract tells
+  every seat there is no diff or repository, that a plan's unchecked criteria are not defects, and
+  that the bundle's own charter scopes the analysis. The verdict protocol (AGREE / PARTIALLY AGREE /
+  DISAGREE) still takes precedence, and the bundle stays untrusted material.
+- It runs through the same HARDEN review operation and seat sandbox as the default board. The panel
+  `advisory` mode is still refused. No git repository is needed: the run mints its authority
+  against a private scratch repository and stages no tree, so nothing of the caller's is exposed.
+- It is non-gating. `--advisory` with `--landing-tier`, `--native-president` or agy canary capture
+  is refused before any probe. The JSON carries `board: "advisory"`, `composed_board`,
+  `mode: "advisory"`, `gating: false` and the contract id and digest. Native fills bind the
+  contract digest, so an advisory fill is refused by a default run and the reverse.
+- Refusals are actionable: on a non-Linux host, and outside a git repository, the existing
+  `review isolation unavailable` line is followed by a hint line. The default command, with no new
+  flag, is unchanged.
+
 ### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
 
 - When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit

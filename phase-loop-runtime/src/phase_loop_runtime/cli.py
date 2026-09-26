@@ -1140,6 +1140,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--agy-canary-private-board-name",
         help="Capture-only basename for the full board JSON inside the private evidence root.",
     )
+    # agent-harness#802: an advisory, non-gating run over a standalone document.
+    advisor_board_sub.add_argument(
+        "--advisory", action="store_true", default=False,
+        help=("Review a standalone document (research bundle, memo, roadmap, plan) under the advisory "
+              "contract: the bundle's own charter scopes the analysis, no git repository is needed or "
+              "exposed, and the result is labelled non-gating. Refused with --landing-tier."),
+    )
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
             name,
@@ -1927,7 +1934,66 @@ def _native_agent_request_json(leg: object) -> dict | None:
     return to_dict() if callable(to_dict) else None
 
 
-def _advisor_board_command(*, args: argparse.Namespace) -> int:
+_ADVISORY_REFUSED_GIT_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def _advisory_labels(brief: str, *, composed_board: str | None = None) -> dict[str, object]:
+    """The result labels of an ``--advisory`` run: advisory, non-gating, and which contract."""
+    from .advisor_board.advisory_contract import ADVISORY_CONTRACT_ID
+
+    labels: dict[str, object] = {
+        "mode": "advisory",
+        "gating": False,
+        "contract": {"id": ADVISORY_CONTRACT_ID,
+                     "sha256": hashlib.sha256(brief.encode("utf-8")).hexdigest()},
+    }
+    if composed_board is not None:
+        labels.update({"board": "advisory", "composed_board": composed_board})
+    return labels
+
+
+def _advisory_review_authority(root: Path) -> Path:
+    """A private, empty HARDEN review authority for ``--advisory`` (agent-harness#802).
+
+    The review operation names a git repository as its authority, and the broker needs one
+    tracked file to prove the seat cannot see it. A standalone document has no repository, so
+    an advisory run mints its authority against this scratch repository instead of the
+    caller's: one tracked placeholder, no commit, and nothing of the caller's is staged or
+    exposed. ``GIT_*`` is dropped for the two writes here; the HARDEN authority probes that
+    later read this path use the inherited environment, as they do for any repository.
+    """
+    authority = root / "authority"
+    authority.mkdir(mode=0o700)
+    # An inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE (hooks, CI wrappers) would
+    # redirect these writes into the caller's repository.
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "init", "-q", str(authority)], check=True, env=git_env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (authority / "ADVISORY-AUTHORITY").write_text(
+        "Private review authority for one advisory advisor-board run. It holds no reviewed content.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(authority), "add", "-f", "ADVISORY-AUTHORITY"], check=True, env=git_env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return authority.resolve()
+
+
+def _review_isolation_hint(exc: BaseException) -> str | None:
+    """An actionable next step for a refused review isolation (agent-harness#1098)."""
+    import platform
+
+    if platform.system() != "Linux":
+        return ("advisor-board: hint: board seats run only inside the Linux review sandbox "
+                "(bubblewrap and user namespaces), which this host cannot provide. Run the command "
+                "on a Linux host that has them.")
+    if isinstance(exc, subprocess.CalledProcessError) and "rev-parse" in list(exc.cmd or ()):
+        return ("advisor-board: hint: the code-review board needs the git repository under review; "
+                "run it from inside that repository, or pass --advisory to review a standalone "
+                "document without one.")
+    return None
+
+
+def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | None = None) -> int:
     """LEGACY (CLEANSHIP P7): run the 4-vendor advisor board as the RUNNABLE
     agent-facing default. Composes availability-aware seats via
     ``compose_review_board`` (REVIEWGOV IF-0-REVIEWGOV-1: ``is_available ∧ auth_ok``,
@@ -1935,8 +2001,31 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     ``invoke_board``. The load-bearing legacy ``invoke_panel`` is NOT used here — this
     is the additive board surface. Function-local imports keep the advisor_board /
     panel_invoker graph off the bare ``import cli`` path and let tests patch the
-    composition/dispatch seams without shelling out to real vendor CLIs."""
+    composition/dispatch seams without shelling out to real vendor CLIs.
+
+    ``--advisory`` (agent-harness#802) runs the same review operation under the advisory
+    contract against a private scratch authority, and labels the result non-gating."""
     import tempfile
+
+    advisory = bool(getattr(args, "advisory", False))
+    if advisory:
+        # Non-gating by construction: refused before any probe, like the usage errors below.
+        for flag, attr in (("--landing-tier", "landing_tier"), ("--native-president", "native_president")):
+            if getattr(args, attr, None) is not None:
+                print(f"advisor-board: --advisory is non-gating and cannot be combined with {flag}",
+                      file=sys.stderr)
+                return 2
+        # The HARDEN authority probes inherit the environment, and these override ``git -C``:
+        # the scratch authority would silently resolve to the caller's repository.
+        inherited_git = sorted(k for k in _ADVISORY_REFUSED_GIT_ENV if os.environ.get(k))
+        if inherited_git:
+            print(f"advisor-board: --advisory cannot run with {', '.join(inherited_git)} set: it would "
+                  "redirect the private review authority to another repository; unset it and retry",
+                  file=sys.stderr)
+            return 2
+        if _advisory_root is None:
+            with tempfile.TemporaryDirectory(prefix="advisor-board-advisory-") as advisory_root:
+                return _advisor_board_command(args=args, _advisory_root=Path(advisory_root))
 
     from .advisor_board.backing import (
         clear_review_composition_authorization,
@@ -1957,6 +2046,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     from .panel_invoker import _mode_instructions, _preflight_gemini_heartbeat, invoke_board
     from .panel_invoker import PresidentPolicyError
 
+    # The authoritative review instructions: the code-review brief, or the advisory contract,
+    # staged as the brief file every seat and native fill binds (agent-harness#802).
+    review_brief = _mode_instructions("review")
+    advisory_brief_ref: str | None = None
+    if advisory:
+        from .advisor_board.advisory_contract import ADVISORY_CONTRACT
+
+        assert _advisory_root is not None
+        review_brief = ADVISORY_CONTRACT
+        advisory_brief_path = _advisory_root / "advisory-contract.md"
+        advisory_brief_path.write_text(ADVISORY_CONTRACT, encoding="utf-8")
+        advisory_brief_ref = str(advisory_brief_path)
     monitoring_policy = getattr(args, "monitoring_policy", "bounded")
     try:
         resolve_review_monitoring_policy(
@@ -2002,6 +2103,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         print("advisor-board: capture requires --json so full board output stays private", file=sys.stderr)
         capture.close()
         return 2
+    if capture is not None and advisory:
+        print("advisor-board: capture is a governed exact-four run and cannot be --advisory", file=sys.stderr)
+        capture.close()
+        return 2
     review_authorization = None
     instruction_token: object | None = None
     canonical_repo_authority: Path | None = None
@@ -2010,12 +2115,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         # Composition performs vendor auth probes.  Bind its independent pre-effect
         # authority before composition, then mint the exact board authority below.
         try:
-            canonical_repo_authority = Path(subprocess.check_output(
-                ["git", "rev-parse", "--show-toplevel"], text=True, stderr=subprocess.DEVNULL
-            ).strip()).resolve()
+            if _advisory_root is not None:
+                canonical_repo_authority = _advisory_review_authority(_advisory_root)
+            else:
+                canonical_repo_authority = Path(subprocess.check_output(
+                    ["git", "rev-parse", "--show-toplevel"], text=True, stderr=subprocess.DEVNULL
+                ).strip()).resolve()
             prepare_review_composition_authorization()
         except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
             print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
+            hint = _review_isolation_hint(exc)
+            if hint is not None:
+                print(hint, file=sys.stderr)
             return 2
     # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
     # already auth-aware — with no args, ``compose_review_board`` defaults
@@ -2050,7 +2161,9 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         )
         try:
             artifact_text = artifact_path.read_text(encoding="utf-8")
-            payload = native_fill_request_payload(board, artifact_text)
+            payload = native_fill_request_payload(
+                board, artifact_text, **({"brief_ref": advisory_brief_ref} if advisory else {}),
+            )
             root = Path(getattr(args, "native_fill_dir", None) or artifact_path.resolve().parent)
             out_dir = root / "native-fill" / str(payload["request_id"])
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -2071,6 +2184,8 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                   "artifact_path": payload["artifact_path"], "instructions_path": payload["instructions_path"],
                   "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"],
                   "composition": payload["composition"]}
+        if advisory:
+            record.update(_advisory_labels(review_brief))
         if bool(getattr(args, "json", False)):
             print(json.dumps(record, indent=2, sort_keys=True))
         else:
@@ -2090,7 +2205,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             return 2
         refusal = preflight_native_leg_fills(
             board, native_leg_fills, artifact_sha256=content_sha256(staged_text),
-            brief_sha256=content_sha256(_mode_instructions("review")), composition_sha256=composition_digest(board),
+            brief_sha256=content_sha256(review_brief), composition_sha256=composition_digest(board),
         )
         if refusal is not None:
             # Typed, before any reviewer launch.
@@ -2098,7 +2213,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             return 2
     if capture is None:
         instruction_token = set_review_instruction_digest(
-            _mode_instructions("review")
+            review_brief
         )
         try:
             artifact_text = artifact_path.read_text(encoding="utf-8")
@@ -2108,11 +2223,16 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 mode="review",
                 canonical_repo_authority=canonical_repo_authority,
                 **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
+                # An advisory run stages no tree: the scratch authority holds nothing to review.
+                **({"stage_review_tree": False} if advisory else {}),
             )
         except (OSError, UnicodeError, ValueError) as exc:
             reset_review_instruction_digest(instruction_token)
             instruction_token = None
             print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
+            hint = _review_isolation_hint(exc)
+            if hint is not None:
+                print(hint, file=sys.stderr)
             return 2
     # Constrain the spawn cwd (write boundary): the native/claude route otherwise
     # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
@@ -2163,6 +2283,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 "artifact_ref": str(artifact_path.resolve()),
                 "repo_dir": scratch,
                 **({"native_leg_fills": native_leg_fills} if native_leg_fills else {}),
+                **({"brief_ref": advisory_brief_ref} if advisory else {}),
                 "agy_canary_capture": capture,
                 **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
             }
@@ -2281,6 +2402,8 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 for leg in result.legs
             ],
         }
+        if advisory:
+            payload.update(_advisory_labels(review_brief, composed_board=board.name))
         if capture is not None:
             bound_capture = getattr(result, "_agy_canary_capture", None)
             # A governed invocation may refuse before it has allocated and sealed
@@ -2311,8 +2434,9 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             return exit_code
         print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
+    board_label = f"advisory (non-gating; composed from {board.name})" if advisory else board.name
     print(
-        f"advisor-board: {board.name} — independence={independence.level} "
+        f"advisor-board: {board_label} — independence={independence.level} "
         f"({independence.distinct_vendors} distinct vendors / {independence.seats} seats)"
     )
     for leg in result.legs:
