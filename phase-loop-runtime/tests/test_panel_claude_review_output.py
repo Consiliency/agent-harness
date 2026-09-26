@@ -947,20 +947,24 @@ def test_1088r2_a_user_replay_between_cap_and_resume_keeps_the_join(tmp_path, te
     # codex r2 (5a): a replay has no effect on the cap state.
     path = _jsonl(tmp_path, [
         _user("u1", "Review A."), _asst("HEAD", mid="m1", uuid="a1", stop="max_tokens"),
-        _user("u1", "Review A."), _resume(), _asst("TAIL", mid="m2", uuid="a2"),
+        _user("u1", "Review A."), _resume(), _asst("TAIL\nAGREE", mid="m2", uuid="a2"),
     ])
-    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "HEAD\nTAIL"
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "HEAD\nTAIL\nAGREE"
 
 
 @pytest.mark.parametrize("terminal", [False, True])
-def test_1088r2_a_finished_continuation_in_history_does_not_block_a_later_request(tmp_path, terminal):
-    # grok r2 / codex r2 (5b): #1002's "history never blocks a later answer".
+@pytest.mark.parametrize("meta", [False, True])
+def test_1088r2_a_finished_continuation_in_history_does_not_block_a_later_request(tmp_path, terminal, meta):
+    # grok r2 / codex r2 (5b): #1002's "history never blocks a later answer" -- for a GENUINE
+    # later request. An isMeta record is never a request the CLI writes, so after a cap it is
+    # not canonical and fails closed (r3 redesign).
+    request = _meta("u2", "New request: review change B only.") if meta else _user("u2", "Review change B only.")
     path = _jsonl(tmp_path, [
         _user("u1", "Review A"), _asst("HEAD", mid="m1", uuid="a1", stop="max_tokens"),
         _resume(), _asst("TAIL", mid="m2", uuid="a2"),
-        _meta("u2", "New request: review change B only."), _asst("B answer", mid="m3", uuid="a3"),
+        request, _asst("B answer", mid="m3", uuid="a3"),
     ])
-    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "B answer"
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ("" if meta else "B answer")
 
 
 @pytest.mark.parametrize("terminal", [False, True])
@@ -971,3 +975,92 @@ def test_1088r2_joins_hold_on_the_president_route_too(tmp_path, terminal):
         _asst("part three\nAGREE", mid="m3", uuid="a3"),
     ])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "part one\npart two\npart three\nAGREE"
+
+
+# --- r3 redesign: only the canonical shape (cap, resume, ..., final) after the last genuine
+# request is joined; anything else there fails closed; a joined verdict line must lie wholly
+# inside the final piece.
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_meta_non_resume_in_history_does_not_suppress_a_later_answer(tmp_path, terminal):
+    # codex r3: an ambiguous earlier turn is history once a genuine request follows it.
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("A head", mid="m1", uuid="a1", stop="max_tokens"),
+        _meta("x1", "<system-reminder>ctx</system-reminder>"), _asst("A other", mid="m2", uuid="a2"),
+        _user("u2", "Review C"), _asst("C answer\nAGREE", mid="m3", uuid="a3"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "C answer\nAGREE"
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_tool_turn_and_meta_reminder_after_a_resume_fail_closed(tmp_path, terminal):
+    # grok r3: resume, tool_use/tool_result, isMeta reminder, answer -> must not truncate to the tail.
+    tool, result = _tool_pair()
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("BLOCKING: auth missing", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), tool, result, _meta("x1", "<system-reminder>ctx</system-reminder>"),
+        _asst("tail\nAGREE", mid="m3", uuid="a3"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_tool_result_mixed_with_text_after_a_cap_fails_closed(tmp_path, terminal):
+    # grok r3: a user record mixing tool_result and text is not a resume.
+    mixed = {"type": "user", "uuid": "t1", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t", "content": "ok"}, {"type": "text", "text": "more"}]}}
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("BLOCKING: x", mid="m1", uuid="a1", stop="max_tokens"),
+        mixed, _asst("tail\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("where", ["before_resume", "after_resume"])
+def test_1088r3_a_meta_record_around_the_resume_fails_closed(tmp_path, terminal, where):
+    # claude r3 B1: an extra isMeta record must not turn the capped head into history.
+    extra = _meta("x1", "<system-reminder>ctx</system-reminder>")
+    middle = [extra, _resume()] if where == "before_resume" else [_resume(), extra]
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("BLOCKING: auth missing", mid="m1", uuid="a1", stop="max_tokens"),
+        *middle, _asst("tail\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_cut_inside_the_verdict_line_fails_closed(tmp_path, terminal):
+    # claude r3 B2: "DIS" + "AGREE" must not read as a clean AGREE.
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("Findings...\nDIS", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst("AGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_head_ending_on_a_newline_keeps_a_one_line_tail(tmp_path, terminal):
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("Findings...\n", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst("AGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "Findings...\n\nAGREE"
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_cap_without_a_resume_fails_closed(tmp_path, terminal):
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("HEAD", mid="m1", uuid="a1", stop="max_tokens"),
+        _asst("TAIL\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r3_a_resume_after_an_uncapped_message_fails_closed(tmp_path, terminal):
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("HEAD\nAGREE", mid="m1", uuid="a1"),
+        _resume(), _asst("TAIL\nDISAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""

@@ -11,9 +11,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit
   hit…", `isMeta`) and continues under a new message id. That record no longer counts as a new
   request: the extractor joins the capped message(s) with the continuation, instead of returning
-  only the tail and silently dropping a review's findings. Any other meta record after a cap, a
-  resume that continues nothing, and a continuation crossing a tool call all fail closed. On the
-  president route, a `max_tokens` stop is allowed only on a message the answer continues.
+  only the tail and silently dropping a review's findings. Only the exact shape the CLI writes is
+  joined: after the last genuine request, capped message, resume, …, final message. A cap or
+  resume in any other shape there (another meta record, a tool call, a cap without a resume)
+  fails closed, and so does a join whose last line is not wholly inside the final piece (a cut
+  mid-verdict). Turns with no cap or resume are extracted exactly as before. On the president
+  route, a `max_tokens` stop is allowed only on a message the answer continues.
 
 ## [0.7.19] - 2026-09-26
 

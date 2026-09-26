@@ -4063,16 +4063,6 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     def _state(message: dict) -> tuple:
         return ("stop_reason" in message, message.get("stop_reason"))
 
-    # agent-harness#1077: when an answer hits the output cap, the CLI journals the capped
-    # message (stop_reason max_tokens), then an isMeta user record carrying its exact resume
-    # prompt, then the continuation under a NEW message id. One pass classifies every user
-    # record so replay, resume and boundary rules cannot disagree:
-    # - an exact user replay (same uuid and content) is skipped with no effect at all;
-    # - the exact resume prompt after an effective max_tokens stop continues the answer;
-    #   anywhere else it cannot be placed and fails closed;
-    # - any other isMeta record straight after a cap is ambiguous and fails closed;
-    # - every other user record is a turn boundary.
-    # The effective stop ignores exact assistant replays and stale open versions, as below.
     def _is_resume(payload: dict, message: dict) -> bool:
         if payload.get("isMeta") is not True:
             return False
@@ -4084,46 +4074,77 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
 
     def _is_tool_result(message: dict) -> bool:
         content = message.get("content")
-        return isinstance(content, list) and bool(content) and all(
+        return isinstance(content, list) and any(
             isinstance(item, dict) and item.get("type") == "tool_result" for item in content)
 
-    continuation_positions: set[int] = set()
-    boundary = -1
-    request_boundary = -1  # the last boundary that is a request, not a tool result
+    # User records, in order, with exact replays (same uuid and content) removed.
+    fresh_users: list[int] = []
     seen_users: set[tuple[str, str]] = set()
-    effective_stop: object = None
-    stop_by_uuid: dict[str, tuple[str, tuple]] = {}
-    versions_by_uuid: dict[str, set[tuple[str, tuple]]] = {}
     for position, (payload, message) in enumerate(records):
-        if message.get("role") == "assistant":
-            uid, said, state = _uuid(payload), _said(message), _state(message)
-            if uid is not None and uid in stop_by_uuid:
-                if (said, state) in versions_by_uuid[uid]:
-                    continue  # an exact replay does not change the effective state
-                if said == stop_by_uuid[uid][0] and state == (True, None) and stop_by_uuid[uid][1][1] is not None:
-                    continue  # a stale open version of a stopped record
-            if uid is not None:
-                stop_by_uuid[uid] = (said, state)
-                versions_by_uuid.setdefault(uid, set()).add((said, state))
-            effective_stop = message.get("stop_reason")
+        if message.get("role") != "user":
             continue
         user_id = _uuid(payload)
         if user_id is not None:
             if (user_id, _said(message)) in seen_users:
                 continue  # a re-journaled user record is not a new request
             seen_users.add((user_id, _said(message)))
-        if _is_resume(payload, message):
-            if effective_stop != "max_tokens":
-                return ""  # a resume that continues no capped message cannot be placed
-            continuation_positions.add(position)
-            effective_stop = None
-            continue  # the same answer continues
-        if payload.get("isMeta") is True and effective_stop == "max_tokens":
-            return ""  # an unrecognised meta record right after a cap: resume or request?
-        boundary = position
-        if not _is_tool_result(message):
-            request_boundary = position
-        effective_stop = None
+        fresh_users.append(position)
+    boundary = fresh_users[-1] if fresh_users else -1
+
+    # agent-harness#1077: an answer that hits the output cap is journaled as a capped message
+    # (stop_reason max_tokens), the CLI's exact isMeta resume prompt, and the continuation
+    # under a NEW message id, possibly repeated. That shape is recognised ONLY in its
+    # canonical form, within the region after the last genuine request (a user record that
+    # is not isMeta, carries no tool_result and is not a replay): capped message, resume, capped
+    # message, resume, ..., final message, with exact replays ignored and nothing else in
+    # between. If the region holds a cap or a resume in any other shape, the answer cannot be
+    # rebuilt soundly and fails closed. With no cap or resume there, extraction is unchanged.
+    requests = [pos for pos in fresh_users
+                if records[pos][0].get("isMeta") is not True and not _is_tool_result(records[pos][1])]
+    request = requests[-1] if requests else -1
+    events: list[tuple[str, object]] = []
+    region_known: dict[str, tuple[str, tuple]] = {}
+    region_versions: dict[str, set[tuple[str, tuple]]] = {}
+    for position in range(request + 1, len(records)):
+        payload, message = records[position]
+        if message.get("role") == "user":
+            if position not in fresh_users:
+                continue  # an exact replay
+            events.append(("resume", None) if _is_resume(payload, message) else ("user", None))
+            continue
+        uid, said, state = _uuid(payload), _said(message), _state(message)
+        if uid is not None and uid in region_known:
+            if (said, state) in region_versions[uid]:
+                continue
+            if said == region_known[uid][0] and state == (True, None) and region_known[uid][1][1] is not None:
+                continue
+        if uid is not None:
+            region_known[uid] = (said, state)
+            region_versions.setdefault(uid, set()).add((said, state))
+        events.append(("assistant", message.get("id")))
+    continued: list[object] = []  # the message ids of a canonical continued answer, in order
+    capped_seen = any(kind == "resume" for kind, _ in events) or any(
+        m.get("role") == "assistant" and m.get("stop_reason") == "max_tokens"
+        for _, m in records[request + 1:])
+    if capped_seen:
+        groups: list[list[tuple[str, object]]] = [[]]
+        for kind, value in events:
+            if kind == "resume":
+                groups.append([])
+            elif kind == "user":
+                return ""  # another user record inside a continued answer: not canonical
+            else:
+                groups[-1].append((kind, value))
+        ids: list[object] = []
+        for group in groups:
+            message_ids = {value for _, value in group}
+            if len(message_ids) != 1 or None in message_ids:
+                return ""  # each piece is exactly one identified message
+            ids.append(message_ids.pop())
+        if len(ids) < 2 or len(ids) != len(set(ids)):
+            return ""
+        continued = ids  # _message_text requires every piece but the last to be capped
+        boundary = request
     history = [(p, m) for p, m in records[: max(boundary, 0)] if m.get("role") == "assistant"]
     history_ids = {m.get("id") for _, m in history} - {None}
     history_uuids = {_uuid(p) for p, _ in history} - {None}
@@ -4174,37 +4195,7 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     if len(sequence) != len(set(sequence)):
         return ""  # a message id left and returned within the turn
     final_id = sequence[-1]
-
-    def _first_last(message_id: object) -> tuple[int, int]:
-        spots = [pos for pos, (_, m) in zip(turn_positions, turn) if m.get("id") == message_id]
-        return spots[0], spots[-1]
-
-    def _continued_into(message_id: object) -> bool:
-        # A continuation record sits between the previous message and this one.
-        index = sequence.index(message_id)
-        first = _first_last(message_id)[0] if message_id is not None else turn_positions[-1]
-        floor = _first_last(sequence[index - 1])[1] if index > 0 else boundary
-        return any(floor < pos < first for pos in continuation_positions)
-
-    # The answer is the final message, plus every earlier message of the turn it continues:
-    # each capped at max_tokens and followed by a resume record. A continuation whose head
-    # cannot be rebuilt soundly fails closed rather than returning a truncated answer.
-    chain: list[object] = [final_id]
-    while _continued_into(chain[0]):
-        index = sequence.index(chain[0])
-        if chain[0] is None or index == 0 or sequence[index - 1] is None:
-            return ""
-        chain.insert(0, sequence[index - 1])
-
-    # Every resume after the last REQUEST boundary must sit between two members of the chain;
-    # otherwise the head it continued lies outside the answer (for example behind a tool
-    # call) and returning the rest would be a truncated answer. A continuation before the
-    # last request is history and never blocks a later answer.
-    spans = [(_first_last(chain[i])[1], _first_last(chain[i + 1])[0])
-             for i in range(len(chain) - 1)] if None not in chain else []
-    if any(pos > request_boundary and not any(lo < pos < hi for lo, hi in spans)
-           for pos in continuation_positions):
-        return ""
+    chain: list[object] = list(continued) if continued else [final_id]
 
     def _message_text(message_id: object, *, final: bool) -> str | None:
         if message_id is None:
@@ -4299,6 +4290,13 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         if text is None:
             return ""
         parts.append(text)
+    if len(parts) > 1:
+        # The model resumes mid-thought, so a cut can split a line. The verdict is read
+        # from the last line, which must lie wholly inside the final piece.
+        final_text = parts[-1].strip(" \t\r\n")
+        earlier = "\n".join(part for part in parts[:-1] if part)
+        if not final_text or ("\n" not in final_text and not earlier.endswith("\n")):
+            return ""
     return "\n".join(part for part in parts if part).strip(" \t\r\n")
 
 
