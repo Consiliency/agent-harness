@@ -78,8 +78,6 @@
       "claude-sonnet-5",
       "--effort",
       "high",
-      "--permission-mode",
-      "bypassPermissions",
       "--disallowedTools",
       "Agent,TaskCreate,TaskUpdate,TaskList,TeamCreate,TeamDelete,SendMessage,EnterWorktree,ExitWorktree,AskUserQuestion,ExitPlanMode,ToolSearch,advisor",
       "--",

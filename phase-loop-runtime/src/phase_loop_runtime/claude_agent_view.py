@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -104,6 +104,8 @@ class AgentViewLifecycleResult:
     auth_posture: str = "unknown"
     billing_posture: str = "unknown"
     blocker: BlockerSummary | None = None
+    # Full ids of sessions already listed before this launch; never bound to it.
+    preexisting_session_ids: frozenset[str] = frozenset()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -332,6 +334,28 @@ class ClaudeAgentViewAdapter:
                 stop_result=None,
                 blocker=preflight.blocker,
             )
+        preexisting: frozenset[str] = frozenset()
+        if bind_printed_id:
+            # agent-harness#1101 round 2: a record listed BEFORE this launch can never be
+            # the session it starts, even when it shares the printed short id and the new
+            # session registers late. Snapshot the full ids first; if that is impossible,
+            # refuse before starting anything.
+            before = self.list_sessions(cwd=None)
+            if not before.ok:
+                return AgentViewLifecycleResult(
+                    session_id="preflight",
+                    state="blocked",
+                    cwd=str(cwd),
+                    logs_ref=None,
+                    started_at=None,
+                    completed_at=_utc_now(),
+                    stop_result=None,
+                    blocker=BlockerSummary(
+                        "agent_view_preexisting_unknown",
+                        "Agent View launch refused before claude --bg: could not list existing sessions to exclude them from binding.",
+                    ),
+                )
+            preexisting = frozenset(_session_key(session) for session in before.sessions)
         result = self._runner(
             list(preflight.command),
             cwd=str(cwd),
@@ -374,19 +398,22 @@ class ClaudeAgentViewAdapter:
                     ),
                 )
             try:
-                session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id)
+                session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id, exclude=preexisting)
             except AmbiguousSessionError as exc:
                 return _ambiguous_lifecycle(session_id, cwd, exc)
             if session:
                 # Pinned from here on: the full session id, never the short one.
-                return _lifecycle_from_session(session)
-            return _lifecycle_from_parts(
-                session_id=session_id,
-                state="running",
-                cwd=str(cwd),
-                started_at=_utc_now(),
-                completed_at=None,
-                stop_result=None,
+                return replace(_lifecycle_from_session(session), preexisting_session_ids=preexisting)
+            return replace(
+                _lifecycle_from_parts(
+                    session_id=session_id,
+                    state="running",
+                    cwd=str(cwd),
+                    started_at=_utc_now(),
+                    completed_at=None,
+                    stop_result=None,
+                ),
+                preexisting_session_ids=preexisting,
             )
         session = _find_session(self.list_sessions(cwd=cwd).sessions, session_id=session_id, cwd=str(cwd))
         if session:
@@ -408,6 +435,7 @@ class ClaudeAgentViewAdapter:
         poll_interval_s: float = AGENT_VIEW_POLL_INTERVAL_S,
         timeout_s: float | None = None,
         on_poll: Callable[[AgentViewSession | None], None] | None = None,
+        exclude: frozenset[str] = frozenset(),
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> AgentViewLifecycleResult:
@@ -417,10 +445,12 @@ class ClaudeAgentViewAdapter:
         waiting for input, which nothing unattended can supply, so it returns too and
         the session is left attachable. A running session is never timed out on
         silence: `timeout_s` applies only when the caller passes one, and it is None
-        by default. Only the OBSERVER failing ends the wait early, fail-closed: a working
-        listing that stops showing the bound record for AGENT_VIEW_OBSERVER_FAILURE_LIMIT
-        consecutive polls, or `claude agents` itself failing for
-        AGENT_VIEW_LISTING_ERROR_LIMIT consecutive polls. The session is not stopped
+        by default. Only the OBSERVER failing ends the wait early, fail-closed:
+        AGENT_VIEW_OBSERVER_FAILURE_LIMIT successful listings that do not show the bound
+        record (counting from launch, so a record that has not registered yet counts too;
+        a listing error neither adds to nor resets this count, and seeing the record
+        resets it), or AGENT_VIEW_LISTING_ERROR_LIMIT consecutive `claude agents` failures.
+        Sessions in `exclude` (listed before the launch) never match. The session is not stopped
         then, and the result names it with its attach/stop commands. A short printed
         id that matches more than one listed session fails closed as ambiguous; once it
         resolves uniquely, the full session id is pinned.
@@ -434,7 +464,7 @@ class ClaudeAgentViewAdapter:
             session = None
             if listed.ok:
                 try:
-                    session = _find_bound_session(listed.sessions, bound)
+                    session = _find_bound_session(listed.sessions, bound, exclude=exclude)
                 except AmbiguousSessionError as exc:
                     return _ambiguous_lifecycle(bound, cwd, exc)
             if on_poll is not None:
@@ -791,16 +821,25 @@ class AmbiguousSessionError(Exception):
         self.count = count
 
 
-def _find_bound_session(sessions: tuple[AgentViewSession, ...], session_id: str) -> AgentViewSession | None:
+def _session_key(session: AgentViewSession) -> str:
+    return session.session_id or session.id or ""
+
+
+def _find_bound_session(
+    sessions: tuple[AgentViewSession, ...], session_id: str, *, exclude: frozenset[str] = frozenset()
+) -> AgentViewSession | None:
     """The one listed session named by `session_id`, None if absent.
 
-    Raises AmbiguousSessionError when more than one distinct session matches (a short
-    id shared by an older record): binding the first would reduce the wrong session.
+    Sessions in `exclude` (listed before the launch) never match. Raises
+    AmbiguousSessionError when more than one distinct session matches (a short id
+    shared by an older record): binding the first would reduce the wrong session.
     """
     matches: dict[str, AgentViewSession] = {}
     for session in sessions:
+        if _session_key(session) in exclude:
+            continue
         if session.session_id == session_id or session.id == session_id:
-            matches[session.session_id or session.id or session_id] = session
+            matches[_session_key(session) or session_id] = session
     if len(matches) > 1:
         raise AmbiguousSessionError(session_id, len(matches))
     return next(iter(matches.values()), None)
@@ -816,7 +855,9 @@ def _ambiguous_lifecycle(session_id: str, cwd: str | Path | None, exc: Ambiguous
         stop_result=None,
         blocker=BlockerSummary(
             "agent_view_session_ambiguous",
-            f"{exc.count} Agent View sessions match the printed id {session_id}; refusing to guess which one this launch started.",
+            f"{exc.count} Agent View sessions match the printed id {session_id}; refusing to guess which one "
+            f"this launch started. It may still be running: find it with `claude agents` and inspect or stop "
+            f"it with `claude attach <id>` / `claude stop <id>`.",
         ),
     )
 
@@ -873,8 +914,8 @@ def _launch_session_id(output: str, *, strict: bool = False) -> str | None:
         return None
     if strict:
         for pattern in (
-            r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9._:-]+)",
-            r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9._:-]+)\b",
+            r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9_-]+(?:[.:][A-Za-z0-9_-]+)*)",
+            r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9_-]+(?:[.:][A-Za-z0-9_-]+)*)",
         ):
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:

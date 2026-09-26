@@ -1443,7 +1443,12 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             claude_channel_session_id=route_selection.session_id,
         )
     if route_selection.route == "claude_agent_view":
-        permission_mode = _claude_permission_mode(request.action, request.bypass_approvals)
+        # Match the operator's own Claude settings (maintainer ruling on agent-harness#1101):
+        # a permission mode is passed ONLY when the request explicitly asks for one. The
+        # runner's one explicit request is --bypass-approvals; otherwise the session
+        # inherits the operator's configured mode, and stops `blocked` at the first
+        # prompt that mode requires.
+        permission_mode = "bypassPermissions" if request.bypass_approvals else None
         return LaunchSpec(
             executor="claude",
             command=ClaudeAgentViewAdapter().launch_command(
@@ -2333,6 +2338,7 @@ def _launch_claude_agent_view(
         lifecycle = adapter.wait_for_terminal(
             lifecycle.session_id,
             cwd=cwd,
+            exclude=lifecycle.preexisting_session_ids,
             timeout_s=float(spec.launch_timeout_seconds) if spec.launch_timeout_seconds else None,
             on_poll=_heartbeat,
         )

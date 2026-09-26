@@ -67,6 +67,11 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # ends its options with `--` so a variadic option cannot swallow the prompt.
     agent_view = golden["claude_agent_view_solo"]["command"]
     assert "--allowedTools" not in agent_view
+    # ...and passes no --permission-mode without an explicit request (the golden request
+    # has bypass_approvals=False), so the session inherits the operator's own mode.
+    assert "--permission-mode" not in agent_view
+    at = agent_view.index("--effort") + 2
+    agent_view[at:at] = ["--permission-mode", "bypassPermissions"]
     agent_view.remove("--")
     at = agent_view.index("--disallowedTools")
     del agent_view[at:at + 2]

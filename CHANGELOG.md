@@ -11,35 +11,44 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
   root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
   returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
-- The launch binds only the session whose id `claude --bg` prints (the CLI ignores
-  `--session-id` under `--bg`), never another one in the same cwd. It accepts only the CLI's
-  own launch forms (ANSI stripped). A short id that matches more than one listed session
-  fails closed as ambiguous, and once it resolves uniquely the full session id is pinned.
-  Options end with `--` so the variadic flags cannot swallow the prompt. It waits until Agent View reports
-  a terminal state. There is no default deadline and no silence termination, and
-  `launch_timeout_seconds` applies only when set. Only the observer failing ends the wait
-  early, fail-closed: the listing no longer showing the session for 12 polls (~1 min), or
-  `claude agents` itself failing for 60 polls (~5 min). The session is not stopped then; the
-  blocker says it may still be running and gives the `claude attach`/`claude stop` commands. It then returns the session's final assistant message from its transcript as the launch output.
-  Only a `done` session with a readable final message succeeds. A session waiting for input
-  (`blocked`) fails closed and is left attachable. Approval bypass is not defaulted:
-  unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
-  or the session stops `blocked` at the first permission prompt the operator's own settings
-  would show (for example Bash under `acceptEdits`).
-- A refused `claude --bg` launch now reports the CLI's first output line in its blocker, since
-  a launch that exits non-zero never started a session. For example, a background session
-  refuses to start in a workspace that has not been trusted interactively once
-  (`Workspace not trusted`), and trust recorded for a parent directory does not carry over.
-- Before `claude --bg`, the launch now reads (never writes) the operator's per-folder Claude
-  trust for the exact cwd and refuses up front with an actionable hint when it is not trusted.
-  `workspace_trust_state` no longer reports `trusted` just because `.mcp.json` is fine.
-- The session gets only the restrictive half of the print route's tool policy
-  (`--disallowedTools`, so it cannot stall on AskUserQuestion / plan approval or fan out). It
-  never gets `--allowedTools`: those are permission allow rules that would widen the operator's
-  settings. Its context goes through `context.md` instead of one argv entry.
-- The route honors the operator's own Claude settings and workspace trust as-is. It neither
-  weakens nor adds permission settings: no `--settings`, no `--setting-sources`, no
-  `--allowedTools`, no injected `skipDangerousModePermissionPrompt`.
+- **Binding.** The launch binds only the session whose id `claude --bg` prints (the CLI
+  ignores `--session-id` under `--bg`), never one found by cwd.
+  - Only the CLI's own launch forms are parsed, with ANSI stripped.
+  - Sessions already listed before the launch are snapshotted and never bound, even when an
+    older one shares the printed short id and the new session registers late. If existing
+    sessions cannot be listed, the launch refuses before starting anything.
+  - A short id matching more than one new session fails closed as ambiguous. Once it
+    resolves uniquely, the full session id is pinned.
+- **Waiting.** The launch waits until Agent View reports a terminal state. There is no default
+  deadline and no silence termination; `launch_timeout_seconds` applies only when set. Only
+  the observer failing ends the wait early, fail-closed:
+  - 12 successful listings that do not show the session, counted from launch, so polls
+    before it registers count too. Seeing it resets the count; a listing error neither
+    adds to nor resets it.
+  - Or 60 consecutive `claude agents` failures.
+  - The session is not stopped then. The blocker says it may still be running and gives the
+    `claude attach` and `claude stop` commands.
+- **Result.** Only a `done` session whose final assistant message is read from its transcript
+  succeeds, and that message is the launch output. A session waiting for input (`blocked`)
+  fails closed and is left attachable.
+- **Settings and permissions.** The route honors the operator's own Claude settings and
+  workspace trust as-is.
+  - It passes no `--settings`, no `--setting-sources`, no `--allowedTools` allow rules, and no
+    injected setting such as `skipDangerousModePermissionPrompt`.
+  - It passes a `--permission-mode` only when explicitly requested: `--bypass-approvals`
+    gives `bypassPermissions`. Otherwise the session inherits the operator's configured
+    mode. So unattended runs of any action must pass `--bypass-approvals`, or the session
+    stops `blocked` at the first prompt the operator's mode requires.
+  - It only restricts: `--disallowedTools` keeps an unattended session from stalling on
+    AskUserQuestion or plan approval, or from fanning out.
+  - Its context goes through `context.md` instead of one argv entry.
+- **Trust.** Before `claude --bg`, the launch reads (never writes) the operator's per-folder
+  Claude trust for the exact cwd. A trusted parent folder does not count. When the folder is
+  not trusted, the launch refuses before any subprocess, with the fix: run `claude` in that
+  folder once and accept the trust prompt. `workspace_trust_state` no longer reports
+  `trusted` just because `.mcp.json` is fine.
+- **Refusals.** A refused `claude --bg` launch reports the CLI's first output line in its
+  blocker, since a launch that exits non-zero never started a session.
 - `claude_solo` stays `proof-blocked`. The live proof is parked until the workspace-trust design
   lands (agent-harness#1104); agent-harness#1099 stays open.
 

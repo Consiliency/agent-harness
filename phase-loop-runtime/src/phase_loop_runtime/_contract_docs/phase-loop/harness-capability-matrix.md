@@ -402,8 +402,9 @@ binds only the session whose id `claude --bg` prints (the CLI ignores
 `--session-id` under `--bg`), waits for a terminal Agent
 View state with no default deadline or silence termination, and returns the
 session's final assistant message from its transcript as the launch output. A
-`blocked` session (waiting for input) fails closed and stays attachable; unattended
-`plan`/`roadmap` actions therefore need `--bypass-approvals`. `claude_solo` stays
+`blocked` session (waiting for input) fails closed and stays attachable. Without
+`--bypass-approvals` no permission mode is passed, so unattended runs of any action
+need `--bypass-approvals`. `claude_solo` stays
 `proof-blocked` until a disposable roadmap proof on this route records
 `launch.json` and `terminal-summary.json` (agent-harness#1099). The disposable
 proof attempts on 2026-09-26 all exited non-zero within a second with no session.
@@ -411,7 +412,8 @@ Their output was redacted at first; once the launch blocker carried the CLI's fi
 refusal line, the cause read `Workspace not trusted. Run claude in <repo> once and
 accept the trust prompt`. (The variadic `--allowedTools`/`--disallowedTools`/`--add-dir`
 options swallowing the trailing prompt was a real defect found along the way, fixed by
-ending options with `--`, but it was not the observed cause.) A background session needs the exact workspace trusted beforehand; trust recorded
+ending options with `--`, but it was not the observed cause.) A background session
+needs the exact workspace trusted beforehand; trust recorded
 for a parent directory does not carry over. Unattended Agent View dispatch into a
 new checkout therefore needs that one-time trust acceptance first. The launch now
 reads (never writes) that per-folder trust before `claude --bg` and refuses up front
@@ -420,20 +422,25 @@ proof is parked until the workspace-trust design lands (agent-harness#1104: reus
 slot paths and an opt-in, user-run `phase-loop setup --trust-workspaces`; the harness
 never writes trust silently).
 
-Binding and observer: the launch binds only the session id `claude --bg` prints;
-an id matching more than one listed session fails closed as ambiguous, and a
-resolved id is pinned to the full session id. The wait has no deadline and no
-silence termination. Only the observer failing ends it early (the listing not
-showing the session for 12 polls, or `claude agents` failing for 60), fail-closed
-and without stopping the session, whose attach/stop commands the blocker names.
+Binding and observer: the launch binds only the session id `claude --bg` prints.
+Sessions listed before the launch are never bound, even if one shares the short id
+and the new session registers late. An id matching more than one new session fails
+closed as ambiguous, and a resolved id is pinned to the full session id. The wait
+has no deadline and no silence termination. Only the observer failing ends it
+early, fail-closed and without stopping the session: 12 successful listings that do
+not show the session (counted from launch; listing errors neither add nor reset),
+or 60 consecutive `claude agents` failures. The blocker then names the session's
+attach/stop commands.
 
 Settings principle: the Agent View route honors the operator's own Claude
 settings and workspace trust as-is. It inherits the operator's environment
-(`HOME`, config dir), passes no `--settings`, `--setting-sources` or
-`--allowedTools` (only the restrictive `--disallowedTools`), and never
-injects permission settings such as `skipDangerousModePermissionPrompt`; it
-neither weakens nor adds permission settings, so a launch refuses exactly when the
-operator's own `claude` would.
+(`HOME`, config dir). It passes no `--settings`, no `--setting-sources` and no
+`--allowedTools` allow rules, and it injects no setting such as
+`skipDangerousModePermissionPrompt`. It passes a `--permission-mode` only when
+explicitly requested (`--bypass-approvals` gives `bypassPermissions`); otherwise the
+session inherits the operator's configured mode. Its only additions restrict: the
+`--disallowedTools` deny list, plus `--add-dir` for the run's context directory. A
+launch therefore refuses or prompts exactly when the operator's own `claude` would.
 
 ### Frozen Claude Failure Inventory
 

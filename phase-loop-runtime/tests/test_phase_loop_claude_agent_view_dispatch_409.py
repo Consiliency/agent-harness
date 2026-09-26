@@ -137,9 +137,29 @@ class LaunchSpecPermissionTest(unittest.TestCase):
                 self.assertNotIn("--allowedTools", spec.command)
                 self.assertNotIn("--dangerously-skip-permissions", spec.command)
                 self.assertIn("--disallowedTools", spec.command)
-                if action in ("plan", "roadmap"):
-                    # No bypass unless explicitly requested: these prompt on Bash.
-                    self.assertEqual(spec.command[spec.command.index("--permission-mode") + 1], "acceptEdits")
+                # Round 2 (codex B2): no mode at all without an explicit request, so the
+                # session inherits the operator's own configured mode.
+                self.assertNotIn("--permission-mode", spec.command)
+
+    def test_explicit_bypass_is_the_only_permission_mode_passed(self):
+        from _launchspec_golden_cases import _pinned_claude_eligibility, _pinned_env
+        from phase_loop_runtime.launcher import build_launch_request, build_launch_spec
+        from phase_loop_runtime.profiles import resolve_profile_for_executor
+        from phase_loop_runtime.prompts import build_prompt
+
+        roadmap = Path("/repo/specs/phase-plans-v1.md")
+        for action in ("plan", "roadmap", "execute"):
+            with self.subTest(action=action), _pinned_env():
+                spec = build_launch_spec(build_launch_request(
+                    executor="claude", action=action, repo=Path("/repo"), roadmap=roadmap, phase="ADAPTER",
+                    plan=Path("/repo/plans/phase-plan-v1-ADAPTER.md"),
+                    model_selection=resolve_profile_for_executor(action=action, executor="claude"),
+                    prompt_bundle=build_prompt(action, roadmap, phase="ADAPTER"),
+                    json_output=True, bypass_approvals=True,
+                    claude_execution_mode="solo", phase_team_eligibility=_pinned_claude_eligibility(),
+                ))
+                self.assertEqual(spec.command[spec.command.index("--permission-mode") + 1], "bypassPermissions")
+                self.assertNotIn("--allowedTools", spec.command)
 
 
 class LaunchBindingTest(unittest.TestCase):
@@ -164,7 +184,7 @@ class LaunchBindingTest(unittest.TestCase):
 
     def test_the_printed_session_is_bound_to_its_full_id_once_listed(self):
         other = _record("done", session_id="99999999-0000-4000-8000-000000000000")
-        lifecycle = self._launch(_listing_runner([[other, _record("working")]]))
+        lifecycle = self._launch(_listing_runner([[other], [other, _record("working")]]))
         self.assertEqual(lifecycle.session_id, ASSIGNED)
         self.assertEqual(lifecycle.state, "running")
 
@@ -181,6 +201,8 @@ class LaunchBindingTest(unittest.TestCase):
         def run(command, **kwargs):
             if command == ["claude", "--bg", "--help"]:
                 return subprocess.CompletedProcess(command, 0, stdout="Usage: claude\n")
+            if command == ["claude", "agents", "--json", "--all"]:
+                return subprocess.CompletedProcess(command, 0, stdout="[]")
             return subprocess.CompletedProcess(command, 1, stdout=refusal + "\nsecret transcript line\n")
 
         lifecycle = self._launch(run)
@@ -192,6 +214,8 @@ class LaunchBindingTest(unittest.TestCase):
         def run(command, **kwargs):
             if command == ["claude", "--bg", "--help"]:
                 return subprocess.CompletedProcess(command, 0, stdout="Usage: claude\n")
+            if command == ["claude", "agents", "--json", "--all"]:
+                return subprocess.CompletedProcess(command, 0, stdout="[]")
             return subprocess.CompletedProcess(command, 1, stdout="\n\x1b[31mmodel not available\x1b[39m\nmore\n")
 
         lifecycle = self._launch(run)
@@ -245,6 +269,25 @@ class WaitForTerminalTest(unittest.TestCase):
         self.assertEqual(len(polled), AGENT_VIEW_OBSERVER_FAILURE_LIMIT)
         self.assertIn("may still be running", lifecycle.blocker.summary)
 
+    def test_a_record_that_registers_before_the_limit_is_bound(self):
+        # The missing count runs from launch: polls before first registration count.
+        listings = [[]] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("done")]]
+        lifecycle, polled = self._wait(listings)
+        self.assertEqual(lifecycle.state, "done")
+        self.assertEqual(len(polled), AGENT_VIEW_OBSERVER_FAILURE_LIMIT)
+
+    def test_a_record_that_never_registers_fails_closed_at_the_limit(self):
+        lifecycle, polled = self._wait([[]] * AGENT_VIEW_OBSERVER_FAILURE_LIMIT + [[_record("done")]])
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_session_missing")
+        self.assertEqual(len(polled), AGENT_VIEW_OBSERVER_FAILURE_LIMIT)
+
+    def test_listing_errors_neither_add_to_nor_reset_the_missing_count(self):
+        limit = AGENT_VIEW_OBSERVER_FAILURE_LIMIT
+        listings = [[]] * (limit - 1) + [None] * 5 + [[]]
+        lifecycle, polled = self._wait(listings)
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_session_missing")
+        self.assertEqual(len(polled), limit + 5)
+
     def test_a_listed_session_resets_the_observer_failure_count(self):
         listings = [[]] * (AGENT_VIEW_OBSERVER_FAILURE_LIMIT - 1) + [[_record("working")]]
         listings += [None] * (AGENT_VIEW_LISTING_ERROR_LIMIT - 1) + [[_record("done")]]
@@ -262,13 +305,68 @@ class AmbiguousBindingTest(unittest.TestCase):
     OLDER = "0f1e2d3c-0000-4000-8000-000000000001"
 
     def test_launch_refuses_an_ambiguous_short_id(self):
+        # Neither record was listed before the launch, so neither is excluded.
         listing = [_record("done", session_id=self.OLDER), _record("working")]
-        adapter = ClaudeAgentViewAdapter(runner=_listing_runner([listing]))
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner([[], listing]))
         with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
                 mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
             lifecycle = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
         self.assertEqual(lifecycle.state, "blocked")
         self.assertEqual(lifecycle.blocker.reason, "agent_view_session_ambiguous")
+        self.assertIn("may still be running", lifecycle.blocker.summary)
+
+    def _launch_then_wait(self, listings):
+        clock = _Clock(step=5.0)
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner(listings))
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
+            launched = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
+        waited = adapter.wait_for_terminal(
+            launched.session_id, cwd="/repo", exclude=launched.preexisting_session_ids,
+            sleep=clock.sleep, clock=clock,
+        )
+        return launched, waited
+
+    def test_a_preexisting_same_prefix_session_is_never_bound_when_the_new_one_registers_late(self):
+        # Round 2 (codex B1): the older `done` record is ALONE in the listings until the
+        # new session registers; it must never be bound or reduced.
+        older = _record("done", session_id=self.OLDER)
+        launched, waited = self._launch_then_wait([
+            [older],                          # pre-launch snapshot
+            [older],                          # launch-time lookup: new one not listed yet
+            [older],                          # wait poll 1: still not registered
+            [older, _record("working")],      # wait poll 2: registered
+            [older, _record("done")],         # wait poll 3: finished
+        ])
+        self.assertEqual(launched.state, "running")
+        self.assertEqual(launched.session_id, ASSIGNED[:8])
+        self.assertEqual(launched.preexisting_session_ids, frozenset({self.OLDER}))
+        self.assertEqual(waited.state, "done")
+        self.assertEqual(waited.session_id, ASSIGNED)
+
+    def test_a_preexisting_same_prefix_session_alone_fails_closed_never_succeeds(self):
+        older = _record("done", session_id=self.OLDER)
+        _, waited = self._launch_then_wait([[older]])
+        self.assertNotEqual(waited.state, "done")
+        self.assertEqual(waited.blocker.reason, "agent_view_session_missing")
+        self.assertEqual(waited.session_id, ASSIGNED[:8])
+
+    def test_launch_refuses_before_starting_when_existing_sessions_cannot_be_listed(self):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command == ["claude", "--bg", "--help"]:
+                return subprocess.CompletedProcess(command, 0, stdout="Usage\n")
+            if command == ["claude", "agents", "--json", "--all"]:
+                return subprocess.CompletedProcess(command, 1, stdout="down")
+            raise AssertionError(f"launched despite unknown pre-existing sessions: {command}")
+
+        adapter = ClaudeAgentViewAdapter(runner=run)
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
+            lifecycle = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_preexisting_unknown")
 
     def test_wait_refuses_an_ambiguous_short_id_instead_of_reducing_the_older_session(self):
         clock = _Clock(step=5.0)
@@ -295,6 +393,7 @@ class AmbiguousBindingTest(unittest.TestCase):
 
     def test_strict_parse_ignores_other_session_mentions_and_ansi(self):
         self.assertEqual(_launch_session_id("backgrounded · \x1b[36m93efedda\x1b[39m\n", strict=True), "93efedda")
+        self.assertEqual(_launch_session_id("backgrounded · 93efedda.\n", strict=True), "93efedda")
         self.assertIsNone(_launch_session_id("session: deadbeef finished earlier\n", strict=True))
         self.assertIsNone(_launch_session_id(json.dumps({"id": "deadbeef"}), strict=True))
 
@@ -391,6 +490,14 @@ class FolderTrustTest(unittest.TestCase):
         self.assertEqual(claude_global_config_path({"CLAUDE_CONFIG_DIR": "/cfg", "HOME": "/h"}), Path("/cfg/.claude.json"))
         self.assertEqual(claude_global_config_path({"HOME": "/h"}), Path("/h/.claude.json"))
 
+    def test_unknown_trust_refuses_before_any_subprocess_including_the_help_probe(self):
+        runner = mock.Mock()
+        adapter = ClaudeAgentViewAdapter(runner=runner, config_path=Path("/nonexistent/.claude.json"))
+        with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"):
+            lifecycle = adapter.launch_background("do work", cwd="/work/repo", bind_printed_id=True)
+        runner.assert_not_called()
+        self.assertEqual(lifecycle.blocker.reason, "trust_preflight_blocked")
+
     def test_untrusted_folder_refuses_before_any_subprocess_with_an_actionable_hint(self):
         config = self._config({"/work": {"hasTrustDialogAccepted": True}})
         runner = mock.Mock()
@@ -421,6 +528,21 @@ class TranscriptPathTest(unittest.TestCase):
                 "11111111-2222-4333-8444-555555555555", cwd="/repo", project_dir_for_cwd=by_cwd, projects_root=root
             ))
 
+    def test_fallback_root_follows_claude_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "cfg"
+            only = config / "projects" / "-some-other-spelling" / f"{ASSIGNED}.jsonl"
+            only.parent.mkdir(parents=True)
+            only.write_text("{}\n", encoding="utf-8")
+            nowhere = lambda cwd: Path(tmp) / "absent"  # noqa: E731
+            with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(config)}):
+                self.assertEqual(session_transcript_path(ASSIGNED, cwd="/repo", project_dir_for_cwd=nowhere), only)
+            with mock.patch.dict("os.environ", {"HOME": tmp}, clear=False), mock.patch.dict("os.environ", {}, clear=False):
+                import os as _os
+                _os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                with mock.patch("pathlib.Path.home", return_value=Path(tmp)):
+                    self.assertIsNone(session_transcript_path(ASSIGNED, cwd="/repo", project_dir_for_cwd=nowhere))
+
 
 class _ScriptedAdapter(ClaudeAgentViewAdapter):
     def __init__(self, *, launch_state="running", terminal_state="done", text="final", blocker=None):
@@ -434,10 +556,13 @@ class _ScriptedAdapter(ClaudeAgentViewAdapter):
         self.stopped = []
         self.wait_kwargs = None
 
+    PREEXISTING = frozenset({"99999999-0000-4000-8000-000000000000"})
+
     def _lifecycle(self, state, blocker=None):
         return AgentViewLifecycleResult(
             session_id="agent-1", state=state, cwd="/repo", logs_ref=None,
             started_at=None, completed_at=None, stop_result=None, blocker=blocker,
+            preexisting_session_ids=self.PREEXISTING,
         )
 
     def launch_background(self, prompt, *, cwd, **kwargs):
@@ -506,6 +631,8 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertEqual(adapter.launch_kwargs["permission"], "bypassPermissions")
         # No deadline unless the operator configured one.
         self.assertIsNone(adapter.wait_kwargs["timeout_s"])
+        # Sessions listed before the launch stay excluded while waiting (round 2).
+        self.assertEqual(adapter.wait_kwargs["exclude"], _ScriptedAdapter.PREEXISTING)
         self.assertTrue((run_dir / "heartbeat.json").is_file())
 
     def test_running_is_never_reported_as_a_successful_launch(self):
