@@ -1147,3 +1147,36 @@ def test_1088r4_a_history_copy_inside_a_piece_is_ignored(tmp_path, terminal):
         _resume(), _asst("Z review\nAGREE", mid="mh", uuid="h1"), _asst("tail\nDISAGREE", mid="m3", uuid="a3"),
     ])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == "HEAD\ntail\nDISAGREE"
+
+
+# --- r5: the verdict line must start after a newline inside ONE text item of the final piece.
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r5_separate_text_items_in_the_final_piece_do_not_open_the_guard(tmp_path, terminal):
+    # codex r5: "D" | "IS", "AGREE" must not read as a clean AGREE.
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("Findings...\nD", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst_items(["IS", "AGREE"], mid="m2", uuid="a2", stop="end_turn"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r5_separate_records_of_the_final_message_do_not_open_the_guard(tmp_path, terminal):
+    # codex r5: another separator boundary -- two records (uuids) of the same final message.
+    first = _asst("IS", mid="m2", uuid="a2", stop=None)
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("Findings...\nD", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), first, _asst("AGREE", mid="m2", uuid="a3", stop="end_turn"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == ""
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_1088r5_a_model_newline_in_the_last_item_keeps_the_join(tmp_path, terminal):
+    path = _jsonl(tmp_path, [
+        _user("u1", "Review A"), _asst("Findings...\nD", mid="m1", uuid="a1", stop="max_tokens"),
+        _resume(), _asst_items(["ISCUSSION", "done.\nAGREE"], mid="m2", uuid="a2", stop="end_turn"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=terminal) == (
+        "Findings...\nD\nISCUSSION\ndone.\nAGREE")

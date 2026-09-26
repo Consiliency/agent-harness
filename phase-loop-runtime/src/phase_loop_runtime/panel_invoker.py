@@ -4211,6 +4211,8 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         return ""  # the turn must be exactly the continued pieces, in order
     chain: list[object] = list(continued) if continued else [final_id]
 
+    final_items: list[str] = []  # the final message's text items, as the model wrote them
+
     def _message_text(message_id: object, *, final: bool) -> str | None:
         if message_id is None:
             group = [turn[-1]]  # identity-less messages are independent, never joined
@@ -4266,10 +4268,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
                 return None  # a non-final stop this position cannot carry
             if any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
                 return None
-            texts.append("\n".join(
-                item["text"] for item in content
-                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
-            ))
+            items = [item["text"] for item in content
+                     if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)]
+            if final:
+                final_items.extend(items)
+            texts.append("\n".join(items))
         return "\n".join(text for text in texts if text)
 
     final_group = [turn[-1]] if final_id is None else [(p, m) for p, m in turn if m.get("id") == final_id]
@@ -4306,12 +4309,14 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
         if text is None:
             return ""
         parts.append(text)
-    if len(parts) > 1 and len([line for line in parts[-1].split("\n") if line.strip()]) < 2:
+    if len(parts) > 1:
         # The model resumes mid-thought, so a cut can split a line, and the verdict is read
-        # from the last line. That line must start after a newline inside the final piece;
-        # a newline at the end of an earlier piece does not count, as the extractor may
-        # have inserted it.
-        return ""
+        # from the last line. That line must start after a newline the MODEL wrote: the last
+        # non-blank text item of the final piece must itself hold two non-blank lines. Any
+        # newline between items or pieces may be one the extractor inserted.
+        last_item = next((item for item in reversed(final_items) if item.strip()), "")
+        if len([line for line in last_item.split("\n") if line.strip()]) < 2:
+            return ""
     return "\n".join(part for part in parts if part).strip(" \t\r\n")
 
 
