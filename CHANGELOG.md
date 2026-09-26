@@ -22,8 +22,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - A provider usage or quota limit is now `DEGRADED` with detail
   `provider_usage_limit (resets <time>): <the CLI's own line>`, not a bare `ERROR`. Wording is
-  taken from the codex, Claude Code, grok and agy binaries; for agy only status tokens were
-  found, not a full sentence.
+  taken from the codex, Claude Code, grok and agy binaries. For agy only status tokens were
+  found, not a full sentence, and a recovered per-minute `RESOURCE_EXHAUSTED` 429 is
+  deliberately not treated as a usage limit.
 - A seat whose output is an environment failure (codex's bubblewrap socket-directory error,
   Claude Code's "Temp directory … is owned by uid …" refusal) is never `OK`. It is `DEGRADED`
   with detail `provider_environment_failure: …`. Its text is kept, so the governed gate treats
@@ -32,6 +33,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   line in `detail`. This includes brokered codex and grok seats, which used to drop it, and
   the Claude TUI seat. The excerpt comes from the end of the log, not the start, which for
   codex is the echoed prompt. `advisor-board` prints the detail on its stderr shortfall lines.
+  The Claude PTY tail kept for diagnostics is now 600 characters, up from 200, so the
+  CLI's refusal fits in it.
 - A conforming review that only discusses limits or auth keeps `OK`. Signatures are matched
   only in the log tail, or in a body short enough to be the failure itself (500 characters or
   fewer).

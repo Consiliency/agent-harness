@@ -1840,9 +1840,10 @@ _TOOL_DENIED_RE = re.compile(
 # exceeded)" does not match that wording. Every phrase below is copied from the CLI's own
 # binary strings (codex 0.157.1, Claude Code 2.1.x, grok-native, agy) or the measured
 # banner, never guessed. agy has no sourced print-mode SENTENCE, only its status/UI tokens
-# (`RESOURCE_EXHAUSTED`, `STOP_REASON_QUOTA_EXHAUSTED`, "Quota exhausted", "Out of
-# credits"). Deliberately NOT `MODEL_CAPACITY_EXHAUSTED`: that is server capacity, not the
-# account's quota. Only ever scanned over a log TAIL or a failure-shaped body (see
+# (`STOP_REASON_QUOTA_EXHAUSTED`, "Quota exhausted", "Out of credits"). Deliberately NOT
+# `MODEL_CAPACITY_EXHAUSTED` (server capacity, not the account's quota) and NOT a bare
+# `RESOURCE_EXHAUSTED`: that is also agy's per-minute 429, which it retries in-process and
+# recovers from (tests/test_phase_loop_launcher.py has exactly that transcript). Only ever scanned over a log TAIL or a failure-shaped body (see
 # `_output_is_provider_failure`), never a whole transcript.
 _PROVIDER_USAGE_LIMIT_RE = re.compile(
     # codex "You've hit your usage limit[. …]"; claude "You've hit your (monthly spend)
@@ -1858,7 +1859,7 @@ _PROVIDER_USAGE_LIMIT_RE = re.compile(
     r"\byou(?:['’]re| are) out of usage credits\b|\busage balance exhausted\b|"
     r"\bout of credits\b|"
     # agy status tokens (see above)
-    r"\bquota exhausted\b|\bSTOP_REASON_QUOTA_EXHAUSTED\b|\bRESOURCE_EXHAUSTED\b",
+    r"\bquota exhausted\b|\bSTOP_REASON_QUOTA_EXHAUSTED\b",
     re.IGNORECASE,
 )
 # The provider's own reset time when it prints one: codex " or try again at %b %-d, %Y
@@ -3968,8 +3969,9 @@ def _classify_leg(
     a review that carries the CLI's own env-failure string): the CLI could
     not run, so any verdict it printed is not a review. It is checked BEFORE the early-OK and
     fails CLOSED — the text is kept, so the governed gate reads it as non-conforming (BLOCK),
-    never as a clean review and never as an empty-text WARN. In advisory mode a body that IS
-    a usage banner is likewise not a substantive advisory.
+    never as a clean review and never as an empty-text WARN. In advisory and president mode
+    (both keep the auth-scan-first order) a body that IS a usage banner is likewise not a
+    substantive response.
     """
     if rc == 124:  # `timeout` binary / our own timeout maps here
         return "TIMEOUT"
