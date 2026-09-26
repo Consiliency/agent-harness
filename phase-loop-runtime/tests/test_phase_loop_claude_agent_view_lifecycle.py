@@ -10,6 +10,12 @@ from phase_loop_runtime.launcher import LaunchSpec, _agent_view_route_status, _l
 
 
 class ClaudeAgentViewLifecycleTest(unittest.TestCase):
+    def setUp(self):
+        # Folder trust is covered by FolderTrustTest; these tests are about the lifecycle.
+        patcher = mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_background_launch_returns_metadata_only_lifecycle_shape(self):
         calls = []
 
@@ -54,7 +60,7 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
             "auth_posture": "subscription_local",
             "billing_posture": "subscription_included",
         })
-        self.assertIn(["claude", "--bg", "--name", "c2-bg-test", "--cwd", "/repo", "--permission-mode", "plan", "do work"], calls)
+        self.assertIn(["claude", "--bg", "--name", "c2-bg-test", "--permission-mode", "plan", "--", "do work"], calls)
         rendered = json.dumps(lifecycle.to_json(), sort_keys=True)
         self.assertNotIn("raw transcript", rendered)
         self.assertNotIn("logs\":", rendered)
@@ -128,7 +134,7 @@ class ClaudeAgentViewLifecycleTest(unittest.TestCase):
         self.assertNotIn("agent_view_failed", rendered)
 
     def test_failed_agent_view_launch_returns_blocked_result(self):
-        class FakeAgentViewAdapter:
+        class FakeAgentViewAdapter(ClaudeAgentViewAdapter):
             def launch_background(self, prompt, *, cwd, **kwargs):
                 return AgentViewLifecycleResult(
                     session_id="agent-1",

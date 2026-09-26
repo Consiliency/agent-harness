@@ -6,6 +6,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099)
+
+- `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
+  root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
+  returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
+- The launch binds only the session whose id `claude --bg` prints (the CLI ignores
+  `--session-id` under `--bg`), never another one in the same cwd, and ends its options with
+  `--` so the variadic tool flags cannot swallow the prompt. It waits until Agent View reports a terminal state. There is no default
+  deadline and no silence termination, and `launch_timeout_seconds` applies only when set. It
+  then returns the session's final assistant message from its transcript as the launch output.
+  Only a `done` session with a readable final message succeeds. A session waiting for input
+  (`blocked`) fails closed and is left attachable. Approval bypass is not defaulted:
+  unattended `plan`/`roadmap` runs on this route must pass `--bypass-approvals` explicitly,
+  or the session stops `blocked` on its first Bash prompt.
+- A refused `claude --bg` launch now reports the CLI's first output line in its blocker, since
+  a launch that exits non-zero never started a session. For example, a background session
+  refuses to start in a workspace that has not been trusted interactively once
+  (`Workspace not trusted`), and trust recorded for a parent directory does not carry over.
+- Before `claude --bg`, the launch now reads (never writes) the operator's per-folder Claude
+  trust for the exact cwd and refuses up front with an actionable hint when it is not trusted.
+  `workspace_trust_state` no longer reports `trusted` just because `.mcp.json` is fine.
+- The session gets the print route's tool policy (`--allowedTools` / `--disallowedTools`),
+  and its context goes through `context.md` instead of one argv entry.
+- `claude_solo` stays `proof-blocked` until a disposable roadmap proof runs on this route.
+
 ### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
 
 - When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit

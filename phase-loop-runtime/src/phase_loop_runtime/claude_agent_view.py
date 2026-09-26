@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +13,11 @@ from typing import Any, Callable
 
 
 AGENT_VIEW_STATES = {"running", "done", "blocked", "stopped", "failed", "unknown"}
+AGENT_VIEW_POLL_INTERVAL_S = 5.0
+# Consecutive polls on which the OBSERVER fails (listing error, or the bound record
+# absent) before the wait fails closed. This bounds a broken observer, never a
+# working session: a listed, running session resets the count.
+AGENT_VIEW_OBSERVER_FAILURE_LIMIT = 12
 SECRET_LIKE_KEYS = {
     "api_key",
     "authorization",
@@ -149,9 +156,12 @@ class ClaudeAgentViewAdapter:
         *,
         claude_bin: str = "claude",
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        config_path: Path | None = None,
     ) -> None:
         self.claude_bin = claude_bin
         self._runner = runner
+        # Operator's Claude global config (per-folder trust); None = the real one.
+        self._config_path = config_path
 
     def list_command(self) -> list[str]:
         return [self.claude_bin, "agents", "--json", "--all"]
@@ -172,14 +182,17 @@ class ClaudeAgentViewAdapter:
         safe_mode: bool = False,
         strict_mcp_config: bool = False,
         tools: str | list[str] | None = None,
+        allowed_tools: str | None = None,
+        disallowed_tools: str | None = None,
     ) -> list[str]:
+        # `cwd` is the launch directory the caller runs this command from. The root
+        # `claude` command has no `--cwd` option (only `claude agents` does), and an
+        # unknown option fails the launch, so it is never rendered here.
         command = [self.claude_bin, "--bg"]
         if safe_mode:
             command.append("--safe-mode")
         if name:
             command.extend(["--name", name])
-        if cwd is not None:
-            command.extend(["--cwd", str(cwd)])
         if model:
             command.extend(["--model", model])
         if effort:
@@ -202,8 +215,15 @@ class ClaudeAgentViewAdapter:
                 command.append(tools)
             else:
                 command.extend(tools)
+        if allowed_tools:
+            command.extend(["--allowedTools", allowed_tools])
+        if disallowed_tools:
+            command.extend(["--disallowedTools", disallowed_tools])
         if prompt is not None:
-            command.append(prompt)
+            # `--tools`, `--allowedTools`, `--disallowedTools` and `--add-dir` are
+            # variadic (`<values...>`): without the end-of-options marker they swallow
+            # the prompt and `claude --bg` starts with none (agent-harness#1099 proof).
+            command.extend(["--", prompt])
         return command
 
     def logs_command(self, agent_id: str) -> list[str]:
@@ -257,13 +277,18 @@ class ClaudeAgentViewAdapter:
 
     def prepare_launch(self, prompt: str, *, cwd: str | Path, **kwargs: Any) -> LaunchPreflightResult:
         command = tuple(self.launch_command(prompt, cwd=cwd, **kwargs))
-        trust_state = workspace_trust_state(Path(cwd))
+        trust_state = workspace_trust_state(Path(cwd), config_path=self._config_path)
         if trust_state["status"] != "trusted":
+            summary = (
+                workspace_trust_hint(Path(cwd))
+                if trust_state["workspace"] != "trusted"
+                else "Agent View launch blocked before claude --bg because workspace or MCP trust is not ready."
+            )
             return LaunchPreflightResult(
                 trusted=False,
                 trust_state=trust_state,
                 command=command,
-                blocker=BlockerSummary("trust_preflight_blocked", "Agent View launch blocked before claude --bg because workspace or MCP trust is not ready."),
+                blocker=BlockerSummary("trust_preflight_blocked", summary),
             )
         if shutil.which(self.claude_bin) is None:
             return LaunchPreflightResult(
@@ -289,6 +314,7 @@ class ClaudeAgentViewAdapter:
         return LaunchPreflightResult(trusted=True, trust_state=trust_state, command=command)
 
     def launch_background(self, prompt: str, *, cwd: str | Path, **kwargs: Any) -> AgentViewLifecycleResult:
+        bind_printed_id = bool(kwargs.pop("bind_printed_id", False))
         preflight = self.prepare_launch(prompt, cwd=cwd, **kwargs)
         if not preflight.trusted:
             return AgentViewLifecycleResult(
@@ -318,10 +344,41 @@ class ClaudeAgentViewAdapter:
                 started_at=None,
                 completed_at=_utc_now(),
                 stop_result=None,
-                blocker=BlockerSummary("agent_view_launch_failed", "claude --bg did not launch a background session."),
+                blocker=BlockerSummary(
+                    "agent_view_launch_failed",
+                    "claude --bg did not launch a background session." + _cli_refusal_suffix(result.stdout),
+                ),
             )
 
         session_id = _launch_session_id(result.stdout)
+        if bind_printed_id:
+            # Exact binding only (agent-harness#409): the session is the one this launch
+            # printed, never another session that happens to share the cwd. The record
+            # may not be listed yet; the waiter binds it by the printed id.
+            if not session_id:
+                return _lifecycle_from_parts(
+                    session_id="launch",
+                    state="blocked",
+                    cwd=str(cwd),
+                    started_at=None,
+                    completed_at=_utc_now(),
+                    stop_result=None,
+                    blocker=BlockerSummary(
+                        "agent_view_session_unbound",
+                        "claude --bg did not print the id of the session it started.",
+                    ),
+                )
+            session = _find_bound_session(self.list_sessions(cwd=cwd).sessions, session_id)
+            if session:
+                return _lifecycle_from_session(session)
+            return _lifecycle_from_parts(
+                session_id=session_id,
+                state="running",
+                cwd=str(cwd),
+                started_at=_utc_now(),
+                completed_at=None,
+                stop_result=None,
+            )
         session = _find_session(self.list_sessions(cwd=cwd).sessions, session_id=session_id, cwd=str(cwd))
         if session:
             return _lifecycle_from_session(session)
@@ -333,6 +390,83 @@ class ClaudeAgentViewAdapter:
             completed_at=None,
             stop_result=None,
         )
+
+    def wait_for_terminal(
+        self,
+        session_id: str,
+        *,
+        cwd: str | Path | None = None,
+        poll_interval_s: float = AGENT_VIEW_POLL_INTERVAL_S,
+        timeout_s: float | None = None,
+        on_poll: Callable[[AgentViewSession | None], None] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentViewLifecycleResult:
+        """Poll the exact session until Agent View reports a terminal state.
+
+        `done`, `failed` and `stopped` are terminal; `blocked` means the session is
+        waiting for input, which nothing unattended can supply, so it returns too and
+        the session is left attachable. A running session is never timed out on
+        silence: `timeout_s` applies only when the caller passes one, and it is None
+        by default. Only the OBSERVER failing (the listing failing, or the record
+        never appearing) for AGENT_VIEW_OBSERVER_FAILURE_LIMIT consecutive polls ends
+        the wait, fail-closed.
+        """
+        started = clock()
+        failures = 0
+        last_blocker: BlockerSummary | None = None
+        while True:
+            listed = self.list_sessions(cwd=None)
+            session = _find_bound_session(listed.sessions, session_id) if listed.ok else None
+            if on_poll is not None:
+                on_poll(session)
+            if session is not None:
+                failures = 0
+                if session.state in {"done", "failed", "stopped", "blocked"}:
+                    return _lifecycle_from_session(session)
+            else:
+                failures += 1
+                last_blocker = listed.blocker or BlockerSummary(
+                    "agent_view_session_missing", "claude agents did not list the launched background session."
+                )
+                if failures >= AGENT_VIEW_OBSERVER_FAILURE_LIMIT:
+                    return _lifecycle_from_parts(
+                        session_id=session_id,
+                        state="blocked",
+                        cwd=str(cwd) if cwd is not None else None,
+                        started_at=None,
+                        completed_at=_utc_now(),
+                        stop_result=None,
+                        blocker=last_blocker,
+                    )
+            if timeout_s is not None and clock() - started >= timeout_s:
+                return _lifecycle_from_parts(
+                    session_id=session.session_id or session.id or session_id if session else session_id,
+                    state="unknown",
+                    cwd=str(cwd) if cwd is not None else None,
+                    started_at=session.started_at if session else None,
+                    completed_at=None,
+                    stop_result=None,
+                    blocker=BlockerSummary(
+                        "agent_view_launch_timeout",
+                        f"Agent View session did not finish within the configured launch timeout ({timeout_s:g}s).",
+                    ),
+                )
+            sleep(poll_interval_s)
+
+    def final_text(self, session_id: str, *, cwd: str | Path) -> str:
+        """The session's final assistant message from its local transcript, or "".
+
+        Uses the same fail-closed final-turn reader as the brokered Claude seats
+        (agent-harness#1002/#1077), so an ambiguous transcript yields "" rather than
+        a guessed answer.
+        """
+        from .panel_invoker import _claude_project_dir_for_cwd, _final_assistant_text_from_jsonl
+
+        path = session_transcript_path(session_id, cwd=cwd, project_dir_for_cwd=_claude_project_dir_for_cwd)
+        if path is None:
+            return ""
+        return _final_assistant_text_from_jsonl(path)
 
     def inspect(self, agent_id: str, *, cwd: str | Path | None = None) -> AgentViewLifecycleResult:
         agent_id = _validated_agent_id(agent_id)
@@ -438,19 +572,62 @@ class ClaudeAgentViewAdapter:
         return CommandResult(command=tuple(command), returncode=result.returncode, output="", blocker=blocker)
 
 
-def workspace_trust_state(cwd: Path) -> dict[str, str]:
+def claude_global_config_path(env: dict[str, str] | None = None) -> Path:
+    """The operator's Claude global config, where per-folder trust is recorded.
+
+    Mirrors the CLI: `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, else
+    `~/.claude.json`. Read only; the runtime never records trust.
+    """
+    environment = os.environ if env is None else env
+    config_dir = environment.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir) / ".claude.json"
+    return Path(environment.get("HOME") or Path.home()) / ".claude.json"
+
+
+def workspace_folder_trust(cwd: Path, *, config_path: Path | None = None) -> str:
+    """`trusted`, `untrusted` or `unknown` for the EXACT folder, from the operator's config.
+
+    A background session refuses a folder whose own entry has not accepted the trust
+    prompt; trust recorded for a parent folder does not carry over, so only the exact
+    path (as given, or resolved) counts.
+    """
+    path = config_path if config_path is not None else claude_global_config_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unknown"
+    projects = payload.get("projects") if isinstance(payload, dict) else None
+    if not isinstance(projects, dict):
+        return "untrusted"
+    for spelling in dict.fromkeys((str(cwd), str(Path(cwd).resolve()))):
+        entry = projects.get(spelling.rstrip("/") or "/")
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True:
+            return "trusted"
+    return "untrusted"
+
+
+def workspace_trust_hint(cwd: Path) -> str:
+    return (
+        f"Workspace {cwd} is not trusted in your Claude settings. Run `claude` in {cwd} once, "
+        "accept the trust prompt, then re-run this command."
+    )
+
+
+def workspace_trust_state(cwd: Path, *, config_path: Path | None = None) -> dict[str, str]:
+    workspace = workspace_folder_trust(cwd, config_path=config_path)
     mcp_path = cwd / ".mcp.json"
     mcp_status = "absent"
     if mcp_path.exists():
         try:
             payload = json.loads(mcp_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            return {"status": "blocked", "workspace": "trusted", "mcp": "invalid_json"}
+            return {"status": "blocked", "workspace": workspace, "mcp": "invalid_json"}
         rendered = json.dumps(payload, sort_keys=True)
         if "pmcp" in rendered and "pending" in rendered.lower():
-            return {"status": "blocked", "workspace": "trusted", "mcp": "pmcp_pending_approval"}
+            return {"status": "blocked", "workspace": workspace, "mcp": "pmcp_pending_approval"}
         mcp_status = "present"
-    return {"status": "trusted", "workspace": "trusted", "mcp": mcp_status}
+    return {"status": "trusted" if workspace == "trusted" else "blocked", "workspace": workspace, "mcp": mcp_status}
 
 
 def _session_from_payload(payload: dict[str, Any]) -> AgentViewSession:
@@ -559,6 +736,50 @@ def _lifecycle_from_parts(
     )
 
 
+def _cli_refusal_suffix(output: str) -> str:
+    """The CLI's own reason for refusing a `--bg` launch, as one short line.
+
+    A launch that exits non-zero never started a session, so its output is the CLI's
+    refusal, not session text. Only the first non-empty line is kept (ANSI stripped,
+    capped) so the blocker says why without carrying anything else.
+    """
+    for line in str(output or "").splitlines():
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()
+        if text:
+            return f" CLI: {text[:300]}"
+    return ""
+
+
+def _find_bound_session(sessions: tuple[AgentViewSession, ...], session_id: str) -> AgentViewSession | None:
+    for session in sessions:
+        if session.session_id == session_id or session.id == session_id:
+            return session
+    return None
+
+
+def session_transcript_path(
+    session_id: str,
+    *,
+    cwd: str | Path,
+    project_dir_for_cwd: Callable[[str], Path],
+    projects_root: Path | None = None,
+) -> Path | None:
+    """Locate `<session_id>.jsonl` under the Claude projects store.
+
+    The CLI names the project directory after the session's cwd, which may be the
+    resolved form of a symlinked path, so both spellings are tried before a lookup
+    by the (unique) session id across all project directories.
+    """
+    session_id = _validated_agent_id(session_id)
+    for spelling in dict.fromkeys((str(cwd), str(Path(cwd).resolve()))):
+        candidate = project_dir_for_cwd(spelling) / f"{session_id}.jsonl"
+        if candidate.is_file():
+            return candidate
+    root = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
+    matches = sorted(root.glob(f"*/{session_id}.jsonl"))
+    return matches[0] if len(matches) == 1 else None
+
+
 def _find_session(sessions: tuple[AgentViewSession, ...], *, session_id: str | None, cwd: str | None) -> AgentViewSession | None:
     if session_id:
         for session in sessions:
@@ -584,6 +805,10 @@ def _launch_session_id(output: str) -> str | None:
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]+", value):
             return value
     for pattern in (
+        # Claude Code 2.1.x prints `backgrounded · <short id>` (the same forms the
+        # brokered seat parser in panel_invoker accepts).
+        r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9._:-]+)",
+        r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9._:-]+)\b",
         r"\b(?:agent|agent_id|session|session_id)\s*[:=]\s*([A-Za-z0-9._:-]+)",
         r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
     ):
