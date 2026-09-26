@@ -221,7 +221,10 @@ class ClaudeAgentViewAdapter:
         if disallowed_tools:
             command.extend(["--disallowedTools", disallowed_tools])
         if prompt is not None:
-            command.append(prompt)
+            # `--tools`, `--allowedTools`, `--disallowedTools` and `--add-dir` are
+            # variadic (`<values...>`): without the end-of-options marker they swallow
+            # the prompt and `claude --bg` starts with none (agent-harness#1099 proof).
+            command.extend(["--", prompt])
         return command
 
     def logs_command(self, agent_id: str) -> list[str]:

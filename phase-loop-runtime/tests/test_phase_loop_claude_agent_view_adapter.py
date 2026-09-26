@@ -79,6 +79,7 @@ class ClaudeAgentViewAdapterTest(unittest.TestCase):
                 "/repo/docs",
                 "--add-dir",
                 "/repo/vendor",
+                "--",
                 "do work",
             ],
         )

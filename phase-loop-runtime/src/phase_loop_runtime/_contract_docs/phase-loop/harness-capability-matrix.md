@@ -404,7 +404,11 @@ session's final assistant message from its transcript as the launch output. A
 `blocked` session (waiting for input) fails closed and stays attachable; unattended
 `plan`/`roadmap` actions therefore need `--bypass-approvals`. `claude_solo` stays
 `proof-blocked` until a disposable roadmap proof on this route records
-`launch.json` and `terminal-summary.json` (agent-harness#1099).
+`launch.json` and `terminal-summary.json` (agent-harness#1099). The first such
+proof (2026-09-26) failed at launch: `--allowedTools`/`--disallowedTools` are
+variadic and swallowed the trailing prompt, so `claude --bg` exited non-zero within
+a second and no session started. The launch now ends its options with `--`; the
+proof has not been re-run.
 
 ### Frozen Claude Failure Inventory
 
