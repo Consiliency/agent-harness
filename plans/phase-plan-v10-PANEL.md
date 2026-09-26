@@ -65,7 +65,8 @@ Plans agent-harness#1078 (roadmap: agent-harness#1079). The EC-PANEL-N criteria 
     - `evaluate_landing(policy, *, usable_legs, president_ruling, context, user_digest_now) -> LandingDecision`, the one evaluator. `invoke_board` calls it;
     - `invoke_board(..., panel_context: PanelContext | None = None)`. A `plan` or `production_code` landing without a context is refused with `panel_context_required`;
     - `PanelLabels`, carried on `PanelResult`, the `advisor-board` JSON and landing records;
-    - `_seat_instructions(base, lens) -> tuple[str, str]`, which reads `context.composed.seat_lenses[<seat key>]`. The label is `prompt` iff a non-empty section was appended.
+    - `_seat_instructions(base, lens) -> tuple[str, str]`, which reads `context.composed.seat_lenses[<seat key>]`. The label is `prompt` iff a non-empty section was appended;
+    - `deliver_seat_prompt(seat_key: str, route: str, prompt: str, send: Callable[[str], tuple[str, str]]) -> tuple[str, str]`, a module attribute looked up at call time whose default returns `send(prompt)`. On the brokered and TUI routes production calls it exactly once per seat per delivery attempt of an `invoke_board` run (a relaunch happens inside `send` with the same prompt, or calls it again as a new attempt; the president call does not use it), with that seat's `Seat.seat_key`, `route` in `{"brokered", "tui"}`, and the exact prompt it then hands to that seat's transport, after assembly and before that attempt's transport; its return is the seat's `(status, text)`. Replacing it changes neither the route nor the assembly: it marks that leg's result as non-production evidence (as `_has_injected_review_execution_seam` does) without switching away from the broker route. It is the observation seam that binds each frame to its seat for EC-PANEL-6 (agent-harness#1094).
 - [ ] IF-0-PANEL-2 — `advisor_board.lens_frame.render_lens_section(lens: ResolvedLens) -> str` (slice 2).
 
 ## Lane Index & Dependencies
@@ -107,12 +108,12 @@ SL-3 — Documentation and phase reducer (lands with SL-2)
 | SL-0.2 | test | SL-0.1 | `phase-loop-runtime/tests/test_panel_lens_delivery.py` | `ec6_*` on the brokered, TUI and native-fill routes | `PHASE_LOOP_TDD_EXPECT_PANEL=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_lens_delivery.py` |
 | SL-0.3 | test | SL-0.2 | `phase-loop-runtime/tests/test_panel_doc_contract.py` | `ec7_*` | `PHASE_LOOP_TDD_EXPECT_PANEL=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_doc_contract.py` |
 | SL-0.4 | impl | SL-0.3 | `phase-loop-runtime/tests/panel_content_tdd_adapter.py`, `.phase-loop/evidence/PANEL/**` | — | `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/tests/panel_content_tdd_adapter.py record-red` |
-| SL-0.5 | verify | SL-0.4 | `.phase-loop/evidence/PANEL/**` | receipt verifies | `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/tests/panel_content_tdd_adapter.py verify` |
+| SL-0.5 | verify | SL-0.4 | `.phase-loop/evidence/PANEL/**` | receipt verifies | `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/tests/panel_content_tdd_adapter.py verify --receipt-only` |
 
 Rules for the frozen corpus:
 - **Readiness keys.** A node skips in ordinary runs only while its slice's symbol is absent:
   - `ec1_*`–`ec5_*` and `ec3e_*` key on `resolve_panel_table`;
-  - `ec6h_*` keys on `_seat_instructions`;
+  - `ec6h_*` keys on `_seat_instructions` and `deliver_seat_prompt`, which SL-1 lands together;
   - `ec6_*` and `ec7_*` key on `render_lens_section`.
 
   `PHASE_LOOP_TDD_EXPECT_PANEL=1` disables every skip. The acceptance commands and the suite run with it, and the adapter's `verify` asserts zero skips at head. The adapter mirrors `presroute_content_tdd_adapter.py`.
@@ -129,6 +130,10 @@ Rules for the frozen corpus:
   - an invalid `[panel.*]` change being refused;
   - a missing context being refused.
 - **`ec6h_*`** stubs `lens_frame` in `sys.modules` and covers the slice-1 hook on all three routes. A hook defect found in SL-2 reopens SL-1.
+- **`ec6_*` and `ec6h_*` bind each delivery to its seat by an identity production supplies, not by frame content**, so a swap of two seats' lenses fails them:
+  - brokered and TUI: through `deliver_seat_prompt` -- one delivery per seat per attempt, on its lane's route, each seat's own lens inside its own digest-bound instructions frame;
+  - native fill: through the native request's own `seat_key` and `instructions` fields (`NativeAgentLegRequest`, pre-existing) -- one request per native-filled seat per attempt, its `seat_key` being the `Seat.seat_key` that keys `context.composed.seat_lenses`, and `seat_lenses[seat_key]` (never the request's own `lens` metadata) inside its instruction channel; no frame is required there (EC-PANEL-6).
+- **Receipt and suite gates.** SL-0.5 runs `verify --receipt-only`; bare `verify`, which also requires every node to pass, is the phase suite's gate.
 - **One group per falsifier.** Each EC-PANEL-N falsifier in the roadmap gets its own node group. A later test correction restarts SL-0.
 
 ### SL-1 — Slice 1: lane tables, composition, landing minimum, labels
@@ -173,7 +178,7 @@ SL-2.2's `render_lens_section` renders the fixed heading `Review lens (subordina
 ### SL-3 — Documentation and phase reducer (lands with SL-2)
 
 - **Scope**: EC-PANEL-7's documentation and entry-doc coverage, and the phase reduction.
-- **Owned files**: `docs/advisor-board-capabilities-card.md`, `docs/TEAM-ONBOARDING.md`, `.github/entry-doc-suppressions.json`, `.github/workflows/test.yml`, `CHANGELOG.md`, `.claude/docs-catalog.json`
+- **Owned files**: `docs/advisor-board-capabilities-card.md`, `docs/TEAM-ONBOARDING.md`, `phase-loop-runtime/src/phase_loop_runtime/entry_doc_check.py`, `phase-loop-runtime/tests/test_entry_doc_check.py`, `.github/entry-doc-suppressions.json`, `.github/workflows/test.yml`, `CHANGELOG.md`, `.claude/docs-catalog.json`
 - **Interfaces provided**: (none)
 - **Interfaces consumed**: (none)
 - **Parallel-safe**: no (terminal reducer).
@@ -182,7 +187,7 @@ SL-2.2's `render_lens_section` renders the fixed heading `Review lens (subordina
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-3.1 | docs | — | `.claude/docs-catalog.json` | — | `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`; if absent, record "docs-catalog rescan helper unavailable; manual catalog audit" |
-| SL-3.2 | docs | SL-3.1 | the two docs, `.github/entry-doc-suppressions.json`, `CHANGELOG.md` | `ec7_*` | `PHASE_LOOP_TDD_EXPECT_PANEL=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_doc_contract.py` |
+| SL-3.2 | docs | SL-3.1 | the two docs, `entry_doc_check.py`, `test_entry_doc_check.py`, `.github/entry-doc-suppressions.json`, `.github/workflows/test.yml`, `CHANGELOG.md` | `ec7_*` | `PHASE_LOOP_TDD_EXPECT_PANEL=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_doc_contract.py phase-loop-runtime/tests/test_entry_doc_check.py` |
 | SL-3.3 | verify | SL-3.2 | — | — | `git diff --exit-code origin/main -- specs/phase-plans-v10.md` |
 
 SL-3.2 documents lane tables, lens declarations, the fallback, the minimum and its precedence, and the labels (EC-PANEL-7). It also covers:
@@ -190,7 +195,7 @@ SL-3.2 documents lane tables, lens declarations, the fallback, the minimum and i
 - out-of-band recovery for an operator with fewer than four vendors when a base table goes invalid (N4);
 - that a minimum of 1 means one distinct *vendor*, not one seat.
 
-It keeps the entry-doc check covering those sections, and touches `.github/entry-doc-suppressions.json` only if a suppression must change. At closeout it sets `PHASE_LOOP_TDD_EXPECT_PANEL=1` in `.github/workflows/test.yml`, so a later rename of a readiness symbol fails CI instead of silently skipping.
+It makes the entry-doc check cover those sections in both documents (adding the capabilities card to `entry_doc_check.ENTRY_DOCS`), and touches `.github/entry-doc-suppressions.json` only if a suppression must change. At closeout it sets `PHASE_LOOP_TDD_EXPECT_PANEL=1` in `.github/workflows/test.yml`, so a later rename of a readiness symbol fails CI instead of silently skipping.
 
 ## Execution Policy
 
