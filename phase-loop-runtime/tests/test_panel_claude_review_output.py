@@ -773,3 +773,78 @@ def test_president_route_rejects_a_bad_earlier_message_in_the_final_turn(tmp_pat
         first["isApiErrorMessage"] = True
     path = _jsonl(tmp_path, [_user("u1"), first, _asst("FORCING DECISION: APPROVE", mid="m2", uuid="a2")])
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+
+
+# agent-harness#1077: an answer capped at max_tokens and auto-continued after an isMeta
+# "resume" user record is ONE answer; returning only the continuation drops its head.
+
+
+def _resume(uuid="r1"):
+    return {"type": "user", "uuid": uuid, "isMeta": True,
+            "message": {"role": "user", "content": "Output token limit hit. Resume directly."}}
+
+
+def test_1077_a_capped_answer_is_joined_with_its_continuation(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"),
+        _asst("REVIEW START\n1. Blocking finding", mid="msg_1", uuid="a1", stop="max_tokens"),
+        _resume(),
+        _asst("REVIEW END\nPARTIALLY AGREE", mid="msg_2", uuid="a2"),
+    ])
+    expected = "REVIEW START\n1. Blocking finding\nREVIEW END\nPARTIALLY AGREE"
+    assert pi._final_assistant_text_from_jsonl(path) == expected
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == expected
+
+
+def test_1077_a_chain_of_three_is_joined_in_order(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"),
+        _asst("part one", mid="m1", uuid="a1", stop="max_tokens"), _resume("r1"),
+        _asst("part two", mid="m2", uuid="a2", stop="max_tokens"), _resume("r2"),
+        _asst("part three\nAGREE", mid="m3", uuid="a3"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == "part one\npart two\npart three\nAGREE"
+
+
+def test_1077_a_continuation_whose_head_is_not_capped_fails_closed(tmp_path):
+    # A resume record after a NON-capped message is an ordinary meta record: it does not
+    # continue anything, so it starts a new request and the answer is the later message.
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("done\nAGREE", mid="m1", uuid="a1"),
+        _resume(), _asst("unrelated", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == "unrelated"
+
+
+def test_1077_a_capped_head_with_a_tool_call_fails_closed(tmp_path):
+    head = _asst("partial", mid="m1", uuid="a1", stop="max_tokens")
+    head["message"]["content"].append({"type": "tool_use", "id": "t", "name": "x", "input": {}})
+    path = _jsonl(tmp_path, [_user("u1"), head, _resume(), _asst("rest\nAGREE", mid="m2", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_1077_an_identityless_continuation_fails_closed_rather_than_truncating(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("head", mid=None, uuid="a1", stop="max_tokens"),
+        _resume(), _asst("tail\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == ""
+
+
+def test_1077_a_non_meta_user_after_max_tokens_is_a_new_request(tmp_path):
+    path = _jsonl(tmp_path, [
+        _user("u1"), _asst("head", mid="m1", uuid="a1", stop="max_tokens"),
+        _user("u2", "A different request"), _asst("answer\nAGREE", mid="m2", uuid="a2"),
+    ])
+    assert pi._final_assistant_text_from_jsonl(path) == "answer\nAGREE"
+
+
+@pytest.mark.parametrize("marker", ["synthetic", "api_error"])
+def test_1077_the_president_route_still_rejects_a_marked_capped_head(tmp_path, marker):
+    head = _asst("head", mid="m1", uuid="a1", stop="max_tokens")
+    if marker == "synthetic":
+        head["message"]["model"] = "<synthetic>"
+    else:
+        head["isApiErrorMessage"] = True
+    path = _jsonl(tmp_path, [_user("u1"), head, _resume(), _asst("FORCING DECISION: APPROVE", mid="m2", uuid="a2")])
+    assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""

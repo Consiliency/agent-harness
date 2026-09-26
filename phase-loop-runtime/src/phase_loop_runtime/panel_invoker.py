@@ -4054,11 +4054,24 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     def _state(message: dict) -> tuple:
         return ("stop_reason" in message, message.get("stop_reason"))
 
+    # agent-harness#1077: when an answer hits the output cap, the CLI journals the capped
+    # message (stop_reason max_tokens), then an isMeta user record asking it to resume, then
+    # the continuation under a NEW message id. That meta record is not a new request.
+    continuation_positions: set[int] = set()
+    last_assistant_stop: object = None
+    for position, (payload, message) in enumerate(records):
+        if message.get("role") == "assistant":
+            last_assistant_stop = message.get("stop_reason")
+        elif payload.get("isMeta") is True and last_assistant_stop == "max_tokens":
+            continuation_positions.add(position)
+
     boundary = -1
     seen_users: set[tuple[str, str]] = set()
     for position, (payload, message) in enumerate(records):
         if message.get("role") != "user":
             continue
+        if position in continuation_positions:
+            continue  # a resume-after-max_tokens prompt continues the same answer
         user_id = _uuid(payload)
         if user_id is not None:
             if (user_id, _said(message)) in seen_users:
@@ -4074,6 +4087,7 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     seen_versions: dict[str, set[tuple[str, tuple]]] = {}  # every version of each uuid
     stopped_ids: set[object] = set()  # message ids that carried any stop_reason
     turn: list[tuple[dict, dict]] = []
+    turn_positions: list[int] = []
     for position, (payload, message) in enumerate(records):
         if message.get("role") != "assistant":
             continue
@@ -4101,6 +4115,7 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
             stopped_ids.add(message.get("id"))
         if in_turn:
             turn.append((payload, message))
+            turn_positions.append(position)
     if not turn:
         return ""
     identityless = [_said(m) for p, m in turn if _uuid(p) is None]
@@ -4113,76 +4128,122 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     if len(sequence) != len(set(sequence)):
         return ""  # a message id left and returned within the turn
     final_id = sequence[-1]
-    if final_id is None:
-        group = [turn[-1]]  # identity-less messages are independent, never joined
-    else:
-        group = [(p, m) for p, m in turn if m.get("id") == final_id]
-    if any(_uuid(p) in history_uuids or _said(m) in history_said
-           or (m.get("id") is not None and m.get("id") in history_ids)
-           for p, m in group):
-        # A copy or update of history cannot answer a new request. Earlier messages of the
-        # turn may share a history id: the CLI writes a parallel tool call's next tool_use
-        # block under the same message id after the previous tool_result.
-        return ""
-    if final_id is None:
-        # An identity-less answer must not repeat any other assistant record, earlier in this
-        # turn or in history: a copy stripped of its message id cannot be told from a replay.
-        final_payload, final_message = group[0]
-        spoken = json.dumps([final_message.get("role"), final_message.get("content")], sort_keys=True)
-        if any(m is not final_message and m.get("role") == "assistant"
-               and (_uuid(final_payload) is None or _uuid(p) != _uuid(final_payload))
-               and json.dumps([m.get("role"), m.get("content")], sort_keys=True) == spoken
-               for p, m in records):
+
+    def _first_last(message_id: object) -> tuple[int, int]:
+        spots = [pos for pos, (_, m) in zip(turn_positions, turn) if m.get("id") == message_id]
+        return spots[0], spots[-1]
+
+    def _continued_into(message_id: object) -> bool:
+        # A continuation record sits between the previous message and this one.
+        index = sequence.index(message_id)
+        first = _first_last(message_id)[0] if message_id is not None else turn_positions[-1]
+        floor = _first_last(sequence[index - 1])[1] if index > 0 else boundary
+        return any(floor < pos < first for pos in continuation_positions)
+
+    # The answer is the final message, plus every earlier message of the turn it continues:
+    # each capped at max_tokens and followed by a resume record. A continuation whose head
+    # cannot be rebuilt soundly fails closed rather than returning a truncated answer.
+    chain: list[object] = [final_id]
+    while _continued_into(chain[0]):
+        index = sequence.index(chain[0])
+        if chain[0] is None or index == 0 or sequence[index - 1] is None:
             return ""
-    with_uuid = [(p, m) for p, m in group if _uuid(p) is not None]
-    if with_uuid and len(with_uuid) != len(group):
-        return ""  # uuid and uuid-less records cannot be told apart from a replay
-    if with_uuid:
-        latest: dict[str, tuple[dict, dict]] = {}
-        order: list[str] = []
-        for payload, message in group:
-            uid = _uuid(payload)
-            if uid not in latest:
-                order.append(uid)
-            latest[uid] = (payload, message)
-        final_records = [latest[uid] for uid in order]
-    else:
-        final_records = list(group)
-    versions = [m for _, m in final_records]
-    terminal_payload, terminal = final_records[-1]
+        chain.insert(0, sequence[index - 1])
+
+    def _message_text(message_id: object, *, final: bool) -> str | None:
+        if message_id is None:
+            group = [turn[-1]]  # identity-less messages are independent, never joined
+        else:
+            group = [(p, m) for p, m in turn if m.get("id") == message_id]
+        if any(_uuid(p) in history_uuids or _said(m) in history_said
+               or (m.get("id") is not None and m.get("id") in history_ids)
+               for p, m in group):
+            # A copy or update of history cannot answer a new request. Earlier messages of
+            # the turn may share a history id: the CLI writes a parallel tool call's next
+            # tool_use block under the same message id after the previous tool_result.
+            return None
+        if message_id is None:
+            # An identity-less answer must not repeat any other assistant record, earlier in
+            # this turn or in history: a copy stripped of its message id cannot be told from
+            # a replay.
+            final_payload, final_message = group[0]
+            spoken = json.dumps([final_message.get("role"), final_message.get("content")], sort_keys=True)
+            if any(m is not final_message and m.get("role") == "assistant"
+                   and (_uuid(final_payload) is None or _uuid(p) != _uuid(final_payload))
+                   and json.dumps([m.get("role"), m.get("content")], sort_keys=True) == spoken
+                   for p, m in records):
+                return None
+        with_uuid = [(p, m) for p, m in group if _uuid(p) is not None]
+        if with_uuid and len(with_uuid) != len(group):
+            return None  # uuid and uuid-less records cannot be told apart from a replay
+        if with_uuid:
+            latest: dict[str, tuple[dict, dict]] = {}
+            order: list[str] = []
+            for payload, message in group:
+                uid = _uuid(payload)
+                if uid not in latest:
+                    order.append(uid)
+                latest[uid] = (payload, message)
+            final_records = [latest[uid] for uid in order]
+        else:
+            final_records = list(group)
+        terminal = final_records[-1][1]
+        allowed = (None, "end_turn", "stop_sequence") if final else (None, "max_tokens")
+        if final:
+            if "stop_reason" in terminal and terminal["stop_reason"] is None:
+                return None  # the message has not completed
+        elif terminal.get("stop_reason") != "max_tokens":
+            return None  # only a capped message is continued
+        texts: list[str] = []
+        for _, message in final_records:
+            content = message.get("content")
+            if not isinstance(content, list):
+                return None
+            if message.get("stop_reason") not in allowed:
+                return None  # a non-final stop this position cannot carry
+            if any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
+                return None
+            texts.append("\n".join(
+                item["text"] for item in content
+                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+            ))
+        return "\n".join(text for text in texts if text)
+
+    final_group = [turn[-1]] if final_id is None else [(p, m) for p, m in turn if m.get("id") == final_id]
+    terminal_payload, terminal = final_group[-1]
+    if _uuid(terminal_payload) is not None:
+        # The terminal record is the latest version of the uuid that appeared last.
+        terminal_uid = [(_uuid(p)) for p, _ in final_group]
+        last_uid = list(dict.fromkeys(terminal_uid))[-1]
+        terminal_payload, terminal = [(p, m) for p, m in final_group if _uuid(p) == last_uid][-1]
     # The president route checks every raw assistant record of the final turn: the answer's
     # superseded versions and exact replays included (the replay rule ignores API-error and
     # <synthetic> markers), and earlier messages of the turn too. After the last user record
     # (a tool_result is a user record) a genuine final answer has no tool call, marker or
-    # non-final stop anywhere in its turn, so any of them fails closed on this route.
-    answer_records = list(group) + [
+    # non-final stop anywhere in its turn, so any of them fails closed on this route. The one
+    # exception is a max_tokens stop on a message the answer continues (agent-harness#1077).
+    capped = set(chain[:-1])
+    answer_records = list(final_group) + [
         (p, m) for p, m in records[boundary + 1:] if m.get("role") == "assistant"
     ]
     if require_terminal and (
         terminal.get("stop_reason") != "end_turn"
-        or any(m.get("stop_reason") not in (None, "end_turn") or m.get("model") == "<synthetic>"
+        or any((m.get("stop_reason") not in (None, "end_turn")
+                and not (m.get("stop_reason") == "max_tokens" and m.get("id") in capped))
+               or m.get("model") == "<synthetic>"
                or m.get("isApiErrorMessage") or p.get("isApiErrorMessage")
                or not isinstance(m.get("content"), list)
                or any(isinstance(item, dict) and item.get("type") == "tool_use" for item in m["content"])
                for p, m in answer_records)
     ):
         return ""  # the president route needs a genuine, completed end_turn
-    if "stop_reason" in terminal and terminal["stop_reason"] is None:
-        return ""  # the message has not completed
-    texts: list[str] = []
-    for message in versions:
-        content = message.get("content")
-        if not isinstance(content, list):
+    parts: list[str] = []
+    for index, message_id in enumerate(chain):
+        text = _message_text(message_id, final=index == len(chain) - 1)
+        if text is None:
             return ""
-        if message.get("stop_reason") not in (None, "end_turn", "stop_sequence"):
-            return ""  # max_tokens, tool_use or another non-final stop
-        if any(isinstance(item, dict) and item.get("type") == "tool_use" for item in content):
-            return ""
-        texts.append("\n".join(
-            item["text"] for item in content
-            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
-        ))
-    return "\n".join(text for text in texts if text).strip(" \t\r\n")
+        parts.append(text)
+    return "\n".join(part for part in parts if part).strip(" \t\r\n")
 
 
 def _cleanup_broker_claude_transcript(

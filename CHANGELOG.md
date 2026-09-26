@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
+
+- When a Claude answer hits `max_tokens`, the CLI journals an `isMeta` resume record and
+  continues under a new message id. That record no longer counts as a new request. The
+  extractor joins the capped message(s) with the continuation, instead of returning only the
+  tail and silently dropping a review's findings. A continuation whose head cannot be rebuilt
+  soundly fails closed. On the president route, a `max_tokens` stop is allowed only on a
+  message the answer continues.
+
 ### Closeout audit recognises the required skill handoff root (agent-harness#1084)
 
 - `phase-loop-closeout-audit` no longer reports `unknown_ignored` for the repo-local
