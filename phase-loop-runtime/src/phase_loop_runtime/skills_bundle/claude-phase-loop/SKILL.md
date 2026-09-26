@@ -109,15 +109,16 @@ Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeou
 
 Claude Code uses the shared runner contract, but autonomous live dispatch stays
 proof-blocked until a disposable roadmap proof completes on the Agent View route
-(`PHASE_LOOP_CLAUDE_ROUTE=agent_view`). That route binds the session it launches,
-waits for it to finish with no deadline, and reduces its final message
+(`PHASE_LOOP_CLAUDE_ROUTE=agent_view`). That route binds the session it launches
+(proven by a per-launch nonce in the session's own first turn), waits for it to
+finish with no deadline, and reduces its final message
 (agent-harness#409). A session that stops for input is reported blocked and left
 attachable. The route passes a permission mode only when explicitly requested, so
 unattended runs must pass `--bypass-approvals`; without it the session inherits the
 operator's configured mode and stops at the first prompt that mode requires. Never
 fall back to the billing-sensitive print route. The route honors the operator's own
-Harness settings and workspace trust as-is: it adds no allow rules, settings files,
-trust or implicit permission mode, so the launch refuses exactly when the operator's
+Harness settings and workspace trust as-is: it adds no allow rules, directory grants,
+settings files, trust or implicit permission mode, so the launch refuses exactly when the operator's
 `claude` would. A folder the operator has not trusted is refused before launch with
 the fix: run `claude` in that folder once and accept the trust prompt (see
 agent-harness#1104). Manual TUI reentry and manual-import closeout remain

@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -22,7 +23,13 @@ from typing import Any, Callable, Mapping
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
-from .claude_agent_view import AgentViewLifecycleResult, BlockerSummary, ClaudeAgentViewAdapter, workspace_trust_state
+from .claude_agent_view import (
+    AGENT_VIEW_NONCE_PREFIX,
+    AgentViewLifecycleResult,
+    BlockerSummary,
+    ClaudeAgentViewAdapter,
+    workspace_trust_state,
+)
 from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
 from .harness_env_signatures import child_executor_env
@@ -2302,17 +2309,41 @@ def _launch_claude_agent_view(
         if context_path is not None
         else context_text
     )
+    # Launch-specific identity (agent-harness#1101 round 4): `claude --bg` prints only a
+    # short id, so the session is proven ours by this per-launch nonce in its own first
+    # user turn. Nothing without it is ever reduced.
+    launch_nonce = str(uuid.uuid4())
+    prompt = f"{prompt}\n\n{AGENT_VIEW_NONCE_PREFIX}{launch_nonce}"
     launch_options: dict[str, Any] = {
         "model": spec.selected_model,
         "effort": spec.selected_effort,
         "permission": _command_option(spec.command, "--permission-mode"),
         "disallowed_tools": _command_option(spec.command, "--disallowedTools"),
-        "add_dirs": _agent_view_context_grant(context_path, cwd),
     }
     command = adapter.launch_command(prompt, cwd=cwd, **launch_options)
-    # `claude --bg` ignores --session-id (it manages the id itself), so the session is
-    # bound by the id the launch prints, never by cwd.
-    lifecycle = adapter.launch_background(prompt, cwd=cwd, bind_printed_id=True, **launch_options)
+    if context_path is not None and not _path_within(Path(context_path).parent, cwd):
+        # The route adds no permission grants (no --add-dir), so a context file the
+        # session could only read through one is refused, not granted.
+        lifecycle = AgentViewLifecycleResult(
+            session_id="preflight",
+            state="blocked",
+            cwd=str(cwd),
+            logs_ref=None,
+            started_at=None,
+            completed_at=_utc_now(),
+            stop_result=None,
+            blocker=BlockerSummary(
+                "agent_view_context_outside_workspace",
+                f"The run's context file {context_path} is outside the launch workspace {cwd}; the Agent View "
+                "route adds no directory grants, so run with the phase-loop run directory inside the workspace.",
+            ),
+        )
+    else:
+        # `claude --bg` ignores --session-id (it manages the id itself), so the session is
+        # bound by the id the launch prints plus the nonce, never by cwd.
+        lifecycle = adapter.launch_background(
+            prompt, cwd=cwd, bind_printed_id=True, launch_nonce=launch_nonce, **launch_options
+        )
     timed_out = False
     if lifecycle.state in {"running", "unknown"} and lifecycle.blocker is None:
         started_monotonic = time.monotonic()
@@ -2340,6 +2371,7 @@ def _launch_claude_agent_view(
             cwd=cwd,
             exclude=lifecycle.preexisting_session_ids,
             verified=lifecycle.binding_verified,
+            nonce=launch_nonce,
             timeout_s=float(spec.launch_timeout_seconds) if spec.launch_timeout_seconds else None,
             on_poll=_heartbeat,
         )
@@ -2349,8 +2381,15 @@ def _launch_claude_agent_view(
     final_text = ""
     blocker = lifecycle.blocker
     if lifecycle.state == "done" and blocker is None:
-        final_text = adapter.final_text(lifecycle.session_id, cwd=cwd)
-        if not final_text:
+        if adapter.launch_proof(lifecycle.session_id, cwd=cwd, nonce=launch_nonce) is not True:
+            # Belt and braces: never reduce a transcript that does not carry this nonce.
+            blocker = BlockerSummary(
+                "agent_view_binding_unverifiable",
+                "The finished session's transcript does not carry this launch's nonce, so it is not reported.",
+            )
+        else:
+            final_text = adapter.final_text(lifecycle.session_id, cwd=cwd)
+        if blocker is None and not final_text:
             blocker = BlockerSummary(
                 "agent_view_transcript_missing",
                 "Agent View session finished but its final assistant message could not be read from the session transcript.",
@@ -2403,21 +2442,12 @@ def _launch_claude_agent_view(
     )
 
 
-def _agent_view_context_grant(context_path: str | None, cwd: Path) -> list[Path] | None:
-    """`--add-dir` for the run's context directory, only when it is OUTSIDE the cwd.
-
-    `--add-dir` is a grant (the CLI form of permissions.additionalDirectories), so the
-    route adds it only when the session could not otherwise read its own context.md.
-    The normal run directory (`.phase-loop/runs/...` inside the repo) needs none.
-    """
-    if context_path is None:
-        return None
-    context_dir = Path(context_path).parent
+def _path_within(path: Path, root: Path) -> bool:
     try:
-        context_dir.resolve().relative_to(cwd.resolve())
+        path.resolve().relative_to(root.resolve())
     except ValueError:
-        return [context_dir]
-    return None
+        return False
+    return True
 
 
 def _agent_view_route_status(lifecycle_state: str) -> str:

@@ -11,33 +11,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
   root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
   returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
-- **Binding.** The launch binds only the session whose id `claude --bg` prints (the CLI
-  ignores `--session-id` under `--bg`), never one found by cwd.
-  - Only the CLI's own launch forms are parsed, with ANSI stripped.
-  - Sessions already listed before the launch are snapshotted and never bound, even when an
-    older one shares the printed short id and the new session registers late. If existing
-    sessions cannot be listed after 3 attempts, the launch refuses before starting anything.
-  - A short id matching more than one new session fails closed as ambiguous. Once it
-    resolves uniquely, the full session id is pinned.
-  - `claude --bg` prints only the short id, so a candidate must also be in the launch cwd
-    (realpath on both sides), and must not already be finished (done, failed or stopped)
-    when first seen after the launch. Otherwise the launch fails closed as
-    `agent_view_binding_unverifiable`, with how to find and stop the launched session.
-  - Residual: an unrelated session in the same cwd, registered after the snapshot, sharing
-    the short id and still unfinished when first seen, would be bound. Reading the CLI, its
-    dispatcher refuses a new job whose short id collides with a live one (`short-alive`),
-    which should turn that case into a launch refusal; this is not verified live. The guard
-    can also fail closed on our own session if it registers late and finishes before it is
-    first seen.
+- **Binding.** `claude --bg` prints only a short session id (read from the 2.1.283 CLI
+  source, not observed live). The launch therefore proves identity with a per-launch nonce:
+  a fresh `phase-loop-launch-nonce: <uuid4>` line appended to the prompt it delivers.
+  - A listed session is this launch's only if its own transcript's first user turn carries
+    that nonce. One without it is excluded as some other session; one whose transcript is
+    not readable yet stays unproven.
+  - Nothing is reduced without the nonce: success re-checks it before the final message is
+    read.
+  - Pre-filters: only the CLI's own launch forms are parsed (ANSI stripped). Sessions
+    already listed before the launch (a snapshot with 3 attempts, else refuse before
+    starting) never match, and a candidate must be in the launch cwd (realpath). Both
+    filters apply only until the full session id is pinned.
+  - A short id matching more than one candidate fails closed as ambiguous.
 - **Waiting.** The launch waits until Agent View reports a terminal state. There is no default
-  deadline and no silence termination; `launch_timeout_seconds` applies only when set. Only
-  the observer failing ends the wait early, fail-closed:
-  - 12 successful listings that do not show the session, counted from launch, so polls
-    before it registers count too. Seeing it resets the count; a listing error neither
-    adds to nor resets it.
-  - Or 60 consecutive `claude agents` failures.
-  - The session is not stopped then. The blocker says it may still be running and gives the
-    `claude attach` and `claude stop` commands.
+  deadline and no silence termination; `launch_timeout_seconds` applies only when set. The
+  wait ends early, fail-closed and without stopping the session, only in these cases:
+  - 12 successful listings with no candidate, counted from launch. Seeing one resets the
+    count; a listing error neither adds to nor resets it.
+  - 60 consecutive `claude agents` failures.
+  - A candidate unproven for 12 sightings (`agent_view_binding_unverifiable`).
+  - An ambiguous id.
+  
+  The blocker names the printed or pinned id and says the session may still be running,
+  with the attach/stop commands.
 - **Result.** Only a `done` session whose final assistant message is read from its transcript
   succeeds, and that message is the launch output. A session waiting for input (`blocked`)
   fails closed and is left attachable.
@@ -51,9 +48,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     stops `blocked` at the first prompt the operator's mode requires.
   - It adds the restrictive `--disallowedTools`, which keeps an unattended session from
     stalling on AskUserQuestion or plan approval, or from fanning out.
-  - Its context goes through `context.md` instead of one argv entry. The one possible grant
-    is `--add-dir` for that file's directory, added only when it lies outside the launch cwd.
-    The normal `.phase-loop/runs/...` directory inside the repo gets none.
+  - It adds NO permission grants at all: no `--add-dir`. Its context goes through
+    `context.md` in the run directory inside the workspace (`.phase-loop/runs/...`). A
+    context file outside the launch cwd is refused before launch
+    (`agent_view_context_outside_workspace`), never granted.
 - **Trust.** Before `claude --bg`, the launch reads (never writes) the operator's per-folder
   Claude trust for the exact cwd. A trusted parent folder does not count. When the folder is
   not trusted, the launch refuses before any subprocess, with the fix: run `claude` in that

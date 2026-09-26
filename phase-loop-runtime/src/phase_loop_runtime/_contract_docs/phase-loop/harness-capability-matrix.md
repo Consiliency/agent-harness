@@ -422,35 +422,41 @@ proof is parked until the workspace-trust design lands (agent-harness#1104: reus
 slot paths and an opt-in, user-run `phase-loop setup --trust-workspaces`; the harness
 never writes trust silently).
 
-Binding and observer: the launch binds only the session id `claude --bg` prints.
-Sessions listed before the launch (snapshotted with a bounded retry of 3
-attempts before refusing) are never bound, even if one shares the short id
-and the new session registers late. An id matching more than one new session fails
-closed as ambiguous, and a resolved id is pinned to the full session id. Because
-`claude --bg` prints only the short id, a candidate must also be in the launch cwd
-(realpath) and must not already be finished when first seen; otherwise the launch
-fails closed as `agent_view_binding_unverifiable`. Residual: an unrelated same-cwd
-session registered after the snapshot, sharing the short id and still unfinished when
-first seen, would be bound. The CLI's dispatcher refuses a short id that collides with
-a live job (`short-alive`), which should prevent that, but this is unverified live. The wait
-has no deadline and no silence termination. Only the observer failing ends it
-early, fail-closed and without stopping the session: 12 successful listings that do
-not show the session (counted from launch; seeing the session resets the count;
-listing errors neither add to nor reset it),
-or 60 consecutive `claude agents` failures. The blocker then names the session's
-attach/stop commands.
+Binding and observer:
+- Why a nonce: `claude --bg` prints only a short session id. This comes from reading the
+  2.1.283 CLI source, not from a live run. Each launch therefore appends a fresh
+  `phase-loop-launch-nonce: <uuid4>` line to the prompt it delivers.
+- What binds: a listed session is this launch's only if its own transcript's first user
+  turn carries that nonce.
+  - A candidate without it is excluded as another session.
+  - A candidate whose transcript is not readable yet stays unproven.
+  - Success re-checks the nonce before any final message is read.
+- Pre-filters: sessions listed before the launch (snapshotted, 3 attempts) never match, and
+  candidates must be in the launch cwd (realpath). Both apply only until the full id is
+  pinned. An id matching more than one candidate fails closed as ambiguous.
+- Waiting: there is no deadline and no silence termination. The wait ends early,
+  fail-closed and without stopping the session, only on:
+  - 12 successful listings with no candidate (counted from launch; seeing one resets the
+    count; listing errors neither add to nor reset it);
+  - 60 consecutive `claude agents` failures;
+  - 12 unproven sightings (`agent_view_binding_unverifiable`);
+  - an ambiguous id.
+  
+  The blocker names the attach/stop commands.
+- Unverified live: that the CLI records the delivered prompt as the session's first user
+  turn. If it does not, our own session stays unproven and the launch fails closed; it
+  never reports another session.
 
 Settings principle: the Agent View route honors the operator's own Claude
 settings and workspace trust as-is. It inherits the operator's environment
-(`HOME`, config dir). It passes no `--settings`, no `--setting-sources` and no
-`--allowedTools` allow rules, and it injects no setting such as
+(`HOME`, config dir). It passes no `--settings`, no `--setting-sources`, no
+`--allowedTools` allow rules and no `--add-dir`, and it injects no setting such as
 `skipDangerousModePermissionPrompt`. It passes a `--permission-mode` only when
 explicitly requested (`--bypass-approvals` gives `bypassPermissions`); otherwise the
-session inherits the operator's configured mode. It adds the restrictive
-`--disallowedTools` deny list. Its one possible grant is `--add-dir` for the run's
-context directory, and only when that directory lies outside the launch cwd; the
-normal `.phase-loop/runs/...` directory inside the repo gets none. A launch
-therefore refuses or prompts exactly when the operator's own `claude` would.
+session inherits the operator's configured mode. It adds no permission grants at all.
+Its only addition is the restrictive `--disallowedTools` deny list. A context file
+outside the launch cwd is refused before launch (`agent_view_context_outside_workspace`)
+rather than granted.
 
 ### Frozen Claude Failure Inventory
 

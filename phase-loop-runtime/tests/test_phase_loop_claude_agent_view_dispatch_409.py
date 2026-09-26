@@ -141,6 +141,9 @@ class LaunchSpecPermissionTest(unittest.TestCase):
                 # Round 2 (codex B2): no mode at all without an explicit request, so the
                 # session inherits the operator's own configured mode.
                 self.assertNotIn("--permission-mode", spec.command)
+                # `--` immediately before the prompt, which is last (claude N5).
+                self.assertEqual(spec.command[-2], "--")
+                self.assertNotIn("--add-dir", spec.command)
 
     def test_explicit_bypass_is_the_only_permission_mode_passed(self):
         from _launchspec_golden_cases import _pinned_claude_eligibility, _pinned_env
@@ -163,6 +166,8 @@ class LaunchSpecPermissionTest(unittest.TestCase):
                 self.assertEqual(spec.command[mode_at + 1], "bypassPermissions")
                 # The mode is an option, so it must precede the end-of-options marker.
                 self.assertLess(mode_at, spec.command.index("--"))
+                self.assertEqual(spec.command[-2], "--")
+                self.assertNotIn("--add-dir", spec.command)
                 self.assertNotIn("--allowedTools", spec.command)
 
 
@@ -319,17 +324,38 @@ class AmbiguousBindingTest(unittest.TestCase):
         self.assertEqual(lifecycle.blocker.reason, "agent_view_session_ambiguous")
         self.assertIn("may still be running", lifecycle.blocker.summary)
 
-    def _launch_then_wait(self, listings):
+    NONCE = "5a1f0c7e-1111-4222-8333-944455556666"
+
+    def _launch_then_wait(self, listings, *, nonce=None, transcripts=None):
+        """Launch + wait against scripted listings. With `nonce`, `transcripts` maps a
+        full session id to its first user turn, written as a real JSONL transcript."""
         clock = _Clock(step=5.0)
-        adapter = ClaudeAgentViewAdapter(runner=_listing_runner(listings))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for sid, first_user in (transcripts or {}).items():
+            path = root / "-some-project" / f"{sid}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"type": "user", "uuid": "u1", "message": {"role": "user", "content": first_user}}) + "\n",
+                            encoding="utf-8")
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner(listings), projects_root=root, sleep=lambda s: None)
         with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
-                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"):
-            launched = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True)
-        waited = adapter.wait_for_terminal(
-            launched.session_id, cwd="/repo", exclude=launched.preexisting_session_ids,
-            verified=launched.binding_verified, sleep=clock.sleep, clock=clock,
-        )
+                mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"), \
+                mock.patch("phase_loop_runtime.panel_invoker._claude_project_dir_for_cwd", return_value=root / "absent"):
+            launched = adapter.launch_background("do work", cwd="/repo", bind_printed_id=True, launch_nonce=nonce)
+            if launched.blocker is not None:
+                return launched, launched
+            waited = adapter.wait_for_terminal(
+                launched.session_id, cwd="/repo", exclude=launched.preexisting_session_ids,
+                verified=launched.binding_verified, nonce=nonce, sleep=clock.sleep, clock=clock,
+                # A simulated operator bound, so a broken binding FAILS the test instead
+                # of spinning forever (the real route has no default deadline).
+                timeout_s=86400.0,
+            )
         return launched, waited
+
+    def _ours(self):
+        return {ASSIGNED: f"run the phase\n\nphase-loop-launch-nonce: {self.NONCE}"}
 
     def test_a_preexisting_same_prefix_session_is_never_bound_when_the_new_one_registers_late(self):
         # Round 2 (codex B1): the older `done` record is ALONE in the listings until the
@@ -341,7 +367,7 @@ class AmbiguousBindingTest(unittest.TestCase):
             [older],                          # wait poll 1: still not registered
             [older, _record("working")],      # wait poll 2: registered
             [older, _record("done")],         # wait poll 3: finished
-        ])
+        ], nonce=self.NONCE, transcripts={**self._ours(), self.OLDER: f"phase-loop-launch-nonce: {self.NONCE}"})
         self.assertEqual(launched.state, "running")
         self.assertEqual(launched.session_id, ASSIGNED[:8])
         self.assertEqual(launched.preexisting_session_ids, frozenset({self.OLDER}))
@@ -350,36 +376,60 @@ class AmbiguousBindingTest(unittest.TestCase):
 
     def test_a_preexisting_same_prefix_session_alone_fails_closed_never_succeeds(self):
         older = _record("done", session_id=self.OLDER)
-        _, waited = self._launch_then_wait([[older]])
+        _, waited = self._launch_then_wait([[older]], nonce=self.NONCE, transcripts=self._ours())
         self.assertNotEqual(waited.state, "done")
         self.assertEqual(waited.blocker.reason, "agent_view_session_missing")
         self.assertEqual(waited.session_id, ASSIGNED[:8])
 
-    def test_post_snapshot_same_prefix_finished_session_is_never_reported(self):
-        # Round 3 (codex): empty snapshot; an unrelated session B in the same cwd with the
-        # same short id registers AFTER the snapshot, already `done`; A registers later.
-        other = _record("done", session_id=self.OLDER)
+    def test_round4_unfinished_impostor_is_never_reported_and_ours_binds(self):
+        # Round 4 (codex): empty snapshot; unrelated B, same short id, same cwd, still
+        # WORKING when first seen, registers before A. B's transcript lacks the nonce.
+        impostor = _record("working", session_id=self.OLDER)
         launched, waited = self._launch_then_wait([
-            [],                               # pre-launch snapshot: nothing
-            [other],                          # launch-time lookup: only B, already done
-        ])
-        self.assertEqual(launched.state, "blocked")
-        self.assertEqual(launched.blocker.reason, "agent_view_binding_unverifiable")
-        self.assertIn("may still be running", launched.blocker.summary)
-        self.assertNotEqual(launched.session_id, ASSIGNED)
-
-    def test_post_snapshot_finished_session_first_seen_in_the_wait_fails_closed(self):
-        other = _record("done", session_id=self.OLDER)
-        launched, waited = self._launch_then_wait([
-            [],                               # snapshot
-            [],                               # launch-time lookup: nothing yet
-            [other],                          # wait poll 1: B appears, already done
-            [other, _record("done")],         # A would appear later, never reached
-        ])
+            [],                                         # snapshot
+            [impostor],                                 # launch lookup: only B (working)
+            [dict(impostor, state="done")],             # wait 1: B finishes; A not listed yet
+            [dict(impostor, state="done"), _record("working")],   # wait 2: A registers
+            [dict(impostor, state="done"), _record("done")],      # wait 3: A done
+        ], nonce=self.NONCE, transcripts={**self._ours(), self.OLDER: "some other task"})
         self.assertEqual(launched.state, "running")
-        self.assertFalse(launched.binding_verified)
-        self.assertEqual(waited.blocker.reason, "agent_view_binding_unverifiable")
+        self.assertIn(self.OLDER, launched.preexisting_session_ids)   # proven not ours, excluded
+        self.assertEqual(waited.state, "done")
+        self.assertEqual(waited.session_id, ASSIGNED)
+
+    def test_round4_unfinished_impostor_alone_never_succeeds(self):
+        impostor = _record("working", session_id=self.OLDER)
+        _, waited = self._launch_then_wait(
+            [[], [impostor], [dict(impostor, state="done")]],
+            nonce=self.NONCE, transcripts={self.OLDER: "some other task"},
+        )
         self.assertNotEqual(waited.state, "done")
+        self.assertEqual(waited.blocker.reason, "agent_view_session_missing")
+        self.assertNotEqual(waited.session_id, self.OLDER)
+
+    def test_our_session_already_finished_when_first_seen_is_accepted_by_its_nonce(self):
+        # The nonce replaces the round-3 first-sight guard's false refusal of our own
+        # fast session.
+        launched, waited = self._launch_then_wait(
+            [[], [], [_record("done")]], nonce=self.NONCE, transcripts=self._ours()
+        )
+        self.assertEqual(waited.state, "done")
+        self.assertEqual(waited.session_id, ASSIGNED)
+        self.assertIsNone(waited.blocker)
+
+    def test_an_unreadable_transcript_stays_unproven_then_fails_closed(self):
+        launched, waited = self._launch_then_wait([[], [_record("working")]], nonce=self.NONCE, transcripts={})
+        self.assertEqual(waited.blocker.reason, "agent_view_binding_unverifiable")
+        self.assertEqual(waited.session_id, ASSIGNED[:8])
+        self.assertNotEqual(waited.state, "done")
+
+    def test_legacy_without_nonce_refuses_a_candidate_finished_at_first_sight(self):
+        other = _record("done", session_id=self.OLDER)
+        launched, _ = self._launch_then_wait([[], [other]])
+        self.assertEqual(launched.blocker.reason, "agent_view_binding_unverifiable")
+        # The run record names the printed id, not the rejected candidate (claude N3).
+        self.assertEqual(launched.session_id, ASSIGNED[:8])
+        self.assertNotEqual(launched.session_id, self.OLDER)
 
     def test_a_same_prefix_session_in_another_cwd_never_matches(self):
         elsewhere = _record("done", session_id=self.OLDER, cwd="/elsewhere")
@@ -388,10 +438,31 @@ class AmbiguousBindingTest(unittest.TestCase):
             [elsewhere],                              # launch lookup: only the other-cwd one
             [elsewhere, _record("working")],          # A registers
             [elsewhere, _record("done")],
-        ])
+        ], nonce=self.NONCE, transcripts={**self._ours(), self.OLDER: f"phase-loop-launch-nonce: {self.NONCE}"})
         self.assertEqual(launched.state, "running")
         self.assertEqual(waited.state, "done")
         self.assertEqual(waited.session_id, ASSIGNED)
+
+    def test_cwd_is_compared_by_realpath_and_empty_cwd_is_unknown(self):
+        from phase_loop_runtime.claude_agent_view import _same_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            self.assertTrue(_same_dir(str(link), str(real)))
+        self.assertFalse(_same_dir("", "/repo"))
+        self.assertFalse(_same_dir(None, "/repo"))
+
+    def test_after_pinning_the_cwd_filter_no_longer_applies(self):
+        # claude N2: once proven and pinned, a changed listed cwd does not drop the session.
+        moved = _record("done", cwd="/repo/sub")
+        launched, waited = self._launch_then_wait(
+            [[], [_record("working")], [moved]], nonce=self.NONCE, transcripts=self._ours()
+        )
+        self.assertTrue(launched.binding_verified)
+        self.assertEqual(waited.state, "done")
 
     def test_launch_refuses_before_starting_when_existing_sessions_cannot_be_listed(self):
         calls = []
@@ -612,8 +683,10 @@ class TranscriptPathTest(unittest.TestCase):
 
 
 class _ScriptedAdapter(ClaudeAgentViewAdapter):
-    def __init__(self, *, launch_state="running", terminal_state="done", text="final", blocker=None):
+    def __init__(self, *, launch_state="running", terminal_state="done", text="final", blocker=None, proof=True):
         super().__init__(runner=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no subprocess")))
+        self.proof = proof
+        self.proof_nonces = []
         self.launch_state = launch_state
         self.terminal_state = terminal_state
         self.text = text
@@ -644,6 +717,10 @@ class _ScriptedAdapter(ClaudeAgentViewAdapter):
 
     def final_text(self, session_id, *, cwd):
         return self.text
+
+    def launch_proof(self, session_id, *, cwd, nonce):
+        self.proof_nonces.append(nonce)
+        return self.proof
 
     def stop(self, agent_id, *, cwd=None):
         self.stopped.append(agent_id)
@@ -685,9 +762,13 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         # The context goes through a file, not a single argv entry.
         self.assertEqual((run_dir / "context.md").read_text(encoding="utf-8"), "workflow context\n")
         self.assertIn(str(run_dir / "context.md"), adapter.prompt)
-        # context.md lives inside the cwd, so no --add-dir grant is added (round 3).
-        self.assertIsNone(adapter.launch_kwargs["add_dirs"])
+        # No permission grants at all (round 4): never --add-dir.
+        self.assertNotIn("add_dirs", adapter.launch_kwargs)
         self.assertNotIn("--add-dir", result.command)
+        # `--` sits immediately before the prompt, which is last; never a print flag.
+        self.assertEqual(result.command[-2], "--")
+        self.assertNotIn("-p", result.command)
+        self.assertNotIn("--print", result.command)
         # The session is bound by its printed id and the spec's tool policy is carried.
         self.assertTrue(adapter.launch_kwargs["bind_printed_id"])
         self.assertNotIn("--session-id", result.command)
@@ -704,6 +785,18 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertEqual(adapter.wait_kwargs["exclude"], _ScriptedAdapter.PREEXISTING)
         self.assertIs(adapter.wait_kwargs["verified"], False)
         self.assertTrue((run_dir / "heartbeat.json").is_file())
+
+    def test_a_binding_verified_at_launch_is_forwarded_to_the_wait(self):
+        adapter = _ScriptedAdapter(text="final")
+        original = adapter._lifecycle
+
+        def verified_lifecycle(state, blocker=None):
+            from dataclasses import replace as _replace
+            return _replace(original(state, blocker), binding_verified=True)
+
+        adapter._lifecycle = verified_lifecycle
+        self._run(adapter)
+        self.assertIs(adapter.wait_kwargs["verified"], True)
 
     def test_non_bypass_launch_renders_no_permission_mode(self):
         # Round 3 (claude): the converse of B2 at the LAUNCH path, for execute/repair specs
@@ -723,7 +816,9 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertNotIn("--permission-mode", result.command)
         self.assertEqual(result.command[-2], "--")
 
-    def test_context_outside_the_cwd_gets_the_one_scoped_grant(self):
+    def test_context_outside_the_cwd_is_refused_not_granted(self):
+        # Round 4 (maintainer rule): the route adds NO permission grants, so no --add-dir;
+        # a context file outside the workspace is refused before any launch.
         cwd = tempfile.TemporaryDirectory()
         runs = tempfile.TemporaryDirectory()
         self.addCleanup(cwd.cleanup)
@@ -735,10 +830,29 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
             selected_model="claude-opus-5-5", selected_effort="high", wrapped_cwd=cwd.name,
             claude_route="claude_agent_view",
         )
-        run_dir = Path(runs.name) / "run"
-        result = _launch_claude_agent_view(spec, log_path=run_dir / "launch.log", adapter=adapter)
-        self.assertEqual(adapter.launch_kwargs["add_dirs"], [run_dir])
-        self.assertEqual(result.command[result.command.index("--add-dir") + 1], str(run_dir))
+        result = _launch_claude_agent_view(spec, log_path=Path(runs.name) / "run" / "launch.log", adapter=adapter)
+        self.assertIsNone(adapter.launch_kwargs)          # never launched
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside the launch workspace", result.output)
+        self.assertNotIn("--add-dir", result.command)
+
+    def test_the_launch_nonce_is_in_the_prompt_and_checked_before_success(self):
+        adapter = _ScriptedAdapter(text="final")
+        result, _ = self._run(adapter)
+        nonce = adapter.launch_kwargs["launch_nonce"]
+        self.assertRegex(nonce, r"^[0-9a-f-]{36}$")
+        self.assertTrue(adapter.prompt.endswith(f"phase-loop-launch-nonce: {nonce}"))
+        self.assertEqual(result.command[-1], adapter.prompt)
+        self.assertEqual(adapter.wait_kwargs["nonce"], nonce)
+        self.assertEqual(adapter.proof_nonces, [nonce])
+        self.assertEqual(result.returncode, 0)
+
+    def test_a_finished_session_without_the_nonce_is_never_reported(self):
+        adapter = _ScriptedAdapter(text="someone else's answer", proof=False)
+        result, _ = self._run(adapter)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("someone else's answer", result.output)
+        self.assertEqual(result.claude_route_result["status"], "blocked")
 
     def test_running_is_never_reported_as_a_successful_launch(self):
         # The exact #409 failure: the runner saw rc=0 for a session that was still running.
