@@ -67,11 +67,15 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     (agent-harness#1101, agent-harness#409, agent-harness#1099);
   - `advisor-board --advisory`, a non-gating review of a standalone document
     (agent-harness#1103, agent-harness#802);
+  - several accounts on one host can run advisor boards at the same time: every seat runs
+    as the operator's real uid and gid (agent-harness#1109, agent-harness#1098 item 2);
   - Claude answers continued past the output cap are extracted whole (agent-harness#1088,
     agent-harness#1077);
   - the v10 PANEL phase plan and its amendments, and the SL-0 tests-first corpus
     (agent-harness#1083, agent-harness#1100, agent-harness#1111, agent-harness#1092; planning
     and tests only);
+  - the agy first-use self-qualification plan (agent-harness#1118, agent-harness#1076;
+    planning only);
   - the 0.7.19 published record (agent-harness#1095).
 - Release tracking: agent-harness#1122; the appended plan-authority rows cite it.
 - Tag: not yet created. The signed `v0.7.20` tag push, which publishes to PyPI, is
@@ -298,8 +302,8 @@ tagged commit and verifies `SHA256SUMS`, and the published digests are recorded 
 tag push. As for `0.7.15`–`0.7.19`, the published digests are expected to differ, because
 archive bytes are timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `da3615f897451d2e8d58f34d5ea49e6e330dbb09d821b70bd14d9cbb9066c887`
-- prepared direct-sdist sha256: `f7596e7b6c11272076bb17c5bfce1667e7ce77bbef93ab68fe94ae3cea7a5da6`
+- prepared direct-wheel sha256: `abdf76cae29d85624c53c043cdd8a2c311f79ac3f69be6195a50c7eda57f190b`
+- prepared direct-sdist sha256: `4e6af82fb9beb9bbca862df480401042ff364100f9992ecc9bff7600c3e3d3c6`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.19 (published)
@@ -419,7 +423,7 @@ Measured on the prepared `0.7.20` build described above.
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.20.data`, `phase_loop_runtime-0.7.20.dist-info`
 - Wheel file count: `472`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `973` regular files (`1108` archive members including directories)
+- Sdist file count: `974` regular files (`1109` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
