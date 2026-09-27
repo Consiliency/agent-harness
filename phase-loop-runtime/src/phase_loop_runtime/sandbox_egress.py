@@ -66,6 +66,7 @@ from .sandbox_policy import EgressPolicy, egress_allowlist
 
 __all__ = [
     "EgressUnavailable",
+    "SeatIdentityUnverified",
     "SLIRP_UPLINK_CIDR",
     "PRIVATE_CIDRS",
     "egress_rules",
@@ -125,6 +126,15 @@ def retain_bounding_caps(prefix, caps) -> tuple[str, ...]:
 
 class EgressUnavailable(RuntimeError):
     """Egress isolation was required and could not be enforced."""
+
+
+class SeatIdentityUnverified(EgressUnavailable):
+    """The seat's namespace is up but the seat is not provably the operator, locked down.
+
+    Always a refusal, in every egress mode (``PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL``
+    included): a wrong identity or capability set inside a working namespace is a defect,
+    not a missing host capability (agent-harness#1098).
+    """
 
 
 def egress_required() -> bool:
@@ -267,6 +277,11 @@ def require_egress_isolation(available: bool | None = None) -> None:
 
 
 
+# Written into every holder work dir: the stale-scratch sweep reaps only a dir that carries
+# it, never a bystander that merely shares the `pl-egress-ns-` name prefix.
+EGRESS_WORK_MARKER = ".phase-loop-egress-holder"
+
+
 @contextlib.contextmanager
 def isolated_network(
     policy: EgressPolicy | None = None,
@@ -330,6 +345,7 @@ def isolated_network(
         resolv = os.path.join(work, "resolv.conf")
         with open(resolv, "w", encoding="utf-8") as handle:
             handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
+        Path(work, EGRESS_WORK_MARKER).touch()
         owner_read = owner_write = None
         holder = None
         slirp = None
