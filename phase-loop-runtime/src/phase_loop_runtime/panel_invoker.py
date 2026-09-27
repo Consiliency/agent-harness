@@ -1681,34 +1681,51 @@ SpawnFn = Callable[..., "tuple[str, str]"]
 # optionally followed by an em-dash/colon/reason — so a real "DISAGREE — endpoint
 # skips auth" conforms, while "I cannot AGREE or DISAGREE without context" (starts
 # with "I") and "no blockers" do not. Most-specific alternative first.
-# A verdict word is either written as the brief prescribes (UPPERCASE, anything may follow)
-# or, in any case, stands alone / before a separator — so a CLI line such as
-# `Agree and continue` is not a verdict (agent-harness#1102 r7).
-_VERDICT_RE = re.compile(
-    r"^(?:(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b"
-    r"|(?i:(PARTIALLY\s+AGREE|DISAGREE|AGREE))(?=[*`]*\s*(?:$|[\u2014\u2013:.,;!()-])))"
-)
+_VERDICT_RE = re.compile(r"^(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
 # Leading markdown decoration to strip before matching the verdict token, so a
 # genuinely-conforming verdict formatted as a bullet / blockquote / numbered item
 # / bold still parses ("- AGREE", "> AGREE", "1. AGREE", "**AGREE**"). Format
 # tolerance here prevents over-blocking a real approval on cosmetics (CR finding).
-# List / quote / heading / numbering markup BEFORE a line's text: the marker must be followed
-# by whitespace (`- AGREE`), so a flag such as `--agree` is not stripped into a verdict.
-# A blockquote `>` needs no following space (`>**AGREE**` is valid Markdown); the other
-# markers do, so a CLI flag such as `--agree` is never stripped to a verdict.
-_LEADING_MARKUP_RE = re.compile(r"^(?:\s+|>+\s*|[-*>`#]+\s+|\d+[.)]\s*)+")
+_LEADING_MARKUP_RE = re.compile(r"^(?:[-*>\s`#]+|\d+[.)]\s*)+")
+
+
+def terminal_verdict(text: str) -> str | None:
+    """Return the leg's structured verdict iff its LAST non-empty line BEGINS with
+    one of {AGREE, PARTIALLY AGREE, DISAGREE} (tolerating a leading ``VERDICT:``,
+    list/blockquote/numbered/bold markup, and a trailing ``— reason``); else
+    ``None`` (non-conforming → the caller fails closed). The panel brief instructs
+    each leg to end with the verdict, so the terminal line is the contract — not a
+    substring anywhere."""
+    for raw in reversed((text or "").splitlines()):
+        s = raw.strip()
+        if not s:
+            continue
+        s = _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
+        if s.upper().startswith("VERDICT:"):
+            s = s[len("VERDICT:") :].strip().strip("*`").strip()
+        s = _LEADING_MARKUP_RE.sub("", s).strip()
+        m = _VERDICT_RE.match(s)
+        return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
+    return None
+
+
+# The advisory artifact's leading markup (list / quote / heading / numbering before the
+# line's text). The review VERDICT does not use this: it keeps main's parser exactly
+# (agent-harness#1102 r10 — I1 already makes CLI prose unreachable as an OK verdict, so the
+# verdict parse needs no tightening, and three rounds of tightening each regressed a
+# legitimate Markdown form).
+_ARTIFACT_LEADING_MARKUP_RE = re.compile(r"^(?:\s+|>+\s*|[-*>`#]+\s+|\d+[.)]\s*)+")
 
 
 def _final_line(text: str) -> str | None:
     """The last NON-EMPTY line with leading list / blockquote / numbered / bold markup and
     a wrapping ``*``/`` ` `` emphasis removed — the one line a leg's success artifact lives
-    on. Shared by ``terminal_verdict`` and ``_advisory_recommendation`` so the two parse
-    it identically (a seat that signs off after its verdict or recommendation fails both
-    the same way)."""
+    on. Used by ``_advisory_recommendation``; the review verdict keeps main's own parser
+    (``terminal_verdict``), which agent-harness#1102 r10 restored byte-for-byte."""
     for raw in reversed((text or "").splitlines()):
         s = raw.strip()
         if s:
-            return _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
+            return _ARTIFACT_LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
     return None
 
 
@@ -1719,28 +1736,9 @@ def _after_label(line: str, label: str) -> str | None:
     match = re.match(rf"{re.escape(label)}[*`]*:", line, re.IGNORECASE)
     if match is None:
         return None
-    # The value may itself be wrapped (`**Verdict:** **AGREE**`, ``*Verdict:* `DISAGREE` ``):
-    # strip every run of emphasis / code markers and whitespace around it — never `-`,
-    # so a CLI flag such as `--agree` is still not a verdict (agent-harness#1102 r8).
+    # The value may itself be wrapped (`**RECOMMENDATION:** **ship it**`): strip every run
+    # of emphasis / code markers and whitespace around it.
     return re.sub(r"[\s*`]+$", "", re.sub(r"^[\s*`]+", "", line[match.end():]))
-
-
-def terminal_verdict(text: str) -> str | None:
-    """Return the leg's structured verdict iff its LAST non-empty line BEGINS with
-    one of {AGREE, PARTIALLY AGREE, DISAGREE} (tolerating a leading ``VERDICT:``,
-    list/blockquote/numbered/bold markup, and a trailing ``— reason``); else
-    ``None`` (non-conforming → the caller fails closed). The panel brief instructs
-    each leg to end with the verdict, so the terminal line is the contract — not a
-    substring anywhere."""
-    s = _final_line(text)
-    if s is None:
-        return None
-    labeled = _after_label(s, "VERDICT")
-    if labeled is not None:
-        s = labeled
-    s = _LEADING_MARKUP_RE.sub("", s).strip()
-    m = _VERDICT_RE.match(s)
-    return re.sub(r"\s+", " ", (m.group(1) or m.group(2)).upper()) if m else None
 
 
 # #63: panel mode. "review" is the pre-merge code-review framing (default,
@@ -1874,8 +1872,8 @@ def _completion_ok(text: str, mode: str = "review") -> bool:
 
 
 def _advisory_recommendation(text: str) -> str | None:
-    """The advisory success artifact: the last non-empty line (parsed exactly as
-    ``terminal_verdict`` parses it, via ``_final_line``) is ``RECOMMENDATION: <value>``
+    """The advisory success artifact: the last non-empty line (via ``_final_line``) is
+    ``RECOMMENDATION: <value>``
     with a non-empty value. Returns the value, else None."""
     s = _final_line(text)
     value = _after_label(s, "RECOMMENDATION") if s is not None else None

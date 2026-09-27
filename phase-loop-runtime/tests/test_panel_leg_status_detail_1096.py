@@ -587,7 +587,7 @@ def test_advisory_banner_falsifier():
     ("advice\nRECOMMENDATION: go\n\nThanks, happy to help!", None),  # a sign-off after it
     ("RECOMMENDATION: go\nadvice after it", None),      # not the last line
 ])
-def test_recommendation_parse_mirrors_the_verdict_parse(text, value):
+def test_recommendation_parse(text, value):
     assert pi._advisory_recommendation(text) == value
 
 
@@ -928,10 +928,11 @@ def test_a_group_readable_log_dir_is_refused(monkeypatch, tmp_path):
     assert leg.detail == "unknown failure (exit 1); CLI output not retained"
 
 
-# Negative: no sourced failure line (and no CLI prompt/flag line) parses as a verdict.
+# Negative: no SOURCED provider failure line parses as a verdict (under main's parser, which
+# r10 restored; the CLI prompt/flag cases were dropped — I1 makes them unreachable as OK).
 
 @pytest.mark.parametrize("line", [
-    "Agree and continue", "--agree", "--agree --yes", "Agreed.", CODEX_USAGE_BANNER,
+    "Agreed.", CODEX_USAGE_BANNER,
     CODEX_BWRAP_FAILURE, CLAUDE_TMPDIR_REFUSAL, "Usage limit reached", "You hit your weekly limit.",
     "Quota exhausted", "Out of credits", "401 Unauthorized: please log in again.",
 ])
@@ -1083,7 +1084,8 @@ def test_an_omnigent_detail_is_typed_only_when_it_fits_its_templates():
     assert pi._omnigent_detail(None) is None
 
 
-# B2: the verdict forms main accepted must still parse; the CLI lines must not.
+# Formatted verdicts main accepts (rounds 8-10 regressions) — pinned; the differential test
+# below proves the WHOLE parse equals main's.
 
 @pytest.mark.parametrize("line,verdict", [
     ("**Verdict:** **AGREE**", "AGREE"),
@@ -1097,10 +1099,11 @@ def test_an_omnigent_detail_is_typed_only_when_it_fits_its_templates():
     ("1. PARTIALLY AGREE", "PARTIALLY AGREE"),
     ("VERDICT: agree", "AGREE"),
     ("`AGREE`", "AGREE"),
-    ("**Verdict**: DISAGREE", "DISAGREE"),
     (">**AGREE**", "AGREE"),  # r9: a blockquote needs no space after `>`
     ("> **AGREE**", "AGREE"),
     (">DISAGREE: blocking", "DISAGREE"),
+    ("## Agree ##", "AGREE"),  # r10: closing heading hashes
+    ("## Partially agree ##", "PARTIALLY AGREE"),
 ])
 def test_formatted_verdicts_parse(line, verdict):
     assert pi.terminal_verdict("review body\n" + line) == verdict
@@ -1236,3 +1239,87 @@ def test_a_forged_legfailure_subclass_is_foreign():
 
     leg = pi.PanelLegResult("codex", "ERROR", detail=ForgedFailure("FOREIGN_CANARY_1096"))
     assert leg.detail == "unknown failure; CLI output not retained"
+
+
+
+# --- board round 10 (agent-harness#1102): the review verdict parse IS main's -------------
+#
+# A FROZEN copy of origin/main's parser (1d73c1be, `panel_invoker.py`), vendored verbatim.
+# Rounds 8-10 each found a legitimate Markdown verdict the tightened parser had regressed;
+# r10 restored main's parser, and this differential test holds it there by construction.
+
+_MAIN_VERDICT_RE = re.compile(r"^(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
+_MAIN_LEADING_MARKUP_RE = re.compile(r"^(?:[-*>\s`#]+|\d+[.)]\s*)+")
+
+
+def _main_terminal_verdict(text):
+    for raw in reversed((text or "").splitlines()):
+        s = raw.strip()
+        if not s:
+            continue
+        s = _MAIN_LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
+        if s.upper().startswith("VERDICT:"):
+            s = s[len("VERDICT:") :].strip().strip("*`").strip()
+        s = _MAIN_LEADING_MARKUP_RE.sub("", s).strip()
+        m = _MAIN_VERDICT_RE.match(s)
+        return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
+    return None
+
+
+# Every verdict form (positive and negative) raised in rounds 5-10.
+_VERDICT_CORPUS_LINES = (
+    "AGREE", "DISAGREE", "PARTIALLY AGREE", "PARTIALLY  AGREE", "agree", "Disagree",
+    "**Verdict:** **AGREE**", "**Verdict:** *PARTIALLY AGREE*", "**Verdict:** `DISAGREE`",
+    "*Verdict:* **AGREE**", "**Partially agree** — reason", "**AGREE** — fine",
+    "- AGREE", "> DISAGREE: blocking", "1. PARTIALLY AGREE", "VERDICT: agree", "`AGREE`",
+    "**Verdict**: DISAGREE", ">**AGREE**", "> **AGREE**", ">DISAGREE: blocking",
+    "## Agree ##", "## Partially agree ##", "### DISAGREE", "**VERDICT:** AGREE",
+    "DISAGREE — endpoint skips auth", "AGREE.", "AGREE: fine", "Agree and continue",
+    "--agree", "--agree --yes", "Agreed.", "I cannot AGREE or DISAGREE without context",
+    "no blockers", "non-blocking", "Verdict:", "RECOMMENDATION: go", "", "   ",
+    CODEX_USAGE_BANNER, CODEX_BWRAP_FAILURE, CLAUDE_TMPDIR_REFUSAL, "Usage limit reached",
+    "You hit your weekly limit.", "Quota exhausted", "Out of credits",
+    "401 Unauthorized: please log in again.",
+)
+_VERDICT_WORDS = ("AGREE", "DISAGREE", "PARTIALLY AGREE", "agree", "Partially agree",
+                  "disagree", "Agreed", "AGREEMENT", "disagreeable")
+_LEADS = ("", "- ", "* ", "> ", ">", ">> ", "# ", "## ", "### ", "1. ", "2) ", "`", "**", "*",
+          "--", "-", "\t", "  ", "> - ", "1. **", "#")
+_LABELS = ("", "VERDICT: ", "Verdict: ", "**Verdict:** ", "*Verdict:* ", "**Verdict**: ",
+           "verdict:", "`Verdict:` ")
+_WRAPS = (("", ""), ("**", "**"), ("*", "*"), ("`", "`"), ("***", "***"), ("", " ##"),
+          ("", " #"), ("", "**"), ("**", ""))
+_TAILS = ("", " — reason", " - reason", ": reason", ".", "!", " and continue", " ##",
+          " (with nits)", "d", " ", ",", " – x")
+
+
+def _generated_verdict_lines(seed=1110, cases=4000):
+    import random
+
+    rng = random.Random(seed)
+    for _ in range(cases):
+        open_, close = rng.choice(_WRAPS)
+        yield (rng.choice(_LEADS) + rng.choice(_LABELS) + open_ + rng.choice(_VERDICT_WORDS)
+               + close + rng.choice(_TAILS))
+
+
+@pytest.mark.parametrize("line", _VERDICT_CORPUS_LINES)
+def test_the_verdict_parse_equals_mains_on_every_raised_form(line):
+    for body in (line, "review body\n" + line, "review body\n" + line + "\n\n",
+                 line + "\ntrailing line"):
+        assert pi.terminal_verdict(body) == _main_terminal_verdict(body), repr(body)
+
+
+def test_the_verdict_parse_equals_mains_on_generated_markup():
+    mismatches = [
+        line for line in _generated_verdict_lines()
+        if pi.terminal_verdict("review body\n" + line) != _main_terminal_verdict("review body\n" + line)
+    ]
+    assert not mismatches, mismatches[:10]
+
+
+def test_the_generator_exercises_both_outcomes():
+    """The differential corpus is not vacuous: main accepts some generated lines and rejects
+    others, and every verdict value occurs."""
+    results = {_main_terminal_verdict("x\n" + line) for line in _generated_verdict_lines()}
+    assert {None, "AGREE", "DISAGREE", "PARTIALLY AGREE"} <= results

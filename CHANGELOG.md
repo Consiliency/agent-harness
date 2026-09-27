@@ -200,12 +200,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     prompts now ask for;
   - president: a `FORCING DECISION:` line.
 
-  Free text never decides an outcome or demotes an `OK` leg. The verdict line is parsed by
-  one parser, shared with the `RECOMMENDATION:` line. A verdict word must be UPPERCASE, or
-  stand alone, or come before a separator. Markup counts only when it is followed by
-  whitespace. So a CLI line such as `Agree and continue` or `--agree` is not a verdict.
-  Markdown around the value (`**Verdict:** **AGREE**`, ``*Verdict:* `DISAGREE` ``,
-  `**Partially agree** — reason`, `>**AGREE**`) still parses, as on main. From
+  Free text never decides an outcome or demotes an `OK` leg. The review verdict is parsed
+  exactly as before (`terminal_verdict` is unchanged from 0.7.19, held there by a
+  differential test against a frozen copy); `OK` needing exit 0 plus that verdict already
+  keeps CLI prose from counting. The `RECOMMENDATION:` line reads the same last line. From
   agent-harness#1098 item 2 this fixes advisory mode's old length-only acceptance; the
   rest of that item stays open.
 - A failed leg's `detail` is built ONLY from this runtime's closed vocabulary, and raw CLI
