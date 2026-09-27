@@ -56,7 +56,7 @@ Plans agent-harness#1078 (roadmap: agent-harness#1079). The EC-PANEL-N criteria 
     - `PanelContext(snapshot, resolved_table, explicit_profile, composed, gated_revision)` from `build_panel_context(task, snapshot, *, repo_dir, base_revision, head_revision, monitoring_policy, repository_profile=None, probes=None)`. The builder runs at gate time with explicit revisions:
       - `base_revision` is the target head, from the fetched target branch resolved at gate time; `gated_revision = base_revision`;
       - it reads `[panel.*]` at `base_revision` and runs `validate_panel_change(base_revision=…, head_revision=…)`; a non-landing `advisor-board` run passes `head_revision=None`, which skips validation;
-      - it resolves the explicit profile from `repository_profile`, read at `base_revision` (the GOVSETUP injection point), over `snapshot.user_profile`, labelled with `gated_revision`. The profile shape it reads is the corpus's: `.phase-loop/governance.toml` at `base_revision` and `$XDG_CONFIG_HOME/agent-harness/governance.toml`, each listing seat aliases (`fable`, `sol`, `grok`, `gemini`) as `[tiers.<tier>] panel = [...]`; no other `[tiers.<tier>]` key lowers the minimum. A malformed or unreadable profile at `base_revision` or in the user file raises `BoardConfigError`, and the landing is refused. A `panel` value of `none` is refused at `plan` and `production_code` (EC-GOVSETUP-6). At `tests_only` and `docs_only`, `none` means no explicit seats, which is those tiers' built-in. Neither case is ever read as "no required seats" where seats are required. By maintainer decision (2026-09-27), IF-0-GOVSETUP-1 builds on this layout (see the SL-1 entry gates);
+      - it resolves the explicit profile from `repository_profile`, read at `base_revision` (the GOVSETUP injection point), over `snapshot.user_profile`, labelled with `gated_revision`. The profile shape it reads is the corpus's: `.phase-loop/governance.toml` at `base_revision` and `$XDG_CONFIG_HOME/agent-harness/governance.toml`, each listing seat aliases (`fable`, `sol`, `grok`, `gemini`) as `[tiers.<tier>] panel = [...]`; no other `[tiers.<tier>]` key lowers the minimum. A malformed or unreadable profile at `base_revision` or in the user file raises `BoardConfigError`, and the landing is refused. An absent profile file means no explicit seats; it is not treated as unreadable. A `panel` value of `none` is refused at `plan` and `production_code` (EC-GOVSETUP-6). At `tests_only` and `docs_only`, `none` means no explicit seats, which is those tiers' built-in. Neither case is ever read as "no required seats" where seats are required. By maintainer decision (2026-09-27), IF-0-GOVSETUP-1 builds on this layout (see the SL-1 entry gates);
       - it composes under that policy's probes and preflight. `probes` is the one injectable probe seam: `PanelProbes(is_available, auth_ok, preflight)`, whose callables go to `compose_panel_board` unchanged. When it is `None` the default probes read `DEFAULT_HARNESS_REGISTRY.probe`, `executor_availability._probes_pass` and `gemini_heartbeat.require_capability`, and the builder reads `compose_panel_board`, by module-attribute lookup at call time with no caching, because the frozen `ec3_the_builder_applies_its_own_probes_per_policy` node and `_ForcedProbes` patch exactly those names. New tests use `probes`. Renaming any of the three leaves (for example in EXECFIND) needs a post-closeout SL-0 repair. A context built with injected `probes` counts as non-production evidence, like a replaced `deliver_seat_prompt`, and `invoke_board` refuses it on a landing call with `panel_probes_injected`, launching no seat;
       - it is rebuilt on every re-gate;
       - it is the only source of contexts, and a context is trusted for its content, not only its identity (item 8). On a landing call, `invoke_board` refuses with `panel_context_unverified`, before policy validation and with no seat launched, unless both checks below pass. Together they refuse hand-built contexts, `dataclasses.replace` copies, contexts mutated in place, and forged or mutated snapshots, including one passed through the builder. The mechanism adds no constructor field, so the five-field lists above stay as they are.
@@ -149,7 +149,7 @@ Rules for the frozen corpus:
 - **Known receipt gap (agent-harness#1094 item 3).** The receipt's `red_environment` records only `PHASE_LOOP_TDD_EXPECT_GOVLEAN`, because the shared `content_tdd_receipt.v1` writer in `tdd_receipts.py` hard-codes it. The gap stays documented rather than fixed in PANEL: `tdd_receipts.py` belongs to GOVLEAN and the adapter's freeze scope excludes it, and a schema change would force re-recording the frozen receipt, which restarts SL-0. The adapter has no replay subcommand. `record-red` writes a new receipt into the frozen evidence paths, so it must never be used to replay. `verify` runs at HEAD, and `verify --receipt-only` runs nothing. Replay by hand, in scratch:
   - Run `git worktree add --detach <scratch> <base_commit>`. The receipt's `base_commit` is its `landing_commit`: the SL-0 commit itself, which already contains the frozen tests, the adapter and the golden, so no overlay is needed.
   - From that worktree's root (the argv's paths are repo-relative), run `red_argv` with `PHASE_LOOP_TDD_EXPECT_PANEL=1` and `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests`. This is the environment the recorder gave its pytest child. SL-0.4's command sets `PYTHONPATH=phase-loop-runtime/src` for the adapter process only, and the adapter's `_activated_env` extends it to `src:tests` for the child. The recorder also inherits the caller's environment and sets `PHASE_LOOP_TDD_EXPECT_GOVLEAN=1`, which is harmless.
-  - Compare per-node outcomes with the recorded ones, not log bytes. At recording, `scan_red_run` required every node in `red_nodeids` to fail, and none to be skipped or to error. In this receipt `red_argv[0]` is a bare `python3`, so it resolves on the replaying machine. The collected node set must equal `red_nodeids` exactly, and the replay records the interpreter and pytest versions.
+  - Compare per-node outcomes with the recorded ones, not log bytes. At recording, `scan_red_run` required every node in `red_nodeids` to fail, and none to be skipped or to error. In this receipt `red_argv[0]` is a bare `python3`, so it resolves on the replaying machine. The collected node set must equal `red_nodeids` exactly. The replay runs in a scrubbed environment containing only `PATH`, `HOME` and the two variables above, and records the interpreter and pytest versions. At recording, `PHASE_LOOP_TDD_EXPECT_PANEL=1` came from the adapter's `_activated_env`, not from SL-0.4's command.
 
   The recorded command run without the PANEL flag skips every node and exits 0, so it is not a replay. GOVLEAN follow-up: agent-harness#1112 asks for an additive per-phase EXPECT field for future receipts, which would not re-record PANEL's.
 - **One group per falsifier.** Each EC-PANEL-N falsifier in the roadmap gets its own node group. A later test correction restarts SL-0.
@@ -185,11 +185,11 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
      - **Registration.** When it admits a landing, `invoke_board` registers the decision by identity plus a content digest, in the same module-private registry as contexts (no constructor field is added). The registry entry binds:
        - the tier;
        - the registered context the decision evaluated;
-       - the repository identity: the repository's canonical root (`git rev-parse --show-toplevel`) and its `origin` URL, both read by the runtime;
+       - the repository identity: `git rev-parse --git-common-dir` (which is stable across linked worktrees) and the `origin` URL, both read by the runtime;
        - for a PR landing, the PR's live `number`, `baseRefName`, `headRefOid`, `headRepository` and `url`, read by the runtime at decision time with `gh pr view <pr> --repo <origin owner/name> --json number,baseRefName,headRefOid,headRepository,url`;
-       - for a push landing, the target branch and the reviewed head.
+       - for a push landing, the target branch the context's builder resolved (the fetched target it gated against) and the reviewed head, which is the head of the review packet the seats received, never a re-read.
 
-       The entry passes three new additive keywords to `invoke_board`: `target_branch`, `reviewed_head`, and for a PR landing `reviewed_pr`. They are cross-checks only. Each must equal the value the runtime read, or the decision is not merge-capable. A decision admitted without them is not merge-capable either, which is why the frozen direct-invoke nodes, which never merge, are unaffected. The registry holds strong references, so a collected object's `id()` cannot be reused. A governed closeout gets its decision from the `invoke_board` call that its own `_governed_premerge_review` makes, and `_perform_phase_closeout_impl` passes that decision to its push.
+       The entry passes three new additive keywords to `invoke_board`: `target_branch`, `reviewed_head`, and for a PR landing `reviewed_pr`. They are cross-checks only. Each must equal the value the runtime read, or the decision is not merge-capable. If the PR's live `headRefOid` at decision time differs from `reviewed_head` (the packet head), the decision is not merge-capable. A decision admitted without them is not merge-capable either, which is why the frozen direct-invoke nodes, which never merge, are unaffected. The registry holds strong references, so a collected object's `id()` cannot be reused. Only `invoke_board` may call the registration entry point, and the tripwire allowlists that single reference. A `LandingDecision` built by hand, copied with `replace`, or returned by a direct `evaluate_landing` call has no registration or bindings, so `guarded_merge` refuses it. A governed closeout gets its decision from the `invoke_board` call that its own `_governed_premerge_review` makes, and `_perform_phase_closeout_impl` passes that decision to its push.
      - **Checks on each call.** `guarded_merge` does the following, in order, and refuses at the first failure:
        - re-verifies the decision's and the context's registrations;
        - requires the action's repository, target branch, head and (for a PR) PR number to equal the decision's bindings exactly;
@@ -198,25 +198,29 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
        - calls `panel_regate_required(repo_dir, gated_revision=<the context's gated_revision>, target_head=B0)`. It refuses if the call returns `True` or raises;
        - re-hashes the user file, and refuses on any mismatch with the context's `snapshot.user_digest`;
        - for `GhPrMerge`, re-reads the PR's live `number`, `baseRefName`, `headRefOid` and base repository immediately before the attempt. It requires each to equal the binding, and refuses with zero attempts otherwise;
-       - performs the action. `GhPrMerge` runs `gh pr merge <bound number> --repo <bound owner/name> --merge --match-head-commit <bound headRefOid>`, and takes nothing from the action except the decision reference.
+       - performs the action. Every `git` call in `merge_guard.py` runs as `git -c core.hooksPath=/dev/null …`, and every push also passes `--no-verify`, so no repository hook runs inside a merge-guard call. `GhPrMerge` runs `gh pr merge <bound number> --repo <bound owner/name> --merge --match-head-commit <bound headRefOid>`, and takes nothing from the action except the decision reference. For a push landing, the pushed commit is exactly the bound head, a fast-forward over B0. If today's closeout pushes any other commit (for example a local merge commit), SL-1.0 records that and declares the change under "Landing-path argv change".
 
-       A decision that was refused once is retired, and a decision that merged is consumed.
-     - **`NoLandingToken`.** Only `merge_guard.mint_no_landing_token()` may construct one, and only from the autonomous entry. The module keeps a runtime registry of the tokens it minted. The wrapper refuses the token if the run mode resolves to `governed`, if the run mode is unreadable, or if any landing decision was registered for this repository in the process. On this path the wrapper performs today's primitive byte-for-byte.
+       A decision that was refused once is retired, and a decision that merged is consumed; a retry that presents a retired decision is refused before any attempt. A "primitive" means a remote-mutating command. Fetches and reads are not primitives.
+     - **`NoLandingToken`.** Only `merge_guard.mint_no_landing_token()` may construct one, and only from the autonomous entry. The module keeps a runtime registry of the tokens it minted. The wrapper refuses the token if the run mode resolves to `governed`, if the run mode is unreadable, or if any landing call (admitted or refused) was made for this repository in the process. On this path the wrapper performs today's primitive byte-for-byte.
      - **Resume in a fresh process.** A governed run resumed in a fresh process has no registered decision. It refuses with `panel_merge_authority_missing`, and the board runs again.
   2. **Remote mutations live in named functions of `merge_guard.py`.** Each remote-mutating command sits in the body of exactly one function:
      - `guarded_merge`: `gh pr merge --merge --match-head-commit`, and the leased push to the target.
-     - `publish_nontarget` takes no target from its caller. It resolves the protected destinations itself: the remote's default branch, every branch that reports as protected under classic branch protection or matches a ruleset, and the landing targets that the run-train roadmap and the phase-loop configuration declare. A failed lookup refuses. Everything it runs is checked against an allowlist grammar:
-       - **Pushes.** It runs `git push <remote> <refspec>` with exactly ONE fully explicit refspec, `<src>:refs/heads/<name>`. `<src>` is a 40- or 64-hex SHA or `refs/heads/<local>`, and `<name>` is not protected. The only flags on its closed flag list are `--porcelain` and `--quiet`. Everything else is refused before any attempt, including:
+     - `publish_nontarget` takes no target from its caller. It resolves the protected destinations itself: the remote's default branch, every branch that reports as protected under classic branch protection or matches a ruleset, the landing targets that the run-train roadmap and the phase-loop configuration declare, and every target that a registered decision binds. A failed lookup refuses. Everything it runs is checked against an allowlist grammar:
+       - **Pushes.** It runs `git -c core.hooksPath=/dev/null push --no-verify <bound origin> <refspec>`, with exactly ONE fully explicit refspec, `<src>:refs/heads/<name>`. `<remote>` must be the bound `origin` URL. `<src>` is a 40- or 64-hex SHA or `refs/heads/<local>`, and `<name>` is not protected. The flags are a closed list: `--no-verify` (required), `--porcelain` and `--quiet`. Everything else is refused before any attempt, including:
          - no refspec, `HEAD`, `origin HEAD`, or an unqualified destination;
          - the matching refspecs `:` and `+:`;
          - `+` force;
          - deletions (`:<name>`, `--delete`, `-d`);
          - `--mirror`, `--all`, `--tags`, `--follow-tags`, `--set-upstream`/`-u`, `--push-option`/`-o`;
          - any other flag.
-       - **GitHub operations.** It runs `gh pr create`, `gh pr comment`, `gh issue create|comment`, and `gh pr edit` with only `--title`, `--body`/`--body-file`, `--add-label`/`--remove-label` and `--add-reviewer`. `--base` is never allowed.
-       - **`gh pr ready`, and any push to a PR's head branch.** These are refused unless all three hold, read live: auto-merge is off, the PR is not queued, and the PR's base is not queue-protected. Unreadable state refuses.
+       - **GitHub operations.** Every call passes `--repo <bound owner/name>`, and a PR selector is only a number resolved against that repository, never a URL. The allowed operations:
+         - `gh pr create`, only as `--repo --head <owner>:<branch> --base --title --body/--body-file [--draft]`. `<branch>` must already be published at the exact local SHA, checked live with `git ls-remote` just before the call. `--web`, `--fill` and any fork or interactive flow are refused, so PR creation can never push.
+         - `gh pr comment` and `gh issue create|comment`.
+         - `gh pr edit`, with only `--title`, `--body`/`--body-file`, `--add-label`/`--remove-label` and `--add-reviewer`. `--base` is never allowed.
+       - **Runtime-authored text.** Titles, bodies, labels and comments are runtime-authored templates. They never relay seat or implementer text. Any relayed fragment is neutralized: it cannot start with `/` or `@`, and it is code-fenced in bodies. One site relays such text today: `convergence/broker/credsep.py` builds its `gh pr create` title from the branch head's commit subject, and it also pushes and creates PRs outside `merge_guard`. That site is already known to the SL-1.0 inventory, and routes to the plan amendment.
+       - **`gh pr ready`, and any push to a PR's head branch.** `publish_nontarget` finds, by itself, every open PR whose head is the destination; it does not take one from the caller. The operation is refused unless all three hold for each such PR, read live: auto-merge is off, the PR is not queued, and the PR's base is not queue-protected. Unreadable state refuses.
 
-       Exact guarantee: the runtime never marks ready, retargets, or pushes to a PR whose live state shows auto-merge enabled, queue membership or a queue-protected base. It never pushes to a protected branch. What it does not govern is automation that GitHub or a human configures on an event, such as a merge bot reacting to `ready`; that is a non-boundary outside the runtime (below).
+       Exact guarantee: the runtime never marks ready, retargets, or pushes to a PR whose live state shows auto-merge enabled, queue membership or a queue-protected base. It never pushes to a protected branch, and never pushes through PR creation. The runtime itself emits these events: `ready`, labels, comments, PR creation and head pushes. It does not govern automation that a repository configures to react to them (see below).
      - `dequeue`: the GraphQL `dequeuePullRequest` mutation, plus `gh pr merge --disable-auto`, confirmed by queue membership, as `train_runner._dequeue_pr` does today. `--disable-auto` alone cancels an auto-merge request; it does not remove a queued entry. `dequeue` needs no authority token because it can only remove: it takes a PR out of a queue and cancels auto-merge, and it cannot add, enable or merge. Its falsifier asserts that it never issues any other mutation.
 
      Later phases add remote mutations only as new named functions in this module, and add read-only commands only to `merge_guard.READ_ONLY_ALLOWLIST`. Those two are the module's extension seams (see Execution Notes).
@@ -226,41 +230,45 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
      - **Base race.** Maintainer decision (2026-09-27, agent-harness#1111): accept the window between the re-gate and GitHub's PR merge, as an explicit exception to EC-PANEL-1's re-gate rule. It applies only to that window, and only to `GhPrMerge`. After the merge, the wrapper compares the merge commit's first parent with B0. If they differ, or if the merge commit cannot be read, it raises the typed escalation `panel_merge_base_moved` for a human. Run-train records it in its result and ledger, and halts before the next node.
      - **Pushes.** `GitPush` requires the commit to descend from B0, and pushes with `--force-with-lease=refs/heads/<target>:<B0>`. That makes the push atomic against B0: a target that advances to B1 is refused, even if B1 is an ancestor of the commit.
 
-  **The tripwire scan.** Its scope is exactly these forms:
-  - the standard spawn APIs: `subprocess.*`, `os.exec*`, `os.spawn*`, `os.posix_spawn*`, `os.system`, `os.popen`, `pty.spawn` and `asyncio.create_subprocess_*`, called with a literal `git`/`gh` argv[0];
-  - any list or tuple display whose first element is the literal `"git"` or `"gh"`, wherever it appears. This catches `argv = ["git", "push", …]` and a pass-through `_run([...])`;
-  - `gh api` calls;
-  - imports of a git library (GitPython, pygit2, dulwich) or a GitHub API client (PyGithub, ghapi, gidgethub);
-  - HTTP through `urllib.request`, `http.client`, `requests`, `httpx` or `aiohttp` with a literal GitHub host and a non-`GET` or non-literal method.
+  **The tripwire scan.** It covers the maintainer's scope, the standard spawn APIs with a literal `git`/`gh`, using these match rules:
+  - **Where it matches.** A literal `git`/`gh` token, or a literal path whose basename is `git`/`gh`, in command position. Command position means:
+    - the first element of any list or tuple display (such as `argv = [...]` or a pass-through `_run([...])`), in any expression;
+    - the result of `shlex.split()` or `.split()` applied to a literal;
+    - a literal `shell=True` or `os.system` string;
+    - a simple command in a scanned shell script.
 
-  Everything else is a named residual below. The scope and the maintainer's residual list together partition the surface.
+    Shell is tokenized over `&&`, `||`, `;`, `|` and `$(…)`. Assignment words (`VAR=x`) and a closed set of transparent prefixes (`env`, `timeout`, `nice`, `nohup`, `stdbuf`, `sudo`, `command`, `exec`, `time`, `xargs`) are skipped to find the command position. The spawn APIs whose arguments are read are `subprocess.*`, `os.exec*`, `os.spawn*`, `os.posix_spawn*`, `os.system`, `os.popen`, `pty.spawn` and `asyncio.create_subprocess_*`.
+  - **Fail closed.** Any other literal argv or command line that contains a `git`/`gh` token fails the scan.
+  - **HTTP, whatever the client.** Any call whose arguments carry a literal GitHub API URL fails if its method is non-`GET` or non-literal.
+  - **Libraries.** Imports of a git library (GitPython, pygit2, dulwich) or a GitHub API client (PyGithub, ghapi, gidgethub) fail.
 
   Within that scope, it fails on anything it cannot classify. Outside `merge_guard.py`:
-  - a `git` subcommand must be literal and on a closed list of local subcommands plus `fetch`/`ls-remote`/`clone`, and each subcommand's options must be on its own closed option list. That list never includes an exec-capable option: `-c`, `--exec-path`, `--exec`/`-x`, `foreach`, `bisect run`, `--upload-pack`/`-u`, `ext::` URLs, `grep -O`, `difftool --extcmd`, and the like. A `fetch` refspec destination must lie under `refs/remotes/`;
+  - a `git` subcommand must be literal and on a closed list of local subcommands plus `fetch`/`ls-remote`/`clone`, and each subcommand's options must be on its own closed option list. That list never includes an exec-capable option: `-c`, `--exec-path`, `--exec`/`-x`, `foreach`, `bisect run`, `--upload-pack`/`-u`, `ext::` URLs, `grep -O`, `difftool --extcmd`, and the like. A `fetch` refspec destination must lie under `refs/remotes/`. Inside `merge_guard.py`, the only `-c` allowed is `core.hooksPath=/dev/null`;
   - `gh` is limited to `pr view|list|checks|diff`, `issue view|list`, `auth status` and `repo view`;
   - `gh api` is checked against a closed flag allowlist: a literal path, `-H`/`--header`, `--jq`, `--paginate`, and `-X GET`/`--method GET` in either attached or separate spelling. Any other flag fails the scan, which catches `--field`, `--method=PUT` and `-XPUT`. `-f`/`-F` are illegal even alongside `-X GET`. The one exception is `gh api graphql -f query=<literal>`, whose literal body must be a `query`, never a `mutation`.
 
-  **Named residuals** (the maintainer's list, exactly as decided). These are out of the scan's scope because the runtime is trusted and reviewed:
-  - shell strings built at runtime, and `bash -c` payloads;
+  **Named residuals.** These follow the maintainer's decision, in its wording. They are out of scope because the runtime is trusted and reviewed:
+  - obfuscated or runtime-built spawns. This includes shell strings built at runtime, `bash -c` payloads, and a computed argv[0] such as `shutil.which("git")`;
   - `curl` or `wget` calls to the API;
-  - git aliases, and commands driven by config;
+  - git aliases, and config-driven commands. This includes repository hooks that run inside `git` calls made outside `merge_guard.py`, such as local commits in modules SL-1 does not own;
   - third-party spawn libraries;
-  - non-literal HTTP, meaning a host that is not a literal. A literal GitHub host with a non-literal method is in scope, as stated above;
+  - non-literal HTTP, meaning a URL that is not a literal;
   - the data-driven spawn sites: the plan `suite_command` runner, and the harness session launch.
 
-  **Non-boundaries outside the runtime.** These are not scan forms. The runtime cannot act on them, and they are listed for honesty:
-  - manual merges by a human or an agent (including following a skill's prose, such as `skill-editor`'s `git push`);
+  **Partition.** Inside the scanned roots, every literal occurrence of a `git`/`gh` token, a literal GitHub API URL, or a named library import is in scope, and everything non-literal is a named residual. So scope and residuals partition the scanned surface. The trees outside the roots (tests, `spikes/**`, `ci/**`, `.github/workflows/**`) are outside by the roots statement, not by the partition.
+
+  **Non-boundaries outside the runtime.** These are not scan forms. The runtime cannot govern them, and they are listed for honesty:
+  - interactive humans and interactive agents merging by hand (including following a skill's prose, such as `skill-editor`'s `git push`). For agents the runtime itself launches (implementers, fix rounds, seats), the boundary is their sandbox and credential policy: the seat and implementer sandbox (`sandbox_policy`), and the broker's credential separation (`convergence/broker/credsep.py`);
   - an auto-merge a human enabled that GitHub itself fires;
-  - repository automation triggered by a comment, a label or `ready`;
-  - workflows that merge (`.github/workflows/**` is the CI boundary);
-  - git hooks in the repository.
+  - repository automation that reacts to events the runtime emits (`ready`, labels, comments, PR creation, head pushes). Maintainer decision (2026-09-27, agent-harness#1111): a third-party merge bot or other automation reacting to those runtime-emitted events is a disclosed known gap, alongside manual merges. SL-3.2 documents it;
+  - workflows that merge (`.github/workflows/**` is the CI boundary).
 
   **Today's merge sites**, each of which becomes a `guarded_merge` call:
   - `train_runner._live_merge_pr`;
   - `runner._perform_phase_closeout_impl`'s closeout push (`commit` and `manual` publish nothing);
   - `runner._run_legible_pr_transition`'s push to `refs/heads/main`.
 
-  `governed_board_gate`'s `promoted` and the `advisor-board` landing JSON authorize no merge. SL-3.2 documents run-train and phase-loop as the merge paths.
+  `governed_board_gate`'s `promoted` and the `advisor-board` landing JSON authorize no merge. SL-3.2 documents run-train and phase-loop as the only runtime merge paths. Every push landing to a non-GitHub remote refuses, because its branch-rules lookup cannot be read; this is disclosed, and it fails closed.
 
   **Landing-path argv change.** The landing path adds the fetch, and the lease on pushes. SL-1.0 lists every test that drives a governed merge site, with its owning phase. Candidates today:
   - `test_train_merge.py` (RESIDUAL, INTEG, FAULTS, REVIEWTRUTH);
@@ -274,6 +282,7 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
 SL-1 entry gates (SL-1.0, before any production edit):
 - **Receipt replay (item 3).** From the root of the scratch worktree (the argv paths are repo-relative), run the manual replay (SL-0 rules) once. It passes only if the per-node outcomes equal the recorded ones: every `red_nodeids` node fails, and none is skipped or errors. Any mismatch stops SL-1 and routes to an SL-0 repair. The comparison is attached to the SL-1 landing record.
 - **Merge-surface inventory (item 7).** Run the gateway scan in report mode on the base. Every `git`/`gh` spawn outside the allowlist, and every test that drives a governed merge site, is listed with its module's owning phase. A site in a module SL-1 does not own routes to a plan amendment before any production edit.
+- **HARDEN freeze of `backing.py`.** Confirm that no unsealed HARDEN evidence binds `backing.py`'s bytes; only `FROZEN_SL0_PATHS` are byte-pinned. If any does, the `backing.py` seam routes to a plan amendment.
 - **Guard pass-through.** Confirm that `harden_tdd_guard` forwards an absent `review_policy` unchanged (it reads `call_kwargs.get("review_policy")` and substitutes nothing), so the strict wrapper can observe `panel_review_policy_required`. If it substitutes a policy, SL-1 stops, and the alignment routes to agent-harness#1113 with a plan amendment.
 - **Harness dry-run (item 10).** Run the `ec3e_*` nodes against a throwaway stub of the IF-0-PANEL-1 names that never lands. The stub implements the identity registry, a `merge_guard` stub, and both user-file reads. The run therefore also proves that no harness layer, `harden_tdd_guard` included, copies a context. It also shows whether a frozen ec3e harness fakes `git`/`gh` for the merges or isolates `XDG_CONFIG_HOME` in a way that conflicts. Any such conflict routes to an SL-0 repair, and the frozen patch points (for example `_live_merge_pr`) are kept. Each node may pass or fail on an assertion about production behaviour, but none may error in the harness itself (an import, fixture or `TypeError` inside a `_Harness`, `_drive` or `_run_*` helper). A harness error stops SL-1 and routes to a post-closeout SL-0 repair (the agent-harness#614 precedent); the frozen node is never edited. pytest reports an exception raised in a helper as FAILED, not ERROR, so a result is classified by the frame that raised it. SL-1.0's output and stub, and SL-1.1's red run, go into the SL-1 landing record.
 - **GOVSETUP shape (item 5).** Maintainer decision (2026-09-27, agent-harness#1111): the corpus's layout is accepted, and IF-0-GOVSETUP-1 must build on it. The layout is `.phase-loop/governance.toml`, `$XDG_CONFIG_HOME/agent-harness/governance.toml`, a `[tiers.<tier>] panel = [...]` table, and seat aliases. GOVSETUP's plan must conform to that layout (see IF-0-PANEL-1). The gate is met when `plans/manifest.json` has no committed GOVSETUP plan, or when that plan's IF-0-GOVSETUP-1 realizes the layout. A plan that does not conform is refused at its own review, and the corpus is not re-frozen. These nodes pin the layout: `ec1_target_head_panel_change_requires_a_regate`, `ec4_a_governance_profile_cannot_lower_the_minimum`, `ec4_every_seat_an_explicit_profile_names_is_required`, `ec4_repository_profile_takes_precedence_over_the_user_profile`, `ec5_labels_carry_the_explicit_profile_and_its_provenance`, `ec5_labels_carry_a_user_profile_path_and_digest_not_the_base`, `ec3e_target_head_profile_panel_list_change_after_the_gate_forces_a_regate` and `ec3e_a_profile_document_cannot_lower_the_minimum`.
@@ -307,6 +316,9 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
   - PR substitution: a different PR number with a matching head SHA;
   - a mismatch between a caller cross-check keyword and the value the runtime read;
   - a `gated_revision` that is not an ancestor of B0;
+  - a decision from a direct `evaluate_landing` call, and a `LandingDecision` built by hand or copied with `replace`;
+  - a PR head that advanced between the review packet and the decision;
+  - a retry that presents a decision already retired by a refusal;
   - `panel_regate_required` returning `True`: a `[panel.*]` change, or a change to only the profile `panel` list, and a retry after such a change;
   - `panel_regate_required` raising;
   - a failed fetch;
@@ -318,13 +330,19 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
   - an enqueued merge: one `gh pr merge`, then one `dequeue` call and its membership-confirmation read, then the refusal;
   - a failed dequeue escalates;
   - a lease rejection after the target advances to an ancestor-of-commit B1;
+  - a `--match-head-commit` rejection after the live re-read;
+  - a CLI error after the server has already merged, which must still run the post-merge check;
   - `panel_merge_base_moved`, for a moved base and for an unreadable merge commit, with run-train halting;
 - `test_sl1_ec1_publish_nontarget_never_updates_a_protected_branch`: every case asserts zero push or mutation attempts. It is parametrized over:
   - `git push` with no refspec, `git push origin HEAD`, `:`, `+:`, `main`, `HEAD:main`, `+x:refs/heads/main`, `:main`, `--delete`, `--mirror`, `--all`, `--tags`, `--follow-tags`, `--set-upstream`, `-o`;
   - a caller that mis-declares its target;
   - a classic-protected branch, a ruleset branch, and a failed protection lookup;
-  - `gh pr edit --base` on any PR, and any other `gh pr edit` flag off the list;
+  - `gh pr edit --base` on any PR, any other `gh pr edit` flag off the list, and a URL selector into another repository;
+  - `gh pr create` with an unpublished branch or a branch that is ahead of its published head (a protected branch included), and with `--web`, `--fill` or a fork flow;
+  - a `<remote>` other than the bound `origin`;
+  - a caller that supplies no PR, while an open PR with auto-merge enabled has the destination as its head;
   - `gh pr ready`, and a push to a PR's head, when auto-merge is enabled, when the PR is queued, when its base is queue-protected, and when that state is unreadable;
+- `test_sl1_ec1_merge_guard_runs_no_hooks`: `pre-push`, `post-commit` and `reference-transaction` hooks that record an attempted merge are installed in the fixture repository, including through a relative `core.hooksPath`. No hook runs on any `merge_guard` call;
 - `test_sl1_ec1_dequeue_only_removes`: `dequeue` issues only `dequeuePullRequest`, `gh pr merge --disable-auto` and read-only confirmation calls;
 - `test_sl1_ec1_gateway_tripwire` (required; a regression tripwire by the maintainer decision above): the scan described above, over `phase-loop-runtime/src/**` and `phase-loop-runtime/scripts/**`, `phase-loop-skills/**` and `skills-src/**` (Python, and shell scripts as literal command lines), and `install-agent-harness.sh`. Inside `merge_guard.py`, it also checks that each remote mutation sits in its one allowed function, and that `NoLandingToken` and `mint_no_landing_token` are referenced only at allowlisted sites. The self-falsifiers cover one case per in-scope form:
   - each spawn API;
@@ -344,6 +362,12 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
   - a git library import;
   - a GitHub API client import;
   - a list display `["git", "push", …]` assigned to a variable and then spawned;
+  - a prefixed Python argv, `["timeout", "600", "gh", "pr", "merge", …]`;
+  - `shlex.split` of a literal `git push …`;
+  - a compound `shell=True` literal (`cd x && git push …`);
+  - a shell-script fixture with an assignment prefix and a chained command (`GH_TOKEN=$t gh pr merge …`; `cd d && git push …`);
+  - a non-GET call with a literal GitHub API URL through a client that is not otherwise listed (for example `urllib3`);
+  - a stray reference to the registration entry point;
   - `requests.put` to a literal `api.github.com` URL;
   - `urllib.request.Request(..., method="PATCH")` to that host;
   - an `httpx`/`aiohttp` call whose method is non-literal;
@@ -369,7 +393,7 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
 SL-2.2's `render_lens_section` renders the fixed heading `Review lens (subordinate to the verdict protocol)`, then the lens name and text verbatim, then exactly `The verdict protocol above takes precedence over this lens wherever they conflict.` (`PRECEDENCE_STATEMENT`), with nothing after it. Slice 2's board bundle includes SL-1's hook and the frame builder, because slice 2 changes every frame without touching `panel_invoker.py`.
 
 **Item 4 (per-seat digest binding) is split across two lanes.**
-- SL-1 owns the binding change, because it owns `panel_invoker.py`. Production today binds one instruction digest per review, and the broker checks every leg's staged instructions against it. SL-1 binds each seat's own instructions instead, by minting one authorization per distinct instruction set. This keeps the `ReviewIsolationAuthorization` / `public_board_review.v1` format that PRESROUTE and EXECFIND mint against. In `advisor_board/backing.py` it may change only that digest seam. A format change is out of scope and needs a plan amendment. `test_sl1_ec6_each_seat_is_bound_to_its_own_instruction_digest` proves the change with `lens_frame` stubbed.
+- SL-1 owns the binding change, because it owns `panel_invoker.py`. Production today binds one instruction digest per review, and the broker checks every leg's staged instructions against it. SL-1 binds each seat's own instructions instead, by minting one authorization per distinct instruction set, and binding each authorization to its seat's `seat_key`, so two seats that each hold a valid authorization cannot swap. This keeps the `ReviewIsolationAuthorization` / `public_board_review.v1` format that PRESROUTE and EXECFIND mint against. In `advisor_board/backing.py` it may change only that digest seam. A format change is out of scope and needs a plan amendment. `test_sl1_ec6_each_seat_is_bound_to_its_own_instruction_digest` proves the change with `lens_frame` stubbed.
 - SL-2 owns the end-to-end acceptance test, `test_panel_lens_transport.py::test_ec6_distinct_seat_lenses_survive_digest_binding_and_transport`. It uses the real `lens_frame`, and faking only the child process, it drives distinct seat lenses through production digest binding on the brokered and TUI routes and through the native-fill request. It then checks, after transport, the instructions each seat actually received: the staged instructions its broker leg hands the child, the TUI session's input, and the native request's `instructions`. Each seat's received bytes must carry its own lens and pass its own digest check. The test includes two seats on the same harness. It binds each child's received bytes to its seat through production identity (the seat's own authorization, or `seat_key`), never through the leg name or the content, and a swap mutation between the two seats must fail it. The item-9 observation seam (`deliver_seat_prompt`) sits before transport and does not satisfy this test. A binding defect found here reopens SL-1.
 
 ### SL-3 — Documentation and phase reducer (lands with SL-2)
@@ -391,7 +415,8 @@ SL-3.2 documents lane tables, lens declarations, the fallback, the minimum and i
 - the `[president]` pointer for a single-vendor user;
 - out-of-band recovery for an operator with fewer than four vendors when a base table goes invalid (N4);
 - that a minimum of 1 means one distinct *vendor*, not one seat;
-- that run-train and phase-loop are the only merge paths, and that the `advisor-board` landing JSON authorizes no merge;
+- that run-train and phase-loop are the only runtime merge paths, and that the `advisor-board` landing JSON authorizes no merge;
+- that a repository running a merge bot or other automation that reacts to runtime-emitted events (`ready`, labels, comments, PR creation, head pushes) must not pair it with governed PANEL landings (the disclosed gap above);
 - the merge-guard refusal and escalation codes, with a human runbook for `panel_merge_base_moved` and `panel_merge_dequeue_failed`;
 - recovery from a malformed base `.phase-loop/governance.toml`. Every panel landing reads that file at base, so a repair PR through a panel path is itself refused. The repair lands through the same out-of-band maintainer route as N4.
 
@@ -418,7 +443,7 @@ It makes the entry-doc check cover those sections in both documents (adding the 
   - LEGLIFE's EC-4 lane is held until its plan cites the ruling.
   - The LEGLIFE-4 and REVIEWTRUTH-5 closeouts wait for SL-2.
   - This plan edits none of those phases.
-  - From SL-1's landing, `test_sl1_ec1_gateway_tripwire` binds every later phase that spawns `git`/`gh` or mutates a remote, for example RESIDUAL lane A's publish identity, FAB*, INTEG, RELEASE and the skills. Such a phase adds its mutation as a new named function in `merge_guard.py` (the module's extension seam), and adds its read-only commands to the allowlist in its own plan.
+  - From SL-1's landing, `test_sl1_ec1_gateway_tripwire` binds every later phase whose `git`/`gh` spawns or GitHub calls fall inside the tripwire's scope (its literal forms), for example RESIDUAL lane A's publish identity, FAB*, INTEG, RELEASE and the skills. Such a phase adds its mutation as a new named function in `merge_guard.py` (the module's extension seam), and adds its read-only commands to the allowlist in its own plan.
 - **Readings of earlier criteria** (from the president ruling on agent-harness#1079):
   - EC-GOVLEAN-5's "full board" is the board EC-PANEL-4 requires.
   - EC-GOVSETUP-4's "four seats" is today's four named seats (`min_distinct_vendors=None`), labelled as an effective minimum of 4 from the built-in source. Take GOVSETUP's no-profile golden after SL-1.
