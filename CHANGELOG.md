@@ -217,10 +217,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A conforming review that only discusses limits, auth or these failures keeps `OK`, as does
   an advisory that gives advice about rate limits. A signature is the WHOLE line the CLI
   prints: the sourced sentence, with only its variable parts (a datetime, a path, which may
-  contain spaces) left open. It must start at column 0, optionally after `ERROR:`. Signatures
-  are matched in the last 20 lines of the log, or in a body that is itself the failure: a
-  usage banner or env failure plus at most a verdict, in every mode, checked before the
-  review-mode early-OK. A quote in backticks, in a fence, mid-sentence, next to the
+  contain spaces but not sentence punctuation) left open. The codex reset may be dated,
+  same-day or absent ("Try again later."). A signature must start at column 0, optionally
+  after `ERROR:`. In the log, only lines the CLI itself printed are scanned: the last 20
+  lines outside codex's echoed `user`/`codex`/`thinking`/`exec` blocks, plus `ERROR:` lines
+  that end such a block. The codex leg elides its exact prompt echo first. In the body, a
+  failure is any mix of usage and env lines plus at most a verdict, in every mode, checked
+  before the review-mode early-OK. A quote in backticks, in a fence, mid-sentence, next to the
   reviewer's own prose, or on a line that begins with the sentence and goes on, does not
   count.
 

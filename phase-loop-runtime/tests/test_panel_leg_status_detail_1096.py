@@ -64,6 +64,7 @@ CONFORMING_REVIEW_ABOUT_LIMITS = (
 @pytest.mark.parametrize("line", [
     CODEX_USAGE_BANNER,                                                   # measured, codex
     "You've hit your usage limit. Upgrade to Plus to continue using Codex",  # codex binary
+    "Quota exceeded. Check your plan and billing details.",                # codex binary
     "You hit your spend cap set by the owner of your workspace. Ask an owner to increase "
     "your spend cap to continue.",                                         # codex binary
     "You've hit your monthly spend limit.",                                # claude binary
@@ -296,7 +297,7 @@ def test_the_final_labelled_detail_is_bounded_and_control_stripped():
     line never reaches the operator's terminal via `advisor-board`."""
     path = "/tmp/\x1b[2J\x07\x1bZ\x9b2J\x00" + "z" * 950
     line = f"Temp directory {path} is owned by uid 65534, expected 0. Refusing to use it"
-    log = "user\nprompt\n" + line + "\n"
+    log = line + "\n"
     status = pi._classify_leg(1, "", log)
     assert status == "DEGRADED"
     detail = pi._leg_failure_detail(status, 1, "", log)
@@ -576,14 +577,24 @@ def test_review_mode_usage_banner_body_with_nonzero_rc_is_typed_degraded():
     assert pi._classify_leg(1, "You hit your weekly limit.", "", mode="review") == "DEGRADED"
 
 
-def test_pty_tail_redacts_a_token_that_straddles_the_cut():
-    """codex r2: the 600-char cut ran BEFORE the token patterns, stranding `abcd…` after
-    removing its `xai-` prefix."""
-    raw = b"fatal: rejected xai-abcdefghijklmnopqrst " + b"y" * 579
+def _no_8char_piece(token: str, text: str) -> bool:
+    return all(token[k:k + 8] not in text for k in range(len(token) - 7))
+
+
+@pytest.mark.parametrize("prefix,token,pad", [
+    # codex r2's exact input: the 600-char cut lands inside the token
+    (b"fatal: rejected ", "xai-abcdefghijklmnopqrst", 579),
+    # claude r3: the Bearer half must actually straddle the cut (587 pads, not 590)
+    (b"auth Bearer ", "abcdefghijklmnopqrstuvwx", 587),
+])
+def test_pty_tail_redacts_a_token_that_straddles_the_cut(prefix, token, pad):
+    """codex r2: the 600-char cut ran BEFORE the token patterns, stranding a suffix after
+    removing the prefix the pattern needs."""
+    raw = prefix + token.encode() + b" " + b"y" * pad
+    unredacted = raw.decode()[-600:]
+    assert token[-8:] in unredacted and token[:8] not in unredacted, "the cut must straddle"
     tail = pi._sanitized_pty_tail(raw)
-    assert "abcdefghijklmnopqrst" not in tail, tail[:80]
-    raw = b"auth Bearer abcdefghijklmnopqrstuvwx " + b"y" * 590
-    assert "mnopqrstuvwx" not in pi._sanitized_pty_tail(raw)
+    assert _no_8char_piece(token, tail), tail[:60]
 
 
 @pytest.mark.parametrize("body", [
@@ -699,3 +710,126 @@ def test_cli_prints_the_finalized_detail(tmp_path):
         for line in codex_lines:
             assert "\x1b" not in line and "abcdefghijklmnopqrstuv" not in line
             assert len(line) <= pi._LEG_DETAIL_MAX_CHARS + 80
+
+
+
+# --- board round 3 (agent-harness#1102) ------------------------------------------------
+
+def test_body_mixing_usage_and_env_lines_is_a_failure():
+    """codex r3: each kind's check rejected the other kind's line, so the mixed body got
+    the early-OK."""
+    body = (
+        "You've hit your usage limit. Upgrade to Plus to continue using Codex\n"
+        + CODEX_BWRAP_FAILURE + "\nAGREE"
+    )
+    assert pi._classify_leg(0, body, "", mode="review") == "DEGRADED"
+    assert pi._leg_failure_detail("DEGRADED", 0, body, "").startswith("provider_usage_limit")
+
+
+def test_temp_dir_path_cannot_swallow_reviewer_prose():
+    """codex r3: the open path capture took "…checks pass; expected diagnostic: Temp directory
+    /tmp/claude" as the path."""
+    body = (
+        "Temp directory /tmp/claude checks pass; expected diagnostic: Temp directory "
+        "/tmp/claude is owned by uid 65534, expected 0. Refusing to use it\nAGREE"
+    )
+    assert pi._classify_leg(0, body, "", mode="review") == "OK"
+    # the other direction: a real path with spaces is still a path
+    real = "Temp directory /tmp/claude cache dir is owned by uid 65534, expected 0. Refusing to use it"
+    assert pi._classify_leg(0, real, "", mode="advisory") == "DEGRADED"
+
+
+def test_codex_exact_advisory_log_with_prompt_echo_stays_ok():
+    """codex r3's exact log: an unindented sourced line INSIDE the echoed user block."""
+    log = (
+        "user\nExample failure:\nYou've hit your usage limit. Upgrade to Plus to continue "
+        "using Codex\ncodex\nThe patch handles temporary directories correctly.\n"
+    )
+    body = "The patch handles temporary directories correctly."
+    assert pi._classify_leg(0, body, log, mode="advisory") == "OK"
+
+
+def test_codex_leg_elides_its_prompt_echo_before_classification(monkeypatch, tmp_path):
+    """The production codex path: a bundle whose LAST line is a column-0 `ERROR: <banner>`
+    (the residual `_provider_output_tail` cannot tell apart) is elided by `_exec_leg`, so a
+    stream disconnect is not typed as a usage limit."""
+    class _Proc:
+        def __init__(self, stderr):
+            self.returncode, self.stdout, self.stderr = 1, "", stderr
+
+    def fake(cmd, **kw):
+        prompt = kw["input_text"]
+        return _Proc("user\n" + prompt + "\nERROR: stream disconnected before completion: reset\n")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake)
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda leg, env: (True, ""))
+    review_dir, out_dir = tmp_path / "review", tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    (review_dir / "review-bundle.md").write_text("x")
+    # Brokered: the sealed prompt carries the bundle INLINE (the unbrokered prompt is only a
+    # pointer to the staged file), so this is the route where a bundle is echoed.
+    monkeypatch.setattr(pi, "_brokered_codex_command", lambda **kw: ["codex", "exec", "-"])
+    monkeypatch.setattr(pi, "_record_broker_provider_evidence", lambda *a, **k: None)
+    sealed = "Review this.\nThe bundle.\nERROR: You've hit your usage limit. Try again later."
+    seen: list[str] = []
+    real_fake = fake
+
+    def recording(cmd, **kw):
+        seen.append(kw["input_text"])
+        return real_fake(cmd, **kw)
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", recording)
+    rc, text, log = pi._exec_leg(
+        "codex", review_dir, out_dir, timeout_s=60, artifact="A", env={}, broker_prompt=sealed,
+    )
+    assert seen and "You've hit your usage limit" in seen[0], "the test must echo the banner"
+    assert "You've hit your usage limit" not in log
+    status = pi._classify_leg(rc, text, log)
+    assert status == "ERROR"
+    assert pi._leg_failure_detail(status, rc, text, log) == (
+        "ERROR: stream disconnected before completion: reset"
+    )
+
+
+_CODEX_PLANS = {
+    "bare": "You've hit your usage limit.",
+    "plus": "You've hit your usage limit. Upgrade to Plus to continue using Codex "
+            "(https://chatgpt.com/explore/plus),",
+    "pro": "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+           "visit https://chatgpt.com/codex/settings/usage to purchase more credits",
+    "team": "You've hit your usage limit. To get more access now, send a request to your admin",
+}
+_CODEX_RESETS = {
+    # codex error.rs retry_suffix / retry_suffix_after_or; both forms are in the binary
+    "none": (" Try again later.", " or try again later.", None),
+    "same_day": (" Try again at 3:05 PM.", " or try again at 3:05 PM.", "3:05 PM"),
+    "dated": (" Try again at Oct 1st, 2026 1:42 PM.", " or try again at Oct 1st, 2026 1:42 PM.",
+              "Oct 1st, 2026 1:42 PM"),
+}
+
+
+@pytest.mark.parametrize("plan", sorted(_CODEX_PLANS))
+@pytest.mark.parametrize("reset", sorted(_CODEX_RESETS))
+def test_codex_usage_banner_every_plan_and_reset_form(plan, reset):
+    """claude r3 B1: the same-day and no-reset forms (the common 5-hour window) regressed
+    to a bare ERROR / OK when the datetime was mandatory."""
+    bare_suffix, or_suffix, when = _CODEX_RESETS[reset]
+    banner = _CODEX_PLANS[plan] + (bare_suffix if plan == "bare" else or_suffix)
+    log = "user\n<prompt echo elided>\nERROR: " + banner + "\n"
+    status = pi._classify_leg(1, "", log)
+    assert status == "DEGRADED", banner
+    detail = pi._leg_failure_detail(status, 1, "", log)
+    label = f"provider_usage_limit (resets {when}): " if when else "provider_usage_limit: "
+    assert detail.startswith(label), (banner, detail)
+    for mode in ("review", "advisory"):
+        assert pi._classify_leg(0, banner + "\n\nAGREE", "", mode=mode) == "DEGRADED", banner
+
+
+@pytest.mark.parametrize("home", ["/Users/Jane Doe/Library/Caches/claude", "/home/Jane Doe/.cache/claude"])
+def test_home_segment_with_spaces_is_redacted_whole(home):
+    """grok r3 BLOCKING: the one-word home segment regex left `~/ Doe/…`."""
+    line = f"Temp directory {home} is owned by uid 501, expected 0. Refusing to use it"
+    detail = pi._leg_failure_detail("DEGRADED", 1, "", line)
+    assert detail.startswith("provider_environment_failure: Temp directory ~/")
+    assert "Jane" not in detail and "Doe" not in detail, detail

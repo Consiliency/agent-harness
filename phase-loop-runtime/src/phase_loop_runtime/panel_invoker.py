@@ -1850,7 +1850,11 @@ _TOOL_DENIED_RE = re.compile(
 # Each entry is the WHOLE line the CLI prints, with its variable parts constrained (a
 # datetime, a path) — board r2 (agent-harness#1102): a prefix match let a reviewer's own
 # line that merely BEGINS with a sourced fragment count as the CLI's line.
-_CODEX_RESET_DT = r"[A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M"
+# codex `format_retry_timestamp`: the time alone ("%-I:%M %p") when the reset is the same
+# local day — the usual 5-hour window — else "%b %-d<ordinal>, %Y %-I:%M %p" (board r3 B1).
+_CODEX_RESET_DT = (
+    r"(?:[A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?,? (?:\d{4} )?)?\d{1,2}:\d{2} [AP]M"
+)
 _CODEX_USAGE_TAIL_FRAGMENTS = (
     # every fragment below sits next to "hit your usage limit" in the codex binary
     r"Upgrade to Plus to continue using Codex(?: \(https://chatgpt\.com/explore/plus\))?",
@@ -1858,11 +1862,14 @@ _CODEX_USAGE_TAIL_FRAGMENTS = (
     r"[Vv]isit https://chatgpt\.com/codex/settings/usage to purchase more credits",
     r"To get more access now, send a request to your admin",
     r"(?:or )?[Tt]ry again at " + _CODEX_RESET_DT,
+    # no `resets_at`: " Try again later." / " or try again later." (both in the binary)
+    r"(?:or )?[Tt]ry again later",
 )
 _PROVIDER_USAGE_LIMIT_SENTENCES = (
     # codex
     r"You['’]ve hit your usage limit(?:[ ,.]+(?:"
-    + "|".join(_CODEX_USAGE_TAIL_FRAGMENTS) + r"))*[ ,.]*",
+    + "|".join(_CODEX_USAGE_TAIL_FRAGMENTS) + r"))*,?\.?",
+    r"Quota exceeded\. Check your plan and billing details\.",
     r"You hit your spend cap set by the owner of your workspace\. "
     r"Ask an owner to increase your spend cap to continue\.",
     # Claude Code (each a complete string in the binary; the suffixes are its adjacent ones)
@@ -1890,7 +1897,10 @@ _PROVIDER_USAGE_LIMIT_SENTENCES = (
 # use it". Sourced from the codex / Claude Code binaries; nothing is sourced for grok or agy.
 # A path is a bounded non-greedy run anchored by the sentence's fixed tail, so a path with
 # spaces ("/tmp/claude cache") is still a path.
-_CLAUDE_TMP_PATH = r"/[^\n]{0,1000}?"
+# Spaces are allowed ("/tmp/claude cache"); the sentence structure a real path never has
+# is not ("; ", ": ", a second "directory /"), so reviewer prose that ends in the CLI's line
+# cannot be swallowed as the path (board r3).
+_CLAUDE_TMP_PATH = r"/(?:(?![;:] |[Dd]irectory /)[^\n]){0,1000}?"
 _CLAUDE_TMPDIR_HINT = (
     r"(?: Set CLAUDE_CODE_TMPDIR to a directory you control, or ask an administrator to "
     r"remove it\.)?"
@@ -1920,6 +1930,11 @@ def _whole_line_re(sentences: tuple[str, ...]) -> re.Pattern[str]:
 
 _PROVIDER_USAGE_LIMIT_RE = _whole_line_re(_PROVIDER_USAGE_LIMIT_SENTENCES)
 _PROVIDER_ENV_FAILURE_RE = _whole_line_re(_PROVIDER_ENV_FAILURE_SENTENCES)
+# The UNION, for "is this body the CLI's failure": a body mixing a usage line and an env line
+# (plus a verdict) is still nothing but CLI output (board r3).
+_PROVIDER_FAILURE_RE = _whole_line_re(
+    _PROVIDER_USAGE_LIMIT_SENTENCES + _PROVIDER_ENV_FAILURE_SENTENCES
+)
 # The same sentences ANYWHERE: only for a Claude PTY tail, which `_sanitized_pty_tail`
 # collapses to one line (so no line starts survive), only for a leg that already failed
 # WITHOUT review text (see `_exec_claude_tui_leg`).
@@ -1952,12 +1967,56 @@ _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted>"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
-    (re.compile(r"(?:/var)?/home/[^/\s]+|/Users/[^/\s]+|/root(?=/|\b)"), "~"),
+    # The WHOLE home segment, spaces included ("/Users/Jane Doe/…"): up to the next "/" when
+    # one follows on the line, else the next whitespace (board r3). Over-redacting prose up
+    # to a later "/" is the safe direction.
+    (re.compile(r"(?:(?:/var)?/home|/Users)/(?:[^/\n]*?(?=/)|[^/\s]+)|/root(?=/|\b)"), "~"),
 )
 
 
 def _log_tail(text: str, lines: int = _PROVIDER_FAILURE_LOG_TAIL_LINES) -> str:
     kept = [line for line in (text or "").splitlines() if line.strip()]
+    return "\n".join(kept[-lines:])
+
+
+# codex's transcript role markers (each alone on a line). Text inside a `user` block is the
+# echoed PROMPT and inside `codex` / `thinking` / `exec` blocks the model's own words or tool
+# output — never the CLI speaking. `tokens used` closes a turn.
+_CODEX_ROLE_MARKERS = frozenset({"user", "codex", "thinking", "exec"})
+_CODEX_OWN_LINE_RE = re.compile(r"^(?:ERROR|Error|error): ")
+
+
+def _provider_output_tail(text: str, lines: int = _PROVIDER_FAILURE_LOG_TAIL_LINES) -> str:
+    """The tail of the lines the CLI ITSELF printed — the only region a provider signature
+    is looked for in (board r3: an unindented prompt echo inside the 20-line window typed a
+    good advisory). Lines inside a codex role block are dropped, except the CLI's own
+    ``ERROR:``-tagged lines at the END of a block, which is where it prints them when the
+    turn dies; an ``ERROR:`` line followed by more block text was part of the echo. SGR colour is removed
+    first so a coloured ``ERROR:`` tag still anchors. Residual: a prompt whose LAST line is a
+    column-0 ``ERROR: <sourced sentence>`` is indistinguishable here; the codex leg elides
+    its exact prompt echo before classification (``_exec_leg``)."""
+    kept: list[str] = []
+    block: str | None = None
+    pending: list[str] = []  # ERROR:-tagged lines inside the current role block
+
+    for raw in _ANSI_CSI_RE.sub("", text or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line in _CODEX_ROLE_MARKERS or line == "tokens used":
+            kept.extend(pending)
+            pending = []
+            block = None if line == "tokens used" else line
+            continue
+        if block is None:
+            kept.append(line)
+        elif _CODEX_OWN_LINE_RE.match(line):
+            pending.append(line)
+        else:
+            # Block text follows: every ERROR: line so far was INSIDE the echoed block (a
+            # prompt quoting one), not where the CLI stopped.
+            pending = []
+    kept.extend(pending)
     return "\n".join(kept[-lines:])
 
 
@@ -1995,10 +2054,11 @@ def _provider_failure_kind(review_text: str, log_text: str, *, anchored: bool = 
     leg that classified OK."""
     usage = _PROVIDER_USAGE_LIMIT_RE if anchored else _PROVIDER_USAGE_LIMIT_ANY_RE
     env = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
-    tail = _log_tail(log_text)
-    if usage.search(tail) or _output_is_provider_failure(review_text, _PROVIDER_USAGE_LIMIT_RE):
+    tail = _provider_output_tail(log_text)
+    body_is_failure = _output_is_provider_failure(review_text, _PROVIDER_FAILURE_RE)
+    if usage.search(tail) or (body_is_failure and _PROVIDER_USAGE_LIMIT_RE.search(review_text)):
         return "provider_usage_limit"
-    if env.search(tail) or _output_is_provider_failure(review_text, _PROVIDER_ENV_FAILURE_RE):
+    if env.search(tail) or body_is_failure:
         return "provider_environment_failure"
     return None
 
@@ -2063,7 +2123,7 @@ def _leg_failure_detail(
             pattern = _PROVIDER_USAGE_LIMIT_RE if anchored else _PROVIDER_USAGE_LIMIT_ANY_RE
         else:
             pattern = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
-        for candidate in (_log_tail(log_text), str(review_text)):
+        for candidate in (_provider_output_tail(log_text), str(review_text)):
             hits = [
                 line for line in candidate.splitlines()
                 if pattern.search(_LEADING_VERDICT_RE.sub("", line.rstrip()))
@@ -4307,13 +4367,11 @@ def _classify_leg(
         return "DEGRADED"
     # A body that IS the CLI's failure (env OR usage) plus at most a verdict is not a review,
     # in EVERY mode — checked before the early-OK (board r2: a usage banner + AGREE was OK).
-    if _output_is_provider_failure(body, _PROVIDER_ENV_FAILURE_RE) or _output_is_provider_failure(
-        body, _PROVIDER_USAGE_LIMIT_RE
-    ):
+    if _output_is_provider_failure(body, _PROVIDER_FAILURE_RE):
         return "DEGRADED"
     if rc == 0 and body and mode == "review" and _completion_ok(body, mode):
         return "OK"
-    tail = _log_tail(log_text or "")
+    tail = _provider_output_tail(log_text or "")
     if (
         _AUTH_SIGNATURE.search(log_text or "")
         or _PROVIDER_USAGE_LIMIT_RE.search(tail)
@@ -7322,6 +7380,11 @@ def _exec_leg(
             # BEFORE the auth-signature scan ever runs, so which stream(s) the
             # body appears in here no longer matters.
             log_text = (proc.stdout or "") + (proc.stderr or "")
+            # agent-harness#1096 (board r3): codex echoes the prompt verbatim into its
+            # transcript. Elide that exact echo so nothing in the bundle can ever read as
+            # the CLI's own output, whatever its indentation or position.
+            if prompt.strip():
+                log_text = log_text.replace(prompt.strip(), "<prompt echo elided>")
             if review_monitor is not None or rc != 0 or review_text.strip():
                 break  # hard failure OR real output → stop (never hammer, never waste)
             if _elapsed >= timeout_s * _LEG_RETRY_ELAPSED_FRACTION:
