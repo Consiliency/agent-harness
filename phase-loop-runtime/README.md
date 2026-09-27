@@ -203,11 +203,21 @@ A failed `run-train` on a repository with no partition receipt leaves an empty
 `<git-common-dir>/phase-loop-fabpub-broker-v1/run-train-writer.lock` behind.
 The probe treats that file as runtime lock residue, not inventory state, only
 when it is a regular, 0-byte, singly linked file owned by the operator; the
-sealed inventory is identical with or without it. Any other file under that name
-is reported as unattested canonical state. Apply always holds every repository's
-writer lock, creating it if absent, from before its re-probe until it returns,
-and refuses while a `run-train` or another apply holds it; rerun apply after the
-holder exits. Never delete broker files to clear a refusal.
+sealed inventory is identical with or without it. Anything else under that name
+(content, a directory, a socket or FIFO, a symlink, a hardlink, a foreign owner)
+is refused. Apply always holds every repository's writer lock, creating it if
+absent, from before its re-probe until it returns, and refuses while a
+`run-train` or another apply holds it. Never delete broker files to clear a
+refusal.
+
+Before apply, stop every `run-train` on the host, not only those for the named
+repositories: the drain counts live `run-train` processes host-wide. A train that
+starts during apply waits behind the writer lock, is counted as live, and makes
+apply fail after DRAINING with `WriterGenerationBlocked`. To recover, stop the
+trains and re-run the same `--apply --inventory <same file>`; that resumes the
+sealed bootstrap and must not be preceded by a new probe. Until the resume
+completes, trains in those repositories obtain generation leases but no
+admission or provider effects.
 
 Inventory completeness is bounded to the named worktrees, explicit and
 environment-declared legacy roots, historical-evidence roots, and hashed broker

@@ -2851,13 +2851,16 @@ def _namespace_holds_nothing(root: Path, files: list[dict]) -> bool:
     """
     if not root.exists():
         return True
-    if files:
+    if files or not root.is_dir() or root.is_symlink():
         return False
-    return all(entry.name == RUN_TRAIN_WRITER_LOCK for entry in root.iterdir())
+    return all(
+        entry.name == RUN_TRAIN_WRITER_LOCK and _is_run_train_lock_residue(entry)
+        for entry in root.iterdir()
+    )
 
 
 @contextlib.contextmanager
-def _exclude_live_run_trains(inventory: dict):
+def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
     """Hold every sealed repository's run-train writer lock for the whole apply.
 
     The lock is opened exactly as ``run_train_generation_leases`` opens it
@@ -2865,10 +2868,15 @@ def _exclude_live_run_trains(inventory: dict):
     order, and taken with a non-blocking exclusive ``flock``: a run-train or a
     second apply that already holds it refuses this apply, and a train that
     starts later blocks in fencing until this apply returns.  Apply never waits
-    on a writer lock, so it cannot deadlock.  Creating the lock does not perturb
-    the sealed inventory because the residue is not inventory state.  Each lock
-    is a distinct open file description, so nothing inside the apply may enter
-    ``run_train_generation_leases``.
+    on a writer lock, and fencing holds nothing apply waits on (it takes the
+    writer lock before any lease or latch lock), so it cannot deadlock.  Creating
+    the lock does not perturb the sealed inventory because the residue is not
+    inventory state.  Each lock is a distinct open file description, so nothing
+    inside the apply may enter ``run_train_generation_leases``.
+
+    Yields the resolved namespace roots it holds.  ``resuming`` selects the
+    remedy a refusal names: a first apply re-probes, a resume re-runs apply with
+    the same sealed inventory.
     """
     import errno
     import fcntl
@@ -2876,17 +2884,32 @@ def _exclude_live_run_trains(inventory: dict):
     rows = {
         _inventory_row_namespace_root(row).resolve(): row for row in inventory["worktrees"]
     }
+    remedy = (
+        "restore the repository, then re-run apply with the same inventory"
+        if resuming
+        else "re-run the zero-history probe"
+    )
     with contextlib.ExitStack() as stack:
         for root in sorted(rows, key=str):
             path = root / RUN_TRAIN_WRITER_LOCK
+            row = rows[root]
+            if root.name != REPOSITORY_NAMESPACE_DIR:
+                raise LegacyCutoverConflict(
+                    f"sealed namespace root {root} is not a {REPOSITORY_NAMESPACE_DIR} "
+                    f"directory; {remedy}"
+                )
             if not root.parent.is_dir():
                 # The repository itself is gone, so no train can run in it and
-                # there is nothing to lock.  Refuse now, with the same typed
-                # remedy the row resolution gives, rather than proceed unlocked.
-                _inventory_row_repository(rows[root])
+                # there is nothing to lock.  Refuse now, with the remedy the
+                # row's first-apply or resume path would give, never unlocked.
+                if resuming:
+                    _inventory_row_repository(row)
                 raise LegacyCutoverConflict(
-                    f"the repository common dir for {path} is gone; re-run the "
-                    "zero-history probe"
+                    f"sealed inventory row for {row['canonical_repository_identity']} "
+                    f"names pruned worktree {row['worktree']} and its repository "
+                    f"common dir {root.parent} is gone"
+                    + ("" if resuming else " before its first apply")
+                    + f"; {remedy}"
                 )
             try:
                 _require_no_ancestor_symlink(root)
@@ -2898,8 +2921,7 @@ def _exclude_live_run_trains(inventory: dict):
                 )
             except OSError as error:
                 raise LegacyCutoverConflict(
-                    f"cannot open the run-train writer lock {path}: {error}; re-run the "
-                    "zero-history probe if the repository moved"
+                    f"cannot open the run-train writer lock {path}: {error}; {remedy}"
                 ) from error
             stack.callback(os.close, descriptor)
             try:
@@ -2928,7 +2950,7 @@ def _exclude_live_run_trains(inventory: dict):
                 raise LegacyCutoverConflict(
                     f"cannot lock the run-train writer lock {path}: {error}"
                 ) from error
-        yield
+        yield frozenset(rows)
 
 
 def _classify_repository_namespace(
@@ -2964,6 +2986,17 @@ def _classify_repository_namespace(
             )
         state = "bootstrap_owned"
     else:
+        if not root.is_dir() or root.is_symlink():
+            raise LegacyCutoverConflict(
+                f"unattested canonical state for {snapshot.identity}: namespace root "
+                f"{root} is not a directory"
+            )
+        writer_lock = root / RUN_TRAIN_WRITER_LOCK
+        if os.path.lexists(writer_lock) and not _is_run_train_lock_residue(writer_lock):
+            raise LegacyCutoverConflict(
+                f"unattested canonical state for {snapshot.identity}: "
+                f"{[RUN_TRAIN_WRITER_LOCK]}"
+            )
         allowed = {"writer-generation.json", "writer-generation.lock"}
         onboarding = root / "zero-legacy-onboarding"
         inventory_path = onboarding / f"{cutover_id}.inventory.json"
@@ -3420,8 +3453,8 @@ def bootstrap_zero_history_authority(
     _validate_zero_history_inventory(inventory)
     cutover_id = str(inventory["cutover_id"])
     authority = _canonical_input_path(inventory["authority_root"], label="authority root")
-    with _exclude_live_run_trains(inventory):
-        stored_path, journal, pointer = _bootstrap_paths(authority, cutover_id)
+    stored_path, journal, pointer = _bootstrap_paths(authority, cutover_id)
+    with _exclude_live_run_trains(inventory, resuming=stored_path.exists()) as held_roots:
         lock = authority / "bootstrap.lock"
         with _reentrant_flock(lock):
             if stored_path.exists():
@@ -3460,6 +3493,13 @@ def bootstrap_zero_history_authority(
             _record_bootstrap_state(journal, cutover_id, "DRAINING")
 
         worktrees = tuple(_inventory_row_repository(row) for row in inventory["worktrees"])
+        for worktree in worktrees:
+            if repository_namespace_root(worktree).resolve() not in held_roots:
+                raise LegacyCutoverConflict(
+                    f"repository {worktree} no longer resolves to a sealed namespace whose "
+                    "run-train writer lock this apply holds; restore the repository at its "
+                    "sealed location, then re-run apply with the same inventory"
+                )
         latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
         for latch in latches:
             if latch.read().generation_state == "LEGACY_OPEN":

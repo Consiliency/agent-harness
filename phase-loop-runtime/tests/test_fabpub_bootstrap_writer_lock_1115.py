@@ -15,6 +15,8 @@ from __future__ import annotations
 import errno
 import fcntl
 import os
+import shutil
+import socket
 import subprocess
 import threading
 from pathlib import Path
@@ -205,7 +207,37 @@ def test_writer_lock_that_is_not_a_regular_file_is_unattested(tmp_path: Path) ->
     os.mkfifo(lock)
 
     assert not live._is_run_train_lock_residue(lock)
-    with pytest.raises(live.LegacyCutoverConflict):
+    with pytest.raises(live.LegacyCutoverConflict, match="unsupported type"):
+        _probe(tmp_path, repo)
+
+
+def test_empty_directory_under_the_lock_name_is_unattested_at_probe(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    _writer_lock(repo).mkdir(parents=True)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="unattested canonical state"):
+        _probe(tmp_path, repo)
+
+
+def test_socket_under_the_lock_name_refuses_at_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    lock = _writer_lock(repo)
+    lock.parent.mkdir(parents=True)
+    monkeypatch.chdir(lock.parent)  # a relative bind keeps the socket path short
+    with socket.socket(socket.AF_UNIX) as server:
+        server.bind(live.RUN_TRAIN_WRITER_LOCK)
+        assert not live._is_run_train_lock_residue(lock)
+        with pytest.raises(live.LegacyCutoverConflict, match="unsupported type"):
+            _probe(tmp_path, repo)
+
+
+def test_namespace_root_that_is_a_file_is_unattested(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    live.repository_namespace_root(repo).write_text("", encoding="utf-8")
+
+    with pytest.raises(live.LegacyCutoverConflict, match="is not a directory"):
         _probe(tmp_path, repo)
 
 
@@ -272,16 +304,115 @@ def test_apply_opens_the_writer_lock_read_write_without_following_or_truncating(
     assert not flags & (os.O_TRUNC | os.O_EXCL)
 
 
-def test_absent_lock_race_a_run_train_that_starts_during_apply_cannot_enter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The lock is absent when apply starts; a real run-train entry is attempted
-    after apply holds its locks (inside onboarding, past ``await_quiescent``).
-    It must block until apply returns, never run concurrently with it."""
+def test_apply_refuses_a_writer_lock_that_is_not_a_regular_file(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
     inventory = _probe(tmp_path, repo)
-    assert not _writer_lock(repo).exists()
+    lock = _writer_lock(repo)
+    lock.parent.mkdir(parents=True)
+    os.mkfifo(lock)  # opens O_RDWR|O_NONBLOCK without blocking; fstat must refuse it
 
+    with pytest.raises(live.LegacyCutoverConflict, match="singly linked regular file"):
+        _apply(inventory)
+    assert not (tmp_path / "authority").exists()
+
+
+def test_apply_refuses_a_writer_lock_owned_by_another_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    foreign_uid = os.getuid() + 1
+    monkeypatch.setattr(live.os, "getuid", lambda: foreign_uid)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="owned by the operator"):
+        _apply(inventory)
+    assert not (tmp_path / "authority").exists()
+
+
+def _interrupt_after_draining(inventory: dict, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Crash the first apply right after DRAINING is journaled; return the journal."""
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            live.WriterGenerationLatch,
+            "open",
+            classmethod(lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("crash"))),
+        )
+        with pytest.raises(RuntimeError, match="crash"):
+            _apply(inventory)
+    journal = Path(inventory["authority_root"]) / "bootstrap-1115.bootstrap-journal.jsonl"
+    assert live._bootstrap_journal_states(journal, "bootstrap-1115") == ("DRAINING",)
+    return journal
+
+
+def test_resume_refuses_while_a_run_train_holds_the_writer_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    journal = _interrupt_after_draining(inventory, monkeypatch)
+    journal_before = journal.read_bytes()
+
+    with _writer_lock(repo).open("a+") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with pytest.raises(live.LegacyCutoverConflict, match="holds the writer lock"):
+            _apply(inventory)
+
+    assert journal.read_bytes() == journal_before
+    assert not (Path(inventory["authority_root"]) / "ACTIVE_BOOTSTRAP").exists()
+    _assert_bootstrapped(repo, _apply(inventory))
+
+
+def test_first_apply_of_a_deleted_repository_names_the_re_probe_remedy(tmp_path: Path) -> None:
+    main = _git_repo(tmp_path / "main")
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", "-b", "linked", str(linked)],
+        check=True,
+    )
+    inventory = _probe(tmp_path, linked)
+    shutil.rmtree(linked)
+    shutil.rmtree(main)
+
+    with pytest.raises(live.LegacyCutoverConflict) as raised:
+        _apply(inventory)
+    message = str(raised.value)
+    assert "before its first apply" in message and "re-run the zero-history probe" in message
+    assert not (tmp_path / "authority").exists()
+
+
+def test_apply_refuses_a_repository_outside_the_namespaces_it_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    stranger = _git_repo(tmp_path / "stranger")
+    inventory = _probe(tmp_path, repo)
+    monkeypatch.setattr(live, "_inventory_row_repository", lambda _row: stranger)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="writer lock this apply holds"):
+        _apply(inventory)
+    assert not (live.repository_namespace_root(stranger) / "writer-generation.json").exists()
+
+
+def test_apply_creates_nothing_under_a_sealed_root_that_is_not_a_fabpub_namespace(
+    tmp_path: Path,
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    inventory["worktrees"][0]["namespace_root"] = str(elsewhere)
+    inventory["inventory_sha256"] = live._inventory_digest(inventory)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="is not a phase-loop-fabpub-broker-v1"):
+        _apply(inventory)
+    assert list(elsewhere.iterdir()) == []
+
+
+def _race_a_run_train_against(
+    inventory: dict, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[str], dict]:
+    """Start a real run-train entry from a thread inside apply's onboarding and
+    record, by event order, whether it blocked behind apply's writer lock."""
     decided = threading.Event()
     outcome: list[str] = []
     events: list[str] = []
@@ -325,8 +456,35 @@ def test_absent_lock_race_a_run_train_that_starts_during_apply_cannot_enter(
     monkeypatch.setattr(live, "onboard_zero_legacy_repository", racing_onboard)
     result = _apply(inventory)
     worker.join(_GUARD_SECONDS)
-
     assert not worker.is_alive()
+    return events, result
+
+
+def test_absent_lock_race_a_run_train_that_starts_during_apply_cannot_enter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock is absent when apply starts; a real run-train entry is attempted
+    after apply holds its locks (inside onboarding, past ``await_quiescent``).
+    It must block until apply's hold ends, never run concurrently with it."""
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    assert not _writer_lock(repo).exists()
+
+    events, result = _race_a_run_train_against(inventory, repo, monkeypatch)
+
+    _assert_bootstrapped(repo, result)
+    assert events == ["train-blocked-during-apply", "onboarding-done", "train-entered"]
+
+
+def test_resume_race_a_run_train_that_starts_during_resume_cannot_enter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    _interrupt_after_draining(inventory, monkeypatch)
+
+    events, result = _race_a_run_train_against(inventory, repo, monkeypatch)
+
     _assert_bootstrapped(repo, result)
     assert events == ["train-blocked-during-apply", "onboarding-done", "train-entered"]
 

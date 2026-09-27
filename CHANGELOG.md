@@ -16,8 +16,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   captured row is 0 bytes with the empty digest and an `lstat` shows a regular, singly linked
   file owned by the current uid. The row is dropped, and a namespace holding nothing else
   classifies as `absent`, so the sealed inventory and its digest are identical with or without
-  the residue. Content, a symlink, a hardlink, another file type, or a foreign owner keeps the
-  row and refuses as unattested. No earlier sealed inventory can hold the dropped row, because
+  the residue. Content, a symlink, a hardlink, a directory, a socket or FIFO, or a foreign owner
+  under that name refuses as unattested, as does a namespace root that is not a directory. No earlier sealed inventory can hold the dropped row, because
   every earlier probe refused it. An existing but empty namespace directory now also classifies
   as `absent` rather than `empty`; a probe inventory sealed by an earlier release over such a
   directory must be re-probed.
@@ -28,6 +28,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   first-apply re-probe. A held lock refuses with `LegacyCutoverConflict` ("a run-train or another
   bootstrap apply holds the writer lock"); every other open, stat, or lock error is a typed
   `LegacyCutoverConflict`. A train that starts during apply blocks in fencing until apply
+  returns. A resume also refuses if a sealed row now resolves to a namespace whose lock it
+  does not hold, and apply creates nothing under a sealed root that is not a
+  `phase-loop-fabpub-broker-v1` directory.
+- **Behaviour change:** re-running apply on an already ACTIVE bootstrap, which is idempotent, now
+  refuses while any `run-train` holds a sealed repository's writer lock. Re-run it after the
+  train exits.
+- **Recovery on 0.7.19.** Stop every `run-train` on the host (the drain counts them host-wide),
+  upgrade, then rerun `phase-loop fabpub-bootstrap --probe` and `--apply --confirm-zero-history`.
+  Do not delete the lock file. If apply fails after DRAINING with `WriterGenerationBlocked`, stop
+  the trains and re-run the same `--apply --inventory <same file>` as a resume, without
+  re-probing; until it completes, trains in those repositories get leases but no effects.
   returns.
 - **Recovery on 0.7.19.** Upgrade, then rerun `phase-loop fabpub-bootstrap --probe` and
   `--apply --confirm-zero-history`. Do not delete the lock file.
