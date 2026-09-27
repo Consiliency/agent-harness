@@ -192,40 +192,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   mid-verdict). Turns with no cap or resume are extracted exactly as before. On the president
   route, a `max_tokens` stop is allowed only on a message the answer continues.
 
-### Board legs say why they failed (agent-harness#1096; env-failure half of agent-harness#1098 item 2)
+### Board legs say why they failed; outcome is decided only by a success artifact (agent-harness#1096; env-failure half of agent-harness#1098 item 2)
 
-- A provider usage or quota limit is now `DEGRADED` with detail
-  `provider_usage_limit (resets <time>): <the CLI's own line>`, not a bare `ERROR`. Wording is
-  taken from the codex, Claude Code, grok and agy binaries. For agy only status tokens were
-  found, not a full sentence, and a recovered per-minute `RESOURCE_EXHAUSTED` 429 is
-  deliberately not treated as a usage limit.
-- A seat whose output is an environment failure (codex's bubblewrap socket-directory error,
-  Claude Code's "Temp directory … is owned by uid …" refusal) is never `OK`, at any length.
-  This applies when every substantive line of the body is a line the CLI printed, or a bare
-  verdict. It is `DEGRADED`, on every route including the Claude TUI seat, with detail
-  `provider_environment_failure: …`. Its text is kept, so the governed gate treats
-  it as a non-conforming review and blocks, rather than passing it.
-- Every failed leg now carries a credential-redacted, control-stripped excerpt of the CLI's
-  last error line in `detail`. The whole stored string, label included, is capped at 1000
-  characters on every route. This includes brokered codex and grok seats, which used to drop it, and
-  the Claude TUI seat. The excerpt comes from the end of the log, not the start, which for
-  codex is the echoed prompt. `advisor-board` prints the detail on its stderr shortfall lines.
-  The Claude PTY tail kept for diagnostics is now 600 characters, up from 200, so the
-  CLI's refusal fits in it. The whole window is redacted before the tail is cut. A Claude
-  leg is retyped from its tail only when it produced no review text and did not time out.
-  `advisor-board` prints every detail through the same redact-and-bound exit.
-- A conforming review that only discusses limits, auth or these failures keeps `OK`, as does
-  an advisory that gives advice about rate limits. A signature is the WHOLE line the CLI
-  prints: the sourced sentence, with only its variable parts (a datetime, a path, which may
-  contain spaces but not sentence punctuation) left open. The codex reset may be dated,
-  same-day or absent ("Try again later."). A signature must start at column 0, optionally
-  after `ERROR:`. In the log, only lines the CLI itself printed are scanned: the last 20
-  lines outside codex's echoed `user`/`codex`/`thinking`/`exec` blocks, plus `ERROR:` lines
-  that end such a block. The codex leg elides its exact prompt echo first. In the body, a
-  failure is any mix of usage and env lines plus at most a verdict, in every mode, checked
-  before the review-mode early-OK. A quote in backticks, in a fence, mid-sentence, next to the
-  reviewer's own prose, or on a line that begins with the sentence and goes on, does not
-  count.
+- A leg is `OK` only when it exits 0 and produces its mode's success artifact:
+  - review: a terminal AGREE / PARTIALLY AGREE / DISAGREE verdict;
+  - advisory: at least 40 characters ending in a `RECOMMENDATION:` line;
+  - president: a `FORCING DECISION:` line.
+
+  Anything else fails, whatever it printed. An rc-0 environment failure printed instead of a
+  review (agent-harness#1098) therefore fails without any text scan. Free text never decides
+  an outcome or demotes an `OK` leg, which retires advisory's auth-scan-first order. Advisory
+  mode now needs its `RECOMMENDATION:` line; the advisory instructions ask for it, and a
+  seat that omits it is a failed seat.
+- A failed leg's `detail` is `<failure_kind>: <the CLI's own line>`:
+  - `usage_limit`, which adds `(resets <time>)` when the provider prints a reset time;
+  - `env_failure`, `auth`, `timeout` and `signal`;
+  - otherwise the line alone.
+
+  The kind comes from process facts first, then a plain match of sourced provider wording
+  in the log tail and body. This covers codex's usage banner even when codex's
+  "no last agent message" warning follows it. A mislabel is cosmetic.
+- `detail` is carried on every route: direct, brokered codex/grok, and the Claude TUI seat.
+  It is redacted and capped at 1000 characters. Redaction substitutes known values (the
+  running user's home directories and names, and the seat's scratch and repo paths) plus
+  known credential shapes. It no longer guesses home-path shapes. `advisor-board` prints
+  every detail through the same exit. The Claude PTY tail is 600 characters and is
+  redacted in full before it is cut.
 
 ## [0.7.19] - 2026-09-26
 

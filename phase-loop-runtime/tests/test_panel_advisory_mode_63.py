@@ -15,7 +15,12 @@ import pytest
 
 import phase_loop_runtime.panel_invoker as pi
 
-_PROSE = "Here is my substantial advice: weigh the tradeoffs and the main risk is X."
+# agent-harness#1102 round 5: advisory's success artifact is a final `RECOMMENDATION:` line
+# (no AGREE/DISAGREE verdict). Prose without it is a failed seat.
+_PROSE = (
+    "Here is my substantial advice: weigh the tradeoffs and the main risk is X.\n"
+    "RECOMMENDATION: address risk X before anything else."
+)
 
 
 def test_completion_ok_review_requires_verdict():
@@ -26,6 +31,8 @@ def test_completion_ok_review_requires_verdict():
 def test_completion_ok_advisory_accepts_prose_without_verdict():
     assert pi._completion_ok(_PROSE, "advisory") is True
     assert pi._completion_ok("ok", "advisory") is False  # below substance threshold
+    # agent-harness#1102 r5: substantial prose WITHOUT the recommendation line is not a success
+    assert pi._completion_ok(_PROSE.rsplit("\n", 1)[0], "advisory") is False
 
 
 def test_mode_instructions_differ():

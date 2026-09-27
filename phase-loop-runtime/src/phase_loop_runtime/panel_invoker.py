@@ -1784,15 +1784,33 @@ def _completion_ok(text: str, mode: str = "review") -> bool:
     """Is a leg's output a COMPLETE response for this mode?
 
     review  → must end with a conforming terminal verdict (fail-closed, unchanged).
-    advisory → substantial non-empty prose (no verdict required).
+    advisory → substantial prose (>= 40 chars) whose LAST non-empty line is a non-empty
+               ``RECOMMENDATION:`` line — the artifact ``_ADVISORY_INSTRUCTIONS`` asks for.
+               No review verdict is required. Before agent-harness#1102 round 5 any 40
+               characters passed, so a CLI failure banner could read as a success.
     """
     if mode == "advisory":
-        return len((text or "").strip()) >= 40
+        return len((text or "").strip()) >= 40 and _advisory_recommendation(text) is not None
     # PRESROUTE: the president operation's own completion grammar -- its last line is
     # a non-empty ``FORCING DECISION:``, never a review verdict.
     if mode == "president":
         return _president_ruling_complete(text)
     return terminal_verdict(text) is not None
+
+
+def _advisory_recommendation(text: str) -> str | None:
+    """The advisory success artifact: the last non-empty line, after list/quote/bold markup,
+    is ``RECOMMENDATION: <something>``. Returns the recommendation, else None."""
+    for raw in reversed((text or "").splitlines()):
+        s = raw.strip()
+        if not s:
+            continue
+        s = _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
+        if s.upper().startswith("RECOMMENDATION:"):
+            rest = s[len("RECOMMENDATION:"):].strip().strip("*`").strip()
+            return rest or None
+        return None
+    return None
 
 
 def _president_ruling_complete(text: str) -> bool:
@@ -1834,121 +1852,58 @@ _TOOL_DENIED_RE = re.compile(
     r"auto-denied|permission denied by headless",
     re.IGNORECASE | re.DOTALL,
 )
-# agent-harness#1096: PROVIDER USAGE / QUOTA EXHAUSTION. On 2026-09-26 every brokered codex
-# seat died with "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/
-# settings/usage to purchase more credits or try again at Oct 1st, 2026 1:42 PM." and
-# surfaced as a bare ERROR with no detail: `_AUTH_SIGNATURE`'s "usage limit (reached|
-# exceeded)" does not match that wording.
+# agent-harness#1096 / #1098: WHY a leg failed.
 #
-# Each alternative is a SENTENCE the CLI itself prints, copied from its binary strings (codex
-# 0.157.1, Claude Code 2.1.x, grok-native, agy) or the measured banner — never a paraphrase,
-# and never a generic phrase ("if you hit the rate limit, back off" is advice, not a banner).
-# agy has no sourced print-mode sentence, only its status/UI tokens. Deliberately NOT
-# `MODEL_CAPACITY_EXHAUSTED` (server capacity, not the account's quota) and NOT a bare
-# `RESOURCE_EXHAUSTED`: that is also agy's per-minute 429, which it retries in-process and
-# recovers from (tests/test_phase_loop_launcher.py has exactly that transcript).
-# Each entry is the WHOLE line the CLI prints, with its variable parts constrained (a
-# datetime, a path) — board r2 (agent-harness#1102): a prefix match let a reviewer's own
-# line that merely BEGINS with a sourced fragment count as the CLI's line.
-# codex `format_retry_timestamp`: the time alone ("%-I:%M %p") when the reset is the same
-# local day — the usual 5-hour window — else "%b %-d<ordinal>, %Y %-I:%M %p" (board r3 B1).
-_CODEX_RESET_DT = (
-    r"(?:[A-Z][a-z]{2} \d{1,2}(?:st|nd|rd|th)?,? (?:\d{4} )?)?\d{1,2}:\d{2} [AP]M"
-)
-_CODEX_USAGE_TAIL_FRAGMENTS = (
-    # every fragment below sits next to "hit your usage limit" in the codex binary
-    r"Upgrade to Plus to continue using Codex(?: \(https://chatgpt\.com/explore/plus\))?",
-    r"Upgrade to Pro \(https://chatgpt\.com/explore/pro\)",
-    r"[Vv]isit https://chatgpt\.com/codex/settings/usage to purchase more credits",
-    r"To get more access now, send a request to your admin",
-    r"(?:or )?[Tt]ry again at " + _CODEX_RESET_DT,
-    # no `resets_at`: " Try again later." / " or try again later." (both in the binary)
-    r"(?:or )?[Tt]ry again later",
-)
-_PROVIDER_USAGE_LIMIT_SENTENCES = (
-    # codex
-    r"You['’]ve hit your usage limit(?:[ ,.]+(?:"
-    + "|".join(_CODEX_USAGE_TAIL_FRAGMENTS) + r"))*,?\.?",
-    r"Quota exceeded\. Check your plan and billing details\.",
-    r"You hit your spend cap set by the owner of your workspace\. "
-    r"Ask an owner to increase your spend cap to continue\.",
-    # Claude Code (each a complete string in the binary; the suffixes are its adjacent ones)
+# The design (board round 5 of agent-harness#1102, after four rounds of regex patches):
+#   * OUTCOME is decided only by positive evidence of success — `_classify_leg` returns OK
+#     only for rc 0 plus the mode's success artifact (`_completion_ok`). Free text never
+#     decides an outcome and never demotes an OK leg.
+#   * LABELING happens only on a leg that already failed, and it is cosmetic: a wrong label
+#     cannot change pass/fail. `failure_kind` comes from, in order, the harness's own typed
+#     diagnostics / process facts (timeout, signal), then a plain text match over the CLI's
+#     log tail and body. That match makes no claim about WHO printed a line; a prompt echo
+#     that quotes a banner can mislabel a failed leg, and nothing worse.
+#   * REDACTION substitutes KNOWN values (the running user's home and name, the seat's own
+#     scratch/repo paths) and known credential shapes. It does not guess path shapes.
+#
+# Wording sources for the labels (strings on the pinned binaries, or the measured banner):
+#   codex 0.157.1 — "You've hit your usage limit" (+ " Try again at …" / " or try again
+#     later."), "You hit your spend cap", "Quota exceeded. Check your plan and billing
+#     details."; env: "error building bubblewrap command", "app-server socket directory must
+#     be a user-owned directory".
+#   Claude Code — "You've hit your monthly spend limit" / "channel's monthly spend limit" /
+#     "team's shared budget", "You've reached your Fable limit.", "Usage limit reached",
+#     "You're out of usage credits"; env: "Temp directory … is owned by uid …, expected …",
+#     "… is not a directory (may be an attacker-planted symlink)", "… is not readable (…)".
+#   grok — "You hit your free usage limit.", "You hit your weekly limit.", "You've hit the
+#     rate limit for your plan.", "You've reached your free Grok Build usage limit".
+#   agy — only status/UI tokens: "Quota exhausted", "Out of credits",
+#     STOP_REASON_QUOTA_EXHAUSTED. NOT a bare RESOURCE_EXHAUSTED (agy's recovered per-minute
+#     429) and NOT MODEL_CAPACITY_EXHAUSTED (server capacity).
+_USAGE_LIMIT_LABEL_RE = re.compile(
+    r"You['’]ve hit your usage limit|You hit your spend cap|"
+    r"Quota exceeded\. Check your plan and billing details|"
     r"You['’]ve hit your (?:monthly spend limit|channel['’]s monthly spend limit|"
-    r"team['’]s shared budget)\.?(?: (?:Switch to another model|/model to switch models\.))?",
-    r"You['’]ve reached your Fable limit\.",
-    r"Usage limit reached",
-    r"You['’]re out of usage credits\.?(?: (?:Switch to another model|"
-    r"/model to switch models\.))?",
-    # grok
-    r"You hit your (?:free usage|weekly) limit\.(?: (?:Upgrade to a higher tier for more usage|"
-    r"Purchase credits to keep using Grok Build|Unlock all features with SuperGrok\.))?",
-    r"You['’]ve hit the rate limit for your plan\. Upgrade your account or try again later\.",
-    r"You['’]ve reached your free Grok Build usage limit for now\.(?: Get SuperGrok for much "
-    r"higher limits, or try again later: https://grok\.com/supergrok\?referrer=grok-build)?",
-    # agy (UI / status tokens, printed as-is)
-    r"(?:AI: )?Out of credits",
-    r"Quota exhausted",
-    r"(?:stop_?reason\s*[:=]\s*)?STOP_REASON_QUOTA_EXHAUSTED",
+    r"team['’]s shared budget)|You['’]ve reached your Fable limit|Usage limit reached|"
+    r"You['’]re out of usage credits|You hit your (?:free usage|weekly) limit|"
+    r"You['’]ve hit the rate limit for your plan|"
+    r"You['’]ve reached your free Grok Build usage limit|"
+    r"\bQuota exhausted\b|\bOut of credits\b|\bSTOP_REASON_QUOTA_EXHAUSTED\b"
 )
-# agent-harness#1098 item 2: an ENVIRONMENT / STARTUP failure the CLI printed instead of a
-# review. On dev0 a codex seat returned OK with the text "error building bubblewrap command:
-# app-server socket directory must be a user-owned directory with mode 0700", and the claude
-# TUI refused "Temp directory /tmp/claude-0 is owned by uid 65534, expected 0. Refusing to
-# use it". Sourced from the codex / Claude Code binaries; nothing is sourced for grok or agy.
-# A path is a bounded non-greedy run anchored by the sentence's fixed tail, so a path with
-# spaces ("/tmp/claude cache") is still a path.
-# Spaces are allowed ("/tmp/claude cache"); the sentence structure a real path never has
-# is not ("; ", ": ", a second "directory /"), so reviewer prose that ends in the CLI's line
-# cannot be swallowed as the path (board r3).
-_CLAUDE_TMP_PATH = r"/(?:(?![;:] |[Dd]irectory /)[^\n]){0,1000}?"
-_CLAUDE_TMPDIR_HINT = (
-    r"(?: Set CLAUDE_CODE_TMPDIR to a directory you control, or ask an administrator to "
-    r"remove it\.)?"
+_ENV_FAILURE_LABEL_RE = re.compile(
+    r"error building bubblewrap command|"
+    r"app-server socket directory must be a user-owned directory|"
+    r"[Dd]irectory .{1,1000}? is owned by uid \d+, expected \d+|"
+    r"[Dd]irectory .{1,1000}? is not (?:a directory \(may be an attacker-planted symlink\)|"
+    r"readable \()"
 )
-_PROVIDER_ENV_FAILURE_SENTENCES = (
-    # codex: its only sourced bubblewrap reason, with or without the wrapper prefix
-    r"(?:error building bubblewrap command: )?app-server socket directory must be a "
-    r"user-owned directory with mode 0700\.?",
-    # Claude Code: the three temp-dir refusals it throws before starting, verbatim.
-    r"(?:Temp d|D)irectory " + _CLAUDE_TMP_PATH + r" is owned by uid \d+, expected \d+\. "
-    r"Refusing to use it(?: — another user may have pre-created it\.)?" + _CLAUDE_TMPDIR_HINT,
-    r"(?:Temp d|D)irectory " + _CLAUDE_TMP_PATH + r" is not a directory \(may be an "
-    r"attacker-planted symlink\)\. Refusing to use it\." + _CLAUDE_TMPDIR_HINT,
-    r"(?:Temp d|D)irectory " + _CLAUDE_TMP_PATH + r" is not readable \(its mode may have been "
-    r"altered, or a path component denies search\)\. Refusing to use it — restore its "
-    r"permissions \(chmod 0700\) or remove it\." + _CLAUDE_TMPDIR_HINT,
-)
-
-
-def _whole_line_re(sentences: tuple[str, ...]) -> re.Pattern[str]:
-    # Column 0 (a tail scan must not count an INDENTED echoed prompt/docstring line), an
-    # optional `ERROR:` tag the CLI adds, the whole sentence, then nothing but whitespace.
-    return re.compile(
-        r"^(?:(?:ERROR|Error|error): )?(?:" + "|".join(sentences) + r")[ \t]*$", re.MULTILINE
-    )
-
-
-_PROVIDER_USAGE_LIMIT_RE = _whole_line_re(_PROVIDER_USAGE_LIMIT_SENTENCES)
-_PROVIDER_ENV_FAILURE_RE = _whole_line_re(_PROVIDER_ENV_FAILURE_SENTENCES)
-# The UNION, for "is this body the CLI's failure": a body mixing a usage line and an env line
-# (plus a verdict) is still nothing but CLI output (board r3).
-_PROVIDER_FAILURE_RE = _whole_line_re(
-    _PROVIDER_USAGE_LIMIT_SENTENCES + _PROVIDER_ENV_FAILURE_SENTENCES
-)
-# The same sentences ANYWHERE: only for a Claude PTY tail, which `_sanitized_pty_tail`
-# collapses to one line (so no line starts survive), only for a leg that already failed
-# WITHOUT review text (see `_exec_claude_tui_leg`).
-_PROVIDER_USAGE_LIMIT_ANY_RE = re.compile("|".join(_PROVIDER_USAGE_LIMIT_SENTENCES))
-_PROVIDER_ENV_FAILURE_ANY_RE = re.compile("|".join(_PROVIDER_ENV_FAILURE_SENTENCES))
-# The provider's own reset time when it prints one: codex " or try again at %b %-d, %Y
-# %-I:%M %p" / " Try again at "; claude "until your limit resets at …" / "resets at …".
+# The provider's own reset time when it prints one: codex " or try again at <time>" with
+# the time alone ("%-I:%M %p", same local day) or dated ("%b %-d<ordinal>, %Y %-I:%M %p").
 _PROVIDER_USAGE_RESET_RE = re.compile(
     r"(?:try again at|resets at)\s+(?P<when>[^\n]{1,60}?)\s*\.?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
-# Only the END of a log is the CLI's own error: codex's `log_text` is stdout+stderr with the
-# whole prompt echoed FIRST, so a bundle that merely contains a signature must not count.
-_PROVIDER_FAILURE_LOG_TAIL_LINES = 20
+_LEG_FAILURE_LOG_TAIL_LINES = 20
 # ONE bound on the final stored `detail` (label + excerpt), every route.
 _LEG_DETAIL_MAX_CHARS = 1000
 _LEG_ERROR_LINE_RE = re.compile(
@@ -1957,7 +1912,8 @@ _LEG_ERROR_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-# Credential shapes `runner._redacted_stderr_excerpt` (key=value only) does not cover.
+# Credential SHAPES (values we cannot know in advance): `runner._redacted_stderr_excerpt`
+# covers key=value; these cover bare bearer tokens, prefixed API keys, JWTs and emails.
 _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer <redacted>"),
     (re.compile(
@@ -1967,107 +1923,55 @@ _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted>"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
-    # The WHOLE home segment, spaces included ("/Users/Jane Doe/…"): up to the next "/" when
-    # one follows on the line, else the next whitespace (board r3). Over-redacting prose up
-    # to a later "/" is the safe direction.
-    (re.compile(r"(?:(?:/var)?/home|/Users)/(?:[^/\n]*?(?=/)|[^/\s]+)|/root(?=/|\b)"), "~"),
 )
 
 
-def _log_tail(text: str, lines: int = _PROVIDER_FAILURE_LOG_TAIL_LINES) -> str:
-    kept = [line for line in (text or "").splitlines() if line.strip()]
-    return "\n".join(kept[-lines:])
+def _redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The running user's real home directories and names — the KNOWN values a detail must
+    not carry. Both the environment's view and the password database's, since they can
+    differ (a seat's rebuilt environment, a mapped uid)."""
+    homes: set[str] = set()
+    users: set[str] = set()
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        homes.add(home)
+    try:
+        import pwd
+
+        entry = pwd.getpwuid(os.getuid())
+        homes.add(entry.pw_dir)
+        users.add(entry.pw_name)
+    except (ImportError, KeyError, AttributeError, OSError):
+        pass
+    for key in ("USER", "LOGNAME"):
+        if os.environ.get(key):
+            users.add(os.environ[key])
+    return (
+        tuple(h.rstrip("/") for h in homes if h and h.rstrip("/") not in ("", "/")),
+        tuple(u for u in users if u),
+    )
 
 
-# codex's transcript role markers (each alone on a line). Text inside a `user` block is the
-# echoed PROMPT and inside `codex` / `thinking` / `exec` blocks the model's own words or tool
-# output — never the CLI speaking. `tokens used` closes a turn.
-_CODEX_ROLE_MARKERS = frozenset({"user", "codex", "thinking", "exec"})
-_CODEX_OWN_LINE_RE = re.compile(r"^(?:ERROR|Error|error): ")
+def _substitute_known_values(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
+    """Replace exact known values, longest first: the seat's own paths (``known``: scratch
+    dirs, the repo/worktree root) with ``<path>``, the home directories with ``~``, the user
+    names (as whole words) with ``<user>``."""
+    homes, users = _redaction_identity()
+    pairs = [(str(p).rstrip("/"), "<path>") for p in known if str(p).rstrip("/") not in ("", "/")]
+    pairs += [(h, "~") for h in homes]
+    for value, token in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
+        text = text.replace(value, token)
+    for user in sorted(users, key=len, reverse=True):
+        text = re.sub(rf"(?<![\w.-]){re.escape(user)}(?![\w.-])", "<user>", text)
+    return text
 
 
-def _provider_output_tail(text: str, lines: int = _PROVIDER_FAILURE_LOG_TAIL_LINES) -> str:
-    """The tail of the lines the CLI ITSELF printed — the only region a provider signature
-    is looked for in (board r3: an unindented prompt echo inside the 20-line window typed a
-    good advisory). Lines inside a codex role block are dropped, except the CLI's own
-    ``ERROR:``-tagged lines at the END of a block, which is where it prints them when the
-    turn dies; an ``ERROR:`` line followed by more block text was part of the echo. SGR colour is removed
-    first so a coloured ``ERROR:`` tag still anchors. Residual: a prompt whose LAST line is a
-    column-0 ``ERROR: <sourced sentence>`` is indistinguishable here; the codex leg elides
-    its exact prompt echo before classification (``_exec_leg``)."""
-    kept: list[str] = []
-    block: str | None = None
-    pending: list[str] = []  # ERROR:-tagged lines inside the current role block
-
-    for raw in _ANSI_CSI_RE.sub("", text or "").splitlines():
-        line = raw.rstrip()
-        if not line.strip():
-            continue
-        if line in _CODEX_ROLE_MARKERS or line == "tokens used":
-            kept.extend(pending)
-            pending = []
-            block = None if line == "tokens used" else line
-            continue
-        if block is None:
-            kept.append(line)
-        elif _CODEX_OWN_LINE_RE.match(line):
-            pending.append(line)
-        else:
-            # Block text follows: every ERROR: line so far was INSIDE the echoed block (a
-            # prompt quoting one), not where the CLI stopped.
-            pending = []
-    kept.extend(pending)
-    return "\n".join(kept[-lines:])
-
-
-def _is_bare_verdict_line(line: str) -> bool:
-    # The SAME parser `_completion_ok` uses (`**Verdict:** AGREE`, `- AGREE`, …), so the two
-    # can never disagree about what a verdict line is.
-    return terminal_verdict(line) is not None
-
-
-_LEADING_VERDICT_RE = re.compile(
-    r"^\s*(?:VERDICT:\s*)?(?:PARTIALLY AGREE|DISAGREE|AGREE)\s*[—–:-]\s*", re.IGNORECASE
-)
-
-
-def _output_is_provider_failure(body: str, pattern: re.Pattern[str]) -> bool:
-    """True iff ``body`` IS a provider failure message, whatever its length: every
-    substantive line is either a WHOLE line the CLI printed — ``pattern`` is a whole-line
-    sentence shape, optionally after ``ERROR:`` or a leading ``VERDICT —`` — or a verdict
-    line, and at least one is the former. Any line of the reviewer's own prose (a review
-    that quotes the string mid-sentence, in backticks, in a ``` fence, beside other
-    findings, or on a line that STARTS with a sourced fragment and continues) makes it a
-    review, which keeps its conforming-verdict OK."""
-    lines = [line.rstrip() for line in (body or "").splitlines() if line.strip()]
-    hits = 0
-    for line in lines:
-        if pattern.match(_LEADING_VERDICT_RE.sub("", line)):
-            hits += 1
-        elif not _is_bare_verdict_line(line):
-            return False
-    return hits > 0
-
-
-def _provider_failure_kind(review_text: str, log_text: str, *, anchored: bool = True) -> str | None:
-    """The typed provider failure a leg's output shows, or None. Never consulted for a
-    leg that classified OK."""
-    usage = _PROVIDER_USAGE_LIMIT_RE if anchored else _PROVIDER_USAGE_LIMIT_ANY_RE
-    env = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
-    tail = _provider_output_tail(log_text)
-    body_is_failure = _output_is_provider_failure(review_text, _PROVIDER_FAILURE_RE)
-    if usage.search(tail) or (body_is_failure and _PROVIDER_USAGE_LIMIT_RE.search(review_text)):
-        return "provider_usage_limit"
-    if env.search(tail) or body_is_failure:
-        return "provider_environment_failure"
-    return None
-
-
-def _redact_leg_detail(line: str) -> str:
+def _redact_leg_detail(line: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
     from .redaction import _FORBIDDEN_METADATA_PATTERNS
     from .runner import _redacted_stderr_excerpt  # lazy: avoid a panel_invoker<->runner cycle
 
     redacted = _LEG_DETAIL_CTRL_RE.sub(" ", _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", line)))
+    redacted = _substitute_known_values(redacted, known)
     redacted = _redacted_stderr_excerpt(redacted, max_chars=len(redacted) + 8)
     for pattern, replacement in _LEG_DETAIL_SECRET_RES:
         redacted = pattern.sub(replacement, redacted)
@@ -2078,69 +1982,90 @@ def _redact_leg_detail(line: str) -> str:
     return redacted
 
 
-def _finalize_leg_detail(detail: str | None) -> str | None:
+def _finalize_leg_detail(
+    detail: str | None, known: Sequence[str | os.PathLike[str]] = ()
+) -> str | None:
     """The ONE exit for a CLI-derived ``detail``: redacted (again — idempotent), control-
     stripped, and bounded as a whole, label included."""
     if not detail:
         return None
-    redacted = _redact_leg_detail(detail)
+    redacted = _redact_leg_detail(detail, known)
     if len(redacted) > _LEG_DETAIL_MAX_CHARS:
         redacted = redacted[: _LEG_DETAIL_MAX_CHARS - 3] + "..."
     return redacted or None
 
 
-def _leg_failure_excerpt(text: str) -> str:
-    """A credential-redacted excerpt of a failed CLI's FINAL error line.
+def _seat_paths(*paths: object) -> tuple[str, ...]:
+    """The seat's own scratch / repo paths, as known values for ``detail`` redaction."""
+    return tuple(str(p) for p in paths if p)
 
-    A single-line harness diagnostic ("timeout after 900s", the TOOL-DENIAL message) is
-    kept whole (the final bound applies); a multi-line CLI log contributes only the last
-    line OF ITS TAIL that looks like an error (else its last line) — never the head, which
-    for codex is the echoed prompt."""
+
+def _log_tail(text: str, lines: int = _LEG_FAILURE_LOG_TAIL_LINES) -> str:
+    kept = [line for line in (text or "").splitlines() if line.strip()]
+    return "\n".join(kept[-lines:])
+
+
+def _leg_failure_kind(rc: int, review_text: str, log_text: str) -> str:
+    """``failure_kind`` for a leg that ALREADY failed. Sources, in order: process facts
+    (timeout, signal), then a text match over the log tail and the body. Cosmetic by
+    construction — the outcome was decided before this runs."""
+    if rc == 124:
+        return "timeout"
+    if rc < 0:
+        return "signal"
+    haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
+    if _USAGE_LIMIT_LABEL_RE.search(haystack):
+        return "usage_limit"
+    if _ENV_FAILURE_LABEL_RE.search(haystack):
+        return "env_failure"
+    if _AUTH_SIGNATURE.search(haystack):
+        return "auth"
+    return "unknown"
+
+
+def _leg_failure_excerpt(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
+    """A credential-redacted excerpt of a failed CLI's FINAL error line: a single-line
+    harness diagnostic whole; else the last error-looking line of the log tail (else its
+    last line) — never the head, which for codex is the echoed prompt."""
     lines = [line.strip() for line in _log_tail(text).splitlines() if line.strip()]
     if not lines:
         return ""
     chosen = lines[0] if len(lines) == 1 else next(
         (line for line in reversed(lines) if _LEG_ERROR_LINE_RE.search(line)), lines[-1]
     )
-    return _redact_leg_detail(chosen)
+    return _redact_leg_detail(chosen, known)
 
 
 def _leg_failure_detail(
-    status: str, rc: int, review_text: str, log_text: str, *, anchored: bool = True
+    status: str, rc: int, review_text: str, log_text: str,
+    known: Sequence[str | os.PathLike[str]] = (),
 ) -> str | None:
-    """``PanelLegResult.detail`` for a failed leg: the typed provider failure (if any) plus
-    the CLI's own final error line. None for an OK leg, and for an rc==0 non-conforming
-    review with nothing typed to say (its text already carries the evidence)."""
+    """``PanelLegResult.detail`` for a failed leg: ``<failure_kind>: <the CLI's line>``, or
+    just the line when the kind is unknown. None for an OK leg, and for an rc 0 non-
+    conforming review with nothing to label (its text already carries the evidence)."""
     if status == "OK":
         return None
-    kind = _provider_failure_kind(review_text, log_text, anchored=anchored)
-    if kind is None and rc == 0 and str(review_text).strip():
+    kind = _leg_failure_kind(rc, review_text, log_text)
+    if kind == "unknown" and rc == 0 and str(review_text).strip():
         return None
     source = log_text if str(log_text).strip() else review_text
-    if kind is not None:
-        # Excerpt the line that actually carries the signature, not a later unrelated one.
-        if kind == "provider_usage_limit":
-            pattern = _PROVIDER_USAGE_LIMIT_RE if anchored else _PROVIDER_USAGE_LIMIT_ANY_RE
-        else:
-            pattern = _PROVIDER_ENV_FAILURE_RE if anchored else _PROVIDER_ENV_FAILURE_ANY_RE
-        for candidate in (_provider_output_tail(log_text), str(review_text)):
-            hits = [
-                line for line in candidate.splitlines()
-                if pattern.search(_LEADING_VERDICT_RE.sub("", line.rstrip()))
-            ]
+    if kind in ("usage_limit", "env_failure"):
+        # Excerpt the line that carries the label, not a later unrelated one.
+        pattern = _USAGE_LIMIT_LABEL_RE if kind == "usage_limit" else _ENV_FAILURE_LABEL_RE
+        for candidate in (_log_tail(log_text), str(review_text)):
+            hits = [line for line in candidate.splitlines() if pattern.search(line)]
             if hits:
                 source = hits[-1]
                 break
-    excerpt = _leg_failure_excerpt(str(source))
-    if kind is None:
-        return _finalize_leg_detail(excerpt)
-    reset = None
-    if kind == "provider_usage_limit":
-        match = _PROVIDER_USAGE_RESET_RE.search(_redact_leg_detail(str(source)))
+    excerpt = _leg_failure_excerpt(str(source), known)
+    if kind == "unknown":
+        return _finalize_leg_detail(excerpt, known)
+    label = kind
+    if kind == "usage_limit":
+        match = _PROVIDER_USAGE_RESET_RE.search(_redact_leg_detail(str(source), known))
         if match:
-            reset = match.group("when").strip()
-    label = f"{kind} (resets {reset})" if reset else kind
-    return _finalize_leg_detail(f"{label}: {excerpt}" if excerpt else label)
+            label = f"{kind} (resets {match.group('when').strip()})"
+    return _finalize_leg_detail(f"{label}: {excerpt}" if excerpt else label, known)
 # The gemini/agy leg runs HEADLESS, where a tool permission cannot be prompted for and is
 # auto-denied — the CLI then produces NO output at all and exits rc==0, so the whole leg
 # silently vanishes. (That is how the gemini seat stayed dead for 6 of 11 rounds of the
@@ -2223,7 +2148,10 @@ _ADVISORY_INSTRUCTIONS = (
     "to review' or that a bundle/PR is missing — read the staged material in full and give "
     "concrete, honest advice: name the tradeoffs and risks, be adversarial where it helps, "
     "and end with a clear recommendation. `review-instructions.md` is your task brief; treat "
-    "`review-bundle.md` as the material to advise on. Use your maximum reasoning budget."
+    "`review-bundle.md` as the material to advise on. Use your maximum reasoning budget. "
+    "Your response MUST end with one final line of the form `RECOMMENDATION: <your "
+    "recommendation in one line>` — a response without that last line is treated as a "
+    "failed seat."
 )
 
 
@@ -3774,10 +3702,6 @@ _GEMINI_BROKER_DETAILS = frozenset({
     "brokered Gemini subscription credential reference is unavailable",
     "brokered Gemini subscription credential reference is invalid",
     "review_operation_cancelled",
-    # agent-harness#1098: an otherwise-accepted response whose body IS a provider
-    # environment failure (``_classify_leg`` fails it closed before the early-OK).
-    "Gemini broker response is a provider environment failure",
-    "Gemini broker response is a provider usage limit",
 })
 
 
@@ -4316,81 +4240,44 @@ def _classify_leg(
 ) -> str:
     """Map a leg's exit code + outputs to a fail-closed status.
 
-    Only a leg that ENDS with a conforming structured verdict (see
-    ``terminal_verdict``) is a real review (`ok`) — a terse "DISAGREE" counts; a
-    long review missing the terminal verdict, or junk that merely mentions the
-    words, is NON-CONFORMING and fails closed (`degraded`), never a silent pass.
+    OUTCOME IS DECIDED ONLY BY POSITIVE EVIDENCE OF SUCCESS (agent-harness#1102 round 5).
+    A leg is ``OK`` iff it exited 0 AND produced its mode's success artifact
+    (``_completion_ok``): review — a body ending in a conforming terminal verdict
+    (``terminal_verdict``; a terse "DISAGREE" counts, prose that merely mentions the words
+    does not); advisory — a substantive body ending in a ``RECOMMENDATION:`` line;
+    president — a final non-empty ``FORCING DECISION:`` line. Everything else fails, WHATEVER
+    the exit code and whatever the text says — so an rc-0 environment failure printed
+    instead of a review (agent-harness#1098) fails by construction, with no text scan.
 
-    ah#252: a conforming ``rc == 0`` review is classified ``OK`` BEFORE the
-    ``_AUTH_SIGNATURE`` scan runs. The codex leg's ``log_text`` includes its full
-    transcript (stdout + stderr — codex echoes both the prompt and its own final
-    message onto stderr too, see ``_exec_leg``), so a review whose own PROSE
-    merely discusses "unauthorized" / "rate limit exceeded" / etc. as subject
-    matter (routine in legal, security, and auth-code reviews) used to match the
-    auth-error scan and force a clean, conforming review to ``DEGRADED`` —
-    discarding a valid result. A genuinely de-authed/rate-limited CLI cannot
-    also emit a real, complete, conforming AGREE/PARTIALLY AGREE/DISAGREE (rc==0
-    only reflects the CLI process exiting cleanly, not that a substantive review
-    was produced), so this reorder does not weaken detection of a real auth
-    failure: any leg that is NOT a conforming rc==0 review still falls through to
-    the auth-signature scan exactly as before, and a hard failure (rc != 0) is
-    still caught by the ``rc != 0`` branch even when no auth phrase matched.
+    Free text never decides an outcome and never demotes an ``OK`` leg. That retires the
+    earlier text-based demotions (the advisory auth-scan-first order, and #1096's body
+    heuristics): each existed only because a success predicate was too weak to exclude a
+    failure banner, which the artifact rule now does. ah#252 is preserved trivially: a
+    conforming review whose prose discusses "unauthorized" / "usage limit" is ``OK``
+    because nothing downstream of the artifact check can change it.
 
-    The early-OK bypass is restricted to ``mode == "review"`` (ah#252 CR, codex): only
-    there does ``_completion_ok`` require a conforming terminal verdict — a strong
-    predicate a de-authed/rate-limited CLI cannot satisfy. In ``advisory`` mode
-    ``_completion_ok`` is only ``len(body) >= 40``, so a genuine auth banner (e.g.
-    ``"401 Unauthorized: authentication token expired; please log in again."``) would
-    clear it and fail OPEN past the auth scan. Advisory therefore keeps the original
-    auth-scan-first order; it may false-DEGRADE an advisory whose prose merely mentions
-    auth vocabulary, but that is the fail-CLOSED direction and advisory boards are
-    non-gating by design.
+    The one exception is ``_PROVIDER_TRUNCATION_MARKER``: the provider's own marker that
+    the artifact itself is incomplete, so it is part of the artifact check, not a label.
 
-    agent-harness#1096 / #1098: provider USAGE exhaustion and ENVIRONMENT failures are typed
-    ``DEGRADED`` (the reason rides ``detail``, see ``_leg_failure_detail``). Both are scanned
-    over the log TAIL only and AFTER the review-mode early-OK, so the invariant above holds
-    for them too: a conforming review whose prose discusses a usage limit stays ``OK``.
-    The single exception is a body that IS a provider failure (environment OR usage) —
-    every substantive line is a WHOLE sourced line the CLI printed or a verdict line, at any
-    length (``_output_is_provider_failure``): the CLI could not run, so any verdict it printed
-    is not a review. A review that QUOTES the string (mid-sentence, in backticks, in a fence,
-    beside its own findings, or on a line that begins with it and goes on) is not that. It is checked BEFORE the early-OK and
-    fails CLOSED — the text is kept, so the governed gate reads it as non-conforming (BLOCK),
-    never as a clean review and never as an empty-text WARN. In advisory and president mode
-    (both keep the auth-scan-first order) a body that IS a usage banner is likewise not a
-    substantive response.
+    On a FAILED leg, text may only choose among failure statuses: ``DEGRADED`` for a
+    labeled provider failure (auth / usage limit / environment — see
+    ``_leg_failure_kind``), else ``ERROR`` (rc != 0), ``EMPTY`` (no body), or ``DEGRADED``
+    (a body without the artifact). The reason rides ``detail``.
     """
     if rc == 124:  # `timeout` binary / our own timeout maps here
         return "TIMEOUT"
     body = (review_text or "").strip()
     if _PROVIDER_TRUNCATION_MARKER.search(body):
         return "DEGRADED"
-    # A body that IS the CLI's failure (env OR usage) plus at most a verdict is not a review,
-    # in EVERY mode — checked before the early-OK (board r2: a usage banner + AGREE was OK).
-    if _output_is_provider_failure(body, _PROVIDER_FAILURE_RE):
-        return "DEGRADED"
-    if rc == 0 and body and mode == "review" and _completion_ok(body, mode):
+    if rc == 0 and body and _completion_ok(body, mode):
         return "OK"
-    tail = _provider_output_tail(log_text or "")
-    if (
-        _AUTH_SIGNATURE.search(log_text or "")
-        or _PROVIDER_USAGE_LIMIT_RE.search(tail)
-        or _PROVIDER_ENV_FAILURE_RE.search(tail)
-    ):
+    # FAILED. Everything below only labels.
+    if _leg_failure_kind(rc, review_text, log_text) in ("auth", "usage_limit", "env_failure"):
         return "DEGRADED"
     if rc != 0:
         return "ERROR"
     if not body:
         return "EMPTY"
-    # AFTER the auth scan (so an auth banner still fails closed in BOTH modes): a
-    # substantive body classifies OK. In advisory mode this is the pre-existing #63
-    # behavior (prose above the length threshold, no terminal verdict required); in
-    # review mode a conforming verdict already returned OK above, so this only catches
-    # the review-early-branch's rc!=0 edge, which never reaches here.
-    if _completion_ok(body, mode):
-        return "OK"
-    # review: substantial text but no conforming terminal verdict → fail-closed.
-    # advisory: text present but below the substance threshold → degraded.
     return "DEGRADED"
 
 
@@ -6981,27 +6868,23 @@ def _exec_claude_tui_leg(
         logging.getLogger(__name__).warning(
             "advisor-panel claude TUI leg %s [%s]: %s", status, log_text, pty_tail
         )
-    # agent-harness#1096/#1098: the same tail, typed, for ``PanelLegResult.detail`` — a
-    # caller-owned sink so this function's (status, text) shape stays unchanged. The
-    # tail is where the CLI's own refusal lands (e.g. the shared-/tmp "Temp directory …
-    # is owned by uid …" that surfaced only as ``claude_tui_pty_eof_no_output``).
-    # The PTY tail is one collapsed line, so its signatures are matched unanchored. That is
-    # only safe when the screen can hold nothing but the CLI's own output: a leg that failed
-    # WITHOUT review text (the Claude seat's on-screen prose could quote a sentence) and was
-    # not reclaimed on time (a TIMEOUT stays a TIMEOUT). A typed provider failure is then
-    # DEGRADED, as on every other route.
+    # agent-harness#1096/#1098: the same tail, labeled, for ``PanelLegResult.detail`` — a
+    # caller-owned sink so this function's (status, text) shape stays unchanged. The tail is
+    # where the CLI's own refusal lands (e.g. the shared-/tmp "Temp directory … is owned by
+    # uid …" that surfaced only as ``claude_tui_pty_eof_no_output``). The status is already
+    # a failure; a labeled provider failure is ``DEGRADED`` as on every other route (a
+    # TIMEOUT stays a TIMEOUT). Labels are cosmetic: this never touches an OK leg.
     if failure_detail_sink is not None and status != "OK":
-        typed_ok = status != "TIMEOUT" and not str(review_text or "").strip()
-        tail_detail = _leg_failure_detail(
-            status, rc if rc else 1, review_text, pty_tail, anchored=not typed_ok
-        )
-        if tail_detail and tail_detail.startswith("provider_") and typed_ok:
+        seat_paths = (review_dir, out_dir, tui_cwd, *((repo_dir,) if repo_dir else ()))
+        kind = _leg_failure_kind(rc if rc else 1, review_text, pty_tail)
+        if kind in ("usage_limit", "env_failure") and status != "TIMEOUT":
             status = "DEGRADED"
+        tail_detail = _leg_failure_detail(status, rc if rc else 1, review_text, pty_tail, seat_paths)
+        if tail_detail and kind == "unknown" and log_text:
+            tail_detail = f"{log_text}: {tail_detail}"
+        tail_detail = _finalize_leg_detail(tail_detail, seat_paths)
+        if tail_detail:
             failure_detail_sink.append(tail_detail)
-        elif tail_detail:
-            combined = _finalize_leg_detail(f"{log_text}: {tail_detail}" if log_text else tail_detail)
-            if combined:
-                failure_detail_sink.append(combined)
     return status, text
 
 
@@ -7380,9 +7263,10 @@ def _exec_leg(
             # BEFORE the auth-signature scan ever runs, so which stream(s) the
             # body appears in here no longer matters.
             log_text = (proc.stdout or "") + (proc.stderr or "")
-            # agent-harness#1096 (board r3): codex echoes the prompt verbatim into its
-            # transcript. Elide that exact echo so nothing in the bundle can ever read as
-            # the CLI's own output, whatever its indentation or position.
+            # agent-harness#1096: codex echoes the prompt verbatim into its transcript.
+            # Elide that exact echo: it is noise in `detail`, and a bundle that quotes a
+            # provider banner would otherwise mislabel a failed leg. (Labels only — the
+            # outcome never reads this log.)
             if prompt.strip():
                 log_text = log_text.replace(prompt.strip(), "<prompt echo elided>")
             if review_monitor is not None or rc != 0 or review_text.strip():
@@ -8260,15 +8144,13 @@ def _default_spawn(
                         return "DEGRADED", ""
                     status = _classify_leg(rc, text, log, provider_mode)
                     if leg == "gemini" and status != "OK":
-                        if not log and _output_is_provider_failure(text, _PROVIDER_ENV_FAILURE_RE):
-                            log = "Gemini broker response is a provider environment failure"
-                        elif not log and _output_is_provider_failure(text, _PROVIDER_USAGE_LIMIT_RE):
-                            log = "Gemini broker response is a provider usage limit"
                         if log not in _GEMINI_BROKER_DETAILS:
                             raise ValueError("gemini_broker_diagnostic_invalid")
                         gemini_detail = log
                     elif leg != "gemini":
-                        leg_detail = _leg_failure_detail(status, rc, text, log)
+                        leg_detail = _leg_failure_detail(
+                            status, rc, text, log, _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
+                        )
                     return status, text
                 def _cancel_parent_infer() -> None:
                     # Expiry requests cancellation; only failed cleanup is fatal.
@@ -8366,7 +8248,10 @@ def _default_spawn(
         # agent-harness#1096: the detail is the CLI's FINAL error line(s), bounded and
         # credential-redacted, plus a typed provider failure when one is recognised — not
         # the head of the log, which for codex is the echoed prompt.
-        detail = _leg_failure_detail(status, rc, review_text, log_text)
+        detail = _leg_failure_detail(
+            status, rc, review_text, log_text,
+            _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
+        )
         if detail:
             return status, review_text, detail
         return status, review_text

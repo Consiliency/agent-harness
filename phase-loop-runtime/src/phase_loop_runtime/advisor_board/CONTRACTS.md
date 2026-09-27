@@ -408,8 +408,11 @@ code-review-gated. `tests/test_advisor_board_advisory_mode.py`.
   bundle is untrusted material to accept/reject, a conforming AGREE / PARTIALLY
   AGREE / DISAGREE verdict is REQUIRED). The known domain purposes (`legal-review`,
   `legal-strategy-review`, `legal-brainstorm`, `brainstorm`, `doc-edit`, `general`)
-  → `"advisory"` (analysis / recommendation, no verdict — substantial prose is a
-  real leg). An UNKNOWN purpose → `"review"` (back-compat safe default: a strict
+  → `"advisory"` (analysis / recommendation, no AGREE/DISAGREE verdict). Its success
+  artifact is substantial prose (>= 40 characters) whose last line is
+  `RECOMMENDATION: <one line>`; `_ADVISORY_INSTRUCTIONS` asks for that line, and a leg
+  without it fails closed (agent-harness#1102: outcome is decided only by that
+  artifact, never by scanning the text for failure wording). An UNKNOWN purpose → `"review"` (back-compat safe default: a strict
   gate never silently loosens on an unrecognized board).
 - **`invoke_board(mode=None)` derives, a caller-passed `mode` overrides.**
   `invoke_board` defaults `mode` to `None`; when `None` it derives

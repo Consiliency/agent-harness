@@ -38,7 +38,9 @@ from phase_loop_runtime.advisor_board.presets import (
 _LEGAL_PROSE = (
     "The indemnification clause shifts liability asymmetrically toward the licensee; "
     "the cap should be mutual and the survival period tightened. My recommendation is "
-    "to renegotiate section 8 before signing — the downside exposure is material."
+    "to renegotiate section 8 before signing — the downside exposure is material.\n"
+    # agent-harness#1102 round 5: advisory's success artifact (no review verdict needed)
+    "RECOMMENDATION: renegotiate section 8 before signing."
 )
 
 
@@ -294,6 +296,8 @@ def test_review_render_leg_prompt_is_byte_identical_to_legacy():
 
 def test_advisory_completion_accepts_prose_without_verdict():
     assert pi._completion_ok(_LEGAL_PROSE, "advisory") is True
+    # agent-harness#1102 r5: the same prose without its RECOMMENDATION line is not a success
+    assert pi._completion_ok(_LEGAL_PROSE.rsplit("\n", 1)[0], "advisory") is False
     # the SAME prose, under review mode, is fail-closed (no terminal verdict).
     assert pi._completion_ok(_LEGAL_PROSE, "review") is False
     # end-to-end: a legal board's prose leg classifies OK, never rejected.
