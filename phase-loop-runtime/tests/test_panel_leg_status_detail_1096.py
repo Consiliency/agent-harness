@@ -24,7 +24,6 @@ import textwrap
 import time
 import types
 import unittest.mock
-from pathlib import Path
 
 import pytest
 
