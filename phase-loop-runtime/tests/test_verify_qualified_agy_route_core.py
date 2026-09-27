@@ -35,43 +35,48 @@ def verifier():
     return module
 
 
+def _record(verifier):
+    """The newest member's record; every member pins the same tree."""
+    return verifier.validate_records(verify_sources=False)[-1]
+
+
 def _drift(verifier, monkeypatch, name):
-    record, _ = verifier.validate_record(verify_sources=False)
+    record = _record(verifier)
     drifted = dict(record["source_sha256"])
     drifted[name] = "0" * 64
     monkeypatch.setattr(verifier, "actual_source_hashes", lambda: drifted)
 
 
-def test_the_route_core_is_pinned_by_the_record(verifier):
-    record, _ = verifier.validate_record(verify_sources=False)
-    assert set(verifier.ROUTE_CORE) <= set(record["source_sha256"])
+def test_the_route_core_is_pinned_by_every_record(verifier):
+    for record in verifier.validate_records(verify_sources=False):
+        assert set(verifier.ROUTE_CORE) <= set(record["source_sha256"])
 
 
 def _non_core(verifier):
-    record, _ = verifier.validate_record(verify_sources=False)
+    record = _record(verifier)
     return next(name for name in sorted(record["source_sha256"]) if name not in verifier.ROUTE_CORE)
 
 
 def test_a_non_core_drift_passes_route_core_but_fails_the_release_check(verifier, monkeypatch):
     _drift(verifier, monkeypatch, _non_core(verifier))
-    verifier.validate_record(route_core_only=True)
+    verifier.validate_records(route_core_only=True)
     with pytest.raises(ValueError, match="differ from this checkout"):
-        verifier.validate_record()
+        verifier.validate_records()
 
 
 @pytest.mark.parametrize("name", ["gemini_heartbeat.py", "qualify_gemini_heartbeat.py"])
 def test_a_route_core_drift_fails_route_core(verifier, monkeypatch, name):
     _drift(verifier, monkeypatch, name)
     with pytest.raises(ValueError, match=f"route-core file {name}"):
-        verifier.validate_record(route_core_only=True)
+        verifier.validate_records(route_core_only=True)
 
 
 def test_a_route_core_file_missing_from_the_record_fails(verifier, monkeypatch):
-    record, _ = verifier.validate_record(verify_sources=False)
+    record = _record(verifier)
     monkeypatch.setattr(verifier, "actual_source_hashes", lambda: dict(record["source_sha256"]))
     monkeypatch.setattr(verifier, "ROUTE_CORE", verifier.ROUTE_CORE + ("not_pinned.py",))
     with pytest.raises(ValueError, match="does not pin route-core file not_pinned.py"):
-        verifier.validate_record(route_core_only=True)
+        verifier.validate_records(route_core_only=True)
 
 
 def test_publication_is_gated_on_the_full_pin_set():

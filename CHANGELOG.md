@@ -6,15 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Qualified agy 1.2.12 entry image (agent-harness#1008)
+### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008)
 
-- Admit the latest 1.2.12 Linux x64 image for brokered Gemini heartbeat-only
-  review after real completion, cancellation and owner-loss qualification.
-  The 1.2.11 image now refuses before launch. The `--help` surface is unchanged,
-  so the help digest is carried over. The current-image record and CI
-  provenance check bind the source, official archive and executable; automatic
-  fleet updates remain tracked by agent-harness#1008 and first-use
-  self-qualification by agent-harness#1076.
+- The brokered Gemini heartbeat-only route now admits a closed SET of qualified
+  images, `gemini_heartbeat.QUALIFIED_IMAGES` (image digest -> help digest):
+  agy 1.2.11 and 1.2.12 Linux x64. A host that has not yet auto-updated keeps its
+  Gemini seat; any other digest still refuses before launch. Both members were
+  qualified live (completion, cancellation, owner-loss) on this tree, and each has
+  its own evidence record. The `--help` surface is byte-identical across the two.
+- `plans/evidence/qualified-provider-images.json` is now schema
+  `qualified_provider_images.v2` and lists every member. `verify_qualified_agy_image.py`
+  refuses unless the catalog and the runtime set name exactly the same members and
+  every member's record checks. The upstream check requires the latest release to
+  be a member. First-use self-qualification remains agent-harness#1076.
 
 ### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099)
 

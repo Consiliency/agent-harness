@@ -233,7 +233,7 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
     monkeypatch.setenv("PATH", str(cli_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
-    monkeypatch.setattr(gh, "QUALIFIED_IMAGE_SHA256", sha256(cli.read_bytes()).hexdigest())
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(cli.read_bytes()).hexdigest(): "d" * 64})
     return SimpleNamespace(module=gh, path=cli, attempts=attempts, observation=observation,
                            mode=mode_file, token=token, home=home)
 
@@ -241,7 +241,7 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
 @pytest.mark.parametrize("missing", ["image", "memfd", "pidfd", "pidfd_enosys"])
 def test_missing_capability_refuses_whole_board_before_effects(fixture_cli, monkeypatch, missing, tmp_path, capsys):
     gh = fixture_cli.module
-    if missing == "image": monkeypatch.setattr(gh, "QUALIFIED_IMAGE_SHA256", "0" * 64)
+    if missing == "image": monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {"0" * 64: "d" * 64})
     if missing == "memfd": monkeypatch.delattr(gh.os, "memfd_create", raising=False)
     if missing == "pidfd": monkeypatch.delattr(gh.os, "pidfd_open", raising=False)
     if missing == "pidfd_enosys":
@@ -676,6 +676,31 @@ def test_snapshot_rechecks_bytes_after_successful_capability_check(fixture_cli):
     assert not fixture_cli.attempts.exists()
 
 
+def test_closed_image_set_admits_each_member_and_refuses_a_third(fixture_cli, monkeypatch):
+    """agent-harness#1008: every member of QUALIFIED_IMAGES is admitted and bound as itself;
+    any other digest refuses before a launch, as the single pin did."""
+    gh = fixture_cli.module
+    first = fixture_cli.path.read_bytes()
+    second = first + b"# a second qualified member\n"
+    third = first + b"# an unqualified image\n"
+    digests = [sha256(body).hexdigest() for body in (first, second, third)]
+    assert len(set(digests)) == 3
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {digests[0]: "d" * 64, digests[1]: "e" * 64})
+    env = panel._broker_subscription_env()
+    for body, digest in zip((first, second), digests):
+        fixture_cli.path.write_bytes(body)
+        assert gh.require_capability(env).name == "agy"
+        with _profile(fixture_cli) as profile:
+            assert profile.evidence["provider_image_sha256"] == digest
+    fixture_cli.path.write_bytes(third)
+    with pytest.raises(ValueError, match="gemini"):
+        gh.require_capability(env)
+    with pytest.raises(ValueError, match="gemini"):
+        with _profile(fixture_cli):
+            pytest.fail("an unqualified image reached an owned profile")
+    assert not fixture_cli.attempts.exists()
+
+
 def test_capability_checks_leave_other_policy_routes_unaffected(fixture_cli, monkeypatch):
     monkeypatch.setattr(fixture_cli.module, "require_capability",
                         lambda *a, **kw: pytest.fail("unrelated capability probe"))
@@ -688,7 +713,7 @@ def test_capability_checks_leave_other_policy_routes_unaffected(fixture_cli, mon
 @pytest.mark.parametrize("missing", ["image", "memfd", "pidfd"])
 def test_public_other_routes_complete_without_gemini_capability(fixture_cli, tmp_path, monkeypatch, route, missing):
     gh = fixture_cli.module
-    if missing == "image": monkeypatch.setattr(gh, "QUALIFIED_IMAGE_SHA256", "0" * 64)
+    if missing == "image": monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {"0" * 64: "d" * 64})
     if missing == "memfd": monkeypatch.delattr(gh.os, "memfd_create", raising=False)
     if missing == "pidfd": monkeypatch.delattr(gh.os, "pidfd_open", raising=False)
     board, policy = gemini_board(), "bounded"
@@ -754,7 +779,7 @@ def test_default_spawn_rechecks_capability_before_scratch_effects(fixture_cli, t
         # A private repository, never the live checkout (agent-harness#1053).
         canonical_repo_authority=_fixture_repo(tmp_path / "authority"),
     )
-    monkeypatch.setattr(fixture_cli.module, "QUALIFIED_IMAGE_SHA256", "0" * 64)
+    monkeypatch.setattr(fixture_cli.module, "QUALIFIED_IMAGES", {"0" * 64: "d" * 64})
     monkeypatch.setattr(panel, "_gc_stale_panel_scratch", lambda: pytest.fail("scratch effect"))
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "direct", 0, threading.Event())
     result = panel._default_spawn("gemini", "input", review_monitor=monitor,
@@ -1016,7 +1041,7 @@ from dataclasses import replace
 from pathlib import Path
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
-gh.QUALIFIED_IMAGE_SHA256={fixture_cli.module.QUALIFIED_IMAGE_SHA256!r}
+gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
 panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}),review_policy=panel.ReviewLandingPolicy(('gemini',),False))
 '''
