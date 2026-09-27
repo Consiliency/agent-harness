@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "7c0814936841104da6fd8652c3e535877d9c1835408ff0d251ac45c2b6dc8293",
+      "raw_receipt_sha256": "6af2c5cb8b3bc468b3d6f23caf335e58927e1cf2fcdf7c6bb439b808ee88534b",
       "record_sha256": {
-        "broker": "b25bcd7623b883e484880bd2853363c7b86fe8b6986e49843935597896dad354",
-        "monitoring": "a9a6cae3bfe555c0e21524ac71e8e3cc5340aa86e1adfdac3904b20afe48d0d9",
-        "observer": "2754e802302b5064a98dc4dd21e85e71eb62b01e4df879bcb43502c59491c624",
-        "result": "b16511d35cc021403129f896e086a6a1ed4ca0db929a3df3b4ab1b06260aad2a"
+        "broker": "d870e52e05148b98329bf08fa76b758c8b7a41eb508f6fcf4019bbe20768c575",
+        "monitoring": "88b8445cde5f0f4fbd6f436529a49f0b9f37c1219f4d9aad6450ead5320e9c03",
+        "observer": "82e93f9daf1ba87fd56c8bb041b86a0897b2c8134a026d1cec0ce94eee90bdb7",
+        "result": "be1a5826f94d9e9f799c994a2b33a06a3f7fe1f37bf12578824f6427326a3611"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "1baeb0f8a8fa81da88fe8c65701f3a88f20e355b57126479339b48ef0f12ca29",
+      "raw_receipt_sha256": "13cb4487193ceebfd774f645dd9b3dfd1b301e5e1b49eef7ae3b85f86293a8a6",
       "record_sha256": {
-        "broker": "17c8780bab9d864743941b71770ba8106459c2a102cf53a554561dfec776997f",
-        "monitoring": "2f374b80538430a1b3c98de204f40ca314c474b0ef36b6746a6a488b64a87576",
-        "observer": "bd76272214a493364c29c3f6253cd4b66f42cccea532f74b7e66432dd6c39600",
+        "broker": "f0d34d2b95cb26c482fa9c7078525851e70798cc1c6c83cae4e7637f85b07530",
+        "monitoring": "1d22950845f744f8cf560a9cbf7406a717eab12e4a89ac7b48e1464c0f449a05",
+        "observer": "de56adcf40f3e73bd334a2958dfb15f31707a29fff8f306ca7ba8111eb3aac1f",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "7f732676fa532c7f1836263ef204538b456d0f907e438f7372f31d8220c71f59",
+      "raw_receipt_sha256": "fb7d36203881f90445f8c08d9e6ea188beb9830becae521e89a0341a6631f5ec",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "aee9616e110c646fa16eec753d79925d3d3c1a304533aaa491b74c05ef0b8dd1",
-        "observer": "1f2f52a2b0d46029b18ddcea189d440b1cceaad4e00d1e87bce29000e7132268",
+        "monitoring": "0e9797432e4f2053c179f98508666da01cc8e2dcecc79553063c250764bbe8af",
+        "observer": "643ce940c98065be43158355a2f7eb0850ffeb168fbc245f4cece21305517840",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -196,7 +196,7 @@
   "route": "brokered_subscription_heartbeat_only",
   "schema": "agy_1212_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "f7bcaa29652fe171715ec907951ded2cd44c36427d1496534ea28bfd188ba167",
+    "__init__.py": "2d0330ce429951df308dead3182a8da202b2ec6cd609dc7917925602ce1c95f3",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "e9a503543374ccb83e41535c9fee012fe849b9397003d87aec9ff8fdb653bc73",
     "advisor_board/__init__.py": "7a746aa1ccf9cca9e6344c0d09a34c464cd1bd82044e469f56c2fa5b1b641ff8",
@@ -261,12 +261,12 @@
     "convergence/broker/admission.py": "4011bd9cc051af83a1aedb71117e2e30461e17375f235774682626c12060e10f",
     "convergence/broker/credsep.py": "f87b13733de2175a9609b7d812f7a0c37642582d8b006447feec7c6264e30753",
     "convergence/broker/evidence.py": "12afc8852544900cfd9efc92d4287f4ed72f0468dcc6d503d32cbb12a4be5284",
-    "convergence/broker/live.py": "9ea4a5feac5657c5ea68d0ba29303a86f716863382bf07c30f4276d5d5311b21",
+    "convergence/broker/live.py": "f5b8b154fe6fb7f940c79e6db3b8f531b99afbb6d0243e239d403c0e4c73bb61",
     "convergence/broker/verbs.py": "35f1920bdac10a6fd3579203a0a872c855aaf5067bae0eede1b8d3b1d26f9e26",
     "convergence/contracts.py": "0a08b445ae07566ff212bfeef3b83b44488228f694e73f84aa01c18f48e08a71",
     "convergence/dispatch.py": "44a9eb208b04a4888022e7a66073e569b15842790dd267110c9c1f34e08aef6e",
     "convergence/event_log.py": "a9153ed4893bbc852876f81ce0e4ecf15fdaf0b4faeccb33ae25b78f4b73ea6c",
-    "convergence/fencing.py": "9af4f517b50b04bdc101df3320ddedced3782cfb2eb5f5a5449cfa7e6acdc5c3",
+    "convergence/fencing.py": "e7d90bc14be8d84265af843345394a0f9ed56f47fa001f02856a3c805de8286e",
     "convergence/provider_contracts.py": "afd50633dc6c66ac71f7783ca325bfb22dbce3ba7bb98a365b1774a7b4a18e36",
     "convergence/reconcile.py": "1fa1a955ccd8b0ccc1dffe1da4bb31ef3ec88e491f63d8b8541911d523b543b0",
     "convergence/refresh.py": "c24346fab0c8f5ce13f8363df2ef108dfb9bd6a0759b47992c4dab86ca89cb98",
@@ -354,7 +354,7 @@
     "review_stage.py": "b49548413af2c51a7308488524fccb0772a1610a5cc23d8301b71cb9dd845c9c",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "17dc68a53456e0db5e018441ed8fbc67be3d07d360f8ef9d225fce03fb5514f0",
+    "roadmap_assumptions.py": "0d07028530889bffa9237a8b93ff937a497192342923012dd215bf94d7c04903",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
