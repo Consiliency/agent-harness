@@ -6,7 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### `fabpub-bootstrap` accepts the run-train writer-lock residue and excludes a live train (agent-harness#1115)
+## [0.7.20] - 2026-09-27
+
+### `fabpub-bootstrap` accepts the run-train writer-lock residue and excludes a live train (agent-harness#1115; PR agent-harness#1116)
 
 - A `run-train` on a repository with no FABPUB partition receipt creates an empty
   `run-train-writer.lock` in the repository namespace before it refuses. `fabpub-bootstrap --probe`
@@ -46,7 +48,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the trains and re-run the same `--apply --inventory <same file>` as a resume, without
   re-probing; until it completes, trains in those repositories get leases but no effects.
 
-### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008)
+### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008; PR agent-harness#1119)
 
 - The brokered Gemini heartbeat-only route now admits a closed SET of qualified
   images, `gemini_heartbeat.QUALIFIED_IMAGES` (image digest -> help digest):
@@ -60,7 +62,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   every member's record checks. The upstream check requires the latest release to
   be a member. First-use self-qualification remains agent-harness#1076.
 
-### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099)
+### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099; PR agent-harness#1101)
 
 - `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
   root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
@@ -125,7 +127,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `claude_solo` stays `proof-blocked`. The live proof is parked until the workspace-trust design
   lands (agent-harness#1104); agent-harness#1099 stays open.
 
-### `advisor-board --advisory`: a non-gating review of a standalone document (agent-harness#802; agent-harness#1098 items 1 and 3)
+### `advisor-board --advisory`: a non-gating review of a standalone document (agent-harness#802; agent-harness#1098 items 1 and 3; PR agent-harness#1103)
 
 - `phase-loop advisor-board <bundle> --advisory` reviews a research bundle, memo, roadmap or plan
   under the advisory contract (`advisory.v1`) instead of the code-review brief. The contract tells
@@ -155,7 +157,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `review isolation unavailable` line is followed by a hint line. The default command, with no new
   flag, is unchanged.
 
-### Several accounts on one host can run advisor boards at the same time (agent-harness#1098 item 2)
+### Several accounts on one host can run advisor boards at the same time (agent-harness#1098 item 2; PR agent-harness#1109)
 
 - Every seat now runs as the operator's real uid and gid. Seats run inside a filtered user
   namespace in which every account used to be uid 0, and the provider CLIs keep scratch under
@@ -180,7 +182,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   sandboxes. It also sweeps leftover `pl-egress-ns-*` holder directories that carry the holder's
   marker, are older than a day, and whose namespace holder is no longer running.
 
-### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
+### Claude answers continued past the output cap are extracted whole (agent-harness#1077; PR agent-harness#1088)
 
 - When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit
   hit…", `isMeta`) and continues under a new message id. That record no longer counts as a new
@@ -192,7 +194,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   mid-verdict). Turns with no cap or resume are extracted exactly as before. On the president
   route, a `max_tokens` stop is allowed only on a message the answer continues.
 
-### Board legs: outcome only from a success artifact; `detail` only from our own vocabulary (agent-harness#1096; advisory part of agent-harness#1098 item 2)
+### Board legs: outcome only from a success artifact; `detail` only from our own vocabulary (agent-harness#1096; advisory part of agent-harness#1098 item 2; PR agent-harness#1102)
 
 - A leg is `OK` only when it exits 0 and produces its mode's success artifact:
   - review: a terminal AGREE / PARTIALLY AGREE / DISAGREE verdict;
@@ -243,6 +245,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the Claude TUI's stderr warning carries only our status and marker, never the PTY tail.
 - `STDERR_SECRET_KV_RE` now lives in `redaction.py`, so `PanelLegResult` does not import
   `runner`.
+
+### v10 PANEL phase plan and SL-0 tests-first corpus (agent-harness#1078, agent-harness#1094; PRs agent-harness#1083, agent-harness#1100, agent-harness#1111, agent-harness#1092)
+
+- `plans/phase-plan-v10-PANEL.md` lands with its amendments: the per-seat delivery seam and the
+  resolved SL-1 prerequisites. Each plan revision appends `plan_current_authority.v1` rows.
+- The frozen SL-0 corpus (`test_panel_lanes.py`, `test_panel_lens_delivery.py`,
+  `test_panel_doc_contract.py`, the golden, the adapter and the RED receipt) lands tests-first.
+  In an ordinary run its nodes SKIP until the SL-1/SL-2 symbols exist;
+  `PHASE_LOOP_TDD_EXPECT_PANEL=1` makes them fail. No runtime behaviour changes yet.
 
 ## [0.7.19] - 2026-09-26
 
