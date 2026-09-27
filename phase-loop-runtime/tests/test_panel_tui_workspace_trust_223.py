@@ -285,10 +285,10 @@ def test_every_line_of_the_live_modal_is_modal_vocabulary():
         assert not pi._tui_trust_modal_line(pi._normalize_tui_line(editor_line), cwd_norms), editor_line
 
 
-def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
-    """CR F3/R3: the redacted tail is preserved as diagnosable evidence for EVERY non-OK
-    failure — via a WARNING log, NOT stamped into ``text`` (which feeds verdict-conformance
-    and would turn an operational failure into a promotion-blocking nonconforming review)."""
+def test_non_typed_failure_logs_its_marker_not_the_pty_tail(tmp_path, monkeypatch, caplog):
+    """CR F3/R3, revised by agent-harness#1102 r8: a non-OK leg is still logged at WARNING —
+    by its status and marker only. The PTY tail is CLI output: it goes to the private
+    per-leg log, never to the operator's stderr and never into ``text``."""
     monkeypatch.setattr(pi, "_run_claude_tui_session",
                         lambda **kw: (1, "", "claude_tui_missing_canonical_output", "diag tail Z"))
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
@@ -301,7 +301,8 @@ def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
     with caplog.at_level(_logging.WARNING):
         status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
     assert status != "OK"
-    assert "diag tail Z" in caplog.text, "the diagnostic tail must be logged for a non-OK leg"
+    assert "claude_tui_missing_canonical_output" in caplog.text, "a non-OK leg must be logged"
+    assert "diag tail Z" not in caplog.text, "CLI output reached the WARNING log"
 
 
 def test_operational_degraded_leg_is_governed_warn_not_block(tmp_path, monkeypatch):
@@ -389,10 +390,10 @@ def _degraded_mapping(monkeypatch, tmp_path, marker, tail):
     return _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
 
 
-def test_typed_reasons_map_to_degraded_with_empty_text_and_logged_tail(tmp_path, monkeypatch, caplog):
+def test_typed_reasons_map_to_degraded_with_empty_text_and_no_tail_on_stderr(tmp_path, monkeypatch, caplog):
     """Both new typed operational reasons surface as DEGRADED with EMPTY text (so the
     governed classifier records a WARN, never a promotion-blocking nonconforming review),
-    and the redacted tail is preserved via a WARNING log."""
+    and (agent-harness#1102 r8) the PTY tail is NOT written to the WARNING log."""
     import logging as _logging
     with caplog.at_level(_logging.WARNING):
         status, text = _degraded_mapping(
@@ -400,7 +401,7 @@ def test_typed_reasons_map_to_degraded_with_empty_text_and_logged_tail(tmp_path,
         )
     assert status == "DEGRADED"
     assert text == ""  # empty ⇒ governed WARN, not a nonconforming block
-    assert "redacted tail A" in caplog.text
+    assert "redacted tail A" not in caplog.text  # agent-harness#1102 r8: no PTY text on stderr
     assert "claude_tui_workspace_trust_blocked" in caplog.text
 
     caplog.clear()
@@ -410,7 +411,7 @@ def test_typed_reasons_map_to_degraded_with_empty_text_and_logged_tail(tmp_path,
         )
     assert status == "DEGRADED"
     assert text == ""
-    assert "redacted tail B" in caplog.text
+    assert "redacted tail B" not in caplog.text
 
 
 @pytest.mark.parametrize("brokered", [False, True])

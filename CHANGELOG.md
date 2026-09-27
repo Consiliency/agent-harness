@@ -192,6 +192,58 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   mid-verdict). Turns with no cap or resume are extracted exactly as before. On the president
   route, a `max_tokens` stop is allowed only on a message the answer continues.
 
+### Board legs: outcome only from a success artifact; `detail` only from our own vocabulary (agent-harness#1096; advisory part of agent-harness#1098 item 2)
+
+- A leg is `OK` only when it exits 0 and produces its mode's success artifact:
+  - review: a terminal AGREE / PARTIALLY AGREE / DISAGREE verdict;
+  - advisory: at least 40 characters ending in a `RECOMMENDATION:` line, which the advisory
+    prompts now ask for;
+  - president: a `FORCING DECISION:` line.
+
+  Free text never decides an outcome or demotes an `OK` leg. The review verdict is parsed
+  exactly as before (`terminal_verdict` is unchanged from 0.7.19, held there by a
+  differential test against a frozen copy); `OK` needing exit 0 plus that verdict already
+  keeps CLI prose from counting. The `RECOMMENDATION:` line reads the same last line. From
+  agent-harness#1098 item 2 this fixes advisory mode's old length-only acceptance; the
+  rest of that item stays open.
+- A failed leg's `detail` is built ONLY from this runtime's closed vocabulary, and raw CLI
+  text never enters it. Provenance is by TYPE, not shape: a parametrized harness code is
+  kept only when this runtime built it (`_HarnessCode`); CLI output, stdout, exception
+  messages and PTY tails are never turned into one, however closely they match a template.
+  A plain string is kept only when it EQUALS a fixed literal. Every template field is
+  enumerated (including the log name, `<harness>-<24 hex>.log`); a native-fill refusal
+  carries its reason only. Only
+  the EXACT types count, read without dispatching any method of the input, and the stored
+  value is a fresh copy. The threat model is untrusted text; in-process Python code is
+  trusted and out of scope. It is either a harness code or one of these templates:
+  - `timeout`;
+  - `signal <N>`;
+  - `auth_failure`;
+  - `usage_limit`, or `usage_limit (resets <HH:MM[, Mon D YYYY]>)`. The reset time is parsed
+    and re-rendered, never copied;
+  - `env_failure: temp dir owned by another account (uid <N>)`;
+  - `env_failure: temp dir unusable`;
+  - `env_failure: app-server socket dir not user-owned`;
+  - `env_failure: sandbox command could not be built`;
+  - `env_failure: staging filesystem below its free-space floor`;
+  - `tool_denied: headless tool permission auto-denied`;
+  - `unknown failure[ (exit <N>)]; CLI output: leg-logs/<harness>-<24 hex>.log`, or `…; CLI output not
+    retained`.
+- `PanelLegResult.detail` is a validating data descriptor. It checks on every write
+  (including `object.__setattr__`) and every read (so a value planted in the backing slot
+  is never returned raw), and `PanelLegResult` may not be subclassed at all (a mixin could
+  otherwise shadow the descriptor). Anything outside the grammar
+  becomes `unknown failure; CLI output not retained`.
+- For an unknown failure, the CLI's raw output (best-effort redacted, last 64 KiB) goes to
+  a PRIVATE per-leg file under the run's stream dir: `leg-logs/`, mode 0700, and must be
+  ours; the file is 0600, created with O_EXCL|O_NOFOLLOW relative to that directory.
+  `detail` names it only by that run-relative path. The file is never part of
+  `PanelLegResult`, the verdict JSON, governed reasons or the board summary. With no
+  stream dir, nothing is retained. The disclosed research ledger carries only the code, and
+  the Claude TUI's stderr warning carries only our status and marker, never the PTY tail.
+- `STDERR_SECRET_KV_RE` now lives in `redaction.py`, so `PanelLegResult` does not import
+  `runner`.
+
 ## [0.7.19] - 2026-09-26
 
 ### Closeout audit recognises the required skill handoff root (agent-harness#1084; PR agent-harness#1085)

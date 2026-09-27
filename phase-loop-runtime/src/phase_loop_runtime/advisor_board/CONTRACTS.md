@@ -397,6 +397,28 @@ of the caller context but still stage raw contents for each leg.
   timeouts return timeout status without retry. CTXRELY owns any follow-on reliability
   split beyond these frozen names and retry/timeout invariants.
 
+## Leg `detail` vocabulary (agent-harness#1096 / #1102)
+
+A `PanelLegResult.detail` is built ONLY from this runtime's closed vocabulary; raw CLI text
+never enters it. It is a harness code (`_HARNESS_DETAIL_CODES`, or a
+`_HARNESS_DETAIL_CODE_TEMPLATES` pattern whose fields are typed tokens), a failure template
+(`_FAILURE_DETAIL_TEMPLATES`: `timeout`, `signal <N>`, `auth_failure`,
+`usage_limit[ (resets <HH:MM[, Mon D YYYY]>)]`, the five `env_failure: …` forms,
+`tool_denied: …`, `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log | not
+retained`), or `<harness code>: <failure template>`. Provenance is by type: a parametrized
+harness code is kept only as a `_HarnessCode` built by this runtime; CLI output, exception
+messages and PTY tails are never turned into one, and a plain string survives only by
+equality with a fixed literal. Every template field is enumerated or checked against the
+run's own values. `detail` is a validating data descriptor (write and read), and
+`PanelLegResult` may not be subclassed (checked on the exact instance type, not only by
+`__init_subclass__`). An unknown failure's raw output is kept
+only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 0700), which
+`detail` names by its run-relative path. That file is never in the verdict JSON, governed
+reasons or the board summary. Its name carries only closed fields:
+`leg-logs/<registry harness | leg>-<24 hex>.log`.
+
+**Threat model.** I3 defends against untrusted TEXT: CLI stdout/stderr, leg bodies, exception messages and PTY output. None of it can choose or enter `detail`. In-process Python code is trusted runtime code and is out of scope: it can do anything (for example `object.__setattr__` on arbitrary objects, or replacing this module's functions). The exact-type checks (`PanelLegResult` refuses any subclass instance; only an exact `_HarnessCode` / `_LegFailure` has provenance; contents are read with `str.__str__` and re-created as a fresh `_HarnessCode`) close the cheap structural bypasses, but they are not a sandbox against hostile in-process code.
+
 ## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
 
 A board's PURPOSE now selects its default panel MODE automatically, so a domain
@@ -408,8 +430,11 @@ code-review-gated. `tests/test_advisor_board_advisory_mode.py`.
   bundle is untrusted material to accept/reject, a conforming AGREE / PARTIALLY
   AGREE / DISAGREE verdict is REQUIRED). The known domain purposes (`legal-review`,
   `legal-strategy-review`, `legal-brainstorm`, `brainstorm`, `doc-edit`, `general`)
-  → `"advisory"` (analysis / recommendation, no verdict — substantial prose is a
-  real leg). An UNKNOWN purpose → `"review"` (back-compat safe default: a strict
+  → `"advisory"` (analysis / recommendation, no AGREE/DISAGREE verdict). Its success
+  artifact is substantial prose (>= 40 characters) whose last line is
+  `RECOMMENDATION: <one line>`; `_ADVISORY_INSTRUCTIONS` asks for that line, and a leg
+  without it fails closed (agent-harness#1102: outcome is decided only by that
+  artifact, never by scanning the text for failure wording). An UNKNOWN purpose → `"review"` (back-compat safe default: a strict
   gate never silently loosens on an unrecognized board).
 - **`invoke_board(mode=None)` derives, a caller-passed `mode` overrides.**
   `invoke_board` defaults `mode` to `None`; when `None` it derives
