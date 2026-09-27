@@ -187,7 +187,7 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
     - Preventively, it refuses a target whose branch rules require a merge queue, with `panel_merge_queue_target`.
     - Detectively, if a merge comes back enqueued (still OPEN, with no merge commit), it dequeues and refuses with `panel_merge_enqueued`. Residual: the queue can merge before the dequeue.
 
-    Refusing queue-protected targets changes run-train's behaviour for panel landings, and that needs maintainer confirmation.
+    Maintainer decision (2026-09-27, agent-harness#1111): refuse queue-protected targets up front, and dequeue and refuse any attempt that comes back enqueued. The re-gate inside the queue is deferred until a repository needs merge queues. Intended consequence: run-train no longer merges a panel landing into a queue-protected target. `test_sl1_ec1_every_merge_site_regates_on_every_attempt` covers both refusal paths, `panel_merge_queue_target` and `panel_merge_enqueued`.
   - **Base race.** `gh pr merge` pins the head (`--match-head-commit`) but not the base. Residual: a push to the target between the wrapper's fetch and GitHub's merge. After the merge, the wrapper checks that the merge commit's first parent is the fetched head, and records `panel_merge_base_moved` if not. That check detects the race; it does not prevent it. Push actions have no such window.
   - **Today's primitives.** Each becomes a `guarded_merge` call:
     - run-train: `train_runner._live_merge_pr`'s `gh pr merge`;
