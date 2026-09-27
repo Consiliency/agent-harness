@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Qualified agy 1.2.12 entry image (agent-harness#1008)
+
+- Admit the latest 1.2.12 Linux x64 image for brokered Gemini heartbeat-only
+  review after real completion, cancellation and owner-loss qualification.
+  The 1.2.11 image now refuses before launch. The `--help` surface is unchanged,
+  so the help digest is carried over. The current-image record and CI
+  provenance check bind the source, official archive and executable; automatic
+  fleet updates remain tracked by agent-harness#1008 and first-use
+  self-qualification by agent-harness#1076.
+
 ### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099)
 
 - `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
