@@ -845,4 +845,7 @@ def test_an_advisory_fill_with_a_different_brief_is_refused_by_the_digest_prefli
         native_leg_fills=(fill,), base_env={"CLAUDECODE": "1"},
     )
     details = [leg.detail for leg in result.legs]
-    assert details == [f"native_fill_refused:{pi.NATIVE_FILL_DIGEST_MISMATCH}:{claude_seat.seat_key}"], details
+    # agent-harness#1102 r9: the refusal code carries the reason only (a seat key is not a
+    # closed detail field); the leg itself still carries its seat_key.
+    assert details == [f"native_fill_refused:{pi.NATIVE_FILL_DIGEST_MISMATCH}"], details
+    assert [leg.seat_key for leg in result.legs] == [claude_seat.seat_key]

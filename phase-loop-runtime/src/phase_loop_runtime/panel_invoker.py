@@ -1282,10 +1282,17 @@ class _FinalizedDetail:
     def __get__(self, instance: object, owner: type | None = None) -> str | None:
         if instance is None:
             return None  # the dataclass field default
+        _require_exact_leg_result(instance)
         return _finalize_leg_detail(instance.__dict__.get(self._slot))
 
     def __set__(self, instance: object, value: object) -> None:
+        _require_exact_leg_result(instance)
         instance.__dict__[self._slot] = _finalize_leg_detail(value)
+
+
+def _require_exact_leg_result(instance: object) -> None:
+    if type(instance) is not PanelLegResult:
+        raise TypeError("PanelLegResult may not be subclassed: its detail chokepoint is final")
 
 
 @dataclass(frozen=True)
@@ -1317,6 +1324,10 @@ class PanelLegResult:
         raise TypeError("PanelLegResult may not be subclassed: its detail chokepoint is final")
 
     def __post_init__(self) -> None:
+        # EXACT type (r9): `__init_subclass__` can be skipped by an earlier base whose own
+        # hook does not call super, so the instance itself refuses any subclass.
+        if type(self) is not PanelLegResult:
+            raise TypeError("PanelLegResult may not be subclassed: its detail chokepoint is final")
         object.__setattr__(self, "status", normalize_leg_status(self.status))
         if self.seat_key is None:
             object.__setattr__(self, "seat_key", self.leg)
@@ -1683,7 +1694,9 @@ _VERDICT_RE = re.compile(
 # tolerance here prevents over-blocking a real approval on cosmetics (CR finding).
 # List / quote / heading / numbering markup BEFORE a line's text: the marker must be followed
 # by whitespace (`- AGREE`), so a flag such as `--agree` is not stripped into a verdict.
-_LEADING_MARKUP_RE = re.compile(r"^(?:\s+|[-*>`#]+\s+|\d+[.)]\s*)+")
+# A blockquote `>` needs no following space (`>**AGREE**` is valid Markdown); the other
+# markers do, so a CLI flag such as `--agree` is never stripped to a verdict.
+_LEADING_MARKUP_RE = re.compile(r"^(?:\s+|>+\s*|[-*>`#]+\s+|\d+[.)]\s*)+")
 
 
 def _final_line(text: str) -> str | None:
@@ -2296,22 +2309,26 @@ def _alt(values: Sequence[str]) -> str:
 
 
 _H = _alt(_REGISTRY_HARNESSES)
-_HARNESS_DETAIL_CODE_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
+# The omnigent backing's two fixed-shape details; `_route_omnigent_seat` checks its outcome
+# against exactly these before typing it as ours.
+_OMNIGENT_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.ASCII) for p in (
+    r"omnigent " + _alt(_OMNIGENT_FAILURE_CATEGORIES) + r": HTTP \d{3}",
+    r"omnigent v\d{1,3}\.\d{1,3}\.\d{1,3} lane=" + _alt(_OMNIGENT_AUTH_LANES),
+))
+_HARNESS_DETAIL_CODE_TEMPLATES: tuple[re.Pattern[str], ...] = _OMNIGENT_DETAIL_TEMPLATES + tuple(
+    re.compile(p, re.ASCII) for p in (
     r"timeout after \d{1,6}s",
     r"claude_tui_launch_error:" + _alt(_BUILTIN_EXCEPTION_NAMES),
     r"research_audit_" + _alt(_RESEARCH_AUDIT_STATUSES),
     r"(?:codex|gemini|grok|claude|opencode) not logged in — run `(?:codex|agy|grok|claude|opencode) "
     r"login` \(auth preflight failed\)",
-    r"omnigent " + _alt(_OMNIGENT_FAILURE_CATEGORIES) + r": HTTP \d{3}",
-    r"omnigent v\d{1,3}\.\d{1,3}\.\d{1,3} lane=" + _alt(_OMNIGENT_AUTH_LANES),
     r"skip: harness '" + _H + r"' not in live Omnigent catalog",
     r"skip: effort mapping for harness '" + _H + r"' is populated in ABDREG/ABDHOME/ABDOMNI",
     r"skip: backing '(?:homebrew|omnigent)' not served by homebrew(?: \(ABDOMNI\))?",
     r"skip: no homebrew adapter for lane '" + _H + r"' — Omnigent-or-skip \(ABDOMNI\)",
     r"president_ruling_missing:" + _alt(_PRESIDENT_POLICY_CODES),
-    # the seat is checked against the board's own seat keys by its producer
-    r"native_fill_refused:" + _alt(_NATIVE_FILL_REFUSAL_CODES)
-    + r"(?::" + _H + r"(?::[A-Za-z0-9._-]{1,80}){1,3})?",
+    # no seat field: the leg already carries its seat_key (r9 closes the last free-form token)
+    r"native_fill_refused:" + _alt(_NATIVE_FILL_REFUSAL_CODES),
     r"slirp4netns exited \(-?\d{1,4}\) before the uplink was usable; the namespace has no network",
 ))
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -2324,15 +2341,15 @@ _PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
     "env_failure: sandbox command could not be built",
     "env_failure: staging filesystem below its free-space floor", _UNKNOWN_DETAIL,
 })
-_FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
+_FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.ASCII) for p in (
     *(re.escape(t) for t in sorted(_PARAMETER_FREE_FAILURES)),
     r"signal \d{1,2}",
     r"usage_limit \(resets (?:[01]\d|2[0-3]):[0-5]\d(?:, " + _alt(_MONTHS)
     + r" (?:[1-9]|[12]\d|3[01]) \d{4})?\)",
     r"env_failure: temp dir owned by another account \(uid \d{1,10}\)",
-    # exactly `_write_private_leg_log`'s name: `<safe seat key>-<12 hex>.log`
+    # exactly `_write_private_leg_log`'s name: `<registry harness | leg>-<24 hex>.log`
     r"unknown failure(?: \(exit \d{1,3}\))?; CLI output(?: not retained|: "
-    + _LEG_LOG_DIRNAME + r"/[A-Za-z0-9._-]{1,60}-[0-9a-f]{12}\.log)",
+    + _LEG_LOG_DIRNAME + r"/(?:" + _H + r"|leg)-[0-9a-f]{24}\.log)",
 ))
 
 
@@ -2357,7 +2374,9 @@ def _is_failure_template(value: str) -> bool:
 
 def _detail_is_valid(value: str) -> bool:
     """The grammar (defense in depth behind provenance): a harness code, a failure template,
-    or `<harness code>: <failure template>`."""
+    or `<harness code>: <failure template>`. Checked on a plain `str` copy, so no method of
+    the input is dispatched."""
+    value = str.__str__(value) if isinstance(value, str) else ""
     if _is_harness_code(value) or _is_failure_template(value):
         return True
     code, sep, rest = value.partition(": ")
@@ -2383,8 +2402,8 @@ class _LegFailure:
 
     def rendered(self, log_ref: str | None = None) -> _HarnessCode:
         body = _unknown_detail(self.rc, log_ref) if self.unknown else self.template
-        if isinstance(self.prefix, _HarnessCode) and _is_harness_code(self.prefix):
-            body = f"{self.prefix}: {body}"
+        if type(self.prefix) is _HarnessCode and _is_harness_code(str.__str__(self.prefix)):
+            body = f"{str.__str__(self.prefix)}: {body}"
         return _HarnessCode(body)
 
 
@@ -2393,14 +2412,32 @@ def _finalize_leg_detail(value: object) -> _HarnessCode | None:
     PROVENANCE first: a ``_LegFailure`` or ``_HarnessCode`` (built by us) is kept when it
     also fits the grammar; a plain string only when it equals one of our fixed literals.
     Anything else becomes the unknown-failure template. Idempotent; never scrubs."""
-    if value is None or value == "":
+    # EXACT types only (r9): a subclass of a trusted type could override the methods this
+    # function would otherwise dispatch through, so it is treated as foreign. Contents are
+    # read with `str.__str__` (a plain `str` copy, no input-controlled method), and the
+    # result is a FRESH `_HarnessCode` built from that copy, never the supplied object.
+    if value is None:
         return None
-    if isinstance(value, _LegFailure):
+    if type(value) is _LegFailure:
         value = value.rendered()
-    if isinstance(value, _HarnessCode):
-        return value if _detail_is_valid(value) else _HarnessCode(_UNKNOWN_DETAIL)
-    text = str(value)
+    if type(value) is _HarnessCode:
+        canonical = str.__str__(value)
+        if not canonical:
+            return None
+        return _HarnessCode(canonical if _detail_is_valid(canonical) else _UNKNOWN_DETAIL)
+    text = str.__str__(value) if isinstance(value, str) else ""
+    if isinstance(value, str) and not text:
+        return None
     if text in _HARNESS_DETAIL_CODES or text in _PARAMETER_FREE_FAILURES:
+        return _HarnessCode(text)
+    return _HarnessCode(_UNKNOWN_DETAIL)
+
+
+def _omnigent_detail(value: object) -> _HarnessCode | None:
+    if not value:
+        return None
+    text = str.__str__(value) if isinstance(value, str) else ""
+    if any(p.fullmatch(text) for p in _OMNIGENT_DETAIL_TEMPLATES):
         return _HarnessCode(text)
     return _HarnessCode(_UNKNOWN_DETAIL)
 
@@ -2435,8 +2472,9 @@ def _write_private_leg_log(run_dir: Path | str, seat_key: str, raw: str) -> str 
         st = os.fstat(dir_fd)
         if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077:
             return None
-        safe_key = re.sub(r"[^A-Za-z0-9._-]", "_", seat_key)[:60] or "leg"
-        name = f"{safe_key}-{uuid.uuid4().hex[:12]}.log"
+        # Only closed fields in the name (r9): the seat's registry harness, else `leg`.
+        harness = str(seat_key).split(":", 1)[0]
+        name = f"{harness if harness in _REGISTRY_HARNESSES else 'leg'}-{uuid.uuid4().hex[:24]}.log"
         fd = os.open(
             name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd,
         )
@@ -2460,6 +2498,7 @@ def _exception_failure(exc: BaseException) -> object:
     only when it EQUALS one of our fixed literals; otherwise it is an unknown failure whose
     text goes only to the private per-leg log (a full staging disk gets its own template)."""
     message = str(exc)
+    message = str.__str__(message) if isinstance(message, str) else ""
     if message in _HARNESS_DETAIL_CODES:
         # EXACT equality with one of our own fixed literals (a refusal this runtime raised):
         # nothing is parsed out of the message and no template is matched, so it cannot
@@ -2476,7 +2515,7 @@ def _resolve_leg_detail(value: object, run_dir: Path | str | None, seat_key: str
     """Turn a spawn's failure into its stored detail. An unknown failure's raw output goes to
     the private per-leg log when the run has a directory; everything else passes through
     (the descriptor validates it)."""
-    if isinstance(value, _LegFailure) and value.unknown:
+    if type(value) is _LegFailure and value.unknown:
         ref = (
             _write_private_leg_log(run_dir, seat_key, value.raw)
             if run_dir is not None and value.raw.strip() else None
@@ -2572,7 +2611,7 @@ def _leg_failure_detail(
     non-conforming review with nothing to label (its text already carries the evidence)."""
     if status == "OK":
         return None
-    if isinstance(log_text, _HarnessCode):
+    if type(log_text) is _HarnessCode:
         # Provenance by TYPE: a diagnostic this runtime itself produced (never CLI text
         # that merely looks like one — agent-harness#1102 r8).
         return _LegFailure(log_text)
@@ -9595,8 +9634,9 @@ def _route_omnigent_seat(
         leg=leg,
         status=outcome.status,
         text=outcome.text,
-        # The omnigent backing's own fixed-shape detail (category / lane), our vocabulary.
-        detail=_HarnessCode(outcome.detail) if outcome.detail else None,
+        # The omnigent backing's own fixed-shape detail (category / lane): typed as ours only
+        # after it full-matches one of its two templates (r9); anything else is unknown.
+        detail=_omnigent_detail(outcome.detail),
         seat_key=seat.seat_key,
     )
 
@@ -9903,13 +9943,8 @@ def invoke_board(
             composition_sha256=_composition_digest(board), env=base_env,
         )
         if _refusal is not None:
-            # The seat is named only when it is one of THIS board's seats (r8: a closed field).
-            _seat = str(_refusal.seat_key)
-            _known = {str(seat.seat_key) for seat in board.seats}
-            return review_refusal(_HarnessCode(
-                f"native_fill_refused:{_refusal.reason}:{_seat}" if _seat in _known
-                else f"native_fill_refused:{_refusal.reason}"
-            ))
+            # The reason only (r9): a seat key is not a closed field.
+            return review_refusal(_HarnessCode(f"native_fill_refused:{_refusal.reason}"))
         return None
 
     governed_review_request = (

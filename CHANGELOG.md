@@ -205,7 +205,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   stand alone, or come before a separator. Markup counts only when it is followed by
   whitespace. So a CLI line such as `Agree and continue` or `--agree` is not a verdict.
   Markdown around the value (`**Verdict:** **AGREE**`, ``*Verdict:* `DISAGREE` ``,
-  `**Partially agree** — reason`) still parses, as on main. From
+  `**Partially agree** — reason`, `>**AGREE**`) still parses, as on main. From
   agent-harness#1098 item 2 this fixes advisory mode's old length-only acceptance; the
   rest of that item stays open.
 - A failed leg's `detail` is built ONLY from this runtime's closed vocabulary, and raw CLI
@@ -213,8 +213,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   kept only when this runtime built it (`_HarnessCode`); CLI output, stdout, exception
   messages and PTY tails are never turned into one, however closely they match a template.
   A plain string is kept only when it EQUALS a fixed literal. Every template field is
-  enumerated or checked against the run's own values (the board's seat keys, our log-name
-  generator's `<key>-<12 hex>.log`). It is either a harness code or one of these templates:
+  enumerated (including the log name, `<harness>-<24 hex>.log`); a native-fill refusal
+  carries its reason only. Only
+  the EXACT types count, read without dispatching any method of the input, and the stored
+  value is a fresh copy. The threat model is untrusted text; in-process Python code is
+  trusted and out of scope. It is either a harness code or one of these templates:
   - `timeout`;
   - `signal <N>`;
   - `auth_failure`;
@@ -226,7 +229,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - `env_failure: sandbox command could not be built`;
   - `env_failure: staging filesystem below its free-space floor`;
   - `tool_denied: headless tool permission auto-denied`;
-  - `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log`, or `…; CLI output not
+  - `unknown failure[ (exit <N>)]; CLI output: leg-logs/<harness>-<24 hex>.log`, or `…; CLI output not
     retained`.
 - `PanelLegResult.detail` is a validating data descriptor. It checks on every write
   (including `object.__setattr__`) and every read (so a value planted in the backing slot

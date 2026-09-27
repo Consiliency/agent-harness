@@ -410,10 +410,14 @@ harness code is kept only as a `_HarnessCode` built by this runtime; CLI output,
 messages and PTY tails are never turned into one, and a plain string survives only by
 equality with a fixed literal. Every template field is enumerated or checked against the
 run's own values. `detail` is a validating data descriptor (write and read), and
-`PanelLegResult` may not be subclassed. An unknown failure's raw output is kept
+`PanelLegResult` may not be subclassed (checked on the exact instance type, not only by
+`__init_subclass__`). An unknown failure's raw output is kept
 only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 0700), which
 `detail` names by its run-relative path. That file is never in the verdict JSON, governed
-reasons or the board summary.
+reasons or the board summary. Its name carries only closed fields:
+`leg-logs/<registry harness | leg>-<24 hex>.log`.
+
+**Threat model.** I3 defends against untrusted TEXT: CLI stdout/stderr, leg bodies, exception messages and PTY output. None of it can choose or enter `detail`. In-process Python code is trusted runtime code and is out of scope: it can do anything (for example `object.__setattr__` on arbitrary objects, or replacing this module's functions). The exact-type checks (`PanelLegResult` refuses any subclass instance; only an exact `_HarnessCode` / `_LegFailure` has provenance; contents are read with `str.__str__` and re-created as a fresh `_HarnessCode`) close the cheap structural bypasses, but they are not a sandbox against hostile in-process code.
 
 ## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
 

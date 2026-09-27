@@ -763,7 +763,7 @@ def test_every_reviewer_input_yields_a_template_with_no_input_text(text, rc):
     "usage_limit (resets 13:42, Oct 1 2026)", "env_failure: temp dir owned by another account (uid 65534)",
     "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
     "env_failure: sandbox command could not be built", "tool_denied: headless tool permission auto-denied",
-    "unknown failure; CLI output not retained", "unknown failure (exit 2); CLI output: leg-logs/codex-0a1b2c3d4e5f.log",
+    "unknown failure; CLI output not retained", "unknown failure (exit 2); CLI output: leg-logs/codex-0a1b2c3d4e5f0a1b2c3d4e5f.log",
     "claude_tui_pty_eof_no_output: unknown failure; CLI output not retained",
     "under_claude_code", "native_fill", "president_ruling_missing:president_invocation_failed",
     "timeout after 900s", "subscription_auth_unproven", "Gemini broker deadline exceeded",
@@ -778,7 +778,11 @@ def test_the_template_grammar_accepts_our_vocabulary(detail):
     f"token={TOK}", "fatal: /home/jdoe/x", "usage_limit (resets 3:05 PM)", "usage_limit: You've hit",
     "env_failure: Temp directory /tmp/claude-0 is owned by uid 1", "signal 9; rm -rf /",
     "unknown failure; CLI output: /home/jdoe/run/leg-logs/x.log", "timeout after 900s /home/x",
-    "unknown failure; CLI output: leg-logs/x.log",  # not our generator's `<key>-<12 hex>.log`
+    "unknown failure; CLI output: leg-logs/x.log",  # not our generator's `<harness>-<24 hex>.log`
+    "unknown failure; CLI output: leg-logs/codex-0a1b2c3d4e5f.log",  # 12 hex: the old shape
+    "unknown failure; CLI output: leg-logs/sk-ant-api03-0a1b2c3d4e5f0a1b2c3d4e5f.log",  # not a harness
+    "unknown failure (exit \uff11); CLI output not retained",  # a non-ASCII digit (re.ASCII)
+    "native_fill_refused:native_fill_digest_mismatch:claude:claude-opus-5-5:max:correctness",  # no seat
     "president_ruling_missing:ghp_abcdefghijklmnopqrstuv",  # an unenumerated token
     "claude_agent_state:idle; stop=ghp_abcdefghijklmnopqrstuv",  # no longer a template at all
     "claude_tui_pty_eof_no_output: fatal: boom",
@@ -832,7 +836,7 @@ def test_a_raw_exception_is_an_unknown_failure_with_its_text_only_in_the_private
         raise OSError(f"cannot exec /home/jdoe/.local/bin/codex token={TOK}")
     monkeypatch.setattr(pi, "_exec_leg", boom)
     leg = pi.invoke_panel("ARTIFACT", ["codex"], stream_dir=tmp_path).legs[0]
-    assert re.fullmatch(r"unknown failure; CLI output: leg-logs/codex-[0-9a-f]{12}\.log", leg.detail), leg.detail
+    assert re.fullmatch(r"unknown failure; CLI output: leg-logs/codex-[0-9a-f]{24}\.log", leg.detail), leg.detail
     log = (tmp_path / leg.detail.rsplit(": ", 1)[1]).read_text()
     assert "cannot exec" in log and TOK not in log  # best-effort hygiene on the private log
 
@@ -851,7 +855,7 @@ def test_an_unknown_failure_names_a_private_0600_log_in_a_0700_dir(monkeypatch, 
     import stat as _stat
     leg = _unknown_failure_panel(monkeypatch, tmp_path)
     assert re.fullmatch(
-        r"unknown failure \(exit 1\); CLI output: leg-logs/codex-[0-9a-f]{12}\.log", leg.detail
+        r"unknown failure \(exit 1\); CLI output: leg-logs/codex-[0-9a-f]{24}\.log", leg.detail
     ), leg.detail
     ref = leg.detail.rsplit(": ", 1)[1]
     log = tmp_path / ref
@@ -1056,13 +1060,27 @@ def test_the_raw_field_is_not_in_the_repr():
     assert _SECRET not in repr(failure)
 
 
-def test_a_native_fill_refusal_names_only_a_seat_of_this_board():
-    assert pi._finalize_leg_detail(pi._HarnessCode(
-        "native_fill_refused:native_fill_digest_mismatch:claude:claude-opus-5-5:max:correctness"
-    )) == "native_fill_refused:native_fill_digest_mismatch:claude:claude-opus-5-5:max:correctness"
-    assert pi._finalize_leg_detail(pi._HarnessCode("native_fill_refused:not_a_code:claude:x")) == (
+def test_a_native_fill_refusal_carries_the_reason_only():
+    """r9: the seat is not a closed field, so the code drops it (the leg carries seat_key)."""
+    code = "native_fill_refused:native_fill_digest_mismatch"
+    assert pi._finalize_leg_detail(pi._HarnessCode(code)) == code
+    assert pi._finalize_leg_detail(pi._HarnessCode("native_fill_refused:not_a_code")) == (
         "unknown failure; CLI output not retained"
     )
+
+
+def test_a_private_log_name_carries_only_the_registry_harness(tmp_path):
+    for seat_key, harness in (("codex:gpt-6:max:red-team", "codex"), (f"{_SECRET}:x", "leg")):
+        ref = pi._write_private_leg_log(tmp_path, seat_key, "boom")
+        assert re.fullmatch(rf"leg-logs/{harness}-[0-9a-f]{{24}}\.log", ref), ref
+
+
+def test_an_omnigent_detail_is_typed_only_when_it_fits_its_templates():
+    assert pi._omnigent_detail("omnigent v0.4.0 lane=api_key") == "omnigent v0.4.0 lane=api_key"
+    assert pi._omnigent_detail(f"omnigent auth: HTTP 401 {_SECRET}") == (
+        "unknown failure; CLI output not retained"
+    )
+    assert pi._omnigent_detail(None) is None
 
 
 # B2: the verdict forms main accepted must still parse; the CLI lines must not.
@@ -1080,6 +1098,9 @@ def test_a_native_fill_refusal_names_only_a_seat_of_this_board():
     ("VERDICT: agree", "AGREE"),
     ("`AGREE`", "AGREE"),
     ("**Verdict**: DISAGREE", "DISAGREE"),
+    (">**AGREE**", "AGREE"),  # r9: a blockquote needs no space after `>`
+    ("> **AGREE**", "AGREE"),
+    (">DISAGREE: blocking", "DISAGREE"),
 ])
 def test_formatted_verdicts_parse(line, verdict):
     assert pi.terminal_verdict("review body\n" + line) == verdict
@@ -1160,3 +1181,58 @@ def test_property_template_shaped_secret_lines_never_choose_the_detail():
                 continue
             assert pi._detail_is_valid(detail), (case, detail)
             assert secret not in detail and secret[:8] not in detail, (case, repr(text), detail)
+
+
+
+# --- board round 9 (agent-harness#1102): exact types, no dispatch through the input -----
+
+def test_an_earlier_base_that_skips_init_subclass_still_cannot_subclass():
+    """codex r9 #1: an earlier base whose `__init_subclass__` does not call super skips
+    PanelLegResult's hook; the exact-type check in `__post_init__` and the descriptor holds."""
+
+    class EarlierBase:
+        detail = None
+
+        def __init_subclass__(cls, **kwargs):
+            pass
+
+    class Leaky(EarlierBase, pi.PanelLegResult):
+        pass
+
+    with pytest.raises(TypeError):
+        Leaky("codex", "ERROR", text="", detail="FOREIGN_CANARY_1096")
+
+
+def test_a_forged_harness_code_subclass_is_foreign():
+    """codex r9 #2: a `_HarnessCode` subclass overriding `partition` (or `__str__`) must not
+    pass the grammar; only the exact type counts, read via `str.__str__`, and the stored value
+    is a fresh `_HarnessCode`, never the supplied object."""
+
+    class ForgedCode(pi._HarnessCode):
+        def partition(self, sep):
+            return "under_claude_code", ": ", "timeout"
+
+        def __str__(self):
+            return "timeout"
+
+        def __eq__(self, other):
+            return True
+
+        __hash__ = str.__hash__
+
+    leg = pi.PanelLegResult("codex", "ERROR", text="", detail=ForgedCode("FOREIGN_CANARY_1096"))
+    assert leg.detail == "unknown failure; CLI output not retained"
+    assert "FOREIGN_CANARY_1096" not in repr(leg)
+    assert not pi._detail_is_valid(ForgedCode("FOREIGN_CANARY_1096"))
+    genuine = pi._HarnessCode("timeout after 900s")
+    stored = pi._finalize_leg_detail(genuine)
+    assert stored == genuine and stored is not genuine and type(stored) is pi._HarnessCode
+
+
+def test_a_forged_legfailure_subclass_is_foreign():
+    class ForgedFailure(pi._LegFailure):
+        def rendered(self, log_ref=None):
+            return pi._HarnessCode("timeout")
+
+    leg = pi.PanelLegResult("codex", "ERROR", detail=ForgedFailure("FOREIGN_CANARY_1096"))
+    assert leg.detail == "unknown failure; CLI output not retained"
