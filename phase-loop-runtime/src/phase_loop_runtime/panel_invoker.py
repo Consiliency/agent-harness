@@ -6166,8 +6166,8 @@ _REVIEW_VERDICT_CONTRACT = (
     "line (use DISAGREE only when there is a blocking defect)."
 )
 _ADVISORY_VERDICT_CONTRACT = (
-    "End with exactly one final line `RECOMMENDATION: <one line>`; no AGREE / "
-    "PARTIALLY AGREE / DISAGREE verdict is required."
+    "End with a clear recommendation as exactly one final line `RECOMMENDATION: "
+    "<one line>`; no AGREE / PARTIALLY AGREE / DISAGREE verdict is required."
 )
 
 
