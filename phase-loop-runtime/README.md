@@ -199,6 +199,34 @@ onboarding repositories that were not named by the original probe.
 Apply is irreversible and refuses changed bytes, symlinks, live allocator
 state, held generation leases, or an authority owned by another bootstrap.
 
+A failed `run-train` on a repository with no partition receipt leaves an empty
+`<git-common-dir>/phase-loop-fabpub-broker-v1/run-train-writer.lock` behind.
+The probe treats that file as runtime lock residue, not inventory state, only
+when it is a regular, 0-byte, singly linked file owned by the operator; the
+sealed inventory is identical with or without it. Anything else under that name
+(content, a directory, a socket or FIFO, a symlink, a hardlink, a foreign owner)
+is refused, as is a namespace root that is a symlink (dangling or not) or not a
+directory. The refusal names the entry and what it is. It is not runtime residue:
+inspect it, and remove it yourself only after confirming it is not yours, then
+re-run the probe. The runtime never deletes it. The probe classifies the
+namespace through one descriptor opened without following symlinks and refuses
+if the root is replaced while it is inspected. These checks keep an honest
+operator from mis-sealing; they are not a boundary against the operator's own
+account, since a same-uid actor who can rewrite the namespace can already forge
+broker state directly. Apply always holds every repository's writer lock, creating it if
+absent, from before its re-probe until it returns, and refuses while a
+`run-train` or another apply holds it. Never delete broker files to clear a
+refusal.
+
+Before apply, stop every `run-train` on the host, not only those for the named
+repositories: the drain counts live `run-train` processes host-wide. A train that
+starts during apply waits behind the writer lock, is counted as live, and makes
+apply fail after DRAINING with `WriterGenerationBlocked`. To recover, stop the
+trains and re-run the same `--apply --inventory <same file>`; that resumes the
+sealed bootstrap and must not be preceded by a new probe. Until the resume
+completes, trains in those repositories obtain generation leases but no
+admission or provider effects.
+
 Inventory completeness is bounded to the named worktrees, explicit and
 environment-declared legacy roots, historical-evidence roots, and hashed broker
 directories directly beneath `.train-ledger` directories under each

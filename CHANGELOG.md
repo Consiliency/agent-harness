@@ -6,6 +6,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `fabpub-bootstrap` accepts the run-train writer-lock residue and excludes a live train (agent-harness#1115)
+
+- A `run-train` on a repository with no FABPUB partition receipt creates an empty
+  `run-train-writer.lock` in the repository namespace before it refuses. `fabpub-bootstrap --probe`
+  then reported that file as `unattested canonical state`, so the first failed train blocked the
+  repository's own bootstrap (Consiliency/treesitter-chunker#97).
+- **Probe.** `run-train-writer.lock` is runtime lock residue, not inventory state, when its
+  captured row is 0 bytes with the empty digest and an `lstat` shows a regular, singly linked
+  file owned by the current uid. The row is dropped, and a namespace holding nothing else
+  classifies as `absent`, so the sealed inventory and its digest are identical with or without
+  the residue. Content, a symlink, a hardlink, a directory, a socket or FIFO, or a foreign owner
+  under that name refuses as unattested, as does a namespace root that is a symlink (dangling or
+  not) or not a directory. The refusal names the entry and what it is, and tells the operator to
+  inspect it and remove it only after confirming it is not theirs; nothing is deleted
+  automatically. The namespace root is opened once with `O_DIRECTORY|O_NOFOLLOW` and inspected
+  through that descriptor, and the probe refuses if the root's `(st_dev, st_ino)` changed by the
+  end of classification. These checks stop an honest operator from mis-sealing; they are not a
+  boundary against a same-uid actor, who could forge broker state directly. No earlier sealed inventory can hold the dropped row, because
+  every earlier probe refused it. An existing but empty namespace directory now also classifies
+  as `absent` rather than `empty`; a probe inventory sealed by an earlier release over such a
+  directory must be re-probed.
+- **Apply.** `bootstrap_zero_history_authority` always holds every sealed repository's writer
+  lock for the whole apply. It opens the lock the way fencing does (created if absent, `O_RDWR`,
+  `O_NOFOLLOW`, never truncated), requires a singly linked regular file owned by the operator,
+  and takes a non-blocking exclusive `flock` in fencing's sorted namespace-root order, before the
+  first-apply re-probe. A held lock refuses with `LegacyCutoverConflict` ("a run-train or another
+  bootstrap apply holds the writer lock"); every other open, stat, or lock error is a typed
+  `LegacyCutoverConflict`. A train that starts during apply blocks in fencing until apply
+  returns. A resume also refuses if a sealed row now resolves to a namespace whose lock it
+  does not hold, and apply creates nothing under a sealed root that is not a
+  `phase-loop-fabpub-broker-v1` directory.
+- **Behaviour change:** re-running apply on an already ACTIVE bootstrap, which is idempotent, now
+  refuses while any `run-train` holds a sealed repository's writer lock. Re-run it after the
+  train exits.
+- **Recovery on 0.7.19.** Stop every `run-train` on the host (the drain counts them host-wide),
+  upgrade, then rerun `phase-loop fabpub-bootstrap --probe` and `--apply --confirm-zero-history`.
+  Do not delete the lock file. If apply fails after DRAINING with `WriterGenerationBlocked`, stop
+  the trains and re-run the same `--apply --inventory <same file>` as a resume, without
+  re-probing; until it completes, trains in those repositories get leases but no effects.
+
 ### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008)
 
 - The brokered Gemini heartbeat-only route now admits a closed SET of qualified

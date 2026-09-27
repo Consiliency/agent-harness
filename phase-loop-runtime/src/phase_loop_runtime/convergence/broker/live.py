@@ -20,6 +20,7 @@ import importlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -2796,119 +2797,408 @@ def _receipt_bootstrap_claim(
     }
 
 
+#: The run-train writer lock ``run_train_generation_leases`` creates and flocks
+#: in every repository namespace it fences, before any receipt exists.
+RUN_TRAIN_WRITER_LOCK = "run-train-writer.lock"
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def _is_run_train_lock_residue(path: Path) -> bool:
+    """True only for the runtime's own writer-lock residue (agent-harness#1115).
+
+    An empty, singly linked regular file owned by the operator is the byte-exact
+    residue of a run-train attempt; anything else under that name (content, a
+    symlink, a hardlink, a foreign owner) could be canonical state.
+    """
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    return _is_lock_residue_status(status)
+
+
+def _is_lock_residue_status(status: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(status.st_mode)
+        and status.st_size == 0
+        and status.st_nlink == 1
+        and status.st_uid == os.getuid()
+    )
+
+
+def _lock_status_in(dir_fd: int) -> os.stat_result | None:
+    """``lstat`` of the writer-lock entry inside the opened namespace directory."""
+    try:
+        return os.stat(RUN_TRAIN_WRITER_LOCK, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _drop_run_train_lock_residue(dir_fd: int | None, files: list[dict]) -> list[dict]:
+    """Drop the benign writer-lock row so it is not state in the sealed inventory.
+
+    The row's own captured size and digest must already say "empty", so the
+    attestation and the acceptance come from one observation.  A non-benign file
+    under that name keeps its row and is refused as unattested.  No sealed
+    inventory can hold the dropped row: every earlier probe refused it.
+    """
+    return [
+        item
+        for item in files
+        if not (
+            item["path"] == RUN_TRAIN_WRITER_LOCK
+            and item["size"] == 0
+            and item["sha256"] == _EMPTY_SHA256
+            and dir_fd is not None
+            and (status := _lock_status_in(dir_fd)) is not None
+            and _is_lock_residue_status(status)
+        )
+    ]
+
+
+def _describe_lock_impostor(status: os.stat_result) -> str:
+    """Why an entry under the writer-lock name is not the runtime's residue."""
+    if stat.S_ISLNK(status.st_mode):
+        return "a symlink"
+    if stat.S_ISDIR(status.st_mode):
+        return "a directory"
+    if stat.S_ISSOCK(status.st_mode):
+        return "a socket"
+    if stat.S_ISFIFO(status.st_mode):
+        return "a FIFO"
+    if not stat.S_ISREG(status.st_mode):
+        return "a special file"
+    if status.st_size:
+        return f"a regular file holding {status.st_size} bytes"
+    if status.st_nlink != 1:
+        return f"a regular file with {status.st_nlink} hard links"
+    return f"a regular file owned by uid {status.st_uid}, not {os.getuid()}"
+
+
+def _refuse_lock_impostor(
+    snapshot: RepositorySnapshot, path: Path, status: os.stat_result
+) -> None:
+    raise LegacyCutoverConflict(
+        f"unattested canonical state for {snapshot.identity}: {[RUN_TRAIN_WRITER_LOCK]} "
+        f"at {path} is {_describe_lock_impostor(status)}, not runtime writer-lock residue "
+        "(an empty, singly linked regular file you own). Inspect it and remove it only "
+        "after confirming it is not yours; then re-run the zero-history probe"
+    )
+
+
+def _namespace_holds_nothing(dir_fd: int | None, files: list[dict]) -> bool:
+    """True when the namespace root is missing (``dir_fd`` is None) or the opened
+    root directory holds at most the benign writer lock.
+
+    Apply creates the namespace root and its writer lock before the first-apply
+    re-probe, so a missing root and a root holding only that residue must
+    classify, and digest, identically.  Enumeration goes through the descriptor
+    opened with ``O_NOFOLLOW``, never the path, so a root swapped for a symlink
+    cannot substitute another directory's contents.
+    """
+    if dir_fd is None:
+        return True
+    if files:
+        return False
+    with os.scandir(dir_fd) as entries:
+        names = [entry.name for entry in entries]
+    return all(name == RUN_TRAIN_WRITER_LOCK for name in names) and (
+        not names
+        or (
+            (status := _lock_status_in(dir_fd)) is not None
+            and _is_lock_residue_status(status)
+        )
+    )
+
+
+def _open_namespace_root(snapshot: RepositorySnapshot) -> int | None:
+    """Open the namespace root itself: ``None`` when it is truly absent.
+
+    ``O_NOFOLLOW|O_DIRECTORY`` refuses a symlink root (dangling or not) and any
+    non-directory on every classification branch.  A root without a receipt must
+    also be owned by the operator, like the residue inside it.
+    """
+    root = snapshot.namespace_root
+    try:
+        dir_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+    except FileNotFoundError:
+        if os.path.lexists(root):
+            raise LegacyCutoverConflict(
+                f"namespace root {root} changed during the probe; re-run the "
+                "zero-history probe"
+            ) from None
+        return None
+    except OSError as error:
+        raise LegacyCutoverConflict(
+            f"unattested canonical state for {snapshot.identity}: namespace root "
+            f"{root} is not a directory (a symlink, dangling or not, or another "
+            "file type); inspect it and remove it only after confirming it is not "
+            "yours; then re-run the zero-history probe"
+        ) from error
+    status = os.fstat(dir_fd)
+    if not stat.S_ISDIR(status.st_mode) or (
+        status.st_uid != os.getuid()
+        and not os.path.lexists(snapshot.container / RECEIPT_FILENAME)
+    ):
+        os.close(dir_fd)
+        raise LegacyCutoverConflict(
+            f"unattested canonical state for {snapshot.identity}: namespace root "
+            f"{root} is owned by uid {status.st_uid}, not {os.getuid()}; inspect it "
+            "and remove it only after confirming it is not yours; then re-run the "
+            "zero-history probe"
+        )
+    return dir_fd
+
+
+def _require_same_namespace_root(snapshot: RepositorySnapshot, dir_fd: int | None) -> None:
+    """Bind the classification to the directory that was opened and inspected."""
+    root = snapshot.namespace_root
+    try:
+        current = os.lstat(root)
+    except FileNotFoundError:
+        current = None
+    if dir_fd is None:
+        unchanged = current is None
+    else:
+        opened = os.fstat(dir_fd)
+        unchanged = current is not None and (current.st_dev, current.st_ino) == (
+            opened.st_dev,
+            opened.st_ino,
+        )
+    if not unchanged:
+        raise LegacyCutoverConflict(
+            f"namespace root {root} changed during the probe; re-run the "
+            "zero-history probe"
+        )
+
+
+@contextlib.contextmanager
+def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
+    """Hold every sealed repository's run-train writer lock for the whole apply.
+
+    The lock is opened exactly as ``run_train_generation_leases`` opens it
+    (created if absent, never truncated), in the same sorted namespace-root
+    order, and taken with a non-blocking exclusive ``flock``: a run-train or a
+    second apply that already holds it refuses this apply, and a train that
+    starts later blocks in fencing until this apply returns.  Apply never waits
+    on a writer lock, and fencing holds nothing apply waits on (it takes the
+    writer lock before any lease or latch lock), so it cannot deadlock.  Creating
+    the lock does not perturb the sealed inventory because the residue is not
+    inventory state.  Each lock is a distinct open file description, so nothing
+    inside the apply may enter ``run_train_generation_leases``.
+
+    Yields the resolved namespace roots it holds.  ``resuming`` selects the
+    remedy a refusal names: a first apply re-probes, a resume re-runs apply with
+    the same sealed inventory.
+    """
+    import errno
+    import fcntl
+
+    rows = {
+        _inventory_row_namespace_root(row).resolve(): row for row in inventory["worktrees"]
+    }
+    remedy = (
+        "restore the repository or rotate the authority; then re-run apply with the "
+        "same inventory, without re-probing"
+        if resuming
+        else "re-run the zero-history probe"
+    )
+    with contextlib.ExitStack() as stack:
+        for root in sorted(rows, key=str):
+            path = root / RUN_TRAIN_WRITER_LOCK
+            row = rows[root]
+            if root.name != REPOSITORY_NAMESPACE_DIR:
+                raise LegacyCutoverConflict(
+                    f"sealed namespace root {root} is not a {REPOSITORY_NAMESPACE_DIR} "
+                    f"directory; {remedy}"
+                )
+            if not root.parent.is_dir():
+                # The repository itself is gone, so no train can run in it and
+                # there is nothing to lock.  Refuse now, never unlocked, with the
+                # remedy for this path: a resume must not be told to re-probe.
+                raise LegacyCutoverConflict(
+                    f"sealed inventory row for {row['canonical_repository_identity']} "
+                    f"names pruned worktree {row['worktree']} and its repository "
+                    f"common dir {root.parent} is gone"
+                    + ("" if resuming else " before its first apply")
+                    + f"; {remedy}"
+                )
+            try:
+                _require_no_ancestor_symlink(root)
+                root.mkdir(exist_ok=True)
+                descriptor = os.open(
+                    path,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                    0o666,
+                )
+            except OSError as error:
+                raise LegacyCutoverConflict(
+                    f"cannot open the run-train writer lock {path}: {error}; {remedy}"
+                ) from error
+            stack.callback(os.close, descriptor)
+            try:
+                status = os.fstat(descriptor)
+            except OSError as error:
+                raise LegacyCutoverConflict(
+                    f"cannot stat the run-train writer lock {path}: {error}"
+                ) from error
+            if not (
+                stat.S_ISREG(status.st_mode)
+                and status.st_nlink == 1
+                and status.st_uid == os.getuid()
+            ):
+                raise LegacyCutoverConflict(
+                    f"run-train writer lock {path} is not a singly linked regular file "
+                    "owned by the operator"
+                )
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    raise LegacyCutoverConflict(
+                        f"a run-train or another bootstrap apply holds the writer lock "
+                        f"{path}; wait for it to finish, then re-run apply"
+                    ) from error
+                raise LegacyCutoverConflict(
+                    f"cannot lock the run-train writer lock {path}: {error}"
+                ) from error
+        yield frozenset(rows)
+
+
 def _classify_repository_namespace(
     snapshot: RepositorySnapshot,
     cutover_id: str,
     *,
     bootstrap_inventory_sha256: str | None = None,
 ) -> dict:
-    root = snapshot.namespace_root
-    files = _tree_file_inventory(root)
-    # Bootstrap ownership is a property of the CONTAINER receipt; the generation
-    # pointer is deliberately not resolved here so one repository's unroutable
-    # pointer never turns its siblings' re-validation into a host-wide refusal.
-    container = snapshot.container
-    if not root.exists():
-        state = "absent"
-    elif (container / RECEIPT_FILENAME).exists():
-        receipt = load_partition_receipt(container)
-        bootstrap_claim = (
-            _receipt_bootstrap_claim(receipt) if receipt is not None else None
-        )
+    dir_fd = _open_namespace_root(snapshot)
+    try:
+        root = snapshot.namespace_root
+        writer_lock = root / RUN_TRAIN_WRITER_LOCK
+        lock_status = _lock_status_in(dir_fd) if dir_fd is not None else None
         if (
-            receipt is None
-            or not receipt.zero_source
-            or receipt.cutover_id != cutover_id
-            or bootstrap_inventory_sha256 is None
-            or bootstrap_claim is None
-            or bootstrap_claim["inventory_sha256"] != bootstrap_inventory_sha256
+            lock_status is not None
+            and not os.path.lexists(snapshot.container / RECEIPT_FILENAME)
+            and not _is_lock_residue_status(lock_status)
         ):
-            raise LegacyCutoverConflict(
-                f"repository {snapshot.identity} has a receipt not owned by bootstrap "
-                f"{cutover_id!r}"
+            # Name the impostor before the tree walk refuses it generically.
+            _refuse_lock_impostor(snapshot, writer_lock, lock_status)
+        files = _drop_run_train_lock_residue(dir_fd, _tree_file_inventory(root))
+        # Bootstrap ownership is a property of the CONTAINER receipt; the generation
+        # pointer is deliberately not resolved here so one repository's unroutable
+        # pointer never turns its siblings' re-validation into a host-wide refusal.
+        container = snapshot.container
+        if _namespace_holds_nothing(dir_fd, files):
+            state = "absent"
+        elif (container / RECEIPT_FILENAME).exists():
+            receipt = load_partition_receipt(container)
+            bootstrap_claim = (
+                _receipt_bootstrap_claim(receipt) if receipt is not None else None
             )
-        state = "bootstrap_owned"
-    else:
-        allowed = {"writer-generation.json", "writer-generation.lock"}
-        onboarding = root / "zero-legacy-onboarding"
-        inventory_path = onboarding / f"{cutover_id}.inventory.json"
-        journal_path = onboarding / f"{cutover_id}.journal.jsonl"
-        partial_paths = {
-            str(inventory_path.relative_to(root)),
-            str(journal_path.relative_to(root)),
-            str((onboarding / "cutover.lock").relative_to(root)),
-        }
-        allowed.update(partial_paths)
-        unexpected = [
-            item["path"]
-            for item in files
-            if item["path"] not in allowed
-            and not _is_onboarding_atomic_temp(item["path"], snapshot, cutover_id)
-        ]
-        if unexpected:
-            raise LegacyCutoverConflict(
-                f"unattested canonical state for {snapshot.identity}: {unexpected}"
-            )
-        if inventory_path.exists():
-            sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
-            if _inventory_digest(sealed) != sealed.get("inventory_sha256"):
-                raise LegacyCutoverConflict(
-                    f"interrupted onboarding inventory drifted for {snapshot.identity}"
-                )
-            partition = sealed.get("partitions", {}).get(snapshot.identity)
             if (
-                partition is None
-                or not partition.get("zero_source")
-                or Path(partition.get("target_namespace", "")) != container
-                or not _recorded_worktree_binds(partition.get("worktree", ""), snapshot)
-                or _partition_map_digest(sealed.get("partitions", {}))
-                != sealed.get("partition_map_sha256")
+                receipt is None
+                or not receipt.zero_source
+                or receipt.cutover_id != cutover_id
+                or bootstrap_inventory_sha256 is None
+                or bootstrap_claim is None
+                or bootstrap_claim["inventory_sha256"] != bootstrap_inventory_sha256
             ):
                 raise LegacyCutoverConflict(
-                    f"interrupted onboarding inventory is not bound to {snapshot.identity} "
-                    f"(recorded worktree {(partition or {}).get('worktree', '')!r}, "
-                    f"observed worktree {str(snapshot.worktree)!r})"
+                    f"repository {snapshot.identity} has a receipt not owned by bootstrap "
+                    f"{cutover_id!r}"
                 )
-            if journal_path.exists():
-                states, ids = _journal_entries(journal_path)
-                expected = LegacyBrokerCutoverTransaction.JOURNAL_STATES[:-1]
-                if set(ids) != {cutover_id} or tuple(states) != expected[: len(states)]:
-                    raise LegacyCutoverConflict(
-                        f"interrupted onboarding journal is not a valid prefix for {cutover_id!r}"
-                    )
-            state = "bootstrap_in_progress"
-        elif journal_path.exists():
-            raise LegacyCutoverConflict(
-                f"interrupted onboarding journal has no sealed inventory for {snapshot.identity}"
-            )
+            state = "bootstrap_owned"
         else:
-            state = None
-        latch_path = root / "writer-generation.json"
-        if latch_path.exists():
-            raw = json.loads(latch_path.read_text(encoding="utf-8"))
-            if raw.get("schema") != "WriterGenerationLatch.v1" or raw.get(
-                "generation_state"
-            ) not in {"LEGACY_OPEN", "DRAINING"}:
+            # Backstop for an impostor that appeared after the pre-check.
+            lock_status = _lock_status_in(dir_fd)
+            if lock_status is not None and not _is_lock_residue_status(lock_status):
+                _refuse_lock_impostor(snapshot, writer_lock, lock_status)
+            allowed = {"writer-generation.json", "writer-generation.lock"}
+            onboarding = root / "zero-legacy-onboarding"
+            inventory_path = onboarding / f"{cutover_id}.inventory.json"
+            journal_path = onboarding / f"{cutover_id}.journal.jsonl"
+            partial_paths = {
+                str(inventory_path.relative_to(root)),
+                str(journal_path.relative_to(root)),
+                str((onboarding / "cutover.lock").relative_to(root)),
+            }
+            allowed.update(partial_paths)
+            unexpected = [
+                item["path"]
+                for item in files
+                if item["path"] not in allowed
+                and not _is_onboarding_atomic_temp(item["path"], snapshot, cutover_id)
+            ]
+            if unexpected:
                 raise LegacyCutoverConflict(
-                    f"repository {snapshot.identity} does not have a pristine bootstrap latch"
+                    f"unattested canonical state for {snapshot.identity}: {unexpected}"
                 )
-            if (root / "generation-leases").exists() and any(
-                (root / "generation-leases").iterdir()
-            ):
+            if inventory_path.exists():
+                sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
+                if _inventory_digest(sealed) != sealed.get("inventory_sha256"):
+                    raise LegacyCutoverConflict(
+                        f"interrupted onboarding inventory drifted for {snapshot.identity}"
+                    )
+                partition = sealed.get("partitions", {}).get(snapshot.identity)
+                if (
+                    partition is None
+                    or not partition.get("zero_source")
+                    or Path(partition.get("target_namespace", "")) != container
+                    or not _recorded_worktree_binds(partition.get("worktree", ""), snapshot)
+                    or _partition_map_digest(sealed.get("partitions", {}))
+                    != sealed.get("partition_map_sha256")
+                ):
+                    raise LegacyCutoverConflict(
+                        f"interrupted onboarding inventory is not bound to {snapshot.identity} "
+                        f"(recorded worktree {(partition or {}).get('worktree', '')!r}, "
+                        f"observed worktree {str(snapshot.worktree)!r})"
+                    )
+                if journal_path.exists():
+                    states, ids = _journal_entries(journal_path)
+                    expected = LegacyBrokerCutoverTransaction.JOURNAL_STATES[:-1]
+                    if set(ids) != {cutover_id} or tuple(states) != expected[: len(states)]:
+                        raise LegacyCutoverConflict(
+                            f"interrupted onboarding journal is not a valid prefix for {cutover_id!r}"
+                        )
+                state = "bootstrap_in_progress"
+            elif journal_path.exists():
                 raise LegacyCutoverConflict(
-                    f"repository {snapshot.identity} has held generation leases"
+                    f"interrupted onboarding journal has no sealed inventory for {snapshot.identity}"
                 )
-            if state is None:
-                state = "initialized_latch"
-        elif state is None:
-            state = "empty"
-    return {
-        "worktree": str(snapshot.worktree),
-        "canonical_repository_identity": snapshot.identity,
-        "namespace_root": str(root),
-        "classification": state,
-        "files": files,
-    }
+            else:
+                state = None
+            latch_path = root / "writer-generation.json"
+            if latch_path.exists():
+                raw = json.loads(latch_path.read_text(encoding="utf-8"))
+                if raw.get("schema") != "WriterGenerationLatch.v1" or raw.get(
+                    "generation_state"
+                ) not in {"LEGACY_OPEN", "DRAINING"}:
+                    raise LegacyCutoverConflict(
+                        f"repository {snapshot.identity} does not have a pristine bootstrap latch"
+                    )
+                if (root / "generation-leases").exists() and any(
+                    (root / "generation-leases").iterdir()
+                ):
+                    raise LegacyCutoverConflict(
+                        f"repository {snapshot.identity} has held generation leases"
+                    )
+                if state is None:
+                    state = "initialized_latch"
+            elif state is None:
+                state = "empty"
+        _require_same_namespace_root(snapshot, dir_fd)
+        return {
+            "worktree": str(snapshot.worktree),
+            "canonical_repository_identity": snapshot.identity,
+            "namespace_root": str(root),
+            "classification": state,
+            "files": files,
+        }
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _validate_historical_evidence_root(root: Path) -> dict:
@@ -3286,85 +3576,93 @@ def bootstrap_zero_history_authority(
     cutover_id = str(inventory["cutover_id"])
     authority = _canonical_input_path(inventory["authority_root"], label="authority root")
     stored_path, journal, pointer = _bootstrap_paths(authority, cutover_id)
-    lock = authority / "bootstrap.lock"
-    with _reentrant_flock(lock):
-        if stored_path.exists():
-            stored = json.loads(stored_path.read_text(encoding="utf-8"))
-            if stored != inventory:
-                raise LegacyCutoverConflict(
-                    "bootstrap resume inventory differs from the sealed authority inventory"
-                )
-            _revalidate_bootstrap_sources(inventory)
-        else:
-            # Nothing durable exists before the first apply's re-probe, so a
-            # pruned row is re-probed rather than resolved through the fallback.
-            for row in inventory["worktrees"]:
-                recorded = Path(row["worktree"])
-                if not _path_discovers_repository(recorded):
+    with _exclude_live_run_trains(inventory, resuming=stored_path.exists()) as held_roots:
+        lock = authority / "bootstrap.lock"
+        with _reentrant_flock(lock):
+            if stored_path.exists():
+                stored = json.loads(stored_path.read_text(encoding="utf-8"))
+                if stored != inventory:
                     raise LegacyCutoverConflict(
-                        f"sealed inventory row for {row['canonical_repository_identity']} "
-                        f"names pruned worktree {row['worktree']} before its first apply; "
-                        "re-run the zero-history probe"
+                        "bootstrap resume inventory differs from the sealed authority inventory"
                     )
-            reprobe = probe_zero_history_bootstrap(
+                _revalidate_bootstrap_sources(inventory)
+            else:
+                # Nothing durable exists before the first apply's re-probe, so a
+                # pruned row is re-probed rather than resolved through the fallback.
+                for row in inventory["worktrees"]:
+                    recorded = Path(row["worktree"])
+                    if not _path_discovers_repository(recorded):
+                        raise LegacyCutoverConflict(
+                            f"sealed inventory row for {row['canonical_repository_identity']} "
+                            f"names pruned worktree {row['worktree']} before its first apply; "
+                            "re-run the zero-history probe"
+                        )
+                reprobe = probe_zero_history_bootstrap(
+                    cutover_id=cutover_id,
+                    authority_root=authority,
+                    worktrees=[row["worktree"] for row in inventory["worktrees"]],
+                    legacy_roots=[row["path"] for row in inventory["legacy_roots"]],
+                    historical_evidence_roots=[
+                        row["path"] for row in inventory["historical_evidence_roots"]
+                    ],
+                    search_roots=inventory["search_roots"],
+                )
+                if reprobe != inventory:
+                    raise LegacyCutoverConflict(
+                        "zero-history source inventory changed between probe and apply"
+                    )
+                _atomic_write_json(stored_path, inventory)
+            _record_bootstrap_state(journal, cutover_id, "DRAINING")
+
+        worktrees = tuple(_inventory_row_repository(row) for row in inventory["worktrees"])
+        for worktree in worktrees:
+            if repository_namespace_root(worktree).resolve() not in held_roots:
+                raise LegacyCutoverConflict(
+                    f"repository {worktree} no longer resolves to a sealed namespace whose "
+                    "run-train writer lock this apply holds; restore the repository at its "
+                    "sealed location, then re-run apply with the same inventory"
+                )
+        latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
+        for latch in latches:
+            if latch.read().generation_state == "LEGACY_OPEN":
+                latch.begin_draining()
+        for latch, worktree in zip(latches, worktrees):
+            if latch.read().generation_state == "DRAINING":
+                latch.await_quiescent(worktree=worktree)
+
+        with _hold_all(_bootstrap_seal_lock_paths(inventory)):
+            _revalidate_bootstrap_sources(inventory)
+            _record_bootstrap_state(journal, cutover_id, "INVENTORY_SEALED")
+            _record_bootstrap_state(journal, cutover_id, "ARMED")
+            _record_bootstrap_state(journal, cutover_id, "ACTIVE")
+            claim = {
+                "schema": "ZeroHistoryBootstrapAuthority.v1",
+                "cutover_id": cutover_id,
+                "inventory_sha256": inventory["inventory_sha256"],
+            }
+            if pointer.exists():
+                if json.loads(pointer.read_text(encoding="utf-8")) != claim:
+                    raise LegacyCutoverConflict("another zero-history bootstrap owns the authority")
+            else:
+                _atomic_write_json(pointer, claim)
+
+        receipts = []
+        for worktree, row in zip(worktrees, inventory["worktrees"]):
+            receipt = onboard_zero_legacy_repository(
+                worktree,
                 cutover_id=cutover_id,
                 authority_root=authority,
-                worktrees=[row["worktree"] for row in inventory["worktrees"]],
-                legacy_roots=[row["path"] for row in inventory["legacy_roots"]],
-                historical_evidence_roots=[
-                    row["path"] for row in inventory["historical_evidence_roots"]
-                ],
-                search_roots=inventory["search_roots"],
+                recorded_worktree=row["worktree"],
             )
-            if reprobe != inventory:
-                raise LegacyCutoverConflict(
-                    "zero-history source inventory changed between probe and apply"
-                )
-            _atomic_write_json(stored_path, inventory)
-        _record_bootstrap_state(journal, cutover_id, "DRAINING")
-
-    worktrees = tuple(_inventory_row_repository(row) for row in inventory["worktrees"])
-    latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
-    for latch in latches:
-        if latch.read().generation_state == "LEGACY_OPEN":
-            latch.begin_draining()
-    for latch, worktree in zip(latches, worktrees):
-        if latch.read().generation_state == "DRAINING":
-            latch.await_quiescent(worktree=worktree)
-
-    with _hold_all(_bootstrap_seal_lock_paths(inventory)):
-        _revalidate_bootstrap_sources(inventory)
-        _record_bootstrap_state(journal, cutover_id, "INVENTORY_SEALED")
-        _record_bootstrap_state(journal, cutover_id, "ARMED")
-        _record_bootstrap_state(journal, cutover_id, "ACTIVE")
-        claim = {
-            "schema": "ZeroHistoryBootstrapAuthority.v1",
+            receipts.append(receipt.canonical_repository_identity)
+        return {
+            "schema": "ZeroHistoryBootstrapResult.v1",
             "cutover_id": cutover_id,
+            "authority_root": str(authority),
+            "state": "ACTIVE",
             "inventory_sha256": inventory["inventory_sha256"],
+            "repositories": receipts,
         }
-        if pointer.exists():
-            if json.loads(pointer.read_text(encoding="utf-8")) != claim:
-                raise LegacyCutoverConflict("another zero-history bootstrap owns the authority")
-        else:
-            _atomic_write_json(pointer, claim)
-
-    receipts = []
-    for worktree, row in zip(worktrees, inventory["worktrees"]):
-        receipt = onboard_zero_legacy_repository(
-            worktree,
-            cutover_id=cutover_id,
-            authority_root=authority,
-            recorded_worktree=row["worktree"],
-        )
-        receipts.append(receipt.canonical_repository_identity)
-    return {
-        "schema": "ZeroHistoryBootstrapResult.v1",
-        "cutover_id": cutover_id,
-        "authority_root": str(authority),
-        "state": "ACTIVE",
-        "inventory_sha256": inventory["inventory_sha256"],
-        "repositories": receipts,
-    }
 
 ONBOARDING_SEAL_BOUNDARIES = (
     "before_zero_source_proof",
