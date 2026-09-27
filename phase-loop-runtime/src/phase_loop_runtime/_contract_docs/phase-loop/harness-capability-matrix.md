@@ -426,10 +426,14 @@ Binding and observer:
 - Why a nonce: `claude --bg` prints only a short session id. This comes from reading the
   2.1.283 CLI source, not from a live run. Each launch therefore appends a fresh
   `phase-loop-launch-nonce: <uuid4>` line to the prompt it delivers.
-- What binds: a listed session is this launch's only if its own transcript's first user
-  turn carries that nonce.
-  - A candidate without it is excluded as another session.
-  - A candidate whose transcript is not readable yet stays unproven.
+- What binds: a listed session is this launch's only if the opening user turn of its own
+  transcript carries that nonce.
+  - The opening turn is the user records up to the first assistant record, with `isMeta`
+    records skipped, so a preamble before the prompt does not hide the nonce.
+  - A candidate whose opening turn is closed without the nonce is excluded as another
+    session.
+  - A candidate that cannot be read, whose turn is not closed yet, or whose record shape
+    is unrecognized stays unproven. It is never excluded for those reasons.
   - Success re-checks the nonce before any final message is read.
 - Pre-filters: sessions listed before the launch (snapshotted, 3 attempts) never match, and
   candidates must be in the launch cwd (realpath). Both apply only until the full id is
@@ -439,13 +443,24 @@ Binding and observer:
   - 12 successful listings with no candidate (counted from launch; seeing one resets the
     count; listing errors neither add to nor reset it);
   - 60 consecutive `claude agents` failures;
-  - 12 unproven sightings (`agent_view_binding_unverifiable`);
-  - an ambiguous id.
-  
+  - 12 unproven sightings in total (`agent_view_binding_unverifiable`), counted
+    cumulatively across candidates;
+  - an ambiguous id. Ambiguity is checked before the nonce, so if an impostor and our
+    session first appear in the same poll, the launch also fails closed.
+
   The blocker names the attach/stop commands.
-- Unverified live: that the CLI records the delivered prompt as the session's first user
-  turn. If it does not, our own session stays unproven and the launch fails closed; it
+- Unverified live, on the agent-harness#1099 proof checklist:
+  - `claude --bg` records the delivered prompt in the opening user turn of the transcript
+    this code reads;
+  - it writes that turn before the first model response, and within about 12 polls of the
+    session first appearing in `claude agents`.
+
+  If either fails, our own session is never proven. It is either unproven until the
+  12-sighting rule fails the launch closed, or, if the opening turn closes without the
+  nonce, excluded until the missing-record rule fails it closed. Either way the launch
   never reports another session.
+- Only a pinned, nonce-proven session is ever stopped, and only on an operator timeout.
+  An unproven candidate is left running, with the attach/stop hint.
 
 Settings principle: the Agent View route honors the operator's own Claude
 settings and workspace trust as-is. It inherits the operator's environment

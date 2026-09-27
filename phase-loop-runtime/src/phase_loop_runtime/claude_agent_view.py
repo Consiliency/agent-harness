@@ -494,9 +494,10 @@ class ClaudeAgentViewAdapter:
         AGENT_VIEW_OBSERVER_FAILURE_LIMIT successful listings show no candidate (counted
         from launch, so polls before registration count; seeing a candidate resets it;
         a listing error neither adds to nor resets it); AGENT_VIEW_LISTING_ERROR_LIMIT
-        consecutive `claude agents` failures; a candidate stays unproven for
-        AGENT_VIEW_OBSERVER_FAILURE_LIMIT sightings, or is refused
-        (`agent_view_binding_unverifiable`); or the printed id is ambiguous. The result
+        consecutive `claude agents` failures; AGENT_VIEW_OBSERVER_FAILURE_LIMIT unproven
+        sightings in total (cumulative across candidates, never reset), or a refusal
+        (`agent_view_binding_unverifiable`); or the printed id is ambiguous (checked before
+        the nonce, so an impostor and ours first listed in the same poll also fail closed). The result
         then names the printed or pinned id with its attach/stop commands.
         """
         started = clock()
@@ -532,7 +533,7 @@ class ClaudeAgentViewAdapter:
                         if on_poll is not None:
                             on_poll(None)
                         if timeout_s is not None and clock() - started >= timeout_s:
-                            return _timeout_lifecycle(bound, None, cwd, timeout_s)
+                            return _timeout_lifecycle(bound, None, cwd, timeout_s, verified=False)
                         sleep(poll_interval_s)
                         continue
             if on_poll is not None:
@@ -570,7 +571,7 @@ class ClaudeAgentViewAdapter:
                         ),
                     )
             if timeout_s is not None and clock() - started >= timeout_s:
-                return _timeout_lifecycle(bound, session, cwd, timeout_s)
+                return _timeout_lifecycle(bound, session, cwd, timeout_s, verified=verified)
             sleep(poll_interval_s)
 
     def _resolve_printed(
@@ -596,12 +597,17 @@ class ClaudeAgentViewAdapter:
                 if candidate.state in _TERMINAL_AT_FIRST_SIGHT:
                     return "unverifiable", candidate
                 return "verified", candidate
-            proof = self.launch_proof(_session_key(candidate), cwd=cwd, nonce=nonce)
+            key = candidate.session_id
+            if not key or key in exclude:
+                # The proof needs the full session id, and an excluded candidate must
+                # never be re-examined: stay unproven rather than loop (terminates).
+                return "unproven", candidate
+            proof = self.launch_proof(key, cwd=cwd, nonce=nonce)
             if proof is True:
                 return "verified", candidate
             if proof is None:
                 return "unproven", candidate
-            exclude.add(_session_key(candidate))
+            exclude.add(key)
 
     def launch_proof(self, session_id: str, *, cwd: str | Path | None, nonce: str) -> bool | None:
         """True if the session's own first user turn carries `nonce`, False if it does
@@ -619,10 +625,7 @@ class ClaudeAgentViewAdapter:
             return None
         if path is None:
             return None
-        first_user = _first_user_text(path)
-        if first_user is None:
-            return None
-        return f"{AGENT_VIEW_NONCE_PREFIX}{nonce}" in first_user
+        return _first_turn_carries(path, f"{AGENT_VIEW_NONCE_PREFIX}{nonce}")
 
     def final_text(self, session_id: str, *, cwd: str | Path) -> str:
         """The session's final assistant message from its local transcript, or "".
@@ -970,9 +973,13 @@ def _unverifiable_lifecycle(
 
 
 def _timeout_lifecycle(
-    bound: str, session: AgentViewSession | None, cwd: str | Path | None, timeout_s: float
+    bound: str, session: AgentViewSession | None, cwd: str | Path | None, timeout_s: float, *, verified: bool
 ) -> AgentViewLifecycleResult:
-    return _lifecycle_from_parts(
+    hint = "" if verified else (
+        f" It was never proven to be this launch's session, so it is not stopped: find it with "
+        f"`claude agents` and inspect or stop it with `claude attach <id>` / `claude stop <id>`."
+    )
+    lifecycle = _lifecycle_from_parts(
         session_id=(_session_key(session) or bound) if session else bound,
         state="unknown",
         cwd=str(cwd) if cwd is not None else None,
@@ -981,9 +988,10 @@ def _timeout_lifecycle(
         stop_result=None,
         blocker=BlockerSummary(
             "agent_view_launch_timeout",
-            f"Agent View session did not finish within the configured launch timeout ({timeout_s:g}s).",
+            f"Agent View session did not finish within the configured launch timeout ({timeout_s:g}s).{hint}",
         ),
     )
+    return replace(lifecycle, binding_verified=verified)
 
 
 def _find_pinned_session(sessions: tuple[AgentViewSession, ...], full_id: str) -> AgentViewSession | None:
@@ -994,30 +1002,47 @@ def _find_pinned_session(sessions: tuple[AgentViewSession, ...], full_id: str) -
     return None
 
 
-def _first_user_text(path: Path) -> str | None:
-    """Text of the transcript's first user record, or None if there is none yet."""
+def _first_turn_carries(path: Path, needle: str) -> bool | None:
+    """Whether the transcript's opening user turn carries `needle`.
+
+    Scans user records up to the first assistant record, skipping `isMeta` records
+    (preambles and hook-injected context can precede the prompt). True as soon as a
+    user record carries the needle. False only once an assistant record has closed the
+    opening turn without it, and every user record seen had a recognized shape. None
+    (unproven, never excluded) when the transcript is unreadable, the turn is not
+    closed yet, or a record's shape is not recognized.
+    """
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
+    unrecognized = False
     for line in lines:
         try:
             record = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(record, dict) or record.get("type") != "user":
+        if not isinstance(record, dict):
+            continue
+        kind = record.get("type")
+        if kind == "assistant":
+            return None if unrecognized else False
+        if kind != "user" or record.get("isMeta"):
             continue
         message = record.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return "\n".join(
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
                 item.get("text", "") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str)
             )
-        return ""
+        else:
+            unrecognized = True
+            continue
+        if needle in text:
+            return True
     return None
-
 
 def _find_bound_session(
     sessions: tuple[AgentViewSession, ...],

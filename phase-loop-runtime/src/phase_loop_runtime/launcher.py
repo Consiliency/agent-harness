@@ -2376,13 +2376,21 @@ def _launch_claude_agent_view(
             on_poll=_heartbeat,
         )
         timed_out = lifecycle.blocker is not None and lifecycle.blocker.reason == "agent_view_launch_timeout"
-        if timed_out:
+        if timed_out and lifecycle.binding_verified:
+            # Only a pinned, nonce-proven full id is ever stopped; an unproven candidate
+            # is left running like the other early exits (its blocker says how to act).
             adapter.stop(lifecycle.session_id, cwd=cwd)
     final_text = ""
     blocker = lifecycle.blocker
     if lifecycle.state == "done" and blocker is None:
-        if adapter.launch_proof(lifecycle.session_id, cwd=cwd, nonce=launch_nonce) is not True:
-            # Belt and braces: never reduce a transcript that does not carry this nonce.
+        proof = adapter.launch_proof(lifecycle.session_id, cwd=cwd, nonce=launch_nonce)
+        # Belt and braces: never reduce a transcript that does not carry this nonce.
+        if proof is None:
+            blocker = BlockerSummary(
+                "agent_view_transcript_missing",
+                "Agent View session finished but its transcript could not be read to confirm this launch's nonce.",
+            )
+        elif proof is False:
             blocker = BlockerSummary(
                 "agent_view_binding_unverifiable",
                 "The finished session's transcript does not carry this launch's nonce, so it is not reported.",

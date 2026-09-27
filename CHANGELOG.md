@@ -14,9 +14,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Binding.** `claude --bg` prints only a short session id (read from the 2.1.283 CLI
   source, not observed live). The launch therefore proves identity with a per-launch nonce:
   a fresh `phase-loop-launch-nonce: <uuid4>` line appended to the prompt it delivers.
-  - A listed session is this launch's only if its own transcript's first user turn carries
-    that nonce. One without it is excluded as some other session; one whose transcript is
-    not readable yet stays unproven.
+  - A listed session is this launch's only if the opening user turn of its own transcript
+    carries that nonce. The opening turn is the user records up to the first assistant
+    record, with `isMeta` records skipped.
+  - A session whose opening turn closes without the nonce is excluded as some other
+    session. One that is unreadable, still open, or of an unrecognized shape stays
+    unproven and is never excluded.
   - Nothing is reduced without the nonce: success re-checks it before the final message is
     read.
   - Pre-filters: only the CLI's own launch forms are parsed (ANSI stripped). Sessions
@@ -30,11 +33,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - 12 successful listings with no candidate, counted from launch. Seeing one resets the
     count; a listing error neither adds to nor resets it.
   - 60 consecutive `claude agents` failures.
-  - A candidate unproven for 12 sightings (`agent_view_binding_unverifiable`).
-  - An ambiguous id.
-  
+  - 12 unproven sightings in total, counted across candidates
+    (`agent_view_binding_unverifiable`).
+  - An ambiguous id, which is checked before the nonce.
+  - An operator timeout. Only a pinned, nonce-proven session is ever stopped; any other is
+    left running with the attach/stop hint.
+
   The blocker names the printed or pinned id and says the session may still be running,
   with the attach/stop commands.
+- **Not yet proven live** (agent-harness#1099 checklist): `claude --bg` must write the prompt
+  in the opening user turn before the first model response, within about 12 polls of the
+  session appearing. Otherwise the launch fails closed.
 - **Result.** Only a `done` session whose final assistant message is read from its transcript
   succeeds, and that message is the launch output. A session waiting for input (`blocked`)
   fails closed and is left attachable.

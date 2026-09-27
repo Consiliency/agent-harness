@@ -68,6 +68,12 @@ def _listing_runner(listings, *, launch_stdout=None, calls=None):
     return run
 
 
+def _session_from(record):
+    from phase_loop_runtime.claude_agent_view import _session_from_payload
+
+    return _session_from_payload(record)
+
+
 class _Clock:
     def __init__(self, step):
         self.now = 0.0
@@ -303,6 +309,19 @@ class WaitForTerminalTest(unittest.TestCase):
         lifecycle, _ = self._wait(listings)
         self.assertEqual(lifecycle.state, "done")
 
+    def test_timeout_before_proof_reports_unverified_with_a_hint(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clock = _Clock(step=5.0)
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner([[_record("working")]]), projects_root=Path(tmp.name))
+        with mock.patch("phase_loop_runtime.panel_invoker._claude_project_dir_for_cwd", return_value=Path(tmp.name) / "x"):
+            lifecycle = adapter.wait_for_terminal(
+                ASSIGNED[:8], cwd="/repo", nonce="n", timeout_s=12.0, sleep=clock.sleep, clock=clock
+            )
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_timeout")
+        self.assertFalse(lifecycle.binding_verified)
+        self.assertIn("not stopped", lifecycle.blocker.summary)
+
     def test_explicit_timeout_is_honored(self):
         lifecycle, _ = self._wait([[_record("working")]], timeout_s=12.0)
         self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_timeout")
@@ -336,8 +355,12 @@ class AmbiguousBindingTest(unittest.TestCase):
         for sid, first_user in (transcripts or {}).items():
             path = root / "-some-project" / f"{sid}.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"type": "user", "uuid": "u1", "message": {"role": "user", "content": first_user}}) + "\n",
-                            encoding="utf-8")
+            # A closed opening turn: the user prompt, then the first assistant record.
+            path.write_text(
+                json.dumps({"type": "user", "uuid": "u1", "message": {"role": "user", "content": first_user}}) + "\n"
+                + json.dumps({"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": []}}) + "\n",
+                encoding="utf-8",
+            )
         adapter = ClaudeAgentViewAdapter(runner=_listing_runner(listings), projects_root=root, sleep=lambda s: None)
         with mock.patch("phase_loop_runtime.claude_agent_view.shutil.which", return_value="/usr/bin/claude"), \
                 mock.patch("phase_loop_runtime.claude_agent_view.workspace_folder_trust", return_value="trusted"), \
@@ -416,6 +439,30 @@ class AmbiguousBindingTest(unittest.TestCase):
         self.assertEqual(waited.state, "done")
         self.assertEqual(waited.session_id, ASSIGNED)
         self.assertIsNone(waited.blocker)
+
+    def test_a_transcript_that_appears_after_unproven_polls_then_verifies(self):
+        # The proof is re-tried on every sighting; it succeeds once the transcript lands.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        clock = _Clock(step=5.0)
+        path = root / "-p" / f"{ASSIGNED}.jsonl"
+        sightings = []
+
+        def on_poll(session):
+            sightings.append(session)
+            if len(sightings) == 3:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"type": "user", "message": {"role": "user",
+                                "content": f"go\nphase-loop-launch-nonce: {self.NONCE}"}}) + "\n", encoding="utf-8")
+
+        listings = [[_record("working")]] * 4 + [[_record("done")]]
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner(listings), projects_root=root)
+        with mock.patch("phase_loop_runtime.panel_invoker._claude_project_dir_for_cwd", return_value=root / "absent"):
+            waited = adapter.wait_for_terminal(ASSIGNED[:8], cwd="/repo", nonce=self.NONCE, on_poll=on_poll,
+                                               sleep=clock.sleep, clock=clock, timeout_s=86400.0)
+        self.assertEqual(waited.state, "done")
+        self.assertEqual(waited.session_id, ASSIGNED)
 
     def test_an_unreadable_transcript_stays_unproven_then_fails_closed(self):
         launched, waited = self._launch_then_wait([[], [_record("working")]], nonce=self.NONCE, transcripts={})
@@ -592,6 +639,84 @@ class RealTranscriptReadTest(unittest.TestCase):
                                                 "content": [{"type": "text", "text": "old answer"}]}}
         records = [old, {"type": "user", "uuid": "u2", "message": {"role": "user", "content": "again"}}, old]
         self.assertEqual(self._run(records), "")
+
+
+class FirstTurnProofTest(unittest.TestCase):
+    """Round 5 (claude b): the nonce proof scans the opening user turn robustly."""
+
+    NEEDLE = "phase-loop-launch-nonce: abc"
+
+    def _proof(self, records):
+        from phase_loop_runtime.claude_agent_view import _first_turn_carries
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in records), encoding="utf-8")
+            return _first_turn_carries(path, self.NEEDLE)
+
+    def _user(self, content, **extra):
+        return {"type": "user", "message": {"role": "user", "content": content}, **extra}
+
+    ASSISTANT = {"type": "assistant", "message": {"role": "assistant", "content": []}}
+
+    def test_is_meta_preamble_before_the_prompt_is_skipped(self):
+        self.assertTrue(self._proof([self._user("hook context", isMeta=True), self._user(f"task\n{self.NEEDLE}"), self.ASSISTANT]))
+
+    def test_an_is_meta_record_never_makes_the_proof_indeterminate(self):
+        # A skipped meta record's shape does not matter: a closed turn without the nonce
+        # is still a definite "not ours", so that session is excluded.
+        records = [self._user({"hook": "payload"}, isMeta=True), self._user("other task"), self.ASSISTANT]
+        self.assertIs(self._proof(records), False)
+
+    def test_a_non_meta_preamble_before_the_prompt_is_scanned_past(self):
+        self.assertTrue(self._proof([self._user("injected note"), self._user(f"task\n{self.NEEDLE}"), self.ASSISTANT]))
+
+    def test_list_content_and_leading_non_user_records(self):
+        records = [{"type": "system", "subtype": "init"}, "not json",
+                   self._user([{"type": "text", "text": f"task {self.NEEDLE}"}]), self.ASSISTANT]
+        self.assertTrue(self._proof(records))
+
+    def test_closed_turn_without_the_nonce_is_false(self):
+        self.assertIs(self._proof([self._user("other task"), self.ASSISTANT]), False)
+
+    def test_unrecognized_shape_is_unproven_not_excluded(self):
+        self.assertIsNone(self._proof([self._user({"weird": "shape"}), self.ASSISTANT]))
+
+    def test_an_open_turn_is_unproven(self):
+        self.assertIsNone(self._proof([self._user("preamble only so far")]))
+        self.assertIsNone(self._proof([]))
+
+    def test_the_nonce_after_the_first_assistant_record_does_not_count(self):
+        self.assertIs(self._proof([self._user("other"), self.ASSISTANT, self._user(self.NEEDLE)]), False)
+
+
+class ResolverTerminationTest(unittest.TestCase):
+    """Round 5 (claude e): _resolve_printed cannot spin."""
+
+    def test_a_candidate_without_a_full_id_is_unproven_and_never_proven(self):
+        adapter = ClaudeAgentViewAdapter(runner=mock.Mock())
+        adapter.launch_proof = mock.Mock(side_effect=AssertionError("proof needs a full id"))
+        short_only = _session_from(dict(_record("working"), sessionId=None))
+        status, _ = adapter._resolve_printed((short_only,), ASSIGNED[:8], exclude=set(), cwd="/repo", nonce="n")
+        self.assertEqual(status, "unproven")
+
+    def test_an_already_excluded_candidate_is_not_re_examined(self):
+        adapter = ClaudeAgentViewAdapter(runner=mock.Mock())
+        calls = []
+
+        def proof(key, **kw):
+            calls.append(key)
+            if len(calls) > 3:
+                raise AssertionError("resolver re-examined an excluded candidate (would spin)")
+            return False
+
+        adapter.launch_proof = proof
+        session = _session_from(_record("working"))
+        with mock.patch("phase_loop_runtime.claude_agent_view._find_bound_session", return_value=session):
+            status, _ = adapter._resolve_printed((session,), ASSIGNED[:8], exclude=set(), cwd="/repo", nonce="n")
+        # Proven not ours once, then (even if a buggy lookup returns it again) never re-proven.
+        self.assertEqual(status, "unproven")
+        self.assertEqual(calls, [ASSIGNED])
 
 
 class FolderTrustTest(unittest.TestCase):
@@ -873,17 +998,38 @@ class LaunchClaudeAgentViewTest(unittest.TestCase):
         self.assertIn("claude attach", result.output)
         self.assertEqual(adapter.stopped, [])
 
-    def test_operator_timeout_stops_the_session(self):
+    def _timed_out_adapter(self, *, verified):
+        from dataclasses import replace as _replace
         from phase_loop_runtime.claude_agent_view import BlockerSummary
 
         adapter = _ScriptedAdapter(
             terminal_state="unknown", blocker=BlockerSummary("agent_view_launch_timeout", "timed out")
         )
+        original = adapter._lifecycle
+        adapter._lifecycle = lambda state, blocker=None: _replace(original(state, blocker), binding_verified=verified)
+        return adapter
+
+    def test_operator_timeout_stops_a_pinned_nonce_proven_session(self):
+        adapter = self._timed_out_adapter(verified=True)
         result, _ = self._run(adapter, timeout=60)
         self.assertEqual(adapter.wait_kwargs["timeout_s"], 60.0)
         self.assertEqual(result.returncode, 1)
         self.assertTrue(result.timed_out)
         self.assertEqual(adapter.stopped, ["agent-1"])
+
+    def test_operator_timeout_leaves_an_unproven_candidate_running(self):
+        # Round 5 (claude g): never `claude stop` a session not proven to be ours.
+        adapter = self._timed_out_adapter(verified=False)
+        result, _ = self._run(adapter, timeout=60)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(adapter.stopped, [])
+
+    def test_success_recheck_distinguishes_unreadable_from_missing_nonce(self):
+        # Round 5 (claude f).
+        unreadable, _ = self._run(_ScriptedAdapter(text="x", proof=None))
+        self.assertIn("could not be read", unreadable.output)
+        missing, _ = self._run(_ScriptedAdapter(text="x", proof=False))
+        self.assertIn("does not carry this launch's nonce", missing.output)
 
 
 if __name__ == "__main__":

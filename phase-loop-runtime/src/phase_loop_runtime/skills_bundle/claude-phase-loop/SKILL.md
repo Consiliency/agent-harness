@@ -118,10 +118,10 @@ unattended runs must pass `--bypass-approvals`; without it the session inherits 
 operator's configured mode and stops at the first prompt that mode requires. Never
 fall back to the billing-sensitive print route. The route honors the operator's own
 Harness settings and workspace trust as-is: it adds no allow rules, directory grants,
-settings files, trust or implicit permission mode, so the launch refuses exactly when the operator's
-`claude` would. A folder the operator has not trusted is refused before launch with
-the fix: run `claude` in that folder once and accept the trust prompt (see
-agent-harness#1104). Manual TUI reentry and manual-import closeout remain
+settings files, trust or implicit permission mode. It never grants what the operator's
+`claude` would not, and it also refuses up front, with the fix, when the folder is not
+trusted (run `claude` in that folder once and accept the trust prompt; see
+agent-harness#1104) or when the run's context file would lie outside the workspace. Manual TUI reentry and manual-import closeout remain
 supported through `.phase-loop/` state. ThawedCode stays grouped with
 Harness only for docs and manual imports; do not claim a separate live
 ThawedCode automation contract unless a later roadmap proves it.
