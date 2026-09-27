@@ -210,7 +210,7 @@ from .governed_premerge import (
 from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs, invoke_board as _PRODUCTION_INVOKE_BOARD
 from .reconcile import reconcile
-from .redaction import apply_diagnostics_redaction
+from .redaction import STDERR_SECRET_KV_RE, apply_diagnostics_redaction
 from .review_summary import summarize_run
 from .route_log import with_route_log
 from .release_guard import (
@@ -12611,9 +12611,8 @@ def _commit_failure_closeout(
     )
 
 
-# key=value / key: value credential shape. Shared with panel_invoker's leg-detail redactor,
-# which applies it to the WHOLE multi-line text before selecting an excerpt.
-_STDERR_SECRET_KV_RE = re.compile(r"(?i)(api[_-]?key|authorization|token|secret|password)(\s*[:=]\s*)\S+")
+# key=value credential shape: shared from `redaction` (the panel leg-detail redactor uses it too).
+_STDERR_SECRET_KV_RE = STDERR_SECRET_KV_RE
 
 
 def _redacted_stderr_excerpt(text: str, max_chars: int = 500) -> str:

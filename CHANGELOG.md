@@ -216,18 +216,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in the log tail and body. This covers codex's usage banner even when codex's
   "no last agent message" warning follows it. A mislabel is cosmetic.
 - `detail` is carried on every route: direct, brokered codex/grok, and the Claude TUI seat.
-  `PanelLegResult` finalizes its own `detail` when it is constructed, so no route can store an
-  unredacted one. That covers raw exception strings, governed finding reasons and the
-  streaming verdict JSON. Finalizing is idempotent.
-- Redaction runs over the whole, uncut, multi-line text BEFORE an excerpt line is selected
-  or cut, so `Bearer\n<token>` cannot leak as a bare token. It substitutes known values:
-  the running user's home directories and names, and the seat's scratch and repo paths.
-  Paths are matched only at a path boundary, and usernames as whole `[A-Za-z0-9_]` tokens,
-  so `jdoe-codex` and `jdoe.admin` are covered. An email whose local part is the username is
-  still redacted. Known credential shapes are also redacted. Home-path shapes are no longer
-  guessed. Output is capped at 1000 characters. The Claude PTY tail (600 characters) is
-  redacted over the whole buffer before it is cut. It is single-line, as it already was on
-  main through `_redacted_stderr_excerpt`.
+  `PanelLegResult.detail` is a data descriptor that finalizes on every write, so no route can
+  store an unredacted detail. That covers `__init__`, `dataclasses.replace` and
+  `object.__setattr__`, raw exception strings, governed finding reasons and the streaming
+  verdict JSON. Finalizing is idempotent: its output is a fixed point.
+- Redaction is span-union, with no order between detectors. Escape and control characters
+  become spaces one-for-one and are never deleted, so `Bearer\t<tok>` stays two words. Every
+  detector then runs over the same normalized, uncut text:
+  - credential schemes (bearer, basic, token), prefixed keys, JWTs and `1//` tokens;
+  - key=value secrets, including a scheme word and quoted keys;
+  - emails;
+  - known homes and seat paths, matched only at a path start;
+  - known usernames, as whole `[A-Za-z0-9_]` tokens.
+
+  Overlapping spans merge and are replaced once. A span holding a credential becomes
+  `<redacted>`, so `Authorization: Bearer <tok>`, `sess-<user>-<tok>` and
+  `alice@<user>.example.com` cannot leak half a secret. The closeout metadata gate's patterns
+  run last. The excerpt is selected, and the 1000-character cap applied, only after
+  redaction. The Claude PTY tail redacts its whole buffer, seat paths included, before its
+  600-character cut. `STDERR_SECRET_KV_RE` now lives in `redaction.py`, so
+  `PanelLegResult` does not import `runner`.
 - The Claude TUI turns only an `ERROR` / `EMPTY` leg with a labeled auth, usage or env
   failure into `DEGRADED`, whether or not the caller collects the detail. The
   `RECOMMENDATION:` and verdict labels also accept the colon outside the bold

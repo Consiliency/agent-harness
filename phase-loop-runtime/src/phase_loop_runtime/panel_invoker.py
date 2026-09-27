@@ -1268,12 +1268,30 @@ class PanelRequest:
         return panel_leg_timeout_seconds(leg, self.artifact)
 
 
+class _FinalizedDetail:
+    """agent-harness#1102: the detail chokepoint, as a DATA DESCRIPTOR. Every write —
+    ``__init__``, ``dataclasses.replace`` and even ``object.__setattr__`` (which honours data
+    descriptors) — stores ``_finalize_leg_detail(value)``, so governed finding reasons, the
+    streaming verdict JSON and every printer only ever see a redacted, bounded detail."""
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._slot = "_" + name
+
+    def __get__(self, instance: object, owner: type | None = None) -> str | None:
+        if instance is None:
+            return None  # the dataclass field default
+        return instance.__dict__.get(self._slot)
+
+    def __set__(self, instance: object, value: str | None) -> None:
+        instance.__dict__[self._slot] = _finalize_leg_detail(value)
+
+
 @dataclass(frozen=True)
 class PanelLegResult:
     leg: str  # vendor: codex | gemini | claude
     status: str  # one of LEG_STATUSES
     text: str = ""
-    detail: str | None = None
+    detail: str | None = _FinalizedDetail()  # type: ignore[assignment]
     # ABDRESOLVE leg->seat re-key: `leg` alone keys by vendor, so a board with two
     # same-vendor seats (two openai seats on codex and opencode) was inexpressible.
     # `seat_key` is the stable per-seat identity (advisor_board.Seat.seat_key) that
@@ -1295,11 +1313,6 @@ class PanelLegResult:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
         if self.seat_key is None:
             object.__setattr__(self, "seat_key", self.leg)
-        # agent-harness#1102: the detail chokepoint. Every route that builds a leg result —
-        # a CLI diagnostic, a raw exception string, a fixed vocabulary token — stores the
-        # redacted, single-line, bounded form, so governed finding reasons, the streaming
-        # verdict JSON and every printer only ever see a finalized detail. Idempotent.
-        object.__setattr__(self, "detail", _finalize_leg_detail(self.detail))
 
     @property
     def usable(self) -> bool:
@@ -1405,7 +1418,7 @@ def _finalize_research_result(
     attach_research_ledger(result, ledger)
     if result.status == "OK" and ledger.status != "success":
         object.__setattr__(result, "status", "DEGRADED")
-        object.__setattr__(result, "detail", _finalize_leg_detail(f"research_audit_{ledger.status}"))
+        object.__setattr__(result, "detail", f"research_audit_{ledger.status}")
     return result
 
 
@@ -1930,31 +1943,52 @@ _LEG_ERROR_LINE_RE = re.compile(
     r"\bexception\b|\btraceback\b|\bpanic",
     re.IGNORECASE,
 )
-# Control characters to drop from a detail. NEWLINE is kept so redaction can run over the
-# whole multi-line text before an excerpt line is selected; the final single-line form
-# collapses whitespace (as `runner._redacted_stderr_excerpt` always has).
+# ----------------------------------------------------------------------------------------
+# SPAN-UNION REDACTION for `detail` (agent-harness#1102 round 6).
+#
+# Rounds 1-5 redacted with a SEQUENCE of rewrites, and each rewrite destroyed context a
+# later detector needed (the key=value pass ate `Bearer`, a `<user>` substitution split
+# `sess-jane-…`, deleting a tab glued `Bearer<tok>`). There is no order now:
+#   1. normalize WITHOUT destroying separation — every control character and every
+#      character of an escape sequence becomes ONE space, so offsets and word breaks survive;
+#   2. EVERY detector runs against that same normalized text and reports spans;
+#   3. overlapping / adjacent spans merge and each merged span is replaced ONCE — by
+#      `<redacted>` when it holds any credential, so a token is never half-substituted;
+#   4. only then is an excerpt selected or a cut made (callers), and the result capped.
+# Idempotent by construction: detectors ignore matches wholly inside a generated placeholder,
+# a known path matches only at a path START (never after `~` or `/`), and `_finalize_leg_detail`
+# iterates redact+cap to its fixed point.
+_LEG_DETAIL_PLACEHOLDERS = ("<redacted>", "<user>", "<email>", "<path>", "~")
+_LEG_DETAIL_PLACEHOLDER_RE = re.compile(r"<redacted>|<user>|<email>|<path>|~")
+_LEG_DETAIL_ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
 _LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
-# Credential SHAPES (values we cannot know in advance): key=value (shared with
-# `runner._redacted_stderr_excerpt`), bare bearer tokens, prefixed API keys, JWTs, emails.
-# Each run-shaped pattern anchors its START so a long run cannot backtrack quadratically.
-_LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer <redacted>"),
-    (re.compile(
+# Credential SHAPES (values we cannot know in advance).
+_LEG_DETAIL_CREDENTIAL_RES: tuple[re.Pattern[str], ...] = (
+    # an auth scheme and its token, across whitespace/newlines
+    re.compile(r"(?i)\b(?:bearer|basic|token|digest|negotiate)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    # prefixed API keys / tokens
+    re.compile(
         r"\b(?:sk-(?:ant-)?|sk_live_|sess-|xai-|gh[pousr]_|github_pat_|glpat-|hf_|"
         r"xox[abceoprs]-|AIza|ya29\.|AKIA)[A-Za-z0-9_.-]{8,}"
-    ), "<redacted>"),
-    (re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"), "<redacted>"),
-    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted>"),
-    # `<user>@domain`: the local part was the known username, already substituted.
-    (re.compile(r"(?:(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+|<user>)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
-     "<email>"),
+    ),
+    re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"),
 )
-# A known value is substituted only as a WHOLE token: a username between non-[A-Za-z0-9_]
-# characters (and never inside an already-substituted `<…>` placeholder, so finalizing is
-# idempotent); a path only at a path boundary (`HOME=/app` must not rewrite `/app-server`).
-_USERNAME_BOUNDARY = "A-Za-z0-9_<>"
-_PATH_END = r"(?![A-Za-z0-9._-])"
-_PATH_START = r"(?<![A-Za-z0-9._/-])"
+# key=value / key: value secrets: the VALUE (with an optional scheme word) is the span, so
+# the key name stays readable. Quoted keys and values are allowed.
+_LEG_DETAIL_KV_RE = re.compile(
+    r"(?i)[\"']?\b(?:api[_-]?key|authorization|proxy-authorization|access[_-]?token|"
+    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|token|secret|password|passwd)[\"']?"
+    r"\s*[:=]\s*(?P<value>[\"']?(?:(?:bearer|basic|token|digest)\s+)?[^\s\"',;]+[\"']?)"
+)
+_LEG_DETAIL_EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# A known path starts at the text start, after whitespace, a quote, `=`, `:`, `(`, or right
+# after a `file://` scheme — never after `~` or `/` (so `~/app` is not re-matched for
+# HOME=/app). It ends at a path boundary: anything but a name character, and a `.` only
+# when no name character follows it ("… /Users/Jane Doe." ends the path).
+_PATH_START = r"(?:(?<=^)|(?<=[\s\"'=:(])|(?<=file://))"
+_PATH_END = r"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])"
+_USERNAME_WORD = "A-Za-z0-9_"
 
 
 def _redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -1983,36 +2017,68 @@ def _redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
     )
 
 
-def _substitute_known_values(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
-    """Replace exact known values, longest first: the seat's own paths (``known``: scratch
-    dirs, the repo/worktree root) with ``<path>`` and the home directories with ``~``, each
-    only at a path boundary; the user names, as whole tokens, with ``<user>``."""
+def _normalize_leg_text(text: str) -> str:
+    """Every escape-sequence and control character (newline kept) becomes ONE space, so
+    offsets are preserved and `Bearer\\t<tok>` / `Bearer\\x1b[1C<tok>` stay two words."""
+    text = _LEG_DETAIL_ESCAPE_RE.sub(lambda m: " " * len(m.group(0)), text or "")
+    return _LEG_DETAIL_CTRL_RE.sub(" ", text)
+
+
+def _leg_detail_spans(
+    text: str, known: Sequence[str | os.PathLike[str]] = ()
+) -> list[tuple[int, int, str]]:
+    """Every detector's spans over the SAME normalized text: (start, end, kind)."""
+    spans: list[tuple[int, int, str]] = []
+    for pattern in _LEG_DETAIL_CREDENTIAL_RES:
+        spans += [(m.start(), m.end(), "credential") for m in pattern.finditer(text)]
+    spans += [(m.start("value"), m.end("value"), "credential") for m in _LEG_DETAIL_KV_RE.finditer(text)]
+    spans += [(m.start(), m.end(), "email") for m in _LEG_DETAIL_EMAIL_RE.finditer(text)]
     homes, users = _redaction_identity()
-    pairs = [(str(p).rstrip("/"), "<path>") for p in known if str(p).rstrip("/") not in ("", "/")]
-    pairs += [(h, "~") for h in homes]
-    for value, token in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
-        text = re.sub(_PATH_START + re.escape(value) + _PATH_END, token, text)
-    for user in sorted(users, key=len, reverse=True):
-        b = _USERNAME_BOUNDARY
-        text = re.sub(rf"(?<![{b}]){re.escape(user)}(?![{b}])", "<user>", text)
-    return text
+    seat = [str(p).rstrip("/") for p in known if str(p).rstrip("/") not in ("", "/")]
+    for value, kind in [(p, "path") for p in seat] + [(h, "home") for h in homes]:
+        pattern = re.compile(_PATH_START + re.escape(value) + _PATH_END)
+        spans += [(m.start(), m.end(), kind) for m in pattern.finditer(text)]
+    for user in users:
+        w = _USERNAME_WORD
+        pattern = re.compile(rf"(?<![{w}]){re.escape(user)}(?![{w}])")
+        spans += [(m.start(), m.end(), "user") for m in pattern.finditer(text)]
+    # A match wholly inside a generated placeholder is the placeholder, not a new finding.
+    inside = [(m.start(), m.end()) for m in _LEG_DETAIL_PLACEHOLDER_RE.finditer(text)]
+    return [
+        (s, e, k) for s, e, k in spans
+        if e > s and not any(ps <= s and e <= pe for ps, pe in inside)
+    ]
+
+
+_LEG_DETAIL_PLACEHOLDER_FOR = (
+    ("credential", "<redacted>"), ("email", "<email>"), ("path", "<path>"),
+    ("home", "~"), ("user", "<user>"),
+)
 
 
 def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
-    """Redact a WHOLE, UNCUT, multi-line text (line structure kept): control characters,
-    known values, credential shapes, the metadata gate's forbidden shapes. Always run this
-    BEFORE selecting or cutting an excerpt — selecting first can separate a secret from the
-    context its pattern needs (``Bearer\\n<token>`` → a bare token)."""
+    """Span-union redaction of a WHOLE, UNCUT, multi-line text (line structure kept). Run
+    this BEFORE selecting or cutting an excerpt. The closeout metadata gate's forbidden
+    shapes run last, over the redacted text: they can only remove more, and they check the
+    same output string the gate itself will check."""
     from .redaction import _FORBIDDEN_METADATA_PATTERNS
-    from .runner import _STDERR_SECRET_KV_RE  # lazy: avoid a panel_invoker<->runner cycle
 
-    redacted = _LEG_DETAIL_CTRL_RE.sub(" ", _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", text or "")))
-    redacted = _substitute_known_values(redacted, known)
-    redacted = _STDERR_SECRET_KV_RE.sub(r"\1\2<redacted>", redacted)
-    for pattern, replacement in _LEG_DETAIL_SECRET_RES:
-        redacted = pattern.sub(replacement, redacted)
-    # `detail` reaches governed-review finding reasons; keep it clear of the closeout
-    # metadata gate's forbidden shapes (raw diff hunks, secret-like values).
+    normalized = _normalize_leg_text(text)
+    spans = sorted(_leg_detail_spans(normalized, known))
+    merged: list[list[object]] = []
+    for start, end, kind in spans:
+        if merged and start <= merged[-1][1]:  # overlapping or adjacent
+            merged[-1][1] = max(merged[-1][1], end)
+            merged[-1][2].add(kind)
+        else:
+            merged.append([start, end, {kind}])
+    out: list[str] = []
+    cursor = 0
+    for start, end, kinds in merged:
+        placeholder = next(p for k, p in _LEG_DETAIL_PLACEHOLDER_FOR if k in kinds)
+        out += [normalized[cursor:start], placeholder]
+        cursor = end
+    redacted = "".join(out) + normalized[cursor:]
     for _name, pattern in _FORBIDDEN_METADATA_PATTERNS:
         redacted = pattern.sub("<redacted>", redacted)
     return redacted
@@ -2021,15 +2087,25 @@ def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) ->
 def _finalize_leg_detail(
     detail: str | None, known: Sequence[str | os.PathLike[str]] = ()
 ) -> str | None:
-    """The ONE form a stored ``detail`` takes: redacted, single-line, bounded as a whole.
-    Idempotent (re-finalizing a finalized detail returns it unchanged), and applied by
-    ``PanelLegResult`` itself, so no route can store an unfinalized detail."""
+    """The ONE form a stored ``detail`` takes: span-union redacted, single-line, bounded as a
+    whole. Iterated to its fixed point, so ``finalize(finalize(x)) == finalize(x)``; stored
+    through ``PanelLegResult``'s ``detail`` descriptor, so no route can store anything else."""
     if not detail:
         return None
-    redacted = " ".join(_redact_leg_text(str(detail), known).split())
-    if len(redacted) > _LEG_DETAIL_MAX_CHARS:
-        redacted = redacted[: _LEG_DETAIL_MAX_CHARS - 3] + "..."
-    return redacted or None
+    current = str(detail)
+    for _ in range(8):
+        redacted = " ".join(_redact_leg_text(current, known).split())
+        if len(redacted) > _LEG_DETAIL_MAX_CHARS:
+            cut = _LEG_DETAIL_MAX_CHARS - 1
+            # never cut inside a placeholder
+            for m in _LEG_DETAIL_PLACEHOLDER_RE.finditer(redacted, max(0, cut - 12), cut + 12):
+                if m.start() < cut < m.end():
+                    cut = m.start()
+            redacted = redacted[:cut].rstrip() + "…"
+        if redacted == current:
+            break
+        current = redacted
+    return current or None
 
 
 def _seat_paths(*paths: object) -> tuple[str, ...]:
@@ -5534,23 +5610,19 @@ def _tui_trust_modal_present(screen: str, cwd_tokens: Sequence[str]) -> bool:
 _TUI_CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
 
-def _sanitized_pty_tail(terminal_bytes: bytes, max_chars: int = 600) -> str:
+def _sanitized_pty_tail(
+    terminal_bytes: bytes, max_chars: int = 600, known: Sequence[str | os.PathLike[str]] = (),
+) -> str:
     """A bounded, credential-redacted, control-stripped tail of the PTY buffer for
-    failed-leg evidence. Order matters (ah#196/#223 CR): strip ANSI/OSC + control seqs,
-    REDACT THE WHOLE TEXT, then keep the FINAL ``max_chars`` — redacting after slicing
-    could expose a secret whose key sits just before the cut, and the informative bytes
-    (the modal / reject / stall context) live at the END of the buffer."""
+    failed-leg evidence. Order matters (ah#196/#223 CR; agent-harness#1102): REDACT THE
+    WHOLE, UNCUT BUFFER — escape and control characters become spaces (never deleted, so
+    `Bearer\t<tok>` stays two words), and the seat's own paths (``known``) are substituted
+    in that same first pass — and only then keep the FINAL ``max_chars``. Cutting first
+    could strand a secret's or a seat path's suffix without the context its detector needs;
+    the informative bytes (the modal / reject / stall context) live at the END of the
+    buffer. Whitespace, newlines included, is collapsed to one line, as it always was."""
     text = terminal_bytes.decode("utf-8", errors="replace")
-    text = _ANSI_OSC_RE.sub("", text)
-    text = _ANSI_CSI_RE.sub("", text)
-    text = _TUI_CTRL_RE.sub("", text)
-    # Redact the WHOLE, UNCUT buffer (every credential shape and known value `detail`
-    # redacts) before the tail-slice, so the cut can never strand a token's suffix without
-    # the prefix its pattern needs (agent-harness#1102 r2/r5). Whitespace, newlines
-    # included, is then collapsed to one line exactly as main's
-    # `runner._redacted_stderr_excerpt` step already did — the tail was single-line before
-    # this PR too.
-    redacted = " ".join(_redact_leg_text(text).split())
+    redacted = " ".join(_redact_leg_text(text, known).split())
     return redacted[-max_chars:].strip()
 
 
@@ -5570,6 +5642,7 @@ def _run_claude_tui_session(
     allow_transcript_final: bool = False,
     broker_transcript_path: Path | None = None,
     review_monitor: _ReviewMonitor | None = None,
+    redaction_paths: Sequence[str | os.PathLike[str]] = (),
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
@@ -5672,7 +5745,7 @@ def _run_claude_tui_session(
         tail = (
             ""
             if log == "claude_tui_file_output"
-            else _sanitized_pty_tail(terminal_bytes)
+            else _sanitized_pty_tail(terminal_bytes, known=redaction_paths)
         )
         if log == "claude_tui_stalled":
             finished_at = time.monotonic()
@@ -6794,6 +6867,10 @@ def _exec_claude_tui_leg(
         tui_extra["review_monitor"] = review_monitor
     if quiescence_latch is not None:
         tui_extra["quiescence_latch"] = quiescence_latch
+    # agent-harness#1102: the seat's own paths are redacted in the PTY tail's FIRST pass,
+    # over the whole buffer, before its 600-character cut.
+    seat_paths = (review_dir, out_dir, tui_cwd, *((repo_dir,) if repo_dir else ()))
+    tui_extra["redaction_paths"] = seat_paths
     leg_started = time.monotonic()
     total_backstop_s = (
         max(1, int(backstop_s))
@@ -6916,16 +6993,15 @@ def _exec_claude_tui_leg(
     # labeled provider failure turns only ERROR / EMPTY into DEGRADED (never OK, TIMEOUT or
     # an existing DEGRADED), whether or not the caller asked for the detail.
     if status in ("ERROR", "EMPTY"):
-        if _leg_failure_kind(rc if rc else 1, review_text, pty_tail) in (
+        if _leg_failure_kind(rc, review_text, pty_tail) in (
             "auth", "usage_limit", "env_failure",
         ):
             status = "DEGRADED"
     # The detail itself goes to a caller-owned sink so this function's (status, text) shape
     # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
-        seat_paths = (review_dir, out_dir, tui_cwd, *((repo_dir,) if repo_dir else ()))
-        kind = _leg_failure_kind(rc if rc else 1, review_text, pty_tail)
-        tail_detail = _leg_failure_detail(status, rc if rc else 1, review_text, pty_tail, seat_paths)
+        kind = _leg_failure_kind(rc, review_text, pty_tail)
+        tail_detail = _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
         if tail_detail and kind == "unknown" and log_text:
             tail_detail = f"{log_text}: {tail_detail}"
         tail_detail = _finalize_leg_detail(tail_detail, seat_paths)

@@ -702,10 +702,28 @@ def test_finalizing_is_idempotent(monkeypatch):
 
 
 def test_the_real_identity_is_what_the_host_reports():
-    homes, users = _REAL_REDACTION_IDENTITY()
+    """The real lookup, on whatever host runs it (claude r6: it failed for HOME=/ and for a
+    host with no passwd entry and no USER/LOGNAME). It returns only usable values: no empty
+    or root home, no empty name; and the process home is among them when it is usable."""
     import os
-    assert os.path.expanduser("~").rstrip("/") in homes
-    assert users, "no username known to redact"
+    homes, users = _REAL_REDACTION_IDENTITY()
+    assert all(h and h != "/" and not h.endswith("/") for h in homes), homes
+    assert all(u for u in users), users
+    home = os.path.expanduser("~").rstrip("/")
+    if home and home != "~":
+        assert home in homes
+
+
+def test_the_real_identity_tolerates_a_bare_host(monkeypatch):
+    """HOME=/, no passwd entry, no USER/LOGNAME: nothing to redact, and no crash."""
+    import os
+    import pwd
+    monkeypatch.setenv("HOME", "/")
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: (_ for _ in ()).throw(KeyError(uid)))
+    assert _REAL_REDACTION_IDENTITY() == ((), ())
+    assert os.path.expanduser("~") == "/"
 
 
 def test_the_final_labelled_detail_is_bounded_and_control_stripped():
@@ -839,3 +857,151 @@ def test_claude_tui_advisory_ok_goes_through_the_artifact_rule(monkeypatch, tmp_
         tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, mode="advisory",
     )
     assert status == expected
+
+
+# --- board round 6 (agent-harness#1102): span-union redaction --------------------------------
+
+TOK = "abcdefghijklmnopqrstuvwx"
+
+
+def _detail(log: str, *, identity=None, monkeypatch=None, known=()):
+    if identity is not None:
+        monkeypatch.setattr(pi, "_redaction_identity", lambda: identity)
+    return pi._leg_failure_detail("ERROR", -9, "", log, known)
+
+
+@pytest.mark.parametrize("log", [
+    f"Authorization: Bearer\n{TOK}",                                  # codex/claude r6, multi-line
+    f"fatal: request rejected (Authorization: Bearer {TOK})",          # single-line
+    f"Authorization: Basic {TOK}==",                                   # Basic scheme
+    f'{{"access_token": "{TOK}"}}',                                    # quoted key and value
+    f"auth header was Bearer\t{TOK}",                                  # a TAB from the PTY
+    f"auth header was Bearer\x1b[1C{TOK}",                             # a CSI cursor move
+    f"Proxy-Authorization: Negotiate {TOK}",
+])
+def test_credential_context_survives_every_other_detector(log):
+    """codex/claude r6: the key=value pass ate `Bearer` before the bearer detector ran, and
+    control deletion glued `Bearer<tok>`. Every detector now sees the same text."""
+    detail = _detail(log)
+    assert TOK not in detail and TOK[:12] not in detail, detail
+
+
+@pytest.mark.parametrize("log", [
+    f"fatal: rejected sess-jane-{TOK}",
+    f"fatal: rejected Bearer jane-{TOK}",
+    "fatal: alice@jane.example.com denied",
+])
+def test_a_username_inside_a_credential_or_email_does_not_split_it(monkeypatch, log):
+    """grok r6: `<user>` substituted first split `sess-jane-…` and `alice@jane.…`."""
+    detail = _detail(log, identity=((), ("jane",)), monkeypatch=monkeypatch)
+    assert TOK not in detail and "jane" not in detail and "alice" not in detail, detail
+
+
+def test_an_email_containing_the_username_is_one_email(monkeypatch):
+    detail = _detail("fatal: john.doe@corp.com denied", identity=((), ("doe",)), monkeypatch=monkeypatch)
+    assert "john" not in detail and "corp.com" not in detail and "<email>" in detail, detail
+
+
+def test_a_username_that_is_a_key_prefix_does_not_break_the_key(monkeypatch):
+    detail = _detail(f"fatal: sk-ant-api03-{TOK}", identity=((), ("sk",)), monkeypatch=monkeypatch)
+    assert TOK not in detail and "<redacted>" in detail, detail
+
+
+def test_a_username_between_markup_is_still_the_username(monkeypatch):
+    """codex r6: the `<>` exemption let `<owner>jdoe</owner>` through."""
+    detail = _detail("fatal: <owner>jdoe</owner>", identity=((), ("jdoe",)), monkeypatch=monkeypatch)
+    assert "jdoe" not in detail and "<owner><user></owner>" in detail, detail
+
+
+def test_a_home_that_is_its_own_suffix_finalizes_idempotently(monkeypatch):
+    """codex r6: HOME=/app turned `/app/app` into `~/app`, then `~~`."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/app",), ()))
+    once = pi._finalize_leg_detail("signal: /app/app")
+    assert once == "signal: ~/app"
+    assert pi._finalize_leg_detail(once) == once
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("fatal: under /Users/Jane Doe.", "fatal: under ~."),
+    ("open file:///Users/Jane Doe/x failed", "open file://~/x failed"),
+])
+def test_home_path_boundaries(monkeypatch, line, expected):
+    """claude r6: a home followed by `.`, and one after a `file://` scheme."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/Users/Jane Doe",), ()))
+    assert pi._finalize_leg_detail(line) == expected
+
+
+def test_a_seat_path_crossing_the_pty_cut_is_redacted_first():
+    """codex r6: the PTY tail was cut BEFORE seat paths were substituted, so the cut left
+    `seat-private/review/…`."""
+    raw = b"fatal: /srv/seat-private/review/" + b"y" * 580
+    tail = pi._sanitized_pty_tail(raw, known=("/srv/seat-private/review",))
+    assert "seat-private" not in tail, tail[:40]
+
+
+def test_the_tui_passes_its_seat_paths_into_the_first_redaction(monkeypatch, tmp_path):
+    seen = {}
+
+    def session(**kw):
+        seen.update(kw)
+        return 1, "", "claude_tui_pty_eof_no_output", ""
+
+    _claude_session(monkeypatch, (1, "", "x", ""))
+    monkeypatch.setattr(pi, "_run_claude_tui_session", session)
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    pi._exec_claude_tui_leg(tmp_path / "review", tmp_path / "out", 30, "bundle", env={})
+    paths = [str(p) for p in seen.get("redaction_paths", ())]
+    assert str(tmp_path / "review") in paths and str(tmp_path / "out") in paths
+
+
+def test_object_setattr_cannot_store_a_raw_detail():
+    """codex/claude r6: `object.__setattr__` bypassed `__post_init__`. `detail` is now a data
+    descriptor, which `object.__setattr__` honours."""
+    leg = pi.PanelLegResult(leg="codex", status="ERROR", text="")
+    object.__setattr__(leg, "detail", f"token={TOK}")
+    assert leg.detail == "token=<redacted>"
+
+
+# A seeded property test: each secret, embedded at random offsets in random text, with the
+# separators next to it randomly rewritten (spaces, tabs, newlines, CR, CSI, controls, case),
+# never survives finalize, and finalize is a fixed point.
+_PROPERTY_SEED = 1102
+_PROPERTY_CASES = 3000
+_SEPARATORS = (" ", "  ", "\t", "\n", "\r\n", "\x1b[1C", "\x1b[0m ", "\x07", " \x00 ", "\x0b")
+_FILLER = (
+    "fatal:", "error", "request", "rejected", "while", "calling", "the", "API", "(", ")",
+    "status=401", "retrying", "->", "[x]", "see", "log", "done.", "path", "at", ":", ",",
+)
+
+
+def _random_secret(rng):
+    body = "".join(rng.choice("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789")
+                   for _ in range(rng.randint(20, 40)))
+    sep = rng.choice(_SEPARATORS)
+    kinds = [
+        (f"{rng.choice(['Bearer', 'bearer', 'BEARER', 'Basic', 'token'])}{sep}{body}", body),
+        (f"Authorization:{rng.choice(['', ' '])}Bearer{sep}{body}", body),
+        (f"{rng.choice(['token', 'password', 'api_key', 'secret'])}{rng.choice(['=', ': ', ' = '])}{body}", body),
+        (f'"access_token":{rng.choice(["", " "])}"{body}"', body),
+        (f"{rng.choice(['sk-ant-api03-', 'xai-', 'ghp_', 'github_pat_', 'glpat-', 'hf_', 'sess-', 'AKIA'])}{body}", body),
+        (f"eyJ{body[:12]}.{body[12:]}.sig", body),
+        (f"{body[:10].lower()}.{body[10:18].lower()}@example-corp.com", body[:10].lower()),
+        ("/home/pl-tester/" + body[:8], "pl-tester"),
+        ("pl-tester", "pl-tester"),
+    ]
+    return rng.choice(kinds)
+
+
+def test_property_no_secret_survives_and_finalize_is_a_fixed_point():
+    import random
+
+    rng = random.Random(_PROPERTY_SEED)
+    for case in range(_PROPERTY_CASES):
+        secret, distinctive = _random_secret(rng)
+        words = [rng.choice(_FILLER) for _ in range(rng.randint(0, 30))]
+        words.insert(rng.randint(0, len(words)), secret)
+        text = "".join(w + rng.choice(_SEPARATORS) for w in words)
+        once = pi._finalize_leg_detail(text)
+        assert once is None or distinctive not in once, (case, repr(text), once)
+        assert pi._finalize_leg_detail(once) == once, (case, repr(text), once)
