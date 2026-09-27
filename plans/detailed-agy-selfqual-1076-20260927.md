@@ -13,9 +13,10 @@ automation:
 # Detailed plan: agy first-use self-qualification of genuine upstream releases (agent-harness#1076)
 
 Status: draft for board + president review. Planning only; no source changed.
-Spec: the maintainer's proposal in agent-harness#1076, which this plan implements
-and does not restate. Where this plan and the issue disagree, the issue wins and
-this plan is amended.
+Spec: the maintainer's proposal in agent-harness#1076 as refined by the maintainer
+decisions D1–D4 below (2026-09-27). Where the issue and D1–D4 differ, D1–D4 govern;
+any other disagreement between this plan and the issue is resolved by amending the
+plan.
 
 ## Problem and inputs
 
@@ -53,318 +54,248 @@ Inputs observed at `input_base_commit` (inputs, not outputs):
 
 ## Invariants (each has a falsifier in "Tests")
 
-- **I1 No unverified binary is executed.** An installed image whose digest is not
-  release-qualified is executed (for help measurement or preflight) only after
-  provenance: the archive's SHA-256 equals the release asset's published digest
-  and the archive's `antigravity` member equals the installed bytes. Everything
-  that executes is the sealed memfd copy of exactly those bytes.
-- **I2 The behavioural preflight is the existing three live operations** —
-  completion, cancel after observed progress, owner loss — under the unchanged
-  isolation contract (`agy_memfd_home_deny_all_v1`, broker, egress isolation,
-  heartbeat-only monitor, the same `validate_records` checks). Any failure refuses
-  the seat, as today.
-- **I3 Once per key per host.** The key is (image digest, help digest, isolation
-  profile id, runtime identity = package `__version__` plus the route-core source
-  digests, per D2). Qualification runs under an exclusive
-  lock; concurrent first uses wait and then reuse the one result.
-- **I4 The local record is operator-owned and integrity-checked.** Store 0700,
-  files 0600, owned by the effective uid, no symlinks; a tampered, foreign,
-  mis-keyed or wrongly-permissioned record is ignored (treated as absent), never
-  trusted.
-- **I5 Every Gemini leg result states its admission class**:
-  `release_qualified` or `locally_qualified`.
-- **I6 The release pin is not weakened.** The release-qualified digest path is
-  byte-for-byte the current check; no local record can change what a
-  release-qualified image needs, and no network or local state is consulted for it.
+- **I1 Only verified bytes execute.** A non-release image executes (help
+  measurement, preflight, leg) only after provenance: archive SHA-256 equals the
+  release asset's published digest, and the archive member equals the image. What
+  executes is always a sealed memfd filled from the **same single read** whose
+  digest was checked. `PATH` is never re-resolved after verification.
+- **I2 The behavioural preflight is the existing three live operations**
+  (completion, cancel after observed progress, owner loss) under the unchanged
+  isolation contract and the same `validate_records` checks. Any failure refuses.
+- **I3 Once per key per user per host, under a lock.** Key = image digest, help
+  digest, isolation profile id, platform, and runtime identity (D2).
+- **I4 The local record is integrity-checked.** A tampered, foreign (other host
+  **or** other user), mis-keyed or loosely-permissioned record or store is absent.
+- **I5 Every Gemini heartbeat leg carries exactly one admission class:**
+  `release_qualified`, `locally_qualified`, or `qualification_candidate`.
+- **I6 The release pin is not weakened.** A release-digest match is decided before
+  any config, store or network access and is the same check as at `input_base_commit`.
 
-Threat model, stated plainly: I4 defends against corruption, copying a record from
-another host or user, group/world-writable or foreign-owned storage, symlink
-redirection, and a record for one key admitting another. It does **not** defend
-against an adversary already executing as the operator's uid; that adversary can
-rewrite the runtime itself, so no same-uid record scheme can stop it.
+Threat model: I4 defends against corruption, cross-host and cross-user copies,
+loose or foreign storage, symlinks, and one key admitting another. A process
+already running as the operator's uid can rewrite the runtime itself and is out
+of scope, with one exception closed by construction: the qualification worker
+entry (below) cannot be used to admit unverified bytes.
 
 ## Design
 
-### Admission split (lookup vs qualify)
+### One verified image object
 
-`require_capability(env)` keeps its signature and its capability probes but returns
-an admission (`image path`, `image_sha256`, `help_sha256`, `class`) from a **pure
-lookup**: the release constant (`release_qualified`) or a valid local record
-(`locally_qualified`). It never runs provenance or inference. `_read_image` and the
-memfd re-hash in `owned_profile` check against the admission's digest instead of the
-constant; `profile.evidence["provider_image_sha256"]` reports the admitted digest.
+A new `VerifiedImage` is produced by exactly one routine: open the source once
+(`O_NOFOLLOW`, regular file), read it into memory, hash that buffer, fill a sealed
+memfd from the **same buffer**, re-hash the memfd. The routine's input is either the
+`PATH`-resolved agy (resolved once) or, for the watch, the archive member stream.
+Everything downstream (help measurement, the three operations, board legs, the
+president) takes the `VerifiedImage`'s memfd and never opens a path again.
+`owned_profile` accepts a `VerifiedImage` instead of re-reading `agy`.
 
-A new `ensure_admitted(env, *, cancel_event)` runs lookup first and, only if lookup
-misses, the first-use path below. It is called **only** from the whole-board
-preflight `_preflight_gemini_heartbeat` (its callers: `invoke_board`, both `cli.py`
-sites, `train_runner`, `governed_review`), which already precedes availability,
-auth and dispatch. The per-leg re-check (`panel_invoker` review-monitor branch) and
-`president_adapter` keep calling the pure lookup. A leg's own launch path therefore
-never triggers provenance or inference.
+### Admission (lookup vs qualify)
+
+`admit(env)` returns an `Admission(verified_image, help_sha256, class)`:
+1. Build the `VerifiedImage`. If its digest is the release constant →
+   `release_qualified`. No config, store or network is read (I6).
+2. Else, if the user config opts out (D3) → refuse with today's
+   `gemini_heartbeat_capability_unavailable`, reading nothing else.
+3. Else, a valid local record for the full key → `locally_qualified`.
+4. Else → miss.
+
+`ensure_admitted(env, cancel_event)` = `admit`, and on a miss the first-use path.
+Only the whole-board preflight (`_preflight_gemini_heartbeat` and its callers)
+calls it; the resulting `Admission` is carried to the board's legs. Legs and the
+president never qualify. A president run with no admission on the host is refused;
+`phase-loop agy-qualification run` pre-qualifies explicitly.
 
 ### First-use path (coordinator process, never the seat)
 
-1. Lookup misses → acquire the store lock (below). Re-run lookup after acquiring;
-   another process may have finished.
-2. **Provenance, in the coordinator process** (the host process running the board,
-   which has network; the seat sandbox never does). Hash the installed image by fd.
-   **Host platform (D4)** is detected from the running host, never from config:
-   OS from `sys.platform`, architecture from `os.uname().machine` (normalised to
-   upstream's `x64`/`arm64`), and on Linux the libc from the running interpreter's
-   ELF program interpreter (`/proc/self/exe` `PT_INTERP`: `ld-musl-*` → musl, else
-   glibc). The platform determines exactly one expected asset name
-   (`agy_cli_<os>_<arch>[_musl].<ext>`, following upstream's observed naming); an
-   unknown platform, or a platform with no such asset, refuses.
-   Enumerate releases of `google-antigravity/antigravity-cli` through the GitHub
-   REST API, newest first. Only **stable** releases are candidates:
-   `prerelease == false` and `draft == false` in the release metadata. Examine at
-   most a small fixed number of stable releases (a constant set in L2). The bound is
-   kept because the member digest is only knowable by downloading each archive
-   (tens of MB): an image that matches nothing, which is exactly the tampered case,
-   would otherwise force a download of every release in history on every first use.
-   A genuine install older than the window is refused and is covered by updating
-   agy or by a release record. For each candidate take only the exact
-   platform-matched asset name; any other asset, including another platform's, is
-   never considered. Require its `browser_download_url` under
-   `https://github.com/google-antigravity/antigravity-cli/releases/download/<tag>/`,
-   download it to a 0700 scratch directory with a size cap, require
-   `sha256(archive) == asset.digest`, then stream the platform's executable member
-   (`antigravity` for the tar archives; regular file, size cap) and compare with the installed digest. The version is learned
-   from the matching release; the binary is never executed to discover it. No
-   match within the window → refuse `gemini_heartbeat_provenance_unmatched`.
-   **Isolation is unchanged on every platform.** The capability probes in
-   `require_capability` (sealed memfd, pidfd, pidfd signalling, bwrap flags) run
-   first; a platform that cannot meet them (for example macOS or Windows, which
-   have no memfd/pidfd/bwrap) refuses exactly as today, before any provenance fetch.
-   The record stores the detected platform and asset name; lookup refuses a record
-   whose platform differs from the running host.
-3. **Authoritative digest source**: GitHub's `digest` field on the release asset.
-   It is the only vendor-side digest upstream publishes; the trust anchor is GitHub
-   (TLS + API) and the `google-antigravity` organisation's release. This is the
-   same source `verify_qualified_agy_image.py` already trusts for release
-   qualification, so the local path adds no weaker anchor. If upstream later
-   publishes signed checksums, adopting them is a follow-up, not this plan.
-4. **Offline**: any provenance fetch failure (DNS, TLS, HTTP, rate limit,
-   timeout) refuses with `gemini_heartbeat_provenance_unavailable`, writes no
-   record, and does not execute the image. Release-qualified images and images
-   with a valid local record need no network and are unaffected.
-5. **Help measurement** runs only after step 2, by executing the sealed memfd
-   copy through the admitted filename (`/dev/phase-loop-agy/agy --help`) inside the
-   owned profile, per the contract's "measure help through the admitted filename".
-6. **Behavioural preflight**: the three operations run in sequence through the
-   packaged driver (next section), each with the existing preregistration,
-   observer and `validate_records`, followed by `validate_directory`. This is real
-   subscription inference (roughly a minute in total, once per key per host). Any
-   failure refuses the seat with the existing fixed diagnostics.
-7. On success, write the local record atomically (temp file in the store, fsync,
-   rename), release the lock, and admit as `locally_qualified`.
+1. Take the store lock (`flock`, CLOEXEC fd); waiters stay cancellable and emit
+   heartbeats; re-run `admit` after acquiring.
+2. **Provenance** over the network from the coordinator: host platform detected
+   from the running host (D4); stable releases only; exact platform asset; URL
+   under the release-download prefix; strict `sha256:<hex>` `asset.digest` equal
+   to the archive digest; the archive member is streamed and hashed, never
+   extracted; it must equal the `VerifiedImage` digest. No `Authorization` header
+   is sent. Any fetch failure → `gemini_heartbeat_provenance_unavailable`,
+   nothing executes, nothing is written.
+3. Write a **provenance entry** (authenticated like a record) for the image digest.
+4. Measure help by executing the `VerifiedImage` memfd through the admitted
+   filename inside the owned profile.
+5. Run the three operations through the packaged driver. On success write the
+   **qualified record**; on a behavioural failure write a negative record (cleared
+   by `agy-qualification clear`). Cancellation, a fetch failure or a mid-run image
+   change writes nothing.
 
-### Packaged driver and the recursion guard
+The recency window is a small constant: the member digest is only knowable by
+downloading each archive, so a tampered image (which matches nothing) would
+otherwise download every release on every first use. Verified member digests are
+cached per `asset.digest` in the store so a repeat miss does not re-download.
 
-Move the operation and validation logic of `scripts/qualify_gemini_heartbeat.py`
-into the package (`phase_loop_runtime/agy_qualification.py`); the script becomes a
-thin shim with the same CLI, so the manual release-qualification workflow is
-unchanged. Parametrise it on an explicit candidate (image digest, help digest)
-instead of reading `gh.QUALIFIED_*`; the release path passes the constants.
+### Qualification worker (no bypass by construction)
 
-The driver's worker calls `invoke_board` with a Gemini-only board, which would hit
-`ensure_admitted` and deadlock on its parent's lock. The worker is instead launched
-with a **candidate admission** passed by an inherited sealed memfd (not an
-environment variable), naming exactly one image/help digest. Lookup honours it
-only inside a process started by the driver's `--worker` entry, it is never
-persisted, and legs admitted by it carry class `qualification_candidate`, which is
-neither `release_qualified` nor `locally_qualified` and is never a countable vote.
+The driver's worker process runs `invoke_board` on a Gemini-only board and would
+otherwise deadlock on its parent's lock. It receives the `VerifiedImage` memfd
+explicitly (not by environment), re-hashes it, and admits it as
+`qualification_candidate` **only if the store holds a valid provenance entry for
+that digest** (step 3). A caller that seals an arbitrary memfd and enters the
+worker without provenance gets zero launches. Candidate legs are never counted and
+never persisted as records.
 
-### Lock
+### Store and record
 
-`fcntl.flock(LOCK_EX)` on a lock file in the store. Waiters poll a non-blocking
-acquire in short intervals and stay cancellable through the operation cancel event
-(heartbeat-only: no wall-clock deadline on the wait). The kernel releases the lock
-when the qualifier dies, and the next holder re-checks the record first.
-A **behavioural** failure (an operation ran and failed validation) is persisted as
-a negative record under the same key, so concurrent and later boards refuse
-immediately instead of each spending inference; `phase-loop agy-qualification
-clear` removes it. Infrastructure failures (provenance unavailable, credential
-missing, capability missing) persist nothing.
+Per user, at `$XDG_STATE_HOME/phase-loop/agy-qualification/`. The directory must be
+0700 and every file 0600, owned by the euid, opened `O_NOFOLLOW`; otherwise the
+whole store is treated as absent. Entries carry an HMAC-SHA256 over canonical JSON
+whose authenticated context includes the full key, the euid and `/etc/machine-id`.
+Without a readable machine-id, self-qualification refuses; the release path is
+unaffected.
 
-### Local record store
+### Runtime identity (D2)
 
-`$XDG_STATE_HOME/phase-loop/agy-qualification/` (default `~/.local/state/...`),
-created 0700; records and the host key 0600. Opened with `O_NOFOLLOW`; directory
-and every file must be owned by the euid with no group/other bits, else ignored.
-Record schema `agy_local_qualification.v1`: the key fields, release tag, asset
-name, `asset.digest`, archive and member digests, the redacted three-operation
-summary in the same shape as `plans/evidence/agy-*-qualification.json`, and an
-HMAC-SHA256 over the canonical JSON with a per-store random key. The key file also
-binds `/etc/machine-id`, so a copied store fails verification. Lookup recomputes
-everything and treats any mismatch, parse error or unknown schema as absent.
+A packaged `ROUTE_CORE` tuple (in the package, not `scripts/`) lists the route
+modules that exist in an installed wheel: at least `gemini_heartbeat.py`,
+`agy_qualification.py`, `agy_provenance.py`. The runtime hashes those installed
+files; the key is `__version__` plus those digests. `verify_qualified_agy_image.py`
+imports the same tuple, so the CI `--route-core` gate and the local key cover the
+same files, including the new provenance code.
 
-### Leg result class
+### Counting (D1)
 
-Add `provider_image_admission` (`release_qualified` | `locally_qualified` |
-`qualification_candidate`) to `profile.evidence`, which flows into
-`harden_isolation_evidence`, and to the leg's landing evidence. Existing
-broker/observer envelopes and `provider_*` keys stay unchanged (the contract freezes
-them); the executing lane confirms no closed key-set assertion in
-`test_gemini_heartbeat_bootstrap.py` breaks and, if one exists, extends it
-explicitly rather than loosening it.
+The governed-landing seat check (`governed_review.py`'s per-leg usable check, and
+the president's input legs) accepts a brokered heartbeat Gemini leg only when its
+class is `release_qualified` or `locally_qualified`; `qualification_candidate` or a
+missing class is not a vote. Landing evidence records each leg's class and flags a
+Gemini leg whose admitted digest is the one the PR under review pins. Boards run
+with the installed base runtime's admission, never the reviewed tree's.
 
-### Upstream watch (scheduled, subscribed host)
+### Upstream watch (scoped to what can pass the gate)
 
-A new operator command `phase-loop agy-qualification watch` runs on a subscribed
-host from the host's own scheduler (a systemd user timer or cron entry documented
-in `docs/`), **not** on a GitHub-hosted runner (no subscription) and **not** as a
-registered self-hosted runner. When the newest **stable** upstream release's asset
-for the watch host's detected platform differs from the release-qualified digest, it runs provenance and the three
-operations against that release's archive member (installed into a private path,
-not replacing the operator's agy), and on success opens the evidence-record PR
-(`agy-<version>-linux-x64-qualification.json`, catalog pointer, constants) with
-`gh`. It never merges. Only the Linux x64 glibc route has a release catalog entry
-(`qualified_provider_images.v1` allows exactly that route), so on any other platform
-the watch qualifies locally and reports, and opens no PR; adding catalog routes is a
-schema change outside this plan. Hosted CI keeps the provenance-only nightly
-(`--upstream-only`) unchanged.
+`phase-loop agy-qualification watch` runs from a timer on a subscribed host (no
+GitHub-hosted runner, no self-hosted runner registration). It only proposes the
+release route (Linux x64 glibc; `qualified_provider_images.v1` has only that route);
+on other platforms it reports and opens nothing. For the newest stable release not
+yet pinned on `main`:
+1. It is idempotent per version: an existing branch or PR for that version whose
+   base route-core matches current `main` → no-op.
+2. It builds a `VerifiedImage` from the provenance-checked archive member stream
+   (no disk install).
+3. In a fresh checkout of current `main` with the constants and catalog edited, it
+   runs the manual qualification (the shim) **from that tree**. The record
+   therefore matches that tree, which is what `--route-core` requires.
+4. It opens a draft PR and never merges.
+
+The hosted nightly provenance check is unchanged.
 
 ## Changes
 
 | File | Action |
 |---|---|
-| `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py` | Admission split, `ensure_admitted`, class in evidence; release constants unchanged. |
-| `phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py` (new) | Host-platform detection, stable-release enumeration, exact-asset, digest and member verification; no execution. |
-| `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py` (new) | Packaged driver, candidate admission, store, lock, record. |
-| `phase-loop-runtime/scripts/qualify_gemini_heartbeat.py` | Shim over the packaged driver. |
-| `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | `_preflight_gemini_heartbeat` → `ensure_admitted` with cancel event; per-leg re-check stays lookup-only; landing evidence carries the class. |
-| `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py` | Lookup-only admission; class in evidence. |
-| `phase-loop-runtime/src/phase_loop_runtime/cli.py` | `agy-qualification {status,clear,watch}`. |
-| `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py` (+ `schema.py`, example fixture) | D3 opt-out: user-file-only `[agy] self_qualification = false` in `advisor-boards.toml`; the loader's unknown-key hard error means the key is added to the schema, not tolerated. |
-| `phase-loop-runtime/scripts/verify_qualified_agy_image.py` | `ROUTE_CORE` and `actual_source_hashes` follow the moved driver files. |
-| `.github/workflows/qualified-agy-image.yml` | `paths:` follow the moved files; upstream job unchanged. |
-| `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` | Qualified Gemini extension: two admission classes, provenance, store, lock, class field. |
-| `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, operator doc for the watch timer | Documentation. |
-| `phase-loop-runtime/tests/test_agy_self_qualification.py` (new); moved-path updates in `test_qualify_network_owner.py`, `test_gemini_heartbeat_bootstrap.py`, `test_verify_qualified_agy_route_core.py` | Tests. |
+| `phase_loop_runtime/gemini_heartbeat.py` | `VerifiedImage`, `admit`/`ensure_admitted`, `owned_profile` takes a `VerifiedImage`, class in evidence; release constants unchanged. |
+| `phase_loop_runtime/agy_provenance.py` (new) | Platform detection, stable-release selection, asset, digest and member checks; no execution. |
+| `phase_loop_runtime/agy_qualification.py` (new) | Packaged driver and worker, store, lock, entries, `ROUTE_CORE`, watch. |
+| `scripts/qualify_gemini_heartbeat.py` | Shim over the packaged driver. |
+| `phase_loop_runtime/panel_invoker.py`, `president_adapter.py`, `cli.py`, `train_runner.py` | Preflight carries the `Admission`; legs and president are lookup-only; CLI `agy-qualification {status,run,clear,watch}`. |
+| `phase_loop_runtime/governed_review.py` | D1 counting rule. |
+| `phase_loop_runtime/advisor_board/config.py`, `schema.py`, example fixture | D3: user-file-only `[agy] self_qualification = false` (the repo file keeps rejecting unknown tables). |
+| `scripts/verify_qualified_agy_image.py`, `.github/workflows/qualified-agy-image.yml` | Import the packaged `ROUTE_CORE`; `paths:` cover the new modules. |
+| `advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `CHANGELOG.md`, watch-timer operator doc | Contract and docs. |
+| `tests/test_agy_self_qualification.py` (new) + moved-path updates in the existing agy tests | Tests. |
 
-## Lanes and order
+## Lanes and landing
 
-- **L0 tests first.** Land `test_agy_self_qualification.py` with every falsifier
-  below, skipping (not failing) unimplemented contracts in ordinary runs.
-- **L1 driver move + parametrisation** (no behaviour change; release path passes
-  the constants). Update verifier, workflow paths and moved-path tests.
-- **L2 provenance module** (network code; fakes a GitHub API and archive server
-  in tests).
-- **L3 store, lock, record, candidate admission.**
-- **L4 admission split + preflight wiring + class evidence + contract text.**
-- **L5 CLI `status/clear/watch` + operator doc.**
-- **L6 live verification** on a subscribed host (below).
+L0–L5 are commits in **one** implementation PR, because any change to route-core
+needs one live record for the final tree:
+- L0 tests first (skip-guarded)
+- L1 driver move and `ROUTE_CORE`
+- L2 provenance ‖ L3 store/lock/worker (both after L1)
+- L4 admission and counting (after L2 and L3)
+- L5 CLI, watch and docs
 
-L1 → L4 are ordered; L2 and L3 may run in parallel after L1.
-
-### Landing sequence
-
-Any PR touching `gemini_heartbeat.py` or the driver turns the `--route-core` check
-red until it carries a fresh live qualification record for its own tree. The
-implementation PR therefore lands **after** the in-flight manual 1.2.12
-qualification PR and carries a new record produced on a subscribed host from its
-own final tree. Tests alone cannot land it.
+The PR lands after the in-flight manual 1.2.12 qualification, with a live record
+produced on a subscribed host from its final tree. L6's live check needs an
+in-window stable build that is not the pinned one.
 
 ## Tests and falsifiers
 
-Each is a named mutation that must turn its test red:
-
-- **Tampered binary (I1).** Flip one byte of an image whose unmodified bytes match a
-  fake release member: provenance refuses, help measurement and preflight are never
-  launched (the fake launcher records zero executions), no record is written.
-- **Digest mismatch (I1).** Archive bytes differ from `asset.digest`; wrong asset
-  name; an asset for a platform other than the detected host (musl asset on a
-  glibc host and the reverse, arm64 on x64); a prerelease or draft release whose
-  asset matches; download URL outside the release prefix; member absent,
-  non-regular or oversized: each refuses before execution.
-- **Offline (I1, I6).** API unreachable: first use refuses with
-  `gemini_heartbeat_provenance_unavailable`; the release-qualified image in the same
-  run is still admitted with no network call made; an image with a valid local
-  record is admitted with no network call made.
-- **Tampered record (I4).** One flipped byte; valid HMAC but a different image
-  digest; a store copied with a different machine-id; mode 0644; foreign owner;
-  symlinked file or directory; unknown schema: each is ignored and first use runs
-  again (never admits).
-- **Concurrent first use (I3).** Two processes race `ensure_admitted` on one
-  unqualified image with a fake driver: exactly one qualification runs, both are
-  admitted `locally_qualified`; killing the holder mid-run releases the lock and the
-  waiter qualifies; a waiter's cancel event ends its wait with
-  `review_operation_cancelled`.
-- **Behavioural failure (I2).** Each of the three operations failing validation
-  refuses the seat and persists a negative record; a later board refuses without a
-  driver launch; `clear` removes it.
-- **Unchanged isolation (I2).** The driver's `validate_records` checks and argv are
-  byte-identical to the release path; a mutation that drops any observer check in
-  the local path turns the parity test red.
-- **Recursion guard.** A candidate admission presented to an ordinary board entry
-  point (not a driver worker) is ignored; a `qualification_candidate` leg is never
-  counted by landing.
-- **Platform detection (D4).** Detection uses the running host only: a config or
-  environment value naming another platform changes nothing; an unsupported
-  platform refuses before any network call.
-- **Opt-out (D3).** With `[agy] self_qualification = false`, an image without a
-  release record is refused as today and the driver is never launched.
-- **Class (I5).** Every Gemini leg result carries exactly one class; a
-  release-qualified image reports `release_qualified` even when a local record for
-  the same digest exists.
-- **Release pin (I6).** With the store absent, unreadable or populated, admission of
-  the release-qualified digest makes the same checks as `input_base_commit` and
-  nothing else; a record claiming a different digest for the release key cannot
-  alter it.
-- **Lookup-only legs.** Per-leg and president admission never call provenance or the
-  driver (spy asserts zero calls).
-
-L6 live: on a subscribed host with an agy lacking a release record, run one board;
-confirm exactly one qualification, a `locally_qualified` class on the Gemini leg, a
-0600 record in a 0700 store, and reuse by a second board without inference. Then
-flip a byte in a private copy of the image on `PATH` and confirm refusal with no
-execution.
+Each falsifier names the mutation that must turn it red:
+- **I1 before provenance.** Byte-flipped image, digest mismatch, wrong/other-platform
+  asset, prerelease/draft, bad URL, malformed `digest`, bad member: refuse, zero executions.
+- **I1 after verification (TOCTOU).** The fake filesystem replaces the `PATH` image
+  (or re-points `PATH`) after each of: provenance, help measurement, qualification,
+  and a cached `locally_qualified` admission before a leg launches. The executed
+  bytes are always the original sealed memfd, and the path is opened exactly once
+  per admission. Mutations: a second open of the path, or taking the expected
+  digest from the bytes being checked, turn it red.
+- **Worker bypass.** Worker started with a sealed memfd of unverified bytes and no
+  provenance entry → zero launches.
+- **Offline.** First use refuses; release-qualified and already-recorded images are
+  admitted with zero network calls.
+- **Record/store (I4).** Flipped byte; foreign owner; 0644 file; 0755 store dir;
+  symlink; unknown schema; store copied from another host; the whole store (key
+  included) copied to another user on the same host with valid ownership and
+  modes: each → absent.
+- **D2 key.** A valid-HMAC record differing only in `__version__`, in one
+  `ROUTE_CORE` digest, in profile id, in platform, or in help digest → absent. A
+  test asserts that the verifier's and the runtime's `ROUTE_CORE` are the same
+  object and that it includes the provenance and qualification modules.
+- **I3 concurrency.** Two real processes race → one qualification, both admitted;
+  killing the holder hands off; a waiter's cancel returns `review_operation_cancelled`.
+- **I2.** Each operation failing → refuse and a negative record; cancel or a
+  mid-run image change → no record; validation parity with the release path.
+- **D3 opt-out is exactly today.** Golden parity against `input_base_commit`'s
+  `require_capability`, with a valid local record **seeded**, across preflight,
+  per-leg and president paths, for the release image, a non-release image and a
+  missing agy. The result, diagnostic string, store reads, network calls and
+  executions must all be identical to today (no store reads, no network, no
+  launches for non-release images). A repo-level `[agy]` table is still rejected.
+- **D4.** Host detection ignores config and environment; a record whose platform is
+  not the host's is absent; an unsupported platform refuses before any network call.
+- **D1.** At every tier, a `locally_qualified` Gemini leg counts; a
+  `qualification_candidate` leg or one with no class does not.
+- **I5/I6.** Exactly one class per leg. A release image reports `release_qualified`
+  even when a record exists, and its admission reads no config, store or network.
+- **Watch.** A second tick for the same version is a no-op; on a non-glibc-x64
+  platform no PR is opened; `merge` is never invoked; the produced record passes
+  `verify_qualified_agy_image.py --route-core` against the prepared tree.
 
 ## Maintainer decisions (recorded 2026-09-27)
 
-- **D1 Governed landings count a `locally_qualified` Gemini seat, at every tier.**
-  The admission class is recorded on every Gemini leg and in landing evidence.
-  (`qualification_candidate` legs remain driver-only and never count.)
-- **D2 Record key runtime identity = package `__version__` plus the route-core
-  source digests** (the agent-harness#1029 regime).
-- **D3 On by default**, with a user-config opt-out (`[agy] self_qualification = false`)
-  that restores today's hard refusal.
-- **D4 The stable release asset for the host's own platform is eligible.** Platform
-  is detected from the running host, not config; the asset must match it exactly,
-  so a musl host uses the musl asset and any other platform upstream ships uses its
-  own asset. A platform-mismatched asset is refused. "Stable" means
-  `prerelease == false` and `draft == false` in the release metadata. Exact-asset,
-  URL-prefix, `asset.digest` and member-digest checks apply per platform. The
-  isolation contract and the three live operations are unchanged on every platform;
-  a platform that cannot meet them refuses as today. The bounded recency window is
-  kept, justified in "First-use path" step 2.
+- **D1** A `locally_qualified` Gemini seat counts toward governed landings at every
+  tier, and the class is recorded on every leg. Enforced in "Counting (D1)".
+- **D2** The runtime identity in the key is `__version__` plus the route-core
+  digests. Enforced in "Runtime identity (D2)".
+- **D3** On by default, with a user-config opt-out that restores exactly today's
+  hard refusal. Enforced by admission step 2 and the parity test.
+- **D4** The stable (not prerelease, not draft) asset for the host-detected platform
+  is eligible, musl included on a musl host; platform-mismatched assets are
+  refused; the checks apply per platform. The isolation contract and the three
+  operations are unchanged, and a platform that cannot meet them refuses as today.
+  The recency window is kept (justified above).
 
 ## Security review
 
-This touches `gemini_heartbeat.py`, the qualification driver and the route
-contract, all security-sensitive. It requires a four-vendor board and a president
-on this plan and again on the implementation. Reviewers should check at least:
-the TOCTOU window between provenance hashing and the sealed memfd copy (the
-admitted digest must be re-verified on the memfd, as today); that no code path
-executes the image before provenance; archive extraction (tar member type, size,
-path; stream-hash, never extract to disk); the store's permission, ownership and
-symlink handling; that the candidate admission cannot be reached from an ordinary
-board; and that the provenance fetch runs in the coordinator process with no
-credential and never inside the seat namespace.
+Plan and implementation each need a four-vendor board and a president. The focus
+areas are:
+- the single-read `VerifiedImage` construction and the absence of any later path open;
+- the worker's provenance-entry gate;
+- archive handling (stream-hash only);
+- store binding (euid, machine-id, key);
+- that provenance runs only in the coordinator, with no credential.
 
 ## Acceptance
 
-- [ ] Every falsifier in "Tests and falsifiers" exists, fails under its named
-  mutation and passes on the candidate; the `automation.suite_command` passes.
-- [ ] The release-qualified admission path is unchanged in behaviour (I6 test green)
-  and the manual qualification CLI still produces a record that
+- [ ] Every falsifier above exists and is red under its named mutation. After L4,
+  `test_agy_self_qualification.py` runs with **zero skips**, and the
+  `automation.suite_command` passes.
+- [ ] The release-qualified admission is unchanged (I6 and D3 parity green), and the
+  manual qualification shim still produces a record that
   `verify_qualified_agy_image.py` accepts.
-- [ ] L6 live verification on a subscribed host is recorded, including the
-  tampered-binary refusal.
-- [ ] `CONTRACTS.md` states both admission classes, the provenance source, the
-  store, the lock, host-platform asset selection and the D1 counting rule.
+- [ ] L6 live on a subscribed host:
+  - one first-use qualification of a non-pinned stable build, reused by a second
+    board without inference;
+  - a post-verification image swap still executes only the verified bytes;
+  - one watch dry run, whose record passes `--route-core` on its prepared tree.
+- [ ] `CONTRACTS.md` states the three classes, `VerifiedImage`, provenance, store,
+  lock, platform selection and the D1 counting rule.
 - [ ] Plan and implementation each pass a four-vendor board and a president.
 
-Non-goals: extending digest pinning to other harnesses (issue's last bullet);
-revoking local records when upstream withdraws a release; signed-checksum adoption.
+Non-goals: pinning other harnesses; revoking local records when upstream withdraws
+a release; adopting signed checksums.
