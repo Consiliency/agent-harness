@@ -2287,6 +2287,7 @@ _FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for
     r"env_failure: temp dir unusable",
     r"env_failure: app-server socket dir not user-owned",
     r"env_failure: sandbox command could not be built",
+    r"env_failure: staging filesystem below its free-space floor",
     r"unknown failure(?: \(exit -?\d{1,3}\))?; CLI output(?: not retained|: "
     + _LEG_LOG_DIRNAME + r"/[A-Za-z0-9._-]{1,120}\.log)",
 ))
@@ -2400,6 +2401,10 @@ def _exception_failure(exc: BaseException) -> object:
     message = str(exc)
     if _is_harness_code(message):
         return message
+    if isinstance(exc, _sandbox_policy.SandboxSpaceError):
+        # A full disk is an operator-actionable environment failure (board round 8 of
+        # agent-harness#908); its message names paths, so it gets our own template.
+        return "env_failure: staging filesystem below its free-space floor"
     return _LegFailure(_UNKNOWN_DETAIL, raw=f"{type(exc).__name__}: {message}", unknown=True)
 
 

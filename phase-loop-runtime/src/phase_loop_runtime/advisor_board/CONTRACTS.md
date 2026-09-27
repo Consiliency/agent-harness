@@ -403,7 +403,7 @@ A `PanelLegResult.detail` is built ONLY from this runtime's closed vocabulary; r
 never enters it. It is a harness code (`_HARNESS_DETAIL_CODES`, or a
 `_HARNESS_DETAIL_CODE_TEMPLATES` pattern whose fields are typed tokens), a failure template
 (`_FAILURE_DETAIL_TEMPLATES`: `timeout`, `signal <N>`, `auth_failure`,
-`usage_limit[ (resets <HH:MM[, Mon D YYYY]>)]`, the four `env_failure: …` forms,
+`usage_limit[ (resets <HH:MM[, Mon D YYYY]>)]`, the five `env_failure: …` forms,
 `tool_denied: …`, `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log | not
 retained`), or `<harness code>: <failure template>`. `detail` is a validating data descriptor
 (write and read), and a subclass may not shadow it. An unknown failure's raw output is kept

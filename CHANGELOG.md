@@ -218,6 +218,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - `env_failure: temp dir unusable`;
   - `env_failure: app-server socket dir not user-owned`;
   - `env_failure: sandbox command could not be built`;
+  - `env_failure: staging filesystem below its free-space floor`;
   - `tool_denied: headless tool permission auto-denied`;
   - `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log`, or `…; CLI output not
     retained`.
