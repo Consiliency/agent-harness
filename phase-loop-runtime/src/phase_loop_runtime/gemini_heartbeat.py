@@ -14,8 +14,18 @@ import time
 from .agy_canary_evidence import AgyCanaryEvidenceError, _linux_memfd_seal_abi, _sealed_tree_fd
 
 
-QUALIFIED_IMAGE_SHA256 = "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56"
-QUALIFIED_HELP_SHA256 = "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755"
+# The closed set of qualified agy entry images: image SHA256 -> its measured `--help` SHA256.
+# Each member has its own live qualification record, listed in
+# plans/evidence/qualified-provider-images.json; verify_qualified_agy_image.py requires this
+# literal and that catalog to name exactly the same members (agent-harness#1008).
+QUALIFIED_IMAGES = {
+    # agy 1.2.11
+    "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56":
+        "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
+    # agy 1.2.12
+    "ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca":
+        "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
+}
 PROFILE_ID = "agy_memfd_home_deny_all_v1"
 PRIVATE_HOME = "/dev/phase-loop-agy"
 _CAPABILITY = "gemini_heartbeat_capability_unavailable"
@@ -35,7 +45,7 @@ def _read_image(path):
         while chunk := os.read(fd, 1024 * 1024):
             chunks.append(chunk)
         data = b"".join(chunks)
-        if sha256(data).hexdigest() != QUALIFIED_IMAGE_SHA256:
+        if sha256(data).hexdigest() not in QUALIFIED_IMAGES:
             raise ValueError(_CAPABILITY)
         return data
     finally:
@@ -253,11 +263,12 @@ def owned_profile(env, *, settings_bytes, credential_path):
             raise ValueError("brokered Gemini subscription credential reference is invalid")
         try:
             data = _read_image(image)
+            image_sha256 = sha256(data).hexdigest()
             profile.image_fd = profile._own(_sealed_tree_fd(data=data, executable=True, label="agy-image"))
             copied = sha256()
             while chunk := os.read(profile.image_fd, 1024 * 1024):
                 copied.update(chunk)
-            if copied.hexdigest() != QUALIFIED_IMAGE_SHA256:
+            if copied.hexdigest() != image_sha256 or image_sha256 not in QUALIFIED_IMAGES:
                 raise ValueError(_CAPABILITY)
             os.lseek(profile.image_fd, 0, os.SEEK_SET)
             os.fchmod(profile.image_fd, 0o500)
@@ -277,10 +288,10 @@ def owned_profile(env, *, settings_bytes, credential_path):
                 "--symlink", str(Path(credential_path).absolute()), config + "/antigravity-oauth-token",
             ]
             settings_hash = sha256(settings_bytes).hexdigest()
-            description = {"id": PROFILE_ID, "image_sha256": QUALIFIED_IMAGE_SHA256,
+            description = {"id": PROFILE_ID, "image_sha256": image_sha256,
                            "settings_sha256": settings_hash, "home": PRIVATE_HOME}
             profile.evidence.update({
-                "provider_image_sha256": QUALIFIED_IMAGE_SHA256,
+                "provider_image_sha256": image_sha256,
                 "provider_agy_settings_sha256": settings_hash,
                 "provider_profile_sha256": sha256(json.dumps(description, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
                 "provider_agy_subscription_reference": "private_symlink",

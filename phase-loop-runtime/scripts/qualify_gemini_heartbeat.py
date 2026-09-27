@@ -264,6 +264,14 @@ def validate_directory(root, **expected):
             "route_qualified": sorted(operations) == ["cancel", "completion", "owner-loss"]}
 
 
+def series_image(root):
+    """The one qualified image a series measured, read from its preregistrations, never asserted."""
+    images = {json.loads(path.read_text()).get("image_sha256") for path in root.rglob("preregistration.json")}
+    if len(images) != 1 or next(iter(images)) not in gh.QUALIFIED_IMAGES:
+        raise QualificationFailure("qualification series does not measure exactly one qualified image")
+    return next(iter(images))
+
+
 def source_pins():
     source = Path(panel.__file__).parent
     files = sorted(source.rglob("*.py"))
@@ -271,8 +279,8 @@ def source_pins():
     return {str(path.relative_to(source)) if path.is_relative_to(source) else path.name: file_hash(path) for path in files}
 
 
-def profile_description():
-    return {"id": gh.PROFILE_ID, "image_sha256": gh.QUALIFIED_IMAGE_SHA256,
+def profile_description(image_sha256):
+    return {"id": gh.PROFILE_ID, "image_sha256": image_sha256,
             "settings_sha256": sha256(panel._broker_agy_settings_bytes()).hexdigest(), "home": gh.PRIVATE_HOME}
 
 
@@ -471,7 +479,11 @@ def run_operation(operation, root, help_evidence, extra_helpers=()):
     credential_regular_before = credential.is_file()
     if not credential_regular_before:
         raise QualificationFailure("qualification credential target is unavailable")
-    if file_hash(help_evidence) != gh.QUALIFIED_HELP_SHA256:
+    image_sha256 = file_hash(image_path)
+    if image_sha256 not in gh.QUALIFIED_IMAGES:
+        raise QualificationFailure("qualification candidate image is not a qualified set member")
+    help_sha256 = gh.QUALIFIED_IMAGES[image_sha256]
+    if file_hash(help_evidence) != help_sha256:
         raise QualificationFailure("qualification help input differs from the measured candidate")
     root.mkdir(mode=0o700, parents=False, exist_ok=False)
     artifact = (
@@ -486,7 +498,7 @@ def run_operation(operation, root, help_evidence, extra_helpers=()):
     (root / "artifact.md").write_text(artifact)
     (root / "brief.md").write_text(brief)
     (root / "agy-help.txt").write_bytes(Path(help_evidence).read_bytes())
-    sources, profile, registered_helpers = source_pins(), profile_description(), helper_pins(extra_helpers)
+    sources, profile, registered_helpers = source_pins(), profile_description(image_sha256), helper_pins(extra_helpers)
     prompt = panel._render_broker_inline_prompt(artifact, brief, "review")
     transport = panel._broker_gemini_stream_protocol(prompt).transport
     request = {"artifact_sha256": sha256(artifact.encode()).hexdigest(),
@@ -495,13 +507,13 @@ def run_operation(operation, root, help_evidence, extra_helpers=()):
                "provider_transport_sha256": sha256(transport.encode()).hexdigest()}
     preregistration = {"operation": operation, "attempt_limit": 1, "source_sha256": sources,
                        "helper_sha256": registered_helpers,
-                       "image_sha256": file_hash(image_path), "help_sha256": gh.QUALIFIED_HELP_SHA256,
+                       "image_sha256": image_sha256, "help_sha256": help_sha256,
                        "profile": profile, "profile_sha256": digest(profile), "request": request,
                        "trigger": "observed provider progress after admission" if operation == "cancel" else "observed qualified provider admission after independent local measurements",
                        "model_deadline_s": None, "silence_deadline_s": None}
     write_json(root / "preregistration.json", preregistration)
     held, observed_processes = {}, {}
-    helpers = HelperObserver(gh.QUALIFIED_IMAGE_SHA256, registered_helpers)
+    helpers = HelperObserver(image_sha256, registered_helpers)
     namespace_fd = None
     observer = None
     monitor = None
@@ -540,7 +552,7 @@ def run_operation(operation, root, help_evidence, extra_helpers=()):
                         if not argv or argv[0] != gh.PRIVATE_HOME + "/agy":
                             continue
                         image_hash = file_hash(f"/proc/{pid}/exe")
-                        if image_hash != gh.QUALIFIED_IMAGE_SHA256:
+                        if image_hash != image_sha256:
                             raise QualificationFailure("qualification observed an unqualified provider image")
                         ns = os.stat(f"/proc/{pid}/ns/pid")
                         init = None
@@ -644,8 +656,8 @@ def run_operation(operation, root, help_evidence, extra_helpers=()):
         stage = "validation"
         if source_pins() != sources:
             raise QualificationFailure("qualification runtime changed during observation")
-        validate_records(record, expected_source_sha256=sources, expected_image_sha256=gh.QUALIFIED_IMAGE_SHA256,
-                         expected_help_sha256=gh.QUALIFIED_HELP_SHA256, expected_profile_sha256=digest(profile),
+        validate_records(record, expected_source_sha256=sources, expected_image_sha256=image_sha256,
+                         expected_help_sha256=help_sha256, expected_profile_sha256=digest(profile),
                          expected_helper_sha256=registered_helpers)
         completed = True
     except BaseException as exc:
@@ -675,9 +687,10 @@ def main():
     if args.worker is not None:
         worker(args.worker.resolve())
     elif args.validate is not None:
+        image_sha256 = series_image(args.validate)
         result = validate_directory(args.validate, expected_source_sha256=source_pins(),
-                         expected_image_sha256=gh.QUALIFIED_IMAGE_SHA256, expected_help_sha256=gh.QUALIFIED_HELP_SHA256,
-                         expected_profile_sha256=digest(profile_description()), expected_helper_sha256=helper_pins(args.helper_image))
+                         expected_image_sha256=image_sha256, expected_help_sha256=gh.QUALIFIED_IMAGES[image_sha256],
+                         expected_profile_sha256=digest(profile_description(image_sha256)), expected_helper_sha256=helper_pins(args.helper_image))
         print(json.dumps(result))
         return 0 if result["route_qualified"] else 2
     else:

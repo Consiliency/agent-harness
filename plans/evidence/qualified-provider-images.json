@@ -1,12 +1,25 @@
 {
-  "schema": "qualified_provider_images.v1",
+  "schema": "qualified_provider_images.v2",
   "routes": {
     "gemini_heartbeat_linux_x64": {
       "provider": "gemini",
       "route": "brokered_subscription_heartbeat_only",
       "platform": "linux",
       "architecture": "x86_64",
-      "record": "agy-1.2.11-linux-x64-qualification.json"
+      "images": [
+        {
+          "release_version": "1.2.11",
+          "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+          "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
+          "record": "agy-1.2.11-linux-x64-qualification.json"
+        },
+        {
+          "release_version": "1.2.12",
+          "image_sha256": "ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca",
+          "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
+          "record": "agy-1.2.12-linux-x64-qualification.json"
+        }
+      ]
     }
   }
 }

@@ -405,30 +405,35 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | Legacy invoke_panel | Existing behavior | Unsupported |
 | CLI default four-vendor board | Existing behavior | Preserves four vendors; refuses before auth if Gemini capability is missing or changed |
 
-The Gemini extension (agent-harness#905) admits only the qualified `agy` 1.2.11
-Linux x64 entry image SHA256
-`ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`
-and requires sealed memfd/pidfd support in the running Python/kernel. It uses
+The Gemini extension (agent-harness#905) admits only a closed set of qualified
+`agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`:
+1.2.11 (SHA256 `ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`)
+and 1.2.12 (SHA256 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`),
+so a host that has not yet auto-updated keeps its Gemini seat (agent-harness#1008).
+It requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, acknowledged stdin input, deny-all settings and no
 staged-tree attachment. The executable/settings are immutable mounts in a private
 namespace-owned HOME. Credential targets are referenced, never copied or restored;
 legitimate refresh writes survive. Required bwrap flags are checked at admission.
-An image update needs qualification before the supported digest changes. The
+Adding an image to the set needs its own qualification first. The
 runtime performs no release discovery or image search: it hashes the single
-`agy` resolved on `PATH` and refuses any other digest, including the previously
-qualified 1.2.10, 1.2.9 and 1.2.7 images. A durable image catalog, upstream-release
+`agy` resolved on `PATH`, admits it only if that digest is a set member, binds
+the admitted digest into the profile evidence, and refuses any other digest,
+including the previously qualified 1.2.10, 1.2.9 and 1.2.7 images. Upstream-release
 discovery and fleet updater coordination are tracked by agent-harness#1008.
-The redacted 1.2.11 qualification record and exact source hashes are in
-`plans/evidence/agy-1.2.11-linux-x64-qualification.json`; that evidence record is
+Each member has its own redacted qualification record with exact source hashes,
+`plans/evidence/agy-<release>-linux-x64-qualification.json`; the records are
 not a second admission source.
-`plans/evidence/qualified-provider-images.json` points to the current record.
-The `qualified-agy-image` CI check compares the record's hashes of the route's core
+`plans/evidence/qualified-provider-images.json` lists every member (image digest,
+help digest, release and record), and the verifier refuses unless that list and
+the runtime set name exactly the same members and every member's record checks.
+The `qualified-agy-image` CI check compares every record's hashes of the route's core
 files (`gemini_heartbeat.py`, `qualify_gemini_heartbeat.py`) with the checkout on
 pull requests and pushes that touch them or the evidence. The full source-hash set
 blocks publication, a release-cut pull request and a pull request that changes the
 evidence, and is reported without blocking nightly (agent-harness#1029), so a release
 still needs a qualification series on its exact tree. Nightly and manual runs also
-verify the latest official release archive and extracted executable.
+verify that the latest official release is a set member, and its archive and extracted executable.
 
 Rejected, empty and native-failed streams retain fixed diagnostics and remain
 non-votes. The qualification driver records distinct completion, cancellation

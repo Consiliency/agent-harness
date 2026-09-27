@@ -1,4 +1,4 @@
-"""Verify the current qualified agy record against source and Google's release asset."""
+"""Verify every qualified agy image record against source, and the latest one against Google's release asset."""
 
 import argparse
 import ast
@@ -38,7 +38,7 @@ def digest_file(path):
 
 def image_constants():
     tree = ast.parse((PACKAGE / "gemini_heartbeat.py").read_text())
-    names = {"QUALIFIED_IMAGE_SHA256", "QUALIFIED_HELP_SHA256", "PROFILE_ID"}
+    names = {"QUALIFIED_IMAGES", "PROFILE_ID"}
     return {target.id: ast.literal_eval(node.value)
             for node in tree.body if isinstance(node, ast.Assign)
             for target in node.targets if isinstance(target, ast.Name) and target.id in names}
@@ -50,45 +50,71 @@ def actual_source_hashes():
     return actual
 
 
-def validate_record(*, verify_sources=True, route_core_only=False):
+def catalog_route():
     catalog = json.loads((EVIDENCE / "qualified-provider-images.json").read_text())
-    require(catalog["schema"] == "qualified_provider_images.v1", "catalog schema mismatch")
+    require(catalog["schema"] == "qualified_provider_images.v2", "catalog schema mismatch")
     require(set(catalog["routes"]) == {"gemini_heartbeat_linux_x64"}, "catalog route mismatch")
     route = catalog["routes"]["gemini_heartbeat_linux_x64"]
     for key, value in {"provider": "gemini", "route": "brokered_subscription_heartbeat_only",
                        "platform": "linux", "architecture": "x86_64"}.items():
         require(route[key] == value, f"catalog {key} mismatch")
-    name = route["record"]
+    members = route["images"]
+    require(isinstance(members, list) and bool(members), "catalog has no qualified images")
+    for field in ("image_sha256", "release_version", "record"):
+        require(len({member[field] for member in members}) == len(members), f"catalog repeats a {field}")
+    return route, members
+
+
+def validate_member(route, member, constants, *, verify_sources=True, route_core_only=False, actual=None):
+    """One qualified image: its catalog entry, its own evidence record and (optionally) its source pins."""
+    name = member["record"]
     require(Path(name).name == name and name.startswith("agy-") and
             name.endswith("-linux-x64-qualification.json"), "unsafe catalog record path")
     record = json.loads((EVIDENCE / name).read_text())
     for key, value in {"provider": route["provider"], "route": route["route"],
-                       "platform": route["platform"], "architecture": route["architecture"]}.items():
-        require(record[key] == value, f"record {key} mismatch")
-    constants = image_constants()
-    require(record["image_sha256"] == constants["QUALIFIED_IMAGE_SHA256"], "admitted image mismatch")
-    require(record["help_sha256"] == constants["QUALIFIED_HELP_SHA256"], "help digest mismatch")
-    require(record["isolation_profile"] == constants["PROFILE_ID"], "isolation profile mismatch")
+                       "platform": route["platform"], "architecture": route["architecture"],
+                       "release_version": member["release_version"],
+                       "image_sha256": member["image_sha256"], "help_sha256": member["help_sha256"]}.items():
+        require(record[key] == value, f"record {name} {key} mismatch")
+    require(record["isolation_profile"] == constants["PROFILE_ID"], f"record {name} isolation profile mismatch")
     pins = record["source_sha256"]
     if verify_sources:
-        actual = actual_source_hashes()
         if route_core_only:
-            for name in ROUTE_CORE:
-                require(name in pins, f"qualification record does not pin route-core file {name}")
-                require(pins[name] == actual.get(name),
-                        f"route-core file {name} differs from its qualification; requalify")
+            for core in ROUTE_CORE:
+                require(core in pins, f"qualification record {name} does not pin route-core file {core}")
+                require(pins[core] == actual.get(core),
+                        f"route-core file {core} differs from its qualification ({name}); requalify")
         else:
-            require(pins == actual, "qualification source hashes differ from this checkout")
+            require(pins == actual, f"qualification source hashes of {name} differ from this checkout")
     require(record["validator"] == {"validated": 3,
                                     "operations": ["cancel", "completion", "owner-loss"],
-                                    "route_qualified": True}, "qualification validation mismatch")
+                                    "route_qualified": True}, f"record {name} qualification validation mismatch")
     require({row["operation"] for row in record["records"]} ==
-            {"cancel", "completion", "owner-loss"}, "qualification operations mismatch")
+            {"cancel", "completion", "owner-loss"}, f"record {name} qualification operations mismatch")
     require(all(row["image_sha256"] == record["image_sha256"] and
                 row["help_sha256"] == record["help_sha256"] and
-                row["profile"]["id"] == record["isolation_profile"]
-                for row in record["records"]), "qualification record image or profile mismatch")
-    return record, len(pins)
+                row["profile"]["id"] == record["isolation_profile"] and
+                row["profile"]["image_sha256"] == record["image_sha256"]
+                for row in record["records"]), f"record {name} image or profile mismatch")
+    return record
+
+
+def validate_records(*, verify_sources=True, route_core_only=False):
+    """Every member of the runtime's closed image set, each against its own record.
+
+    The runtime literal and the catalog must name exactly the same (image, help) pairs, so
+    neither can widen the admitted set without the other and without a record.
+    """
+    route, members = catalog_route()
+    constants = image_constants()
+    require(isinstance(constants.get("QUALIFIED_IMAGES"), dict) and bool(constants["QUALIFIED_IMAGES"]),
+            "runtime qualified image set missing")
+    require({(m["image_sha256"], m["help_sha256"]) for m in members} ==
+            set(constants["QUALIFIED_IMAGES"].items()),
+            "runtime qualified image set differs from the catalog")
+    actual = actual_source_hashes() if verify_sources else None
+    return [validate_member(route, member, constants, verify_sources=verify_sources,
+                            route_core_only=route_core_only, actual=actual) for member in members]
 
 
 def verify_archive(record, archive):
@@ -113,23 +139,27 @@ def main():
     mode.add_argument("--route-core", action="store_true",
                       help="verify the record and the route-core source pins only, without network")
     args = parser.parse_args()
-    record, source_count = validate_record(verify_sources=not args.upstream_only,
-                                           route_core_only=args.route_core)
+    records = validate_records(verify_sources=not args.upstream_only, route_core_only=args.route_core)
+    releases = [record["release_version"] for record in records]
+    source_count = len(records[0]["source_sha256"])
     if args.route_core:
-        drift = sorted(name for name, digest in actual_source_hashes().items()
-                       if record["source_sha256"].get(name) != digest)
-        print(json.dumps({"route_core": list(ROUTE_CORE), "route_core_pins_verified": True,
-                          "other_sources_drifted": len(drift),
+        drift = sorted({name for record in records for name, digest in actual_source_hashes().items()
+                        if record["source_sha256"].get(name) != digest})
+        print(json.dumps({"qualified_releases": releases, "route_core": list(ROUTE_CORE),
+                          "route_core_pins_verified": True, "other_sources_drifted": len(drift),
                           "full_pin_check": "at release (publish-pypi.yml)"}))
         return
     if args.source_only:
-        print(json.dumps({"source_files": source_count, "source_pins_verified": True}))
+        print(json.dumps({"qualified_releases": releases, "source_files": source_count,
+                          "source_pins_verified": True}))
         return
     request = Request(API, headers={"Accept": "application/vnd.github+json",
                                     "User-Agent": "agent-harness-qualified-image-check"})
     with urlopen(request, timeout=30) as response:
         release = json.load(response)
-    require(release["tag_name"] == record["release_version"], "qualified release is no longer latest")
+    latest = [record for record in records if record["release_version"] == release["tag_name"]]
+    require(len(latest) == 1, "latest release is not a qualified image set member")
+    record, = latest
     asset, = (item for item in release["assets"] if item["name"] == ASSET)
     require(asset["digest"] == "sha256:" + record["upstream_asset_sha256"], "vendor asset digest mismatch")
     require(asset["browser_download_url"].startswith(
@@ -146,11 +176,10 @@ def main():
                     target.write(chunk)
                     require(target.tell() <= 128_000_000, "release asset exceeds expected size")
             verify_archive(record, archive)
-    print(json.dumps({"latest_release": release["tag_name"], "source_files": source_count,
-                      "source_pins_verified": not args.upstream_only,
+    print(json.dumps({"latest_release": release["tag_name"], "qualified_releases": releases,
+                      "source_files": source_count, "source_pins_verified": not args.upstream_only,
                       "asset_sha256": record["upstream_asset_sha256"],
                       "image_sha256": record["image_sha256"], "verified": True}))
-
 
 if __name__ == "__main__":
     main()
