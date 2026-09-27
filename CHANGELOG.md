@@ -202,8 +202,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Anything else fails, whatever it printed. An rc-0 environment failure printed instead of a
   review (agent-harness#1098) therefore fails without any text scan. Free text never decides
   an outcome or demotes an `OK` leg, which retires advisory's auth-scan-first order. Advisory
-  mode now needs its `RECOMMENDATION:` line; the advisory instructions ask for it, and a
-  seat that omits it is a failed seat.
+  mode now needs its `RECOMMENDATION:` line. The panel advisory instructions, the Claude TUI
+  advisory prompt and the native-fill advisory contract all ask for it, and a seat that omits
+  it is a failed seat. The line is parsed exactly as the review verdict is (the last
+  non-empty line), so a sign-off after it fails. The `--advisory` board contract
+  (advisory.v1) runs in review mode with verdicts and is unchanged.
 - A failed leg's `detail` is `<failure_kind>: <the CLI's own line>`:
   - `usage_limit`, which adds `(resets <time>)` when the provider prints a reset time;
   - `env_failure`, `auth`, `timeout` and `signal`;

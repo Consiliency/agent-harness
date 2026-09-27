@@ -651,3 +651,45 @@ def test_the_final_labelled_detail_is_bounded_and_control_stripped():
     assert detail.startswith("env_failure: Temp directory /tmp/")
     assert len(detail) <= pi._LEG_DETAIL_MAX_CHARS
     assert not re.search(r"[\x00-\x1f\x7f-\x9f]", detail), repr(detail)
+
+
+# --- the advisory RECOMMENDATION artifact (lead conditions for option A) -------------------
+
+def test_advisory_banner_falsifier():
+    """A 40+ character provider banner with rc 0 and no RECOMMENDATION line is a failure in
+    advisory mode — the exact fail-open the old `len >= 40` rule had."""
+    banner = "You've hit the rate limit for your plan. Upgrade your account or try again later."
+    assert len(banner) >= 40
+    assert pi._classify_leg(0, banner, "", mode="advisory") != "OK"
+
+
+@pytest.mark.parametrize("text,value", [
+    ("advice\nRECOMMENDATION: go", "go"),
+    ("advice\n**RECOMMENDATION:** ship it", "ship it"),
+    ("advice\n  recommendation:  do x  ", "do x"),
+    ("advice\n- RECOMMENDATION: a", "a"),
+    ("advice\nRECOMMENDATION:", None),                  # empty value
+    ("advice\nRECOMMENDATION: go\n\nThanks, happy to help!", None),  # a sign-off after it
+    ("RECOMMENDATION: go\nadvice after it", None),      # not the last line
+])
+def test_recommendation_parse_mirrors_the_verdict_parse(text, value):
+    assert pi._advisory_recommendation(text) == value
+
+
+def test_a_sign_off_fails_verdict_and_recommendation_alike():
+    """Same parse shape: a line after the artifact defeats both."""
+    assert pi.terminal_verdict("review\nAGREE\nThanks!") is None
+    assert pi._advisory_recommendation("advice\nRECOMMENDATION: go\nThanks!") is None
+
+
+def test_every_advisory_prompt_asks_for_the_recommendation_line(tmp_path):
+    assert "RECOMMENDATION:" in pi._ADVISORY_INSTRUCTIONS
+    assert "RECOMMENDATION:" in pi._ADVISORY_VERDICT_CONTRACT
+    tui = pi._render_claude_tui_prompt("A", tmp_path, tmp_path / "out.txt", mode="advisory")
+    assert "RECOMMENDATION:" in tui
+
+
+def test_president_without_a_forcing_decision_fails_even_when_long():
+    body = "A long, careful ruling that weighs every seat's findings in depth. " * 20
+    assert pi._classify_leg(0, body, "", mode="president") != "OK"
+    assert pi._classify_leg(0, body + "\nFORCING DECISION: land it", "", mode="president") == "OK"

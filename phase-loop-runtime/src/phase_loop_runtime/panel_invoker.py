@@ -1648,6 +1648,27 @@ _VERDICT_RE = re.compile(r"^(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE
 _LEADING_MARKUP_RE = re.compile(r"^(?:[-*>\s`#]+|\d+[.)]\s*)+")
 
 
+def _final_line(text: str) -> str | None:
+    """The last NON-EMPTY line with leading list / blockquote / numbered / bold markup and
+    a wrapping ``*``/`` ` `` emphasis removed — the one line a leg's success artifact lives
+    on. Shared by ``terminal_verdict`` and ``_advisory_recommendation`` so the two parse
+    it identically (a seat that signs off after its verdict or recommendation fails both
+    the same way)."""
+    for raw in reversed((text or "").splitlines()):
+        s = raw.strip()
+        if s:
+            return _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
+    return None
+
+
+def _after_label(line: str, label: str) -> str | None:
+    """``line``'s value after ``<label>:`` (the label case-insensitive, a trailing emphasis
+    wrapper like ``**LABEL:**`` tolerated), or None when the line does not carry it."""
+    if not line.upper().startswith(label.upper() + ":"):
+        return None
+    return line[len(label) + 1:].strip().strip("*`").strip()
+
+
 def terminal_verdict(text: str) -> str | None:
     """Return the leg's structured verdict iff its LAST non-empty line BEGINS with
     one of {AGREE, PARTIALLY AGREE, DISAGREE} (tolerating a leading ``VERDICT:``,
@@ -1655,17 +1676,15 @@ def terminal_verdict(text: str) -> str | None:
     ``None`` (non-conforming → the caller fails closed). The panel brief instructs
     each leg to end with the verdict, so the terminal line is the contract — not a
     substring anywhere."""
-    for raw in reversed((text or "").splitlines()):
-        s = raw.strip()
-        if not s:
-            continue
-        s = _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
-        if s.upper().startswith("VERDICT:"):
-            s = s[len("VERDICT:") :].strip().strip("*`").strip()
-        s = _LEADING_MARKUP_RE.sub("", s).strip()
-        m = _VERDICT_RE.match(s)
-        return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
-    return None
+    s = _final_line(text)
+    if s is None:
+        return None
+    labeled = _after_label(s, "VERDICT")
+    if labeled is not None:
+        s = labeled
+    s = _LEADING_MARKUP_RE.sub("", s).strip()
+    m = _VERDICT_RE.match(s)
+    return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
 
 
 # #63: panel mode. "review" is the pre-merge code-review framing (default,
@@ -1799,18 +1818,12 @@ def _completion_ok(text: str, mode: str = "review") -> bool:
 
 
 def _advisory_recommendation(text: str) -> str | None:
-    """The advisory success artifact: the last non-empty line, after list/quote/bold markup,
-    is ``RECOMMENDATION: <something>``. Returns the recommendation, else None."""
-    for raw in reversed((text or "").splitlines()):
-        s = raw.strip()
-        if not s:
-            continue
-        s = _LEADING_MARKUP_RE.sub("", s).strip().strip("*`").strip()
-        if s.upper().startswith("RECOMMENDATION:"):
-            rest = s[len("RECOMMENDATION:"):].strip().strip("*`").strip()
-            return rest or None
-        return None
-    return None
+    """The advisory success artifact: the last non-empty line (parsed exactly as
+    ``terminal_verdict`` parses it, via ``_final_line``) is ``RECOMMENDATION: <value>``
+    with a non-empty value. Returns the value, else None."""
+    s = _final_line(text)
+    value = _after_label(s, "RECOMMENDATION") if s is not None else None
+    return value or None
 
 
 def _president_ruling_complete(text: str) -> bool:
@@ -3990,8 +4003,9 @@ def _render_claude_tui_prompt(
         if mode != "advisory"
         else (
             "The file must contain your full advice in prose (tradeoffs, risks, a clear "
-            "recommendation) — NO AGREE/DISAGREE verdict is required. After the file is written, "
-            "reply in chat with a one-line summary of your recommendation."
+            "recommendation) — NO AGREE/DISAGREE verdict is required — and must end with one "
+            "final line `RECOMMENDATION: <your recommendation in one line>`. After the file is "
+            "written, reply in chat with only that same RECOMMENDATION line."
         )
     )
     return (
@@ -6152,8 +6166,8 @@ _REVIEW_VERDICT_CONTRACT = (
     "line (use DISAGREE only when there is a blocking defect)."
 )
 _ADVISORY_VERDICT_CONTRACT = (
-    "End with a clear recommendation; no AGREE / PARTIALLY AGREE / DISAGREE "
-    "verdict is required."
+    "End with exactly one final line `RECOMMENDATION: <one line>`; no AGREE / "
+    "PARTIALLY AGREE / DISAGREE verdict is required."
 )
 
 
