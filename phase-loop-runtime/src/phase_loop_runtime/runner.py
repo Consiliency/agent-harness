@@ -12611,8 +12611,13 @@ def _commit_failure_closeout(
     )
 
 
+# key=value / key: value credential shape. Shared with panel_invoker's leg-detail redactor,
+# which applies it to the WHOLE multi-line text before selecting an excerpt.
+_STDERR_SECRET_KV_RE = re.compile(r"(?i)(api[_-]?key|authorization|token|secret|password)(\s*[:=]\s*)\S+")
+
+
 def _redacted_stderr_excerpt(text: str, max_chars: int = 500) -> str:
-    redacted = re.sub(r"(?i)(api[_-]?key|authorization|token|secret|password)(\s*[:=]\s*)\S+", r"\1\2<redacted>", text or "")
+    redacted = _STDERR_SECRET_KV_RE.sub(r"\1\2<redacted>", text or "")
     redacted = " ".join(redacted.split())
     if len(redacted) > max_chars:
         return redacted[: max_chars - 3] + "..."

@@ -1295,6 +1295,11 @@ class PanelLegResult:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
         if self.seat_key is None:
             object.__setattr__(self, "seat_key", self.leg)
+        # agent-harness#1102: the detail chokepoint. Every route that builds a leg result —
+        # a CLI diagnostic, a raw exception string, a fixed vocabulary token — stores the
+        # redacted, single-line, bounded form, so governed finding reasons, the streaming
+        # verdict JSON and every printer only ever see a finalized detail. Idempotent.
+        object.__setattr__(self, "detail", _finalize_leg_detail(self.detail))
 
     @property
     def usable(self) -> bool:
@@ -1400,7 +1405,7 @@ def _finalize_research_result(
     attach_research_ledger(result, ledger)
     if result.status == "OK" and ledger.status != "success":
         object.__setattr__(result, "status", "DEGRADED")
-        object.__setattr__(result, "detail", f"research_audit_{ledger.status}")
+        object.__setattr__(result, "detail", _finalize_leg_detail(f"research_audit_{ledger.status}"))
     return result
 
 
@@ -1662,11 +1667,13 @@ def _final_line(text: str) -> str | None:
 
 
 def _after_label(line: str, label: str) -> str | None:
-    """``line``'s value after ``<label>:`` (the label case-insensitive, a trailing emphasis
-    wrapper like ``**LABEL:**`` tolerated), or None when the line does not carry it."""
-    if not line.upper().startswith(label.upper() + ":"):
+    """``line``'s value after ``<label>:`` (the label case-insensitive; an emphasis wrapper
+    around the label with the colon inside or outside it — ``**LABEL:**`` or ``**LABEL**:``
+    — tolerated), or None when the line does not carry it."""
+    match = re.match(rf"{re.escape(label)}[*`]*:", line, re.IGNORECASE)
+    if match is None:
         return None
-    return line[len(label) + 1:].strip().strip("*`").strip()
+    return line[match.end():].strip().strip("*`").strip()
 
 
 def terminal_verdict(text: str) -> str | None:
@@ -1872,9 +1879,8 @@ _TOOL_DENIED_RE = re.compile(
 #     only for rc 0 plus the mode's success artifact (`_completion_ok`). Free text never
 #     decides an outcome and never demotes an OK leg.
 #   * LABELING happens only on a leg that already failed, and it is cosmetic: a wrong label
-#     cannot change pass/fail. `failure_kind` comes from, in order, the harness's own typed
-#     diagnostics / process facts (timeout, signal), then a plain text match over the CLI's
-#     log tail and body. That match makes no claim about WHO printed a line; a prompt echo
+#     cannot change pass/fail. `failure_kind` comes from, in order, process facts (timeout,
+#     signal), then a plain text match over the CLI's log tail and body. That match makes no claim about WHO printed a line; a prompt echo
 #     that quotes a banner can mislabel a failed leg, and nothing worse.
 #   * REDACTION substitutes KNOWN values (the running user's home and name, the seat's own
 #     scratch/repo paths) and known credential shapes. It does not guess path shapes.
@@ -1924,9 +1930,13 @@ _LEG_ERROR_LINE_RE = re.compile(
     r"\bexception\b|\btraceback\b|\bpanic",
     re.IGNORECASE,
 )
-_LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-# Credential SHAPES (values we cannot know in advance): `runner._redacted_stderr_excerpt`
-# covers key=value; these cover bare bearer tokens, prefixed API keys, JWTs and emails.
+# Control characters to drop from a detail. NEWLINE is kept so redaction can run over the
+# whole multi-line text before an excerpt line is selected; the final single-line form
+# collapses whitespace (as `runner._redacted_stderr_excerpt` always has).
+_LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+# Credential SHAPES (values we cannot know in advance): key=value (shared with
+# `runner._redacted_stderr_excerpt`), bare bearer tokens, prefixed API keys, JWTs, emails.
+# Each run-shaped pattern anchors its START so a long run cannot backtrack quadratically.
 _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer <redacted>"),
     (re.compile(
@@ -1935,8 +1945,16 @@ _LEG_DETAIL_SECRET_RES: tuple[tuple[re.Pattern[str], str], ...] = (
     ), "<redacted>"),
     (re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted>"),
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
+    # `<user>@domain`: the local part was the known username, already substituted.
+    (re.compile(r"(?:(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+|<user>)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+     "<email>"),
 )
+# A known value is substituted only as a WHOLE token: a username between non-[A-Za-z0-9_]
+# characters (and never inside an already-substituted `<…>` placeholder, so finalizing is
+# idempotent); a path only at a path boundary (`HOME=/app` must not rewrite `/app-server`).
+_USERNAME_BOUNDARY = "A-Za-z0-9_<>"
+_PATH_END = r"(?![A-Za-z0-9._-])"
+_PATH_START = r"(?<![A-Za-z0-9._/-])"
 
 
 def _redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -1967,25 +1985,30 @@ def _redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 def _substitute_known_values(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
     """Replace exact known values, longest first: the seat's own paths (``known``: scratch
-    dirs, the repo/worktree root) with ``<path>``, the home directories with ``~``, the user
-    names (as whole words) with ``<user>``."""
+    dirs, the repo/worktree root) with ``<path>`` and the home directories with ``~``, each
+    only at a path boundary; the user names, as whole tokens, with ``<user>``."""
     homes, users = _redaction_identity()
     pairs = [(str(p).rstrip("/"), "<path>") for p in known if str(p).rstrip("/") not in ("", "/")]
     pairs += [(h, "~") for h in homes]
     for value, token in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
-        text = text.replace(value, token)
+        text = re.sub(_PATH_START + re.escape(value) + _PATH_END, token, text)
     for user in sorted(users, key=len, reverse=True):
-        text = re.sub(rf"(?<![\w.-]){re.escape(user)}(?![\w.-])", "<user>", text)
+        b = _USERNAME_BOUNDARY
+        text = re.sub(rf"(?<![{b}]){re.escape(user)}(?![{b}])", "<user>", text)
     return text
 
 
-def _redact_leg_detail(line: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
+def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
+    """Redact a WHOLE, UNCUT, multi-line text (line structure kept): control characters,
+    known values, credential shapes, the metadata gate's forbidden shapes. Always run this
+    BEFORE selecting or cutting an excerpt — selecting first can separate a secret from the
+    context its pattern needs (``Bearer\\n<token>`` → a bare token)."""
     from .redaction import _FORBIDDEN_METADATA_PATTERNS
-    from .runner import _redacted_stderr_excerpt  # lazy: avoid a panel_invoker<->runner cycle
+    from .runner import _STDERR_SECRET_KV_RE  # lazy: avoid a panel_invoker<->runner cycle
 
-    redacted = _LEG_DETAIL_CTRL_RE.sub(" ", _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", line)))
+    redacted = _LEG_DETAIL_CTRL_RE.sub(" ", _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", text or "")))
     redacted = _substitute_known_values(redacted, known)
-    redacted = _redacted_stderr_excerpt(redacted, max_chars=len(redacted) + 8)
+    redacted = _STDERR_SECRET_KV_RE.sub(r"\1\2<redacted>", redacted)
     for pattern, replacement in _LEG_DETAIL_SECRET_RES:
         redacted = pattern.sub(replacement, redacted)
     # `detail` reaches governed-review finding reasons; keep it clear of the closeout
@@ -1998,11 +2021,12 @@ def _redact_leg_detail(line: str, known: Sequence[str | os.PathLike[str]] = ()) 
 def _finalize_leg_detail(
     detail: str | None, known: Sequence[str | os.PathLike[str]] = ()
 ) -> str | None:
-    """The ONE exit for a CLI-derived ``detail``: redacted (again — idempotent), control-
-    stripped, and bounded as a whole, label included."""
+    """The ONE form a stored ``detail`` takes: redacted, single-line, bounded as a whole.
+    Idempotent (re-finalizing a finalized detail returns it unchanged), and applied by
+    ``PanelLegResult`` itself, so no route can store an unfinalized detail."""
     if not detail:
         return None
-    redacted = _redact_leg_detail(detail, known)
+    redacted = " ".join(_redact_leg_text(str(detail), known).split())
     if len(redacted) > _LEG_DETAIL_MAX_CHARS:
         redacted = redacted[: _LEG_DETAIL_MAX_CHARS - 3] + "..."
     return redacted or None
@@ -2018,13 +2042,13 @@ def _log_tail(text: str, lines: int = _LEG_FAILURE_LOG_TAIL_LINES) -> str:
     return "\n".join(kept[-lines:])
 
 
-def _leg_failure_kind(rc: int, review_text: str, log_text: str) -> str:
+def _leg_failure_kind(rc: int | None, review_text: str, log_text: str) -> str:
     """``failure_kind`` for a leg that ALREADY failed. Sources, in order: process facts
     (timeout, signal), then a text match over the log tail and the body. Cosmetic by
     construction — the outcome was decided before this runs."""
     if rc == 124:
         return "timeout"
-    if rc < 0:
+    if isinstance(rc, int) and rc < 0:
         return "signal"
     haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
     if _USAGE_LIMIT_LABEL_RE.search(haystack):
@@ -2036,49 +2060,56 @@ def _leg_failure_kind(rc: int, review_text: str, log_text: str) -> str:
     return "unknown"
 
 
-def _leg_failure_excerpt(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
-    """A credential-redacted excerpt of a failed CLI's FINAL error line: a single-line
-    harness diagnostic whole; else the last error-looking line of the log tail (else its
-    last line) — never the head, which for codex is the echoed prompt."""
-    lines = [line.strip() for line in _log_tail(text).splitlines() if line.strip()]
+def _leg_failure_excerpt(redacted_text: str) -> str:
+    """The FINAL error line of an ALREADY-REDACTED text: a single line whole; else the last
+    error-looking line of the tail (else its last line) — never the head, which for codex is
+    the echoed prompt."""
+    lines = [line.strip() for line in _log_tail(redacted_text).splitlines() if line.strip()]
     if not lines:
         return ""
-    chosen = lines[0] if len(lines) == 1 else next(
-        (line for line in reversed(lines) if _LEG_ERROR_LINE_RE.search(line)), lines[-1]
-    )
-    return _redact_leg_detail(chosen, known)
+    if len(lines) == 1:
+        return lines[0]
+    return next((line for line in reversed(lines) if _LEG_ERROR_LINE_RE.search(line)), lines[-1])
 
 
 def _leg_failure_detail(
-    status: str, rc: int, review_text: str, log_text: str,
+    status: str, rc: int | None, review_text: str, log_text: str,
     known: Sequence[str | os.PathLike[str]] = (),
 ) -> str | None:
     """``PanelLegResult.detail`` for a failed leg: ``<failure_kind>: <the CLI's line>``, or
     just the line when the kind is unknown. None for an OK leg, and for an rc 0 non-
-    conforming review with nothing to label (its text already carries the evidence)."""
+    conforming review with nothing to label (its text already carries the evidence).
+
+    Order matters: the kind is read from the raw text (it is only a label), but every
+    character that can reach ``detail`` is REDACTED FIRST, over the whole uncut text, and
+    only then is an excerpt line selected and bounded."""
     if status == "OK":
         return None
     kind = _leg_failure_kind(rc, review_text, log_text)
     if kind == "unknown" and rc == 0 and str(review_text).strip():
         return None
-    source = log_text if str(log_text).strip() else review_text
+    red_log = _redact_leg_text(str(log_text or ""), known)
+    red_body = _redact_leg_text(str(review_text or ""), known)
+    source = red_log if red_log.strip() else red_body
     if kind in ("usage_limit", "env_failure"):
-        # Excerpt the line that carries the label, not a later unrelated one.
+        # Excerpt the line that carries the label, not a later unrelated one. Matched on the
+        # redacted text; a label pattern broken by redaction just falls back to the tail.
         pattern = _USAGE_LIMIT_LABEL_RE if kind == "usage_limit" else _ENV_FAILURE_LABEL_RE
-        for candidate in (_log_tail(log_text), str(review_text)):
+        for candidate in (_log_tail(red_log), red_body):
             hits = [line for line in candidate.splitlines() if pattern.search(line)]
             if hits:
                 source = hits[-1]
                 break
-    excerpt = _leg_failure_excerpt(str(source), known)
+    excerpt = _leg_failure_excerpt(source)
     if kind == "unknown":
         return _finalize_leg_detail(excerpt, known)
     label = kind
     if kind == "usage_limit":
-        match = _PROVIDER_USAGE_RESET_RE.search(_redact_leg_detail(str(source), known))
+        match = _PROVIDER_USAGE_RESET_RE.search(source)
         if match:
             label = f"{kind} (resets {match.group('when').strip()})"
     return _finalize_leg_detail(f"{label}: {excerpt}" if excerpt else label, known)
+
 # The gemini/agy leg runs HEADLESS, where a tool permission cannot be prompted for and is
 # auto-denied — the CLI then produces NO output at all and exits rc==0, so the whole leg
 # silently vanishes. (That is how the gemini seat stayed dead for 6 of 11 rounds of the
@@ -5509,20 +5540,17 @@ def _sanitized_pty_tail(terminal_bytes: bytes, max_chars: int = 600) -> str:
     REDACT THE WHOLE TEXT, then keep the FINAL ``max_chars`` — redacting after slicing
     could expose a secret whose key sits just before the cut, and the informative bytes
     (the modal / reject / stall context) live at the END of the buffer."""
-    from .runner import (
-        _redacted_stderr_excerpt,
-    )  # lazy: avoid a panel_invoker<->runner cycle
-
     text = terminal_bytes.decode("utf-8", errors="replace")
     text = _ANSI_OSC_RE.sub("", text)
     text = _ANSI_CSI_RE.sub("", text)
     text = _TUI_CTRL_RE.sub("", text)
-    # Redact the WHOLE window (every credential shape `detail` redacts, not only key=value)
-    # before the tail-slice, so the cut can never strand a token's suffix without the prefix
-    # the pattern needs (board r2, agent-harness#1102). The window is bounded first (the
-    # buffer is a whole session); a remnant stranded at ITS edge is far outside the tail.
-    text = text[-(max_chars + 8192):]
-    redacted = _redact_leg_detail(_redacted_stderr_excerpt(text, max_chars=len(text) + 8))
+    # Redact the WHOLE, UNCUT buffer (every credential shape and known value `detail`
+    # redacts) before the tail-slice, so the cut can never strand a token's suffix without
+    # the prefix its pattern needs (agent-harness#1102 r2/r5). Whitespace, newlines
+    # included, is then collapsed to one line exactly as main's
+    # `runner._redacted_stderr_excerpt` step already did — the tail was single-line before
+    # this PR too.
+    redacted = " ".join(_redact_leg_text(text).split())
     return redacted[-max_chars:].strip()
 
 
@@ -6882,17 +6910,21 @@ def _exec_claude_tui_leg(
         logging.getLogger(__name__).warning(
             "advisor-panel claude TUI leg %s [%s]: %s", status, log_text, pty_tail
         )
-    # agent-harness#1096/#1098: the same tail, labeled, for ``PanelLegResult.detail`` — a
-    # caller-owned sink so this function's (status, text) shape stays unchanged. The tail is
-    # where the CLI's own refusal lands (e.g. the shared-/tmp "Temp directory … is owned by
-    # uid …" that surfaced only as ``claude_tui_pty_eof_no_output``). The status is already
-    # a failure; a labeled provider failure is ``DEGRADED`` as on every other route (a
-    # TIMEOUT stays a TIMEOUT). Labels are cosmetic: this never touches an OK leg.
+    # agent-harness#1096/#1098: the same tail labels the failure. The tail is where the CLI's
+    # own refusal lands (e.g. the shared-/tmp "Temp directory … is owned by uid …" that
+    # surfaced only as ``claude_tui_pty_eof_no_output``). Exactly as in ``_classify_leg``, a
+    # labeled provider failure turns only ERROR / EMPTY into DEGRADED (never OK, TIMEOUT or
+    # an existing DEGRADED), whether or not the caller asked for the detail.
+    if status in ("ERROR", "EMPTY"):
+        if _leg_failure_kind(rc if rc else 1, review_text, pty_tail) in (
+            "auth", "usage_limit", "env_failure",
+        ):
+            status = "DEGRADED"
+    # The detail itself goes to a caller-owned sink so this function's (status, text) shape
+    # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
         seat_paths = (review_dir, out_dir, tui_cwd, *((repo_dir,) if repo_dir else ()))
         kind = _leg_failure_kind(rc if rc else 1, review_text, pty_tail)
-        if kind in ("usage_limit", "env_failure") and status != "TIMEOUT":
-            status = "DEGRADED"
         tail_detail = _leg_failure_detail(status, rc if rc else 1, review_text, pty_tail, seat_paths)
         if tail_detail and kind == "unknown" and log_text:
             tail_detail = f"{log_text}: {tail_detail}"
@@ -7595,7 +7627,7 @@ def _exec_leg(
                     "sometimes `command`. See the CLI's own message below for which. "
                     # One line, so the leg-detail excerpt keeps this explanation whole.
                     # Redacted BEFORE the cut, so a cut never strands a partial secret.
-                    f"CLI said: {_redact_leg_detail(' '.join(log_text.split()))[:400]}"
+                    f"CLI said: {' '.join(_redact_leg_text(log_text).split())[:400]}"
                 )
             soft_empty = rc == 0 and not review_text.strip()
             # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —

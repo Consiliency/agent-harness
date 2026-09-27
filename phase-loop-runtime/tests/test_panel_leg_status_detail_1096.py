@@ -37,6 +37,18 @@ from phase_loop_runtime import governed_review as gr
 from phase_loop_runtime import panel_invoker as pi
 
 
+_REAL_REDACTION_IDENTITY = pi._redaction_identity
+
+
+@pytest.fixture(autouse=True)
+def _fixed_identity(monkeypatch):
+    """Host independence (agent-harness#1102 r5): the redactor substitutes the RUNNING
+    user's home and name, so every test runs as one fixed fake identity — no assertion may
+    pass or fail because of who runs the suite. The one test of the real lookup calls
+    ``_REAL_REDACTION_IDENTITY`` directly."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/pl-tester",), ("pl-tester",)))
+
+
 CODEX_USAGE_BANNER = (
     "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
     "to purchase more credits or try again at Oct 1st, 2026 1:42 PM."
@@ -417,21 +429,44 @@ def test_rc0_without_the_success_artifact_is_never_ok(mode, body):
     assert pi._classify_leg(1, body, "", mode=mode) != "OK"
 
 
-@pytest.mark.parametrize("body", [
-    CONFORMING_REVIEW_ABOUT_LIMITS,
-    "The `error building bubblewrap command` diagnostic is handled correctly.\n\nAGREE",
-    CODEX_BWRAP_FAILURE + "\n\nAGREE",
-    "Temp directory /tmp/claude checks pass; expected diagnostic: " + CLAUDE_TMPDIR_REFUSAL
-    + "\nAGREE",
-    "You've hit your usage limit. Try again later.\n\n**Verdict:** DISAGREE",
-])
-def test_a_conforming_review_is_ok_whatever_its_text_mentions(body):
-    """Free text never demotes an OK leg. A body that ends in a real verdict IS the review
-    artifact, even when it quotes (or consists of) provider wording — the reviewer's words
-    are its own. (Rounds 1-4 tried to demote some of these by regex; each tightening
-    opened a new hole.)"""
-    assert pi._classify_leg(0, body, body, mode="review") == "OK"
+_PROVIDER_PROSE = (
+    CONFORMING_REVIEW_ABOUT_LIMITS.rsplit("\n", 1)[0],
+    "The `error building bubblewrap command` diagnostic is handled correctly.",
+    CODEX_BWRAP_FAILURE,
+    "Temp directory /tmp/claude checks pass; expected diagnostic: " + CLAUDE_TMPDIR_REFUSAL,
+    "You've hit your usage limit. Try again later. 401 Unauthorized: please log in again.",
+)
+_ARTIFACT_LINE = {
+    "review": "**Verdict:** DISAGREE",
+    "advisory": "RECOMMENDATION: fix the classifier first.",
+    "president": "FORCING DECISION: land after the fix.",
+}
+
+
+@pytest.mark.parametrize("mode", sorted(_ARTIFACT_LINE))
+@pytest.mark.parametrize("prose", _PROVIDER_PROSE)
+def test_a_conforming_artifact_is_ok_whatever_its_text_mentions(mode, prose):
+    """Free text never demotes an OK leg, in ANY mode (claude r5: advisory and president are
+    exactly the modes that lost the auth-first scan). A body ending in its mode's artifact
+    IS the artifact, even when its prose is — or quotes — provider wording."""
+    body = prose + "\n\n" + "Substantive analysis of the change. " * 2 + "\n" + _ARTIFACT_LINE[mode]
+    assert pi._classify_leg(0, body, body, mode=mode) == "OK"
     assert pi._leg_failure_detail("OK", 0, body, body) is None
+
+
+@pytest.mark.parametrize("mode", sorted(_ARTIFACT_LINE))
+def test_a_conforming_artifact_with_nonzero_rc_is_never_ok(mode):
+    """I1's rc condition (claude r5): the artifact is necessary, not sufficient."""
+    body = "Substantive analysis of the change. " * 2 + "\n" + _ARTIFACT_LINE[mode]
+    assert pi._classify_leg(0, body, "", mode=mode) == "OK"
+    for rc in (1, 2, -9, None):
+        assert pi._classify_leg(rc, body, "", mode=mode) != "OK", rc
+
+
+def test_a_missing_rc_is_an_error_not_a_crash():
+    """claude r5: `rc < 0` raised TypeError for rc None; main returned ERROR."""
+    assert pi._classify_leg(None, "", "") == "ERROR"
+    assert pi._leg_failure_kind(None, "", "") == "unknown"
 
 
 def test_advisory_ok_requires_its_recommendation_line():
@@ -627,16 +662,47 @@ def test_the_real_home_is_substituted_whatever_its_shape(monkeypatch, home, tail
 
 
 def test_the_username_and_seat_paths_are_substituted(monkeypatch):
+    """claude r5 (a): the username boundary is [A-Za-z0-9_], so `jdoe-codex` / `jdoe.admin`
+    are substituted too (the round-5 test pinned that leak; dropped)."""
     monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/jdoe",), ("jdoe",)))
-    log = "fatal: jdoe cannot write /srv/seat-42/out/panel.txt (owner jdoe.admin stays)"
+    log = (
+        "fatal: jdoe cannot create /tmp/jdoe-codex/app.sock or write "
+        "/srv/seat-42/out/panel.txt (owner jdoe.admin)"
+    )
     detail = pi._leg_failure_detail("ERROR", 1, "", log, ("/srv/seat-42",))
+    assert "jdoe" not in detail, detail
     assert "/srv/seat-42" not in detail and "<path>/out/panel.txt" in detail
     assert "fatal: <user> cannot" in detail
-    assert "jdoe.admin" in detail, "a name is replaced as a whole word only"
+    # a longer word merely containing the name is not the name
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: ((), ("ann",)))
+    assert "annotation" in pi._leg_failure_detail("ERROR", 1, "", "fatal: bad annotation")
+
+
+def test_an_email_whose_local_part_is_the_username_is_redacted(monkeypatch):
+    """claude/grok r5 (b): known values are substituted first, so `jane@x` became
+    `<user>@x`; the shape pass now takes `<user>@domain` too."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: ((), ("jane",)))
+    detail = pi._leg_failure_detail("ERROR", 1, "", "fatal: jane@janedoe.dev: request rejected")
+    assert "janedoe" not in detail and "<email>" in detail, detail
+
+
+def test_a_known_path_is_substituted_only_at_a_path_boundary(monkeypatch):
+    """claude r5: HOME=/app must not rewrite /app-server."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/app",), ()))
+    detail = pi._leg_failure_detail("ERROR", 1, "", "fatal: /app-server failed; see /app/log")
+    assert "/app-server" in detail and "~/log" in detail, detail
+
+
+def test_finalizing_is_idempotent(monkeypatch):
+    """claude r5: re-finalizing username `user` gave `<<user>>`."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/user",), ("user",)))
+    once = pi._finalize_leg_detail("user at /home/user/x token=abcdefghijklmnop jane@a.io " + "z" * 2000)
+    assert once == pi._finalize_leg_detail(once)
+    assert "<<" not in once and len(once) <= pi._LEG_DETAIL_MAX_CHARS
 
 
 def test_the_real_identity_is_what_the_host_reports():
-    homes, users = pi._redaction_identity()
+    homes, users = _REAL_REDACTION_IDENTITY()
     import os
     assert os.path.expanduser("~").rstrip("/") in homes
     assert users, "no username known to redact"
@@ -665,6 +731,7 @@ def test_advisory_banner_falsifier():
 
 @pytest.mark.parametrize("text,value", [
     ("advice\nRECOMMENDATION: go", "go"),
+    ("advice\n**RECOMMENDATION**: go", "go"),           # colon outside the bold (r5)
     ("advice\n**RECOMMENDATION:** ship it", "ship it"),
     ("advice\n  recommendation:  do x  ", "do x"),
     ("advice\n- RECOMMENDATION: a", "a"),
@@ -693,3 +760,82 @@ def test_president_without_a_forcing_decision_fails_even_when_long():
     body = "A long, careful ruling that weighs every seat's findings in depth. " * 20
     assert pi._classify_leg(0, body, "", mode="president") != "OK"
     assert pi._classify_leg(0, body + "\nFORCING DECISION: land it", "", mode="president") == "OK"
+
+
+
+# --- board round 5 (agent-harness#1102): redaction ORDER and the detail chokepoint -----------
+
+def test_a_token_split_from_its_prefix_by_a_newline_is_redacted_before_selection():
+    """codex r5 BLOCKING: the excerpt picked the last line FIRST, so `Bearer\n<token>` lost
+    its prefix and leaked as `signal: <token>`. Redaction now runs over the whole uncut
+    text before any line is selected."""
+    log = "Bearer\nabcdefghijklmnopqrstuvwx"
+    status = pi._classify_leg(-9, "", log)
+    assert status == "ERROR"
+    detail = pi._leg_failure_detail(status, -9, "", log)
+    assert "abcdefghijklmnopqrstuvwx" not in detail, detail
+    assert detail.startswith("signal: ")
+
+
+def test_every_panel_leg_result_stores_a_finalized_detail(monkeypatch):
+    """claude r5 (c): raw exception strings reached `PanelLegResult.detail`, then governed
+    finding reasons and the verdict JSON. The dataclass now finalizes on construction."""
+    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/jdoe",), ("jdoe",)))
+    raw = "OSError: [Errno 13] /home/jdoe/.local/bin/codex token=abcdefghijklmnop \x1b[2J" + "q" * 3000
+    leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=raw)
+    assert "/home/jdoe" not in leg.detail and "jdoe" not in leg.detail
+    assert "abcdefghijklmnop" not in leg.detail and "\x1b" not in leg.detail
+    assert len(leg.detail) <= pi._LEG_DETAIL_MAX_CHARS
+    reason = gr._findings_from_panel(pi.PanelResult(legs=(leg,)))[0].reason
+    assert "jdoe" not in reason and "abcdefghijklmnop" not in reason
+    import dataclasses
+    assert dataclasses.replace(leg, status="ERROR").detail == leg.detail, "not idempotent"
+    # the direct spawn's exception path builds a PanelLegResult too
+    def boom(*a, **k):
+        raise OSError("cannot exec /home/jdoe/.local/bin/codex")
+    monkeypatch.setattr(pi, "_exec_leg", boom)
+    detail = pi.invoke_panel("ARTIFACT", ["codex"]).legs[0].detail or ""
+    assert "/home/jdoe" not in detail and "jdoe" not in detail, detail
+
+
+def test_claude_tui_status_does_not_depend_on_the_sink(monkeypatch, tmp_path):
+    """claude r5: the ERROR→DEGRADED rewrite ran only when a sink was passed."""
+    _claude_session(monkeypatch, (
+        1, "", "claude_tui_pty_eof_no_output", pi._sanitized_pty_tail(CLAUDE_TMPDIR_REFUSAL.encode())
+    ))
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    with_sink, _ = pi._exec_claude_tui_leg(
+        tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=[],
+    )
+    without_sink, _ = pi._exec_claude_tui_leg(tmp_path / "review", tmp_path / "out", 30, "bundle", env={})
+    assert with_sink == without_sink == "DEGRADED"
+
+
+@pytest.mark.parametrize("marker,tail,expected", [
+    # auth now labels too (claude r5)
+    ("claude_tui_pty_eof_no_output", "Error: not logged in · Please run /login", "DEGRADED"),
+    # an existing DEGRADED typed-operational status is left alone, not rewritten
+    ("claude_tui_stalled", "Usage limit reached", "DEGRADED"),
+])
+def test_claude_tui_rewrites_only_error_or_empty(monkeypatch, tmp_path, marker, tail, expected):
+    _claude_session(monkeypatch, (1, "", marker, tail))
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    status, _ = pi._exec_claude_tui_leg(tmp_path / "review", tmp_path / "out", 30, "bundle", env={})
+    assert status == expected
+
+
+@pytest.mark.parametrize("body,expected", [
+    (ADVISORY_OK, "OK"),
+    (ADVISORY_OK.rsplit("\n", 1)[0], "DEGRADED"),
+])
+def test_claude_tui_advisory_ok_goes_through_the_artifact_rule(monkeypatch, tmp_path, body, expected):
+    """claude r5: confirm the TUI's OK decision is `_completion_ok(text, "advisory")`."""
+    _claude_session(monkeypatch, (0, body, "claude_tui_file_output", ""))
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    status, _ = pi._exec_claude_tui_leg(
+        tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, mode="advisory",
+    )
+    assert status == expected

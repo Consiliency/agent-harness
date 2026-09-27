@@ -216,11 +216,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in the log tail and body. This covers codex's usage banner even when codex's
   "no last agent message" warning follows it. A mislabel is cosmetic.
 - `detail` is carried on every route: direct, brokered codex/grok, and the Claude TUI seat.
-  It is redacted and capped at 1000 characters. Redaction substitutes known values (the
-  running user's home directories and names, and the seat's scratch and repo paths) plus
-  known credential shapes. It no longer guesses home-path shapes. `advisor-board` prints
-  every detail through the same exit. The Claude PTY tail is 600 characters and is
-  redacted in full before it is cut.
+  `PanelLegResult` finalizes its own `detail` when it is constructed, so no route can store an
+  unredacted one. That covers raw exception strings, governed finding reasons and the
+  streaming verdict JSON. Finalizing is idempotent.
+- Redaction runs over the whole, uncut, multi-line text BEFORE an excerpt line is selected
+  or cut, so `Bearer\n<token>` cannot leak as a bare token. It substitutes known values:
+  the running user's home directories and names, and the seat's scratch and repo paths.
+  Paths are matched only at a path boundary, and usernames as whole `[A-Za-z0-9_]` tokens,
+  so `jdoe-codex` and `jdoe.admin` are covered. An email whose local part is the username is
+  still redacted. Known credential shapes are also redacted. Home-path shapes are no longer
+  guessed. Output is capped at 1000 characters. The Claude PTY tail (600 characters) is
+  redacted over the whole buffer before it is cut. It is single-line, as it already was on
+  main through `_redacted_stderr_excerpt`.
+- The Claude TUI turns only an `ERROR` / `EMPTY` leg with a labeled auth, usage or env
+  failure into `DEGRADED`, whether or not the caller collects the detail. The
+  `RECOMMENDATION:` and verdict labels also accept the colon outside the bold
+  (`**RECOMMENDATION**: …`). A missing return code classifies `ERROR` again instead of
+  raising.
 
 ## [0.7.19] - 2026-09-26
 
