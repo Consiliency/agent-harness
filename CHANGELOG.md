@@ -25,10 +25,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   automatically. The namespace root is opened once with `O_DIRECTORY|O_NOFOLLOW` and inspected
   through that descriptor, and the probe refuses if the root's `(st_dev, st_ino)` changed by the
   end of classification. These checks stop an honest operator from mis-sealing; they are not a
-  boundary against a same-uid actor, who could forge broker state directly. No earlier sealed inventory can hold the dropped row, because
-  every earlier probe refused it. An existing but empty namespace directory now also classifies
-  as `absent` rather than `empty`; a probe inventory sealed by an earlier release over such a
-  directory must be re-probed.
+  boundary against a same-uid actor, who could forge broker state directly. No earlier sealed
+  inventory can hold the dropped row, because every earlier probe refused it. An existing but
+  empty namespace directory now also classifies as `absent` rather than `empty`; a probe
+  inventory sealed by an earlier release over such a directory must be re-probed.
 - **Apply.** `bootstrap_zero_history_authority` always holds every sealed repository's writer
   lock for the whole apply. It opens the lock the way fencing does (created if absent, `O_RDWR`,
   `O_NOFOLLOW`, never truncated), requires a singly linked regular file owned by the operator,
@@ -157,7 +157,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `review isolation unavailable` line is followed by a hint line. The default command, with no new
   flag, is unchanged.
 
-### Several accounts on one host can run advisor boards at the same time (agent-harness#1098 item 2; PR agent-harness#1109)
+### Several accounts on one host can run advisor boards at the same time (the multi-account part of agent-harness#1098 item 2; PR agent-harness#1109)
 
 - Every seat now runs as the operator's real uid and gid. Seats run inside a filtered user
   namespace in which every account used to be uid 0, and the provider CLIs keep scratch under
@@ -172,7 +172,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   operator's uid and gid, a file the operator just created as the operator's own, and the expected
   capability lines. Otherwise the launch is refused, in every egress mode,
   `PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL` included. An owned codex seat without the egress namespace
-  is refused, as on main. A leg that could not get a namespace at all records
+  is still refused, as in 0.7.19. A leg that could not get a namespace at all records
   `sandbox_seat_identity: unavailable`. The seat's capability lock-down now runs after the switch,
   and the seat keeps no more capabilities than before. The egress policy and codex's `/tmp` write
   exclusion are unchanged.
@@ -198,16 +198,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - A leg is `OK` only when it exits 0 and produces its mode's success artifact:
   - review: a terminal AGREE / PARTIALLY AGREE / DISAGREE verdict;
-  - advisory: at least 40 characters ending in a `RECOMMENDATION:` line, which the advisory
-    prompts now ask for;
+  - advisory (the panel's advisory mode): at least 40 characters ending in a
+    `RECOMMENDATION:` line, which the advisory-mode prompts now ask for;
   - president: a `FORCING DECISION:` line.
 
   Free text never decides an outcome or demotes an `OK` leg. The review verdict is parsed
   exactly as before (`terminal_verdict` is unchanged from 0.7.19, held there by a
   differential test against a frozen copy); `OK` needing exit 0 plus that verdict already
-  keeps CLI prose from counting. The `RECOMMENDATION:` line reads the same last line. From
-  agent-harness#1098 item 2 this fixes advisory mode's old length-only acceptance; the
-  rest of that item stays open.
+  keeps CLI prose from counting. In advisory mode, the `RECOMMENDATION:` line is read from the
+  same last line. Of agent-harness#1098 item 2, this fixes advisory mode's old length-only
+  acceptance, and agent-harness#1109 fixes the multi-account part; the rest of that item stays
+  open.
 - A failed leg's `detail` is built ONLY from this runtime's closed vocabulary, and raw CLI
   text never enters it. Provenance is by TYPE, not shape: a parametrized harness code is
   kept only when this runtime built it (`_HarnessCode`); CLI output, stdout, exception
