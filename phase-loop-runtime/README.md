@@ -199,6 +199,14 @@ onboarding repositories that were not named by the original probe.
 Apply is irreversible and refuses changed bytes, symlinks, live allocator
 state, held generation leases, or an authority owned by another bootstrap.
 
+A failed `run-train` on a repository with no partition receipt leaves an empty
+`<git-common-dir>/phase-loop-fabpub-broker-v1/run-train-writer.lock` behind.
+The probe accepts that file only as runtime lock residue: a regular, 0-byte,
+non-symlink file owned by the operator. Any other file under that name is
+reported as unattested canonical state. Apply holds each repository's writer
+lock for its whole duration and refuses while a `run-train` holds it; rerun
+apply after the train exits. Never delete broker files to clear a refusal.
+
 Inventory completeness is bounded to the named worktrees, explicit and
 environment-declared legacy roots, historical-evidence roots, and hashed broker
 directories directly beneath `.train-ledger` directories under each

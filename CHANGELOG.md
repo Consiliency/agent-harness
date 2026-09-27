@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `fabpub-bootstrap` accepts the run-train writer-lock residue and excludes a live train (agent-harness#1115)
+
+- A `run-train` on a repository with no FABPUB partition receipt creates an empty
+  `run-train-writer.lock` in the repository namespace before it refuses. `fabpub-bootstrap --probe`
+  then reported that file as `unattested canonical state`, so the first failed train blocked the
+  repository's own bootstrap (Consiliency/treesitter-chunker#97).
+- **Probe.** The classifier now accepts `run-train-writer.lock` only when an `lstat` shows a
+  regular, non-symlink, 0-byte file owned by the current uid. Any content, a symlink, another
+  file type, or a foreign owner still refuses. The file stays in the sealed inventory, so digest
+  semantics are unchanged.
+- **Apply.** `bootstrap_zero_history_authority` takes every sealed repository's writer lock with
+  a non-blocking exclusive `flock`, outermost and in sorted namespace order, and holds it until
+  apply returns. A lock held by a live `run-train` refuses with `LegacyCutoverConflict` ("a
+  run-train holds the writer lock"). An absent lock is not created, because that would drift
+  the sealed inventory.
+- **Recovery on 0.7.19.** Upgrade, then rerun `phase-loop fabpub-bootstrap --probe` and
+  `--apply --confirm-zero-history`. Do not delete the lock file.
 ### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008)
 
 - The brokered Gemini heartbeat-only route now admits a closed SET of qualified

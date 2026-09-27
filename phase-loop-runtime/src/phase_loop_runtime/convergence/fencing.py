@@ -36,7 +36,11 @@ def restart_legacy_supervisor(worktree: Path, *, supervisor, generation: str):
 
 @contextmanager
 def run_train_generation_leases(worktrees):
-    from .broker.live import WriterGenerationLatch, repository_namespace_root
+    from .broker.live import (
+        RUN_TRAIN_WRITER_LOCK,
+        WriterGenerationLatch,
+        repository_namespace_root,
+    )
 
     with ExitStack() as stack:
         leases = []
@@ -44,7 +48,7 @@ def run_train_generation_leases(worktrees):
         namespace_roots = {repository_namespace_root(path).resolve() for path in paths}
         for namespace_root in sorted(namespace_roots, key=str):
             namespace_root.mkdir(parents=True, exist_ok=True)
-            writer_lock = stack.enter_context((namespace_root / "run-train-writer.lock").open("a+"))
+            writer_lock = stack.enter_context((namespace_root / RUN_TRAIN_WRITER_LOCK).open("a+"))
             fcntl.flock(writer_lock, fcntl.LOCK_EX)
         for path in paths:
             latch = WriterGenerationLatch.open(path)
