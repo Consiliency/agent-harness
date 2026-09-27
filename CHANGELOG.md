@@ -42,8 +42,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The blocker names the printed or pinned id and says the session may still be running,
   with the attach/stop commands.
 - **Not yet proven live** (agent-harness#1099 checklist): `claude --bg` must write the prompt
-  in the opening user turn before the first model response, within about 12 polls of the
-  session appearing. Otherwise the launch fails closed.
+  in a non-`isMeta` user record before the first assistant record, within about 12 polls of
+  the session appearing. Otherwise the launch fails closed.
 - **Result.** Only a `done` session whose final assistant message is read from its transcript
   succeeds, and that message is the launch output. A session waiting for input (`blocked`)
   fails closed and is left attachable.

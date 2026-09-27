@@ -533,7 +533,7 @@ class ClaudeAgentViewAdapter:
                         if on_poll is not None:
                             on_poll(None)
                         if timeout_s is not None and clock() - started >= timeout_s:
-                            return _timeout_lifecycle(bound, None, cwd, timeout_s, verified=False)
+                            return _timeout_lifecycle(bound, None, cwd, timeout_s, verified=verified)
                         sleep(poll_interval_s)
                         continue
             if on_poll is not None:
@@ -976,8 +976,8 @@ def _timeout_lifecycle(
     bound: str, session: AgentViewSession | None, cwd: str | Path | None, timeout_s: float, *, verified: bool
 ) -> AgentViewLifecycleResult:
     hint = "" if verified else (
-        f" It was never proven to be this launch's session, so it is not stopped: find it with "
-        f"`claude agents` and inspect or stop it with `claude attach <id>` / `claude stop <id>`."
+        f" Session {bound} was never proven to be this launch's session, so it is not stopped: "
+        f"inspect it with `claude attach {bound}` or stop it with `claude stop {bound}`."
     )
     lifecycle = _lifecycle_from_parts(
         session_id=(_session_key(session) or bound) if session else bound,
@@ -1013,7 +1013,9 @@ def _first_turn_carries(path: Path, needle: str) -> bool | None:
     closed yet, or a record's shape is not recognized.
     """
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        # "\n" only: JSONL records may carry raw U+2028/U+2029/U+0085 (JSON.stringify
+        # leaves them unescaped), which splitlines() would split mid-record.
+        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
         return None
     unrecognized = False
@@ -1043,6 +1045,7 @@ def _first_turn_carries(path: Path, needle: str) -> bool | None:
         if needle in text:
             return True
     return None
+
 
 def _find_bound_session(
     sessions: tuple[AgentViewSession, ...],

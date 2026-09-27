@@ -450,8 +450,8 @@ Binding and observer:
 
   The blocker names the attach/stop commands.
 - Unverified live, on the agent-harness#1099 proof checklist:
-  - `claude --bg` records the delivered prompt in the opening user turn of the transcript
-    this code reads;
+  - `claude --bg` records the delivered prompt in a non-`isMeta` user record before the
+    first assistant record of the transcript this code reads;
   - it writes that turn before the first model response, and within about 12 polls of the
     session first appearing in `claude agents`.
 

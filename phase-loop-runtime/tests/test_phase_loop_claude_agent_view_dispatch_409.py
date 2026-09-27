@@ -321,6 +321,29 @@ class WaitForTerminalTest(unittest.TestCase):
         self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_timeout")
         self.assertFalse(lifecycle.binding_verified)
         self.assertIn("not stopped", lifecycle.blocker.summary)
+        # The hint names the real id, not a literal placeholder (round 6).
+        self.assertIn(f"claude stop {ASSIGNED[:8]}", lifecycle.blocker.summary)
+        self.assertNotIn("<id>", lifecycle.blocker.summary)
+
+    def test_timeout_after_proof_with_listing_errors_stays_verified(self):
+        # Round 6 (claude): a proven, pinned session that times out while `claude agents`
+        # is failing keeps binding_verified=True, so the launcher may stop it.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        path = root / "-p" / f"{ASSIGNED}.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"type": "user", "message": {"role": "user",
+                        "content": "go\nphase-loop-launch-nonce: n"}}) + "\n", encoding="utf-8")
+        clock = _Clock(step=5.0)
+        adapter = ClaudeAgentViewAdapter(runner=_listing_runner([[_record("working")], None]), projects_root=root)
+        with mock.patch("phase_loop_runtime.panel_invoker._claude_project_dir_for_cwd", return_value=root / "x"):
+            lifecycle = adapter.wait_for_terminal(
+                ASSIGNED[:8], cwd="/repo", nonce="n", timeout_s=12.0, sleep=clock.sleep, clock=clock
+            )
+        self.assertEqual(lifecycle.blocker.reason, "agent_view_launch_timeout")
+        self.assertTrue(lifecycle.binding_verified)
+        self.assertEqual(lifecycle.session_id, ASSIGNED)
 
     def test_explicit_timeout_is_honored(self):
         lifecycle, _ = self._wait([[_record("working")]], timeout_s=12.0)
@@ -646,13 +669,22 @@ class FirstTurnProofTest(unittest.TestCase):
 
     NEEDLE = "phase-loop-launch-nonce: abc"
 
-    def _proof(self, records):
+    def _proof(self, records, *, ensure_ascii=True):
         from phase_loop_runtime.claude_agent_view import _first_turn_carries
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "t.jsonl"
-            path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in records), encoding="utf-8")
+            path.write_text(
+                "".join((r if isinstance(r, str) else json.dumps(r, ensure_ascii=ensure_ascii)) + "\n" for r in records),
+                encoding="utf-8",
+            )
             return _first_turn_carries(path, self.NEEDLE)
+
+    def test_raw_line_separators_inside_a_record_do_not_split_it(self):
+        # Round 6 (claude): JSON.stringify leaves U+2028/U+2029/U+0085 raw; splitlines()
+        # would cut the prompt record in two and wrongly exclude our own session.
+        prompt = f"step one\u2028step two\u2029step three\u0085{self.NEEDLE}"
+        self.assertTrue(self._proof([self._user(prompt), self.ASSISTANT], ensure_ascii=False))
 
     def _user(self, content, **extra):
         return {"type": "user", "message": {"role": "user", "content": content}, **extra}
