@@ -1488,3 +1488,64 @@ def _host_pid(record: str, timeout_s: float = 5.0) -> int:
         if time.monotonic() >= deadline:
             raise AssertionError(f"no host process for {record!r}")
         time.sleep(.02)
+
+
+def test_the_gemini_seat_probe_leaves_the_profile_descriptors_to_the_launch(fixture_cli, tmp_path, monkeypatch):
+    """agent-harness#1098/#1109: the seat-identity probe runs through the gemini owner
+    WITHOUT its single-use descriptors, before the launch, and the launch still receives
+    them intact -- the real profile, the real wrapper, a real board."""
+    fixture_cli.mode.write_text("ok")
+    repo = _fixture_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    calls: list[tuple[str, list[str]]] = []
+    real_run, real_popen = panel.subprocess.run, panel.subprocess.Popen
+
+    def run(argv, *a, **k):
+        if panel._SEAT_PROBE in argv:
+            calls.append(("probe", list(argv)))
+        return real_run(argv, *a, **k)
+
+    def popen(argv, *a, **k):
+        if "/dev/phase-loop-agy/agy" in argv:
+            calls.append(("launch", list(argv)))
+        return real_popen(argv, *a, **k)
+
+    monkeypatch.setattr(panel.subprocess, "run", run)
+    monkeypatch.setattr(panel.subprocess, "Popen", popen)
+    result = panel.invoke_board(
+        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        stream_dir=tmp_path / "records", gateway_available=False, repo_dir=repo,
+    )
+    leg, = result.legs
+    assert leg.status == "OK" and leg.text.endswith("AGREE"), (leg.status, leg.detail)
+    launches = [argv for kind, argv in calls if kind == "launch"]
+    assert len(launches) == 1
+    launch = launches[0]
+    index = calls.index(("launch", launch))
+    probe = next(argv for kind, argv in reversed(calls[:index]) if kind == "probe")
+    fd_args = []
+    for flag, width in (("--info-fd", 2), ("--block-fd", 2), ("--ro-bind-data", 3)):
+        for position, arg in enumerate(launch):
+            if arg == flag:
+                fd_args.append(launch[position:position + width])
+    assert {args[0] for args in fd_args} == {"--info-fd", "--block-fd", "--ro-bind-data"}
+    assert not any(flag in probe for flag in ("--info-fd", "--block-fd", "--ro-bind-data")), (
+        "the probe must never touch the gemini profile's single-use descriptors")
+    # Apart from those descriptor mounts (and their --perms), the probe ran through the
+    # launch's own wrapper.
+    strip = {"--info-fd", "--block-fd", "--ro-bind-data", "--perms", "--dir", "--symlink"}
+    def wrapper(argv):
+        out, skip = [], 0
+        for arg in argv[:argv.index("/usr/bin/env")]:
+            if skip:
+                skip -= 1
+                continue
+            if arg in strip:
+                skip = {"--ro-bind-data": 2, "--symlink": 2}.get(arg, 1)
+                continue
+            out.append(arg)
+        return out
+    assert wrapper(probe) == wrapper(launch)
+    # The provider received the sealed image and settings through the descriptors.
+    observed = json.loads(fixture_cli.observation.read_text())
+    assert observed["argv"][0] == "/dev/phase-loop-agy/agy" and observed["settings_readonly"] is True
