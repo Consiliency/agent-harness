@@ -48,8 +48,8 @@ Inputs observed at `input_base_commit` (inputs, not outputs):
   extension (agent-harness#905)".
 - Upstream (observed with `gh api repos/google-antigravity/antigravity-cli/releases`):
   each release carries GitHub's per-asset `digest` (`sha256:<hex>`) and **no**
-  separate checksum file or signature. Release 1.2.12 added `*_musl` Linux assets
-  beside `agy_cli_linux_x64.tar.gz`.
+  separate checksum file or signature. Assets are per platform
+  (`agy_cli_<os>_<arch>[_musl].<ext>`); release 1.2.12 added `*_musl` Linux assets.
 
 ## Invariants (each has a falsifier in "Tests")
 
@@ -64,7 +64,8 @@ Inputs observed at `input_base_commit` (inputs, not outputs):
   heartbeat-only monitor, the same `validate_records` checks). Any failure refuses
   the seat, as today.
 - **I3 Once per key per host.** The key is (image digest, help digest, isolation
-  profile id, runtime identity — see D2). Qualification runs under an exclusive
+  profile id, runtime identity = package `__version__` plus the route-core source
+  digests, per D2). Qualification runs under an exclusive
   lock; concurrent first uses wait and then reuse the one result.
 - **I4 The local record is operator-owned and integrity-checked.** Store 0700,
   files 0600, owned by the effective uid, no symlinks; a tampered, foreign,
@@ -107,16 +108,36 @@ never triggers provenance or inference.
    another process may have finished.
 2. **Provenance, in the coordinator process** (the host process running the board,
    which has network; the seat sandbox never does). Hash the installed image by fd.
+   **Host platform (D4)** is detected from the running host, never from config:
+   OS from `sys.platform`, architecture from `os.uname().machine` (normalised to
+   upstream's `x64`/`arm64`), and on Linux the libc from the running interpreter's
+   ELF program interpreter (`/proc/self/exe` `PT_INTERP`: `ld-musl-*` → musl, else
+   glibc). The platform determines exactly one expected asset name
+   (`agy_cli_<os>_<arch>[_musl].<ext>`, following upstream's observed naming); an
+   unknown platform, or a platform with no such asset, refuses.
    Enumerate releases of `google-antigravity/antigravity-cli` through the GitHub
-   REST API, latest first, within a bounded recent window (D4). For each, take only
-   the asset named `agy_cli_linux_x64.tar.gz` (musl and other assets are refused,
-   D4), require its `browser_download_url` under
+   REST API, newest first. Only **stable** releases are candidates:
+   `prerelease == false` and `draft == false` in the release metadata. Examine at
+   most a small fixed number of stable releases (a constant set in L2). The bound is
+   kept because the member digest is only knowable by downloading each archive
+   (tens of MB): an image that matches nothing, which is exactly the tampered case,
+   would otherwise force a download of every release in history on every first use.
+   A genuine install older than the window is refused and is covered by updating
+   agy or by a release record. For each candidate take only the exact
+   platform-matched asset name; any other asset, including another platform's, is
+   never considered. Require its `browser_download_url` under
    `https://github.com/google-antigravity/antigravity-cli/releases/download/<tag>/`,
    download it to a 0700 scratch directory with a size cap, require
-   `sha256(archive) == asset.digest`, then stream the `antigravity` member (regular
-   file, size cap) and compare with the installed digest. The version is learned
+   `sha256(archive) == asset.digest`, then stream the platform's executable member
+   (`antigravity` for the tar archives; regular file, size cap) and compare with the installed digest. The version is learned
    from the matching release; the binary is never executed to discover it. No
    match within the window → refuse `gemini_heartbeat_provenance_unmatched`.
+   **Isolation is unchanged on every platform.** The capability probes in
+   `require_capability` (sealed memfd, pidfd, pidfd signalling, bwrap flags) run
+   first; a platform that cannot meet them (for example macOS or Windows, which
+   have no memfd/pidfd/bwrap) refuses exactly as today, before any provenance fetch.
+   The record stores the detected platform and asset name; lookup refuses a record
+   whose platform differs from the running host.
 3. **Authoritative digest source**: GitHub's `digest` field on the release asset.
    It is the only vendor-side digest upstream publishes; the trust anchor is GitHub
    (TLS + API) and the `google-antigravity` organisation's release. This is the
@@ -193,12 +214,15 @@ explicitly rather than loosening it.
 A new operator command `phase-loop agy-qualification watch` runs on a subscribed
 host from the host's own scheduler (a systemd user timer or cron entry documented
 in `docs/`), **not** on a GitHub-hosted runner (no subscription) and **not** as a
-registered self-hosted runner. When the latest upstream release's Linux x64 member
-differs from the release-qualified digest, it runs provenance and the three
+registered self-hosted runner. When the newest **stable** upstream release's asset
+for the watch host's detected platform differs from the release-qualified digest, it runs provenance and the three
 operations against that release's archive member (installed into a private path,
 not replacing the operator's agy), and on success opens the evidence-record PR
 (`agy-<version>-linux-x64-qualification.json`, catalog pointer, constants) with
-`gh`. It never merges. Hosted CI keeps the provenance-only nightly
+`gh`. It never merges. Only the Linux x64 glibc route has a release catalog entry
+(`qualified_provider_images.v1` allows exactly that route), so on any other platform
+the watch qualifies locally and reports, and opens no PR; adding catalog routes is a
+schema change outside this plan. Hosted CI keeps the provenance-only nightly
 (`--upstream-only`) unchanged.
 
 ## Changes
@@ -206,12 +230,13 @@ not replacing the operator's agy), and on success opens the evidence-record PR
 | File | Action |
 |---|---|
 | `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py` | Admission split, `ensure_admitted`, class in evidence; release constants unchanged. |
-| `phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py` (new) | Release enumeration, digest and member verification; no execution. |
+| `phase-loop-runtime/src/phase_loop_runtime/agy_provenance.py` (new) | Host-platform detection, stable-release enumeration, exact-asset, digest and member verification; no execution. |
 | `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py` (new) | Packaged driver, candidate admission, store, lock, record. |
 | `phase-loop-runtime/scripts/qualify_gemini_heartbeat.py` | Shim over the packaged driver. |
 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | `_preflight_gemini_heartbeat` → `ensure_admitted` with cancel event; per-leg re-check stays lookup-only; landing evidence carries the class. |
 | `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py` | Lookup-only admission; class in evidence. |
 | `phase-loop-runtime/src/phase_loop_runtime/cli.py` | `agy-qualification {status,clear,watch}`. |
+| `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py` (+ `schema.py`, example fixture) | D3 opt-out: user-file-only `[agy] self_qualification = false` in `advisor-boards.toml`; the loader's unknown-key hard error means the key is added to the schema, not tolerated. |
 | `phase-loop-runtime/scripts/verify_qualified_agy_image.py` | `ROUTE_CORE` and `actual_source_hashes` follow the moved driver files. |
 | `.github/workflows/qualified-agy-image.yml` | `paths:` follow the moved files; upstream job unchanged. |
 | `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` | Qualified Gemini extension: two admission classes, provenance, store, lock, class field. |
@@ -249,7 +274,9 @@ Each is a named mutation that must turn its test red:
   fake release member: provenance refuses, help measurement and preflight are never
   launched (the fake launcher records zero executions), no record is written.
 - **Digest mismatch (I1).** Archive bytes differ from `asset.digest`; wrong asset
-  name (including `*_musl`); download URL outside the release prefix; member absent,
+  name; an asset for a platform other than the detected host (musl asset on a
+  glibc host and the reverse, arm64 on x64); a prerelease or draft release whose
+  asset matches; download URL outside the release prefix; member absent,
   non-regular or oversized: each refuses before execution.
 - **Offline (I1, I6).** API unreachable: first use refuses with
   `gemini_heartbeat_provenance_unavailable`; the release-qualified image in the same
@@ -273,6 +300,11 @@ Each is a named mutation that must turn its test red:
 - **Recursion guard.** A candidate admission presented to an ordinary board entry
   point (not a driver worker) is ignored; a `qualification_candidate` leg is never
   counted by landing.
+- **Platform detection (D4).** Detection uses the running host only: a config or
+  environment value naming another platform changes nothing; an unsupported
+  platform refuses before any network call.
+- **Opt-out (D3).** With `[agy] self_qualification = false`, an image without a
+  release record is refused as today and the driver is never launched.
 - **Class (I5).** Every Gemini leg result carries exactly one class; a
   release-qualified image reports `release_qualified` even when a local record for
   the same digest exists.
@@ -289,30 +321,24 @@ confirm exactly one qualification, a `locally_qualified` class on the Gemini leg
 flip a byte in a private copy of the image on `PATH` and confirm refusal with no
 execution.
 
-## Open maintainer decisions (recommendations only; not decided here)
+## Maintainer decisions (recorded 2026-09-27)
 
-- **D1 Do governed landings count a `locally_qualified` Gemini seat?**
-  `review_policy_for_tier` requires `gemini` for PLAN and PRODUCTION_CODE.
-  Recommendation: **count it for all tiers, with the class recorded in landing
-  evidence.** The behavioural preflight and provenance are the same ones release
-  qualification uses. The deciding fact: the evidence-record PR for a new agy
-  version itself needs a board with a Gemini seat, which on an auto-updated host is
-  only locally qualified. "Do not count" therefore blocks every new release's
-  record PR (and every other governed landing) until a standing per-version
-  exception is granted. Alternative: do not count, plus a documented per-version
-  exception.
-- **D2 What "runtime version" means in the key.** Recommendation: package
-  `__version__` plus the route-core source digests, matching the
-  agent-harness#1029 regime, so a development edit outside the route does not force
-  another minute of inference. Alternative: the full source-pin set (safer, but
-  requalifies on every source edit in a development tree).
-- **D3 Default on or opt-in.** Recommendation: default on, with an operator opt-out
-  (`agy_self_qualification: false` in the user config) that restores today's hard
-  refusal. Alternative: opt-in, which keeps dev0's next auto-update outage by default.
-- **D4 Release window and musl.** Recommendation: search the latest few releases
-  (not all history) and admit only `agy_cli_linux_x64.tar.gz`; a musl install is
-  refused until it has its own record and route. Alternative: accept musl members
-  via the same provenance, which widens the admitted set.
+- **D1 Governed landings count a `locally_qualified` Gemini seat, at every tier.**
+  The admission class is recorded on every Gemini leg and in landing evidence.
+  (`qualification_candidate` legs remain driver-only and never count.)
+- **D2 Record key runtime identity = package `__version__` plus the route-core
+  source digests** (the agent-harness#1029 regime).
+- **D3 On by default**, with a user-config opt-out (`[agy] self_qualification = false`)
+  that restores today's hard refusal.
+- **D4 The stable release asset for the host's own platform is eligible.** Platform
+  is detected from the running host, not config; the asset must match it exactly,
+  so a musl host uses the musl asset and any other platform upstream ships uses its
+  own asset. A platform-mismatched asset is refused. "Stable" means
+  `prerelease == false` and `draft == false` in the release metadata. Exact-asset,
+  URL-prefix, `asset.digest` and member-digest checks apply per platform. The
+  isolation contract and the three live operations are unchanged on every platform;
+  a platform that cannot meet them refuses as today. The bounded recency window is
+  kept, justified in "First-use path" step 2.
 
 ## Security review
 
@@ -337,7 +363,7 @@ credential and never inside the seat namespace.
 - [ ] L6 live verification on a subscribed host is recorded, including the
   tampered-binary refusal.
 - [ ] `CONTRACTS.md` states both admission classes, the provenance source, the
-  store and the lock; the maintainer's D1 ruling is recorded in it.
+  store, the lock, host-platform asset selection and the D1 counting rule.
 - [ ] Plan and implementation each pass a four-vendor board and a president.
 
 Non-goals: extending digest pinning to other harnesses (issue's last bullet);
