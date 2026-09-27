@@ -1312,11 +1312,9 @@ class PanelLegResult:
     # an AttributeError.
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        # The detail chokepoint must not be shadowed: a subclass redefining ``detail`` (or
-        # its backing slot) would store unvalidated text.
-        if "detail" in cls.__dict__ or "_detail" in cls.__dict__:
-            raise TypeError("PanelLegResult subclasses may not redefine detail")
-        super().__init_subclass__(**kwargs)
+        # Final in spirit (agent-harness#1102 r8): ANY subclass could put another `detail`
+        # ahead of the validating descriptor in its MRO (a mixin), so none is allowed.
+        raise TypeError("PanelLegResult may not be subclassed: its detail chokepoint is final")
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
@@ -1406,11 +1404,13 @@ def _effective_research_policy(
 
 
 def _research_unavailable_result(
-    *, leg: str, seat_key: str | None, detail: str
+    *, leg: str, seat_key: str | None, detail: str, run_dir: Path | str | None = None,
 ) -> PanelLegResult:
-    # The research ledger keeps the full reason; the leg's `detail` carries only the code
-    # (agent-harness#1102: detail is our closed vocabulary; an exception message is not).
+    # agent-harness#1102 r8: both the leg's `detail` AND the disclosed research ledger carry
+    # only the CODE; a reason after it (an exception message) goes to the private log.
     code = "research_profile_unavailable" if detail.startswith("research_profile_unavailable:") else detail
+    if code != detail and run_dir is not None:
+        _write_private_leg_log(run_dir, str(seat_key or leg), detail)
     return attach_research_ledger(
         PanelLegResult(
             leg=leg,
@@ -1419,7 +1419,7 @@ def _research_unavailable_result(
             detail=code,
             seat_key=seat_key,
         ),
-        unavailable_ledger(detail),
+        unavailable_ledger(str(_finalize_leg_detail(code))),
     )
 
 
@@ -1430,7 +1430,7 @@ def _finalize_research_result(
     attach_research_ledger(result, ledger)
     if result.status == "OK" and ledger.status != "success":
         object.__setattr__(result, "status", "DEGRADED")
-        object.__setattr__(result, "detail", f"research_audit_{ledger.status}")
+        object.__setattr__(result, "detail", _HarnessCode(f"research_audit_{ledger.status}"))
     return result
 
 
@@ -1675,7 +1675,7 @@ SpawnFn = Callable[..., "tuple[str, str]"]
 # `Agree and continue` is not a verdict (agent-harness#1102 r7).
 _VERDICT_RE = re.compile(
     r"^(?:(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b"
-    r"|(?i:(PARTIALLY\s+AGREE|DISAGREE|AGREE))(?=\s*(?:$|[\u2014\u2013:.,;!()-])))"
+    r"|(?i:(PARTIALLY\s+AGREE|DISAGREE|AGREE))(?=[*`]*\s*(?:$|[\u2014\u2013:.,;!()-])))"
 )
 # Leading markdown decoration to strip before matching the verdict token, so a
 # genuinely-conforming verdict formatted as a bullet / blockquote / numbered item
@@ -1706,7 +1706,10 @@ def _after_label(line: str, label: str) -> str | None:
     match = re.match(rf"{re.escape(label)}[*`]*:", line, re.IGNORECASE)
     if match is None:
         return None
-    return line[match.end():].strip().strip("*`").strip()
+    # The value may itself be wrapped (`**Verdict:** **AGREE**`, ``*Verdict:* `DISAGREE` ``):
+    # strip every run of emphasis / code markers and whitespace around it — never `-`,
+    # so a CLI flag such as `--agree` is still not a verdict (agent-harness#1102 r8).
+    return re.sub(r"[\s*`]+$", "", re.sub(r"^[\s*`]+", "", line[match.end():]))
 
 
 def terminal_verdict(text: str) -> str | None:
@@ -1952,7 +1955,6 @@ _ENV_FAILURE_LABEL_RE = re.compile(
 # The provider's own reset time when it prints one: codex " or try again at <time>" with
 # the time alone ("%-I:%M %p", same local day) or dated ("%b %-d<ordinal>, %Y %-I:%M %p").
 _LEG_FAILURE_LOG_TAIL_LINES = 20
-# ONE bound on the final stored `detail` (label + excerpt), every route.
 # ----------------------------------------------------------------------------------------
 # SPAN-UNION REDACTION for `detail` (agent-harness#1102 round 6).
 #
@@ -2234,6 +2236,14 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     'review_monitoring_unsupported_api_fallback',
     'review_monitoring_unsupported_route',
     'review_monitoring_unsupported_route:native_fill',
+    'review_monitoring_unsupported_route:claude',
+    'review_monitoring_unsupported_route:codex',
+    'review_monitoring_unsupported_route:gemini',
+    'review_monitoring_unsupported_route:grok',
+    'review_monitoring_unsupported_route:opencode',
+    'review_monitoring_unsupported_route:pi',
+    'review_monitoring_unsupported_route:cursor',
+    'review_monitoring_unsupported_route:unresolved',
     'review_monitoring_unsupported_transport',
     'seats and legs must correspond positionally',
     'tool or subagent activity observed',
@@ -2254,44 +2264,85 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "the namespace came up but cannot resolve a hostname; a seat here could reach raw IPs "
     "and nothing else (round-6 failure mode)",
 })
+# Closed token sets for the parametrized harness codes (agent-harness#1102 r8: every field is
+# enumerated, an integer, or validated by its producer against the run's own values).
+_REGISTRY_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "grok", "opencode", "pi", "cursor")
+_PRESIDENT_POLICY_CODES: tuple[str, ...] = (
+    "degraded_president_validation_deferred", "president_fill_digest_mismatch",
+    "president_fill_heartbeat_refused", "president_invocation_failed", "president_ladder_invalid",
+    "president_native_fill_stream_required", "president_operation_authorization_mismatch",
+    "president_operation_cancelled", "president_round_limit", "president_ruling_format_missing",
+    "president_seam_missing", "president_unavailable", "requires_president_override_refused",
+    "review_authority_state_invalid", "review_board_policy_mismatch", "review_landing_tier_required",
+    "review_landing_tier_unknown",
+)
+_NATIVE_FILL_REFUSAL_CODES: tuple[str, ...] = (
+    "native_fill_composition_drift", "native_fill_digest_mismatch", "native_fill_duplicate_seat",
+    "native_fill_seat_not_deferred", "native_fill_stale_request",
+)
+_RESEARCH_AUDIT_STATUSES: tuple[str, ...] = ("denied", "failed", "no_calls", "unavailable")
+_OMNIGENT_FAILURE_CATEGORIES: tuple[str, ...] = (
+    "rate_limit", "billing", "auth", "policy_denied", "backend_unavailable",
+)
+_OMNIGENT_AUTH_LANES: tuple[str, ...] = ("subscription", "api_key")
+_BUILTIN_EXCEPTION_NAMES: tuple[str, ...] = tuple(sorted(
+    name for name, obj in vars(__import__("builtins")).items()
+    if isinstance(obj, type) and issubclass(obj, BaseException)
+))
+
+
+def _alt(values: Sequence[str]) -> str:
+    return "(?:" + "|".join(re.escape(v) for v in values) + ")"
+
+
+_H = _alt(_REGISTRY_HARNESSES)
 _HARNESS_DETAIL_CODE_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
     r"timeout after \d{1,6}s",
-    r"claude_tui_launch_error:[A-Za-z_][A-Za-z0-9_]{0,60}",
-    r"claude_agent_state:[A-Za-z_]{1,40}(?:; stop=[A-Za-z0-9_.-]{1,40})?",
-    r"claude_code_version_(?:below_minimum|supported):\d{1,4}\.\d{1,4}\.\d{1,4}",
-    r"research_audit_[a-z_]{1,40}",
-    r"review_monitoring_unsupported_route(?::[a-z_]{1,40})?",
+    r"claude_tui_launch_error:" + _alt(_BUILTIN_EXCEPTION_NAMES),
+    r"research_audit_" + _alt(_RESEARCH_AUDIT_STATUSES),
     r"(?:codex|gemini|grok|claude|opencode) not logged in — run `(?:codex|agy|grok|claude|opencode) "
     r"login` \(auth preflight failed\)",
-    r"omnigent [a-z_]{1,40}: HTTP \d{3}",
-    r"omnigent v[0-9.]{1,20} lane=[a-z0-9_-]{1,40}",
-    r"skip: harness '[A-Za-z0-9_-]{1,40}' not in live Omnigent catalog",
-    r"skip: effort mapping for harness '[A-Za-z0-9_-]{1,40}' is populated in ABDREG/ABDHOME/ABDOMNI",
-    r"skip: backing '[A-Za-z0-9_-]{1,40}' not served by homebrew(?: \(ABDOMNI\))?",
-    r"skip: no homebrew adapter for lane '[A-Za-z0-9_-]{1,40}' \u2014 Omnigent-or-skip \(ABDOMNI\)",
-    r"president_ruling_missing:[a-z_]{1,60}",
-    r"native_fill_refused:[a-z_]{1,60}:[A-Za-z0-9_.:-]{1,160}",
+    r"omnigent " + _alt(_OMNIGENT_FAILURE_CATEGORIES) + r": HTTP \d{3}",
+    r"omnigent v\d{1,3}\.\d{1,3}\.\d{1,3} lane=" + _alt(_OMNIGENT_AUTH_LANES),
+    r"skip: harness '" + _H + r"' not in live Omnigent catalog",
+    r"skip: effort mapping for harness '" + _H + r"' is populated in ABDREG/ABDHOME/ABDOMNI",
+    r"skip: backing '(?:homebrew|omnigent)' not served by homebrew(?: \(ABDOMNI\))?",
+    r"skip: no homebrew adapter for lane '" + _H + r"' — Omnigent-or-skip \(ABDOMNI\)",
+    r"president_ruling_missing:" + _alt(_PRESIDENT_POLICY_CODES),
+    # the seat is checked against the board's own seat keys by its producer
+    r"native_fill_refused:" + _alt(_NATIVE_FILL_REFUSAL_CODES)
+    + r"(?::" + _H + r"(?::[A-Za-z0-9._-]{1,80}){1,3})?",
     r"slirp4netns exited \(-?\d{1,4}\) before the uplink was usable; the namespace has no network",
 ))
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LEG_LOG_DIRNAME = "leg-logs"
-_FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
-    r"timeout",
-    r"signal \d{1,2}",
-    r"auth_failure",
-    r"tool_denied: headless tool permission auto-denied",
-    r"usage_limit",
-    r"usage_limit \(resets (?:[01]\d|2[0-3]):[0-5]\d(?:, (?:" + "|".join(_MONTHS)
-    + r") (?:[1-9]|[12]\d|3[01]) \d{4})?\)",
-    r"env_failure: temp dir owned by another account \(uid \d{1,10}\)",
-    r"env_failure: temp dir unusable",
-    r"env_failure: app-server socket dir not user-owned",
-    r"env_failure: sandbox command could not be built",
-    r"env_failure: staging filesystem below its free-space floor",
-    r"unknown failure(?: \(exit -?\d{1,3}\))?; CLI output(?: not retained|: "
-    + _LEG_LOG_DIRNAME + r"/[A-Za-z0-9._-]{1,120}\.log)",
-))
 _UNKNOWN_DETAIL = "unknown failure; CLI output not retained"
+# Failure templates with NO field: a plain string equal to one of these is our own literal.
+_PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
+    "timeout", "auth_failure", "usage_limit", "tool_denied: headless tool permission auto-denied",
+    "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
+    "env_failure: sandbox command could not be built",
+    "env_failure: staging filesystem below its free-space floor", _UNKNOWN_DETAIL,
+})
+_FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
+    *(re.escape(t) for t in sorted(_PARAMETER_FREE_FAILURES)),
+    r"signal \d{1,2}",
+    r"usage_limit \(resets (?:[01]\d|2[0-3]):[0-5]\d(?:, " + _alt(_MONTHS)
+    + r" (?:[1-9]|[12]\d|3[01]) \d{4})?\)",
+    r"env_failure: temp dir owned by another account \(uid \d{1,10}\)",
+    # exactly `_write_private_leg_log`'s name: `<safe seat key>-<12 hex>.log`
+    r"unknown failure(?: \(exit \d{1,3}\))?; CLI output(?: not retained|: "
+    + _LEG_LOG_DIRNAME + r"/[A-Za-z0-9._-]{1,60}-[0-9a-f]{12}\.log)",
+))
+
+
+class _HarnessCode(str):
+    """A detail THIS RUNTIME produced — provenance by TYPE, not by shape (agent-harness#1102
+    r8). Constructed only by harness code from its own literals and validated fields; CLI
+    output, stdout, exception messages and PTY tails are never turned into one. A plain
+    ``str`` reaching ``detail`` is kept only when it EQUALS one of our fixed literals."""
+
+    __slots__ = ()
 
 
 def _is_harness_code(value: str) -> bool:
@@ -2305,11 +2356,12 @@ def _is_failure_template(value: str) -> bool:
 
 
 def _detail_is_valid(value: str) -> bool:
+    """The grammar (defense in depth behind provenance): a harness code, a failure template,
+    or `<harness code>: <failure template>`."""
     if _is_harness_code(value) or _is_failure_template(value):
         return True
     code, sep, rest = value.partition(": ")
-    # `<harness code>: <failure template>` (a code may itself contain ": ", so try each split)
-    while sep:
+    while sep:  # a code may itself contain ": ", so try each split
         if _is_harness_code(code) and _is_failure_template(rest):
             return True
         more_code, sep, rest = rest.partition(": ")
@@ -2324,33 +2376,40 @@ class _LegFailure:
     only when the template is the unknown-failure one (``unknown``)."""
 
     template: str
-    raw: str = ""
+    raw: str = field(default="", repr=False)
     unknown: bool = False
     rc: int | None = None
-    prefix: str | None = None  # a harness code naming the route, e.g. a claude_tui_* marker
+    prefix: str | None = None  # a _HarnessCode naming the route, e.g. a claude_tui_* marker
 
-    def rendered(self, log_ref: str | None = None) -> str:
+    def rendered(self, log_ref: str | None = None) -> _HarnessCode:
         body = _unknown_detail(self.rc, log_ref) if self.unknown else self.template
-        return f"{self.prefix}: {body}" if self.prefix and _is_harness_code(self.prefix) else body
+        if isinstance(self.prefix, _HarnessCode) and _is_harness_code(self.prefix):
+            body = f"{self.prefix}: {body}"
+        return _HarnessCode(body)
 
 
-def _finalize_leg_detail(value: object) -> str | None:
-    """The VALIDATOR every stored ``detail`` passes (via ``PanelLegResult``'s descriptor):
-    a string in our vocabulary is returned unchanged (so this is idempotent); a
-    ``_LegFailure`` contributes only its template; anything else becomes the unknown-failure
-    template. It never scrubs, and never lets unvalidated text through."""
+def _finalize_leg_detail(value: object) -> _HarnessCode | None:
+    """The VALIDATOR every stored ``detail`` passes (via ``PanelLegResult``'s descriptor), by
+    PROVENANCE first: a ``_LegFailure`` or ``_HarnessCode`` (built by us) is kept when it
+    also fits the grammar; a plain string only when it equals one of our fixed literals.
+    Anything else becomes the unknown-failure template. Idempotent; never scrubs."""
     if value is None or value == "":
         return None
     if isinstance(value, _LegFailure):
         value = value.rendered()
+    if isinstance(value, _HarnessCode):
+        return value if _detail_is_valid(value) else _HarnessCode(_UNKNOWN_DETAIL)
     text = str(value)
-    return text if _detail_is_valid(text) else _UNKNOWN_DETAIL
+    if text in _HARNESS_DETAIL_CODES or text in _PARAMETER_FREE_FAILURES:
+        return _HarnessCode(text)
+    return _HarnessCode(_UNKNOWN_DETAIL)
 
 
 def _unknown_detail(rc: int | None, log_ref: str | None = None) -> str:
-    exit_part = f" (exit {rc})" if isinstance(rc, int) and rc > 0 and rc < 1000 else ""
+    exit_part = f" (exit {rc})" if isinstance(rc, int) and 0 < rc < 1000 else ""
     where = f": {log_ref}" if log_ref else " not retained"
     return f"unknown failure{exit_part}; CLI output{where}"
+
 
 
 _LEG_LOG_MAX_BYTES = 64 * 1024
@@ -2384,7 +2443,9 @@ def _write_private_leg_log(run_dir: Path | str, seat_key: str, raw: str) -> str 
         try:
             os.fchmod(fd, 0o600)
             payload = _redact_leg_text(raw).encode("utf-8", errors="replace")[-_LEG_LOG_MAX_BYTES:]
-            os.write(fd, payload)
+            view = memoryview(payload)
+            while view:  # os.write may write short
+                view = view[os.write(fd, view):]
         finally:
             os.close(fd)
         return f"{_LEG_LOG_DIRNAME}/{name}"
@@ -2395,11 +2456,14 @@ def _write_private_leg_log(run_dir: Path | str, seat_key: str, raw: str) -> str 
 
 
 def _exception_failure(exc: BaseException) -> object:
-    """An exception as a leg failure: its message is kept only when it is one of this
-    runtime's own diagnostics; anything else (an OSError naming a path, a provider error)
-    is an unknown failure whose text goes only to the private per-leg log."""
+    """An exception as a leg failure. Its message is never PARSED into a detail: it is kept
+    only when it EQUALS one of our fixed literals; otherwise it is an unknown failure whose
+    text goes only to the private per-leg log (a full staging disk gets its own template)."""
     message = str(exc)
-    if _is_harness_code(message):
+    if message in _HARNESS_DETAIL_CODES:
+        # EXACT equality with one of our own fixed literals (a refusal this runtime raised):
+        # nothing is parsed out of the message and no template is matched, so it cannot
+        # carry foreign text. Anything else is an unknown failure.
         return message
     if isinstance(exc, _sandbox_policy.SandboxSpaceError):
         # A full disk is an operator-actionable environment failure (board round 8 of
@@ -2508,16 +2572,17 @@ def _leg_failure_detail(
     non-conforming review with nothing to label (its text already carries the evidence)."""
     if status == "OK":
         return None
-    single = str(log_text or "").strip()
-    if single and "\n" not in single and _is_harness_code(single):
-        return _LegFailure(single)  # a diagnostic the harness itself produced
+    if isinstance(log_text, _HarnessCode):
+        # Provenance by TYPE: a diagnostic this runtime itself produced (never CLI text
+        # that merely looks like one — agent-harness#1102 r8).
+        return _LegFailure(log_text)
     kind = _leg_failure_kind(rc, review_text, log_text)
     if kind == "unknown" and rc == 0 and str(review_text).strip():
         return None
     raw = str(log_text or "") if str(log_text or "").strip() else str(review_text or "")
     both = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
     if kind == "timeout":
-        return _LegFailure("timeout")
+        return _LegFailure(_HarnessCode("timeout"))
     if kind == "signal":
         return _LegFailure(f"signal {-int(rc)}" if -int(rc) < 100 else "signal 99")
     if kind == "usage_limit":
@@ -4624,7 +4689,7 @@ def _leg_auth_ok(
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return (
             False,
-            f"{leg} not logged in — run `{probe[0]} login` (auth preflight failed)",
+            _HarnessCode(f"{leg} not logged in — run `{probe[0]} login` (auth preflight failed)"),
         )
     return True, ""
 
@@ -5970,7 +6035,9 @@ def _sanitized_pty_tail(
     could strand a secret's or a seat path's suffix without the context its detector needs;
     the informative bytes (the modal / reject / stall context) live at the END of the
     buffer. Whitespace, newlines included, is collapsed to one line, as it always was."""
-    text = terminal_bytes.decode("utf-8", errors="replace")
+    # Bounded input for the redactor (a session buffer can be large); the cut is far from
+    # the 600-character tail, so nothing it strands can reach the tail.
+    text = terminal_bytes[-(_LEG_LOG_MAX_BYTES):].decode("utf-8", errors="replace")
     redacted = " ".join(_redact_leg_text(text, known).split())
     return redacted[-max_chars:].strip()
 
@@ -6104,7 +6171,8 @@ def _run_claude_tui_session(
                 f"child_running={str(proc is not None and proc.poll() is None).lower()}"
             )
             tail = diagnostic + (f"; {tail}" if tail else "")
-        return rc, text, log, tail
+        # The marker is ours (provenance by type for the detail prefix, agent-harness#1102).
+        return rc, text, _HarnessCode(log) if log else log, tail
 
     try:
         master_fd, slave_fd = pty.openpty()
@@ -7278,10 +7346,10 @@ def _exec_claude_tui_leg(
                 time.monotonic() - leg_started
             )
             if remaining_backstop_s >= 1:
+                # No PTY text on the operator's stderr (agent-harness#1102 r8): the tail
+                # is CLI output; only our marker is logged.
                 logging.getLogger(__name__).warning(
-                    "advisor-panel claude TUI attempt 1/2 DEGRADED "
-                    "[claude_tui_stalled]: %s",
-                    pty_tail or "no PTY tail",
+                    "advisor-panel claude TUI attempt 1/2 DEGRADED [claude_tui_stalled]"
                 )
                 rc, retry_review_text, log_text, pty_tail = _run_claude_tui_session(
                     command=command,
@@ -7329,12 +7397,12 @@ def _exec_claude_tui_leg(
         )
     else:
         text = review_text or log_text
-    # R3: preserve the bounded, redacted, control-stripped PTY tail as DIAGNOSABLE
-    # EVIDENCE for every non-OK failure — via a WARNING log, NOT ``text`` (which feeds
-    # verdict-conformance). The tail is already credential-scrubbed and bounded.
-    if status != "OK" and pty_tail:
+    # R3 / agent-harness#1102 r8: the PTY tail is CLI output, so it never goes to the WARNING
+    # log (the operator's stderr) — only our status and marker do. The tail itself travels
+    # on the leg's `_LegFailure` to the PRIVATE per-leg log, and never into ``text``.
+    if status != "OK":
         logging.getLogger(__name__).warning(
-            "advisor-panel claude TUI leg %s [%s]: %s", status, log_text, pty_tail
+            "advisor-panel claude TUI leg %s [%s]", status, log_text
         )
     # agent-harness#1096/#1098: the same tail labels the failure. The tail is where the CLI's
     # own refusal lands (e.g. the shared-/tmp "Temp directory … is owned by uid …" that
@@ -7551,16 +7619,16 @@ def _exec_leg(
     brokered = broker_prompt is not None
     if leg == "gemini" and review_monitor is not None:
         if not brokered or agy_capture is not None or research_seat is not None:
-            return 1, "", "gemini_heartbeat_broker_required"
+            return 1, "", _HarnessCode("gemini_heartbeat_broker_required")
         if review_monitor.cancel.is_set():
-            return 1, "", "review_operation_cancelled"
+            return 1, "", _HarnessCode("review_operation_cancelled")
     if brokered and not broker_prompt:
-        return 1, "", "brokered route rejects empty prompt"
+        return 1, "", _HarnessCode("brokered route rejects empty prompt")
     env = _broker_subscription_env(env) if brokered else (
         _subscription_env() if env is None else dict(env)
     )
     if brokered and (agy_capture is not None or research_seat is not None):
-        return 1, "", "brokered route rejects capture and research transports"
+        return 1, "", _HarnessCode("brokered route rejects capture and research transports")
     if agy_capture is not None:
         env.pop("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", None)
         env = {
@@ -7571,7 +7639,7 @@ def _exec_leg(
     if research_seat is not None:
         env = scrub_research_env(env)
         if leg not in RESEARCH_CAPABLE_LANES:
-            return 1, "", "research_profile_unenforceable"
+            return 1, "", _HarnessCode("research_profile_unenforceable")
     # #64: auth preflight BEFORE the expensive leg. A logged-out CLI otherwise
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
@@ -7708,7 +7776,7 @@ def _exec_leg(
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
-                return 124, "", f"timeout after {deadline_s}s"
+                return 124, "", _HarnessCode(f"timeout after {deadline_s}s")
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
@@ -7980,7 +8048,7 @@ def _exec_leg(
                             stderr=str(timeout_stderr or ""), staged=capture_staged,
                         ),
                     )
-                return 124, "", "Gemini broker deadline exceeded" if brokered else f"timeout after {deadline_s}s"
+                return 124, "", _HarnessCode("Gemini broker deadline exceeded" if brokered else f"timeout after {deadline_s}s")
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
@@ -8005,18 +8073,18 @@ def _exec_leg(
             )
             if brokered:
                 if review_monitor is not None and review_monitor.cancel.is_set():
-                    return 1, "", "review_operation_cancelled"
+                    return 1, "", _HarnessCode("review_operation_cancelled")
                 native_timeout = "timeout waiting for response" in original_log.lower() or (
                     len(raw_stream.strip()) < 200 and "timeout waiting for response" in raw_stream.lower()
                 )
                 if review_monitor is not None and (native_rc != 0 or rc != 0 or not review_text.strip()) and native_timeout:
-                    return 1, "", "Gemini broker native timeout under heartbeat-only"
+                    return 1, "", _HarnessCode("Gemini broker native timeout under heartbeat-only")
                 if native_rc != 0:
                     review_text = ""
                     log_text = "Gemini broker native exit without an accepted review"
                 elif rc == 0 and not review_text.strip():
                     if _TOOL_DENIED_RE.search(original_log):
-                        return 1, "", "Gemini broker denied a tool permission without review text"
+                        return 1, "", _HarnessCode("Gemini broker denied a tool permission without review text")
                     log_text = "Gemini broker completed without review text"
                 elif rc == 0:
                     log_text = "" if _completion_ok(review_text, mode) else "Gemini broker response lacks a terminal verdict"
@@ -8048,9 +8116,9 @@ def _exec_leg(
                     "denied tool is whichever the model ATTEMPTED — usually `read_file` for "
                     "a path OUTSIDE the staged review dir (the leg's only --add-dir), "
                     "sometimes `command`. See the CLI's own message below for which. "
-                    # One line, so the leg-detail excerpt keeps this explanation whole.
-                    # Redacted BEFORE the cut, so a cut never strands a partial secret.
-                    f"CLI said: {' '.join(_redact_leg_text(log_text).split())[:400]}"
+                    # The CLI's own line, kept for the private log (detail is the fixed
+                    # `tool_denied:` template, never this text).
+                    f"CLI said: {' '.join(log_text.split())[:400]}"
                 )
             soft_empty = rc == 0 and not review_text.strip()
             # A transient stall shows up as an ERROR on stderr, or as a SHORT/empty body —
@@ -8179,7 +8247,7 @@ def _exec_leg(
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
-                return 124, "", f"timeout after {deadline_s}s"
+                return 124, "", _HarnessCode(f"timeout after {deadline_s}s")
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
@@ -8211,7 +8279,7 @@ def _exec_leg(
             out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
-    return 0, "", "unavailable"
+    return 0, "", _HarnessCode("unavailable")
 
 
 class _BrokeredSpawnResult(tuple):
@@ -9222,6 +9290,7 @@ def invoke_panel(
                         leg=leg,
                         seat_key=leg,
                         detail=detail,
+                        run_dir=stream_dir,
                     )
                     for leg in legs
                 )
@@ -9275,7 +9344,10 @@ def invoke_panel(
                 if status == "OK" and not str(text).strip():
                     status = "EMPTY"
                 text_value = str(text)
-                detail = _resolve_leg_detail(spawn_detail, stream_dir, leg)
+                # A typed UNAVAILABLE text becomes the detail: resolve the spawn's detail only when
+                # it will be kept, so no private log is written and then orphaned (r8).
+                detail = None if (status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS) \
+                    else _resolve_leg_detail(spawn_detail, stream_dir, leg)
                 if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                     detail, text_value = text_value, ""
                 result = PanelLegResult(
@@ -9341,7 +9413,10 @@ def invoke_panel(
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
         text_value = str(text)
-        detail = _resolve_leg_detail(spawn_detail, stream_dir, leg)
+        # A typed UNAVAILABLE text becomes the detail: resolve the spawn's detail only when
+        # it will be kept, so no private log is written and then orphaned (r8).
+        detail = None if (status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS) \
+            else _resolve_leg_detail(spawn_detail, stream_dir, leg)
         if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
             detail, text_value = text_value, ""
         return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
@@ -9482,6 +9557,7 @@ def _route_omnigent_seat(
     base_env: Mapping[str, str],
     board: Board,
     skip: "Callable[[Seat, str, str], PanelLegResult]",
+    run_dir: Path | str | None = None,
 ) -> PanelLegResult:
     """Route one omnigent seat through Omnigent v0.4.0, fail-closed.
 
@@ -9497,7 +9573,7 @@ def _route_omnigent_seat(
     3. gateway drops mid-run → skip-with-warning (gateway down).
     """
     if leg not in catalog:
-        return skip(seat, leg, f"skip: harness {leg!r} not in live Omnigent catalog")
+        return skip(seat, leg, _HarnessCode(f"skip: harness {leg!r} not in live Omnigent catalog"))
     try:
         outcome = omnigent.run_seat(
             seat,
@@ -9512,14 +9588,15 @@ def _route_omnigent_seat(
             leg=leg,
             status="DEGRADED",
             text="",
-            detail=_exception_failure(exc),
+            detail=_resolve_leg_detail(_exception_failure(exc), run_dir, str(seat.seat_key)),
             seat_key=seat.seat_key,
         )
     return PanelLegResult(
         leg=leg,
         status=outcome.status,
         text=outcome.text,
-        detail=outcome.detail or None,
+        # The omnigent backing's own fixed-shape detail (category / lane), our vocabulary.
+        detail=_HarnessCode(outcome.detail) if outcome.detail else None,
         seat_key=seat.seat_key,
     )
 
@@ -9660,7 +9737,8 @@ def invoke_board(
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(
             leg=seat.harness or seat.vendor_family, status="UNAVAILABLE",
-            detail=_exception_failure(exc), seat_key=seat.seat_key,
+            # A refusal code of ours survives only as an exact literal (the descriptor).
+            detail=str(exc), seat_key=seat.seat_key,
         ) for seat in board.seats))
         for index, leg in enumerate(refused.legs):
             object.__setattr__(leg, "_review_monitoring", {
@@ -9789,7 +9867,7 @@ def invoke_board(
             except PresidentPolicyError as exc:
                 if exc.code not in _PRESIDENT_REFUSAL_CODES:
                     raise
-                return replace(review_refusal(f"president_ruling_missing:{exc.code}"), president_findings=findings_)
+                return replace(review_refusal(_HarnessCode(f"president_ruling_missing:{exc.code}")), president_findings=findings_)
             panel_ = PanelResult(legs=tuple(results_), president=ruling_, president_findings=findings_)
             _persist_president_ruling(
                 stream_dir, board, ruling_, findings_, effective_president_ladder(president_invoke),
@@ -9825,7 +9903,13 @@ def invoke_board(
             composition_sha256=_composition_digest(board), env=base_env,
         )
         if _refusal is not None:
-            return review_refusal(f"native_fill_refused:{_refusal.reason}:{_refusal.seat_key}")
+            # The seat is named only when it is one of THIS board's seats (r8: a closed field).
+            _seat = str(_refusal.seat_key)
+            _known = {str(seat.seat_key) for seat in board.seats}
+            return review_refusal(_HarnessCode(
+                f"native_fill_refused:{_refusal.reason}:{_seat}" if _seat in _known
+                else f"native_fill_refused:{_refusal.reason}"
+            ))
         return None
 
     governed_review_request = (
@@ -10315,6 +10399,7 @@ def invoke_board(
                         seat_key=seat.seat_key,
                         detail=research_unavailable_detail
                         or "research_profile_unavailable",
+                        run_dir=stream_dir,
                     )
                 research_seat = research_run.seats[index]
                 if (
@@ -10342,7 +10427,7 @@ def invoke_board(
                 )
             decision = select_backing(seat, gateway_available=gateway_available)
             if decision.skip:
-                return _skip(seat, leg, f"skip: {decision.reason}")
+                return _skip(seat, leg, _HarnessCode(f"skip: {decision.reason}"))
             if decision.backing == BACKING_OMNIGENT:
                 # ABDOMNI transport. With no omnigent backing wired this stays the
                 # ABDHOME no-provider skip ("not served by homebrew"); with a backing,
@@ -10352,7 +10437,7 @@ def invoke_board(
                     return _skip(
                         seat,
                         leg,
-                        f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)",
+                        _HarnessCode(f"skip: backing {decision.backing!r} not served by homebrew (ABDOMNI)"),
                     )
                 return _route_omnigent_seat(
                     omnigent,
@@ -10363,16 +10448,17 @@ def invoke_board(
                     env_source,
                     board,
                     _skip,
+                    run_dir=stream_dir,
                 )
             if decision.backing != BACKING_HOMEBREW:
                 return _skip(
-                    seat, leg, f"skip: backing {decision.backing!r} not served by homebrew"
+                    seat, leg, _HarnessCode(f"skip: backing {decision.backing!r} not served by homebrew")
                 )
             if leg not in _HOMEBREW_LANES:
                 return _skip(
                     seat,
                     leg,
-                    f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)",
+                    _HarnessCode(f"skip: no homebrew adapter for lane {leg!r} — Omnigent-or-skip (ABDOMNI)"),
                 )
             # Render effort (proves the mapping is frozen for this lane) + resolve the
             # actively-scrubbed env BEFORE spawning. A breadth lane raises
@@ -10383,14 +10469,17 @@ def invoke_board(
                 seat_env = resolve_seat_env(
                     seat, env_source, allow_api_key_fallback=board.allow_api_key_fallback
                 )
-            except EffortMappingError as exc:
-                return _skip(seat, leg, f"skip: {exc}")
+            except EffortMappingError:
+                # The exception's text is not parsed back into a detail; the skip is ours.
+                return _skip(seat, leg, _HarnessCode(
+                    f"skip: effort mapping for harness {leg!r} is populated in ABDREG/ABDHOME/ABDOMNI"
+                ))
             except ValueError as exc:  # never-silent-key
                 return PanelLegResult(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=_exception_failure(exc),
+                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, str(seat.seat_key)),
                     seat_key=seat.seat_key,
                 )
             try:
@@ -10483,7 +10572,10 @@ def invoke_board(
             # the runtime legs — `_resolve_brief` gives the exact `review-instructions.md`
             # the other seats got). None for every other leg (golden byte-identity holds).
             text_value = str(text)
-            detail = _resolve_leg_detail(seat_detail, stream_dir, str(seat.seat_key))
+            # A typed UNAVAILABLE text becomes the detail: resolve the spawn's detail only when
+            # it will be kept, so no private log is written and then orphaned (r8).
+            detail = None if (status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS) \
+                else _resolve_leg_detail(seat_detail, stream_dir, str(seat.seat_key))
             if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                 detail, text_value = text_value, ""
             result = PanelLegResult(
@@ -10659,7 +10751,7 @@ def invoke_board(
                 # verdicts cannot be read as a landing, keeping the finding list
                 # the ladder was asked to rule on for the durable record.
                 return replace(
-                    review_refusal(f"president_ruling_missing:{exc.code}"),
+                    review_refusal(_HarnessCode(f"president_ruling_missing:{exc.code}")),
                     president_findings=findings,
                 )
             panel_result = PanelResult(

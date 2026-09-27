@@ -2455,8 +2455,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     from .panel_invoker import _finalize_leg_detail
 
     for leg in result.legs:
-        # Every detail reaching the terminal is redacted, control-stripped and bounded here,
-        # whatever route produced it (idempotent for details already finalized).
+        # `detail` is already our closed vocabulary (the PanelLegResult descriptor validates
+        # it); re-validating here is idempotent defense in depth.
         shown = _finalize_leg_detail(leg.detail)
         detail = f" — {shown}" if shown else ""
         print(f"  [{leg.status}] {leg.seat_key}{detail}")

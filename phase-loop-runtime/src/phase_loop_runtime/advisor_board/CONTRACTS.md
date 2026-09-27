@@ -405,8 +405,12 @@ never enters it. It is a harness code (`_HARNESS_DETAIL_CODES`, or a
 (`_FAILURE_DETAIL_TEMPLATES`: `timeout`, `signal <N>`, `auth_failure`,
 `usage_limit[ (resets <HH:MM[, Mon D YYYY]>)]`, the five `env_failure: …` forms,
 `tool_denied: …`, `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log | not
-retained`), or `<harness code>: <failure template>`. `detail` is a validating data descriptor
-(write and read), and a subclass may not shadow it. An unknown failure's raw output is kept
+retained`), or `<harness code>: <failure template>`. Provenance is by type: a parametrized
+harness code is kept only as a `_HarnessCode` built by this runtime; CLI output, exception
+messages and PTY tails are never turned into one, and a plain string survives only by
+equality with a fixed literal. Every template field is enumerated or checked against the
+run's own values. `detail` is a validating data descriptor (write and read), and
+`PanelLegResult` may not be subclassed. An unknown failure's raw output is kept
 only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 0700), which
 `detail` names by its run-relative path. That file is never in the verdict JSON, governed
 reasons or the board summary.

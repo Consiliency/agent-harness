@@ -163,7 +163,9 @@ def test_stalled_tui_retries_once_in_fresh_scratch_and_recovers(
     assert calls[1]["output_file"] == calls[1]["cwd"] / "panel-claude.txt"
     assert calls[1]["backstop_s"] <= calls[0]["backstop_s"]
     assert "claude_tui_stalled" in caplog.text
-    assert "first attempt tail" in caplog.text
+    # agent-harness#1102 r8: the PTY tail is CLI output; it goes to the private per-leg log,
+    # never to the WARNING log (the operator's stderr). The marker is still logged.
+    assert "first attempt tail" not in caplog.text
 
 
 def test_stalled_tui_retries_only_once_and_preserves_first_partial_review(

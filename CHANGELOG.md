@@ -203,12 +203,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Free text never decides an outcome or demotes an `OK` leg. The verdict line is parsed by
   one parser, shared with the `RECOMMENDATION:` line. A verdict word must be UPPERCASE, or
   stand alone, or come before a separator. Markup counts only when it is followed by
-  whitespace. So a CLI line such as `Agree and continue` or `--agree` is not a verdict. From
+  whitespace. So a CLI line such as `Agree and continue` or `--agree` is not a verdict.
+  Markdown around the value (`**Verdict:** **AGREE**`, ``*Verdict:* `DISAGREE` ``,
+  `**Partially agree** — reason`) still parses, as on main. From
   agent-harness#1098 item 2 this fixes advisory mode's old length-only acceptance; the
   rest of that item stays open.
 - A failed leg's `detail` is built ONLY from this runtime's closed vocabulary, and raw CLI
-  text never enters it. It is either a harness code (a fixed diagnostic string, or a
-  parametrized one whose fields are typed tokens) or one of these templates:
+  text never enters it. Provenance is by TYPE, not shape: a parametrized harness code is
+  kept only when this runtime built it (`_HarnessCode`); CLI output, stdout, exception
+  messages and PTY tails are never turned into one, however closely they match a template.
+  A plain string is kept only when it EQUALS a fixed literal. Every template field is
+  enumerated or checked against the run's own values (the board's seat keys, our log-name
+  generator's `<key>-<12 hex>.log`). It is either a harness code or one of these templates:
   - `timeout`;
   - `signal <N>`;
   - `auth_failure`;
@@ -224,14 +230,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     retained`.
 - `PanelLegResult.detail` is a validating data descriptor. It checks on every write
   (including `object.__setattr__`) and every read (so a value planted in the backing slot
-  is never returned raw), and a subclass may not shadow it. Anything outside the grammar
+  is never returned raw), and `PanelLegResult` may not be subclassed at all (a mixin could
+  otherwise shadow the descriptor). Anything outside the grammar
   becomes `unknown failure; CLI output not retained`.
 - For an unknown failure, the CLI's raw output (best-effort redacted, last 64 KiB) goes to
   a PRIVATE per-leg file under the run's stream dir: `leg-logs/`, mode 0700, and must be
   ours; the file is 0600, created with O_EXCL|O_NOFOLLOW relative to that directory.
   `detail` names it only by that run-relative path. The file is never part of
   `PanelLegResult`, the verdict JSON, governed reasons or the board summary. With no
-  stream dir, nothing is retained.
+  stream dir, nothing is retained. The disclosed research ledger carries only the code, and
+  the Claude TUI's stderr warning carries only our status and marker, never the PTY tail.
 - `STDERR_SECRET_KV_RE` now lives in `redaction.py`, so `PanelLegResult` does not import
   `runner`.
 

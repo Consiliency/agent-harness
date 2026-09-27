@@ -193,7 +193,7 @@ def test_board_stderr_summary_names_why_a_seat_failed(tmp_path):
     from phase_loop_runtime.cli import main as cli_main
 
     real_compose = comp_mod.compose_review_board
-    detail = "usage_limit (resets 13:42, Oct 1 2026)"
+    detail = pi._HarnessCode("usage_limit (resets 13:42, Oct 1 2026)")
     result = pi.PanelResult(legs=(
         pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:a"),
         pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:a"),
@@ -769,19 +769,25 @@ def test_every_reviewer_input_yields_a_template_with_no_input_text(text, rc):
     "timeout after 900s", "subscription_auth_unproven", "Gemini broker deadline exceeded",
 ])
 def test_the_template_grammar_accepts_our_vocabulary(detail):
+    """A detail WE built (typed provenance) that fits the grammar is kept as-is."""
     assert pi._detail_is_valid(detail)
-    assert pi._finalize_leg_detail(detail) == detail
+    assert pi._finalize_leg_detail(pi._HarnessCode(detail)) == detail
 
 
 @pytest.mark.parametrize("detail", [
     f"token={TOK}", "fatal: /home/jdoe/x", "usage_limit (resets 3:05 PM)", "usage_limit: You've hit",
     "env_failure: Temp directory /tmp/claude-0 is owned by uid 1", "signal 9; rm -rf /",
     "unknown failure; CLI output: /home/jdoe/run/leg-logs/x.log", "timeout after 900s /home/x",
+    "unknown failure; CLI output: leg-logs/x.log",  # not our generator's `<key>-<12 hex>.log`
+    "president_ruling_missing:ghp_abcdefghijklmnopqrstuv",  # an unenumerated token
+    "claude_agent_state:idle; stop=ghp_abcdefghijklmnopqrstuv",  # no longer a template at all
     "claude_tui_pty_eof_no_output: fatal: boom",
 ])
 def test_the_template_grammar_rejects_anything_else(detail):
     assert not pi._detail_is_valid(detail)
     assert pi._finalize_leg_detail(detail) == "unknown failure; CLI output not retained"
+    # ... even when it arrives with harness provenance (the grammar is defense in depth)
+    assert pi._finalize_leg_detail(pi._HarnessCode(detail)) == "unknown failure; CLI output not retained"
 
 
 def test_the_gemini_broker_vocabulary_is_folded_into_the_template_set():
@@ -978,3 +984,179 @@ def test_property_every_detail_is_a_template_and_carries_no_input_text():
         assert body[:8] not in detail and body[-8:] not in detail, (case, repr(text), detail)
         assert _longest_shared(detail, text) < 12, (case, repr(text), detail)
         assert pi._finalize_leg_detail(detail) == detail
+
+
+
+# --- board round 8 (agent-harness#1102): provenance by TYPE, closed tokens ------------------
+
+_SECRET = "sk-ant-api03-abcdefghij0123456789"
+# A CLI line or exception message that full-matches (or used to full-match) EACH harness /
+# failure template, with a secret in a field. None may choose the detail.
+_TEMPLATE_SHAPED_LINES = (
+    f"claude_agent_state:Running; stop={_SECRET}",
+    f"native_fill_refused:denied:{_SECRET}",
+    f"native_fill_refused:native_fill_digest_mismatch:claude:{_SECRET}",
+    "research_audit_denied",
+    "president_ruling_missing:president_unavailable",
+    "timeout after 900s",
+    "skip: harness 'codex' not in live Omnigent catalog",
+    "skip: no homebrew adapter for lane 'grok' — Omnigent-or-skip (ABDOMNI)",
+    "omnigent auth: HTTP 401",
+    "omnigent v0.4.0 lane=api_key",
+    "slirp4netns exited (1) before the uplink was usable; the namespace has no network",
+    "codex not logged in — run `codex login` (auth preflight failed)",
+    "claude_tui_launch_error:OSError",
+    f"unknown failure (exit 1); CLI output: leg-logs/{_SECRET}-0123456789ab.log",
+    "usage_limit (resets 13:42, Oct 1 2026)",
+    "env_failure: temp dir owned by another account (uid 1)",
+    "signal 9",
+)
+
+
+@pytest.mark.parametrize("line", _TEMPLATE_SHAPED_LINES)
+def test_a_cli_line_shaped_like_a_template_never_chooses_the_detail(line):
+    """codex/claude/grok r8 B1: the single-line shortcut, `_exception_failure` and the TUI
+    prefix accepted any line that full-matched a harness template. Now provenance is by
+    TYPE: CLI output, exception text and PTY tails are never turned into a harness code."""
+    for failure in (
+        pi._leg_failure_detail("ERROR", 1, "", line),          # the CLI log channel
+        pi._leg_failure_detail("ERROR", 1, line, ""),          # the body channel
+        pi._exception_failure(ValueError(line)),               # an exception message
+        line,                                                  # a plain string at the descriptor
+    ):
+        detail = pi._finalize_leg_detail(failure)
+        assert detail != line, (line, detail)
+        assert _SECRET not in (detail or "")
+        # a failure LABEL (auth_failure, usage_limit ...) is fine; a template echo is not
+        assert detail is None or pi._detail_is_valid(detail), (line, detail)
+
+
+def test_a_fixed_literal_passes_only_by_exact_equality():
+    """The one plain-string path left: an exception whose message EQUALS one of our fixed
+    literals (a refusal this runtime raised). Equality carries no foreign text; any extra
+    character makes it an unknown failure."""
+    code = "review_monitoring_unsupported_route:codex"
+    assert pi._finalize_leg_detail(pi._exception_failure(ValueError(code))) == code
+    for line in (f"{code} {_SECRET}", f"{code}:{_SECRET}", f" {code}"):
+        detail = pi._finalize_leg_detail(pi._exception_failure(ValueError(line)))
+        assert detail == "unknown failure; CLI output not retained", (line, detail)
+
+
+def test_a_tui_marker_prefix_needs_provenance():
+    raw = pi._LegFailure(pi._UNKNOWN_DETAIL, raw="x", unknown=True, prefix=f"native_fill_refused:x:{_SECRET}")
+    assert pi._finalize_leg_detail(raw) == "unknown failure; CLI output not retained"
+    typed = pi._LegFailure(
+        pi._UNKNOWN_DETAIL, raw="x", unknown=True, prefix=pi._HarnessCode("claude_tui_pty_eof_no_output"),
+    )
+    assert pi._finalize_leg_detail(typed) == "claude_tui_pty_eof_no_output: unknown failure; CLI output not retained"
+
+
+def test_the_raw_field_is_not_in_the_repr():
+    failure = pi._LegFailure(pi._UNKNOWN_DETAIL, raw=f"token={_SECRET}", unknown=True)
+    assert _SECRET not in repr(failure)
+
+
+def test_a_native_fill_refusal_names_only_a_seat_of_this_board():
+    assert pi._finalize_leg_detail(pi._HarnessCode(
+        "native_fill_refused:native_fill_digest_mismatch:claude:claude-opus-5-5:max:correctness"
+    )) == "native_fill_refused:native_fill_digest_mismatch:claude:claude-opus-5-5:max:correctness"
+    assert pi._finalize_leg_detail(pi._HarnessCode("native_fill_refused:not_a_code:claude:x")) == (
+        "unknown failure; CLI output not retained"
+    )
+
+
+# B2: the verdict forms main accepted must still parse; the CLI lines must not.
+
+@pytest.mark.parametrize("line,verdict", [
+    ("**Verdict:** **AGREE**", "AGREE"),
+    ("**Verdict:** *PARTIALLY AGREE*", "PARTIALLY AGREE"),
+    ("**Verdict:** `DISAGREE`", "DISAGREE"),
+    ("*Verdict:* **AGREE**", "AGREE"),
+    ("**Partially agree** — reason", "PARTIALLY AGREE"),
+    ("**AGREE** — fine", "AGREE"),
+    ("- AGREE", "AGREE"),
+    ("> DISAGREE: blocking", "DISAGREE"),
+    ("1. PARTIALLY AGREE", "PARTIALLY AGREE"),
+    ("VERDICT: agree", "AGREE"),
+    ("`AGREE`", "AGREE"),
+    ("**Verdict**: DISAGREE", "DISAGREE"),
+])
+def test_formatted_verdicts_parse(line, verdict):
+    assert pi.terminal_verdict("review body\n" + line) == verdict
+
+
+# B3: no subclass at all, so no mixin can shadow the descriptor.
+
+def test_a_mixin_cannot_shadow_the_detail_chokepoint():
+    class DetailMixin:
+        detail = None
+
+    with pytest.raises(TypeError):
+        type("Leaky", (DetailMixin, pi.PanelLegResult), {})
+    with pytest.raises(TypeError):
+        type("Plain", (pi.PanelLegResult,), {})
+
+
+# Other surfaces.
+
+def test_the_research_ledger_gets_the_code_and_the_reason_goes_to_the_private_log(tmp_path):
+    leg = pi._research_unavailable_result(
+        leg="codex", seat_key="codex:a",
+        detail=f"research_profile_unavailable: token={_SECRET}", run_dir=tmp_path,
+    )
+    assert leg.detail == "research_profile_unavailable"
+    ledger = leg._research_ledger
+    assert _SECRET not in repr(ledger) and ledger.detail == "research_profile_unavailable"
+    logs = list((tmp_path / "leg-logs").iterdir())
+    assert len(logs) == 1 and "research_profile_unavailable" in logs[0].read_text()
+
+
+def test_the_tui_warning_carries_no_pty_text(monkeypatch, tmp_path, caplog):
+    import logging
+    _claude_session(monkeypatch, (1, "", "claude_tui_pty_eof_no_output", f"{TOK}0123456789"))
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    with caplog.at_level(logging.DEBUG):
+        pi._exec_claude_tui_leg(tmp_path / "review", tmp_path / "out", 30, "bundle", env={})
+    assert TOK not in caplog.text and "claude_tui_pty_eof_no_output" in caplog.text
+
+
+def test_a_typed_unavailable_swap_writes_no_orphan_log(monkeypatch, tmp_path):
+    failure = pi._LegFailure(pi._UNKNOWN_DETAIL, raw="boom", unknown=True, rc=1)
+    leg = pi.invoke_panel(
+        "ARTIFACT", ["claude"], stream_dir=tmp_path,
+        spawn=lambda leg, art: ("UNAVAILABLE", "tui_backing_required", failure),
+    ).legs[0]
+    assert leg.detail == "tui_backing_required"
+    assert not (tmp_path / "leg-logs").exists() or not any((tmp_path / "leg-logs").iterdir())
+
+
+def test_the_private_log_is_written_whole(monkeypatch, tmp_path):
+    """Short writes: the writer loops until every byte is on disk."""
+    import os
+    real_write = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, bytes(data)[:7]))
+    ref = pi._write_private_leg_log(tmp_path, "codex", "0123456789" * 20)
+    assert ref and (tmp_path / ref).read_text() == "0123456789" * 20
+
+
+# The property test, extended with template-shaped secret lines (r8).
+
+def test_property_template_shaped_secret_lines_never_choose_the_detail():
+    import random
+
+    rng = random.Random(_PROPERTY_SEED + 8)
+    for case in range(_PROPERTY_CASES):
+        secret = "".join(rng.choice("abcdefghijkmnopqrstuvwxyz0123456789") for _ in range(24))
+        line = rng.choice(_TEMPLATE_SHAPED_LINES).replace(_SECRET, "ghp_" + secret)
+        line = line if _SECRET in line else f"{line} ghp_{secret}"
+        words = [rng.choice(_FILLER) for _ in range(rng.randint(0, 10))]
+        words.insert(rng.randint(0, len(words)), line)
+        text = rng.choice(["\n", " "]).join(words)
+        rc = rng.choice([1, 2, 0, -9, 124])
+        for failure in (pi._leg_failure_detail("ERROR", rc, "", text), pi._exception_failure(ValueError(text))):
+            detail = pi._finalize_leg_detail(pi._resolve_leg_detail(failure, None, "codex"))
+            if detail is None:
+                continue
+            assert pi._detail_is_valid(detail), (case, detail)
+            assert secret not in detail and secret[:8] not in detail, (case, repr(text), detail)

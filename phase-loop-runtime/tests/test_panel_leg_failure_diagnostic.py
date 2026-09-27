@@ -166,7 +166,7 @@ def test_board_seat_path_carries_the_diagnostic_to_detail(monkeypatch):
     assert "seat_detail" in src, "board seat path no longer captures a spawn diagnostic"
     # agent-harness#1102 r7: the diagnostic is routed through `_resolve_leg_detail` (which
     # writes an unknown failure's raw text to the private per-leg log).
-    assert "detail = _resolve_leg_detail(seat_detail" in src, (
+    assert "_resolve_leg_detail(seat_detail" in src, (
         "board seat path captures seat_detail but never routes it to PanelLegResult.detail"
     )
 

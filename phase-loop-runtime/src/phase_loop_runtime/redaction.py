@@ -33,7 +33,8 @@ _CATEGORY_BY_PROTECTED_SOURCE_ROLE = {
 }
 
 # key=value / key: value credential shape used by `runner._redacted_stderr_excerpt`. It lives
-# here (not in runner) so the panel's leg-detail redactor can share it without importing runner.
+# here (not in runner) so the panel's private-log hygiene pass can share it without importing
+# runner.
 STDERR_SECRET_KV_RE = re.compile(r"(?i)(api[_-]?key|authorization|token|secret|password)(\s*[:=]\s*)\S+")
 
 _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
