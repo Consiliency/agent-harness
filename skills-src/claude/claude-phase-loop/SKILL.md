@@ -107,9 +107,21 @@ Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeou
 - `claude-phase-loop dry-run`: use `phase-loop dry-run --max-phases <N>`.
 - `claude-phase-loop sync-skills`: use `phase-loop sync-skills --check`, and use `--apply` only when the operator explicitly wants bridge repair.
 
-Claude Code uses the shared runner contract, but autonomous live dispatch is
-proof-blocked until the authenticated non-interactive planning smoke completes
-inside the runner timeout. Manual TUI reentry and manual-import closeout remain
+Claude Code uses the shared runner contract, but autonomous live dispatch stays
+proof-blocked until a disposable roadmap proof completes on the Agent View route
+(`PHASE_LOOP_CLAUDE_ROUTE=agent_view`). That route binds the session it launches
+(proven by a per-launch nonce in the session's own first turn), waits for it to
+finish with no deadline, and reduces its final message
+(agent-harness#409). A session that stops for input is reported blocked and left
+attachable. The route passes a permission mode only when explicitly requested, so
+unattended runs must pass `--bypass-approvals`; without it the session inherits the
+operator's configured mode and stops at the first prompt that mode requires. Never
+fall back to the billing-sensitive print route. The route honors the operator's own
+Claude settings and workspace trust as-is: it adds no allow rules, directory grants,
+settings files, trust or implicit permission mode. It never grants what the operator's
+`claude` would not, and it also refuses up front, with the fix, when the folder is not
+trusted (run `claude` in that folder once and accept the trust prompt; see
+agent-harness#1104) or when the run's context file would lie outside the workspace. Manual TUI reentry and manual-import closeout remain
 supported through `.phase-loop/` state. ThawedCode stays grouped with
 Claude only for docs and manual imports; do not claim a separate live
 ThawedCode automation contract unless a later roadmap proves it.

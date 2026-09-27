@@ -392,6 +392,87 @@ with a subscription-backed local session, then observed the disposable
 is a live-dispatch proof blocker, not an auth blocker; keep Claude manual TUI
 reentry and manual imports available through the shared state ledger.
 
+That smoke ran on the print route, which BASELINE later demoted to explicit,
+billing-sensitive compatibility, so it is not the proof to repeat. The async
+route for unattended dispatch is Agent View. Until agent-harness#409 it could not
+carry a phase: it rendered a `--cwd` option the root `claude` command rejects,
+could not parse the `backgrounded · <id>` banner, and returned as soon as
+`claude --bg` started, so the runner verified an unchanged tree. The route now
+binds only the session whose id `claude --bg` prints (the CLI ignores
+`--session-id` under `--bg`), waits for a terminal Agent
+View state with no default deadline or silence termination, and returns the
+session's final assistant message from its transcript as the launch output. A
+`blocked` session (waiting for input) fails closed and stays attachable. Without
+`--bypass-approvals` no permission mode is passed, so unattended runs of any action
+need `--bypass-approvals`. `claude_solo` stays
+`proof-blocked` until a disposable roadmap proof on this route records
+`launch.json` and `terminal-summary.json` (agent-harness#1099). The disposable
+proof attempts on 2026-09-26 all exited non-zero within a second with no session.
+Their output was redacted at first; once the launch blocker carried the CLI's first
+refusal line, the cause read `Workspace not trusted. Run claude in <repo> once and
+accept the trust prompt`. (The variadic `--allowedTools`/`--disallowedTools`/`--add-dir`
+options swallowing the trailing prompt was a real defect found along the way, fixed by
+ending options with `--`, but it was not the observed cause.) A background session
+needs the exact workspace trusted beforehand; trust recorded
+for a parent directory does not carry over. Unattended Agent View dispatch into a
+new checkout therefore needs that one-time trust acceptance first. The launch now
+reads (never writes) that per-folder trust before `claude --bg` and refuses up front
+with the fix: run `claude` in that folder once and accept the trust prompt. The live
+proof is parked until the workspace-trust design lands (agent-harness#1104: reusable
+slot paths and an opt-in, user-run `phase-loop setup --trust-workspaces`; the harness
+never writes trust silently).
+
+Binding and observer:
+- Why a nonce: `claude --bg` prints only a short session id. This comes from reading the
+  2.1.283 CLI source, not from a live run. Each launch therefore appends a fresh
+  `phase-loop-launch-nonce: <uuid4>` line to the prompt it delivers.
+- What binds: a listed session is this launch's only if the opening user turn of its own
+  transcript carries that nonce.
+  - The opening turn is the user records up to the first assistant record, with `isMeta`
+    records skipped, so a preamble before the prompt does not hide the nonce.
+  - A candidate whose opening turn is closed without the nonce is excluded as another
+    session.
+  - A candidate that cannot be read, whose turn is not closed yet, or whose record shape
+    is unrecognized stays unproven. It is never excluded for those reasons.
+  - Success re-checks the nonce before any final message is read.
+- Pre-filters: sessions listed before the launch (snapshotted, 3 attempts) never match, and
+  candidates must be in the launch cwd (realpath). Both apply only until the full id is
+  pinned. An id matching more than one candidate fails closed as ambiguous.
+- Waiting: there is no deadline and no silence termination. The wait ends early,
+  fail-closed and without stopping the session, only on:
+  - 12 successful listings with no candidate (counted from launch; seeing one resets the
+    count; listing errors neither add to nor reset it);
+  - 60 consecutive `claude agents` failures;
+  - 12 unproven sightings in total (`agent_view_binding_unverifiable`), counted
+    cumulatively across candidates;
+  - an ambiguous id. Ambiguity is checked before the nonce, so if an impostor and our
+    session first appear in the same poll, the launch also fails closed.
+
+  The blocker names the attach/stop commands.
+- Unverified live, on the agent-harness#1099 proof checklist:
+  - `claude --bg` records the delivered prompt in a non-`isMeta` user record before the
+    first assistant record of the transcript this code reads;
+  - it writes that turn before the first model response, and within about 12 polls of the
+    session first appearing in `claude agents`.
+
+  If either fails, our own session is never proven. It is either unproven until the
+  12-sighting rule fails the launch closed, or, if the opening turn closes without the
+  nonce, excluded until the missing-record rule fails it closed. Either way the launch
+  never reports another session.
+- Only a pinned, nonce-proven session is ever stopped, and only on an operator timeout.
+  An unproven candidate is left running, with the attach/stop hint.
+
+Settings principle: the Agent View route honors the operator's own Claude
+settings and workspace trust as-is. It inherits the operator's environment
+(`HOME`, config dir). It passes no `--settings`, no `--setting-sources`, no
+`--allowedTools` allow rules and no `--add-dir`, and it injects no setting such as
+`skipDangerousModePermissionPrompt`. It passes a `--permission-mode` only when
+explicitly requested (`--bypass-approvals` gives `bypassPermissions`); otherwise the
+session inherits the operator's configured mode. It adds no permission grants at all.
+Its only addition is the restrictive `--disallowedTools` deny list. A context file
+outside the launch cwd is refused before launch (`agent_view_context_outside_workspace`)
+rather than granted.
+
 ### Frozen Claude Failure Inventory
 
 The proof-blocking Claude cases are explicit parity failures, not vague

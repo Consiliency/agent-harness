@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -22,7 +23,13 @@ from typing import Any, Callable, Mapping
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
-from .claude_agent_view import ClaudeAgentViewAdapter, AgentViewLifecycleResult, workspace_trust_state
+from .claude_agent_view import (
+    AGENT_VIEW_NONCE_PREFIX,
+    AgentViewLifecycleResult,
+    BlockerSummary,
+    ClaudeAgentViewAdapter,
+    workspace_trust_state,
+)
 from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
 from .harness_env_signatures import child_executor_env
@@ -1443,7 +1450,12 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             claude_channel_session_id=route_selection.session_id,
         )
     if route_selection.route == "claude_agent_view":
-        permission_mode = _claude_permission_mode(request.action, request.bypass_approvals)
+        # Match the operator's own Claude settings (maintainer ruling on agent-harness#1101):
+        # a permission mode is passed ONLY when the request explicitly asks for one. The
+        # runner's one explicit request is --bypass-approvals; otherwise the session
+        # inherits the operator's configured mode, and stops `blocked` at the first
+        # prompt that mode requires.
+        permission_mode = "bypassPermissions" if request.bypass_approvals else None
         return LaunchSpec(
             executor="claude",
             command=ClaudeAgentViewAdapter().launch_command(
@@ -1452,6 +1464,11 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
                 model=request.model_selection.model,
                 effort=request.model_selection.effort,
                 permission=permission_mode,
+                # Only the RESTRICTIVE half of the print route's tool policy, so an
+                # unattended session cannot stall on AskUserQuestion / plan approval or
+                # fan out. Never `--allowedTools`: those are permission allow rules that
+                # would widen the operator's own settings (agent-harness#1101 round 1).
+                disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
             ),
             prompt_bundle=prompt_bundle,
             injection_metadata=injection_metadata,
@@ -2122,7 +2139,16 @@ def launch_with_spec(
     if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
         return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
-        return _result_with_spec(_launch_claude_agent_view(spec, log_path=log_path), spec)
+        return _result_with_spec(
+            _launch_claude_agent_view(
+                spec,
+                log_path=log_path,
+                heartbeat_path=heartbeat_path,
+                quiet_warning_seconds=quiet_warning_seconds,
+                quiet_blocker_seconds=quiet_blocker_seconds,
+            ),
+            spec,
+        )
     command, staged_review_paths = _resolve_command_context(spec, log_path, dry_run=dry_run)
     # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
     # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
@@ -2251,19 +2277,146 @@ def _launch_claude_channel(spec: LaunchSpec, *, log_path: Path | None) -> Launch
     )
 
 
-def _launch_claude_agent_view(spec: LaunchSpec, *, log_path: Path | None) -> LaunchResult:
+def _launch_claude_agent_view(
+    spec: LaunchSpec,
+    *,
+    log_path: Path | None,
+    heartbeat_path: Path | None = None,
+    quiet_warning_seconds: int = 600,
+    quiet_blocker_seconds: int = 1800,
+    adapter: ClaudeAgentViewAdapter | None = None,
+) -> LaunchResult:
+    """Run one phase-loop action as a Claude Agent View background session.
+
+    agent-harness#409: `claude --bg` returns as soon as the session starts, so the
+    launch binds the session whose id `claude --bg` prints, waits for that exact
+    session to reach a terminal state, and returns its final assistant message as the output the runner
+    reduces. Only a `done` session with a readable final message is a successful
+    launch; a running, blocked (needs input), failed or unbound session is not.
+    There is no default deadline and no silence-based termination: the wait ends
+    when the session does, or at `spec.launch_timeout_seconds` when an operator set
+    one.
+    """
     started_at = _utc_now()
     cwd = Path(spec.wrapped_cwd or os.getcwd())
-    adapter = ClaudeAgentViewAdapter()
-    lifecycle = adapter.launch_background(
-        spec.prompt_bundle.render_context(),
-        cwd=cwd,
-        model=spec.selected_model,
-        effort=spec.selected_effort,
-        permission=_command_option(spec.command, "--permission-mode"),
+    adapter = adapter if adapter is not None else ClaudeAgentViewAdapter()
+    context_text = spec.prompt_bundle.render_context()
+    # The rendered context can exceed the per-argument ARG_MAX, so, like the print
+    # route's context-file delivery, the session is pointed at a file instead.
+    context_path = _phase_loop_context_path(log_path, context_text)
+    prompt = (
+        _claude_context_prompt(context_path, spec.claude_execution_mode or "solo")
+        if context_path is not None
+        else context_text
     )
-    route_status = _agent_view_route_status(lifecycle.state)
-    route_text = _agent_view_route_text(lifecycle)
+    # Launch-specific identity (agent-harness#1101 round 4): `claude --bg` prints only a
+    # short id, so the session is proven ours by this per-launch nonce in its own first
+    # user turn. Nothing without it is ever reduced.
+    launch_nonce = str(uuid.uuid4())
+    prompt = f"{prompt}\n\n{AGENT_VIEW_NONCE_PREFIX}{launch_nonce}"
+    launch_options: dict[str, Any] = {
+        "model": spec.selected_model,
+        "effort": spec.selected_effort,
+        "permission": _command_option(spec.command, "--permission-mode"),
+        "disallowed_tools": _command_option(spec.command, "--disallowedTools"),
+    }
+    command = adapter.launch_command(prompt, cwd=cwd, **launch_options)
+    if context_path is not None and not _path_within(Path(context_path).parent, cwd):
+        # The route adds no permission grants (no --add-dir), so a context file the
+        # session could only read through one is refused, not granted.
+        lifecycle = AgentViewLifecycleResult(
+            session_id="preflight",
+            state="blocked",
+            cwd=str(cwd),
+            logs_ref=None,
+            started_at=None,
+            completed_at=_utc_now(),
+            stop_result=None,
+            blocker=BlockerSummary(
+                "agent_view_context_outside_workspace",
+                f"The run's context file {context_path} is outside the launch workspace {cwd}; the Agent View "
+                "route adds no directory grants, so run with the phase-loop run directory inside the workspace.",
+            ),
+        )
+    else:
+        # `claude --bg` ignores --session-id (it manages the id itself), so the session is
+        # bound by the id the launch prints plus the nonce, never by cwd.
+        lifecycle = adapter.launch_background(
+            prompt, cwd=cwd, bind_printed_id=True, launch_nonce=launch_nonce, **launch_options
+        )
+    timed_out = False
+    if lifecycle.state in {"running", "unknown"} and lifecycle.blocker is None:
+        started_monotonic = time.monotonic()
+
+        def _heartbeat(session) -> None:
+            if heartbeat_path is None:
+                return
+            write_run_heartbeat(
+                heartbeat_path,
+                run_heartbeat_summary(
+                    log_path=log_path,
+                    heartbeat_path=heartbeat_path,
+                    pid=session.pid if session is not None else None,
+                    started_monotonic=started_monotonic,
+                    started_at=started_at,
+                    quiet_warning_seconds=quiet_warning_seconds,
+                    quiet_blocker_seconds=quiet_blocker_seconds,
+                    command=command,
+                    returncode=None,
+                ),
+            )
+
+        lifecycle = adapter.wait_for_terminal(
+            lifecycle.session_id,
+            cwd=cwd,
+            exclude=lifecycle.preexisting_session_ids,
+            verified=lifecycle.binding_verified,
+            nonce=launch_nonce,
+            timeout_s=float(spec.launch_timeout_seconds) if spec.launch_timeout_seconds else None,
+            on_poll=_heartbeat,
+        )
+        timed_out = lifecycle.blocker is not None and lifecycle.blocker.reason == "agent_view_launch_timeout"
+        if timed_out and lifecycle.binding_verified:
+            # Only a pinned, nonce-proven full id is ever stopped; an unproven candidate
+            # is left running like the other early exits (its blocker says how to act).
+            adapter.stop(lifecycle.session_id, cwd=cwd)
+    final_text = ""
+    blocker = lifecycle.blocker
+    if lifecycle.state == "done" and blocker is None:
+        proof = adapter.launch_proof(lifecycle.session_id, cwd=cwd, nonce=launch_nonce)
+        # Belt and braces: never reduce a transcript that does not carry this nonce.
+        if proof is None:
+            blocker = BlockerSummary(
+                "agent_view_transcript_missing",
+                "Agent View session finished but its transcript could not be read to confirm this launch's nonce.",
+            )
+        elif proof is False:
+            blocker = BlockerSummary(
+                "agent_view_binding_unverifiable",
+                "The finished session's transcript does not carry this launch's nonce, so it is not reported.",
+            )
+        else:
+            final_text = adapter.final_text(lifecycle.session_id, cwd=cwd)
+        if blocker is None and not final_text:
+            blocker = BlockerSummary(
+                "agent_view_transcript_missing",
+                "Agent View session finished but its final assistant message could not be read from the session transcript.",
+            )
+    elif lifecycle.state == "blocked" and blocker is None:
+        blocker = BlockerSummary(
+            "agent_view_needs_input",
+            f"Agent View session {lifecycle.session_id} is waiting for input; attach with `claude attach {lifecycle.session_id}`.",
+        )
+    # Success is exactly: the bound session is `done` and its final message was read.
+    succeeded = lifecycle.state == "done" and blocker is None and bool(final_text)
+    route_status = "done" if succeeded else (
+        "blocked" if blocker is not None else _agent_view_route_status(lifecycle.state)
+    )
+    if route_status == "done" and not succeeded:
+        route_status = "blocked"
+    route_text = final_text if route_status == "done" else (
+        blocker.summary if blocker is not None else _agent_view_route_text(lifecycle)
+    )
     route_result = ClaudeRouteResult(
         route="claude_agent_view",
         session_id=lifecycle.session_id,
@@ -2275,7 +2428,7 @@ def _launch_claude_agent_view(spec: LaunchSpec, *, log_path: Path | None) -> Lau
         billing_posture=lifecycle.billing_posture,
         trust_state=workspace_trust_state(cwd),
         permission_state={"pending": 0},
-        warnings=tuple([lifecycle.blocker.summary] if lifecycle.blocker else []),
+        warnings=tuple([blocker.summary] if blocker else []),
         evidence_refs=tuple(_agent_view_evidence_refs(lifecycle)),
     )
     output = route_result.text
@@ -2283,16 +2436,26 @@ def _launch_claude_agent_view(spec: LaunchSpec, *, log_path: Path | None) -> Lau
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(output + ("\n" if output else ""), encoding="utf-8")
     return LaunchResult(
-        command=spec.command,
-        returncode=0 if route_status in {"working", "done"} else 1,
+        command=command,
+        returncode=0 if route_status == "done" else 1,
         output=output,
         log_path=str(log_path) if log_path else None,
+        heartbeat_path=str(heartbeat_path) if heartbeat_path else None,
         terminal_path=str(log_path.parent / "terminal-summary.json") if log_path else None,
         started_at=started_at,
         finished_at=_utc_now(),
         claude_route="claude_agent_view",
         claude_route_result=route_result.to_json(),
+        timed_out=timed_out,
     )
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _agent_view_route_status(lifecycle_state: str) -> str:

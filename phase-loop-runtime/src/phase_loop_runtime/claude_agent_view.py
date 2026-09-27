@@ -1,16 +1,34 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 
 AGENT_VIEW_STATES = {"running", "done", "blocked", "stopped", "failed", "unknown"}
+AGENT_VIEW_POLL_INTERVAL_S = 5.0
+# Consecutive polls on which the OBSERVER fails (listing error, or the bound record
+# absent) before the wait fails closed. This bounds a broken observer, never a
+# working session: a listed, running session resets the count.
+AGENT_VIEW_OBSERVER_FAILURE_LIMIT = 12
+# `claude agents` itself failing (non-zero, non-JSON) is an observer outage, not
+# evidence about the session, so it gets a longer tolerance (~5 min at the default
+# poll) than a listing that works but no longer shows the bound record.
+AGENT_VIEW_LISTING_ERROR_LIMIT = 60
+# Pre-launch snapshot of existing sessions: a few attempts before refusing.
+AGENT_VIEW_SNAPSHOT_ATTEMPTS = 3
+# The per-launch identity line the launcher appends to the prompt; the bound session is
+# ours only if its own first user turn carries it (agent-harness#1101 round 4).
+AGENT_VIEW_NONCE_PREFIX = "phase-loop-launch-nonce: "
+AGENT_VIEW_SNAPSHOT_RETRY_DELAY_S = 1.0
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 SECRET_LIKE_KEYS = {
     "api_key",
     "authorization",
@@ -92,6 +110,11 @@ class AgentViewLifecycleResult:
     auth_posture: str = "unknown"
     billing_posture: str = "unknown"
     blocker: BlockerSummary | None = None
+    # Full ids of sessions already listed before this launch; never bound to it.
+    preexisting_session_ids: frozenset[str] = frozenset()
+    # True once the bound record was first observed NOT yet finished (see
+    # _TERMINAL_AT_FIRST_SIGHT); until then the binding is unverified.
+    binding_verified: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -149,9 +172,17 @@ class ClaudeAgentViewAdapter:
         *,
         claude_bin: str = "claude",
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        config_path: Path | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        projects_root: Path | None = None,
     ) -> None:
         self.claude_bin = claude_bin
         self._runner = runner
+        # Operator's Claude global config (per-folder trust); None = the real one.
+        self._config_path = config_path
+        self._sleep = sleep
+        # Claude transcript store; None = $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects.
+        self._projects_root = projects_root
 
     def list_command(self) -> list[str]:
         return [self.claude_bin, "agents", "--json", "--all"]
@@ -172,14 +203,17 @@ class ClaudeAgentViewAdapter:
         safe_mode: bool = False,
         strict_mcp_config: bool = False,
         tools: str | list[str] | None = None,
+        allowed_tools: str | None = None,
+        disallowed_tools: str | None = None,
     ) -> list[str]:
+        # `cwd` is the launch directory the caller runs this command from. The root
+        # `claude` command has no `--cwd` option (only `claude agents` does), so it is
+        # never rendered here.
         command = [self.claude_bin, "--bg"]
         if safe_mode:
             command.append("--safe-mode")
         if name:
             command.extend(["--name", name])
-        if cwd is not None:
-            command.extend(["--cwd", str(cwd)])
         if model:
             command.extend(["--model", model])
         if effort:
@@ -202,8 +236,15 @@ class ClaudeAgentViewAdapter:
                 command.append(tools)
             else:
                 command.extend(tools)
+        if allowed_tools:
+            command.extend(["--allowedTools", allowed_tools])
+        if disallowed_tools:
+            command.extend(["--disallowedTools", disallowed_tools])
         if prompt is not None:
-            command.append(prompt)
+            # `--tools`, `--allowedTools`, `--disallowedTools` and `--add-dir` are
+            # variadic (`<values...>`): without the end-of-options marker they swallow
+            # the prompt and `claude --bg` starts with none (agent-harness#1099 proof).
+            command.extend(["--", prompt])
         return command
 
     def logs_command(self, agent_id: str) -> list[str]:
@@ -257,13 +298,18 @@ class ClaudeAgentViewAdapter:
 
     def prepare_launch(self, prompt: str, *, cwd: str | Path, **kwargs: Any) -> LaunchPreflightResult:
         command = tuple(self.launch_command(prompt, cwd=cwd, **kwargs))
-        trust_state = workspace_trust_state(Path(cwd))
+        trust_state = workspace_trust_state(Path(cwd), config_path=self._config_path)
         if trust_state["status"] != "trusted":
+            summary = (
+                workspace_trust_hint(Path(cwd))
+                if trust_state["workspace"] != "trusted"
+                else "Agent View launch blocked before claude --bg because workspace or MCP trust is not ready."
+            )
             return LaunchPreflightResult(
                 trusted=False,
                 trust_state=trust_state,
                 command=command,
-                blocker=BlockerSummary("trust_preflight_blocked", "Agent View launch blocked before claude --bg because workspace or MCP trust is not ready."),
+                blocker=BlockerSummary("trust_preflight_blocked", summary),
             )
         if shutil.which(self.claude_bin) is None:
             return LaunchPreflightResult(
@@ -289,6 +335,8 @@ class ClaudeAgentViewAdapter:
         return LaunchPreflightResult(trusted=True, trust_state=trust_state, command=command)
 
     def launch_background(self, prompt: str, *, cwd: str | Path, **kwargs: Any) -> AgentViewLifecycleResult:
+        bind_printed_id = bool(kwargs.pop("bind_printed_id", False))
+        launch_nonce = kwargs.pop("launch_nonce", None)
         preflight = self.prepare_launch(prompt, cwd=cwd, **kwargs)
         if not preflight.trusted:
             return AgentViewLifecycleResult(
@@ -301,6 +349,35 @@ class ClaudeAgentViewAdapter:
                 stop_result=None,
                 blocker=preflight.blocker,
             )
+        preexisting: frozenset[str] = frozenset()
+        if bind_printed_id:
+            # agent-harness#1101 round 2: a record listed BEFORE this launch can never be
+            # the session it starts, even when it shares the printed short id and the new
+            # session registers late. Snapshot the full ids first; if that is impossible,
+            # refuse before starting anything.
+            before = self.list_sessions(cwd=None)
+            for _ in range(AGENT_VIEW_SNAPSHOT_ATTEMPTS - 1):
+                if before.ok:
+                    break
+                # A bounded retry for a transient `claude agents` failure; nothing has
+                # been launched yet, so refusing afterwards costs no session.
+                self._sleep(AGENT_VIEW_SNAPSHOT_RETRY_DELAY_S)
+                before = self.list_sessions(cwd=None)
+            if not before.ok:
+                return AgentViewLifecycleResult(
+                    session_id="preflight",
+                    state="blocked",
+                    cwd=str(cwd),
+                    logs_ref=None,
+                    started_at=None,
+                    completed_at=_utc_now(),
+                    stop_result=None,
+                    blocker=BlockerSummary(
+                        "agent_view_preexisting_unknown",
+                        "Agent View launch refused before claude --bg: could not list existing sessions to exclude them from binding.",
+                    ),
+                )
+            preexisting = frozenset(_session_key(session) for session in before.sessions)
         result = self._runner(
             list(preflight.command),
             cwd=str(cwd),
@@ -318,10 +395,58 @@ class ClaudeAgentViewAdapter:
                 started_at=None,
                 completed_at=_utc_now(),
                 stop_result=None,
-                blocker=BlockerSummary("agent_view_launch_failed", "claude --bg did not launch a background session."),
+                blocker=BlockerSummary(
+                    "agent_view_launch_failed",
+                    "claude --bg did not launch a background session." + _cli_refusal_suffix(result.stdout),
+                ),
             )
 
-        session_id = _launch_session_id(result.stdout)
+        session_id = _launch_session_id(result.stdout, strict=bind_printed_id)
+        if bind_printed_id:
+            # Exact binding only (agent-harness#409): the session is the one this launch
+            # printed, never another session that happens to share the cwd. The record
+            # may not be listed yet; the waiter binds it by the printed id.
+            if not session_id:
+                return _lifecycle_from_parts(
+                    session_id="launch",
+                    state="blocked",
+                    cwd=str(cwd),
+                    started_at=None,
+                    completed_at=_utc_now(),
+                    stop_result=None,
+                    blocker=BlockerSummary(
+                        "agent_view_session_unbound",
+                        "claude --bg did not print the id of the session it started.",
+                    ),
+                )
+            listed = self.list_sessions(cwd=cwd)
+            excluded = set(preexisting)
+            try:
+                status, session = self._resolve_printed(
+                    listed.sessions if listed.ok else (), session_id, exclude=excluded, cwd=cwd, nonce=launch_nonce
+                )
+            except AmbiguousSessionError as exc:
+                return _ambiguous_lifecycle(session_id, cwd, exc)
+            if status == "unverifiable":
+                return _unverifiable_lifecycle(session_id, session, cwd)
+            if status == "verified":
+                # Pinned from here on: the full session id, never the short one.
+                return replace(
+                    _lifecycle_from_session(session),
+                    preexisting_session_ids=frozenset(excluded),
+                    binding_verified=True,
+                )
+            return replace(
+                _lifecycle_from_parts(
+                    session_id=session_id,
+                    state="running",
+                    cwd=str(cwd),
+                    started_at=_utc_now(),
+                    completed_at=None,
+                    stop_result=None,
+                ),
+                preexisting_session_ids=frozenset(excluded),
+            )
         session = _find_session(self.list_sessions(cwd=cwd).sessions, session_id=session_id, cwd=str(cwd))
         if session:
             return _lifecycle_from_session(session)
@@ -333,6 +458,190 @@ class ClaudeAgentViewAdapter:
             completed_at=None,
             stop_result=None,
         )
+
+    def wait_for_terminal(
+        self,
+        session_id: str,
+        *,
+        cwd: str | Path | None = None,
+        poll_interval_s: float = AGENT_VIEW_POLL_INTERVAL_S,
+        timeout_s: float | None = None,
+        on_poll: Callable[[AgentViewSession | None], None] | None = None,
+        exclude: frozenset[str] = frozenset(),
+        verified: bool = False,
+        nonce: str | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> AgentViewLifecycleResult:
+        """Poll the launched session until Agent View reports a terminal state.
+
+        `done`, `failed` and `stopped` are terminal; `blocked` means the session is
+        waiting for input, which nothing unattended can supply, so it returns too and
+        the session is left attachable. A running session is never timed out on
+        silence: `timeout_s` applies only when the caller passes one, and it is None
+        by default.
+
+        Binding (until `verified`): a record matching the printed short `session_id`,
+        not in `exclude` (listed before the launch) and in the launch cwd, is ours only
+        when its own transcript's first user turn carries `nonce`
+        (AGENT_VIEW_NONCE_PREFIX). A candidate whose transcript lacks the nonce is
+        excluded as some other session; one whose transcript is not readable yet stays
+        unproven. Once proven, the full session id is pinned and matched exactly. With
+        `nonce=None` (no launch evidence) a record already finished at first sight is
+        refused instead.
+
+        The wait ends early, fail-closed and without stopping the session, when:
+        AGENT_VIEW_OBSERVER_FAILURE_LIMIT successful listings show no candidate (counted
+        from launch, so polls before registration count; seeing a candidate resets it;
+        a listing error neither adds to nor resets it); AGENT_VIEW_LISTING_ERROR_LIMIT
+        consecutive `claude agents` failures; AGENT_VIEW_OBSERVER_FAILURE_LIMIT unproven
+        sightings in total (cumulative across candidates, never reset), or a refusal
+        (`agent_view_binding_unverifiable`); or the printed id is ambiguous (checked before
+        the nonce, so an impostor and ours first listed in the same poll also fail closed). The result
+        then names the printed or pinned id with its attach/stop commands.
+        """
+        started = clock()
+        missing = 0
+        listing_errors = 0
+        unproven = 0
+        bound = session_id
+        excluded = set(exclude)
+        while True:
+            listed = self.list_sessions(cwd=None)
+            session = None
+            if listed.ok:
+                if verified:
+                    session = _find_pinned_session(listed.sessions, bound)
+                else:
+                    try:
+                        status, candidate = self._resolve_printed(
+                            listed.sessions, bound, exclude=excluded, cwd=cwd, nonce=nonce
+                        )
+                    except AmbiguousSessionError as exc:
+                        return _ambiguous_lifecycle(bound, cwd, exc)
+                    if status == "unverifiable":
+                        return _unverifiable_lifecycle(bound, candidate, cwd)
+                    if status == "verified":
+                        verified = True
+                        session = candidate
+                        bound = _session_key(candidate) or bound
+                    elif status == "unproven":
+                        missing = listing_errors = 0
+                        unproven += 1
+                        if unproven >= AGENT_VIEW_OBSERVER_FAILURE_LIMIT:
+                            return _unverifiable_lifecycle(bound, candidate, cwd)
+                        if on_poll is not None:
+                            on_poll(None)
+                        if timeout_s is not None and clock() - started >= timeout_s:
+                            return _timeout_lifecycle(bound, None, cwd, timeout_s, verified=verified)
+                        sleep(poll_interval_s)
+                        continue
+            if on_poll is not None:
+                on_poll(session)
+            if session is not None:
+                missing = listing_errors = 0
+                if session.state in {"done", "failed", "stopped", "blocked"}:
+                    return _lifecycle_from_session(session)
+            else:
+                if listed.ok:
+                    missing += 1
+                    listing_errors = 0
+                    blocker = BlockerSummary(
+                        "agent_view_session_missing", "claude agents did not list the launched background session."
+                    )
+                else:
+                    listing_errors += 1
+                    blocker = listed.blocker or BlockerSummary(
+                        "agents_list_failed", "claude agents did not return a successful session list."
+                    )
+                if missing >= AGENT_VIEW_OBSERVER_FAILURE_LIMIT or listing_errors >= AGENT_VIEW_LISTING_ERROR_LIMIT:
+                    # The OBSERVER gave up, not the session: it may still be running.
+                    # Fail closed, but say so and hand over the attach/stop commands.
+                    return _lifecycle_from_parts(
+                        session_id=bound,
+                        state="blocked",
+                        cwd=str(cwd) if cwd is not None else None,
+                        started_at=None,
+                        completed_at=_utc_now(),
+                        stop_result=None,
+                        blocker=BlockerSummary(
+                            blocker.reason,
+                            f"{blocker.summary} The session may still be running: inspect it with "
+                            f"`claude attach {bound}` or stop it with `claude stop {bound}`.",
+                        ),
+                    )
+            if timeout_s is not None and clock() - started >= timeout_s:
+                return _timeout_lifecycle(bound, session, cwd, timeout_s, verified=verified)
+            sleep(poll_interval_s)
+
+    def _resolve_printed(
+        self,
+        sessions: tuple[AgentViewSession, ...],
+        printed: str,
+        *,
+        exclude: set[str],
+        cwd: str | Path | None,
+        nonce: str | None,
+    ) -> tuple[str, AgentViewSession | None]:
+        """Resolve the printed short id to this launch's session.
+
+        Returns ("none"|"verified"|"unproven"|"unverifiable", session). A candidate
+        proven NOT ours (its transcript lacks the nonce) is added to `exclude` and
+        resolution continues as if it were not listed.
+        """
+        while True:
+            candidate = _find_bound_session(sessions, printed, exclude=frozenset(exclude), cwd=cwd)
+            if candidate is None:
+                return "none", None
+            if nonce is None:
+                if candidate.state in _TERMINAL_AT_FIRST_SIGHT:
+                    return "unverifiable", candidate
+                return "verified", candidate
+            key = candidate.session_id
+            if not key or key in exclude:
+                # The proof needs the full session id, and an excluded candidate must
+                # never be re-examined: stay unproven rather than loop (terminates).
+                return "unproven", candidate
+            proof = self.launch_proof(key, cwd=cwd, nonce=nonce)
+            if proof is True:
+                return "verified", candidate
+            if proof is None:
+                return "unproven", candidate
+            exclude.add(key)
+
+    def launch_proof(self, session_id: str, *, cwd: str | Path | None, nonce: str) -> bool | None:
+        """True if the session's own first user turn carries `nonce`, False if it does
+        not, None if its transcript cannot be read (yet)."""
+        from .panel_invoker import _claude_project_dir_for_cwd
+
+        try:
+            path = session_transcript_path(
+                session_id,
+                cwd=cwd if cwd is not None else os.getcwd(),
+                project_dir_for_cwd=_claude_project_dir_for_cwd,
+                projects_root=self._projects_root,
+            )
+        except ValueError:
+            return None
+        if path is None:
+            return None
+        return _first_turn_carries(path, f"{AGENT_VIEW_NONCE_PREFIX}{nonce}")
+
+    def final_text(self, session_id: str, *, cwd: str | Path) -> str:
+        """The session's final assistant message from its local transcript, or "".
+
+        Uses the same fail-closed final-turn reader as the brokered Claude seats
+        (agent-harness#1002/#1077), so an ambiguous transcript yields "" rather than
+        a guessed answer.
+        """
+        from .panel_invoker import _claude_project_dir_for_cwd, _final_assistant_text_from_jsonl
+
+        path = session_transcript_path(
+            session_id, cwd=cwd, project_dir_for_cwd=_claude_project_dir_for_cwd, projects_root=self._projects_root
+        )
+        if path is None:
+            return ""
+        return _final_assistant_text_from_jsonl(path)
 
     def inspect(self, agent_id: str, *, cwd: str | Path | None = None) -> AgentViewLifecycleResult:
         agent_id = _validated_agent_id(agent_id)
@@ -438,19 +747,62 @@ class ClaudeAgentViewAdapter:
         return CommandResult(command=tuple(command), returncode=result.returncode, output="", blocker=blocker)
 
 
-def workspace_trust_state(cwd: Path) -> dict[str, str]:
+def claude_global_config_path(env: dict[str, str] | None = None) -> Path:
+    """The operator's Claude global config, where per-folder trust is recorded.
+
+    Mirrors the CLI: `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, else
+    `~/.claude.json`. Read only; the runtime never records trust.
+    """
+    environment = os.environ if env is None else env
+    config_dir = environment.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir) / ".claude.json"
+    return Path(environment.get("HOME") or Path.home()) / ".claude.json"
+
+
+def workspace_folder_trust(cwd: Path, *, config_path: Path | None = None) -> str:
+    """`trusted`, `untrusted` or `unknown` for the EXACT folder, from the operator's config.
+
+    A background session refuses a folder whose own entry has not accepted the trust
+    prompt; trust recorded for a parent folder does not carry over, so only the exact
+    path (as given, or resolved) counts.
+    """
+    path = config_path if config_path is not None else claude_global_config_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "unknown"
+    projects = payload.get("projects") if isinstance(payload, dict) else None
+    if not isinstance(projects, dict):
+        return "untrusted"
+    for spelling in dict.fromkeys((str(cwd), str(Path(cwd).resolve()))):
+        entry = projects.get(spelling.rstrip("/") or "/")
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True:
+            return "trusted"
+    return "untrusted"
+
+
+def workspace_trust_hint(cwd: Path) -> str:
+    return (
+        f"Workspace {cwd} is not trusted in your Claude settings. Run `claude` in {cwd} once, "
+        "accept the trust prompt, then re-run this command."
+    )
+
+
+def workspace_trust_state(cwd: Path, *, config_path: Path | None = None) -> dict[str, str]:
+    workspace = workspace_folder_trust(cwd, config_path=config_path)
     mcp_path = cwd / ".mcp.json"
     mcp_status = "absent"
     if mcp_path.exists():
         try:
             payload = json.loads(mcp_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            return {"status": "blocked", "workspace": "trusted", "mcp": "invalid_json"}
+            return {"status": "blocked", "workspace": workspace, "mcp": "invalid_json"}
         rendered = json.dumps(payload, sort_keys=True)
         if "pmcp" in rendered and "pending" in rendered.lower():
-            return {"status": "blocked", "workspace": "trusted", "mcp": "pmcp_pending_approval"}
+            return {"status": "blocked", "workspace": workspace, "mcp": "pmcp_pending_approval"}
         mcp_status = "present"
-    return {"status": "trusted", "workspace": "trusted", "mcp": mcp_status}
+    return {"status": "trusted" if workspace == "trusted" else "blocked", "workspace": workspace, "mcp": mcp_status}
 
 
 def _session_from_payload(payload: dict[str, Any]) -> AgentViewSession:
@@ -559,6 +911,213 @@ def _lifecycle_from_parts(
     )
 
 
+def _cli_refusal_suffix(output: str) -> str:
+    """The CLI's own reason for refusing a `--bg` launch, as one short line.
+
+    A launch that exits non-zero never started a session, so its output is the CLI's
+    refusal, not session text. Only the first non-empty line is kept (ANSI stripped,
+    capped) so the blocker says why without carrying anything else.
+    """
+    for line in str(output or "").splitlines():
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()
+        if text:
+            return f" CLI: {text[:300]}"
+    return ""
+
+
+class AmbiguousSessionError(Exception):
+    def __init__(self, session_id: str, count: int) -> None:
+        super().__init__(f"{count} listed sessions match {session_id}")
+        self.session_id = session_id
+        self.count = count
+
+
+def _session_key(session: AgentViewSession) -> str:
+    return session.session_id or session.id or ""
+
+
+# `claude --bg` prints only the SHORT id (banner and attach/logs/stop hints). With a
+# launch nonce the session is proven by its own transcript; without one (nonce=None), a
+# record already finished when first seen cannot be verified and is refused.
+_TERMINAL_AT_FIRST_SIGHT = frozenset({"done", "failed", "stopped"})
+
+
+def _same_dir(left: str | Path | None, right: str | Path | None) -> bool:
+    # An absent or empty cwd is unknown, never the harness's own cwd.
+    if not left or not right:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except (OSError, RuntimeError):
+        return str(left) == str(right)
+
+
+def _unverifiable_lifecycle(
+    printed: str, candidate: AgentViewSession | None, cwd: str | Path | None
+) -> AgentViewLifecycleResult:
+    seen = f" (candidate {_session_key(candidate)}, {candidate.state})" if candidate is not None else ""
+    return _lifecycle_from_parts(
+        session_id=printed,
+        state="blocked",
+        cwd=str(cwd) if cwd is not None else None,
+        started_at=None,
+        completed_at=_utc_now(),
+        stop_result=None,
+        blocker=BlockerSummary(
+            "agent_view_binding_unverifiable",
+            f"No listed session matching the printed id {printed} could be verified as the one this launch "
+            f"started{seen}. The launched session may still be running: find it with `claude agents` and "
+            "inspect or stop it with `claude attach <id>` / `claude stop <id>`.",
+        ),
+    )
+
+
+def _timeout_lifecycle(
+    bound: str, session: AgentViewSession | None, cwd: str | Path | None, timeout_s: float, *, verified: bool
+) -> AgentViewLifecycleResult:
+    hint = "" if verified else (
+        f" Session {bound} was never proven to be this launch's session, so it is not stopped: "
+        f"inspect it with `claude attach {bound}` or stop it with `claude stop {bound}`."
+    )
+    lifecycle = _lifecycle_from_parts(
+        session_id=(_session_key(session) or bound) if session else bound,
+        state="unknown",
+        cwd=str(cwd) if cwd is not None else None,
+        started_at=session.started_at if session else None,
+        completed_at=None,
+        stop_result=None,
+        blocker=BlockerSummary(
+            "agent_view_launch_timeout",
+            f"Agent View session did not finish within the configured launch timeout ({timeout_s:g}s).{hint}",
+        ),
+    )
+    return replace(lifecycle, binding_verified=verified)
+
+
+def _find_pinned_session(sessions: tuple[AgentViewSession, ...], full_id: str) -> AgentViewSession | None:
+    """The record with exactly this full session id; no cwd filter once pinned."""
+    for session in sessions:
+        if _session_key(session) == full_id:
+            return session
+    return None
+
+
+def _first_turn_carries(path: Path, needle: str) -> bool | None:
+    """Whether the transcript's opening user turn carries `needle`.
+
+    Scans user records up to the first assistant record, skipping `isMeta` records
+    (preambles and hook-injected context can precede the prompt). True as soon as a
+    user record carries the needle. False only once an assistant record has closed the
+    opening turn without it, and every user record seen had a recognized shape. None
+    (unproven, never excluded) when the transcript is unreadable, the turn is not
+    closed yet, or a record's shape is not recognized.
+    """
+    try:
+        # "\n" only: JSONL records may carry raw U+2028/U+2029/U+0085 (JSON.stringify
+        # leaves them unescaped), which splitlines() would split mid-record.
+        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    except OSError:
+        return None
+    unrecognized = False
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        kind = record.get("type")
+        if kind == "assistant":
+            return None if unrecognized else False
+        if kind != "user" or record.get("isMeta"):
+            continue
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                item.get("text", "") for item in content if isinstance(item, dict) and isinstance(item.get("text"), str)
+            )
+        else:
+            unrecognized = True
+            continue
+        if needle in text:
+            return True
+    return None
+
+
+def _find_bound_session(
+    sessions: tuple[AgentViewSession, ...],
+    session_id: str,
+    *,
+    exclude: frozenset[str] = frozenset(),
+    cwd: str | Path | None = None,
+) -> AgentViewSession | None:
+    """The one listed session named by `session_id`, None if absent.
+
+    Sessions in `exclude` (listed before the launch) never match, and when `cwd` is
+    given neither does one whose cwd differs (realpath on both sides). Raises
+    AmbiguousSessionError when more than one distinct session matches (a short id
+    shared by an older record): binding the first would reduce the wrong session.
+    """
+    matches: dict[str, AgentViewSession] = {}
+    for session in sessions:
+        if _session_key(session) in exclude:
+            continue
+        if cwd is not None and not _same_dir(session.cwd, cwd):
+            continue
+        if session.session_id == session_id or session.id == session_id:
+            matches[_session_key(session) or session_id] = session
+    if len(matches) > 1:
+        raise AmbiguousSessionError(session_id, len(matches))
+    return next(iter(matches.values()), None)
+
+
+def _ambiguous_lifecycle(session_id: str, cwd: str | Path | None, exc: AmbiguousSessionError) -> AgentViewLifecycleResult:
+    return _lifecycle_from_parts(
+        session_id=session_id,
+        state="blocked",
+        cwd=str(cwd) if cwd is not None else None,
+        started_at=None,
+        completed_at=_utc_now(),
+        stop_result=None,
+        blocker=BlockerSummary(
+            "agent_view_session_ambiguous",
+            f"{exc.count} Agent View sessions match the printed id {session_id}; refusing to guess which one "
+            f"this launch started. It may still be running: find it with `claude agents` and inspect or stop "
+            f"it with `claude attach <id>` / `claude stop <id>`.",
+        ),
+    )
+
+
+def session_transcript_path(
+    session_id: str,
+    *,
+    cwd: str | Path,
+    project_dir_for_cwd: Callable[[str], Path],
+    projects_root: Path | None = None,
+) -> Path | None:
+    """Locate `<session_id>.jsonl` under the Claude projects store.
+
+    The CLI names the project directory after the session's cwd, which may be the
+    resolved form of a symlinked path, so both spellings are tried before a lookup
+    by the (unique) session id across all project directories.
+    """
+    session_id = _validated_agent_id(session_id)
+    for spelling in dict.fromkeys((str(cwd), str(Path(cwd).resolve()))):
+        candidate = project_dir_for_cwd(spelling) / f"{session_id}.jsonl"
+        if candidate.is_file():
+            return candidate
+    if projects_root is not None:
+        root = projects_root
+    else:
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        root = (Path(config_dir) if config_dir else Path.home() / ".claude") / "projects"
+    matches = sorted(root.glob(f"*/{session_id}.jsonl"))
+    return matches[0] if len(matches) == 1 else None
+
+
 def _find_session(sessions: tuple[AgentViewSession, ...], *, session_id: str | None, cwd: str | None) -> AgentViewSession | None:
     if session_id:
         for session in sessions:
@@ -571,9 +1130,25 @@ def _find_session(sessions: tuple[AgentViewSession, ...], *, session_id: str | N
     return sessions[0] if len(sessions) == 1 else None
 
 
-def _launch_session_id(output: str) -> str | None:
-    text = str(output or "").strip()
+def _launch_session_id(output: str, *, strict: bool = False) -> str | None:
+    """The session id `claude --bg` printed.
+
+    `strict` accepts only the CLI's own launch forms (`backgrounded · <id>` or a
+    `claude attach|logs|stop <id>` hint), so unrelated text that mentions some other
+    session can never be bound. ANSI styling is stripped first: the CLI colours the id
+    even when stdout is a pipe.
+    """
+    text = _ANSI_ESCAPE.sub("", str(output or "")).strip()
     if not text:
+        return None
+    if strict:
+        for pattern in (
+            r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9_-]+(?:[.:][A-Za-z0-9_-]+)*)",
+            r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9_-]+(?:[.:][A-Za-z0-9_-]+)*)",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1)
         return None
     try:
         payload = json.loads(text)
@@ -584,6 +1159,10 @@ def _launch_session_id(output: str) -> str | None:
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]+", value):
             return value
     for pattern in (
+        # Claude Code 2.1.x prints `backgrounded · <short id>` (the same forms the
+        # brokered seat parser in panel_invoker accepts).
+        r"\bbackgrounded\s*[·•-]\s*([A-Za-z0-9._:-]+)",
+        r"\bclaude\s+(?:attach|logs|stop)\s+([A-Za-z0-9._:-]+)\b",
         r"\b(?:agent|agent_id|session|session_id)\s*[:=]\s*([A-Za-z0-9._:-]+)",
         r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
     ):

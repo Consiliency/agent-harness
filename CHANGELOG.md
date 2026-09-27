@@ -6,6 +6,71 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude Agent View dispatch waits for the session it launched (agent-harness#409, agent-harness#1099)
+
+- `PHASE_LOOP_CLAUDE_ROUTE=agent_view` could not carry a phase. It rendered `--cwd`, which the
+  root `claude` command rejects. It could not parse the `backgrounded · <id>` banner. And it
+  returned exit 0 as soon as `claude --bg` started, so the runner verified an unchanged tree.
+- **Binding.** `claude --bg` prints only a short session id (read from the 2.1.283 CLI
+  source, not observed live). The launch therefore proves identity with a per-launch nonce:
+  a fresh `phase-loop-launch-nonce: <uuid4>` line appended to the prompt it delivers.
+  - A listed session is this launch's only if the opening user turn of its own transcript
+    carries that nonce. The opening turn is the user records up to the first assistant
+    record, with `isMeta` records skipped.
+  - A session whose opening turn closes without the nonce is excluded as some other
+    session. One that is unreadable, still open, or of an unrecognized shape stays
+    unproven and is never excluded.
+  - Nothing is reduced without the nonce: success re-checks it before the final message is
+    read.
+  - Pre-filters: only the CLI's own launch forms are parsed (ANSI stripped). Sessions
+    already listed before the launch (a snapshot with 3 attempts, else refuse before
+    starting) never match, and a candidate must be in the launch cwd (realpath). Both
+    filters apply only until the full session id is pinned.
+  - A short id matching more than one candidate fails closed as ambiguous.
+- **Waiting.** The launch waits until Agent View reports a terminal state. There is no default
+  deadline and no silence termination; `launch_timeout_seconds` applies only when set. The
+  wait ends early, fail-closed and without stopping the session, only in these cases:
+  - 12 successful listings with no candidate, counted from launch. Seeing one resets the
+    count; a listing error neither adds to nor resets it.
+  - 60 consecutive `claude agents` failures.
+  - 12 unproven sightings in total, counted across candidates
+    (`agent_view_binding_unverifiable`).
+  - An ambiguous id, which is checked before the nonce.
+  - An operator timeout. Only a pinned, nonce-proven session is ever stopped; any other is
+    left running with the attach/stop hint.
+
+  The blocker names the printed or pinned id and says the session may still be running,
+  with the attach/stop commands.
+- **Not yet proven live** (agent-harness#1099 checklist): `claude --bg` must write the prompt
+  in a non-`isMeta` user record before the first assistant record, within about 12 polls of
+  the session appearing. Otherwise the launch fails closed.
+- **Result.** Only a `done` session whose final assistant message is read from its transcript
+  succeeds, and that message is the launch output. A session waiting for input (`blocked`)
+  fails closed and is left attachable.
+- **Settings and permissions.** The route honors the operator's own Claude settings and
+  workspace trust as-is.
+  - It passes no `--settings`, no `--setting-sources`, no `--allowedTools` allow rules, and no
+    injected setting such as `skipDangerousModePermissionPrompt`.
+  - It passes a `--permission-mode` only when explicitly requested: `--bypass-approvals`
+    gives `bypassPermissions`. Otherwise the session inherits the operator's configured
+    mode. So unattended runs of any action must pass `--bypass-approvals`, or the session
+    stops `blocked` at the first prompt the operator's mode requires.
+  - It adds the restrictive `--disallowedTools`, which keeps an unattended session from
+    stalling on AskUserQuestion or plan approval, or from fanning out.
+  - It adds NO permission grants at all: no `--add-dir`. Its context goes through
+    `context.md` in the run directory inside the workspace (`.phase-loop/runs/...`). A
+    context file outside the launch cwd is refused before launch
+    (`agent_view_context_outside_workspace`), never granted.
+- **Trust.** Before `claude --bg`, the launch reads (never writes) the operator's per-folder
+  Claude trust for the exact cwd. A trusted parent folder does not count. When the folder is
+  not trusted, the launch refuses before any subprocess, with the fix: run `claude` in that
+  folder once and accept the trust prompt. `workspace_trust_state` no longer reports
+  `trusted` just because `.mcp.json` is fine.
+- **Refusals.** A refused `claude --bg` launch reports the CLI's first output line in its
+  blocker, since a launch that exits non-zero never started a session.
+- `claude_solo` stays `proof-blocked`. The live proof is parked until the workspace-trust design
+  lands (agent-harness#1104); agent-harness#1099 stays open.
+
 ### `advisor-board --advisory`: a non-gating review of a standalone document (agent-harness#802; agent-harness#1098 items 1 and 3)
 
 - `phase-loop advisor-board <bundle> --advisory` reviews a research bundle, memo, roadmap or plan

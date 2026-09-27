@@ -61,6 +61,21 @@ def test_golden_delta_is_only_final_schema_exclusion():
     assert "executing" not in statuses
     statuses.insert(2, "executing")
     command[index] = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    # The second permitted delta (agent-harness#409/#1099): the Agent View argv no longer
+    # renders the root-unsupported `--cwd`, carries only the restrictive half of the print
+    # route's tool policy (`--disallowedTools`; never an `--allowedTools` allow rule), and
+    # ends its options with `--` so a variadic option cannot swallow the prompt.
+    agent_view = golden["claude_agent_view_solo"]["command"]
+    assert "--allowedTools" not in agent_view
+    # ...and passes no --permission-mode without an explicit request (the golden request
+    # has bypass_approvals=False), so the session inherits the operator's own mode.
+    assert "--permission-mode" not in agent_view
+    at = agent_view.index("--effort") + 2
+    agent_view[at:at] = ["--permission-mode", "bypassPermissions"]
+    agent_view.remove("--")
+    at = agent_view.index("--disallowedTools")
+    del agent_view[at:at + 2]
+    agent_view[2:2] = ["--cwd", "/repo"]
     # Historical INPUT, not regenerated candidate output: the normalized golden
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
