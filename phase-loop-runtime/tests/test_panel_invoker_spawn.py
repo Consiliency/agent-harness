@@ -20,7 +20,9 @@ class ClaudeTuiLegTest(unittest.TestCase):
     def test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file(self):
         captured = {}
 
-        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review", backstop_s=None):
+        # `**_kwargs`: the session also takes `redaction_paths` (agent-harness#1102), which
+        # this test does not inspect.
+        def fake_tui(*, command, cwd, prompt, output_file, timeout_s, env, mode="review", backstop_s=None, **_kwargs):
             captured["command"] = command
             captured["cwd"] = cwd
             captured["prompt"] = prompt
