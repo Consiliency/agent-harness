@@ -184,7 +184,7 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
   1. **An authority token, bound to what it approved.** `merge_guard.guarded_merge(repo_dir, *, authority, action)` lives in a new module owned by SL-1. `authority` is either the admitted `LandingDecision` that `invoke_board` returned, or a `NoLandingToken`. It is never `None` and never a bare context.
      - **Registration.** When it admits a landing, `invoke_board` registers the decision by identity plus a content digest, in the same module-private registry as contexts (no constructor field is added). The registry entry binds:
        - the tier;
-       - the registered context the decision evaluated;
+       - the registered context the decision evaluated. The context registry also records the repository (`--git-common-dir`) and the head that `validate_panel_change` validated. A context built with `head_revision=None` never mints merge authority, and a decision is merge-capable only if its context's validated head equals the review-packet head;
        - the repository identity: `git rev-parse --git-common-dir` (which is stable across linked worktrees) and the `origin` URL, both read by the runtime;
        - for a PR landing, the PR's live `number`, `baseRefName`, `headRefOid`, `headRepository` and `url`, read by the runtime at decision time with `gh pr view <pr> --repo <origin owner/name> --json number,baseRefName,headRefOid,headRepository,url`;
        - for a push landing, the target branch the context's builder resolved (the fetched target it gated against) and the reviewed head, which is the head of the review packet the seats received, never a re-read.
@@ -220,14 +220,14 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
        - **Runtime-authored text.** Titles, bodies, labels and comments are runtime-authored templates. They never relay seat or implementer text. Any relayed fragment is neutralized: it cannot start with `/` or `@`, and it is code-fenced in bodies. One site relays such text today: `convergence/broker/credsep.py` builds its `gh pr create` title from the branch head's commit subject, and it also pushes and creates PRs outside `merge_guard`. That site is already known to the SL-1.0 inventory, and routes to the plan amendment.
        - **`gh pr ready`, and any push to a PR's head branch.** `publish_nontarget` finds, by itself, every open PR whose head is the destination; it does not take one from the caller. The operation is refused unless all three hold for each such PR, read live: auto-merge is off, the PR is not queued, and the PR's base is not queue-protected. Unreadable state refuses.
 
-       Exact guarantee: the runtime never marks ready, retargets, or pushes to a PR whose live state shows auto-merge enabled, queue membership or a queue-protected base. It never pushes to a protected branch, and never pushes through PR creation. The runtime itself emits these events: `ready`, labels, comments, PR creation and head pushes. It does not govern automation that a repository configures to react to them (see below).
+       Exact guarantee: the runtime never marks ready, retargets, or pushes to a PR whose live state shows auto-merge enabled, queue membership or a queue-protected base. `publish_nontarget` never pushes to a protected branch, and never pushes through PR creation. The runtime itself emits these events: `ready`, labels, comments, PR creation and head pushes. It does not govern automation that a repository configures to react to them (see below).
      - `dequeue`: the GraphQL `dequeuePullRequest` mutation, plus `gh pr merge --disable-auto`, confirmed by queue membership, as `train_runner._dequeue_pr` does today. `--disable-auto` alone cancels an auto-merge request; it does not remove a queued entry. `dequeue` needs no authority token because it can only remove: it takes a PR out of a queue and cancels auto-merge, and it cannot add, enable or merge. Its falsifier asserts that it never issues any other mutation.
 
      Later phases add remote mutations only as new named functions in this module, and add read-only commands only to `merge_guard.READ_ONLY_ALLOWLIST`. Those two are the module's extension seams (see Execution Notes).
   3. **Merge queue and base race.**
      - **Branch-rules lookup.** The up-front check covers both rulesets and classic branch protection. A failed or unreadable lookup refuses with `panel_merge_queue_unknown`.
      - **Merge queue.** Maintainer decision (2026-09-27, agent-harness#1111): refuse queue-protected targets up front (`panel_merge_queue_target`), and dequeue and refuse any attempt that comes back enqueued (`panel_merge_enqueued`). The re-gate inside the queue is deferred until a repository needs merge queues. Intended consequence: run-train no longer merges a panel landing into a queue-protected target. Residual: the queue can merge before the dequeue. A failed dequeue is the typed escalation `panel_merge_dequeue_failed`.
-     - **Base race.** Maintainer decision (2026-09-27, agent-harness#1111): accept the window between the re-gate and GitHub's PR merge, as an explicit exception to EC-PANEL-1's re-gate rule. It applies only to that window, and only to `GhPrMerge`. After the merge, the wrapper compares the merge commit's first parent with B0. If they differ, or if the merge commit cannot be read, it raises the typed escalation `panel_merge_base_moved` for a human. Run-train records it in its result and ledger, and halts before the next node.
+     - **Base race.** Maintainer decision (2026-09-27, agent-harness#1111): accept the window between the re-gate and GitHub's PR merge, as an explicit exception to EC-PANEL-1's re-gate rule. It applies only to that window, and only to `GhPrMerge`. After the merge, the wrapper compares the merge commit's first parent with B0. It also reads the merged PR back from GitHub, and requires the PR's state to be `MERGED` with the bound repository and the bound `baseRefName`. If any check differs, or anything cannot be read, it raises the typed escalation `panel_merge_base_moved` for a human. The accepted, detected-after window includes a retarget between the final live read and the merge. Run-train records it in its result and ledger, and halts before the next node.
      - **Pushes.** `GitPush` requires the commit to descend from B0, and pushes with `--force-with-lease=refs/heads/<target>:<B0>`. That makes the push atomic against B0: a target that advances to B1 is refused, even if B1 is an ancestor of the commit.
 
   **The tripwire scan.** It covers the maintainer's scope, the standard spawn APIs with a literal `git`/`gh`, using these match rules:
@@ -237,7 +237,7 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
     - a literal `shell=True` or `os.system` string;
     - a simple command in a scanned shell script.
 
-    Shell is tokenized over `&&`, `||`, `;`, `|` and `$(…)`. Assignment words (`VAR=x`) and a closed set of transparent prefixes (`env`, `timeout`, `nice`, `nohup`, `stdbuf`, `sudo`, `command`, `exec`, `time`, `xargs`) are skipped to find the command position. The spawn APIs whose arguments are read are `subprocess.*`, `os.exec*`, `os.spawn*`, `os.posix_spawn*`, `os.system`, `os.popen`, `pty.spawn` and `asyncio.create_subprocess_*`.
+    Shell is tokenized over `&&`, `||`, `;`, `|` and `$(…)`. Literal payloads are tokenized by the same rules: the argument after `-c` (including combined forms such as `-lc` and `-ec`) for `sh`, `bash`, `dash` and `zsh`, and a literal `eval` in scripts. Exec-capable git environment variables are banned like `-c`, both as assignment words and in a literal `env=` mapping: `GIT_SSH_COMMAND`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, `GIT_EXEC_PATH`, `GIT_ASKPASS` and `GIT_PROXY_COMMAND`. Other assignment words (`VAR=x`) and a closed set of transparent prefixes (`env`, `timeout`, `nice`, `nohup`, `stdbuf`, `sudo`, `command`, `exec`, `time`, `xargs`) are skipped to find the command position. The spawn APIs whose arguments are read are `subprocess.*`, `os.exec*`, `os.spawn*`, `os.posix_spawn*`, `os.system`, `os.popen`, `pty.spawn` and `asyncio.create_subprocess_*`.
   - **Fail closed.** Any other literal argv or command line that contains a `git`/`gh` token fails the scan.
   - **HTTP, whatever the client.** Any call whose arguments carry a literal GitHub API URL fails if its method is non-`GET` or non-literal.
   - **Libraries.** Imports of a git library (GitPython, pygit2, dulwich) or a GitHub API client (PyGithub, ghapi, gidgethub) fail.
@@ -248,19 +248,24 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
   - `gh api` is checked against a closed flag allowlist: a literal path, `-H`/`--header`, `--jq`, `--paginate`, and `-X GET`/`--method GET` in either attached or separate spelling. Any other flag fails the scan, which catches `--field`, `--method=PUT` and `-XPUT`. `-f`/`-F` are illegal even alongside `-X GET`. The one exception is `gh api graphql -f query=<literal>`, whose literal body must be a `query`, never a `mutation`.
 
   **Named residuals.** These follow the maintainer's decision, in its wording. They are out of scope because the runtime is trusted and reviewed:
-  - obfuscated or runtime-built spawns. This includes shell strings built at runtime, `bash -c` payloads, and a computed argv[0] such as `shutil.which("git")`;
+  - obfuscated or runtime-built spawns: shell strings and `-c` payloads built at runtime, and a computed argv[0], meaning a variable or call result such as `shutil.which("git")`;
   - `curl` or `wget` calls to the API;
-  - git aliases, and config-driven commands. This includes repository hooks that run inside `git` calls made outside `merge_guard.py`, such as local commits in modules SL-1 does not own;
+  - git aliases, and config-driven commands, as the maintainer decided. This covers repository hooks run by `git` calls outside `merge_guard.py` (for example local commits in modules SL-1 does not own). Those hooks are repository content, so this gap is caused by the runtime; it is carried to the SL-1 acceptance review (below);
   - third-party spawn libraries;
   - non-literal HTTP, meaning a URL that is not a literal;
   - the data-driven spawn sites: the plan `suite_command` runner, and the harness session launch.
 
-  **Partition.** Inside the scanned roots, every literal occurrence of a `git`/`gh` token, a literal GitHub API URL, or a named library import is in scope, and everything non-literal is a named residual. So scope and residuals partition the scanned surface. The trees outside the roots (tests, `spikes/**`, `ci/**`, `.github/workflows/**`) are outside by the roots statement, not by the partition.
+  **Where scope and residuals overlap.** They are not a partition. The maintainer's decision names these as residuals even when a literal is present:
+  - `curl`/`wget` with a literal API URL;
+  - `shutil.which("git")` and other computed argv[0];
+  - the data-driven spawn sites.
+
+  Skill `SKILL.md` prose is not scanned at all: agents follow it, and it falls under the launched-agent and interactive non-boundaries. Everything else that is literal in the scanned file types (Python and shell) is in scope. The trees outside the roots are outside by the roots statement.
 
   **Non-boundaries outside the runtime.** These are not scan forms. The runtime cannot govern them, and they are listed for honesty:
   - interactive humans and interactive agents merging by hand (including following a skill's prose, such as `skill-editor`'s `git push`). For agents the runtime itself launches (implementers, fix rounds, seats), the boundary is their sandbox and credential policy: the seat and implementer sandbox (`sandbox_policy`), and the broker's credential separation (`convergence/broker/credsep.py`);
   - an auto-merge a human enabled that GitHub itself fires;
-  - repository automation that reacts to events the runtime emits (`ready`, labels, comments, PR creation, head pushes). Maintainer decision (2026-09-27, agent-harness#1111): a third-party merge bot or other automation reacting to those runtime-emitted events is a disclosed known gap, alongside manual merges. SL-3.2 documents it;
+  - repository automation that reacts to events the runtime emits (`ready`, labels, comments, PR creation, head pushes). Maintainer decision (2026-09-27, recorded on agent-harness#1111 and extended to every runtime-emitted event in that PR's round-6 direction): a third-party merge bot or other automation reacting to those runtime-emitted events is a disclosed known gap, alongside manual merges. SL-3.2 documents it;
   - workflows that merge (`.github/workflows/**` is the CI boundary).
 
   **Today's merge sites**, each of which becomes a `guarded_merge` call:
@@ -319,6 +324,8 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
   - a decision from a direct `evaluate_landing` call, and a `LandingDecision` built by hand or copied with `replace`;
   - a PR head that advanced between the review packet and the decision;
   - a retry that presents a decision already retired by a refusal;
+  - a context validated for a different head than the review packet's;
+  - a context built with `head_revision=None`;
   - `panel_regate_required` returning `True`: a `[panel.*]` change, or a change to only the profile `panel` list, and a retry after such a change;
   - `panel_regate_required` raising;
   - a failed fetch;
@@ -331,7 +338,8 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
   - a failed dequeue escalates;
   - a lease rejection after the target advances to an ancestor-of-commit B1;
   - a `--match-head-commit` rejection after the live re-read;
-  - a CLI error after the server has already merged, which must still run the post-merge check;
+  - a CLI error after the server has already merged, which must still run the post-merge check. If that check passes, the decision is consumed and the merge is recorded as a success;
+  - an after-read retarget: the PR's base is changed after the final live read, and the post-merge read-back raises `panel_merge_base_moved`;
   - `panel_merge_base_moved`, for a moved base and for an unreadable merge commit, with run-train halting;
 - `test_sl1_ec1_publish_nontarget_never_updates_a_protected_branch`: every case asserts zero push or mutation attempts. It is parametrized over:
   - `git push` with no refspec, `git push origin HEAD`, `:`, `+:`, `main`, `HEAD:main`, `+x:refs/heads/main`, `:main`, `--delete`, `--mirror`, `--all`, `--tags`, `--follow-tags`, `--set-upstream`, `-o`;
@@ -368,6 +376,8 @@ SL-1 falsifiers (`test_panel_sl1_contracts.py`, written red in SL-1.1; the `ec<N
   - a shell-script fixture with an assignment prefix and a chained command (`GH_TOKEN=$t gh pr merge …`; `cd d && git push …`);
   - a non-GET call with a literal GitHub API URL through a client that is not otherwise listed (for example `urllib3`);
   - a stray reference to the registration entry point;
+  - `["bash", "-lc", "git push …"]`, and a script's `eval "git push …"`;
+  - `GIT_SSH_COMMAND=… git fetch`, and a literal `env={"GIT_CONFIG_PARAMETERS": …}`;
   - `requests.put` to a literal `api.github.com` URL;
   - `urllib.request.Request(..., method="PATCH")` to that host;
   - an `httpx`/`aiohttp` call whose method is non-literal;
@@ -421,6 +431,10 @@ SL-3.2 documents lane tables, lens declarations, the fallback, the minimum and i
 - recovery from a malformed base `.phase-loop/governance.toml`. Every panel landing reads that file at base, so a repair PR through a panel path is itself refused. The repair lands through the same out-of-band maintainer route as N4.
 
 It makes the entry-doc check cover those sections in both documents (adding the capabilities card to `entry_doc_check.ENTRY_DOCS`), and touches `.github/entry-doc-suppressions.json` only if a suppression must change. At closeout it sets `PHASE_LOOP_TDD_EXPECT_PANEL=1` in `.github/workflows/test.yml`, so a later rename of a readiness symbol fails CI instead of silently skipping.
+
+## Carried to SL-1 acceptance
+
+Maintainer decision (2026-09-27, agent-harness#1111): this is the last plan commit for item 7. The named SL-1 falsifiers above are the acceptance contract: `test_sl1_ec1_every_merge_site_refuses_before_any_attempt`, `test_sl1_ec1_every_merge_site_handles_post_attempt_outcomes`, `test_sl1_ec1_publish_nontarget_never_updates_a_protected_branch`, `test_sl1_ec1_merge_guard_runs_no_hooks`, `test_sl1_ec1_dequeue_only_removes` and `test_sl1_ec1_gateway_tripwire`, including the round-7 cases. Any further merge-authority edge case is resolved as a named SL-1 acceptance test in the implementation PR, under its own full board. It does not come back as plan prose. Examples: the runtime-caused hook gap outside `merge_guard`, config-driven redirection of a `merge_guard` push (`pushInsteadOf`, `core.sshCommand`, `credential.helper`), neutralization of relayed text, and the `credsep.py` disposition.
 
 ## Execution Policy
 
