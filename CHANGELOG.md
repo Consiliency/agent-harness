@@ -20,7 +20,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   under that name refuses as unattested, as does a namespace root that is a symlink (dangling or
   not) or not a directory. The refusal names the entry and what it is, and tells the operator to
   inspect it and remove it only after confirming it is not theirs; nothing is deleted
-  automatically. No earlier sealed inventory can hold the dropped row, because
+  automatically. The namespace root is opened once with `O_DIRECTORY|O_NOFOLLOW` and inspected
+  through that descriptor, and the probe refuses if the root's `(st_dev, st_ino)` changed by the
+  end of classification. These checks stop an honest operator from mis-sealing; they are not a
+  boundary against a same-uid actor, who could forge broker state directly. No earlier sealed inventory can hold the dropped row, because
   every earlier probe refused it. An existing but empty namespace directory now also classifies
   as `absent` rather than `empty`; a probe inventory sealed by an earlier release over such a
   directory must be re-probed.
@@ -42,9 +45,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Do not delete the lock file. If apply fails after DRAINING with `WriterGenerationBlocked`, stop
   the trains and re-run the same `--apply --inventory <same file>` as a resume, without
   re-probing; until it completes, trains in those repositories get leases but no effects.
-  returns.
-- **Recovery on 0.7.19.** Upgrade, then rerun `phase-loop fabpub-bootstrap --probe` and
-  `--apply --confirm-zero-history`. Do not delete the lock file.
+
 ### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008)
 
 - The brokered Gemini heartbeat-only route now admits a closed SET of qualified

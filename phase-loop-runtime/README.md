@@ -208,7 +208,12 @@ sealed inventory is identical with or without it. Anything else under that name
 is refused, as is a namespace root that is a symlink (dangling or not) or not a
 directory. The refusal names the entry and what it is. It is not runtime residue:
 inspect it, and remove it yourself only after confirming it is not yours, then
-re-run the probe. The runtime never deletes it. Apply always holds every repository's writer lock, creating it if
+re-run the probe. The runtime never deletes it. The probe classifies the
+namespace through one descriptor opened without following symlinks and refuses
+if the root is replaced while it is inspected. These checks keep an honest
+operator from mis-sealing; they are not a boundary against the operator's own
+account, since a same-uid actor who can rewrite the namespace can already forge
+broker state directly. Apply always holds every repository's writer lock, creating it if
 absent, from before its re-probe until it returns, and refuses while a
 `run-train` or another apply holds it. Never delete broker files to clear a
 refusal.

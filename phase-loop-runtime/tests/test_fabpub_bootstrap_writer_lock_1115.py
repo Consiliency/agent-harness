@@ -17,7 +17,9 @@ import fcntl
 import os
 import shutil
 import socket
+import stat
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -191,10 +193,22 @@ def test_writer_lock_owned_by_another_user_is_unattested(
 ) -> None:
     repo = _git_repo(tmp_path / "repo")
     _residue_only(repo)
+    real_lock_status = live._lock_status_in
     foreign_uid = os.getuid() + 1
-    monkeypatch.setattr(live.os, "getuid", lambda: foreign_uid)
 
-    with pytest.raises(live.LegacyCutoverConflict, match="owned by uid"):
+    def foreign_lock_status(dir_fd):
+        status = real_lock_status(dir_fd)
+        if status is None:
+            return None
+        fields = list(status)
+        fields[stat.ST_UID] = foreign_uid
+        return os.stat_result(fields)
+
+    # Only the lock entry is foreign; the namespace root stays the operator's.
+    monkeypatch.setattr(live, "_lock_status_in", foreign_lock_status)
+    with pytest.raises(
+        live.LegacyCutoverConflict, match=f"is a regular file owned by uid {foreign_uid}"
+    ):
         _probe(tmp_path, repo)
 
 
@@ -247,17 +261,24 @@ def test_impostor_refusal_names_the_entry_and_a_non_destructive_recovery(tmp_pat
 def test_namespace_holds_nothing_only_for_absence_or_the_true_residue(tmp_path: Path) -> None:
     """The ``absent`` decision itself, independent of the earlier impostor refusal."""
     root = tmp_path / live.REPOSITORY_NAMESPACE_DIR
-    assert live._namespace_holds_nothing(root, [])
-    root.symlink_to(tmp_path / "missing")
-    assert not live._namespace_holds_nothing(root, [])
-    root.unlink()
+    assert live._namespace_holds_nothing(None, [])
+
+    def holds_nothing() -> bool:
+        dir_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            return live._namespace_holds_nothing(dir_fd, [])
+        finally:
+            os.close(dir_fd)
+
     root.mkdir()
-    assert live._namespace_holds_nothing(root, [])
+    assert holds_nothing()
     (root / live.RUN_TRAIN_WRITER_LOCK).mkdir()
-    assert not live._namespace_holds_nothing(root, [])
+    assert not holds_nothing()
     (root / live.RUN_TRAIN_WRITER_LOCK).rmdir()
     (root / live.RUN_TRAIN_WRITER_LOCK).touch()
-    assert live._namespace_holds_nothing(root, [])
+    assert holds_nothing()
+    (root / "stray").mkdir()
+    assert not holds_nothing()
 
 
 def test_dangling_symlink_namespace_root_is_unattested(tmp_path: Path) -> None:
@@ -275,6 +296,109 @@ def test_symlink_to_a_directory_as_namespace_root_refuses(tmp_path: Path) -> Non
     live.repository_namespace_root(repo).symlink_to(target)
 
     with pytest.raises(live.LegacyCutoverConflict, match="symlink"):
+        _probe(tmp_path, repo)
+
+
+def test_symlink_root_is_refused_even_when_its_target_holds_a_receipt(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    _assert_bootstrapped(repo, _apply(inventory))
+    root = live.repository_namespace_root(repo)
+    moved = tmp_path / "elsewhere" / live.REPOSITORY_NAMESPACE_DIR
+    moved.parent.mkdir()
+    root.rename(moved)
+    root.symlink_to(moved)
+    snapshot = live.repository_snapshot(repo)
+    assert (snapshot.container / live.RECEIPT_FILENAME).exists()  # through the link
+
+    with pytest.raises(live.LegacyCutoverConflict, match=r"is not a directory \(a symlink"):
+        live._classify_repository_namespace(
+            snapshot,
+            inventory["cutover_id"],
+            bootstrap_inventory_sha256=inventory["inventory_sha256"],
+        )
+
+
+def _swap_root_during_enumeration(
+    monkeypatch: pytest.MonkeyPatch, root: Path, clean: Path, *, restore: bool
+) -> list[bool]:
+    """Swap the namespace root for a symlink to ``clean`` exactly while the
+    ``absent`` decision enumerates it; optionally swap it back (A-B-A)."""
+    swapped: list[bool] = []
+    real_scandir = os.scandir
+    moved = root.with_name(root.name + ".original")
+
+    def swapping_scandir(target=None, *args, **kwargs):
+        if sys._getframe(1).f_code.co_name != "_namespace_holds_nothing" or swapped:
+            return real_scandir(target, *args, **kwargs) if target is not None else real_scandir()
+        swapped.append(True)
+        root.rename(moved)
+        root.symlink_to(clean)
+        try:
+            entries = list(real_scandir(target, *args, **kwargs))
+        finally:
+            if restore:
+                root.unlink()
+                moved.rename(root)
+
+        class _Listing:
+            def __enter__(self):
+                return iter(entries)
+
+            def __exit__(self, *_exc):
+                return False
+
+            def __iter__(self):
+                return iter(entries)
+
+        return _Listing()
+
+    monkeypatch.setattr(os, "scandir", swapping_scandir)
+    return swapped
+
+
+def test_root_swapped_for_a_symlink_during_the_probe_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    root = live.repository_namespace_root(repo)
+    root.mkdir()
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    swapped = _swap_root_during_enumeration(monkeypatch, root, clean, restore=False)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="changed during the probe"):
+        _probe(tmp_path, repo)
+    assert swapped == [True]
+
+
+def test_classification_binds_to_the_directory_it_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A-B-A: the path points at a clean directory only while it is enumerated.
+    The decision must describe the opened directory (which holds a stray entry),
+    not whatever the path named mid-enumeration."""
+    repo = _git_repo(tmp_path / "repo")
+    root = live.repository_namespace_root(repo)
+    (root / "stray").mkdir(parents=True)
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    swapped = _swap_root_during_enumeration(monkeypatch, root, clean, restore=True)
+
+    (row,) = _probe(tmp_path, repo)["worktrees"]
+    assert swapped == [True]
+    assert row["classification"] == "empty"
+
+
+def test_receipt_less_namespace_root_owned_by_another_user_is_unattested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    live.repository_namespace_root(repo).mkdir()
+    foreign_uid = os.getuid() + 1
+    monkeypatch.setattr(live.os, "getuid", lambda: foreign_uid)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="namespace root .* is owned by uid"):
         _probe(tmp_path, repo)
 
 
