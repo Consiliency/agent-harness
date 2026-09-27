@@ -1154,9 +1154,14 @@ def test_launch_prefix_chdirs_by_path_inside_the_namespace(tmp_path):
         composed = panel._provider_launch_prefix(cwd)
     finally:
         panel._EGRESS_LAUNCH_PREFIX.reset(token)
-    assert composed[:len(prefix)] == list(prefix), "the egress prefix is preserved verbatim"
-    assert composed[len(prefix):] == ["/usr/bin/env", "--chdir=" + str(cwd.resolve()), "--"], (
-        "the chdir runs AFTER nsenter and setpriv, by path, in the namespace the provider lives in"
+    # agent-harness#1098: the holder's lock-down is replaced by the seat identity switch,
+    # which locks down after it; the chdir still comes last.
+    namespace = list(prefix[:prefix.index("setpriv")])
+    switch = panel._seat_identity_switch()
+    assert composed[:len(namespace)] == namespace, "the namespace entry is preserved verbatim"
+    assert composed[len(namespace):] == [*switch, "/usr/bin/env", "--chdir=" + str(cwd.resolve()), "--"], (
+        "the chdir runs AFTER nsenter and the identity switch, by path, in the namespace the "
+        "provider lives in"
     )
     assert not any(str(item).startswith("--wd") for item in composed), (
         "nsenter --wd fchdir()s to an outer-namespace dentry; a canonicalising provider sees "

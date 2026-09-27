@@ -19,9 +19,13 @@ import pytest
 
 from phase_loop_runtime import panel_invoker, sandbox_egress
 
+# `$$` is the shell's pid in ITS pid namespace; `/proc/self` is how the mounted procfs names
+# it. They agree only when that procfs belongs to the shell's own pid namespace. (Reading
+# `/proc/1/ns/pid` is not an option since agent-harness#1098: the seat runs as the operator
+# in a nested user namespace and may not inspect the wrapper's init.)
 PROBE = [
     "/bin/sh", "-c",
-    "readlink /proc/self/ns/pid; readlink /proc/1/ns/pid; cat /proc/1/comm",
+    "echo $$; cd -P /proc/self && basename \"$(pwd -P)\"; cat /proc/1/comm",
 ]
 
 needs_bwrap = pytest.mark.skipif(
@@ -45,9 +49,9 @@ def _run(monitor, *, prefix=()):
 
 
 def _assert_own_procfs(lines):
-    self_ns, init_ns, init_comm = lines[0], lines[1], lines[2]
-    # /proc/1 is THIS namespace's init, so it shares the probe's PID namespace ...
-    assert self_ns == init_ns, f"/proc shows another PID namespace: self={self_ns} /proc/1={init_ns}"
+    own_pid, procfs_pid, init_comm = lines[0], lines[1], lines[2]
+    # /proc names the probe by its own pid-namespace pid, so it IS that namespace's procfs ...
+    assert own_pid == procfs_pid, f"/proc shows another PID namespace: $$={own_pid} /proc/self={procfs_pid}"
     # ... and it is the wrapper's init, never the host's (systemd / init).
     assert init_comm not in ("systemd", "init"), init_comm
 

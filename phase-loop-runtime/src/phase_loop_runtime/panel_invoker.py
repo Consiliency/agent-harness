@@ -2190,6 +2190,19 @@ def _apply_context_refs(
     return manifest
 
 
+def _egress_holder_alive(work: Path) -> bool:
+    """Is the namespace holder that wrote ``work/pid`` still running? Unknown = alive.
+
+    No pidfile in a MARKED holder dir means the holder died before readiness."""
+    try:
+        pid = int((work / "pid").read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    return Path(f"/proc/{pid}").exists()
+
+
 def _gc_stale_panel_scratch(
     root: Path | None = None, max_age_s: int = 24 * 3600
 ) -> None:
@@ -2213,8 +2226,19 @@ def _gc_stale_panel_scratch(
             max_total_bytes=_sandbox_policy.max_total_bytes(),
             archive_dest=_sandbox_policy.archive_destination(),
         )
-        for path in base.glob("pl-panel-*"):
+        # `pl-egress-ns-*` too: a killed coordinator leaves its namespace holder's work dir.
+        for path in [*base.glob("pl-panel-*"), *base.glob("pl-egress-ns-*")]:
             try:
+                # Only this account's real directories: /tmp is shared between accounts.
+                if path.is_symlink() or path.lstat().st_uid != os.getuid():
+                    continue
+                # A holder that is still alive serves a seat; age alone is not death (a
+                # heartbeat-only seat has no deadline).
+                if path.name.startswith("pl-egress-ns-") and (
+                    not (path / _sandbox_egress.EGRESS_WORK_MARKER).is_file()
+                    or _egress_holder_alive(path)
+                ):
+                    continue
                 if _sandbox_retention._looks_like_a_sandbox(path):
                     # RETENTION OWNS THIS ONE, AND IT HAS ALREADY DECIDED. It deliberately
                     # keeps a sandbox whose `_archive_work` raised -- "never trade the
@@ -2420,9 +2444,47 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
+def _seat_identity_switch(retain_caps=()) -> list[str]:
+    """Run the seat as the operator's REAL uid and gid, then lock its capabilities down.
+
+    Inside the egress namespace every account is uid 0, and the provider CLIs key their
+    scratch by uid -- `/tmp/claude-0`, `/tmp/codex-daemon-0`,
+    `$TMPDIR/codex-bwrap-synthetic-mount-targets-0` -- so on a shared host whoever ran
+    first owned them and every other account's seats refused them (agent-harness#1098).
+    A nested user namespace mapping the operator's own uid and gid gives each account its
+    own names again, in /tmp and in any TMPDIR, with nothing hidden and nothing to predict.
+    Two runs of the SAME account share those names, exactly as two interactive sessions of
+    that user do. Supplementary groups are untouched: the holder namespace already shows
+    them as the overflow id, and the kernel keeps using them for access checks.
+
+    ORDER IS LOAD-BEARING: a new user namespace does not inherit the lock-down, so the
+    lock-down runs AFTER the switch, inside it (`unshare --keep-caps` hands `setpriv` what it
+    needs to apply it). Locking down first would be undone by the switch.
+    """
+    wanted = tuple(sorted({str(c).lower() for c in retain_caps}))
+    illegal = [c for c in wanted if c not in _sandbox_egress.SEAT_RETAINABLE_CAPS]
+    if illegal:
+        raise ValueError(f"capabilities not retainable by a seat: {illegal}")
+    return ["/usr/bin/unshare", "--user", f"--map-user={os.getuid()}",
+            f"--map-group={os.getgid()}", "--keep-caps",
+            "/usr/bin/setpriv", "--bounding-set=-all" + "".join(f",+{c}" for c in wanted),
+            "--inh-caps=-all", "--ambient-caps=-all",
+            # A credential change clears the parent-death signal; re-arm it for the route
+            # whose supervisor relies on it.
+            *(("--pdeathsig", "SIGKILL") if wanted else ()), "--"]
+
+
 def _provider_launch_prefix(cwd, retain_caps=()):
     prefix = list(_sandbox_egress.retain_bounding_caps(_EGRESS_LAUNCH_PREFIX.get(), retain_caps))
-    if prefix and prefix[0] == "nsenter":
+    if _enters_namespace(prefix):
+        # The holder prefix's own lock-down (`setpriv ... --`) is REPLACED by the switch,
+        # which locks down after it: the switch must be made by the holder's root while it
+        # still holds CAP_SETFCAP (mapping the parent namespace's root requires it since
+        # Linux 5.12), and a lock-down before a user-namespace switch would be undone by it.
+        if "setpriv" in prefix:
+            start = prefix.index("setpriv")
+            del prefix[start:prefix.index("--", start) + 1]
+        prefix.extend(_seat_identity_switch(retain_caps))
         # Entering the holder's mount namespace otherwise resets cwd to its root, so the
         # requested cwd is re-established INSIDE the namespace, and by PATH. `nsenter --wd`
         # is the wrong tool for that: it opens the directory in the caller's mount namespace
@@ -2443,7 +2505,148 @@ def _provider_launch_prefix(cwd, retain_caps=()):
     return prefix
 
 
-def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "subprocess.Popen[bytes]":
+def _enters_namespace(prefix: "Sequence[str]") -> bool:
+    return bool(prefix) and prefix[0] == "nsenter"
+
+
+def _sublist_index(haystack: "Sequence[str]", needle: "Sequence[str]") -> int:
+    for index in range(len(haystack) - len(needle) + 1):
+        if list(haystack[index:index + len(needle)]) == list(needle):
+            return index
+    raise ValueError("the seat identity switch is missing from the launch prefix")
+
+
+def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
+    """The full argv prefix a provider (and its identity probe) is launched through.
+
+    Every non-empty prefix ends in an identity switch followed by the lock-down (setpriv's,
+    or bubblewrap's own on the owned route), or the route refuses. The one empty prefix --
+    no egress namespace and no owner -- is main's unsandboxed host launch, unchanged: the
+    operator's own process, no namespace entered.
+    """
+    prefix = _provider_launch_prefix(cwd, retain_caps)
+    if not process_owner:
+        return prefix
+    if tuple(retain_caps) not in ((), ("setfcap",)):
+        raise ValueError("unsupported owned provider capability policy")
+    switch = _seat_identity_switch(retain_caps)
+    namespaced = _enters_namespace(prefix)
+    # Structurally, not by counting from the end: the owner goes where the switch is.
+    position = _sublist_index(prefix, switch) if namespaced else len(prefix)
+    if retain_caps and not namespaced:
+        # The codex supervisor route exists only inside the egress namespace. Without one
+        # it would run the provider with the operator's full capabilities (a root operator
+        # under the opt-out), and main refused it too. Refuse, typed.
+        raise _sandbox_egress.SeatIdentityUnverified(
+            "an owned codex seat needs the egress namespace; launch refused (agent-harness#1098)"
+        )
+    if retain_caps:
+        # Keep Codex out of bubblewrap so its own sandbox can create another user
+        # namespace. The unshare supervisor owns the PID namespace; the identity switch
+        # after it drops every capability except SETFCAP and re-arms the death signal.
+        prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
+                                     "/usr/bin/unshare", "--pid", "--fork",
+                                     "--kill-child=SIGKILL", "--mount-proc"]
+    else:
+        owner = list(process_owner)
+        if owner[0] != "/usr/bin/bwrap":
+            raise ValueError("unsupported owned provider")
+        # Bubblewrap IS the identity switch and the lock-down on this route: its own user
+        # namespace maps the operator's uid/gid and `--cap-drop ALL` empties the bounding
+        # set inside it. It replaces the switch rather than precede it -- a second switch
+        # inside it could not map a root operator once bubblewrap has dropped SETFCAP.
+        owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
+                      "--gid", str(os.getgid()), "--cap-drop", "ALL"]
+        if namespaced:
+            del prefix[position:position + len(switch)]
+        prefix[position:position] = owner
+    return prefix
+
+
+def _probes_seat(prefix: "Sequence[str]", process_owner=()) -> bool:
+    """Every launch that enters the namespace or an owner wrapper is probed first."""
+    return bool(prefix) and (_enters_namespace(prefix) or bool(process_owner))
+
+
+# Printed by the identity probe, through the launch's own prefix: uid, gid, the owner of a
+# file the operator just created, and the capability/no-new-privs lines.
+_SEAT_PROBE = ('id -u; id -g; stat -c %u "$1"; '
+               'grep -E "^(CapPrm|CapEff|CapBnd|NoNewPrivs):" /proc/self/status')
+
+
+def _inherited_no_new_privs() -> int:
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+            if line.startswith("NoNewPrivs:"):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _expected_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> list[str]:
+    """Exactly what the seat must show -- derived from the caller, never wider than main.
+
+    * The bounding set is only what the route retains.
+    * Permitted/effective: nothing, except that an operator who IS uid 0 execs as root, and
+      root's exec grants exactly the bounding set (the codex route's SETFCAP) -- the state
+      the root seat had on main.
+    * no-new-privs: set when the route sets it (bubblewrap) or the caller already had it
+      (it is inherited and can never be cleared).
+    """
+    bounding = 0
+    for cap in retain_caps:
+        bounding |= 1 << _CAP_NUMBERS[str(cap).lower()]
+    granted = bounding if os.getuid() == 0 else 0
+    no_new_privs = 1 if "/usr/bin/bwrap" in prefix or _inherited_no_new_privs() else 0
+    uid = str(os.getuid())
+    return [uid, str(os.getgid()), uid,
+            f"CapPrm:\t{granted:016x}", f"CapEff:\t{granted:016x}",
+            f"CapBnd:\t{bounding:016x}", f"NoNewPrivs:\t{no_new_privs}"]
+
+
+_CAP_NUMBERS = {"setfcap": 31}
+
+
+@contextmanager
+def _seat_probe_marker():
+    """A file the operator creates now: the seat must see it as its own."""
+    fd, marker = tempfile.mkstemp(prefix=".pl-seat-probe-")
+    os.close(fd)
+    try:
+        yield marker
+    finally:
+        os.unlink(marker)
+
+
+def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
+    """Launch only on POSITIVE evidence that the seat is the operator, locked down.
+
+    The probe runs through the very prefix the provider will run through (owner wrapper,
+    PID supervisor, identity switch and all) and must show the operator's uid and gid, a
+    file the operator just created as the operator's own, and exactly the expected
+    capability and no-new-privs lines. Anything else refuses the launch, in every egress
+    mode -- a namespace that is up but not what it must be is a defect, not a missing
+    host capability.
+    """
+    with _seat_probe_marker() as marker:
+        try:
+            seen = subprocess.run(
+                [*prefix, "/bin/sh", "-c", _SEAT_PROBE, "sh", marker],
+                capture_output=True, text=True, timeout=30,
+                env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, stdin=subprocess.DEVNULL,
+            ).stdout.splitlines()
+        except subprocess.TimeoutExpired:
+            seen = ["TIMEOUT"]
+    expected = _expected_seat_identity(prefix, retain_caps)
+    if seen != expected:
+        raise _sandbox_egress.SeatIdentityUnverified(
+            f"the seat is not the operator, locked down (expected {expected}, saw {seen}); "
+            "launch refused (agent-harness#1098)"
+        )
+
+
+def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -2462,37 +2665,28 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), **kwargs) -> "sub
     executes in front of the real launch -- rather than by a source scanner; the AST walker
     that read call sites was defeated on spelling five times and removed. A raw spawn of a
     provider added elsewhere is a review finding.
+
+    Inside the egress namespace every launch is first probed through its own prefix
+    (`_require_seat_identity`). ``probe_owner`` exists for ONE owner only: the gemini
+    heartbeat profile's wrapper carries single-use descriptors (a gate its bubblewrap blocks
+    on, sealed image data it reads once), so its probe uses the same wrapper without them.
     """
-    prefix = _provider_launch_prefix(kwargs.get("cwd"), retain_caps)
-    if process_owner:
-        position = prefix.index("setpriv") if "setpriv" in prefix else len(prefix)
-        if tuple(retain_caps) not in ((), ("setfcap",)):
-            raise ValueError("unsupported owned provider capability policy")
-        if retain_caps:
-            # Keep Codex in the holder's user namespace so its own sandbox can
-            # create another one. The unshare supervisor owns the PID namespace;
-            # the inner setpriv still drops every capability except SETFCAP.
-            prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
-                                         "/usr/bin/unshare", "--pid", "--fork",
-                                         "--kill-child=SIGKILL", "--mount-proc"]
-            inner_setpriv = prefix.index("setpriv", position + 1)
-            prefix[inner_setpriv + 1:inner_setpriv + 1] = ["--pdeathsig", "keep"]
-        else:
-            # Bubblewrap drops CAP_SETPCAP before a later setpriv can use it.
-            owner = list(process_owner)
-            if owner[0] != "/usr/bin/bwrap":
-                raise ValueError("unsupported owned provider")
-            owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
-                          "--gid", str(os.getgid()), "--cap-drop", "ALL"]
-            if position < len(prefix):
-                del prefix[position:prefix.index("--", position) + 1]
-            prefix[position:position] = owner
+    cwd = kwargs.get("cwd")
+    prefix = _compose_launch_prefix(cwd, process_owner, retain_caps)
+    if _probes_seat(prefix, process_owner):
+        _require_seat_identity(
+            prefix if probe_owner is None else _compose_launch_prefix(cwd, probe_owner, retain_caps),
+            retain_caps,
+        )
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
 def run_provider(argv, **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`."""
-    return subprocess.run([*_provider_launch_prefix(kwargs.get("cwd")), *argv], **kwargs)
+    prefix = _provider_launch_prefix(kwargs.get("cwd"))
+    if _probes_seat(prefix):
+        _require_seat_identity(prefix)
+    return subprocess.run([*prefix, *argv], **kwargs)
 
 
 def _record_sandbox_facts(
@@ -2500,6 +2694,7 @@ def _record_sandbox_facts(
     enforcement: dict[str, object],
     *,
     staged_at: Path,
+    seat_identity: bool | None = None,
 ):
     """Remember what this leg chose, and return a token the caller MUST reset.
 
@@ -2527,6 +2722,10 @@ def _record_sandbox_facts(
         "sandbox_network_mechanism": enforcement.get("mechanism"),
         "sandbox_network_unfiltered_reason": enforcement.get("reason"),
     }
+    if seat_identity is not None:
+        # Typed, never silent: `unavailable` only when no namespace could be held (the
+        # operator opt-out); a namespace whose seat identity is wrong refuses instead.
+        facts["sandbox_seat_identity"] = "host_uid" if seat_identity else "unavailable"
     if not applied:
         facts["sandbox_root_unapplied_reason"] = (
             "the selected root is recorded but NOT used for placement; remote "
@@ -4725,6 +4924,7 @@ def _run_leg_with_liveness(
         proc = launch_provider(
             cmd,
             process_owner=() if review_monitor is None else review_monitor.owned_command((), gemini_profile=gemini_profile),
+            probe_owner=None if gemini_profile is None else review_monitor.owned_command(()),
             retain_caps=retain_caps,
             cwd=str(cwd),
             env=dict(env),
@@ -7545,6 +7745,7 @@ def _default_spawn(
                 # real stage; `sandbox_root_choice.path` is a policy decision nothing
                 # consumes for placement yet.
                 staged_at=staged_tree_path if staged_tree_path is not None else review_dir,
+                seat_identity=bool(egress_prefix),
             )
             egress_stack.callback(_SANDBOX_ROUND_FACTS.reset, facts_token)
         capture_staged: dict[str, dict[str, object]] | None = None

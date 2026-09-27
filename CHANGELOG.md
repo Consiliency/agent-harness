@@ -155,6 +155,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `review isolation unavailable` line is followed by a hint line. The default command, with no new
   flag, is unchanged.
 
+### Several accounts on one host can run advisor boards at the same time (agent-harness#1098 item 2)
+
+- Every seat now runs as the operator's real uid and gid. Seats run inside a filtered user
+  namespace in which every account used to be uid 0, and the provider CLIs keep scratch under
+  uid-keyed names: `/tmp/claude-0`, `/tmp/codex-daemon-0` and
+  `$TMPDIR/codex-bwrap-synthetic-mount-targets-0`. On a shared host the first account to run a
+  board owned those paths, and every other account's seats refused them ("Directory /tmp/claude-0
+  is owned by uid 65534, expected 0"). A nested user namespace now maps each seat to its operator
+  (on the bubblewrap-owned route, bubblewrap's own user namespace does), so each account's names
+  are its own again, in `/tmp` and in any `TMPDIR`. Nothing on the host is hidden or redirected.
+  Two runs by the same account share those names, exactly as two interactive sessions of that user
+  do. Before every launch, a probe runs through the launch's own prefix. It must show the
+  operator's uid and gid, a file the operator just created as the operator's own, and the expected
+  capability lines. Otherwise the launch is refused, in every egress mode,
+  `PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL` included. An owned codex seat without the egress namespace
+  is refused, as on main. A leg that could not get a namespace at all records
+  `sandbox_seat_identity: unavailable`. The seat's capability lock-down now runs after the switch,
+  and the seat keeps no more capabilities than before. The egress policy and codex's `/tmp` write
+  exclusion are unchanged.
+- The stale-sandbox reaper no longer aborts when it meets another account's (or root's)
+  unreadable directory in `/tmp`, which stopped all retention on hosts with
+  `systemd-private-*` directories. It now counts and reaps only the current account's
+  sandboxes. It also sweeps leftover `pl-egress-ns-*` holder directories that carry the holder's
+  marker, are older than a day, and whose namespace holder is no longer running.
+
 ### Claude answers continued past the output cap are extracted whole (agent-harness#1077)
 
 - When a Claude answer hits `max_tokens`, the CLI journals a resume record ("Output token limit

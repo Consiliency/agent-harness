@@ -93,9 +93,13 @@ def discover(root: Path | str) -> list[SandboxEntry]:
         return []
     entries = []
     for child in root.iterdir():
-        if not _looks_like_a_sandbox(child):
-            continue
+        # Only this account's sandboxes. On a shared `/tmp` another user's 0700 directory
+        # (or root's `systemd-private-*`) raised EACCES out of the marker probe, which
+        # aborted the whole reap for everyone; and one it could list would count toward
+        # THIS user's ceiling while being impossible to remove (agent-harness#1098).
         try:
+            if child.lstat().st_uid != os.getuid() or not _looks_like_a_sandbox(child):
+                continue
             entries.append(SandboxEntry(child, child.stat().st_mtime, _size_of(child)))
         except OSError:
             continue
