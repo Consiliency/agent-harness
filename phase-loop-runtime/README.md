@@ -205,7 +205,10 @@ The probe treats that file as runtime lock residue, not inventory state, only
 when it is a regular, 0-byte, singly linked file owned by the operator; the
 sealed inventory is identical with or without it. Anything else under that name
 (content, a directory, a socket or FIFO, a symlink, a hardlink, a foreign owner)
-is refused. Apply always holds every repository's writer lock, creating it if
+is refused, as is a namespace root that is a symlink (dangling or not) or not a
+directory. The refusal names the entry and what it is. It is not runtime residue:
+inspect it, and remove it yourself only after confirming it is not yours, then
+re-run the probe. The runtime never deletes it. Apply always holds every repository's writer lock, creating it if
 absent, from before its re-probe until it returns, and refuses while a
 `run-train` or another apply holds it. Never delete broker files to clear a
 refusal.

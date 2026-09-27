@@ -118,7 +118,7 @@ def test_non_empty_writer_lock_is_unattested(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
     _residue_only(repo).write_text("{}\n", encoding="utf-8")
 
-    with pytest.raises(live.LegacyCutoverConflict, match="unattested canonical state"):
+    with pytest.raises(live.LegacyCutoverConflict, match="is a regular file holding 3 bytes, not runtime writer-lock residue"):
         _probe(tmp_path, repo)
 
 
@@ -161,9 +161,7 @@ def test_symlinked_writer_lock_refuses(tmp_path: Path) -> None:
     lock.parent.mkdir(parents=True)
     lock.symlink_to(target)
 
-    # The tree inventory refuses the symlink before classification; the residue
-    # predicate refuses it independently.
-    with pytest.raises(live.LegacyCutoverConflict, match="symlink"):
+    with pytest.raises(live.LegacyCutoverConflict, match="is a symlink, not runtime writer-lock residue"):
         _probe(tmp_path, repo)
     assert not live._is_run_train_lock_residue(lock)
 
@@ -173,7 +171,7 @@ def test_hardlinked_writer_lock_is_unattested(tmp_path: Path) -> None:
     lock = _residue_only(repo)
     os.link(lock, tmp_path / "second-name.lock")
 
-    with pytest.raises(live.LegacyCutoverConflict, match="unattested canonical state"):
+    with pytest.raises(live.LegacyCutoverConflict, match="is a regular file with 2 hard links, not runtime writer-lock residue"):
         _probe(tmp_path, repo)
 
 
@@ -196,7 +194,7 @@ def test_writer_lock_owned_by_another_user_is_unattested(
     foreign_uid = os.getuid() + 1
     monkeypatch.setattr(live.os, "getuid", lambda: foreign_uid)
 
-    with pytest.raises(live.LegacyCutoverConflict, match="unattested canonical state"):
+    with pytest.raises(live.LegacyCutoverConflict, match="owned by uid"):
         _probe(tmp_path, repo)
 
 
@@ -207,7 +205,7 @@ def test_writer_lock_that_is_not_a_regular_file_is_unattested(tmp_path: Path) ->
     os.mkfifo(lock)
 
     assert not live._is_run_train_lock_residue(lock)
-    with pytest.raises(live.LegacyCutoverConflict, match="unsupported type"):
+    with pytest.raises(live.LegacyCutoverConflict, match="is a FIFO, not runtime writer-lock residue"):
         _probe(tmp_path, repo)
 
 
@@ -215,7 +213,7 @@ def test_empty_directory_under_the_lock_name_is_unattested_at_probe(tmp_path: Pa
     repo = _git_repo(tmp_path / "repo")
     _writer_lock(repo).mkdir(parents=True)
 
-    with pytest.raises(live.LegacyCutoverConflict, match="unattested canonical state"):
+    with pytest.raises(live.LegacyCutoverConflict, match="is a directory, not runtime writer-lock residue"):
         _probe(tmp_path, repo)
 
 
@@ -229,8 +227,55 @@ def test_socket_under_the_lock_name_refuses_at_probe(
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(live.RUN_TRAIN_WRITER_LOCK)
         assert not live._is_run_train_lock_residue(lock)
-        with pytest.raises(live.LegacyCutoverConflict, match="unsupported type"):
+        with pytest.raises(live.LegacyCutoverConflict, match="is a socket, not runtime writer-lock residue"):
             _probe(tmp_path, repo)
+
+
+def test_impostor_refusal_names_the_entry_and_a_non_destructive_recovery(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    lock = _writer_lock(repo)
+    lock.mkdir(parents=True)
+
+    with pytest.raises(live.LegacyCutoverConflict) as raised:
+        _probe(tmp_path, repo)
+    message = str(raised.value)
+    assert str(lock) in message
+    assert "remove it only after confirming it is not yours" in message
+    assert lock.is_dir()  # nothing was removed
+
+
+def test_namespace_holds_nothing_only_for_absence_or_the_true_residue(tmp_path: Path) -> None:
+    """The ``absent`` decision itself, independent of the earlier impostor refusal."""
+    root = tmp_path / live.REPOSITORY_NAMESPACE_DIR
+    assert live._namespace_holds_nothing(root, [])
+    root.symlink_to(tmp_path / "missing")
+    assert not live._namespace_holds_nothing(root, [])
+    root.unlink()
+    root.mkdir()
+    assert live._namespace_holds_nothing(root, [])
+    (root / live.RUN_TRAIN_WRITER_LOCK).mkdir()
+    assert not live._namespace_holds_nothing(root, [])
+    (root / live.RUN_TRAIN_WRITER_LOCK).rmdir()
+    (root / live.RUN_TRAIN_WRITER_LOCK).touch()
+    assert live._namespace_holds_nothing(root, [])
+
+
+def test_dangling_symlink_namespace_root_is_unattested(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    live.repository_namespace_root(repo).symlink_to(tmp_path / "missing")
+
+    with pytest.raises(live.LegacyCutoverConflict, match="is not a directory"):
+        _probe(tmp_path, repo)
+
+
+def test_symlink_to_a_directory_as_namespace_root_refuses(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    target = tmp_path / "real-namespace"
+    target.mkdir()
+    live.repository_namespace_root(repo).symlink_to(target)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="symlink"):
+        _probe(tmp_path, repo)
 
 
 def test_namespace_root_that_is_a_file_is_unattested(tmp_path: Path) -> None:
@@ -378,6 +423,29 @@ def test_first_apply_of_a_deleted_repository_names_the_re_probe_remedy(tmp_path:
     message = str(raised.value)
     assert "before its first apply" in message and "re-run the zero-history probe" in message
     assert not (tmp_path / "authority").exists()
+
+
+def test_resume_of_a_deleted_repository_names_the_resume_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main = _git_repo(tmp_path / "main")
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", "-b", "linked", str(linked)],
+        check=True,
+    )
+    inventory = _probe(tmp_path, linked)
+    journal = _interrupt_after_draining(inventory, monkeypatch)
+    journal_before = journal.read_bytes()
+    shutil.rmtree(linked)
+    shutil.rmtree(main)
+
+    with pytest.raises(live.LegacyCutoverConflict) as raised:
+        _apply(inventory)
+    message = str(raised.value)
+    assert "re-run apply with the same inventory" in message
+    assert "re-run the zero-history probe" not in message
+    assert journal.read_bytes() == journal_before
 
 
 def test_apply_refuses_a_repository_outside_the_namespaces_it_locked(

@@ -2842,6 +2842,35 @@ def _drop_run_train_lock_residue(root: Path, files: list[dict]) -> list[dict]:
     ]
 
 
+def _describe_lock_impostor(path: Path) -> str:
+    """Why an entry under the writer-lock name is not the runtime's residue."""
+    status = os.lstat(path)
+    if stat.S_ISLNK(status.st_mode):
+        return "a symlink"
+    if stat.S_ISDIR(status.st_mode):
+        return "a directory"
+    if stat.S_ISSOCK(status.st_mode):
+        return "a socket"
+    if stat.S_ISFIFO(status.st_mode):
+        return "a FIFO"
+    if not stat.S_ISREG(status.st_mode):
+        return "a special file"
+    if status.st_size:
+        return f"a regular file holding {status.st_size} bytes"
+    if status.st_nlink != 1:
+        return f"a regular file with {status.st_nlink} hard links"
+    return f"a regular file owned by uid {status.st_uid}, not {os.getuid()}"
+
+
+def _refuse_lock_impostor(snapshot: RepositorySnapshot, path: Path) -> None:
+    raise LegacyCutoverConflict(
+        f"unattested canonical state for {snapshot.identity}: {[RUN_TRAIN_WRITER_LOCK]} "
+        f"at {path} is {_describe_lock_impostor(path)}, not runtime writer-lock residue "
+        "(an empty, singly linked regular file you own). Inspect it and remove it only "
+        "after confirming it is not yours; then re-run the zero-history probe"
+    )
+
+
 def _namespace_holds_nothing(root: Path, files: list[dict]) -> bool:
     """True when ``root`` is missing or holds at most the benign writer lock.
 
@@ -2849,9 +2878,9 @@ def _namespace_holds_nothing(root: Path, files: list[dict]) -> bool:
     re-probe, so a missing root and a root holding only that residue must
     classify, and digest, identically.
     """
-    if not root.exists():
+    if not os.path.lexists(root):
         return True
-    if files or not root.is_dir() or root.is_symlink():
+    if files or root.is_symlink() or not root.is_dir():
         return False
     return all(
         entry.name == RUN_TRAIN_WRITER_LOCK and _is_run_train_lock_residue(entry)
@@ -2885,7 +2914,8 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
         _inventory_row_namespace_root(row).resolve(): row for row in inventory["worktrees"]
     }
     remedy = (
-        "restore the repository, then re-run apply with the same inventory"
+        "restore the repository or rotate the authority; then re-run apply with the "
+        "same inventory, without re-probing"
         if resuming
         else "re-run the zero-history probe"
     )
@@ -2900,10 +2930,8 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
                 )
             if not root.parent.is_dir():
                 # The repository itself is gone, so no train can run in it and
-                # there is nothing to lock.  Refuse now, with the remedy the
-                # row's first-apply or resume path would give, never unlocked.
-                if resuming:
-                    _inventory_row_repository(row)
+                # there is nothing to lock.  Refuse now, never unlocked, with the
+                # remedy for this path: a resume must not be told to re-probe.
                 raise LegacyCutoverConflict(
                     f"sealed inventory row for {row['canonical_repository_identity']} "
                     f"names pruned worktree {row['worktree']} and its repository "
@@ -2960,6 +2988,16 @@ def _classify_repository_namespace(
     bootstrap_inventory_sha256: str | None = None,
 ) -> dict:
     root = snapshot.namespace_root
+    writer_lock = root / RUN_TRAIN_WRITER_LOCK
+    if (
+        not root.is_symlink()
+        and root.is_dir()
+        and os.path.lexists(writer_lock)
+        and not os.path.lexists(snapshot.container / RECEIPT_FILENAME)
+        and not _is_run_train_lock_residue(writer_lock)
+    ):
+        # Name the impostor before the tree walk refuses it generically.
+        _refuse_lock_impostor(snapshot, writer_lock)
     files = _drop_run_train_lock_residue(root, _tree_file_inventory(root))
     # Bootstrap ownership is a property of the CONTAINER receipt; the generation
     # pointer is deliberately not resolved here so one repository's unroutable
@@ -2986,17 +3024,15 @@ def _classify_repository_namespace(
             )
         state = "bootstrap_owned"
     else:
-        if not root.is_dir() or root.is_symlink():
+        if root.is_symlink() or not root.is_dir():
             raise LegacyCutoverConflict(
                 f"unattested canonical state for {snapshot.identity}: namespace root "
-                f"{root} is not a directory"
+                f"{root} is not a directory (a symlink, dangling or not, or another "
+                "file type); inspect it and remove it only after confirming it is not "
+                "yours; then re-run the zero-history probe"
             )
-        writer_lock = root / RUN_TRAIN_WRITER_LOCK
         if os.path.lexists(writer_lock) and not _is_run_train_lock_residue(writer_lock):
-            raise LegacyCutoverConflict(
-                f"unattested canonical state for {snapshot.identity}: "
-                f"{[RUN_TRAIN_WRITER_LOCK]}"
-            )
+            _refuse_lock_impostor(snapshot, writer_lock)
         allowed = {"writer-generation.json", "writer-generation.lock"}
         onboarding = root / "zero-legacy-onboarding"
         inventory_path = onboarding / f"{cutover_id}.inventory.json"
