@@ -397,6 +397,20 @@ of the caller context but still stage raw contents for each leg.
   timeouts return timeout status without retry. CTXRELY owns any follow-on reliability
   split beyond these frozen names and retry/timeout invariants.
 
+## Leg `detail` vocabulary (agent-harness#1096 / #1102)
+
+A `PanelLegResult.detail` is built ONLY from this runtime's closed vocabulary; raw CLI text
+never enters it. It is a harness code (`_HARNESS_DETAIL_CODES`, or a
+`_HARNESS_DETAIL_CODE_TEMPLATES` pattern whose fields are typed tokens), a failure template
+(`_FAILURE_DETAIL_TEMPLATES`: `timeout`, `signal <N>`, `auth_failure`,
+`usage_limit[ (resets <HH:MM[, Mon D YYYY]>)]`, the four `env_failure: …` forms,
+`tool_denied: …`, `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log | not
+retained`), or `<harness code>: <failure template>`. `detail` is a validating data descriptor
+(write and read), and a subclass may not shadow it. An unknown failure's raw output is kept
+only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 0700), which
+`detail` names by its run-relative path. That file is never in the verdict JSON, governed
+reasons or the board summary.
+
 ## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
 
 A board's PURPOSE now selects its default panel MODE automatically, so a domain

@@ -192,55 +192,47 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   mid-verdict). Turns with no cap or resume are extracted exactly as before. On the president
   route, a `max_tokens` stop is allowed only on a message the answer continues.
 
-### Board legs say why they failed; outcome is decided only by a success artifact (agent-harness#1096; env-failure half of agent-harness#1098 item 2)
+### Board legs: outcome only from a success artifact; `detail` only from our own vocabulary (agent-harness#1096; advisory part of agent-harness#1098 item 2)
 
 - A leg is `OK` only when it exits 0 and produces its mode's success artifact:
   - review: a terminal AGREE / PARTIALLY AGREE / DISAGREE verdict;
-  - advisory: at least 40 characters ending in a `RECOMMENDATION:` line;
+  - advisory: at least 40 characters ending in a `RECOMMENDATION:` line, which the advisory
+    prompts now ask for;
   - president: a `FORCING DECISION:` line.
 
-  Anything else fails, whatever it printed. An rc-0 environment failure printed instead of a
-  review (agent-harness#1098) therefore fails without any text scan. Free text never decides
-  an outcome or demotes an `OK` leg, which retires advisory's auth-scan-first order. Advisory
-  mode now needs its `RECOMMENDATION:` line. The panel advisory instructions, the Claude TUI
-  advisory prompt and the native-fill advisory contract all ask for it, and a seat that omits
-  it is a failed seat. The line is parsed exactly as the review verdict is (the last
-  non-empty line), so a sign-off after it fails. The `--advisory` board contract
-  (advisory.v1) runs in review mode with verdicts and is unchanged.
-- A failed leg's `detail` is `<failure_kind>: <the CLI's own line>`:
-  - `usage_limit`, which adds `(resets <time>)` when the provider prints a reset time;
-  - `env_failure`, `auth`, `timeout` and `signal`;
-  - otherwise the line alone.
-
-  The kind comes from process facts first, then a plain match of sourced provider wording
-  in the log tail and body. This covers codex's usage banner even when codex's
-  "no last agent message" warning follows it. A mislabel is cosmetic.
-- `detail` is carried on every route: direct, brokered codex/grok, and the Claude TUI seat.
-  `PanelLegResult.detail` is a data descriptor that finalizes on every write, so no route can
-  store an unredacted detail. That covers `__init__`, `dataclasses.replace` and
-  `object.__setattr__`, raw exception strings, governed finding reasons and the streaming
-  verdict JSON. Finalizing is idempotent: its output is a fixed point.
-- Redaction is span-union, with no order between detectors. Escape and control characters
-  become spaces one-for-one and are never deleted, so `Bearer\t<tok>` stays two words. Every
-  detector then runs over the same normalized, uncut text:
-  - credential schemes (bearer, basic, token), prefixed keys, JWTs and `1//` tokens;
-  - key=value secrets, including a scheme word and quoted keys;
-  - emails;
-  - known homes and seat paths, matched only at a path start;
-  - known usernames, as whole `[A-Za-z0-9_]` tokens.
-
-  Overlapping spans merge and are replaced once. A span holding a credential becomes
-  `<redacted>`, so `Authorization: Bearer <tok>`, `sess-<user>-<tok>` and
-  `alice@<user>.example.com` cannot leak half a secret. The closeout metadata gate's patterns
-  run last. The excerpt is selected, and the 1000-character cap applied, only after
-  redaction. The Claude PTY tail redacts its whole buffer, seat paths included, before its
-  600-character cut. `STDERR_SECRET_KV_RE` now lives in `redaction.py`, so
-  `PanelLegResult` does not import `runner`.
-- The Claude TUI turns only an `ERROR` / `EMPTY` leg with a labeled auth, usage or env
-  failure into `DEGRADED`, whether or not the caller collects the detail. The
-  `RECOMMENDATION:` and verdict labels also accept the colon outside the bold
-  (`**RECOMMENDATION**: …`). A missing return code classifies `ERROR` again instead of
-  raising.
+  Free text never decides an outcome or demotes an `OK` leg. The verdict line is parsed by
+  one parser, shared with the `RECOMMENDATION:` line. A verdict word must be UPPERCASE, or
+  stand alone, or come before a separator. Markup counts only when it is followed by
+  whitespace. So a CLI line such as `Agree and continue` or `--agree` is not a verdict. From
+  agent-harness#1098 item 2 this fixes advisory mode's old length-only acceptance; the
+  rest of that item stays open.
+- A failed leg's `detail` is built ONLY from this runtime's closed vocabulary, and raw CLI
+  text never enters it. It is either a harness code (a fixed diagnostic string, or a
+  parametrized one whose fields are typed tokens) or one of these templates:
+  - `timeout`;
+  - `signal <N>`;
+  - `auth_failure`;
+  - `usage_limit`, or `usage_limit (resets <HH:MM[, Mon D YYYY]>)`. The reset time is parsed
+    and re-rendered, never copied;
+  - `env_failure: temp dir owned by another account (uid <N>)`;
+  - `env_failure: temp dir unusable`;
+  - `env_failure: app-server socket dir not user-owned`;
+  - `env_failure: sandbox command could not be built`;
+  - `tool_denied: headless tool permission auto-denied`;
+  - `unknown failure[ (exit <N>)]; CLI output: leg-logs/<name>.log`, or `…; CLI output not
+    retained`.
+- `PanelLegResult.detail` is a validating data descriptor. It checks on every write
+  (including `object.__setattr__`) and every read (so a value planted in the backing slot
+  is never returned raw), and a subclass may not shadow it. Anything outside the grammar
+  becomes `unknown failure; CLI output not retained`.
+- For an unknown failure, the CLI's raw output (best-effort redacted, last 64 KiB) goes to
+  a PRIVATE per-leg file under the run's stream dir: `leg-logs/`, mode 0700, and must be
+  ours; the file is 0600, created with O_EXCL|O_NOFOLLOW relative to that directory.
+  `detail` names it only by that run-relative path. The file is never part of
+  `PanelLegResult`, the verdict JSON, governed reasons or the board summary. With no
+  stream dir, nothing is retained.
+- `STDERR_SECRET_KV_RE` now lives in `redaction.py`, so `PanelLegResult` does not import
+  `runner`.
 
 ## [0.7.19] - 2026-09-26
 

@@ -1270,9 +1270,11 @@ class PanelRequest:
 
 class _FinalizedDetail:
     """agent-harness#1102: the detail chokepoint, as a DATA DESCRIPTOR. Every write —
-    ``__init__``, ``dataclasses.replace`` and even ``object.__setattr__`` (which honours data
-    descriptors) — stores ``_finalize_leg_detail(value)``, so governed finding reasons, the
-    streaming verdict JSON and every printer only ever see a redacted, bounded detail."""
+    ``__init__``, ``dataclasses.replace`` and ``object.__setattr__`` (which honours data
+    descriptors) — stores only a detail in our closed vocabulary (``_finalize_leg_detail``
+    validates, it does not scrub), and every READ validates again, so a value planted in the
+    backing slot directly (``__dict__``, a crafted pickle) is still never returned raw.
+    ``PanelLegResult.__init_subclass__`` refuses a subclass that shadows ``detail``."""
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._slot = "_" + name
@@ -1280,9 +1282,9 @@ class _FinalizedDetail:
     def __get__(self, instance: object, owner: type | None = None) -> str | None:
         if instance is None:
             return None  # the dataclass field default
-        return instance.__dict__.get(self._slot)
+        return _finalize_leg_detail(instance.__dict__.get(self._slot))
 
-    def __set__(self, instance: object, value: str | None) -> None:
+    def __set__(self, instance: object, value: object) -> None:
         instance.__dict__[self._slot] = _finalize_leg_detail(value)
 
 
@@ -1308,6 +1310,13 @@ class PanelLegResult:
     # structurally UNABLE to leak into the (status, text) golden surface. The
     # property reads a default of ``None`` so a plain leg (none attached) is never
     # an AttributeError.
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        # The detail chokepoint must not be shadowed: a subclass redefining ``detail`` (or
+        # its backing slot) would store unvalidated text.
+        if "detail" in cls.__dict__ or "_detail" in cls.__dict__:
+            raise TypeError("PanelLegResult subclasses may not redefine detail")
+        super().__init_subclass__(**kwargs)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", normalize_leg_status(self.status))
@@ -1399,12 +1408,15 @@ def _effective_research_policy(
 def _research_unavailable_result(
     *, leg: str, seat_key: str | None, detail: str
 ) -> PanelLegResult:
+    # The research ledger keeps the full reason; the leg's `detail` carries only the code
+    # (agent-harness#1102: detail is our closed vocabulary; an exception message is not).
+    code = "research_profile_unavailable" if detail.startswith("research_profile_unavailable:") else detail
     return attach_research_ledger(
         PanelLegResult(
             leg=leg,
             status="UNAVAILABLE",
             text="",
-            detail=detail,
+            detail=code,
             seat_key=seat_key,
         ),
         unavailable_ledger(detail),
@@ -1658,12 +1670,20 @@ SpawnFn = Callable[..., "tuple[str, str]"]
 # optionally followed by an em-dash/colon/reason — so a real "DISAGREE — endpoint
 # skips auth" conforms, while "I cannot AGREE or DISAGREE without context" (starts
 # with "I") and "no blockers" do not. Most-specific alternative first.
-_VERDICT_RE = re.compile(r"^(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b", re.IGNORECASE)
+# A verdict word is either written as the brief prescribes (UPPERCASE, anything may follow)
+# or, in any case, stands alone / before a separator — so a CLI line such as
+# `Agree and continue` is not a verdict (agent-harness#1102 r7).
+_VERDICT_RE = re.compile(
+    r"^(?:(PARTIALLY\s+AGREE|DISAGREE|AGREE)\b"
+    r"|(?i:(PARTIALLY\s+AGREE|DISAGREE|AGREE))(?=\s*(?:$|[\u2014\u2013:.,;!()-])))"
+)
 # Leading markdown decoration to strip before matching the verdict token, so a
 # genuinely-conforming verdict formatted as a bullet / blockquote / numbered item
 # / bold still parses ("- AGREE", "> AGREE", "1. AGREE", "**AGREE**"). Format
 # tolerance here prevents over-blocking a real approval on cosmetics (CR finding).
-_LEADING_MARKUP_RE = re.compile(r"^(?:[-*>\s`#]+|\d+[.)]\s*)+")
+# List / quote / heading / numbering markup BEFORE a line's text: the marker must be followed
+# by whitespace (`- AGREE`), so a flag such as `--agree` is not stripped into a verdict.
+_LEADING_MARKUP_RE = re.compile(r"^(?:\s+|[-*>`#]+\s+|\d+[.)]\s*)+")
 
 
 def _final_line(text: str) -> str | None:
@@ -1704,7 +1724,7 @@ def terminal_verdict(text: str) -> str | None:
         s = labeled
     s = _LEADING_MARKUP_RE.sub("", s).strip()
     m = _VERDICT_RE.match(s)
-    return re.sub(r"\s+", " ", m.group(1).upper()) if m else None
+    return re.sub(r"\s+", " ", (m.group(1) or m.group(2)).upper()) if m else None
 
 
 # #63: panel mode. "review" is the pre-merge code-review framing (default,
@@ -1931,18 +1951,8 @@ _ENV_FAILURE_LABEL_RE = re.compile(
 )
 # The provider's own reset time when it prints one: codex " or try again at <time>" with
 # the time alone ("%-I:%M %p", same local day) or dated ("%b %-d<ordinal>, %Y %-I:%M %p").
-_PROVIDER_USAGE_RESET_RE = re.compile(
-    r"(?:try again at|resets at)\s+(?P<when>[^\n]{1,60}?)\s*\.?\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
 _LEG_FAILURE_LOG_TAIL_LINES = 20
 # ONE bound on the final stored `detail` (label + excerpt), every route.
-_LEG_DETAIL_MAX_CHARS = 1000
-_LEG_ERROR_LINE_RE = re.compile(
-    r"\berror\b|\bfatal\b|\brefus|\bdenied\b|\blimit\b|\bexhausted\b|\bfailed\b|"
-    r"\bexception\b|\btraceback\b|\bpanic",
-    re.IGNORECASE,
-)
 # ----------------------------------------------------------------------------------------
 # SPAN-UNION REDACTION for `detail` (agent-harness#1102 round 6).
 #
@@ -2084,32 +2094,330 @@ def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) ->
     return redacted
 
 
-def _finalize_leg_detail(
-    detail: str | None, known: Sequence[str | os.PathLike[str]] = ()
-) -> str | None:
-    """The ONE form a stored ``detail`` takes: span-union redacted, single-line, bounded as a
-    whole. Iterated to its fixed point, so ``finalize(finalize(x)) == finalize(x)``; stored
-    through ``PanelLegResult``'s ``detail`` descriptor, so no route can store anything else."""
-    if not detail:
+# ----------------------------------------------------------------------------------------
+# `detail` VOCABULARY (agent-harness#1102 round 7, maintainer decision 2026-09-27).
+#
+# `PanelLegResult.detail` is built ONLY from our own closed vocabulary. Raw CLI text never
+# enters it: seven rounds of denylist redaction each found a new secret shape, so the detail
+# no longer carries provider output at all. A detail is one of:
+#   * a HARNESS CODE — a fixed string this runtime itself emits (`_HARNESS_DETAIL_CODES`) or
+#     a parametrized one whose every field is a typed, validated token
+#     (`_HARNESS_DETAIL_CODE_TEMPLATES`);
+#   * a FAILURE TEMPLATE (`_FAILURE_DETAIL_TEMPLATES`) whose only fields are a reset time
+#     parsed into a datetime and RE-RENDERED by us, an exit code / signal number, a uid, or
+#     a run-relative private-log name;
+#   * `<harness code>: <failure template>`.
+# `_finalize_leg_detail` is a VALIDATOR: anything else becomes the unknown-failure template.
+# The CLI's raw output goes to a PRIVATE per-leg file (0600, O_EXCL|O_NOFOLLOW, in a 0700
+# `leg-logs/` dir under the run's stream dir) that detail names by a run-relative path; that
+# file is never part of PanelLegResult, the verdict JSON, governed reasons or the summary.
+_HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
+    # claude TUI / Agent View route
+    "claude_tui_broker_final_assistant", "claude_tui_broker_terminal_nonconforming",
+    "claude_tui_editor_not_ready", "claude_tui_file_output", "claude_tui_missing_canonical_output",
+    "claude_tui_pty_eof_no_output", "claude_tui_stalled", "claude_tui_submit_failed",
+    "claude_tui_unsupported_platform", "claude_tui_workspace_trust_blocked",
+    "claude_agent_session_id_missing", "brokered_claude_session_collision",
+    "brokered_claude_transcript_cleanup_failed", "missing_claude_cli",
+    "claude_version_probe_timeout", "claude_version_probe_failed", "claude_version_unparseable",
+    "subscription_auth_unproven", "tui_adapter_required", "tui_backing_required",
+    "under_claude_code", "native_adapter_required", "native_fill", "unavailable",
+    # route / authorization refusals
+    "missing HARDEN review authorization", "missing or forged HARDEN review authorization",
+    "harden_advisory_execution_refused", "harden_review_capture_route_refused",
+    "harden_review_gateway_route_refused", "harden_review_research_route_refused",
+    "harden_review_unsupported_route_refused", "unbound_direct_review_invocation_refused",
+    "unbound_review_execution_replacement_refused", "HARDEN review has no canonical repository authority",
+    "brokered route rejects capture and research transports", "brokered route rejects empty prompt",
+    "broker completed without a response", "research_profile_unenforceable",
+    "research_profile_unavailable", "review_operation_cancelled", "review_monitoring_write_failed",
+    "review_monitoring_policy_mismatch", "review_monitoring_policy_invalid",
+    "review_monitoring_timeout_conflict", "review_monitoring_unsupported_transport",
+    "review_monitoring_unsupported_api_fallback",
+    # gemini (the broker's fixed vocabulary, folded in)
+    "gemini_heartbeat_broker_required", "gemini_heartbeat_capability_unavailable",
+    "gemini_heartbeat_admission_handshake_failed", "gemini_broker_diagnostic_invalid",
+    "gemini_broker_diagnostic_status_mismatch",
+    "Gemini broker stream rejected: malformed JSON",
+    "Gemini broker stream rejected: malformed stream event",
+    "Gemini broker stream rejected: tool or subagent activity observed",
+    "Gemini broker stream changed or omitted its conversation",
+    "Gemini broker stream has an incomplete ingestion result sequence",
+    "Gemini broker stream has a malformed chunk acknowledgement",
+    "Gemini broker stream has no successful terminal response",
+    "Gemini broker stream final response reports truncation",
+    "Gemini broker native exit without an accepted review",
+    "Gemini broker native timeout under heartbeat-only", "Gemini broker deadline exceeded",
+    "Gemini broker denied a tool permission without review text",
+    "Gemini broker completed without review text", "Gemini broker response lacks a terminal verdict",
+    "Gemini broker local provider failure",
+    "brokered Gemini subscription credential reference is unavailable",
+    "brokered Gemini subscription credential reference is invalid",
+    # the review-isolation / broker refusals this runtime raises (their messages are ours)
+    'HARDEN broker requires canonical bwrap and python3',
+    'HARDEN president authorization does not match this operation',
+    'HARDEN president authorization expired before activation',
+    'HARDEN president authorization is not active',
+    'HARDEN president authorization is not available for activation',
+    'HARDEN president isolation requires Linux',
+    'HARDEN president route occurrence already consumed',
+    'HARDEN review authorization expired before activation',
+    'HARDEN review authorization is closed',
+    'HARDEN review authorization is not active',
+    'HARDEN review authorization is not available for activation',
+    'HARDEN review canonical repository authority mismatch',
+    'HARDEN review composition requires Linux',
+    'HARDEN review has no canonical repository authority',
+    'HARDEN review isolation requires a Linux review operation',
+    'HARDEN review leg capability already consumed',
+    'HARDEN review route occurrence already consumed',
+    'HARDEN review staged input does not match authorization',
+    'HARDEN review staged input is writable',
+    'HARDEN review staged tree does not match authorization',
+    'HARDEN review staged tree is missing',
+    'HARDEN review staged tree is unreadable',
+    'broker authorization expired',
+    'broker canonical repository authority is not probeable',
+    'broker child response grammar',
+    'broker completed without a response',
+    'broker frame too large',
+    'broker inference adapter is not initially quiescent',
+    'broker inference adapter requires cancellation and quiescence',
+    'broker operation cancelled or closed',
+    'broker peer ancestry mismatch',
+    'broker request binding',
+    'broker request grammar',
+    'broker requires a quiescent cancellable inference adapter',
+    'broker response grammar',
+    'broker route is not authorized',
+    'broker stage is not immutable and bound',
+    'brokered Gemini model is not the authorized HARDEN route',
+    'brokered Gemini prompt has an invalid UTF-8 boundary',
+    'brokered Gemini prompt is empty',
+    'brokered Gemini prompt is outside the sealed transport bound',
+    'brokered Gemini subscription credential reference is invalid',
+    'brokered Gemini subscription credential reference is unavailable',
+    'brokered review input contains its digest-bound frame delimiter',
+    'brokered review input envelopes bind different Git identities',
+    'brokered review input exceeds sealed transport bound',
+    'brokered review input pairs a generated envelope with free text',
+    'capture-enabled board does not permit research seats',
+    'capture-enabled board requires a provider authority for every seat',
+    'capture-enabled board requires exactly one resolved Gemini seat',
+    'capture-enabled board requires the production Gemini spawn path',
+    'capture-enabled board requires unique provider and seat identities',
+    'gemini_bounded_deadline_invalid',
+    'gemini_broker_diagnostic_invalid',
+    'gemini_broker_diagnostic_status_mismatch',
+    'gemini_heartbeat_monitor_required',
+    'invalid HARDEN president leg authority',
+    'invalid HARDEN review launch authorization',
+    'invalid HARDEN review leg authority',
+    'invalid broker frame label',
+    'malformed stream event',
+    'malformed stream step',
+    'malformed terminal stream result',
+    'missing HARDEN review invocation lease',
+    'missing HARDEN review leg claim',
+    'missing or forged HARDEN president authorization',
+    'missing or forged HARDEN review authorization',
+    'missing, forged, or expired HARDEN composition authorization',
+    'no claude seat is deferred to the driving session under this routing',
+    'panel requests must use metadata_only redaction posture',
+    'peer credentials unavailable',
+    'president broker isolation requires a canonical repository',
+    'provider refusal state must be adapter-originated',
+    'research policy mismatch',
+    'review_monitoring_policy_invalid',
+    'review_monitoring_policy_mismatch',
+    'review_monitoring_timeout_conflict',
+    'review_monitoring_unsupported_api_fallback',
+    'review_monitoring_unsupported_route',
+    'review_monitoring_unsupported_route:native_fill',
+    'review_monitoring_unsupported_transport',
+    'seats and legs must correspond positionally',
+    'tool or subagent activity observed',
+    'truncated broker frame',
+    'unexpected stream event',
+    'unknown generated review input kind',
+    'unsupported owned provider',
+    'unsupported owned provider capability policy',
+    'unverifiable broker proc stat',
+    # board skips
+    "skip: omnigent gateway unavailable",
+    # claude opus fallback (#188)
+    "opus_fallback_used", "opus_fallback_classifier_refusal",
+    # network-egress isolation refusals (sandbox_egress's own reasons)
+    "egress isolation unavailable; refusing to launch WITHOUT network restriction",
+    "egress isolation yielded an empty launch prefix",
+    "network namespace did not come up; launch is UNISOLATED",
+    "the namespace came up but cannot resolve a hostname; a seat here could reach raw IPs "
+    "and nothing else (round-6 failure mode)",
+})
+_HARNESS_DETAIL_CODE_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
+    r"timeout after \d{1,6}s",
+    r"claude_tui_launch_error:[A-Za-z_][A-Za-z0-9_]{0,60}",
+    r"claude_agent_state:[A-Za-z_]{1,40}(?:; stop=[A-Za-z0-9_.-]{1,40})?",
+    r"claude_code_version_(?:below_minimum|supported):\d{1,4}\.\d{1,4}\.\d{1,4}",
+    r"research_audit_[a-z_]{1,40}",
+    r"review_monitoring_unsupported_route(?::[a-z_]{1,40})?",
+    r"(?:codex|gemini|grok|claude|opencode) not logged in — run `(?:codex|agy|grok|claude|opencode) "
+    r"login` \(auth preflight failed\)",
+    r"omnigent [a-z_]{1,40}: HTTP \d{3}",
+    r"omnigent v[0-9.]{1,20} lane=[a-z0-9_-]{1,40}",
+    r"skip: harness '[A-Za-z0-9_-]{1,40}' not in live Omnigent catalog",
+    r"skip: effort mapping for harness '[A-Za-z0-9_-]{1,40}' is populated in ABDREG/ABDHOME/ABDOMNI",
+    r"skip: backing '[A-Za-z0-9_-]{1,40}' not served by homebrew(?: \(ABDOMNI\))?",
+    r"skip: no homebrew adapter for lane '[A-Za-z0-9_-]{1,40}' \u2014 Omnigent-or-skip \(ABDOMNI\)",
+    r"president_ruling_missing:[a-z_]{1,60}",
+    r"native_fill_refused:[a-z_]{1,60}:[A-Za-z0-9_.:-]{1,160}",
+    r"slirp4netns exited \(-?\d{1,4}\) before the uplink was usable; the namespace has no network",
+))
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_LEG_LOG_DIRNAME = "leg-logs"
+_FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in (
+    r"timeout",
+    r"signal \d{1,2}",
+    r"auth_failure",
+    r"tool_denied: headless tool permission auto-denied",
+    r"usage_limit",
+    r"usage_limit \(resets (?:[01]\d|2[0-3]):[0-5]\d(?:, (?:" + "|".join(_MONTHS)
+    + r") (?:[1-9]|[12]\d|3[01]) \d{4})?\)",
+    r"env_failure: temp dir owned by another account \(uid \d{1,10}\)",
+    r"env_failure: temp dir unusable",
+    r"env_failure: app-server socket dir not user-owned",
+    r"env_failure: sandbox command could not be built",
+    r"unknown failure(?: \(exit -?\d{1,3}\))?; CLI output(?: not retained|: "
+    + _LEG_LOG_DIRNAME + r"/[A-Za-z0-9._-]{1,120}\.log)",
+))
+_UNKNOWN_DETAIL = "unknown failure; CLI output not retained"
+
+
+def _is_harness_code(value: str) -> bool:
+    return value in _HARNESS_DETAIL_CODES or any(
+        p.fullmatch(value) for p in _HARNESS_DETAIL_CODE_TEMPLATES
+    )
+
+
+def _is_failure_template(value: str) -> bool:
+    return any(p.fullmatch(value) for p in _FAILURE_DETAIL_TEMPLATES)
+
+
+def _detail_is_valid(value: str) -> bool:
+    if _is_harness_code(value) or _is_failure_template(value):
+        return True
+    code, sep, rest = value.partition(": ")
+    # `<harness code>: <failure template>` (a code may itself contain ": ", so try each split)
+    while sep:
+        if _is_harness_code(code) and _is_failure_template(rest):
+            return True
+        more_code, sep, rest = rest.partition(": ")
+        code = f"{code}: {more_code}"
+    return False
+
+
+@dataclass(frozen=True)
+class _LegFailure:
+    """A failed leg's detail before it reaches ``PanelLegResult``: ``template`` is already in
+    our vocabulary; ``raw`` is the CLI output destined ONLY for the private per-leg log, and
+    only when the template is the unknown-failure one (``unknown``)."""
+
+    template: str
+    raw: str = ""
+    unknown: bool = False
+    rc: int | None = None
+    prefix: str | None = None  # a harness code naming the route, e.g. a claude_tui_* marker
+
+    def rendered(self, log_ref: str | None = None) -> str:
+        body = _unknown_detail(self.rc, log_ref) if self.unknown else self.template
+        return f"{self.prefix}: {body}" if self.prefix and _is_harness_code(self.prefix) else body
+
+
+def _finalize_leg_detail(value: object) -> str | None:
+    """The VALIDATOR every stored ``detail`` passes (via ``PanelLegResult``'s descriptor):
+    a string in our vocabulary is returned unchanged (so this is idempotent); a
+    ``_LegFailure`` contributes only its template; anything else becomes the unknown-failure
+    template. It never scrubs, and never lets unvalidated text through."""
+    if value is None or value == "":
         return None
-    current = str(detail)
-    for _ in range(8):
-        redacted = " ".join(_redact_leg_text(current, known).split())
-        if len(redacted) > _LEG_DETAIL_MAX_CHARS:
-            cut = _LEG_DETAIL_MAX_CHARS - 1
-            # never cut inside a placeholder
-            for m in _LEG_DETAIL_PLACEHOLDER_RE.finditer(redacted, max(0, cut - 12), cut + 12):
-                if m.start() < cut < m.end():
-                    cut = m.start()
-            redacted = redacted[:cut].rstrip() + "…"
-        if redacted == current:
-            break
-        current = redacted
-    return current or None
+    if isinstance(value, _LegFailure):
+        value = value.rendered()
+    text = str(value)
+    return text if _detail_is_valid(text) else _UNKNOWN_DETAIL
+
+
+def _unknown_detail(rc: int | None, log_ref: str | None = None) -> str:
+    exit_part = f" (exit {rc})" if isinstance(rc, int) and rc > 0 and rc < 1000 else ""
+    where = f": {log_ref}" if log_ref else " not retained"
+    return f"unknown failure{exit_part}; CLI output{where}"
+
+
+_LEG_LOG_MAX_BYTES = 64 * 1024
+
+
+def _write_private_leg_log(run_dir: Path | str, seat_key: str, raw: str) -> str | None:
+    """Write ``raw`` (best-effort redacted, bounded) to a PRIVATE per-leg file and return its
+    run-relative name, or None when that cannot be done safely. The directory is 0700 and
+    ours; the file is created 0600 with O_EXCL|O_NOFOLLOW, relative to the opened directory,
+    so no pre-planted symlink or file is ever followed or reused."""
+    logs = Path(run_dir) / _LEG_LOG_DIRNAME
+    try:
+        os.mkdir(logs, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        return None
+    try:
+        dir_fd = os.open(logs, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(dir_fd)
+        if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077:
+            return None
+        safe_key = re.sub(r"[^A-Za-z0-9._-]", "_", seat_key)[:60] or "leg"
+        name = f"{safe_key}-{uuid.uuid4().hex[:12]}.log"
+        fd = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd,
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            payload = _redact_leg_text(raw).encode("utf-8", errors="replace")[-_LEG_LOG_MAX_BYTES:]
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+        return f"{_LEG_LOG_DIRNAME}/{name}"
+    except OSError:
+        return None
+    finally:
+        os.close(dir_fd)
+
+
+def _exception_failure(exc: BaseException) -> object:
+    """An exception as a leg failure: its message is kept only when it is one of this
+    runtime's own diagnostics; anything else (an OSError naming a path, a provider error)
+    is an unknown failure whose text goes only to the private per-leg log."""
+    message = str(exc)
+    if _is_harness_code(message):
+        return message
+    return _LegFailure(_UNKNOWN_DETAIL, raw=f"{type(exc).__name__}: {message}", unknown=True)
+
+
+def _resolve_leg_detail(value: object, run_dir: Path | str | None, seat_key: str) -> object:
+    """Turn a spawn's failure into its stored detail. An unknown failure's raw output goes to
+    the private per-leg log when the run has a directory; everything else passes through
+    (the descriptor validates it)."""
+    if isinstance(value, _LegFailure) and value.unknown:
+        ref = (
+            _write_private_leg_log(run_dir, seat_key, value.raw)
+            if run_dir is not None and value.raw.strip() else None
+        )
+        return value.rendered(ref)
+    return value
 
 
 def _seat_paths(*paths: object) -> tuple[str, ...]:
-    """The seat's own scratch / repo paths, as known values for ``detail`` redaction."""
+    """The seat's own scratch / repo paths, as known values for private-log hygiene."""
     return tuple(str(p) for p in paths if p)
 
 
@@ -2131,60 +2439,96 @@ def _leg_failure_kind(rc: int | None, review_text: str, log_text: str) -> str:
         return "usage_limit"
     if _ENV_FAILURE_LABEL_RE.search(haystack):
         return "env_failure"
+    if _TOOL_DENIED_RE.search(haystack):
+        return "tool_denied"
     if _AUTH_SIGNATURE.search(haystack):
         return "auth"
     return "unknown"
 
 
-def _leg_failure_excerpt(redacted_text: str) -> str:
-    """The FINAL error line of an ALREADY-REDACTED text: a single line whole; else the last
-    error-looking line of the tail (else its last line) — never the head, which for codex is
-    the echoed prompt."""
-    lines = [line.strip() for line in _log_tail(redacted_text).splitlines() if line.strip()]
-    if not lines:
-        return ""
-    if len(lines) == 1:
-        return lines[0]
-    return next((line for line in reversed(lines) if _LEG_ERROR_LINE_RE.search(line)), lines[-1])
+_CODEX_RESET_TIME_RE = re.compile(
+    r"(?:try again at|resets at)\s+(?:(?P<mon>" + "|".join(_MONTHS) + r")[a-z]* "
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?,? (?P<year>\d{4}) )?(?P<h>\d{1,2}):(?P<m>\d{2}) ?(?P<ap>[AP]M)",
+    re.IGNORECASE,
+)
+
+
+def _rendered_reset(text: str) -> str | None:
+    """The provider's reset time, PARSED into a datetime and RE-RENDERED by us
+    (``HH:MM`` or ``HH:MM, Mon D YYYY``) — never copied from the CLI text."""
+    import datetime as _dt
+
+    match = _CODEX_RESET_TIME_RE.search(text or "")
+    if not match:
+        return None
+    hour, minute = int(match["h"]), int(match["m"])
+    if not (1 <= hour <= 12 and 0 <= minute <= 59):
+        return None
+    hour = hour % 12 + (12 if match["ap"].upper() == "PM" else 0)
+    if not match["mon"]:
+        return f"{hour:02d}:{minute:02d}"
+    try:
+        when = _dt.datetime(
+            int(match["year"]), _MONTHS.index(match["mon"][:3].title()) + 1, int(match["day"]),
+            hour, minute,
+        )
+    except ValueError:
+        return None
+    return f"{when:%H:%M}, {_MONTHS[when.month - 1]} {when.day} {when.year}"
+
+
+_ENV_UID_RE = re.compile(r"is owned by uid (\d{1,10}), expected \d{1,10}")
+
+
+def _env_failure_template(text: str) -> str:
+    uid = _ENV_UID_RE.search(text)
+    if uid:
+        return f"env_failure: temp dir owned by another account (uid {int(uid.group(1))})"
+    if re.search(r"app-server socket directory must be a user-owned directory", text):
+        return "env_failure: app-server socket dir not user-owned"
+    if re.search(r"is not (?:a directory|readable)", text):
+        return "env_failure: temp dir unusable"
+    return "env_failure: sandbox command could not be built"
 
 
 def _leg_failure_detail(
     status: str, rc: int | None, review_text: str, log_text: str,
     known: Sequence[str | os.PathLike[str]] = (),
-) -> str | None:
-    """``PanelLegResult.detail`` for a failed leg: ``<failure_kind>: <the CLI's line>``, or
-    just the line when the kind is unknown. None for an OK leg, and for an rc 0 non-
-    conforming review with nothing to label (its text already carries the evidence).
-
-    Order matters: the kind is read from the raw text (it is only a label), but every
-    character that can reach ``detail`` is REDACTED FIRST, over the whole uncut text, and
-    only then is an excerpt line selected and bounded."""
+) -> _LegFailure | None:
+    """``PanelLegResult.detail`` for a failed leg, in OUR vocabulary only: a harness code the
+    runtime itself emitted, or a failure template whose only fields are validated (a reset
+    time parsed and re-rendered, a signal number, a uid). Anything unrecognized becomes the
+    unknown-failure template, and its raw CLI output travels on the ``_LegFailure`` ONLY to
+    the private per-leg log (``_resolve_leg_detail``). None for an OK leg, and for an rc 0
+    non-conforming review with nothing to label (its text already carries the evidence)."""
     if status == "OK":
         return None
+    single = str(log_text or "").strip()
+    if single and "\n" not in single and _is_harness_code(single):
+        return _LegFailure(single)  # a diagnostic the harness itself produced
     kind = _leg_failure_kind(rc, review_text, log_text)
     if kind == "unknown" and rc == 0 and str(review_text).strip():
         return None
-    red_log = _redact_leg_text(str(log_text or ""), known)
-    red_body = _redact_leg_text(str(review_text or ""), known)
-    source = red_log if red_log.strip() else red_body
-    if kind in ("usage_limit", "env_failure"):
-        # Excerpt the line that carries the label, not a later unrelated one. Matched on the
-        # redacted text; a label pattern broken by redaction just falls back to the tail.
-        pattern = _USAGE_LIMIT_LABEL_RE if kind == "usage_limit" else _ENV_FAILURE_LABEL_RE
-        for candidate in (_log_tail(red_log), red_body):
-            hits = [line for line in candidate.splitlines() if pattern.search(line)]
-            if hits:
-                source = hits[-1]
-                break
-    excerpt = _leg_failure_excerpt(source)
-    if kind == "unknown":
-        return _finalize_leg_detail(excerpt, known)
-    label = kind
+    raw = str(log_text or "") if str(log_text or "").strip() else str(review_text or "")
+    both = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
+    if kind == "timeout":
+        return _LegFailure("timeout")
+    if kind == "signal":
+        return _LegFailure(f"signal {-int(rc)}" if -int(rc) < 100 else "signal 99")
     if kind == "usage_limit":
-        match = _PROVIDER_USAGE_RESET_RE.search(source)
-        if match:
-            label = f"{kind} (resets {match.group('when').strip()})"
-    return _finalize_leg_detail(f"{label}: {excerpt}" if excerpt else label, known)
+        reset = _rendered_reset(both)
+        return _LegFailure(f"usage_limit (resets {reset})" if reset else "usage_limit")
+    if kind == "env_failure":
+        return _LegFailure(_env_failure_template(both))
+    if kind == "tool_denied":
+        return _LegFailure("tool_denied: headless tool permission auto-denied")
+    if kind == "auth":
+        return _LegFailure("auth_failure")
+    del known  # the private log's hygiene pass uses only the running identity
+    if not raw.strip():
+        return None  # nothing the CLI said, and nothing of ours to name
+    return _LegFailure(_UNKNOWN_DETAIL, raw=raw, unknown=True, rc=rc)
+
 
 # The gemini/agy leg runs HEADLESS, where a tool permission cannot be prompted for and is
 # auto-denied — the CLI then produces NO output at all and exits rc==0, so the whole leg
@@ -6706,7 +7050,7 @@ def _exec_claude_tui_leg(
     broker_prompt: str | None = None,
     broker_evidence: dict[str, object] | None = None,
     review_monitor: _ReviewMonitor | None = None,
-    failure_detail_sink: list[str] | None = None,
+    failure_detail_sink: list[_LegFailure] | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -7000,13 +7344,11 @@ def _exec_claude_tui_leg(
     # The detail itself goes to a caller-owned sink so this function's (status, text) shape
     # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
-        kind = _leg_failure_kind(rc, review_text, pty_tail)
-        tail_detail = _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
-        if tail_detail and kind == "unknown" and log_text:
-            tail_detail = f"{log_text}: {tail_detail}"
-        tail_detail = _finalize_leg_detail(tail_detail, seat_paths)
-        if tail_detail:
-            failure_detail_sink.append(tail_detail)
+        tail_failure = _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
+        if tail_failure is not None and tail_failure.unknown and log_text:
+            tail_failure = replace(tail_failure, prefix=log_text)
+        if tail_failure is not None:
+            failure_detail_sink.append(tail_failure)
     return status, text
 
 
@@ -8232,11 +8574,11 @@ def _default_spawn(
                 # the broker response grammar is {schema,status,text} and stays so; this is
                 # re-attached to `detail` below exactly like `gemini_detail`. Before this,
                 # a brokered codex usage-limit death reached the operator as a bare ERROR.
-                leg_detail: str | None = None
+                leg_detail: _LegFailure | None = None
                 def _parent_infer() -> tuple[str, str]:
                     nonlocal gemini_detail, leg_detail
                     if leg == "claude":
-                        claude_sink: list[str] = []
+                        claude_sink: list[_LegFailure] = []
                         claude_status, claude_text = _exec_claude_tui_leg(
                             review_dir, out_dir, leg_timeout, artifact,
                             repo_dir=out_dir, mode=provider_mode, model=broker_model,
@@ -8314,7 +8656,7 @@ def _default_spawn(
         if leg == "claude":
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
-            claude_sink: list[str] = []
+            claude_sink: list[_LegFailure] = []
             result = _exec_claude_tui_leg(
                 review_dir,
                 out_dir,
@@ -8395,9 +8737,9 @@ def _default_spawn(
         # one call site away went to `detail` with empty text and was a WARN. Same fault,
         # two verdicts, decided by which line raised.
         if review_monitor is not None:
-            return _BrokeredSpawnResult("DEGRADED", "", str(exc)[:2000],
+            return _BrokeredSpawnResult("DEGRADED", "", _exception_failure(exc),
                                        evidence=broker.evidence if broker is not None else None)
-        return "DEGRADED", "", str(exc)[:2000]
+        return "DEGRADED", "", _exception_failure(exc)
     finally:
         egress_stack.close()
         if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
@@ -8918,7 +9260,7 @@ def invoke_panel(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=str(exc)[:200],
+                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, leg),
                 )
             else:
                 try:
@@ -8928,7 +9270,7 @@ def invoke_panel(
                 if status == "OK" and not str(text).strip():
                     status = "EMPTY"
                 text_value = str(text)
-                detail = spawn_detail
+                detail = _resolve_leg_detail(spawn_detail, stream_dir, leg)
                 if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                     detail, text_value = text_value, ""
                 result = PanelLegResult(
@@ -8974,7 +9316,8 @@ def invoke_panel(
             raise
         except Exception as exc:
             return PanelLegResult(
-                leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]
+                leg=leg, status="DEGRADED", text="",
+                detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, leg),
             )
         # A spawn returns the legacy 2-tuple (status, text) or, when it has a failure
         # DIAGNOSTIC to report, a 3-tuple (status, text, detail). The len-2 path is
@@ -8993,7 +9336,7 @@ def invoke_panel(
         if status == "OK" and not str(text).strip():
             status = "EMPTY"
         text_value = str(text)
-        detail = spawn_detail
+        detail = _resolve_leg_detail(spawn_detail, stream_dir, leg)
         if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
             detail, text_value = text_value, ""
         return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
@@ -9164,7 +9507,7 @@ def _route_omnigent_seat(
             leg=leg,
             status="DEGRADED",
             text="",
-            detail=str(exc)[:200],
+            detail=_exception_failure(exc),
             seat_key=seat.seat_key,
         )
     return PanelLegResult(
@@ -9312,7 +9655,7 @@ def invoke_board(
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(
             leg=seat.harness or seat.vendor_family, status="UNAVAILABLE",
-            detail=str(exc), seat_key=seat.seat_key,
+            detail=_exception_failure(exc), seat_key=seat.seat_key,
         ) for seat in board.seats))
         for index, leg in enumerate(refused.legs):
             object.__setattr__(leg, "_review_monitoring", {
@@ -10042,7 +10385,7 @@ def invoke_board(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=str(exc)[:200],
+                    detail=_exception_failure(exc),
                     seat_key=seat.seat_key,
                 )
             try:
@@ -10109,7 +10452,7 @@ def invoke_board(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=str(exc)[:200],
+                    detail=_resolve_leg_detail(_exception_failure(exc), stream_dir, str(seat.seat_key)),
                     seat_key=seat.seat_key,
                 )
                 return (
@@ -10135,7 +10478,7 @@ def invoke_board(
             # the runtime legs — `_resolve_brief` gives the exact `review-instructions.md`
             # the other seats got). None for every other leg (golden byte-identity holds).
             text_value = str(text)
-            detail = seat_detail
+            detail = _resolve_leg_detail(seat_detail, stream_dir, str(seat.seat_key))
             if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
                 detail, text_value = text_value, ""
             result = PanelLegResult(

@@ -97,44 +97,6 @@ def test_conforming_review_that_discusses_limits_stays_ok():
     assert pi._leg_failure_detail(status, 0, CONFORMING_REVIEW_ABOUT_LIMITS, log) is None
 
 
-def test_detail_is_redacted_and_bounded():
-    secret_log = (
-        "user\nsome prompt\n"
-        "fatal: auth failed token=abcdefghijklmnopqrstuv Bearer abcdefghijklmnop "
-        "for alice@example.com key sk-ant-api03-abcdefghijklmnop at /home/alice/.codex/auth.json "
-        + "x" * 900 + "\n"
-    )
-    detail = pi._leg_failure_detail("ERROR", 1, "", secret_log)
-    assert detail is not None
-    for leaked in ("abcdefghijklmnopqrstuv", "Bearer abcdefghijklmnop", "alice@example.com",
-                   "sk-ant-api03", "/home/alice"):
-        assert leaked not in detail, f"{leaked!r} leaked into detail: {detail!r}"
-    assert len(detail) <= pi._LEG_DETAIL_MAX_CHARS
-
-
-@pytest.mark.parametrize("secret", [
-    "xoxc-1234567890-abcdefghij", "xoxe-1234567890-abcdefghij", "ghu_abcdefghijklmnop",
-    "ghr_abcdefghijklmnop", "xai-abcdefghijklmnopqrst", "/var/home/alice/.config",
-])
-def test_detail_redacts_additional_token_shapes(secret):
-    detail = pi._leg_failure_detail("ERROR", 1, "", f"user\nprompt\nfatal: rejected {secret}\n")
-    assert detail is not None
-    assert secret not in detail and "alice" not in detail, detail
-
-
-def test_detail_never_carries_a_raw_diff_hunk():
-    """detail reaches governed-review finding reasons; the closeout metadata gate treats
-    a raw hunk header as a FATAL malformed closeout."""
-    log = "user\nprompt\nerror: patch failed at @@ -1,3 +1,4 @@ in file\n"
-    detail = pi._leg_failure_detail("ERROR", 1, "", log)
-    assert detail is not None and "@@ -1,3 +1,4 @@" not in detail
-
-
-def test_single_line_harness_diagnostics_are_kept_whole():
-    for diag in ("timeout after 900s", "subscription_auth_unproven"):
-        assert pi._leg_failure_detail("DEGRADED", 1, "", diag) == diag
-
-
 class _FakeBroker:
     """Only the transport is faked: ``run_credentialless_client`` invokes the REAL
     adapter (the production ``_parent_infer`` closure) in-process."""
@@ -196,7 +158,7 @@ def test_brokered_codex_usage_limit_reaches_detail(monkeypatch, tmp_path):
     status, text, detail = spawned
     assert status == "DEGRADED"
     assert text == ""
-    assert detail.startswith("usage_limit (resets Oct 1st, 2026 1:42 PM): ")
+    assert pi._finalize_leg_detail(detail) == "usage_limit (resets 13:42, Oct 1 2026)"
 
 
 def test_brokered_codex_conforming_review_about_limits_is_ok_without_detail(monkeypatch, tmp_path):
@@ -219,7 +181,7 @@ def test_claude_tui_ok_leaves_the_sink_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
     (tmp_path / "review").mkdir()
     (tmp_path / "out").mkdir()
-    sink: list[str] = []
+    sink: list = []
     status, _text = pi._exec_claude_tui_leg(
         tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink,
     )
@@ -231,7 +193,7 @@ def test_board_stderr_summary_names_why_a_seat_failed(tmp_path):
     from phase_loop_runtime.cli import main as cli_main
 
     real_compose = comp_mod.compose_review_board
-    detail = "usage_limit (resets Oct 1st, 2026 1:42 PM): " + CODEX_USAGE_BANNER
+    detail = "usage_limit (resets 13:42, Oct 1 2026)"
     result = pi.PanelResult(legs=(
         pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:a"),
         pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:a"),
@@ -255,28 +217,6 @@ def test_board_stderr_summary_names_why_a_seat_failed(tmp_path):
     lines = [line for line in err.getvalue().splitlines() if "[DEGRADED] codex:a" in line]
     assert len(lines) == 1, err.getvalue()
     assert detail in lines[0]
-
-
-def test_multiline_tool_denial_keeps_the_harness_explanation(monkeypatch, tmp_path):
-    """The TOOL-DENIAL diagnostic embeds the CLI's stderr; a multi-line stderr must not
-    reduce `detail` to the CLI's last line and drop the harness's own explanation."""
-    class _Proc:
-        returncode = 0
-        stdout = ""
-        stderr = (
-            "Warning: 256-color support not detected.\n"
-            'jetski: no output produced — a tool required the "command" permission that '
-            "headless mode cannot prompt for, so it was auto-denied.\n"
-        )
-
-    monkeypatch.setattr(pi, "_run_leg_with_liveness", lambda cmd, **kw: _Proc())
-    review_dir, out_dir = tmp_path / "review", tmp_path / "out"
-    review_dir.mkdir()
-    out_dir.mkdir()
-    (review_dir / "review-bundle.md").write_text("the diff")
-    rc, text, log = pi._exec_leg("gemini", review_dir, out_dir, timeout_s=60, artifact="A", env={})
-    detail = pi._leg_failure_detail(pi._classify_leg(rc, text, log), rc, text, log)
-    assert detail and "TOOL-DENIAL" in detail and "auto-denied" in detail
 
 
 def _no_8char_piece(token: str, text: str) -> bool:
@@ -304,42 +244,6 @@ def _claude_session(monkeypatch, result):
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
     monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
-
-
-def test_cli_prints_the_finalized_detail(tmp_path):
-    """claude r2 F6: a detail from ANY route (here a raw exception string) is sanitized at
-    the print site."""
-    from phase_loop_runtime.advisor_board import composition as comp_mod
-    from phase_loop_runtime.cli import main as cli_main
-
-    real_compose = comp_mod.compose_review_board
-    raw = "boom \x1b[2J token=abcdefghijklmnopqrstuv " + "q" * 3000
-    result = pi.PanelResult(legs=(
-        pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:a"),
-        pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:a"),
-        pi.PanelLegResult(leg="claude", status="OK", text="AGREE", seat_key="claude:a"),
-        pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=raw, seat_key="codex:a"),
-    ))
-    artifact = tmp_path / "bundle.md"
-    artifact.write_text("review me\n")
-    with (
-        unittest.mock.patch.object(
-            comp_mod, "compose_review_board",
-            side_effect=lambda *a, **k: real_compose(
-                is_available=lambda v: v in {"codex", "gemini", "claude", "grok"}
-            ),
-        ),
-        unittest.mock.patch.object(pi, "invoke_board", return_value=result),
-    ):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            cli_main(["advisor-board", str(artifact)])
-    for stream in (out.getvalue(), err.getvalue()):
-        codex_lines = [line for line in stream.splitlines() if "codex:a" in line]
-        assert codex_lines, stream
-        for line in codex_lines:
-            assert "\x1b" not in line and "abcdefghijklmnopqrstuv" not in line
-            assert len(line) <= pi._LEG_DETAIL_MAX_CHARS + 80
 
 
 def test_codex_leg_elides_its_prompt_echo_before_classification(monkeypatch, tmp_path):
@@ -380,9 +284,9 @@ def test_codex_leg_elides_its_prompt_echo_before_classification(monkeypatch, tmp
     assert "You've hit your usage limit" not in log
     status = pi._classify_leg(rc, text, log)
     assert status == "ERROR"
-    assert pi._leg_failure_detail(status, rc, text, log) == (
-        "ERROR: stream disconnected before completion: reset"
-    )
+    failure = pi._leg_failure_detail(status, rc, text, log)
+    assert pi._finalize_leg_detail(failure) == "unknown failure (exit 1); CLI output not retained"
+    assert "You've hit your usage limit" not in failure.raw, "the elided echo must not reach the log"
 
 
 _CODEX_PLANS = {
@@ -398,9 +302,9 @@ _CODEX_PLANS = {
 _CODEX_RESETS = {
     # codex error.rs retry_suffix / retry_suffix_after_or; both forms are in the binary
     "none": (" Try again later.", " or try again later.", None),
-    "same_day": (" Try again at 3:05 PM.", " or try again at 3:05 PM.", "3:05 PM"),
+    "same_day": (" Try again at 3:05 PM.", " or try again at 3:05 PM.", "15:05"),
     "dated": (" Try again at Oct 1st, 2026 1:42 PM.", " or try again at Oct 1st, 2026 1:42 PM.",
-              "Oct 1st, 2026 1:42 PM"),
+              "13:42, Oct 1 2026"),
 }
 
 
@@ -507,9 +411,9 @@ def test_a_usage_banner_on_stdout_with_nonzero_rc_is_labeled():
     """grok / agy print the banner on stdout (the body), not stderr."""
     status = pi._classify_leg(1, "You hit your weekly limit.", "", mode="review")
     assert status == "DEGRADED"
-    assert pi._leg_failure_detail(status, 1, "You hit your weekly limit.", "") == (
-        "usage_limit: You hit your weekly limit."
-    )
+    assert pi._finalize_leg_detail(
+        pi._leg_failure_detail(status, 1, "You hit your weekly limit.", "")
+    ) == "usage_limit"
 
 
 # --- LABEL: on failed legs only, cosmetic --------------------------------------------------
@@ -557,13 +461,12 @@ def test_process_facts_label_before_text():
     assert pi._leg_failure_kind(-9, "", CODEX_USAGE_BANNER) == "signal"
 
 
-def test_usage_limit_banner_is_labeled_with_reset_and_excerpt():
+def test_usage_limit_banner_is_labeled_with_a_rerendered_reset():
+    """The reset time is PARSED and RE-RENDERED by us (agent-harness#1102 r7) — never copied."""
     status = pi._classify_leg(1, "", CODEX_LOG)
     assert status == "DEGRADED"
-    detail = pi._leg_failure_detail(status, 1, "", CODEX_LOG)
-    assert detail.startswith("usage_limit (resets Oct 1st, 2026 1:42 PM): ")
-    assert "You've hit your usage limit" in detail
-    assert "Review the attached phase change" not in detail, "detail is the prompt echo"
+    detail = pi._finalize_leg_detail(pi._leg_failure_detail(status, 1, "", CODEX_LOG))
+    assert detail == "usage_limit (resets 13:42, Oct 1 2026)"
 
 
 def test_codex_banner_followed_by_its_last_message_warning_is_labeled():
@@ -578,8 +481,8 @@ def test_codex_banner_followed_by_its_last_message_warning_is_labeled():
     )
     status = pi._classify_leg(1, "", log)
     assert status == "DEGRADED"
-    assert pi._leg_failure_detail(status, 1, "", log).startswith(
-        "usage_limit (resets Oct 1st, 2026 1:42 PM): ERROR: You've hit your usage limit"
+    assert pi._finalize_leg_detail(pi._leg_failure_detail(status, 1, "", log)) == (
+        "usage_limit (resets 13:42, Oct 1 2026)"
     )
 
 
@@ -591,9 +494,8 @@ def test_codex_usage_banner_every_plan_and_reset_form(plan, reset):
     log = "user\n<prompt echo elided>\nERROR: " + banner + "\n"
     status = pi._classify_leg(1, "", log)
     assert status == "DEGRADED", banner
-    detail = pi._leg_failure_detail(status, 1, "", log)
-    label = f"usage_limit (resets {when}): " if when else "usage_limit: "
-    assert detail.startswith(label), (banner, detail)
+    detail = pi._finalize_leg_detail(pi._leg_failure_detail(status, 1, "", log))
+    assert detail == (f"usage_limit (resets {when})" if when else "usage_limit"), (banner, detail)
 
 
 def test_direct_spawn_carries_labeled_detail_and_stays_a_warn(monkeypatch):
@@ -601,7 +503,7 @@ def test_direct_spawn_carries_labeled_detail_and_stays_a_warn(monkeypatch):
     leg = pi.invoke_panel("ARTIFACT", ["codex"]).legs[0]
     assert leg.status == "DEGRADED"
     assert not leg.text.strip(), "a diagnostic leaked into text (governed BLOCK)"
-    assert leg.detail and leg.detail.startswith("usage_limit (resets Oct 1st, 2026")
+    assert leg.detail == "usage_limit (resets 13:42, Oct 1 2026)"
     findings = gr._findings_from_panel(pi.PanelResult(legs=(leg,)))
     assert [f.code for f in findings] == ["panel_leg_degraded"]
     assert "usage_limit" in findings[0].reason
@@ -613,26 +515,14 @@ def test_claude_tui_refusal_reaches_the_detail_sink(monkeypatch, tmp_path):
     ))
     (tmp_path / "review").mkdir()
     (tmp_path / "out").mkdir()
-    sink: list[str] = []
+    sink: list = []
     status, _text = pi._exec_claude_tui_leg(
         tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink,
     )
     assert status == "DEGRADED"
-    assert sink and sink[-1].startswith("env_failure: Temp directory /tmp/claude-0")
-
-
-def test_claude_untyped_sink_detail_is_prefixed_redacted_and_bounded(monkeypatch, tmp_path):
-    marker = "claude_tui_failed token=abcdefghijklmnopqrstuv " + "y" * 3000
-    _claude_session(monkeypatch, (1, "", marker, "fatal: something broke"))
-    (tmp_path / "review").mkdir()
-    (tmp_path / "out").mkdir()
-    sink: list[str] = []
-    pi._exec_claude_tui_leg(
-        tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink,
+    assert sink and pi._finalize_leg_detail(sink[-1]) == (
+        "env_failure: temp dir owned by another account (uid 65534)"
     )
-    assert sink and sink[-1].startswith("claude_tui_failed")
-    assert "abcdefghijklmnopqrstuv" not in sink[-1]
-    assert len(sink[-1]) <= pi._LEG_DETAIL_MAX_CHARS
 
 
 def test_direct_default_spawn_returns_the_claude_sink_detail(monkeypatch):
@@ -644,61 +534,12 @@ def test_direct_default_spawn_returns_the_claude_sink_detail(monkeypatch):
     assert len(spawned) == 3, spawned
     status, _text, detail = spawned
     assert status == "DEGRADED"
-    assert detail.startswith("env_failure: Temp directory /tmp/claude-0")
+    assert pi._finalize_leg_detail(detail) == (
+        "env_failure: temp dir owned by another account (uid 65534)"
+    )
 
 
 # --- REDACTION: known values --------------------------------------------------------------
-
-@pytest.mark.parametrize("home", ["/Users/Jane Doe", "/home/Jane Doe", "/var/home/Jane Doe"])
-@pytest.mark.parametrize("tail", ["", "/Library/Caches/claude"])
-def test_the_real_home_is_substituted_whatever_its_shape(monkeypatch, home, tail):
-    """rounds 3-4: a home with a space and no trailing slash leaked `~ Doe`. The running
-    user's home is a KNOWN value; substitute it exactly instead of guessing path shapes."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: ((home,), ("jdoe",)))
-    line = f"Temp directory {home}{tail} is owned by uid 501, expected 0. Refusing to use it"
-    detail = pi._leg_failure_detail("DEGRADED", 1, "", line)
-    assert detail.startswith("env_failure: Temp directory ~")
-    assert "Jane" not in detail and "Doe" not in detail, detail
-
-
-def test_the_username_and_seat_paths_are_substituted(monkeypatch):
-    """claude r5 (a): the username boundary is [A-Za-z0-9_], so `jdoe-codex` / `jdoe.admin`
-    are substituted too (the round-5 test pinned that leak; dropped)."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/jdoe",), ("jdoe",)))
-    log = (
-        "fatal: jdoe cannot create /tmp/jdoe-codex/app.sock or write "
-        "/srv/seat-42/out/panel.txt (owner jdoe.admin)"
-    )
-    detail = pi._leg_failure_detail("ERROR", 1, "", log, ("/srv/seat-42",))
-    assert "jdoe" not in detail, detail
-    assert "/srv/seat-42" not in detail and "<path>/out/panel.txt" in detail
-    assert "fatal: <user> cannot" in detail
-    # a longer word merely containing the name is not the name
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: ((), ("ann",)))
-    assert "annotation" in pi._leg_failure_detail("ERROR", 1, "", "fatal: bad annotation")
-
-
-def test_an_email_whose_local_part_is_the_username_is_redacted(monkeypatch):
-    """claude/grok r5 (b): known values are substituted first, so `jane@x` became
-    `<user>@x`; the shape pass now takes `<user>@domain` too."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: ((), ("jane",)))
-    detail = pi._leg_failure_detail("ERROR", 1, "", "fatal: jane@janedoe.dev: request rejected")
-    assert "janedoe" not in detail and "<email>" in detail, detail
-
-
-def test_a_known_path_is_substituted_only_at_a_path_boundary(monkeypatch):
-    """claude r5: HOME=/app must not rewrite /app-server."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/app",), ()))
-    detail = pi._leg_failure_detail("ERROR", 1, "", "fatal: /app-server failed; see /app/log")
-    assert "/app-server" in detail and "~/log" in detail, detail
-
-
-def test_finalizing_is_idempotent(monkeypatch):
-    """claude r5: re-finalizing username `user` gave `<<user>>`."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/user",), ("user",)))
-    once = pi._finalize_leg_detail("user at /home/user/x token=abcdefghijklmnop jane@a.io " + "z" * 2000)
-    assert once == pi._finalize_leg_detail(once)
-    assert "<<" not in once and len(once) <= pi._LEG_DETAIL_MAX_CHARS
 
 
 def test_the_real_identity_is_what_the_host_reports():
@@ -724,17 +565,6 @@ def test_the_real_identity_tolerates_a_bare_host(monkeypatch):
     monkeypatch.setattr(pwd, "getpwuid", lambda uid: (_ for _ in ()).throw(KeyError(uid)))
     assert _REAL_REDACTION_IDENTITY() == ((), ())
     assert os.path.expanduser("~") == "/"
-
-
-def test_the_final_labelled_detail_is_bounded_and_control_stripped():
-    path = "/tmp/\x1b[2J\x07\x1bZ\x9b2J\x00" + "z" * 950
-    line = f"Temp directory {path} is owned by uid 65534, expected 0. Refusing to use it"
-    status = pi._classify_leg(1, "", line)
-    assert status == "DEGRADED"
-    detail = pi._leg_failure_detail(status, 1, "", line)
-    assert detail.startswith("env_failure: Temp directory /tmp/")
-    assert len(detail) <= pi._LEG_DETAIL_MAX_CHARS
-    assert not re.search(r"[\x00-\x1f\x7f-\x9f]", detail), repr(detail)
 
 
 # --- the advisory RECOMMENDATION artifact (lead conditions for option A) -------------------
@@ -780,40 +610,7 @@ def test_president_without_a_forcing_decision_fails_even_when_long():
     assert pi._classify_leg(0, body + "\nFORCING DECISION: land it", "", mode="president") == "OK"
 
 
-
 # --- board round 5 (agent-harness#1102): redaction ORDER and the detail chokepoint -----------
-
-def test_a_token_split_from_its_prefix_by_a_newline_is_redacted_before_selection():
-    """codex r5 BLOCKING: the excerpt picked the last line FIRST, so `Bearer\n<token>` lost
-    its prefix and leaked as `signal: <token>`. Redaction now runs over the whole uncut
-    text before any line is selected."""
-    log = "Bearer\nabcdefghijklmnopqrstuvwx"
-    status = pi._classify_leg(-9, "", log)
-    assert status == "ERROR"
-    detail = pi._leg_failure_detail(status, -9, "", log)
-    assert "abcdefghijklmnopqrstuvwx" not in detail, detail
-    assert detail.startswith("signal: ")
-
-
-def test_every_panel_leg_result_stores_a_finalized_detail(monkeypatch):
-    """claude r5 (c): raw exception strings reached `PanelLegResult.detail`, then governed
-    finding reasons and the verdict JSON. The dataclass now finalizes on construction."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/jdoe",), ("jdoe",)))
-    raw = "OSError: [Errno 13] /home/jdoe/.local/bin/codex token=abcdefghijklmnop \x1b[2J" + "q" * 3000
-    leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=raw)
-    assert "/home/jdoe" not in leg.detail and "jdoe" not in leg.detail
-    assert "abcdefghijklmnop" not in leg.detail and "\x1b" not in leg.detail
-    assert len(leg.detail) <= pi._LEG_DETAIL_MAX_CHARS
-    reason = gr._findings_from_panel(pi.PanelResult(legs=(leg,)))[0].reason
-    assert "jdoe" not in reason and "abcdefghijklmnop" not in reason
-    import dataclasses
-    assert dataclasses.replace(leg, status="ERROR").detail == leg.detail, "not idempotent"
-    # the direct spawn's exception path builds a PanelLegResult too
-    def boom(*a, **k):
-        raise OSError("cannot exec /home/jdoe/.local/bin/codex")
-    monkeypatch.setattr(pi, "_exec_leg", boom)
-    detail = pi.invoke_panel("ARTIFACT", ["codex"]).legs[0].detail or ""
-    assert "/home/jdoe" not in detail and "jdoe" not in detail, detail
 
 
 def test_claude_tui_status_does_not_depend_on_the_sink(monkeypatch, tmp_path):
@@ -864,73 +661,6 @@ def test_claude_tui_advisory_ok_goes_through_the_artifact_rule(monkeypatch, tmp_
 TOK = "abcdefghijklmnopqrstuvwx"
 
 
-def _detail(log: str, *, identity=None, monkeypatch=None, known=()):
-    if identity is not None:
-        monkeypatch.setattr(pi, "_redaction_identity", lambda: identity)
-    return pi._leg_failure_detail("ERROR", -9, "", log, known)
-
-
-@pytest.mark.parametrize("log", [
-    f"Authorization: Bearer\n{TOK}",                                  # codex/claude r6, multi-line
-    f"fatal: request rejected (Authorization: Bearer {TOK})",          # single-line
-    f"Authorization: Basic {TOK}==",                                   # Basic scheme
-    f'{{"access_token": "{TOK}"}}',                                    # quoted key and value
-    f"auth header was Bearer\t{TOK}",                                  # a TAB from the PTY
-    f"auth header was Bearer\x1b[1C{TOK}",                             # a CSI cursor move
-    f"Proxy-Authorization: Negotiate {TOK}",
-])
-def test_credential_context_survives_every_other_detector(log):
-    """codex/claude r6: the key=value pass ate `Bearer` before the bearer detector ran, and
-    control deletion glued `Bearer<tok>`. Every detector now sees the same text."""
-    detail = _detail(log)
-    assert TOK not in detail and TOK[:12] not in detail, detail
-
-
-@pytest.mark.parametrize("log", [
-    f"fatal: rejected sess-jane-{TOK}",
-    f"fatal: rejected Bearer jane-{TOK}",
-    "fatal: alice@jane.example.com denied",
-])
-def test_a_username_inside_a_credential_or_email_does_not_split_it(monkeypatch, log):
-    """grok r6: `<user>` substituted first split `sess-jane-…` and `alice@jane.…`."""
-    detail = _detail(log, identity=((), ("jane",)), monkeypatch=monkeypatch)
-    assert TOK not in detail and "jane" not in detail and "alice" not in detail, detail
-
-
-def test_an_email_containing_the_username_is_one_email(monkeypatch):
-    detail = _detail("fatal: john.doe@corp.com denied", identity=((), ("doe",)), monkeypatch=monkeypatch)
-    assert "john" not in detail and "corp.com" not in detail and "<email>" in detail, detail
-
-
-def test_a_username_that_is_a_key_prefix_does_not_break_the_key(monkeypatch):
-    detail = _detail(f"fatal: sk-ant-api03-{TOK}", identity=((), ("sk",)), monkeypatch=monkeypatch)
-    assert TOK not in detail and "<redacted>" in detail, detail
-
-
-def test_a_username_between_markup_is_still_the_username(monkeypatch):
-    """codex r6: the `<>` exemption let `<owner>jdoe</owner>` through."""
-    detail = _detail("fatal: <owner>jdoe</owner>", identity=((), ("jdoe",)), monkeypatch=monkeypatch)
-    assert "jdoe" not in detail and "<owner><user></owner>" in detail, detail
-
-
-def test_a_home_that_is_its_own_suffix_finalizes_idempotently(monkeypatch):
-    """codex r6: HOME=/app turned `/app/app` into `~/app`, then `~~`."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/app",), ()))
-    once = pi._finalize_leg_detail("signal: /app/app")
-    assert once == "signal: ~/app"
-    assert pi._finalize_leg_detail(once) == once
-
-
-@pytest.mark.parametrize("line,expected", [
-    ("fatal: under /Users/Jane Doe.", "fatal: under ~."),
-    ("open file:///Users/Jane Doe/x failed", "open file://~/x failed"),
-])
-def test_home_path_boundaries(monkeypatch, line, expected):
-    """claude r6: a home followed by `.`, and one after a `file://` scheme."""
-    monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/Users/Jane Doe",), ()))
-    assert pi._finalize_leg_detail(line) == expected
-
-
 def test_a_seat_path_crossing_the_pty_cut_is_redacted_first():
     """codex r6: the PTY tail was cut BEFORE seat paths were substituted, so the cut left
     `seat-private/review/…`."""
@@ -955,53 +685,296 @@ def test_the_tui_passes_its_seat_paths_into_the_first_redaction(monkeypatch, tmp
     assert str(tmp_path / "review") in paths and str(tmp_path / "out") in paths
 
 
-def test_object_setattr_cannot_store_a_raw_detail():
-    """codex/claude r6: `object.__setattr__` bypassed `__post_init__`. `detail` is now a data
-    descriptor, which `object.__setattr__` honours."""
-    leg = pi.PanelLegResult(leg="codex", status="ERROR", text="")
-    object.__setattr__(leg, "detail", f"token={TOK}")
-    assert leg.detail == "token=<redacted>"
-
-
 # A seeded property test: each secret, embedded at random offsets in random text, with the
 # separators next to it randomly rewritten (spaces, tabs, newlines, CR, CSI, controls, case),
 # never survives finalize, and finalize is a fixed point.
+
+
+
+
+# --- board round 7 (agent-harness#1102): detail is OUR vocabulary only ----------------------
+#
+# Maintainer decision 2026-09-27: raw CLI text never enters `detail`. A detail is a harness
+# code or a template whose only fields are validated (a re-rendered reset time, an exit code
+# / signal number, a uid, a run-relative private-log name); the raw output goes to a PRIVATE
+# 0600 per-leg log under the run's stream dir.
+
+TOK = "abcdefghijklmnopqrstuvwx"
+_REVIEWER_INPUTS = (
+    # round 5
+    f"Bearer\n{TOK}",
+    f"OSError: [Errno 13] /home/jdoe/.local/bin/codex token={TOK}",
+    "fatal: jane@janedoe.dev: request rejected",
+    "fatal: /app-server failed; see /app/log",
+    "fatal: cannot create /tmp/jdoe-codex/app.sock: File exists (owner jdoe.admin)",
+    # round 6
+    f"Authorization: Bearer\n{TOK}",
+    f"fatal: request rejected (Authorization: Bearer {TOK})",
+    f"Authorization: Basic {TOK}==",
+    f'{{"access_token": "{TOK}"}}',
+    f"auth header was Bearer\t{TOK}",
+    f"auth header was Bearer\x1b[1C{TOK}",
+    f"fatal: rejected sess-jane-{TOK}",
+    f"fatal: rejected Bearer jane-{TOK}",
+    "fatal: alice@jane.example.com denied",
+    "fatal: john.doe@corp.com denied",
+    f"fatal: sk-ant-api03-{TOK}",
+    "fatal: <owner>jdoe</owner>",
+    "signal: /app/app",
+    "fatal: under /Users/Jane Doe.",
+    "open file:///Users/Jane Doe/x failed",
+    "fatal: /srv/seat-private/review/" + "y" * 580,
+    # round 7
+    f"ANTHROPIC_AUTH_TOKEN={TOK}",
+    "db_password=hunter2hunter2hunter2",
+    "see `/home/jdoe/.ssh/id_rsa`",
+    "[/home/jdoe/x] <//home/jdoe/y> ,/home/jdoe/z;",
+    f"fatal: sk-ant-api03-abc\x1b[0m{TOK}",
+    f'token=Bearer "{TOK}"',
+    f"{TOK}0123456789",
+    "Bearer /home/J Doe/x",
+)
+
+
+def _longest_shared(a: str, b: str) -> int:
+    best = 0
+    for i in range(len(a)):
+        for j in range(i + best + 1, len(a) + 1):
+            if a[i:j] in b:
+                best = j - i
+            else:
+                break
+    return best
+
+
+@pytest.mark.parametrize("text", _REVIEWER_INPUTS)
+@pytest.mark.parametrize("rc", [1, -9, 0])
+def test_every_reviewer_input_yields_a_template_with_no_input_text(text, rc):
+    """Every input rounds 5-7 used against the redactor now yields a detail from our own
+    vocabulary; no run of 8+ characters of the CLI text reaches it."""
+    failure = pi._leg_failure_detail("ERROR", rc, "", text)
+    detail = pi._finalize_leg_detail(pi._resolve_leg_detail(failure, None, "codex"))
+    assert detail is not None and pi._detail_is_valid(detail), detail
+    assert _longest_shared(detail, text) < 8, (detail, text)
+
+
+@pytest.mark.parametrize("detail", [
+    "timeout", "signal 9", "auth_failure", "usage_limit", "usage_limit (resets 15:05)",
+    "usage_limit (resets 13:42, Oct 1 2026)", "env_failure: temp dir owned by another account (uid 65534)",
+    "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
+    "env_failure: sandbox command could not be built", "tool_denied: headless tool permission auto-denied",
+    "unknown failure; CLI output not retained", "unknown failure (exit 2); CLI output: leg-logs/codex-0a1b2c3d4e5f.log",
+    "claude_tui_pty_eof_no_output: unknown failure; CLI output not retained",
+    "under_claude_code", "native_fill", "president_ruling_missing:president_invocation_failed",
+    "timeout after 900s", "subscription_auth_unproven", "Gemini broker deadline exceeded",
+])
+def test_the_template_grammar_accepts_our_vocabulary(detail):
+    assert pi._detail_is_valid(detail)
+    assert pi._finalize_leg_detail(detail) == detail
+
+
+@pytest.mark.parametrize("detail", [
+    f"token={TOK}", "fatal: /home/jdoe/x", "usage_limit (resets 3:05 PM)", "usage_limit: You've hit",
+    "env_failure: Temp directory /tmp/claude-0 is owned by uid 1", "signal 9; rm -rf /",
+    "unknown failure; CLI output: /home/jdoe/run/leg-logs/x.log", "timeout after 900s /home/x",
+    "claude_tui_pty_eof_no_output: fatal: boom",
+])
+def test_the_template_grammar_rejects_anything_else(detail):
+    assert not pi._detail_is_valid(detail)
+    assert pi._finalize_leg_detail(detail) == "unknown failure; CLI output not retained"
+
+
+def test_the_gemini_broker_vocabulary_is_folded_into_the_template_set():
+    assert pi._GEMINI_BROKER_DETAILS <= pi._HARNESS_DETAIL_CODES
+    assert pi._TYPED_UNAVAILABLE_DETAILS <= pi._HARNESS_DETAIL_CODES
+
+
+def test_env_failure_uid_is_a_validated_field(monkeypatch):
+    failure = pi._leg_failure_detail(
+        "ERROR", 1, "", "Temp directory /Users/Jane Doe is owned by uid 501, expected 0. Refusing to use it"
+    )
+    assert pi._finalize_leg_detail(failure) == "env_failure: temp dir owned by another account (uid 501)"
+
+
+# The descriptor: validated on every write AND every read; no subclass may shadow it.
+
+def test_object_setattr_cannot_store_a_raw_detail():
+    leg = pi.PanelLegResult(leg="codex", status="ERROR", text="")
+    object.__setattr__(leg, "detail", f"token={TOK}")
+    assert leg.detail == "unknown failure; CLI output not retained"
+
+
+def test_the_backing_slot_cannot_carry_a_raw_detail():
+    """codex r7: `object.__setattr__(leg, "_detail", raw)` bypassed the setter."""
+    leg = pi.PanelLegResult(leg="codex", status="ERROR", text="")
+    object.__setattr__(leg, "_detail", f"token={TOK}")
+    assert leg.detail == "unknown failure; CLI output not retained"
+    leg.__dict__["_detail"] = "fatal: /home/jdoe/x"
+    assert leg.detail == "unknown failure; CLI output not retained"
+    import dataclasses
+    assert dataclasses.asdict(leg)["detail"] == "unknown failure; CLI output not retained"
+
+
+@pytest.mark.parametrize("shadow", ["detail", "_detail"])
+def test_a_subclass_cannot_shadow_the_detail_chokepoint(shadow):
+    with pytest.raises(TypeError):
+        type("Shadow", (pi.PanelLegResult,), {shadow: None})
+
+
+def test_a_raw_exception_is_an_unknown_failure_with_its_text_only_in_the_private_log(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise OSError(f"cannot exec /home/jdoe/.local/bin/codex token={TOK}")
+    monkeypatch.setattr(pi, "_exec_leg", boom)
+    leg = pi.invoke_panel("ARTIFACT", ["codex"], stream_dir=tmp_path).legs[0]
+    assert re.fullmatch(r"unknown failure; CLI output: leg-logs/codex-[0-9a-f]{12}\.log", leg.detail), leg.detail
+    log = (tmp_path / leg.detail.rsplit(": ", 1)[1]).read_text()
+    assert "cannot exec" in log and TOK not in log  # best-effort hygiene on the private log
+
+
+# The private per-leg log.
+
+_SECRET_RAW = f"user\nprompt\nfatal: provider exploded at /home/jdoe/x with Bearer {TOK}\n"
+
+
+def _unknown_failure_panel(monkeypatch, tmp_path):
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, "", _SECRET_RAW))
+    return pi.invoke_panel("ARTIFACT", ["codex"], stream_dir=tmp_path).legs[0]
+
+
+def test_an_unknown_failure_names_a_private_0600_log_in_a_0700_dir(monkeypatch, tmp_path):
+    import stat as _stat
+    leg = _unknown_failure_panel(monkeypatch, tmp_path)
+    assert re.fullmatch(
+        r"unknown failure \(exit 1\); CLI output: leg-logs/codex-[0-9a-f]{12}\.log", leg.detail
+    ), leg.detail
+    ref = leg.detail.rsplit(": ", 1)[1]
+    log = tmp_path / ref
+    assert _stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert _stat.S_IMODE((tmp_path / "leg-logs").stat().st_mode) == 0o700
+    content = log.read_text()
+    assert "provider exploded" in content
+
+
+def test_the_private_log_never_reaches_the_verdict_json_or_governed_reasons(monkeypatch, tmp_path):
+    leg = _unknown_failure_panel(monkeypatch, tmp_path)
+    ref = leg.detail.rsplit(": ", 1)[1]
+    absolute = str(tmp_path / ref)
+    for path in tmp_path.rglob("*"):
+        if path.is_file() and not path.name.endswith(".log"):
+            body = path.read_text(errors="replace")
+            assert absolute not in body and "provider exploded" not in body, path
+    reason = gr._findings_from_panel(pi.PanelResult(legs=(leg,)))[0].reason
+    assert "provider exploded" not in reason and absolute not in reason
+
+
+def test_the_board_summary_carries_only_the_run_relative_name(monkeypatch, tmp_path):
+    from phase_loop_runtime.advisor_board import composition as comp_mod
+    from phase_loop_runtime.cli import main as cli_main
+
+    leg = _unknown_failure_panel(monkeypatch, tmp_path)
+    real_compose = comp_mod.compose_review_board
+    result = pi.PanelResult(legs=(
+        pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:a"),
+        pi.PanelLegResult(leg="gemini", status="OK", text="AGREE", seat_key="gemini:a"),
+        pi.PanelLegResult(leg="claude", status="OK", text="AGREE", seat_key="claude:a"),
+        pi.PanelLegResult(leg="codex", status="ERROR", text="", detail=leg.detail, seat_key="codex:a"),
+    ))
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("review me\n")
+    for extra in ([], ["--json"]):
+        with (
+            unittest.mock.patch.object(comp_mod, "compose_review_board", side_effect=lambda *a, **k: real_compose(
+                is_available=lambda v: v in {"codex", "gemini", "claude", "grok"})),
+            unittest.mock.patch.object(pi, "invoke_board", return_value=result),
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                cli_main(["advisor-board", str(artifact), *extra])
+        both = out.getvalue() + err.getvalue()
+        assert "provider exploded" not in both and str(tmp_path / "leg-logs") not in both
+
+
+def test_without_a_run_dir_the_raw_output_is_not_retained(monkeypatch):
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, "", _SECRET_RAW))
+    leg = pi.invoke_panel("ARTIFACT", ["codex"]).legs[0]
+    assert leg.detail == "unknown failure (exit 1); CLI output not retained"
+
+
+def test_a_planted_log_dir_is_never_followed_or_reused(monkeypatch, tmp_path):
+    import os
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    os.symlink(target, tmp_path / "leg-logs")
+    leg = _unknown_failure_panel(monkeypatch, tmp_path)
+    assert leg.detail == "unknown failure (exit 1); CLI output not retained"
+    assert not any(target.iterdir())
+
+
+def test_a_group_readable_log_dir_is_refused(monkeypatch, tmp_path):
+    import os
+    (tmp_path / "leg-logs").mkdir()
+    os.chmod(tmp_path / "leg-logs", 0o750)
+    leg = _unknown_failure_panel(monkeypatch, tmp_path)
+    assert leg.detail == "unknown failure (exit 1); CLI output not retained"
+
+
+# Negative: no sourced failure line (and no CLI prompt/flag line) parses as a verdict.
+
+@pytest.mark.parametrize("line", [
+    "Agree and continue", "--agree", "--agree --yes", "Agreed.", CODEX_USAGE_BANNER,
+    CODEX_BWRAP_FAILURE, CLAUDE_TMPDIR_REFUSAL, "Usage limit reached", "You hit your weekly limit.",
+    "Quota exhausted", "Out of credits", "401 Unauthorized: please log in again.",
+])
+def test_no_sourced_failure_line_parses_as_a_verdict(line):
+    assert pi.terminal_verdict("some output\n" + line) is None
+    assert pi._classify_leg(0, "some output\n" + line, "", mode="review") != "OK"
+
+
+# Property: random CLI text containing secrets always yields a template detail.
 _PROPERTY_SEED = 1102
 _PROPERTY_CASES = 3000
 _SEPARATORS = (" ", "  ", "\t", "\n", "\r\n", "\x1b[1C", "\x1b[0m ", "\x07", " \x00 ", "\x0b")
 _FILLER = (
     "fatal:", "error", "request", "rejected", "while", "calling", "the", "API", "(", ")",
     "status=401", "retrying", "->", "[x]", "see", "log", "done.", "path", "at", ":", ",",
+    "You've hit your usage limit.", "Try again at 3:05 PM.", "error building bubblewrap command:",
+    "Temp directory /tmp/claude-0 is owned by uid 65534, expected 0. Refusing to use it",
 )
 
 
-def _random_secret(rng):
+def _random_cli_text(rng):
     body = "".join(rng.choice("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789")
                    for _ in range(rng.randint(20, 40)))
     sep = rng.choice(_SEPARATORS)
-    kinds = [
-        (f"{rng.choice(['Bearer', 'bearer', 'BEARER', 'Basic', 'token'])}{sep}{body}", body),
-        (f"Authorization:{rng.choice(['', ' '])}Bearer{sep}{body}", body),
-        (f"{rng.choice(['token', 'password', 'api_key', 'secret'])}{rng.choice(['=', ': ', ' = '])}{body}", body),
-        (f'"access_token":{rng.choice(["", " "])}"{body}"', body),
-        (f"{rng.choice(['sk-ant-api03-', 'xai-', 'ghp_', 'github_pat_', 'glpat-', 'hf_', 'sess-', 'AKIA'])}{body}", body),
-        (f"eyJ{body[:12]}.{body[12:]}.sig", body),
-        (f"{body[:10].lower()}.{body[10:18].lower()}@example-corp.com", body[:10].lower()),
-        ("/home/pl-tester/" + body[:8], "pl-tester"),
-        ("pl-tester", "pl-tester"),
-    ]
-    return rng.choice(kinds)
+    secret = rng.choice([
+        f"{rng.choice(['Bearer', 'bearer', 'Basic', 'token'])}{sep}{body}",
+        f"Authorization:{rng.choice(['', ' '])}Bearer{sep}{body}",
+        f"{rng.choice(['token', 'password', 'api_key', 'ANTHROPIC_AUTH_TOKEN', 'db_password'])}"
+        f"{rng.choice(['=', ': ', ' = '])}{body}",
+        f'"access_token":{rng.choice(["", " "])}"{body}"',
+        f"{rng.choice(['sk-ant-api03-', 'xai-', 'ghp_', 'sess-'])}{body}",
+        f"eyJ{body[:12]}.{body[12:]}.sig",
+        f"{body[:10].lower()}.{body[10:18].lower()}@example-corp.com",
+        f"/home/{body[:8].lower()}/x",
+        body,  # a bare token: no scheme, key or prefix at all
+    ])
+    words = [rng.choice(_FILLER) for _ in range(rng.randint(0, 30))]
+    words.insert(rng.randint(0, len(words)), secret)
+    return "".join(w + rng.choice(_SEPARATORS) for w in words), body
 
 
-def test_property_no_secret_survives_and_finalize_is_a_fixed_point():
+def test_property_every_detail_is_a_template_and_carries_no_input_text():
     import random
 
     rng = random.Random(_PROPERTY_SEED)
     for case in range(_PROPERTY_CASES):
-        secret, distinctive = _random_secret(rng)
-        words = [rng.choice(_FILLER) for _ in range(rng.randint(0, 30))]
-        words.insert(rng.randint(0, len(words)), secret)
-        text = "".join(w + rng.choice(_SEPARATORS) for w in words)
-        once = pi._finalize_leg_detail(text)
-        assert once is None or distinctive not in once, (case, repr(text), once)
-        assert pi._finalize_leg_detail(once) == once, (case, repr(text), once)
+        text, body = _random_cli_text(rng)
+        rc = rng.choice([1, 2, 0, -9, 124, None])
+        failure = pi._leg_failure_detail("ERROR", rc, "", text)
+        detail = pi._finalize_leg_detail(pi._resolve_leg_detail(failure, None, "codex"))
+        if detail is None:
+            continue
+        assert pi._detail_is_valid(detail), (case, detail)
+        assert body[:8] not in detail and body[-8:] not in detail, (case, repr(text), detail)
+        assert _longest_shared(detail, text) < 12, (case, repr(text), detail)
+        assert pi._finalize_leg_detail(detail) == detail

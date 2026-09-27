@@ -66,7 +66,10 @@ def test_denial_reason_goes_to_detail_never_to_text(monkeypatch):
         "diagnostic leaked into TEXT — this converts an operational failure into a "
         "governed promotion BLOCK (panel_invoker.py:2296-2301)"
     )
-    assert "TOOL-DENIAL" in str(detail), "operator cannot see WHY the leg failed"
+    # agent-harness#1102 r7: the reason is a typed template from our own vocabulary.
+    assert pi._finalize_leg_detail(detail) == "tool_denied: headless tool permission auto-denied", (
+        "operator cannot see WHY the leg failed"
+    )
 
 
 
@@ -161,7 +164,9 @@ def test_board_seat_path_carries_the_diagnostic_to_detail(monkeypatch):
     src = inspect.getsource(pi._run_seat) if hasattr(pi, "_run_seat") else inspect.getsource(pi.invoke_board)
     # The seat path must normalize a 2-or-3 tuple and route the third element to detail.
     assert "seat_detail" in src, "board seat path no longer captures a spawn diagnostic"
-    assert "detail = seat_detail" in src, (
+    # agent-harness#1102 r7: the diagnostic is routed through `_resolve_leg_detail` (which
+    # writes an unknown failure's raw text to the private per-leg log).
+    assert "detail = _resolve_leg_detail(seat_detail" in src, (
         "board seat path captures seat_detail but never routes it to PanelLegResult.detail"
     )
 

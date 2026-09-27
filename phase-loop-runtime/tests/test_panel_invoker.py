@@ -58,7 +58,9 @@ class PanelInvokerTest(unittest.TestCase):
         self.assertFalse(by_leg["gemini"].usable)
         # a crashing leg is fail-closed to degraded, never raised
         self.assertEqual(by_leg["claude"].status, "DEGRADED")
-        self.assertIn("crashed", by_leg["claude"].detail or "")
+        # agent-harness#1102 r7: an exception's own text is not our vocabulary; the leg's
+        # detail names an unknown failure (its message goes only to the private log).
+        self.assertTrue((by_leg["claude"].detail or "").startswith("unknown failure"))
         self.assertEqual(result.usable_legs, (by_leg["codex"],))
 
     def test_ok_with_empty_text_becomes_empty(self):

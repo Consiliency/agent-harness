@@ -1778,7 +1778,10 @@ def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_pat
     status, text, detail = pi._default_spawn("codex", "review", repo_dir=tmp_path)
     assert status == "DEGRADED"
     assert text == "", "a diagnostic in `text` misclassifies the leg as nonconforming"
-    assert detail == "ordinary provider failure"
+    # agent-harness#1102 r7: `detail` is our closed vocabulary. A provider's exception text
+    # is an unknown failure whose message travels only to the private per-leg log.
+    assert pi._finalize_leg_detail(detail) == "unknown failure; CLI output not retained"
+    assert "ordinary provider failure" in detail.raw
 
 
 @pytest.mark.parametrize("mutation_kind", ["ledger", "output"])
