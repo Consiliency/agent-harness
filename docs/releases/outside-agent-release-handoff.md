@@ -48,7 +48,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - `0.7.20` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
@@ -80,8 +80,33 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     planning only);
   - the 0.7.19 published record (agent-harness#1095).
 - Release tracking: agent-harness#1122; the appended plan-authority rows cite it.
-- Tag: not yet created. The signed `v0.7.20` tag push, which publishes to PyPI, is
-  maintainer-gated.
+- Tag: signed `v0.7.20` (tag object `e57dc8bf514ce3e38ed4a22b8e9479bf51f95925`, tagger date
+  2026-09-27T18:33:57Z; verified: good ED25519 signature for the maintainer's key; GitHub
+  verification `valid`) → `7866b6e29fe6e819a8fcfd6f34541d755a688796` (agent-harness#1125's
+  landing on `main`, whose tree is identical to the reviewed head `4f73aa81`).
+- Publication: trusted-publish workflow run `36341122951` (workflow `publish-pypi`, event
+  `push`, head branch `v0.7.20`, head SHA `7866b6e29fe6e819a8fcfd6f34541d755a688796`; job
+  `108681285179` build + verify wheel + sdist; job `108691814711` publish to PyPI, trusted
+  publishing); both succeeded. PyPI reports exactly the `SHA256SUMS` digests recorded under
+  Sealed Implementation Evidence below (the run's `SHA256SUMS` artifact was downloaded and
+  compared).
+- Fresh installs, each into a new Python 3.10 venv:
+  - The published wheel, fetched from its PyPI file URL and sha256-checked, imports `0.7.20`.
+    Its `gemini_heartbeat.QUALIFIED_IMAGES` holds exactly the agy 1.2.11
+    (`ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`) and 1.2.12
+    (`ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`) images, each with help
+    digest `83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755`
+    (agent-harness#1119). `phase-loop --help` loads.
+  - `uv pip install --no-cache --refresh --index-url https://pypi.org/simple
+    phase-loop-runtime==0.7.20` resolves `0.7.20` and imports it. Its distribution metadata
+    lists the same entry points as the sha256-checked published wheel's install; they are
+    recorded under Package Surface Inventory below.
+- GitHub release: `v0.7.20`, published 2026-09-27T19:35:22Z, not a draft and not a
+  prerelease (`gh release view`): https://github.com/Consiliency/agent-harness/releases/tag/v0.7.20.
+- Consumer confirmation: dev0's use of `fabpub-bootstrap` for Consiliency/treesitter-chunker#97
+  is not claimed here; it had not been reported when this record was written.
+- Fleet adoption: the dotfiles pin bump to `v0.7.20` is a separate client-repo change and is
+  not claimed here.
 
 ### Previous release: 0.7.19 (published)
 
@@ -294,18 +319,32 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.20 (prepared)
+### This release: 0.7.20 (published)
 
-The digests below are from the pre-tag local build of the release candidate, produced by
-`uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`) from an export of the release commit's tree. They are a
-preparation measurement, not a publication record: the publishing workflow rebuilds from the
-tagged commit and verifies `SHA256SUMS`, and the published digests are recorded here after the
-tag push. As for `0.7.15`–`0.7.19`, the published digests are expected to differ, because
-archive bytes are timestamp/toolchain-dependent.
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`36341122951` from its build of the tagged commit `7866b6e2`, verified by the publish job
+without rebuilding, and equal to the digests PyPI reports.
+
+The pre-tag local build of the candidate (`uv build` under `umask 022`,
+`Consiliency/agent-harness#519`, from an export of the reviewed head `4f73aa81`, whose tree is
+the tagged commit's) remains a preparation measurement:
 
 - prepared direct-wheel sha256: `a66cb501c7f4f9a4eae3537dde0930eeef15baba6ef650d4727c51e8bb919f1d`
 - prepared direct-sdist sha256: `e2964bfe3c8d1a4d15879c57751433e2fc92b6ffbe1a9a3af4e1711c16aebf56`
+
+The published tuples differ from the prepared ones. Content equivalence was MEASURED, not
+inferred from counts. The prepared archives were retained, and the tagged commit `7866b6e2` was
+also rebuilt locally the same way (wheel
+`b2237216b5110a9798d80047c90d0dbda2ce62b8d1370305a38a7d94ba8d8e97`, sdist
+`a2a7192dc807ab7a0353a42239b11dac9c6eec4d7a55f242826b0e7ddb2ff1c7`; also different from the
+published digests). Both the prepared and the rebuilt archives were compared with the
+published archives by per-member sha256 over the union of member paths. In each comparison
+all 472 wheel files and all 975 sdist regular files match, with none added or missing. The
+digest differences are therefore not in file contents; which archive-level bytes differ
+(timestamps, ordering or compression) was not measured.
+
+- direct-wheel sha256: `b547ae2a60133c928a1089e1d0935c547b8c04f1f6c0e76cffce888e88fa0bee`
+- direct-sdist sha256: `e1848e6c055190cf3858f175a640cc43b082efad46d0db817d4fd399d9b1545b`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.19 (published)
@@ -418,7 +457,11 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.20` build described above.
+File counts and top-level entries were measured on the published `0.7.20` artifacts (workflow
+`36341122951`) and are identical to the prepared measurement. The console and plugin entry
+points were read from the distribution metadata of the published wheel's install (checked
+against the direct-wheel sha256 under Sealed Implementation Evidence), and match the index
+install's (see the fresh-install bullets under Release-Check Evidence).
 
 - Wheel artifact: `phase_loop_runtime-0.7.20-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.20.tar.gz`
@@ -431,10 +474,9 @@ Measured on the prepared `0.7.20` build described above.
 
 ## Governed-Pipeline Pinning
 
-`0.7.19` is published (PyPI, trusted-publish workflow `36219660271`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.19`. Once
-`0.7.20` is published (tag push → PyPI; this document records it as `prepared` until then),
-the pin may move to `phase-loop-runtime==0.7.20`. In either case, call:
+`0.7.20` is published (PyPI, trusted-publish workflow `36341122951`), so governed-pipeline
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.20`, then
+calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
