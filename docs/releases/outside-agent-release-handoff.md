@@ -69,6 +69,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     (agent-harness#1103, agent-harness#802);
   - several accounts on one host can run advisor boards at the same time: every seat runs
     as the operator's real uid and gid (agent-harness#1109, agent-harness#1098 item 2);
+  - board legs take their outcome only from a success artifact, and `detail` only from the
+    runtime's own vocabulary (agent-harness#1102, agent-harness#1096);
   - Claude answers continued past the output cap are extracted whole (agent-harness#1088,
     agent-harness#1077);
   - the v10 PANEL phase plan and its amendments, and the SL-0 tests-first corpus
@@ -302,8 +304,8 @@ tagged commit and verifies `SHA256SUMS`, and the published digests are recorded 
 tag push. As for `0.7.15`–`0.7.19`, the published digests are expected to differ, because
 archive bytes are timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `abdf76cae29d85624c53c043cdd8a2c311f79ac3f69be6195a50c7eda57f190b`
-- prepared direct-sdist sha256: `4e6af82fb9beb9bbca862df480401042ff364100f9992ecc9bff7600c3e3d3c6`
+- prepared direct-wheel sha256: `a66cb501c7f4f9a4eae3537dde0930eeef15baba6ef650d4727c51e8bb919f1d`
+- prepared direct-sdist sha256: `e2964bfe3c8d1a4d15879c57751433e2fc92b6ffbe1a9a3af4e1711c16aebf56`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.19 (published)
@@ -423,7 +425,7 @@ Measured on the prepared `0.7.20` build described above.
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.20.data`, `phase_loop_runtime-0.7.20.dist-info`
 - Wheel file count: `472`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `974` regular files (`1109` archive members including directories)
+- Sdist file count: `975` regular files (`1110` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
