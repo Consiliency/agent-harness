@@ -12,15 +12,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `run-train-writer.lock` in the repository namespace before it refuses. `fabpub-bootstrap --probe`
   then reported that file as `unattested canonical state`, so the first failed train blocked the
   repository's own bootstrap (Consiliency/treesitter-chunker#97).
-- **Probe.** The classifier now accepts `run-train-writer.lock` only when an `lstat` shows a
-  regular, non-symlink, 0-byte file owned by the current uid. Any content, a symlink, another
-  file type, or a foreign owner still refuses. The file stays in the sealed inventory, so digest
-  semantics are unchanged.
-- **Apply.** `bootstrap_zero_history_authority` takes every sealed repository's writer lock with
-  a non-blocking exclusive `flock`, outermost and in sorted namespace order, and holds it until
-  apply returns. A lock held by a live `run-train` refuses with `LegacyCutoverConflict` ("a
-  run-train holds the writer lock"). An absent lock is not created, because that would drift
-  the sealed inventory.
+- **Probe.** `run-train-writer.lock` is runtime lock residue, not inventory state, when its
+  captured row is 0 bytes with the empty digest and an `lstat` shows a regular, singly linked
+  file owned by the current uid. The row is dropped, and a namespace holding nothing else
+  classifies as `absent`, so the sealed inventory and its digest are identical with or without
+  the residue. Content, a symlink, a hardlink, another file type, or a foreign owner keeps the
+  row and refuses as unattested. No earlier sealed inventory can hold the dropped row, because
+  every earlier probe refused it. An existing but empty namespace directory now also classifies
+  as `absent` rather than `empty`; a probe inventory sealed by an earlier release over such a
+  directory must be re-probed.
+- **Apply.** `bootstrap_zero_history_authority` always holds every sealed repository's writer
+  lock for the whole apply. It opens the lock the way fencing does (created if absent, `O_RDWR`,
+  `O_NOFOLLOW`, never truncated), requires a singly linked regular file owned by the operator,
+  and takes a non-blocking exclusive `flock` in fencing's sorted namespace-root order, before the
+  first-apply re-probe. A held lock refuses with `LegacyCutoverConflict` ("a run-train or another
+  bootstrap apply holds the writer lock"); every other open, stat, or lock error is a typed
+  `LegacyCutoverConflict`. A train that starts during apply blocks in fencing until apply
+  returns.
 - **Recovery on 0.7.19.** Upgrade, then rerun `phase-loop fabpub-bootstrap --probe` and
   `--apply --confirm-zero-history`. Do not delete the lock file.
 ### Qualified agy 1.2.12 entry image; 1.2.11 stays admitted (agent-harness#1008)

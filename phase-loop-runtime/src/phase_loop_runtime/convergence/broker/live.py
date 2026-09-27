@@ -2800,14 +2800,15 @@ def _receipt_bootstrap_claim(
 #: The run-train writer lock ``run_train_generation_leases`` creates and flocks
 #: in every repository namespace it fences, before any receipt exists.
 RUN_TRAIN_WRITER_LOCK = "run-train-writer.lock"
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 def _is_run_train_lock_residue(path: Path) -> bool:
     """True only for the runtime's own writer-lock residue (agent-harness#1115).
 
-    An empty regular file owned by the operator is the byte-exact residue of a
-    run-train attempt; anything else under that name (content, a symlink, a
-    foreign owner) could be canonical state and stays unattested.
+    An empty, singly linked regular file owned by the operator is the byte-exact
+    residue of a run-train attempt; anything else under that name (content, a
+    symlink, a hardlink, a foreign owner) could be canonical state.
     """
     try:
         status = os.lstat(path)
@@ -2815,60 +2816,118 @@ def _is_run_train_lock_residue(path: Path) -> bool:
         return False
     return (
         stat.S_ISREG(status.st_mode)
-        and not stat.S_ISLNK(status.st_mode)
         and status.st_size == 0
+        and status.st_nlink == 1
         and status.st_uid == os.getuid()
     )
 
 
+def _drop_run_train_lock_residue(root: Path, files: list[dict]) -> list[dict]:
+    """Drop the benign writer-lock row so it is not state in the sealed inventory.
+
+    The row's own captured size and digest must already say "empty", so the
+    attestation and the acceptance come from one observation.  A non-benign file
+    under that name keeps its row and is refused as unattested.  No sealed
+    inventory can hold the dropped row: every earlier probe refused it.
+    """
+    return [
+        item
+        for item in files
+        if not (
+            item["path"] == RUN_TRAIN_WRITER_LOCK
+            and item["size"] == 0
+            and item["sha256"] == _EMPTY_SHA256
+            and _is_run_train_lock_residue(root / RUN_TRAIN_WRITER_LOCK)
+        )
+    ]
+
+
+def _namespace_holds_nothing(root: Path, files: list[dict]) -> bool:
+    """True when ``root`` is missing or holds at most the benign writer lock.
+
+    Apply creates the namespace root and its writer lock before the first-apply
+    re-probe, so a missing root and a root holding only that residue must
+    classify, and digest, identically.
+    """
+    if not root.exists():
+        return True
+    if files:
+        return False
+    return all(entry.name == RUN_TRAIN_WRITER_LOCK for entry in root.iterdir())
+
+
 @contextlib.contextmanager
 def _exclude_live_run_trains(inventory: dict):
-    """Hold every sealed repository's run-train writer lock, non-blocking.
+    """Hold every sealed repository's run-train writer lock for the whole apply.
 
-    Taken outermost, in the same sorted namespace order ``run_train_generation_leases``
-    uses, so a train blocks behind the apply and the apply refuses a live train
-    instead of racing it; it never waits, so it cannot deadlock.  An absent lock
-    is neither created nor locked: creating it would drift the sealed inventory,
-    and a train that creates it later is refused by the re-probe or fenced by the
-    writer-generation drain.  Each lock is a distinct open file description, so
-    nothing inside the apply may enter ``run_train_generation_leases``.
+    The lock is opened exactly as ``run_train_generation_leases`` opens it
+    (created if absent, never truncated), in the same sorted namespace-root
+    order, and taken with a non-blocking exclusive ``flock``: a run-train or a
+    second apply that already holds it refuses this apply, and a train that
+    starts later blocks in fencing until this apply returns.  Apply never waits
+    on a writer lock, so it cannot deadlock.  Creating the lock does not perturb
+    the sealed inventory because the residue is not inventory state.  Each lock
+    is a distinct open file description, so nothing inside the apply may enter
+    ``run_train_generation_leases``.
     """
     import errno
     import fcntl
 
-    paths = sorted(
-        {
-            _inventory_row_namespace_root(row).resolve() / RUN_TRAIN_WRITER_LOCK
-            for row in inventory["worktrees"]
-        },
-        key=str,
-    )
+    rows = {
+        _inventory_row_namespace_root(row).resolve(): row for row in inventory["worktrees"]
+    }
     with contextlib.ExitStack() as stack:
-        for path in paths:
-            try:
-                descriptor = os.open(
-                    path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        for root in sorted(rows, key=str):
+            path = root / RUN_TRAIN_WRITER_LOCK
+            if not root.parent.is_dir():
+                # The repository itself is gone, so no train can run in it and
+                # there is nothing to lock.  Refuse now, with the same typed
+                # remedy the row resolution gives, rather than proceed unlocked.
+                _inventory_row_repository(rows[root])
+                raise LegacyCutoverConflict(
+                    f"the repository common dir for {path} is gone; re-run the "
+                    "zero-history probe"
                 )
-            except FileNotFoundError:
-                continue
+            try:
+                _require_no_ancestor_symlink(root)
+                root.mkdir(exist_ok=True)
+                descriptor = os.open(
+                    path,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                    0o666,
+                )
             except OSError as error:
                 raise LegacyCutoverConflict(
-                    f"run-train writer lock {path} is not a lockable regular file: {error}"
+                    f"cannot open the run-train writer lock {path}: {error}; re-run the "
+                    "zero-history probe if the repository moved"
                 ) from error
             stack.callback(os.close, descriptor)
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            try:
+                status = os.fstat(descriptor)
+            except OSError as error:
                 raise LegacyCutoverConflict(
-                    f"run-train writer lock {path} is not a regular file"
+                    f"cannot stat the run-train writer lock {path}: {error}"
+                ) from error
+            if not (
+                stat.S_ISREG(status.st_mode)
+                and status.st_nlink == 1
+                and status.st_uid == os.getuid()
+            ):
+                raise LegacyCutoverConflict(
+                    f"run-train writer lock {path} is not a singly linked regular file "
+                    "owned by the operator"
                 )
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
                 if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
                     raise LegacyCutoverConflict(
-                        f"a run-train holds the writer lock {path}; wait for it to "
-                        "finish before applying the zero-history bootstrap"
+                        f"a run-train or another bootstrap apply holds the writer lock "
+                        f"{path}; wait for it to finish, then re-run apply"
                     ) from error
-                raise
+                raise LegacyCutoverConflict(
+                    f"cannot lock the run-train writer lock {path}: {error}"
+                ) from error
         yield
 
 
@@ -2879,12 +2938,12 @@ def _classify_repository_namespace(
     bootstrap_inventory_sha256: str | None = None,
 ) -> dict:
     root = snapshot.namespace_root
-    files = _tree_file_inventory(root)
+    files = _drop_run_train_lock_residue(root, _tree_file_inventory(root))
     # Bootstrap ownership is a property of the CONTAINER receipt; the generation
     # pointer is deliberately not resolved here so one repository's unroutable
     # pointer never turns its siblings' re-validation into a host-wide refusal.
     container = snapshot.container
-    if not root.exists():
+    if _namespace_holds_nothing(root, files):
         state = "absent"
     elif (container / RECEIPT_FILENAME).exists():
         receipt = load_partition_receipt(container)
@@ -2920,10 +2979,6 @@ def _classify_repository_namespace(
             for item in files
             if item["path"] not in allowed
             and not _is_onboarding_atomic_temp(item["path"], snapshot, cutover_id)
-            and not (
-                item["path"] == RUN_TRAIN_WRITER_LOCK
-                and _is_run_train_lock_residue(root / RUN_TRAIN_WRITER_LOCK)
-            )
         ]
         if unexpected:
             raise LegacyCutoverConflict(

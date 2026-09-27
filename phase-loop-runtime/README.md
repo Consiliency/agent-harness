@@ -201,11 +201,13 @@ state, held generation leases, or an authority owned by another bootstrap.
 
 A failed `run-train` on a repository with no partition receipt leaves an empty
 `<git-common-dir>/phase-loop-fabpub-broker-v1/run-train-writer.lock` behind.
-The probe accepts that file only as runtime lock residue: a regular, 0-byte,
-non-symlink file owned by the operator. Any other file under that name is
-reported as unattested canonical state. Apply holds each repository's writer
-lock for its whole duration and refuses while a `run-train` holds it; rerun
-apply after the train exits. Never delete broker files to clear a refusal.
+The probe treats that file as runtime lock residue, not inventory state, only
+when it is a regular, 0-byte, singly linked file owned by the operator; the
+sealed inventory is identical with or without it. Any other file under that name
+is reported as unattested canonical state. Apply always holds every repository's
+writer lock, creating it if absent, from before its re-probe until it returns,
+and refuses while a `run-train` or another apply holds it; rerun apply after the
+holder exits. Never delete broker files to clear a refusal.
 
 Inventory completeness is bounded to the named worktrees, explicit and
 environment-declared legacy roots, historical-evidence roots, and hashed broker
