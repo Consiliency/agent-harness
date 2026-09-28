@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "9ae9a4482e2e87f05047ea82d5e9b3aaf17b0449332c1f1e152cb2da500df8e9",
+      "raw_receipt_sha256": "74a1ed8ac39580dbe494f50ba23d8103cfcd890ff592a21c6033a86f30a4294e",
       "record_sha256": {
-        "broker": "5dee95bcc28dd36945e71d63d90741ad261cc0e92031356e12df176b181ff464",
-        "monitoring": "ae77d29f4d5c98e70e51983a4504eb3b1186e730cf69914a1c94ab13d705c77c",
-        "observer": "3e7bb507f824785e21aa06bb99b7a89992590112c01e20a355827dfe639ae84f",
-        "result": "99471ff789d01c6d93afd99d506a0897ae8a1478a4c7a19edf3d17297cb9482b"
+        "broker": "9dff93227ff2b5137f9a9c0f8247ffab01a353c6842e114d5effb54fd8160a88",
+        "monitoring": "7b70234599ce9a6224f145a9db9549b6d4d471aa4753b8e369286129dae1226c",
+        "observer": "10dca88fc450574c125f5d41727dd5389f147d7c93248c70a0d5b2f1a345abd6",
+        "result": "618145a90b6410455479d6251c077fbebef81ba84ea53967288bed435e8a69b7"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "2411e6664df0c63fee7da3536f04c1fcf05256b64dda05740b9dc600720ddef1",
+      "raw_receipt_sha256": "9e42deabe32e14f2ddbee0c239f1e55d6e4af02e126db93878ed62ea94d5c09b",
       "record_sha256": {
-        "broker": "1cebfa8adaccd29556aaf987efd94cca57c2c78f0a0939fb25e7cf120dee8fee",
-        "monitoring": "c6a36dc87092fe6815d010f455ca1fedfa84ed19414ed1cd28e5566afdda630f",
-        "observer": "0fd0ec4a4ac08f6a6912614a59e4ef1a14f1c82261ca1b0caf4b0290b2862460",
+        "broker": "20e670a617a7c94bbe0f558dda7f8951d3be79d64e857511388bcd7380ec0c14",
+        "monitoring": "9bdfb7ef362207645bd0bd0b460522132b3af589c22bd38d7c7296922dbc0116",
+        "observer": "12005ed7ad38d37fe069bcbe99ea260eeb32dbe18c3cc1bd5eb43fa20c38f368",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "2cbfedbbc7ebb2db932cefbd04d5b5948fe56d9c4a60aa7d3fe1d4746ef2fce4",
+      "raw_receipt_sha256": "6573f1c8b80f045b856cdc1c442495bd6b248effd175b467469c4c242d4d107e",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "b48ddd24f9fbbf8141a8da87bb34369fbeffa8c8596d3539fbe121a9c49a05bc",
-        "observer": "6989f108c9c2e4783fa92a77fbc86f39d9bfb3547a320f5adec15684d90337d5",
+        "monitoring": "09da74d20dfb4d4fd572a9f883bfab3c64f0a301ac8da1a6078c6f7e835084d5",
+        "observer": "92a09a137a5ea0bd203a8d9f4eafa24241332ad738eb455d494726a51ff2c83e",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -221,7 +221,7 @@
     "agy_canary_evidence.py": "7a679349765acb7f5791fe50f2b99056e8df2087b662f7b2da3c7a852caebc7e",
     "agy_provenance.py": "82aa037260125327de4b5fde80e6121484fbc11abf17482973f9a91a86cc2c6e",
     "agy_qualification.py": "8713cecd42dbb29f51ddad8afdc02902dfdedebfe3a3c90bc40bebf9bec3e4a5",
-    "agy_watch.py": "4203995c5451422a75dc848cd60f39e6275a760749b3699949897eea4ee37062",
+    "agy_watch.py": "ad8282028bd66c1623a45ea907b7801a539050a6e40208cf796edce410daa3df",
     "baml_modular.py": "3e9275e21d90db3bdd522be9d01e72254b47bbde67b898101f6d5890cd883485",
     "broker.py": "f91cc789383c0d29caa5c52b841873c21fa871fadc277cfa26416ceaf8d3e2df",
     "build_bundle.py": "4432918670c8a650fd591afa560efbc3c7c7df9acd594640bc258bd4dd4a4b75",
