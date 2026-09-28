@@ -247,11 +247,13 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     authority, and Git objects. Preserve exact blob invariance and tests-before-production
     checks; do not compare real evidence to synthesized fixture constants.
     The derived frozen-inventory check accepts a changed frozen blob only through an
-    `sl0_repairs` chain on this plan's manifest row. An authorization entry and its landed
-    entry pair by issue and path. The landed entry's old blob must equal the blob the check
-    already accepts for that path (the frozen blob, or the previous accepted repair's new
-    blob). Its new blob must equal the path's blob at the recorded merge, and that merge
-    must be an ancestor of the verified commit. PANEL SL-1 is the first such repair
+    `sl0_repairs` chain on this plan's manifest row. Each authorization entry pairs, by
+    issue and path, with exactly one landed entry. The landed entry's old blob must equal
+    the blob the check already accepts for that path (the frozen blob, or the previous
+    accepted repair's new blob) and also the path's blob at the recorded merge's first
+    parent. Its new blob must equal the path's blob at that merge, and the merge must be an
+    ancestor of the verified commit. Links are followed by old-to-new blob and by merge
+    ancestry, never by manifest order. PANEL SL-1 is the first such repair
     (agent-harness#1078).
     Any other drift in a frozen path is refused. Five earlier edits have no record, and
     SL-5 disposes of them under agent-harness#742: agent-harness#1102 r7 and r8,
