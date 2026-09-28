@@ -1346,8 +1346,9 @@ outside this repo; `redaction_posture: metadata_only`; malformed evidence routes
 **Objective**
 Make a blocking review finding a failing test the harness runs, not a paragraph: a seat emits a
 falsifier as text, the harness applies and runs it in the staged tree, and only a finding that is
-red on the reviewed head binds. Seats never execute; the isolation contract is unchanged.
-Source: agent-harness#935.
+red on the reviewed head binds. Seats on the sealed inline route never execute; the isolation
+contract is unchanged. A seat's own execution inside its agent-harness#1132 jail is never a
+falsifier run. Source: agent-harness#935.
 
 **Exit criteria**
 - [ ] EC-EXECFIND-0 — **TEST LANE LANDED FIRST (content-bound form).** As EC-PRESROUTE-0, for
@@ -1362,8 +1363,9 @@ Source: agent-harness#935.
   a diff touching a path outside `phase-loop-runtime/tests/` or modifying an existing file
   reaching the runner; by one block claimed by two findings being accepted; by a block without a
   node id being accepted.
-- [ ] EC-EXECFIND-2 — **The harness runs the falsifier inside its own sandbox; a seat never
-  executes, and a falsifier can only ADD one new test file.** A falsifier diff must create exactly
+- [ ] EC-EXECFIND-2 — **The harness runs the falsifier inside its own sandbox; a sealed-route seat
+  never executes, no seat's own execution is a falsifier run or can reach one, and a falsifier can
+  only ADD one new test file.** A falsifier diff must create exactly
   one NEW file matching `phase-loop-runtime/tests/test_finding_<finding-id>.py` and touch nothing
   else — no modification of any existing file, so `conftest.py`, shared fixture modules and every
   file another test imports are unreachable by construction; the harness refuses any other diff
@@ -1374,12 +1376,47 @@ Source: agent-harness#935.
   wall-clock bound and output cap; `collect_test_execution_evidence` semantics bind the outcome to
   one of `red_on_head | green_on_head | apply_failed | node_missing | error`, where `red_on_head`
   requires the node to have run and failed and a bound or cap expiry is `error`. Seat-authored
-  test code is untrusted and executes only inside that sandbox; the seat process itself still has
-  no tools and its own execution attempt stays a refusal. Falsified by a diff that modifies an
-  existing file (including `conftest.py`) being applied; by a falsifier run with network or
-  credentials; by a run outside the staged tree; by a non-terminating falsifier not recorded as
-  `error` within the bound; by a passing node recorded as `red_on_head`; by a run executing any
-  node other than the named one; by a seat's tool attempt being honoured.
+  test code is untrusted; outside a jailed seat's own jail it executes only inside that sandbox.
+  On the sealed inline route the seat process itself still has no tools, and its own execution
+  attempt stays a refusal. A seat is on the jailed route of agent-harness#1132 only when its
+  dispatch record carries that route's jail identity, and no dispatch record carries it until
+  this criterion's jail falsifiers pass against that jail (exercised by the agent-harness#1133
+  landing); every other seat is on the sealed route. A jailed seat may execute inside its own
+  jail. That execution is never a falsifier run, never produces an outcome here, and cannot reach
+  one. Each falsifier run applies its diff to a tree staged for that run alone from the head under
+  test, never from a seat's tree. A falsifier run's protected objects are its staged tree; its
+  interpreter environment, meaning every `sys.path` entry and site directory the run uses,
+  including the user site directory if enabled; its cache and temporary paths; its stdout, stderr
+  and result pipes; its processes; its sockets; and that run's outcome and receipt records. The
+  run's interpreter environment is installed with no links into shared state (for uv,
+  `--link-mode=copy`), so every protected regular file has exactly one hard link, and the harness
+  checks that before and after the run. An unchanging shared system interpreter that the jail can
+  only read is not a protected object; the harness records a digest of it before and after the
+  run, and a changed digest makes the run `error`. No seat jail can create an entry in, write,
+  replace or delete any protected object, signal any of the run's processes, connect to any of its
+  sockets, mount any protected object or an ancestor of one, or hold a write-capable, directory or
+  `O_PATH` descriptor that resolves to a protected object. The jail identity carried by a dispatch
+  record is bound to a digest of the jail policy, and this criterion's jail falsifiers are re-run
+  against the actual falsifier-run layout whenever that policy or EXECFIND's staging changes.
+  Falsified by a diff that modifies an existing file (including `conftest.py`) being applied; by a
+  falsifier run with network or credentials; by a falsifier run outside its staged tree; by a
+  non-terminating falsifier not recorded as `error` within the bound; by a passing node recorded as
+  `red_on_head`; by a run executing any node other than the named one; by a sealed-route seat's
+  tool attempt being honoured. It is also falsified by a deterministic probe program, running
+  under a live seat jail's identity concurrently with a falsifier run, succeeding through any path
+  it can resolve or any descriptor it holds (not only the literal host paths the parent also passes
+  it) at: creating any entry in a protected directory; changing, replacing or removing a sentinel;
+  delivering a signal the run's sentinel process receives; or making a connection accepted by one
+  of the run's sentinel listeners. For that probe, the run holds a parent-written sentinel nonce
+  file in every directory of the protected set, recursively, and a sentinel process, and it binds
+  one sentinel listener per socket family it uses (TCP and UDP loopback, pathname Unix and abstract
+  Unix). Each of these outcomes is observed parent-side. Also falsified by any protected regular
+  file having a hard link outside the run's protected objects, or a link count other than one where
+  the construction above requires one; by any mount in a seat jail whose root resolves, by device
+  and inode, to a protected object or to an ancestor of one; by any write-capable, directory or
+  `O_PATH` descriptor held by a jailed seat's processes resolving, by device and inode, to a
+  protected object; and by anything a jailed seat produced being recorded as a falsifier outcome or
+  accepted as a receipt-class artifact under EC-EXECFIND-3.
 - [ ] EC-EXECFIND-3 — **Findings are decomposed per finding, and only a red finding binds.**
   `_findings_from_panel` emits one `ReviewFinding` per finding with codes `finding_bound`
   (`red_on_head`, severity block), `finding_unbound` (`green_on_head`, severity warn, routed to
@@ -1391,9 +1428,11 @@ Source: agent-harness#935.
 - [ ] EC-EXECFIND-4 — **The brief teaches the form and the caller may inline fixtures.** The
   sealed brief instructs the falsifier form for blocking findings, and named test fixtures may be
   inlined as additional `artifact_ref` paths under the 512 KiB sealed-prompt cap (the 16 KiB soft
-  warning stays); brokered seats still receive text only and `context_refs` stay metadata-only.
-  Falsified by a seat handed a path instead of bytes; by a bound finding produced from a brief
-  that carried no falsifier instruction; by a prompt over the cap being sent.
+  warning stays). On the sealed inline route brokered seats still receive text only and
+  `context_refs` stay metadata-only. A jailed seat's brief is governed by the agent-harness#1132
+  plan (agent-harness#1133), not by this phase, and must still carry the falsifier instruction.
+  Falsified by a sealed-route seat handed a path instead of bytes; by a bound finding produced from a brief
+  that carried no falsifier instruction; by a sealed-route prompt over the cap being sent.
 - [ ] EC-EXECFIND-5 — **Optional first, required only after a recorded measurement.** A
   `falsifier_policy` of `optional | required` governs whether a blocking finding without a
   falsifier is accepted as `finding_prose`; the default is `optional` until a pre-registered
