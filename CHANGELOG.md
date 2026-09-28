@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140)
+
+- The lease supervisor no longer runs as Python between fork and exec in a child of the
+  (possibly threaded) launcher, which Python documents as unsafe. `launch` now starts
+  `python -I phase_loop_runtime/lease_supervisor.py --lease-fd N --exec-status-fd W -- argv`
+  with only `start_new_session`, `close_fds` and `pass_fds`; no executor launch path passes a
+  `preexec_fn`.
+- Supervision is unchanged: executor `setsid`, subreaper on supervisor and executor,
+  SIGTERM/SIGINT forwarded to the executor group with SIGKILL after 1 s, descendant reaping,
+  out-of-range results mapped to 1, only the lease descriptor held. The executor gets the exact
+  env block (read from `/proc/self/environ`, since interpreter startup can coerce `LC_CTYPE`),
+  cwd, descriptors and signal dispositions it got before, and an exec failure still raises the
+  same `OSError` from `launch`.
+- `launcher.py` changed and `lease_supervisor.py` is new, so the full agy pin set drifts: the
+  next release cut requalifies agy.
+
 ### agy first-use self-qualification of genuine upstream releases (agent-harness#1076)
 
 - An upstream agy release no longer removes the Gemini seat until a runtime release ships
