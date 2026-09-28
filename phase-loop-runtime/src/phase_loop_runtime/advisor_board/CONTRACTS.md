@@ -735,3 +735,79 @@ root, rejecting failures, omissions and terminal/admission mismatches. Preserve
 failed series; diagnose a changed candidate before another attempt. Validation
 uses that host's measured helper images. These receipts do not replace the
 historical bounded-success evidence verifier.
+
+The driver lives in the package, `phase_loop_runtime.agy_qualification`; the script
+is a shim over it, so an installed runtime can run it too (agent-harness#1076).
+
+### First-use self-qualification (agent-harness#1076)
+
+A non-release `agy` image is admitted only by verifying it, never by trusting it.
+
+- **Admission classes.** Every Gemini heartbeat leg carries exactly one class in
+  its profile evidence (`provider_admission_class`): `release_qualified` (digest in
+  `QUALIFIED_IMAGES`), `locally_qualified` (a verified local record), or
+  `qualification_candidate` (only inside a qualification run; never counted, never
+  persisted). The evidence's `provider_image_sha256` is the admitted image's own digest.
+- **VerifiedImage.** `PATH` is resolved once (a versioned-install symlink to its final
+  target), the target is opened once (`O_NOFOLLOW`, regular file, size cap) and read
+  into memory; that buffer is hashed and fills a sealed memfd, which is re-hashed.
+  Help measurement, the three live operations, board legs and the president execute
+  that memfd (an independent, re-hashed read of it per profile) and never open the path
+  again.
+- **Admission order.** (1) A release-qualified digest is admitted before any config,
+  store or network access. (2) If the user config sets `[agy] self_qualification = false`
+  (the repository config cannot), today's `gemini_heartbeat_capability_unavailable`
+  refusal is returned and nothing else is read. (3) A `failed` entry refuses
+  (`gemini_heartbeat_self_qualification_failed`) with no execution. (4) Help is measured
+  from the memfd only after a `provenance` entry verifies against the live key; the
+  `qualified` entry is then verified against the full live key, including that help
+  digest. (5) Otherwise the image is absent: legs and the president refuse; only the
+  whole-board preflight (`_preflight_gemini_heartbeat`) and `phase-loop
+  agy-qualification run` go on to first use. Legs re-admit by lookup rather than
+  receiving the preflight's Admission object; any future cross-process hand-off of an
+  image memfd must reuse the worker's seal check.
+- **Provenance** (coordinator process, nothing executes). Host platform from the running
+  host (D4: `linux-{x64,arm64}[-musl]`); the newest `agy_provenance.RECENCY_WINDOW`
+  stable releases (no prerelease, no draft); the exact platform asset; its URL equal to
+  `https://github.com/google-antigravity/antigravity-cli/releases/download/<tag>/<asset>`;
+  a strict `sha256:<hex>` asset digest equal to the streamed archive digest; exactly one
+  regular-file `antigravity` member (duplicates and links refuse), stream-hashed and
+  never extracted, equal to the image digest. The transport sends no credentials, has
+  no proxy support, uses the interpreter's compiled-in OpenSSL trust store (not
+  `SSL_CERT_FILE`/`SSL_CERT_DIR`), and follows at most three https redirects within
+  GitHub's download hosts. Fetch failure refuses `gemini_heartbeat_provenance_unavailable`;
+  no match refuses `gemini_heartbeat_provenance_unverified`.
+- **Behaviour.** Only after the provenance entry is written: help, then the three live
+  operations through the packaged driver and the release path's own validators. All
+  passing writes the `qualified` entry. An operation the provider ran to a terminal
+  state that validation rejected writes a `failed` entry (until `agy-qualification
+  clear`); provider transients, cancellation and fetch failures write nothing.
+- **Worker gate.** The qualification worker receives the image as an inherited fd and,
+  before hashing, requires a regular-file memfd with `F_SEAL_WRITE`, `F_SEAL_GROW`,
+  `F_SEAL_SHRINK` and `F_SEAL_SEAL` (`F_SEAL_FUTURE_WRITE` alone is refused). It admits
+  the fd as a candidate only if its digest is a release constant (the manual shim and the
+  upstream watch's prepared tree) or has a provenance entry for the current runtime
+  identity. It sets `PR_SET_PDEATHSIG`, so a killed coordinator leaves no worker.
+- **Store.** `$XDG_STATE_HOME/phase-loop/agy-qualification/hosts/<machine>/`, per user,
+  namespaced by machine-id. Directories 0700 and files 0600, owned by the euid, opened
+  `O_NOFOLLOW`; otherwise the store is absent to lookups and first use refuses
+  (`gemini_heartbeat_self_qualification_store_unsafe`). Entry types `provenance`,
+  `qualified`, `failed` and `member_cache`; each is HMAC-SHA256'd under a per-host key over
+  a context recomputed from the live key (type, euid, machine-id, image digest, platform,
+  runtime identity, plus the asset name, profile id or help digest as the type requires).
+  Without a readable machine-id, self-qualification refuses; the release path is unaffected.
+- **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat, and
+  re-check the store after acquiring. Qualification happens once per key per user per host.
+- **Runtime identity (D2).** `__version__` plus the digests of the installed
+  `agy_qualification.ROUTE_CORE` files (`gemini_heartbeat.py`, `agy_qualification.py`,
+  `agy_provenance.py`), the same tuple `verify_qualified_agy_image.py --route-core` checks.
+- **Counting (D1).** In `governed_review`, a usable heartbeat Gemini leg is a vote at every
+  tier only if its recorded class is `release_qualified` or `locally_qualified`. A
+  candidate leg, or a leg with no class (including legs from boards run before the class
+  existed: re-run the board), cannot approve; a blocking verdict from it still blocks. A
+  Gemini leg whose admitted digest appears in the reviewed artifact is flagged
+  (`gemini_seat_reviews_its_own_pin`, non-gating). Boards admit with the installed base
+  runtime, never the reviewed tree.
+- **Upstream watch.** `phase-loop agy-qualification watch` (a host timer on a subscribed
+  host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64 glibc release
+  route, from a fresh checkout of `main`, and opens a draft PR; it never merges.

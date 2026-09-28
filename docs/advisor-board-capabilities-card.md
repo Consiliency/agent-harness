@@ -416,11 +416,15 @@ staged-tree attachment. The executable/settings are immutable mounts in a privat
 namespace-owned HOME. Credential targets are referenced, never copied or restored;
 legitimate refresh writes survive. Required bwrap flags are checked at admission.
 Adding an image to the set needs its own qualification first. The
-runtime performs no release discovery or image search: it hashes the single
-`agy` resolved on `PATH`, admits it only if that digest is a set member, binds
-the admitted digest into the profile evidence, and refuses any other digest,
-including the previously qualified 1.2.10, 1.2.9 and 1.2.7 images. Upstream-release
-discovery and fleet updater coordination are tracked by agent-harness#1008.
+runtime hashes the single `agy` resolved on `PATH` once and binds that digest into the
+profile evidence. A set member is admitted as `release_qualified`. Any other digest is
+admitted only if it is a genuine stable upstream release for the host's platform that
+this host has self-qualified (agent-harness#1076): on first use, the whole-board preflight
+verifies the release asset's published digest and archive member without executing
+anything, then runs the same three live operations, and records the result in a per-user,
+per-host, HMAC-bound store. Such a seat is `locally_qualified` and counts at every tier.
+A user config `[agy] self_qualification = false` restores the hard refusal. See
+CONTRACTS.md "First-use self-qualification".
 Each member has its own redacted qualification record with exact source hashes,
 `plans/evidence/agy-<release>-linux-x64-qualification.json`; the records are
 not a second admission source.
@@ -428,7 +432,8 @@ not a second admission source.
 help digest, release and record), and the verifier refuses unless that list and
 the runtime set name exactly the same members and every member's record checks.
 The `qualified-agy-image` CI check compares every record's hashes of the route's core
-files (`gemini_heartbeat.py`, `qualify_gemini_heartbeat.py`) with the checkout on
+files (`agy_qualification.ROUTE_CORE`: `gemini_heartbeat.py`, `agy_qualification.py`,
+`agy_provenance.py`) with the checkout on
 pull requests and pushes that touch them or the evidence. The full source-hash set
 blocks publication, a release-cut pull request and a pull request that changes the
 evidence, and is reported without blocking nightly (agent-harness#1029), so a release

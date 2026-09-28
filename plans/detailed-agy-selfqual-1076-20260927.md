@@ -84,8 +84,8 @@ unverified bytes only by forging a store entry, which requires that uid.
 A new `VerifiedImage` is produced by exactly one routine. It resolves `PATH` once,
 including following a versioned-install symlink to its final target, and opens that
 target once (`O_NOFOLLOW`, regular file, size cap). It reads the file into memory,
-hashes that buffer, fill a sealed
-memfd from the **same buffer**, re-hash the memfd. The routine's input is either the
+hashes that buffer, fills a sealed
+memfd from the **same buffer**, and re-hashes the memfd. The routine's input is either the
 `PATH`-resolved agy (resolved once) or, for the watch, the archive member stream.
 Everything downstream (help measurement, the three operations, board legs, the
 president) takes the `VerifiedImage`'s memfd and never opens a path again.

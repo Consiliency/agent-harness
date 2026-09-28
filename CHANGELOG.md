@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### agy first-use self-qualification of genuine upstream releases (agent-harness#1076)
+
+- An upstream agy release no longer removes the Gemini seat until a runtime release ships
+  its digest. The whole-board preflight verifies a non-release image's provenance (GitHub's
+  published asset digest and the archive's single `antigravity` member, streamed, nothing
+  executed), then runs the existing three live operations from the same sealed memfd, and
+  records the result per user and host. Later boards admit it by lookup as
+  `locally_qualified`. Release-qualified images are unchanged and still admitted offline.
+- Every Gemini heartbeat leg records its admission class; `governed_review` counts only
+  `release_qualified` and `locally_qualified` legs (a leg with no class, e.g. from a board
+  run before this change, needs a board re-run).
+- `[agy] self_qualification = false` in the user board config restores the hard refusal.
+- New `phase-loop agy-qualification {status,run,clear,watch}`. The qualification driver
+  moved into the package (`phase_loop_runtime.agy_qualification`);
+  `scripts/qualify_gemini_heartbeat.py` is a shim. The `--route-core` set is the packaged
+  `ROUTE_CORE` (`gemini_heartbeat.py`, `agy_qualification.py`, `agy_provenance.py`).
+
 ## [0.7.20] - 2026-09-27
 
 ### `fabpub-bootstrap` accepts the run-train writer-lock residue and excludes a live train (agent-harness#1115; PR agent-harness#1116)
