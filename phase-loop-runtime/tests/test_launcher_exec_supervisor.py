@@ -461,15 +461,16 @@ _FAILING_FORK = (
 
 
 @pytest.mark.parametrize(
-    "prelude",
+    ("prelude", "reason"),
     [
-        pytest.param(_FAILING_FORK, id="fork-EAGAIN"),
+        pytest.param(_FAILING_FORK, "setup:EAGAIN", id="fork-EAGAIN"),
         pytest.param(
             (
                 "def no_proc():",
                 "    raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), '/proc/self/environ')",
                 "module._initial_environment = no_proc",
             ),
+            "setup:ENOENT",
             id="no-proc-environ",
         ),
         pytest.param(
@@ -478,28 +479,35 @@ _FAILING_FORK = (
                 "    raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))",
                 "os.setsid = failing_setsid",
             ),
+            "setup:EPERM",
             id="executor-setsid-EPERM",
         ),
-        pytest.param(("os._exit(3)",), id="silent-death-before-fork"),
+        pytest.param(("os._exit(3)",), None, id="silent-death-before-fork"),
     ],
 )
-def test_supervisor_setup_failure_raises_like_a_failing_preexec_fn(monkeypatch, lease_fd, tmp_path, prelude):
+def test_supervisor_setup_failure_raises_like_a_failing_preexec_fn(monkeypatch, lease_fd, tmp_path, prelude, reason):
     # The old preexec path raised this from Popen for any exception before the
     # executor's exec; an executor that never ran must not look like an exit code.
     _supervisor_with_prelude(monkeypatch, *prelude)
     ran = tmp_path / "executor-ran"
-    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
+    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$") as caught:
         _launch_supervised(["/bin/sh", "-c", 'touch "$0"', str(ran)], lease_fd, tmp_path)
     assert not ran.exists(), "the executor ran although setup failed"
+    if reason is None:
+        # Nothing reported: caught by the launcher's nonzero-exit-without-fork check.
+        assert caught.value.__cause__ is None
+    else:
+        assert str(caught.value.__cause__) == f"lease supervisor {reason}"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="RLIMIT_NPROC is not enforced for root")
 def test_real_rlimit_nproc_eagain_on_the_executor_fork_raises(monkeypatch, lease_fd, tmp_path):
     _supervisor_with_prelude(monkeypatch, "import resource", "resource.setrlimit(resource.RLIMIT_NPROC, (1, 1))")
     ran = tmp_path / "executor-ran"
-    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
+    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$") as caught:
         _launch_supervised(["/bin/sh", "-c", 'touch "$0"', str(ran)], lease_fd, tmp_path)
     assert not ran.exists()
+    assert str(caught.value.__cause__) == "lease supervisor setup:EAGAIN"
 
 
 def test_supervisor_runs_no_site_startup_hooks(monkeypatch, lease_fd, tmp_path):

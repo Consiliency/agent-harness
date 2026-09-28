@@ -488,7 +488,11 @@ def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: 
     if exec_failures and not setup_failures:
         errno_num = int(exec_failures[0].partition(":")[2] or 0)
         raise OSError(errno_num, os.strerror(errno_num), command[0])
-    raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
+    # Same type and message as a failing preexec_fn; the supervisor's reason
+    # (e.g. ``setup:EAGAIN``) rides along as the cause.
+    raise subprocess.SubprocessError("Exception occurred in preexec_fn.") from RuntimeError(
+        f"lease supervisor {', '.join(setup_failures or exec_failures)}"
+    )
 
 
 @dataclass(frozen=True)
