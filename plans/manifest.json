@@ -4339,6 +4339,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "2866c6a3ce83c30e5457c059c191b78c9eddc8176cbfef9e6ae44997ef122c0c",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4388,7 +4394,7 @@
             }
           ],
           "landed": null,
-          "landed_note": "appended as a separate entry after PANEL SL-1 merges: each file's blob at the merge, and the merge commit; this entry is never mutated"
+          "landed_note": "appended as a separate entry after PANEL SL-1 merges, paired with this one by issue and path: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: the old blob must be the blob it already accepts for the path (the frozen blob or the previous accepted repair's new blob). This entry is never mutated."
         }
       ]
     },
@@ -5227,7 +5233,7 @@
             }
           ],
           "landed": null,
-          "landed_note": "appended as a separate entry after PANEL SL-1 merges: each file's blob at the merge, and the merge commit; this entry is never mutated"
+          "landed_note": "appended as a separate entry after PANEL SL-1 merges, paired with this one by issue and path: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: the old blob must be the blob it already accepts for the path (the frozen blob or the previous accepted repair's new blob). This entry is never mutated."
         }
       ]
     },
@@ -10372,6 +10378,12 @@
         },
         {
           "plan_sha256": "d18df70788b15a5262bb26f1f96fd108a40983939fe47e84a802c87baada8933",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "da883d058948a8fa6e47b115175b28fcaddb8e991feb66b49c72c30c3dc45cf0",
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
