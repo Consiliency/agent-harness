@@ -2,11 +2,17 @@
 
 ``launcher.launch`` starts this file as its own program::
 
-    python -I <this file> --lease-fd N --exec-status-fd W -- <executor argv>
+    python -I -S <this file> --lease-fd N --exec-status-fd W -- <executor argv>
 
 so that no Python runs in a child forked from the (possibly threaded) launcher
 before ``exec``.  The supervisor is a fresh single-threaded interpreter, which
-makes its own ``fork`` of the executor safe.
+makes its own ``fork`` of the executor safe; ``-S`` keeps site initialization
+(``.pth`` files, ``sitecustomize``) from starting threads before that fork.
+
+The status descriptor carries newline-terminated records to the launcher:
+``forked`` once the executor is forked, ``exec:<errno>`` if its ``exec``
+fails, and ``setup:<reason>`` if anything before that ``exec`` fails.  An
+empty status therefore means the supervisor died before forking.
 
 This file must stay stdlib-only: ``-I`` drops ``PYTHONPATH``, so importing
 ``phase_loop_runtime`` here would resolve to whatever copy is installed rather
@@ -16,6 +22,7 @@ than the copy that launched us.  ``launcher`` re-exports ``LeaseSupervisor``.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import signal
 import sys
@@ -168,41 +175,63 @@ def _initial_environment() -> dict[bytes, bytes]:
     return environment
 
 
+def _report(status_fd: int | None, record: str) -> None:
+    if status_fd is not None:
+        try:
+            os.write(status_fd, record.encode("ascii") + b"\n")
+        except OSError:
+            pass
+
+
+def _setup_reason(exc: BaseException) -> str:
+    code = getattr(exc, "errno", None)
+    if isinstance(code, int) and code:
+        return f"setup:{errno.errorcode.get(code, code)}"
+    return f"setup:{type(exc).__name__}"
+
+
 def _exec_executor(command: list[str], lease_fd: int | None, status_fd: int | None, environment: dict[bytes, bytes]) -> None:
     """Forked-executor half: become a subreaping session leader, then exec."""
 
     try:
-        os.setsid()
-        LeaseSupervisor.enable_subreaper()
-        for signum in _STARTUP_IGNORED_SIGNALS:
-            signal.signal(signum, signal.SIG_DFL)
-        _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd) if fd is not None))
-        if status_fd is not None:
-            os.set_inheritable(status_fd, False)
-        os.execvpe(command[0], command, environment)
-    except OSError as exc:
-        status = f"exec:{exc.errno or 0}"
-    except BaseException:
-        status = "setup"
-    if status_fd is not None:
         try:
-            os.write(status_fd, status.encode("ascii"))
-        except OSError:
-            pass
-    os._exit(255)
+            os.setsid()
+            LeaseSupervisor.enable_subreaper()
+            for signum in _STARTUP_IGNORED_SIGNALS:
+                signal.signal(signum, signal.SIG_DFL)
+            _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd) if fd is not None))
+            if status_fd is not None:
+                os.set_inheritable(status_fd, False)
+        except BaseException as exc:
+            _report(status_fd, _setup_reason(exc))
+            return
+        try:
+            os.execvpe(command[0], command, environment)
+        except OSError as exc:
+            _report(status_fd, f"exec:{exc.errno or 0}")
+        except BaseException as exc:
+            _report(status_fd, _setup_reason(exc))
+    finally:
+        os._exit(255)
 
 
 def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
     """Fork the executor, then retain the lease until its whole tree is gone."""
 
-    held_lease_fd = lease_fd if _handed_through(lease_fd) else None
-    held_status_fd = status_fd if _handed_through(status_fd) else None
-    environment = _initial_environment()
-    LeaseSupervisor.enable_subreaper()
-    executor_pid = os.fork()
+    held_status_fd: int | None = None
+    try:
+        held_status_fd = status_fd if _handed_through(status_fd) else None
+        held_lease_fd = lease_fd if _handed_through(lease_fd) else None
+        environment = _initial_environment()
+        LeaseSupervisor.enable_subreaper()
+        executor_pid = os.fork()
+    except BaseException as exc:
+        _report(held_status_fd, _setup_reason(exc))
+        os._exit(255)
     if executor_pid == 0:
         _exec_executor(command, held_lease_fd, held_status_fd, environment)
 
+    _report(held_status_fd, "forked")
     _close_supervisor_descriptors(lease_fd)
 
     def terminate_executor(_signum, _frame) -> None:

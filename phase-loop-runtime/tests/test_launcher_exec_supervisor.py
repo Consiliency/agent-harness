@@ -139,8 +139,8 @@ def test_lease_launch_execs_the_supervisor_program_without_preexec_fn(monkeypatc
     assert kwargs["close_fds"] is True
     assert lease_fd in kwargs["pass_fds"]
     supervisor_script = Path(launcher.__file__).with_name("lease_supervisor.py")
-    assert argv[:3] == [sys.executable, "-I", str(supervisor_script)]
-    assert Path(launcher._LEASE_SUPERVISOR_SCRIPT) == supervisor_script
+    assert argv[:4] == [sys.executable, "-I", "-S", str(supervisor_script.resolve())]
+    assert Path(launcher._LEASE_SUPERVISOR_SCRIPT) == supervisor_script.resolve()
     assert argv[argv.index("--") + 1 :] == command
 
 
@@ -426,3 +426,121 @@ def test_supervisor_without_a_passed_lease_still_runs_the_executor(tmp_path):
         os.close(unpassed_fd)
     assert completed.returncode == 0, completed.stderr
     assert sorted(completed.stdout.split(), key=int) == ["0", "1", "2"]
+
+
+def _supervisor_with_prelude(monkeypatch, *prelude: str) -> None:
+    """Run the real supervisor file, with ``prelude`` executed in its process first.
+
+    Failure injection without a production test hook: the supervisor module is
+    loaded from its path and ``main`` runs after the prelude has patched it.
+    """
+    real_command = launcher._lease_supervisor_command
+    script = str(launcher._LEASE_SUPERVISOR_SCRIPT)
+
+    def command(executor_command, lease_fd, status_fd):
+        argv = real_command(executor_command, lease_fd, status_fd)
+        index = argv.index(script)
+        code = "\n".join((
+            "import errno, importlib.util, os, sys",
+            f"spec = importlib.util.spec_from_file_location('lease_supervisor', {script!r})",
+            "module = importlib.util.module_from_spec(spec)",
+            "spec.loader.exec_module(module)",
+            *prelude,
+            "module.main(sys.argv[1:])",
+        ))
+        return [*argv[:index], "-c", code, *argv[index + 1 :]]
+
+    monkeypatch.setattr(launcher, "_lease_supervisor_command", command)
+
+
+_FAILING_FORK = (
+    "def failing_fork():",
+    "    raise BlockingIOError(errno.EAGAIN, os.strerror(errno.EAGAIN))",
+    "os.fork = failing_fork",
+)
+
+
+@pytest.mark.parametrize(
+    "prelude",
+    [
+        pytest.param(_FAILING_FORK, id="fork-EAGAIN"),
+        pytest.param(
+            (
+                "def no_proc():",
+                "    raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), '/proc/self/environ')",
+                "module._initial_environment = no_proc",
+            ),
+            id="no-proc-environ",
+        ),
+        pytest.param(
+            (
+                "def failing_setsid():",
+                "    raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))",
+                "os.setsid = failing_setsid",
+            ),
+            id="executor-setsid-EPERM",
+        ),
+        pytest.param(("os._exit(3)",), id="silent-death-before-fork"),
+    ],
+)
+def test_supervisor_setup_failure_raises_like_a_failing_preexec_fn(monkeypatch, lease_fd, tmp_path, prelude):
+    # The old preexec path raised this from Popen for any exception before the
+    # executor's exec; an executor that never ran must not look like an exit code.
+    _supervisor_with_prelude(monkeypatch, *prelude)
+    ran = tmp_path / "executor-ran"
+    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
+        _launch_supervised(["/bin/sh", "-c", 'touch "$0"', str(ran)], lease_fd, tmp_path)
+    assert not ran.exists(), "the executor ran although setup failed"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="RLIMIT_NPROC is not enforced for root")
+def test_real_rlimit_nproc_eagain_on_the_executor_fork_raises(monkeypatch, lease_fd, tmp_path):
+    _supervisor_with_prelude(monkeypatch, "import resource", "resource.setrlimit(resource.RLIMIT_NPROC, (1, 1))")
+    ran = tmp_path / "executor-ran"
+    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
+        _launch_supervised(["/bin/sh", "-c", 'touch "$0"', str(ran)], lease_fd, tmp_path)
+    assert not ran.exists()
+
+
+def test_supervisor_runs_no_site_startup_hooks(monkeypatch, lease_fd, tmp_path):
+    # A .pth or sitecustomize hook could start a thread before the supervisor's
+    # own fork; -S keeps site initialization out of the supervisor entirely.
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, timeout=120)
+    python = venv / "bin" / "python"
+    purelib = Path(
+        subprocess.run(
+            [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            check=True, capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+    )
+    pth_marker, customize_marker = tmp_path / "pth-ran", tmp_path / "sitecustomize-ran"
+    (purelib / "startup_hook.pth").write_text(f"import pathlib; pathlib.Path({str(pth_marker)!r}).touch()\n", encoding="utf-8")
+    (purelib / "sitecustomize.py").write_text(f"import pathlib\npathlib.Path({str(customize_marker)!r}).touch()\n", encoding="utf-8")
+
+    subprocess.run([str(python), "-I", "-c", "pass"], check=True, timeout=60)
+    assert pth_marker.exists(), "control: a .pth hook runs under -I alone"
+    # A distribution's own sitecustomize (Debian ships one in the stdlib dir)
+    # shadows ours; check ours only where the control shows it is reachable.
+    customize_reachable = customize_marker.exists()
+    for marker in (pth_marker, customize_marker):
+        marker.unlink(missing_ok=True)
+
+    monkeypatch.setattr(sys, "executable", str(python))
+    assert _launch_supervised(["/bin/true"], lease_fd, tmp_path).returncode == 0
+    assert not pth_marker.exists(), "a .pth startup hook ran in the supervisor"
+    if customize_reachable:
+        assert not customize_marker.exists(), "sitecustomize ran in the supervisor"
+
+
+def test_supervisor_does_not_leak_interpreter_locale_coercion(lease_fd, tmp_path):
+    env = {"PATH": "/usr/bin:/bin"}
+    probe = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", "import os; print(os.environ.get('LC_CTYPE', ''))"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    if not probe.stdout.strip():
+        pytest.skip("this interpreter does not coerce LC_CTYPE here (no C.UTF-8 locale), so there is nothing to leak")
+    result = _launch_supervised(["/bin/sh", "-c", "tr '\\0' '\\n' < /proc/$$/environ"], lease_fd, tmp_path, env=env)
+    assert result.returncode == 0
+    assert "LC_CTYPE=" not in result.output, result.output

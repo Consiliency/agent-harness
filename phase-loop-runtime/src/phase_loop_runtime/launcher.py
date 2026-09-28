@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -416,7 +417,7 @@ class LaunchResult:
         return {key: value for key, value in data.items() if value not in (None, [])}
 
 
-_LEASE_SUPERVISOR_SCRIPT = Path(_lease_supervisor.__file__)
+_LEASE_SUPERVISOR_SCRIPT = Path(_lease_supervisor.__file__).resolve()
 
 
 def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd: int) -> list[str]:
@@ -425,11 +426,13 @@ def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd:
     The supervisor is a separate program, not a ``preexec_fn``: Python must not
     run in a child forked from this possibly threaded process before ``exec``.
     It is started by path with ``-I`` so neither the launcher's ``PYTHONPATH``
-    nor an installed copy of this package can substitute another supervisor.
+    nor an installed copy of this package can substitute another supervisor,
+    and with ``-S`` so no site hook can start a thread before its own fork.
     """
     return [
         sys.executable,
         "-I",
+        "-S",
         str(_LEASE_SUPERVISOR_SCRIPT),
         "--lease-fd",
         str(lease_fd),
@@ -440,24 +443,41 @@ def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd:
     ]
 
 
-def _raise_for_supervised_exec_failure(process: subprocess.Popen, exec_status_fd: int, command: list[str]) -> None:
-    """Surface an executor ``exec`` failure the way a direct ``Popen`` would.
+def _supervisor_status_pipe() -> tuple[int, int]:
+    """A status pipe whose ends sit above stdio, so Popen's stdio setup cannot clobber them."""
+    read_fd, write_fd = os.pipe()
+    ends = []
+    for fd in (read_fd, write_fd):
+        if fd <= 2:
+            moved = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+            os.close(fd)
+            fd = moved
+        ends.append(fd)
+    return ends[0], ends[1]
 
-    The supervisor's forked executor writes ``exec:<errno>`` (or ``setup``) to
-    this pipe when it cannot ``exec``; a successful ``exec`` closes it empty.
+
+def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: list[str]) -> bool:
+    """Read the supervisor's status records; raise as a direct ``Popen`` would.
+
+    Returns whether the supervisor reported forking the executor.  An
+    ``exec:<errno>`` record raises the executor's ``OSError``; a
+    ``setup:<reason>`` record raises the ``SubprocessError`` a failing
+    ``preexec_fn`` used to.  See ``lease_supervisor`` for the protocol.
     """
     chunks: list[bytes] = []
     try:
         while True:
-            chunk = os.read(exec_status_fd, 256)
+            chunk = os.read(status_fd, 256)
             if not chunk:
                 break
             chunks.append(chunk)
     finally:
-        os.close(exec_status_fd)
-    status = b"".join(chunks).decode("ascii", "replace")
-    if not status:
-        return
+        os.close(status_fd)
+    records = b"".join(chunks).decode("ascii", "replace").splitlines()
+    exec_failures = [record for record in records if record.startswith("exec:")]
+    setup_failures = [record for record in records if record.startswith("setup:")]
+    if not exec_failures and not setup_failures:
+        return "forked" in records
     for stream in (process.stdin, process.stdout):
         if stream is not None:
             try:
@@ -465,8 +485,8 @@ def _raise_for_supervised_exec_failure(process: subprocess.Popen, exec_status_fd
             except OSError:
                 pass
     process.wait()
-    if status.startswith("exec:"):
-        errno_num = int(status.partition(":")[2] or 0)
+    if exec_failures and not setup_failures:
+        errno_num = int(exec_failures[0].partition(":")[2] or 0)
         raise OSError(errno_num, os.strerror(errno_num), command[0])
     raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
 
@@ -2695,7 +2715,7 @@ def launch(
             exec_status_read: int | None = None
             exec_status_write: int | None = None
             if _supervisor_lease_fd is not None:
-                exec_status_read, exec_status_write = os.pipe()
+                exec_status_read, exec_status_write = _supervisor_status_pipe()
                 popen_command = _lease_supervisor_command(command, _supervisor_lease_fd, exec_status_write)
                 popen_kwargs.update(
                     close_fds=True,
@@ -2710,8 +2730,9 @@ def launch(
             finally:
                 if exec_status_write is not None:
                     os.close(exec_status_write)
+            supervisor_forked = True
             if exec_status_read is not None:
-                _raise_for_supervised_exec_failure(process, exec_status_read, command)
+                supervisor_forked = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
             if stdin_text is not None and process.stdin is not None:
@@ -2813,6 +2834,10 @@ def launch(
                 process.stdout.close()
             except OSError:
                 pass
+            if not supervisor_forked and returncode != 0 and not (timed_out or interrupted or stalled):
+                # The supervisor died before forking the executor without saying
+                # why; that is a failed launch, never an executor exit status.
+                raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
         heartbeat_summary = None
         if heartbeat_path is not None:
             heartbeat_summary = run_heartbeat_summary(
