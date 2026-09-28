@@ -84,15 +84,22 @@ class LeaseSupervisor:
             parents = children
         return tuple(sorted(descendants))
 
-    def _signal_adopted_descendants(self, signum: int) -> None:
+    def _signal_adopted_descendants(self, signum: int, exclude: int | None = None) -> None:
         for pid in self._adopted_descendants():
+            if pid == exclude:
+                continue
             try:
                 os.killpg(os.getpgid(pid), signum)
             except ProcessLookupError:
                 continue
 
     def reap_descendants(self, process: subprocess.Popen) -> int:
+        # ``process.wait()`` observes the executor's exit WITHOUT reaping it: the
+        # zombie leader keeps its pid and process-group number from being reused
+        # while forwarding can still ``killpg`` them.  It is reaped by the caller
+        # only after forwarding is switched off, and never in the loop below.
         returncode = process.wait()
+        leader = process.pid
         # The executor is a session leader, but descendants can call ``setsid``
         # and leave that group. The subreaper adopts every surviving descendant,
         # so explicit child reaping establishes complete-tree emptiness and /proc
@@ -102,7 +109,7 @@ class LeaseSupervisor:
         kill_deadline: float | None = None
         sent_sigkill = False
         while True:
-            descendants = self._adopted_descendants()
+            descendants = tuple(pid for pid in self._adopted_descendants() if pid != leader)
             if not descendants:
                 break
             for pid in descendants:
@@ -112,17 +119,21 @@ class LeaseSupervisor:
                     continue
             now = time.monotonic()
             if kill_deadline is None and now >= reap_deadline:
-                self._signal_adopted_descendants(signal.SIGTERM)
+                self._signal_adopted_descendants(signal.SIGTERM, exclude=leader)
                 kill_deadline = now + self._DESCENDANT_KILL_GRACE_SECONDS
             elif kill_deadline is not None and not sent_sigkill and now >= kill_deadline:
-                self._signal_adopted_descendants(signal.SIGKILL)
+                self._signal_adopted_descendants(signal.SIGKILL, exclude=leader)
                 sent_sigkill = True
             time.sleep(0.01)
         return returncode
 
 
 class _ForkedExecutor:
-    """Small Popen-compatible wait surface for the forked executor child."""
+    """Small Popen-compatible wait surface for the forked executor child.
+
+    ``wait`` observes the exit but leaves the child a zombie (``WNOWAIT``), so
+    its pid and group number stay reserved; ``reap`` collects it at the end.
+    """
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
@@ -131,9 +142,20 @@ class _ForkedExecutor:
 
     def wait(self) -> int:
         if self.returncode is None:
-            _, status = os.waitpid(self.pid, 0)
-            self.returncode = os.waitstatus_to_exitcode(status)
+            info = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOWAIT)
+            if info.si_code == os.CLD_EXITED:
+                self.returncode = info.si_status
+            else:  # CLD_KILLED / CLD_DUMPED: same as waitstatus_to_exitcode
+                self.returncode = -info.si_status
         return self.returncode
+
+    def reap(self) -> None:
+        # Non-blocking: after an unexpected supervisor error the executor may
+        # still run, and the old supervisor never waited for it at that point.
+        try:
+            os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
 
 
 def _close_descriptors_except(keep: tuple[int, ...]) -> None:
@@ -303,7 +325,10 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         # The child died before becoming a group leader; it is never released.
         os.close(go_write)
         _close_supervisor_descriptors(lease_fd)
-        _exit_with(_reap(executor_pid))
+        executor = _ForkedExecutor(executor_pid)
+        returncode = _reap(executor)
+        executor.reap()
+        _exit_with(returncode)
 
     terminated = False
 
@@ -336,12 +361,20 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     _close_supervisor_descriptors(lease_fd)
-    _exit_with(_reap(executor_pid))
+    executor = _ForkedExecutor(executor_pid)
+    returncode = _reap(executor)
+    # Forwarding off before the leader is reaped: after that its pid and group
+    # number are free for reuse.
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM):
+        signal.signal(signum, signal.SIG_IGN)
+    executor.reap()
+    _exit_with(returncode)
 
 
-def _reap(executor_pid: int) -> object:
+def _reap(executor: _ForkedExecutor) -> object:
     try:
-        return LeaseSupervisor().reap_descendants(_ForkedExecutor(executor_pid))
+        return LeaseSupervisor().reap_descendants(executor)
     except BaseException:
         return 1
 

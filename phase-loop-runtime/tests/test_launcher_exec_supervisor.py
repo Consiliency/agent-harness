@@ -826,3 +826,59 @@ def test_silent_death_after_the_early_settle_is_caught_at_exit(monkeypatch, leas
     _supervisor_with_prelude(monkeypatch, "import time", "os.close(int(sys.argv[4]))", "time.sleep(1.5)", "os._exit(3)")
     with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
         _launch_supervised(["/bin/true"], lease_fd, tmp_path)
+
+
+def _signal_spy_prelude(signal_log: Path) -> tuple[str, ...]:
+    return (
+        "real_kill, real_killpg = os.kill, os.killpg",
+        "def record(kind, target, signum):",
+        f"    with open({str(signal_log)!r}, 'a') as log: log.write(f'{{kind}} {{target}} {{int(signum)}}\\n')",
+        "def spy_kill(pid, signum):", "    record('kill', pid, signum)", "    return real_kill(pid, signum)",
+        "def spy_killpg(pgid, signum):", "    record('killpg', pgid, signum)", "    return real_killpg(pgid, signum)",
+        "os.kill, os.killpg = spy_kill, spy_killpg",
+    )
+
+
+def test_executor_leader_stays_a_zombie_while_forwarding_is_possible(monkeypatch, lease_fd, tmp_path):
+    # PGID-reuse safety: the executor E exits, leaving a session-detached
+    # descendant, so the supervisor sits in its reap grace.  E must stay an
+    # unreaped zombie there, pinning pid/pgid E, so a forwarded SIGTERM and its
+    # SIGKILL escalation can only reach the original group; a sentinel in an
+    # unrelated group must survive.
+    signal_log, marker = tmp_path / "signals.log", tmp_path / "marker.json"
+    _supervisor_with_prelude(monkeypatch, *_signal_spy_prelude(signal_log))
+    sentinel = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        command = _python(
+            """
+            import json, os, subprocess, sys
+            detached = subprocess.Popen([sys.executable, "-c", "import time\\nwhile True: time.sleep(0.1)"],
+                                        start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            open(sys.argv[1], "w").write(json.dumps({"pid": os.getpid(), "ppid": os.getppid(), "detached": detached.pid}))
+            """,
+            str(marker),
+        )
+        launched = _BackgroundLaunch(command, lease_fd, tmp_path)
+        observed = _wait_for_json(marker, launched)
+        leader, supervisor_pid = observed["pid"], observed["ppid"]
+        deadline = time.monotonic() + 5
+        while _stat_fields(leader)[0] != "Z":
+            assert time.monotonic() < deadline, "executor did not exit"
+            time.sleep(0.01)
+        time.sleep(1.0)  # well inside the 5 s reap grace
+        fields = _stat_fields(leader)
+        assert fields[0] == "Z", "the executor leader was reaped while forwarding is still possible"
+        assert int(fields[1]) == supervisor_pid and int(fields[2]) == leader, "pid/pgid E is no longer pinned"
+        os.kill(supervisor_pid, signal.SIGTERM)
+        result = launched.result(timeout=20)
+        assert result.returncode == 0
+        entries = signal_log.read_text().splitlines()
+        assert not [entry for entry in entries if entry.startswith("kill ")], entries
+        targets = {int(entry.split()[1]) for entry in entries}
+        assert targets <= {leader, observed["detached"]}, entries
+        assert f"killpg {leader} {int(signal.SIGTERM)}" in entries and f"killpg {leader} {int(signal.SIGKILL)}" in entries, entries
+        assert sentinel.poll() is None, "a process outside the executor's group was signalled"
+        assert not _alive(observed["detached"])
+    finally:
+        sentinel.kill()
+        sentinel.wait()
