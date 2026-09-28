@@ -171,6 +171,7 @@ The plan states **what the client must guarantee and how each guarantee is prove
   - **(d) Never calls again, two variants.** In both, the caller catches the interrupt and makes no further BAML call.
     - (d1) Notice lands: the worker is disposed of within the reap bound.
     - (d2) **Notice lost:** a second exception is injected inside the client's exception path, before its notice is sent, and the test verifies where it landed. The worker is disposed of within the stated backstop bound.
+    - **Notice-path spy** (claude r14): a pass-through spy on the client's abandonment-notice delivery path records every notice by request. (d2) runs assert that **no notice for R was delivered**, which proves the backstop, not the notice, did the disposal. (d1) runs assert exactly one. On 3.12+ the same spy **classifies each run of the (a) sweep** as (d1) (notice delivered) or (d2) (notice lost), and each class must meet its own bound.
 - **I2: ownership.**
   - A generation is disposed of **only** on behalf of the request that owns it.
   - No abandonment, deadline, backstop or late action for request A can dispose of, or disturb, a generation owned by request B.
@@ -197,7 +198,7 @@ The plan states **what the client must guarantee and how each guarantee is prove
   - A spawn is either published and owned, or retired and self-disposed. Never both, never neither.
   - Queue wait and execution have separate budgets. The execution budget (3 × 60 s) starts when the request starts executing. A request queued past its queue budget (3 × 60 s + 10 s) gets `kind="busy"`, and it never owns a generation.
   - No internal timeout escapes untyped or as `fault`.
-  - Abandon and shutdown are serviced within 1 s, even during a hung op or a stalled spawn.
+  - Abandon and shutdown are **serviced** within 1 s, even during a hung op or a stalled spawn. Physical disposal of a stalled spawn's late process is bounded separately, from the spawn's return.
 
   *Falsifiers:*
   - **`busy`:** two or more long requests are queued ahead. The victim gets `type(e) is BamlWorkerError` with `kind == "busy"` within 1 s of its queue budget. No spawn and no frame are attributed to it (spawn-seam and writer spies). The in-flight worker's pid and its `worker_fault_log()` entries are unchanged.
@@ -213,7 +214,7 @@ The plan states **what the client must guarantee and how each guarantee is prove
     - (b) a scripted peer never reads stdin, and a write larger than the pipe buffer is forced.
 
     Each gives a `BamlWorkerError` within the deadline. The next call runs on a new pid, and the helper that owned each fd has closed it.
-  - **Abandon service:** abandonment during a hung op, and during a stalled spawn, disposes of the worker within 1 s.
+  - **Abandon service:** abandonment during a hung op, and during a stalled spawn, is **serviced within 1 s**. For a hung op, the worker is disposed of within that 1 s. For a stalled spawn, servicing means the spawn is retired within 1 s. The **physical disposal** of the stalled spawn's late process follows the separate bound, **measured from the spawn's return** (gone within 2 s of it, per the stalled-spawn falsifier (ii)), because no process exists to kill until `Popen` returns (codex r14 8).
 - **I5: fork, exit and owner death.**
   - A non-exec'd fork child's worker-reaching call raises `kind="forked"` without touching inherited state.
   - **Only the process whose pid equals the owner pid ever signals, reaps, writes to or disposes of a worker. In a fork child, every exit path (`atexit`, finalizers, daemon-thread teardown) is a no-op for inherited worker state and does not wait** (claude r13 B1).
@@ -245,7 +246,12 @@ The plan states **what the client must guarantee and how each guarantee is prove
 - **I8: parity and bounds, unchanged.** Frame caps (#27), the env allowlist (#15), the source and request snapshots, the caller-table outcomes (#22/#24) and the whole divergence register stay normative, with their existing tests.
 - **I9: resources.** A disposed generation's fds, process handle (and Windows Job handle), and helper threads are released within the reap bound.
 
-  *Falsifier:* after N = 50 dispose cycles (kill, timeout, abandon and fault, mixed), the process's open-fd count (`/proc/self/fd`, or `psutil` on macOS and Windows) and `threading.active_count()` return to their pre-cycle baseline, with a small fixed allowance for the long-lived lifecycle threads, within the reap bound after the last cycle.
+  *Falsifier:* run N = 50 dispose cycles (kill, timeout, abandon and fault, mixed). Within the reap bound after the last cycle, each of the following returns to its pre-cycle baseline, with a small fixed allowance only for the long-lived lifecycle threads:
+  - **fds:** the process's open-fd count (`/proc/self/fd`, or `psutil` on macOS and Windows);
+  - **threads:** `threading.active_count()`;
+  - **process and Job handles** (codex r14 9):
+    - **POSIX:** every disposed worker has been reaped. `os.waitpid(-1, os.WNOHANG)` finds no zombie child and raises `ChildProcessError` (the only live child being the current worker, if any). On Linux, **no pidfd** is left open: there is no `anon_inode:[pidfd]` entry among `/proc/self/fd` links beyond baseline;
+    - **Windows:** the process handle count (`GetProcessHandleCount` via `ctypes`) returns to baseline, and **every disposed generation's Job handle is closed**. The client exposes each generation's Job handle to the test seam, and `GetHandleInformation` on it fails with `ERROR_INVALID_HANDLE` after disposal.
 
 **Reference design (NON-NORMATIVE; the implementation may choose any design that passes I1–I9).**
 - One non-main supervisor daemon thread owns every lifecycle transition and disposal, because `KeyboardInterrupt` is only delivered on the main thread.
