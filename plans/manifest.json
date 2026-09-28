@@ -4333,6 +4333,30 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "3f46049b0b7dc6aacfa4db09b3b02ad23f29ebc11de1875417a5eacf1e73c23a",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "2866c6a3ce83c30e5457c059c191b78c9eddc8176cbfef9e6ae44997ef122c0c",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "5a04f5a8195e9027b4ae2c5296e86273764036cfb3db7317318bcd6619fa5c76",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "2ae79d2cafd999cb46b63ecf5e2687346bd926ea8d57783501ff0ffaa7495dce",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4346,7 +4370,46 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-04T16:25:00Z"
+      "updated_at": "2026-09-04T16:25:00Z",
+      "sl0_repairs": [
+        {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:HARDEN",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1078",
+          "decision": "maintainer 2026-09-28, option (a): panel_context_required stays strict; PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
+          "frozen_by": "HARDEN SL-0 (verify_harden_evidence.FROZEN_SL0_PATHS)",
+          "reason": "the frozen PANEL corpus (EC-PANEL-3, EC-PANEL-4) refuses a plan or production_code landing without a panel context, which these nodes make; the CLI nodes pin compose_review_board, which the context-built board replaces",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_panel_invoker.py",
+              "base_blob": "77b79b10272d3488e9ff4b65d745ff7477b9adf4",
+              "nodes": [
+                "PanelInvokerTest::test_board_threads_artifact_ref_and_context_refs",
+                "PanelInvokerTest::test_board_threads_timeout_overrides_to_real_spawn_boundary"
+              ]
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_advisor_board_composition.py",
+              "base_blob": "08555a54145969ead97df49624a8d76712fce44a",
+              "nodes": [
+                "test_derived_review_explicit_spawn_remains_hermetic_after_marker",
+                "test_derived_review_bounded_capture_control_reaches_stage_without_auth"
+              ]
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
+              "base_blob": "050f1ac97baac9d502c18c5516a2f23c1230d54f",
+              "nodes": [
+                "AdvisorBoardCliTest::test_cli_composes_auth_aware_and_dispatches_board",
+                "AdvisorBoardCliTest::test_cli_empty_board_fails_closed",
+                "AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke"
+              ]
+            }
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:HARDEN: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
@@ -5149,7 +5212,44 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-21T00:00:00Z"
+      "updated_at": "2026-09-21T00:00:00Z",
+      "sl0_repairs": [
+        {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:PRESROUTE",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1078",
+          "decision": "maintainer 2026-09-28, option (a): panel_context_required stays strict; PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
+          "frozen_by": "PRESROUTE SL-0 (.phase-loop/evidence/PRESROUTE/content-tdd-receipt.json)",
+          "reason": "the frozen PANEL corpus (EC-PANEL-3, EC-PANEL-4) refuses a plan or production_code landing without a panel context, which these nodes make; the CLI nodes pin compose_review_board, which the context-built board replaces",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_president_wiring.py",
+              "base_blob": "1263876260cf2f6c09a2fc5c64c1b712794c1cdd",
+              "nodes": [
+                "test_production_board_invokes_president_after_all_seats_and_before_return",
+                "test_president_tier_without_seam_is_refused_before_any_seat_runs",
+                "test_exhausted_ladder_refuses_every_leg_with_a_typed_reason",
+                "test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent",
+                "test_degraded_president_deferring_validation_is_refused",
+                "test_invalid_grammar_gets_one_reask_then_fails_closed",
+                "test_blocking_president_refuses_nothing_at_board_level_but_marks_the_ruling",
+                "test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control",
+                "test_ruling_record_written_to_review_stream_with_identity",
+                "test_native_fable_auto_wiring_keys_on_passed_env_not_process_env"
+              ]
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_govlean_panel_policy.py",
+              "base_blob": "df949535a016e6744b084143bdd394a4d8a4b971",
+              "nodes": [
+                "test_plan_or_production_requires_president_false_refused"
+              ]
+            }
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:PRESROUTE: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
@@ -10289,6 +10389,30 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "d18df70788b15a5262bb26f1f96fd108a40983939fe47e84a802c87baada8933",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "da883d058948a8fa6e47b115175b28fcaddb8e991feb66b49c72c30c3dc45cf0",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "7eb0b0e4bfcda320ab7b2bf2e2d1fffe21b48e4db6accbb72b859cd9f3178b1b",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "f3a230840b8e9c8a375bef6e48c451e0bdc92f882934a2991d1b013050db77e4",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": null,
