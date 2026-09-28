@@ -4351,6 +4351,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "2ae79d2cafd999cb46b63ecf5e2687346bd926ea8d57783501ff0ffaa7495dce",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4367,6 +4373,7 @@
       "updated_at": "2026-09-04T16:25:00Z",
       "sl0_repairs": [
         {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:HARDEN",
           "entry": "authorization",
           "issue": "Consiliency/agent-harness#1078",
           "decision": "maintainer 2026-09-28, option (a): panel_context_required stays strict; PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
@@ -4400,7 +4407,7 @@
             }
           ],
           "landed": null,
-          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, paired with this one by issue and path: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: the old blob must equal both the blob it already accepts for the path (the frozen blob, or the previous accepted repair's new blob) and the blob at the merge's first parent; links are followed by blob and merge ancestry, never by manifest order. This entry is never mutated once on main."
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:HARDEN: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
         }
       ]
     },
@@ -5208,6 +5215,7 @@
       "updated_at": "2026-09-21T00:00:00Z",
       "sl0_repairs": [
         {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:PRESROUTE",
           "entry": "authorization",
           "issue": "Consiliency/agent-harness#1078",
           "decision": "maintainer 2026-09-28, option (a): panel_context_required stays strict; PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
@@ -5239,7 +5247,7 @@
             }
           ],
           "landed": null,
-          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, paired with this one by issue and path: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: the old blob must equal both the blob it already accepts for the path (the frozen blob, or the previous accepted repair's new blob) and the blob at the merge's first parent; links are followed by blob and merge ancestry, never by manifest order. This entry is never mutated once on main."
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:PRESROUTE: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
         }
       ]
     },
@@ -10396,6 +10404,12 @@
         },
         {
           "plan_sha256": "7eb0b0e4bfcda320ab7b2bf2e2d1fffe21b48e4db6accbb72b859cd9f3178b1b",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "f3a230840b8e9c8a375bef6e48c451e0bdc92f882934a2991d1b013050db77e4",
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
