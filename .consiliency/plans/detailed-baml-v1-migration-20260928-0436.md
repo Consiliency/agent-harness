@@ -56,9 +56,16 @@ Tracking issue: agent-harness#1135. Evidence is in the issue body and its spike-
   - Tests inject a signal at every bytecode boundary.
 
 - **Revision 13** (round 12): **the plan stops specifying the concurrency algorithm.**
-  - The worker client is now specified by **invariants I1–I8, each with executable falsifiers**. The supervisor design stays as a **non-normative** reference.
+  - The worker client is now specified by **invariants I1–I9, each with executable falsifiers**. The supervisor design stays as a **non-normative** reference.
   - Round-12 findings are folded in as invariants and falsifiers: startup atomicity and waiter recovery (I3), backstop ownership, reply-once and stale frames (I2), separate queue and execution budgets with typed `busy` and a 1 s abandon service (I4), and a lock-free drain (I6).
   - Algorithm-level review moves to the implementation PR.
+
+- **Revision 14** (round 13; bounded to the round-13 in-cap findings):
+  - I1: cleanup scoped to still-owned generations; first exception or a `__context__` chain; both bounds; the lost-notice variant; next-call success; `SystemExit`, custom exceptions and real signals.
+  - I5: the fork-child exit guard.
+  - Per-clause oracles for I2, I4 and I7.
+  - The deleted falsifier criteria are restored in design-neutral form.
+  - New I9 (resources).
 
 ## Task
 
@@ -139,75 +146,112 @@ The worker also runs in its own session or process group (`start_new_session=Tru
 - **Per call:** `_worker_call(op, args)` serializes the request body **once** (`json.dumps(args, ensure_ascii=True, sort_keys=True)`) and captures the expected fingerprint **once**. Every attempt in the retry budget sends a frame whose **body bytes are identical**, and that **differs only in the monotonic `id`** (claude r5 N6), to a worker initialized from exactly that snapshot. A retry therefore cannot answer from different sources or different arguments.
 - **Pinned:** recovery-parity tests for all three production ops against the real runtime. The first worker is killed mid-call, and the retried answer must be byte-equal to a healthy single call's answer.
 
-### Worker client: invariants and falsifiers (NORMATIVE, revision 13)
-The plan states **what the client must guarantee and how each guarantee is proven.** It does not prescribe the concurrency algorithm. Any design that passes I1–I8, with every falsifier implemented as a test in `tests/test_phase_loop_baml_v1_runtime.py`, is acceptable. The algorithm itself is reviewed in the implementation PR against real code and these executable falsifiers.
+### Worker client: invariants and falsifiers (NORMATIVE, revision 14)
+The plan states **what the client must guarantee and how each guarantee is proven.** It does not prescribe the concurrency algorithm. Any design that passes I1–I9, with every falsifier implemented as a test in `tests/test_phase_loop_baml_v1_runtime.py`, is acceptable. The algorithm is reviewed in the implementation PR against real code and these executable falsifiers.
 
-- **I1: interrupts.** A `KeyboardInterrupt`, `SystemExit` or other `BaseException` delivered at **any** point on the calling thread:
-  - re-raises the **first** such exception, **unmapped**;
-  - leaves **no** worker undisposed and **no** request unresolved;
-  - requires **no** further BAML call to achieve that.
+**Definitions.**
+- **"Calling-thread path"** means every frame the calling thread executes during a BAML call, including client helpers and the stdlib callees they reach.
+- **"Owned by request R"** means the worker generation currently assigned to R. A generation that has completed R's work and has been reassigned to another request is no longer owned by R.
+
+- **I1: interrupts.**
+  - **Exception reported.** A `BaseException` (for example `KeyboardInterrupt`, `SystemExit` or any custom `BaseException`) delivered at any point on the calling-thread path causes the call to raise **the first exception**. If another exception arrives while the client is handling the first, the call raises the later one, **chained to the first via `__context__`**. It is **never mapped** to another type.
+  - **Cleanup.** Every generation **still owned by the interrupted request** is disposed of, with its pid gone. A completed generation already reassigned to another request is **preserved** (I2). No request is left unresolved, and no further BAML call is needed for any of this.
+  - **Bounds.** If the client's abandonment notice lands, disposal finishes within the **reap bound (2 s)**. If the notice is lost, for example because a second exception suppresses it, disposal finishes within the **abandonment grace or the request's deadline**, whichever the design uses as its backstop. That backstop bound must be stated in the implementation and asserted by the test.
+  - **Next call.** The next call after any interrupt succeeds on a healthy worker, which is fresh if the previous one was disposed of.
 
   *Falsifiers:*
-  - (a) SIGINT is injected at **every bytecode boundary** of the calling-thread path: via `sys.settrace` opcode events on 3.10/3.11 and `sys.monitoring` `INSTRUCTION` events on 3.12+. Scenarios: a normal call, a call mid-op, a stalled spawn, a cold start.
-  - (b) A **second**, separately armed interrupt: `_thread.interrupt_main()` from a helper thread, gated on an event the injected handler sets. This is needed because on 3.10/3.11 an exception escaping a trace callback disables tracing (codex r12). The test asserts that **both** injections occurred.
-  - (c) **Never calls again:** the caller catches the interrupt and makes no further BAML call. The in-flight worker is still disposed of within its bound.
-
-  Assertions in every run: the first exception type is preserved; each worker the call created or used is completed or disposed, with its pid gone within the stated bound; there is exactly one fault-log entry per disposal.
+  - **(a) Boundary sweep.** Inject at every instruction boundary of the calling-thread path, with `sys.settrace` opcode events on 3.10/3.11 and `sys.monitoring` `INSTRUCTION` events on 3.12+. Three exception types are injected: `KeyboardInterrupt`, **`SystemExit(73)`** and a custom **`class InjectedAbort(BaseException)`**, each carrying a unique payload. The sweep covers four scenarios: a normal call, a call that is mid-op, a stalled spawn, and a cold start.
+    - Single-injection runs assert **identity**: `raised is injected`.
+    - Every run also asserts the cleanup scoped to still-owned generations, the stated bound, one log entry per disposal, and next-call success.
+  - **(b) Double injection.** The second exception must land **inside the client's own exception-handling path**, and the test records where it landed.
+    - On 3.12+, the same `sys.monitoring` callback injects the second exception once execution reaches an instruction inside the client's `except`/cleanup code. The spike confirmed on 3.12.12 that the hook keeps firing after the first raise. The second exception landed inside the `except` body, and the final exception's `__context__` was the first.
+    - On 3.10/3.11, a raise inside a trace callback disables tracing. So the second exception is armed through a client test seam at the start of the exception path, which calls `_thread.interrupt_main()` or raises directly. The seam records that it fired.
+    - Assertions: both injections occurred; the raised exception is the second one; and its `__context__ is first`.
+  - **(c) Real signals where boundary injection cannot reach** (a blocked wait). `signal.pthread_kill(main_ident, SIGINT)` is delivered from a helper thread, gated on the owner's phase (published, mid-op, reply delivered), with the same assertions.
+  - **(d) Never calls again, two variants.** In both, the caller catches the interrupt and makes no further BAML call.
+    - (d1) Notice lands: the worker is disposed of within the reap bound.
+    - (d2) **Notice lost:** a second exception is injected inside the client's exception path, before its notice is sent, and the test verifies where it landed. The worker is disposed of within the stated backstop bound.
 - **I2: ownership.**
-  - A worker generation is disposed of **only** on behalf of the request that currently owns it.
-  - No abandonment, deadline, backstop or late action for request A can dispose of, or disturb, a generation assigned to request B.
-  - Every request reaches **exactly one** terminal outcome and receives **exactly one** reply. Its timers and obligations end at that terminal state.
-  - A frame from a disposed generation is never attributed to a successor (claude r12 B1 and N3; codex r12 3).
+  - A generation is disposed of **only** on behalf of the request that owns it.
+  - No abandonment, deadline, backstop or late action for request A can dispose of, or disturb, a generation owned by request B.
+  - Every request reaches exactly one terminal outcome and gets exactly one reply, and its timers and obligations end at that point.
+  - A frame from a disposed generation is never attributed to a successor.
 
   *Falsifiers:*
-  - A's reply is delivered but A's caller is descheduled, delayed or stopped **beyond** any grace period, while B runs on the same worker. B's call must complete correctly on the same worker pid.
+  - A's reply is delivered, but A's caller is descheduled or stopped beyond any grace period while B runs on the same worker. B completes correctly on the same pid.
   - Concurrent callers combined with abandonment and every backstop timer.
-  - A stale frame is injected from a killed generation. The successor is not faulted and there is no `desync`.
-  - A reply-once check: no request ever observes two replies, including a success followed by `fault`.
+  - A stale frame is injected from a killed generation. The successor is not faulted and no `desync` occurs.
+  - **Deliveries are counted per request at the reply-delivery seam** (a pass-through spy). Across the whole suite, every request's count is exactly 1, including a success followed by an internal fault.
 - **I3: a single owner.**
-  - **Exactly one** supervisor, or whatever the lifecycle owner is, exists at any time.
-  - Lazy start and restart are atomic under concurrency **and** under interruption.
-  - Requests already waiting when the owner dies are served, or given a typed reply within their budget, **without** any new API call.
-  - Recovery finishes every generation the dead owner left detached or published-but-unassigned (claude r12 B2 and N2; codex r12 1–2).
+  - Exactly one lifecycle owner exists at any time.
+  - Lazy start and restart are atomic under concurrency and interruption.
+  - Requests already waiting when the owner dies are served, or get a typed reply within their budget, without any new API call.
+  - Recovery finishes every generation that the dead owner left detached or published but unassigned.
 
   *Falsifiers:*
-  - N threads cold-start concurrently, and exactly one owner is ever observed, by a pass-through spy on thread starts.
-  - An interrupt is injected during owner start (both I1 mechanisms), with the same assertion.
-  - The owner is killed mid-request with other requests waiting, and **no further call** is made. Every waiter gets its result or a typed `BamlWorkerError` within budget, and every worker the dead owner held is disposed of.
+  - N threads cold-start, and exactly one owner is ever observed (a spy on thread starts).
+  - An injection lands during owner start, using the I1 mechanisms.
+  - The owner is killed mid-request with other requests waiting and no further call made. Every waiter gets a result or a typed `BamlWorkerError` within budget, and every worker the dead owner held is disposed of.
 - **I4: deadlines, retries and budgets.**
-  - Every deadline expiry disposes of the owning generation, and retries run on a **fresh** worker.
-  - A spawn is either published and owned, or retired and self-disposed by its spawner. It is never both and never neither (check-and-set, claude r12 N4).
-  - **Queue wait and execution have separate budgets.** A request's execution budget (3 attempts × 60 s) starts when it starts executing. A request that waits in the backlog past its queue budget (3 × 60 s + 10 s) gets `BamlWorkerError(kind="busy")` and never owns a generation.
-  - No internal timeout (for example `queue.Empty`) ever escapes untyped or as `fault` (codex r12 4, claude r12 B3).
-  - An abandon or shutdown request is serviced **within 1 s**, even while an attempt is waiting on a hung op or a stalled spawn (codex r12 3).
+  - Every deadline expiry disposes of the owning generation. Retries run on a fresh worker.
+  - A spawn is either published and owned, or retired and self-disposed. Never both, never neither.
+  - Queue wait and execution have separate budgets. The execution budget (3 × 60 s) starts when the request starts executing. A request queued past its queue budget (3 × 60 s + 10 s) gets `kind="busy"`, and it never owns a generation.
+  - No internal timeout escapes untyped or as `fault`.
+  - Abandon and shutdown are serviced within 1 s, even during a hung op or a stalled spawn.
 
   *Falsifiers:*
-  - B queued behind a 170 s A still succeeds within its own execution budget.
-  - A request queued past its queue budget gets `type(e) is BamlWorkerError` with `kind == "busy"`.
-  - Abandonment during a hung op, and during a stalled spawn, disposes of the worker within 1 s, not at the 60 s deadline.
-  - All the existing deadline, retry, stalled-spawn, publish-before-expiry and blocked-write tests stand.
+  - **`busy`:** two or more long requests are queued ahead. The victim gets `type(e) is BamlWorkerError` with `kind == "busy"` within 1 s of its queue budget. No spawn and no frame are attributed to it (spawn-seam and writer spies). The in-flight worker's pid and its `worker_fault_log()` entries are unchanged.
+  - **Backlog success:** B queued behind a 170 s A still succeeds within its own execution budget.
+  - **Stalled spawn, two separate assertions** (retries 0, only the first spawn delayed through the client's own spawn seam, never `subprocess.Popen`, 3 s delay against a 1 s deadline):
+    - (i) the call gets `kind="spawn"` and a subsequent **abandonment is serviced within 1 s**;
+    - (ii) when the delayed spawn returns, the **late process never enters the slot** and is **gone within 2 s of the spawn's return**. There is exactly one `spawn_late` log entry, and an immediate next call succeeds on a fresh worker.
+  - **Publish-before-expiry:** the spawn publishes, then the deadline fires. That just-published worker is disposed of (one log entry), and the retry uses a fresh pid.
+  - **Retirement:** a spawn that stalls past its deadline is retired. When released, it never publishes, it disposes of its own process, and it logs `spawn_late` once.
+  - **Post-hand-off expiries:** a deadline expiry during init, during a blocked write, and during a hung op each dispose of the worker (pid gone, one log entry). The next attempt runs on a fresh pid.
+  - **Blocked write, and kill mid-read:**
+    - (a) the worker is killed mid-read;
+    - (b) a scripted peer never reads stdin, and a write larger than the pipe buffer is forced.
+
+    Each gives a `BamlWorkerError` within the deadline. The next call runs on a new pid, and the helper that owned each fd has closed it.
+  - **Abandon service:** abandonment during a hung op, and during a stalled spawn, disposes of the worker within 1 s.
 - **I5: fork, exit and owner death.**
   - A non-exec'd fork child's worker-reaching call raises `kind="forked"` without touching inherited state.
-  - `atexit` never starts a thread (3.12+ refuses new threads at shutdown). It gives backlogged requests a `shutdown` reply, and it finishes within 5 s.
-  - Kernel- or OS-enforced owner death follows the platform table.
+  - **Only the process whose pid equals the owner pid ever signals, reaps, writes to or disposes of a worker. In a fork child, every exit path (`atexit`, finalizers, daemon-thread teardown) is a no-op for inherited worker state and does not wait** (claude r13 B1).
+  - `atexit` in the owner never starts a thread, gives backlogged requests `shutdown`, and finishes within 5 s.
+  - Owner death follows the platform table.
 
-  *Falsifiers:* the fork, graceful-exit, owner-death and `shutdown` tests, plus an `atexit` run with a backlog present.
+  *Falsifiers:*
+  - The fork, graceful-exit, owner-death and `shutdown`-with-backlog tests.
+  - **The fork child's exit, in two parts:**
+    - (i) the child makes a call, which raises `forked`, then exits **normally** (`sys.exit(0)`). It exits in **under 1 s**, and an `os.kill`/`os.killpg` spy installed in the child records **nothing**;
+    - (ii) the parent's worker is unaffected, with the same pid and still serving, both during the child's life and after its exit.
 - **I6: calling-thread hygiene.**
-  - The calling thread never blocks on a lock that another thread holds across I/O, `Popen`, a kill, a reap, a sleep or a wait.
+  - The calling thread never blocks on a lock that another thread holds across I/O, `Popen`, kill, reap, sleep or a wait.
   - Daemon threads never log.
-  - The pending-warning drain and `worker_fault_log()` are lock-free on every thread, with at-most-once warnings (claude r12 N1).
+  - The pending-warning drain and `worker_fault_log()` are lock-free, with at-most-once warnings.
+  - **No `__del__`, `weakref.finalize`, signal handler, `threading.excepthook` or logging handler in the client can reach a lock that a daemon thread takes.**
 
-  *Falsifier:* a lock-tracing spy over the whole suite records every lock acquisition, its thread and what runs while it is held, and asserts these rules.
-- **I7: error typing.** `busy`, `forked` and `shutdown` end a call without retry, discard or log. Transport and liveness faults are `BamlWorkerError`. Content errors, the request cap, serialization errors and lone surrogates are a plain `BamlValidationError`. Nothing escapes untyped.
+  *Falsifiers:* a lock-tracing spy over the suite (acquisitions, their threads, and what runs while held), plus the **finalizer and handler lint**, an AST call-graph check.
+- **I7: error typing.**
+  - `busy`, `forked` and `shutdown` end a call without retry, discard or log.
+  - Transport and liveness faults are `BamlWorkerError`.
+  - **Failures in the client's own machinery, such as a thread-start `RuntimeError` or an `os.pipe` `EMFILE`, give `kind="spawn"`.** Any other caller-side `Exception` gives `kind="fault"`.
+  - Content errors, the request cap, serialization errors and lone surrogates are a plain `BamlValidationError`. Nothing escapes untyped.
 
-  *Falsifiers:* the exact-type assertions throughout, plus the client-machinery failure test.
+  *Falsifiers:*
+  - Exact-type assertions throughout.
+  - `threading.Thread.start` patched to raise `RuntimeError`, and `os.pipe` patched to raise `OSError(EMFILE)`: each gives `kind="spawn"`.
+  - **Observable no-discard:** for `busy` (a request stuck in the backlog), `forked` (a fork child) and `shutdown` (a call after `atexit` starts), the other in-flight or parent worker keeps the same pid and keeps serving, `worker_fault_log()` is unchanged, and no spawn is attributed to the call.
 - **I8: parity and bounds, unchanged.** Frame caps (#27), the env allowlist (#15), the source and request snapshots, the caller-table outcomes (#22/#24) and the whole divergence register stay normative, with their existing tests.
+- **I9: resources.** A disposed generation's fds, process handle (and Windows Job handle), and helper threads are released within the reap bound.
 
-**Reference design (NON-NORMATIVE; the implementation may choose any design that passes I1–I8).**
-- One non-main supervisor daemon thread owns every lifecycle transition and every disposal, because `KeyboardInterrupt` is only delivered on the main thread.
-- The calling thread only performs one C-atomic `SimpleQueue.put` to hand over the request, then waits for its reply.
-- Spawner, reader and writer are daemon helpers. Retirement is a check-and-set on a per-spawn token under a lock taken only by non-main threads.
-- Revisions 11–12 described this design in detail. Round 12 found gaps in startup atomicity, recovery of existing waiters, backstop ownership and the separation of the two budgets; I2–I4 now cover each as an invariant with a falsifier. The implementation PR must close them in code.
+  *Falsifier:* after N = 50 dispose cycles (kill, timeout, abandon and fault, mixed), the process's open-fd count (`/proc/self/fd`, or `psutil` on macOS and Windows) and `threading.active_count()` return to their pre-cycle baseline, with a small fixed allowance for the long-lived lifecycle threads, within the reap bound after the last cycle.
+
+**Reference design (NON-NORMATIVE; the implementation may choose any design that passes I1–I9).**
+- One non-main supervisor daemon thread owns every lifecycle transition and disposal, because `KeyboardInterrupt` is only delivered on the main thread.
+- The calling thread performs one C-atomic `SimpleQueue.put` to hand the request over, then waits.
+- Spawner, reader and writer run as daemon helpers.
+- Retirement is a check-and-set on a per-spawn token.
 
 - **Inherited fds.**
   - Worker pipes are created by `os.pipe()`, which is non-inheritable (`O_CLOEXEC`, PEP 446). **Every exec'd child therefore drops them at exec.** After agent-harness#1140 (D7), which this plan lands on top of, that includes the launcher's supervisor: it is an **exec'd program**, not Python running in `preexec_fn`, so CLOEXEC closes our pipes in it and in the executor it starts. (On pre-#1140 main, the Python supervisor closed them explicitly with `_close_supervisor_descriptors`. That path no longer exists at landing time.)
@@ -226,6 +270,7 @@ The plan states **what the client must guarantee and how each guarantee is prove
 - **Response cap:** 17 MiB, giving `framing`.
 - **Idle death** is recorded once and restarted inside attempt 1's budget.
 - **Interruption:** I1.
+- **Client-machinery failures** (thread start, `os.pipe` `EMFILE`) give `kind="spawn"`. Any other caller-side `Exception` gives `kind="fault"` (I7).
 - **Fork:** I5.
 - **The parent never imports `baml_bridge`.**
 
@@ -369,7 +414,7 @@ The plan states **what the client must guarantee and how each guarantee is prove
 ### `phase-loop-runtime/src/phase_loop_runtime/baml_modular.py` (modify)
 - **Add:**
   - `class BamlWorkerError(BamlValidationError)` with `.kind` and `.rc`;
-  - **the worker client**, which must satisfy **I1–I8** (normative). The non-normative reference design is: one supervisor daemon thread owning every lifecycle transition, a calling thread that does one C-atomic hand-off `put` and waits, daemon spawner, reader and writer helpers, and a single spawn seam used as the test seam. `_Client` is created at import with an allocation-only `__init__`, and there is no module-level lock;
+  - **the worker client**, which must satisfy **I1–I9** (normative). The non-normative reference design is: one supervisor daemon thread owning every lifecycle transition, a calling thread that does one C-atomic hand-off `put` and waits, daemon spawner, reader and writer helpers, and a single spawn seam used as the test seam. `_Client` is created at import with an allocation-only `__init__`, and there is no module-level lock;
   - the `_closing` flag (kind `shutdown`);
   - the Windows Job Object helper (ctypes) and the `sys._base_executable` launch;
   - `_worker_env()` (`_filtered_env` given a real job);
@@ -504,7 +549,7 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
     - In (b), the stalled BAML spawn is abandoned, and the next BAML call succeeds on a fresh worker.
     - `/proc/<pid>/fd` of the **exec'd supervisor program** (post-#1140) and of the executor it starts show none of the BAML pipe inodes, because CLOEXEC closed them at exec (claude r9 N1).
   - **Graceful exit while a non-exec fork child is alive.** The parent uses the worker, forks a child that sleeps 30 s holding the inherited fds, and exits normally. The worker is gone within **5 s + 1 s** through the atexit wait-then-kill. A variant SIGKILLs the parent instead: the worker is gone within 3 s by PDEATHSIG, and in a separate run by the watchdog.
-- **Client invariant falsifiers:** every falsifier listed under I1–I8 in "Worker client: invariants and falsifiers" is implemented here. They are the acceptance tests for the client's concurrency, whatever the implementation's design. The stalled-spawn, publish-before-expiry, post-hand-off expiry, blocked-write and discard-with-blocked-owner cases from earlier revisions remain as I4 falsifiers. Preconditions are stated per test (for example, the stalled spawn runs with retries at 0 and only the first spawn delayed, through the client's own spawn seam, never `subprocess.Popen`).
+- **Client invariant falsifiers:** every falsifier listed under I1–I9 in "Worker client: invariants and falsifiers" is implemented here, with the stated preconditions. They are the acceptance tests for the client, whatever the implementation's design. The normative criteria are those written under each invariant; nothing is carried over implicitly from earlier revisions.
 - **Serialization** (claude r6): a `str` argument containing a lone surrogate (`"\ud83d"` as a character), and a non-serializable argument (`object()`), each raise `type(e) is BamlValidationError`. Nothing is sent, the worker pid is unchanged, and `worker_fault_log()` is unchanged. A corpus input containing the character is added to Step 0 and the parity test.
 - **Frame-cap derivation** (#27): for each of the three ops, including the **`parse_closeout` error branch** (non-JSON input echoed back, measured 2.0×) and **nested inputs** (a closeout whose list values are all backslashes), and each shape (all backslash, all quote, astral, control, BMP, ASCII), build a request whose serialized frame is just under 4 MiB, send it to the real worker, and assert the response frame is under 17 MiB. That shows an in-cap request can never produce an over-cap response. A request just over 4 MiB raises a plain `BamlValidationError` (`type(e) is BamlValidationError`), is not sent, and leaves the worker untouched with the same pid. A scripted peer that emits an over-cap response gives `BamlWorkerError(kind="framing")`, and the peer is killed.
 - **#27 per caller site**, with **real** cap failures, not mocks:
@@ -709,7 +754,7 @@ done
   - worker faults of every kind give `BamlWorkerError` with the right `.kind`/`.rc`, discard and kill the worker, and never produce a wrong answer. The kinds are: spawn hook, SIGKILL, timeout, blocked write, each framing case, init fault, panic and fingerprint;
   - owner death per the platform table: Linux in CI and musl, Windows and macOS in the dispatch run; the worker survives a spawning-thread exit and a `killpg` SIGINT;
   - recovery parity for all three ops under a mid-call kill, with an identical snapshot and identical request body bytes across attempts;
-  - **every I1–I8 falsifier passes** (the client-invariant tests): bytecode-boundary and second-interrupt injection, never-calls-again, ownership under concurrency and backstops, single-owner cold start and owner death with waiters, the budget and `busy` typing, 1 s abandon service, fork/exit, the lock-tracing spy and exact error types;
+  - **every I1–I9 falsifier passes** (the client-invariant tests): bytecode-boundary and second-interrupt injection, never-calls-again, ownership under concurrency and backstops, single-owner cold start and owner death with waiters, the budget and `busy` typing, 1 s abandon service, fork/exit, the lock-tracing spy and exact error types;
   - idle-death recovery, in-flight faults at retries 0, and exact per-death log counts;
   - the environment **inside the worker** is a subset of the allowlist, with no sentinels, and output is empty;
   - concurrency, fork-after-use raising `kind="forked"`, the executor launch path after agent-harness#1140 working with a live worker and a stalled spawn, and the stalled-`Popen` recovery;
