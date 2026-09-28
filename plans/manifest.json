@@ -3667,7 +3667,7 @@
           "frozen_by": "FABREADMIT SL-0 (phase-loop-runtime/tests/_fabreadmit_tdd_guard.py FABREADMIT_TEST_PATHS)",
           "issue": "Consiliency/agent-harness#1078",
           "landed": null,
-          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:FABREADMIT: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; a pending authorization accepts nothing; each authorization is spent by exactly one merge. This entry is never mutated once on main.",
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:FABREADMIT: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; a pending authorization accepts nothing and is not refused; each authorization is spent by exactly one merge. This entry is never mutated once on main.",
           "reason": "the agent-harness#1111 merge-guard rulings (queue-protected targets refused, an enqueued merge dequeued and refused, merge authority required at every merge site) change what these nodes' live-merge path does"
         }
       ]
@@ -10474,6 +10474,12 @@
         },
         {
           "plan_sha256": "fbd7f847e19c64cc18b2ce7d008b1a460f1d88dc5ebbb49f7e742eb85e3af820",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "41d2a07b08acc0a2bd5945c91fae1d7775d1f1b5d32137ba02f34be6d1068f26",
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
