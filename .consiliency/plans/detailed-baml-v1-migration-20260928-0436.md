@@ -21,6 +21,27 @@ In revision 3, **the v1 runtime runs only in a dedicated worker subprocess that 
 
 All the new mechanisms were exercised in the round-3 spike (issue comment).
 
+**Revision 5 changes these by construction, not by patching** (round 4: codex and claude DISAGREE; grok and gemini AGREE):
+- **Owner death:** one kernel- or OS-level mechanism per platform, and a table that states exactly what is tested where:
+  - Linux: PDEATHSIG;
+  - Windows: a Job Object with `KILL_ON_JOB_CLOSE`, launching the real interpreter rather than the venv redirector;
+  - macOS: the `getppid` watchdog, with the GIL release now verified during all three real ops, and the residual disclosed.
+- **Client state:** all of it lives in one `_Client` object. The at-fork handler only does `os.close(int)` and drops the reference. Spawning is inside the deadline.
+- **Snapshots:** one source snapshot per process, and one request-bytes snapshot per call reused across retries, with recovery parity pinned for all three ops.
+- **Tests:** split into idle death (recovers), in-flight with retries at 0, and budget.
+- **Claude r4 notes folded in:**
+  - exact-type corpus;
+  - frame caps treated as content errors (#27);
+  - loader env vars allowlisted;
+  - worker cwd pinned;
+  - `--init` / zombie-aware checks;
+  - comment- and string-stripped spawn tripwire;
+  - an AST handler tripwire;
+  - the wave `finally` test with a preserved phase;
+  - downstream outcome pinned through `_parsed_child_automation`;
+  - "re-run" wording corrected;
+  - **adoption-bundle raw digests (#26), newly found**.
+
 ## Task
 
 Replace the `baml-py>=0.222,<0.223` dependency of `phase-loop-runtime` with BAML v1 0.20.1, which is `baml-bridge==0.20.1` (import name `baml_bridge`). Move the `.baml` sources and `baml_modular.py` to the v1 language and runtime. Every public behavior of `phase_loop_runtime.baml_modular` is either preserved or listed in the **divergence register** with a disposition and a pin.
@@ -60,93 +81,95 @@ Replace the `baml-py>=0.222,<0.223` dependency of `phase-loop-runtime` with BAML
 - **Scope.** It is a standalone script that imports only the stdlib plus `baml_bridge`, never `phase_loop_runtime`.
   - All side effects (fd dup/redirect, prctl, watchdog) run under `if __name__ == "__main__":`. Importing the module does nothing.
   - It serves a **fixed** op table: `init`, `parse_closeout`, `closeout_request`, `evidence_request`. There is no caller-named or arbitrary-invoke op.
-  - A second `init` is answered with a `fault`, and so is any op before `init`.
+  - A second `init`, or any op before `init`, is answered with a `fault`.
+  - The test-only ops (`env`) and the prctl-off flag are honoured only when `init` carries `"test_mode": true`, which only `_reset_worker_for_tests(test_mode=True)` sets. A tripwire asserts that no `src/` caller sets it.
 - **Protocol.**
-  - One JSON object per line, encoded as UTF-8 with `ensure_ascii=True`, over binary pipes. This makes it independent of locale and code page.
-  - Requests come in on stdin. Responses go out on a dup of fd 1, taken before fd 1 is pointed at stderr, so native prints cannot corrupt the protocol.
-  - Every request carries a monotonically increasing `id`, which continues across worker restarts. The response echoes it.
+  - One JSON object per line, encoded as UTF-8 with `ensure_ascii=True`, over binary pipes.
+  - Requests come in on stdin. Responses go out on a dup of fd 1, taken before fd 1 is pointed at stderr.
+  - Every request carries a monotonically increasing `id`, continuing across restarts, which the response echoes.
   - A response has exactly the keys `{id, fingerprint, <one of ok|error|request|fault>}`.
-- **Faults.** Any exception inside an op, including `BamlPanic`, is caught and returned as `fault` (`"<module.Class>: <msg>"`). The **client** then discards and kills the worker (see Failure semantics).
-- **Environment normalization.** The worker receives its allowlist key set in argv. Before it imports `baml_bridge`, it deletes every env key outside that set. That covers the `LC_CTYPE` CPython adds by C-locale coercion (spike: a PATH-only child starts with `['LC_CTYPE', 'PATH']`) and `__PYVENV_LAUNCHER__` on Windows/macOS venv launchers. Tests then assert the environment **inside the worker** (codex 4).
-- **Owner liveness** (codex 3). The worker must die with its owner even while hung inside BAML.
-  - **Linux:** at startup, `prctl(PR_SET_PDEATHSIG, SIGKILL)` via `ctypes`. It then re-checks `os.getppid() == <owner pid from argv>` and exits if the owner is already gone.
-  - **PDEATHSIG fires when the parent *thread* that forked exits.** So the client always spawns the worker from **one dedicated, long-lived daemon thread** (`baml-worker-spawner`), never from the calling thread. A caller in a short-lived pool thread therefore cannot cause a spurious kill.
-  - **All platforms:** a watchdog thread polls `os.getppid()` every 0.5 s and calls `os._exit(0)` when it changes.
-  - Spike: a Python thread keeps running during a native BAML op, because the GIL is released (40/40 ticks over a 2 s `baml.sys.sleep`). Killing the owner with SIGKILL while the worker was blocked in a 30 s BAML op removed the worker within 1.5 s with PDEATHSIG alone, and within 1.5 s with the watchdog alone.
-  - Stdin EOF remains a third, idle-time path.
-- **Signals.** The worker is started in its own session: `start_new_session=True` on POSIX, `CREATE_NEW_PROCESS_GROUP` on Windows. A terminal Ctrl-C or a supervisor `killpg` aimed at the runner does not kill it (claude N1). The three liveness paths above still end it when the owner actually dies.
+- **Faults.** Any exception in an op, including `BamlPanic`, is caught with `BaseException` and returned as `fault`. The client then discards and kills the worker.
+- **Environment normalization.** The worker gets its allowlist key set in argv. Before importing `baml_bridge`, it deletes every env key outside that set. This covers C-locale coercion's `LC_CTYPE` (spike: `['LC_CTYPE', 'PATH']`) and `__PYVENV_LAUNCHER__`. Tests read the environment **inside** the worker.
+- **Working directory.** The worker runs in the fixed directory of the installed `phase_loop_runtime` package (`cwd=` on `Popen`), never the caller's cwd. That directory is trusted, and it stays removable on Windows.
+
+### Owner death: one kernel- or OS-level mechanism per platform, stated exactly as tested
+| Platform | Primary mechanism (works while the worker is hung in a native op) | Secondary | Tested where |
+|---|---|---|---|
+| **Linux** (glibc, musl) | `prctl(PR_SET_PDEATHSIG, SIGKILL)` via `ctypes.CDLL(None, use_errno=True)`. That form works on musl, where `find_library("c")` / `libc.so.6` do not. After the prctl, the worker re-checks `getppid()` against the owner pid in argv. PDEATHSIG fires when the forking **thread** exits, so the worker is spawned only from the client's long-lived spawner thread | `getppid` watchdog thread (every 0.5 s) and stdin EOF when idle | CI pytest (Linux) and verification step 6 (musl). The step-6 containers run with **`docker run --init`**, so an orphaned worker is reaped and the "gone within 3 s" check never sees a zombie. The check also treats a zombie state (`Z` in `/proc/<pid>/stat`) as gone |
+| **Windows** | **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, created by the parent through `ctypes` (`CreateJobObjectW` → `SetInformationJobObject(JobObjectExtendedLimitInformation)` → `AssignProcessToJobObject`). The job handle is non-inheritable and held only by the `_Client`. When the owner dies, its last handle closes and the kernel kills every process in the job, even a worker hung inside a native op. **To avoid the venv redirector**, the worker is started with `sys._base_executable` (the real interpreter; `sys.executable` elsewhere), so the process in the job is the worker itself, not a launcher whose child could escape. The venv's `site-packages` still resolve, because `init` carries the parent's `sys.path`. **Ordering:** the parent assigns the job **before** it sends `init`. Until `init` arrives the worker only blocks on stdin, so if the owner dies before assignment, the worker exits on that idle EOF. There is no window in which a hung worker is outside the job | stdin EOF when idle. `getppid` is **not** used on Windows: it does not change when the parent exits | the pre-merge `windows-latest` dispatch run, required by the acceptance criteria. The owner is killed (`TerminateProcess`) while the worker is inside a 30 s hostile `baml.sys.sleep`, and the worker must be gone within 3 s. A second assertion checks that the worker process is in the job (`IsProcessInJob`) |
+| **macOS** | `getppid` watchdog thread. On POSIX the worker is reparented when the owner dies, so `getppid` changes. This needs the GIL. **Verified that the GIL is released during all three real ops**, not only during `baml.sys.sleep`: watchdog ticks were 45/46 during a 232 ms `parse_closeout` of a 1.8 MiB input, 113/124 during a 619 ms `closeout_request` with 40 k owned files, and 6/6 during a 31 ms `evidence_request` with a 2 MiB sample. That was measured on Linux against the same PyO3 build source | stdin EOF when idle | the pre-merge `macos-14` / `macos-13` dispatch run: owner SIGKILL while the worker is in the hostile sleep, worker gone within 3 s. **Residual, disclosed:** a future native op that held the GIL would delay the watchdog until the op returns. There is no macOS kernel equivalent of PDEATHSIG |
+
+The worker also runs in its own session or process group (`start_new_session=True` on POSIX, `CREATE_NEW_PROCESS_GROUP` on Windows), so a terminal Ctrl-C or a `killpg` aimed at the runner does not kill it.
 
 ### Launch and environment
-- **Command.** `Popen([sys.executable, "-I", <path of _baml_worker.py>, <owner pid>, <allowlist keys>], stdin=PIPE, stdout=PIPE, stderr=<temp file>, env=_worker_env(), close_fds=True, start_new_session=True)`.
-  - The `init` message carries the parent's `sys.path` (non-`str` entries dropped) and the **rendered** file map.
-  - Import resolution therefore follows the parent's trust domain: `PYTHONPATH`, the user site, and a cwd entry if the parent has one. That is deliberate and stated. `-I` isolates the environment, not imports.
-- **`_worker_env()` is `_filtered_env` given a real job.** It is an allowlist:
-  - `PATH=<directory of sys.executable>`. This is neither `os.defpath`, which on Windows is `.;C:\bin` and puts the cwd on PATH, nor the parent's `PATH`.
-  - `SYSTEMROOT`, `WINDIR`, `TMPDIR`, `TMP` and `TEMP`, when set.
-  - It **excludes everything else**, including `HOME`, `BAML_*`, `BOUNDARY_*`, `OPENAI_*`, `ANTHROPIC_*`, any `*_API_KEY`, `PYTHON*`, proxies and locale variables.
-  - No locale is set because the protocol does not depend on one (`ensure_ascii`, binary pipes). Coercion leftovers are removed inside the worker, as described above.
+- **Command.** `Popen([<interpreter>, "-I", <path of _baml_worker.py>, <owner pid>, <allowlist keys>], stdin=PIPE, stdout=PIPE, stderr=<temp file>, env=_worker_env(), cwd=<package dir>, close_fds=True, start_new_session=True)`, where `<interpreter>` is `sys._base_executable` on Windows and `sys.executable` elsewhere.
+  - `init` carries the parent's `sys.path` (non-`str` entries dropped) and the rendered file map.
+  - Imports follow the parent's trust domain; `-I` isolates the environment, not imports.
+- **`_worker_env()` allowlist:**
+  - `PATH=<directory of the interpreter>`;
+  - `SYSTEMROOT`, `WINDIR`, `TMPDIR`, `TMP` and `TEMP` when set;
+  - **the dynamic-loader variables `LD_LIBRARY_PATH` (Linux) and `DYLD_LIBRARY_PATH` / `DYLD_FALLBACK_LIBRARY_PATH` (macOS), when set.** Shared-libpython installs need them to start the interpreter at all (claude r4 Q4). They affect only library resolution and carry no credentials;
+  - **everything else is excluded**, including `HOME`, `BAML_*`, `BOUNDARY_*`, `OPENAI_*`, `ANTHROPIC_*`, `*_API_KEY`, `PYTHON*`, proxies and locale variables.
 
 ### Ownership
-- **Process isolation.** Only our client holds the worker's stdin, and the worker loads exactly the map it is sent.
-- **Fingerprint as a further check.** `fingerprint = sha256(canonical JSON of the RENDERED file map)`, computed by the worker from what it loaded and echoed on every response. The client compares it with its own hash of the map it sent.
+- Only our client holds the worker's stdin, and the worker loads exactly the map it is sent.
+- The worker echoes `fingerprint = sha256(canonical JSON of the rendered map)`, computed from what it loaded.
 
-### Client (`baml_modular._BamlWorkerClient`)
-- **Slot and lock.** One module-level slot guarded by a `threading.Lock`. One request at a time; the lock is held for the whole round trip. The worker is started lazily, so a process pays the ~0.8 s cold start once.
-- **Fork safety** (codex 1, claude N2). `os.register_at_fork(after_in_child=_baml_after_fork_in_child)` does three things in the child:
-  1. replaces the lock with a fresh one, because an inherited held lock cannot be released;
-  2. forgets the slot;
-  3. `os.close`s the inherited pipe fds without flushing and neutralizes the `Popen` object, so the child never signals or waits on the parent's worker. The parent's worker still sees EOF when the parent dies.
+### Sources and argument snapshots (codex B2, claude r4 Q8)
+- **Per process:** the rendered file map and its fingerprint are computed **once per process**, on first use, and held in the `_Client` (below). Every worker, including every respawn, is initialized from that same snapshot. It is cleared only by `_reset_worker_for_tests()` (as v0's `lru_cache` on `_runtime` behaved). The regex readers behind D1a / `export_function_schema` read the same snapshot, so the worker and the Python-side schema cannot diverge mid-process.
+- **Per call:** `_worker_call(op, args)` serializes the request body **once** (`json.dumps(args, ensure_ascii=True, sort_keys=True)`) and captures the expected fingerprint **once**. Every attempt in the retry budget sends exactly those bytes to a worker initialized from exactly that snapshot. A retry therefore cannot answer from different sources or different arguments.
+- **Pinned:** recovery-parity tests for all three production ops against the real runtime. The first worker is killed mid-call, and the retried answer must be byte-equal to a healthy single call's answer.
 
-  The `atexit` handler acts only when `os.getpid()` equals the pid that owns the slot.
-  - Spike: with thread A holding the lock mid-request (a 3 s op), the main thread forked. The child's call succeeded in 0.82 s on its own worker pid. The parent's worker finished A's request and kept serving on the same pid.
-- **Bounded IPC** (codex 2, claude N3). **One deadline covers send and receive.** The default is 60 s; tests can override it.
-  - **Writes** are done by a per-worker writer thread. The caller waits on a completion event with the remaining deadline. If the deadline passes, the worker is killed, which unblocks the writer with `BrokenPipeError`, and the call fails typed. A worker that has stopped reading stdin therefore cannot hold the lock forever.
-  - **Reads** are done by a per-worker **daemon** reader thread using `readline(MAX_RESPONSE_BYTES + 1)`, with `MAX_RESPONSE_BYTES = 4 MiB`, into a per-worker queue.
-  - Request frames are capped at `MAX_REQUEST_BYTES = 16 MiB`. The `init` map today is about 30 KB.
-  - Each of these becomes a typed error, followed by discard and kill:
-    - an oversized request, which is refused before sending;
-    - a response line longer than the cap;
-    - a line without its trailing newline, i.e. EOF mid-frame (truncated);
-    - non-JSON or a non-object;
-    - a wrong `id`, a wrong fingerprint, or a wrong key set;
-    - a `json.loads` failure of an `ok` payload.
-- **`atexit`.** Close stdin, wait up to 5 s, then kill.
+### Client state: one `_Client` object (claude B2)
+- **All client state lives in one `_Client` instance,** referenced by the module-level `_CLIENT`:
+  - the request lock;
+  - the worker slot;
+  - the spawner thread and its hand-off queue and events;
+  - the writer thread and the daemon reader thread with their queues;
+  - the `Popen`, its file objects and raw fds;
+  - on Windows, the Job handle;
+  - the source snapshot;
+  - the fault log.
+
+  There are no other module-level locks or primitives.
+- **At-fork child handler** (`os.register_at_fork(after_in_child=…)`). It does **only OS-level work**, so it cannot block on any Python-level lock the parent's threads held at the fork:
+  1. keep the old object alive in `_STALE_CLIENTS` (a module list, never iterated), so it is never finalized after fd-number reuse and no `__del__` closes a reused fd;
+  2. `os.close()` the raw inherited fd **integers** the old `_Client` recorded at spawn: the worker's stdin write end and stdout read end. It never calls Python `close()` or `flush()` on the file objects, because the parent's reader thread is almost always inside `BufferedReader.readline`, holding that object's internal lock;
+  3. set `_CLIENT = None`.
+
+  The child then builds a fresh `_Client`, with its own lock, spawner, threads and worker, lazily on first use. The handler also runs in `subprocess` children that use `preexec_fn`, and it is safe there because it only calls `os.close` and assigns a reference.
+- **Spawning is inside the deadline.**
+  - A call asks the spawner thread to spawn and waits on the hand-off with the **same** per-call deadline that covers send and receive.
+  - If the spawner thread is not alive, for example it died or this is a fresh post-fork object, it is recreated first.
+  - The spawner catches `BaseException` per request and reports it through the hand-off.
+  - A spawn failure or a spawn timeout raises `BamlWorkerError(kind="spawn")`.
+- **Bounded IPC** is unchanged from revision 4: one deadline for spawn, send and receive; a writer thread; a daemon reader using `readline(MAX_RESPONSE_BYTES + 1)`.
+- **Frame caps are input-dependent, so they are content errors, not transport faults** (claude r4 Q7):
+  - A request over `MAX_REQUEST_BYTES` (16 MiB) is refused before sending with a **plain** `BamlValidationError`. The worker is left untouched and there is no retry.
+  - A response over `MAX_RESPONSE_BYTES` (4 MiB) kills the worker (the stream is unsynchronized), is logged, and raises a **plain** `BamlValidationError`, not retried, because the same input would produce it again.
+  - Both caps are register row #27.
+  - Every other framing fault (unterminated line, non-JSON, non-object, wrong id, fingerprint or key set, non-JSON `ok`) is `BamlWorkerError` with the matching `kind`.
+- **`atexit`** acts only when `os.getpid()` equals the owning pid: close stdin, wait 5 s, then kill; on Windows, close the job handle.
 
 ### Failure semantics
-- **New error type** (claude B1): `class BamlWorkerError(BamlValidationError)`.
-  - It is raised only for transport and liveness faults: spawn or init failure, death, timeout, desync, framing error, fingerprint mismatch, or a worker-side `fault`.
-  - It carries `.kind` (one of those names) and `.rc` (the exit code, set only when the worker is known to be dead, else `None`). Attributes are asserted instead of message text (#19).
-  - A **content** verdict (`error` from the bridge, a pydantic failure, a missing payload key, a name outside the bridge table) stays a plain `BamlValidationError`.
-  - Callers can therefore tell "we could not evaluate" apart from "the input is invalid", and the frozen surface is unchanged because `BamlWorkerError` is a `BamlValidationError`.
-- **Any `BamlWorkerError` discards AND kills the worker** (claude B3). A `BamlPanic` is v1's unrecoverable class, so a runtime that raised one is never reused.
-- **Bounded retry of transport and liveness faults only.**
-  - Every op is a pure function of its input (parse, or render a request); none has side effects.
-  - So `_worker_call` retries a `BamlWorkerError` on a **fresh** worker at most **2** times, 3 attempts in total, then raises the last `BamlWorkerError`.
-  - Content verdicts are never retried.
-- **A death between calls is not charged to the next call** (claude B1).
-  - Before sending, a liveness check that finds the worker dead **records the death**, restarts, and proceeds; nothing was sent, so this is not a retry.
-  - Recording means an entry in `baml_modular.worker_fault_log()` (kind, rc, stderr tail, timestamp) plus a `logging.warning`.
-  - Deaths are never hidden. Every one is recorded exactly once, and tests assert that count.
-- **`KeyboardInterrupt` and any other `BaseException`** raised in the parent during a write or wait kills and discards the worker, so a late response can never be read by the next request, and then re-raises unmapped.
-- **The parent never imports `baml_bridge`.** No hooks, no `atexit(shutdown_runtime)` and no v1 singleton exist in our process. After a full public call, `'baml_bridge' not in sys.modules` is a tripwire.
+- **`BamlWorkerError(BamlValidationError)`**, with `.kind` in {`spawn`, `init_fault`, `died`, `timeout`, `desync`, `framing`, `fingerprint`, `fault`} and `.rc` set only when the worker is known dead. It is raised only for transport and liveness faults. Content verdicts, the frame caps and names outside the bridge table raise a plain `BamlValidationError`.
+- **Any `BamlWorkerError` discards and kills the worker.**
+- **Retry budget:** at most 2 retries of a `BamlWorkerError`, each on a fresh worker built from the **same** snapshot with the **same** request bytes. Content errors are never retried.
+- **Idle death** (the worker died between calls): the pre-send liveness check records it once, restarts, and proceeds. This is not a retry and does not consume the budget. The call's answer is the healthy answer.
+- **`worker_fault_log()`** records **one entry per actual worker death or kill**: kind, rc, stderr tail, timestamp. It also emits a `logging.warning`.
+- A `KeyboardInterrupt` or any other `BaseException` in the parent during spawn, write or wait kills and discards the worker, then re-raises unmapped.
+- The parent never imports `baml_bridge`.
 
-### Cost (round-2 addendum §1, plus the round-3 measurement)
-- **Latency:**
-  - cold start about 755–839 ms, once per process;
-  - `parse_closeout` median 2.75 ms (p95 4.3 ms);
-  - `closeout_request` median 3.5 ms;
-  - v0 took 27–60 ms on the first call and about 0.9 ms after.
-  - On the launch path, the first launch in a runner process gains about 0.8 s, and later launches about 3 ms.
-- **Memory:** the worker's VmRSS is about 41 MB before init, **about 281 MB after `initialize_runtime`**, and about 282 MB after a parse (peak about 286 MB). v0's in-process `from_files` added about 21 MB to the parent (28 MB → 49 MB maxrss).
-  - The v1 cost comes from the runtime, not the worker; in-process would add the same to our own process.
-  - It is paid once per runner process that touches BAML, and it is disclosed (#25).
+### Cost
+- **Latency:** cold start about 755–839 ms, once per process; about 3 ms per call after that. On the launch path the first launch pays about 0.8 s.
+- **Memory:** about 281 MB resident after `initialize_runtime` (v0 in-process: about 21 MB). This is the v1 runtime's own cost, and it is disclosed (#25).
 
 ## Caller handling of `BamlWorkerError` (claude B1, B2; code-read on main `b687e311`)
 
 | Call site | Enclosing function and path to the CLI | Durable state written before the call | Can a sibling executor be live? | Rev-4 handling |
 |---|---|---|---|---|
-| Closeout parse: `runner._parse_native_closeout_status` → `discovery.parse_closeout_payload_doc` → `parse_baml_response("EmitPhaseCloseout")` (runner.py around line 10466) | `_parsed_child_automation` (around 10389). It is called after `launch_with_spec` returns: from `run_loop` (around 3924, serial and wave finalize after `run_phase_worker_pool` has joined), `launch_delegated_child` (around 5404/5446) and the lane helpers (around 10616/10962) | The executor has **finished**. Its output is in the launch artifacts (log). The phase status is still the launch-time status | No. Serial: one executor, already exited. Wave: the pool has joined every job before finalization | **Today `except BamlValidationError` maps to `automation_status=blocked`, `blocker_class=contract_bug`, "BAML closeout validation failed"**, a durable invalid-closeout verdict. Rev 4 adds `except BamlWorkerError` **before** it, after the bounded retries, and maps to `automation_parse_error` with `blocker_class="unretryable_external_outage"` (existing frozen vocabulary; no new term). The summary reads `"closeout NOT evaluated: BAML worker <kind> (rc=<rc>) after 3 attempts; executor output preserved at <log>; re-run to re-evaluate"`, `human_required=false`. It is **never** `contract_bug` and never a verdict on the closeout content. It goes through the same code path v0 used for a parse error, so wave teardown and branch preservation behave exactly as they did for v0 parse errors. It does not propagate, because propagating out of wave finalization would run the wave `finally` (around runner.py 5006), which reclaims worktrees not in `preserve_branches`, i.e. it could discard sibling phases' completed work |
-| Tier 3: `evidence_audit.evaluate_suspected_fake_evidence` → `build_baml_request("EvaluateSuspectedFakeEvidence")` (around line 905) | `run_evidence_audit` loop (around 845) → the runner's closeout evidence gate | The executor has finished. The Tier-2 findings are in memory | No (post-launch) | **Today every exception becomes `_uncertain_fallback` → verdict `uncertain` → `tier3_judgment_blocker` returns `None`**, a warning only. That is fail-open. Rev 4: `evaluate_suspected_fake_evidence` re-raises `BamlWorkerError`, placed before its `except (…, ValueError, …)`. The loop at around line 845 catches `BamlWorkerError` **before** `except Exception` and sets `blocker = {"human_required": False, "blocker_class": "unretryable_external_outage", "blocker_summary": "Tier 3 evidence audit NOT run: BAML worker <kind> after 3 attempts; re-run to audit"}`. The closeout is blocked, **never skipped**, and never judged fake. Other Tier-3 call errors (HTTP down, and so on) keep v0's `uncertain` policy; that is unchanged and out of scope |
+| Closeout parse: `runner._parse_native_closeout_status` → `discovery.parse_closeout_payload_doc` → `parse_baml_response("EmitPhaseCloseout")` (runner.py around line 10466) | `_parsed_child_automation` (around 10389). It is called after `launch_with_spec` returns: from `run_loop` (around 3924, serial and wave finalize after `run_phase_worker_pool` has joined), `launch_delegated_child` (around 5404/5446) and the lane helpers (around 10616/10962) | The executor has **finished**. Its output is in the launch artifacts (log). The phase status is still the launch-time status | No. Serial: one executor, already exited. Wave: the pool has joined every job before finalization | **Today `except BamlValidationError` maps to `automation_status=blocked`, `blocker_class=contract_bug`, "BAML closeout validation failed"**, a durable invalid-closeout verdict. Rev 4 adds `except BamlWorkerError` **before** it, after the bounded retries, and maps to `automation_parse_error` with `blocker_class="unretryable_external_outage"` (existing frozen vocabulary; no new term). The summary reads `"closeout NOT evaluated: BAML worker <kind> (rc=<rc>) after 3 attempts; executor output preserved at <log>"`. **No claim is made that a re-run re-parses the preserved output.** A re-run applies the runner's existing handling for a blocked phase, which may relaunch the executor; the preserved log is there for inspection, `human_required=false`. It is **never** `contract_bug` and never a verdict on the closeout content. It goes through the same code path v0 used for a parse error, so wave teardown and branch preservation behave exactly as they did for v0 parse errors. It does not propagate, because propagating out of wave finalization would run the wave `finally` (around runner.py 5006), which reclaims worktrees not in `preserve_branches`, i.e. it could discard sibling phases' completed work |
+| Tier 3: `evidence_audit.evaluate_suspected_fake_evidence` → `build_baml_request("EvaluateSuspectedFakeEvidence")` (around line 905) | `run_evidence_audit` loop (around 845) → the runner's closeout evidence gate | The executor has finished. The Tier-2 findings are in memory | No (post-launch) | **Today every exception becomes `_uncertain_fallback` → verdict `uncertain` → `tier3_judgment_blocker` returns `None`**, a warning only. That is fail-open. Rev 4: `evaluate_suspected_fake_evidence` re-raises `BamlWorkerError`, placed before its `except (…, ValueError, …)`. The loop at around line 845 catches `BamlWorkerError` **before** `except Exception` and sets `blocker = {"human_required": False, "blocker_class": "unretryable_external_outage", "blocker_summary": "Tier 3 evidence audit NOT run: BAML worker <kind> after 3 attempts"}`. The closeout is blocked, **never skipped**, and never judged fake. Other Tier-3 call errors (HTTP down, and so on) keep v0's `uncertain` policy; that is unchanged and out of scope |
 | Launch prompt, serial: `run_loop` → `build_prompt` (around runner.py 3312) | `run_loop` → `cli._main` (cli.py around 1852). No handler in between (dispatch-lock handler around 1488 only; the `ValueError`/`Exception` handlers around 1318–1381 run before dispatch) | The phase selection event may have been emitted; nothing is launched | No. Launch follows the prompt build | `BamlWorkerError` propagates after the bounded retries. `phase-loop run` exits non-zero with the typed error. The dispatch lock is released by its context manager with **no live executor**. No verdict is written (#22) |
 | Launch prompt, concurrent wave: `_dispatch_concurrent_wave` → `_prepare_phase_launch` → `build_prompt` (around 4703 → 3312) | Inside the wave `try:` (around 4785). Its `finally` (around 5006) reclaims prepared worktrees | Worktrees were created for the phases prepared so far. **No job has started**: `run_phase_worker_pool` runs only after every phase is prepared | **No.** All prompts are built before the pool starts | Propagates. The `finally` reclaims only freshly created, unlaunched worktrees, so no work can be lost. The dispatch lock is released with no live executor |
 | Delegated child: `launch_delegated_child` → `build_prompt` (around 5253) | Called from `run_loop` around 4059, in the `automation_status == "delegated"` branch, after the **parent executor has exited** | The parent's closeout has been parsed. **The parent's phase status is NOT yet persisted**: `set_phase_status(...)` runs after `launch_delegated_child` returns (around 4121) | No. The parent has exited, and the child has not launched | Propagating would abort the run before the parent's result is recorded. So rev 4 wraps the `launch_delegated_child(...)` call in that branch with `except BamlWorkerError` and routes it into the **existing** blocked-outcome flow of the branch: `status_after_launch = "blocked"`, and `event_blocker = {"human_required": False, "blocker_class": "unretryable_external_outage", "blocker_summary": "delegated child NOT launched: BAML worker <kind> after 3 attempts"}`, persisted by the same `set_phase_status` call. The child is not launched, and the parent's result is recorded. A plain content `BamlValidationError` cannot occur on this path, because the prompt build has no content verdict |
@@ -179,8 +202,10 @@ Replace the `baml-py>=0.222,<0.223` dependency of `phase-loop-runtime` with BAML
 | 21 | Closeout request envelope from `PhaseLoopCloseoutClient` | **Parity, measured equal** | Step 0 closeout-request golden (5 payloads) |
 | 22 | `injection.py`: v0 swallowed `BamlValidationError` and launched with a fallback instruction | **Changed (lead)**: the fallback is removed. Per-site outcomes are in the caller table: the launch fails typed, and **no call site launches without the contract, releases a lock over a live executor, or converts the error into a verdict** | tests per site: serial `run_loop`, wave prepare, delegated child, lane entry point |
 | 23 | Names outside the bridge table | **Parity** (v0 rejected the same set) | Step 0 plus test |
-| 24 | **New causes for `BamlValidationError`**: the worker can die, time out, desync or fault, independent of the input (claude B1) | **Typed and routed**: `BamlWorkerError` subclass; bounded retries (at most 2) on a fresh worker for pure ops; a death between calls is recorded, not charged; each caller maps it to **"not evaluated"**, never to a content verdict and never to a skip (caller table) | real-worker tests: kill between calls and mid-call while driving the discovery closeout parse, the runner native-closeout path and the Tier-3 build; assert the caller outcomes in the table and the `worker_fault_log()` counts |
+| 24 | **New causes for `BamlValidationError`** (all retries within one call use one source snapshot and identical request bytes): the worker can die, time out, desync or fault, independent of the input (claude B1) | **Typed and routed**: `BamlWorkerError` subclass; bounded retries (at most 2) on a fresh worker for pure ops; a death between calls is recorded, not charged; each caller maps it to **"not evaluated"**, never to a content verdict and never to a skip (caller table) | real-worker tests: kill between calls and mid-call while driving the discovery closeout parse, the runner native-closeout path and the Tier-3 build; assert the caller outcomes in the table and the `worker_fault_log()` counts |
 | 25 | **Memory**: the v1 runtime is about 240 MB resident (worker ~281 MB after init), against ~21 MB added by v0 in-process | **Accepted**, disclosed (CHANGELOG, D6 risk list); inherent to v1 | test: the worker's VmRSS after init is recorded in the verification log (Linux); no threshold is asserted, because the number is informative |
+| 26 | **Adoption-bundle digests.** `adoption_bundle._schema_refs` hashes the RAW bytes of every `baml_src/*.baml` (around `adoption_bundle.py:151`). `fmt` and the syntax edits change 8 digests, and `phase_loop_bridge.baml` adds a ref (named `phase_loop_bridge`, since it has no classes). A vendoring repo's committed adoption bundle therefore reports `stale` until `adoption-bundle refresh` | **Accepted**, disclosed (CHANGELOG: "downstream repos run `phase-loop adoption-bundle refresh` after upgrading"). This was not found in revision 4; claude r4 asked to confirm nothing hashes raw `.baml` bytes | test: on this tree, `check_adoption_bundle` of a freshly refreshed bundle is `fresh` and includes the bridge ref. If `test_phase_loop_adoption_bundle.py` asserts a ref count of 8, that edit is disclosed under the coverage rule |
+| 27 | **Frame caps** (new observable limits): a request over 16 MiB or a response over 4 MiB raises a plain `BamlValidationError` | **Accepted**. v0 had no cap. The caps are orders of magnitude above real inputs (the `init` map is about 30 KB, and a 1.8 MiB parse input works) | cap tests (plain type, no retry) |
 
 ## Decisions (all decided)
 
@@ -251,20 +276,20 @@ Replace the `baml-py>=0.222,<0.223` dependency of `phase-loop-runtime` with BAML
   - sequence ids and the fixed op table;
   - rejection of a second `init`;
   - env normalization against the argv allowlist before `baml_bridge` is imported;
-  - `PR_SET_PDEATHSIG` on Linux, plus the `getppid` watchdog thread on every platform;
+  - the owner-death mechanisms from the platform table: PDEATHSIG on Linux (`ctypes.CDLL(None)`); the `getppid` watchdog on POSIX (Linux, as a secondary, and macOS); none inside the worker on Windows, where the parent's Job Object enforces it;
   - `ensure_ascii` framing;
   - `__main__`-only side effects.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/baml_modular.py` (modify)
 - **Add:**
   - `class BamlWorkerError(BamlValidationError)` with `.kind` and `.rc`;
-  - `_BamlWorkerClient` with its writer and daemon reader threads, the frame caps, one deadline, and fault → discard + kill;
-  - the long-lived `baml-worker-spawner` thread;
+  - **one `_Client` class holding all client state:** lock, slot, spawner thread and hand-off, writer and daemon reader threads, `Popen`, file objects, raw fd ints, the Windows Job handle, the source snapshot and the fault log. It is referenced by `_CLIENT`, with `_STALE_CLIENTS` for post-fork keep-alive;
+  - the Windows Job Object helper (ctypes) and the `sys._base_executable` launch;
   - `_worker_env()` (`_filtered_env` given a real job);
   - the module slot plus lock;
-  - `os.register_at_fork(after_in_child=…)`;
+  - `os.register_at_fork(after_in_child=…)`, OS-level only: `_STALE_CLIENTS.append(old)`, `os.close(<raw fd ints>)`, `_CLIENT = None`;
   - the pid-guarded `atexit`;
-  - `_worker_call(op, args)` with the bounded retry (at most 2, transport and liveness faults only);
+  - `_worker_call(op, args)`: a per-call snapshot (request bytes plus expected fingerprint) reused across the bounded retry (at most 2, transport and liveness faults only);
   - `worker_fault_log()`;
   - `_reset_worker_for_tests()`.
 - `_reset_worker_for_tests()` terminates and discards the worker. Any test that uses non-packaged sources calls it in setup **and** teardown, so the pytest process is never poisoned and the first call never meets a stale fingerprint (grok 3; claude r3 Q3).
@@ -318,7 +343,7 @@ Replace the `baml-py>=0.222,<0.223` dependency of `phase-loop-runtime` with BAML
 New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker and real runtime with no stubs. Any test that swaps sources calls `_reset_worker_for_tests()` in teardown.
 
 - **Parity against the Step 0 goldens:**
-  - the parse corpus is identical except the flagged `pix_2p70`, which is asserted `null`;
+  - the parse corpus is identical except the flagged `pix_2p70`, which is asserted `null`. **Content errors assert `type(e) is BamlValidationError`, never the subclass.** The whole corpus must be served by **one** worker pid with `worker_fault_log()` unchanged, so an input that surfaces as a worker `fault` fails parity instead of passing as a subclass (claude r4 Q1);
   - the evidence request (#1–#3) and the closeout request envelope (#21) equal their goldens on every field except `id` and the closeout prompt;
   - `id is None` (#20);
   - the #23 names raise `BamlValidationError`;
@@ -335,66 +360,68 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
   - no sentinel appears in url, headers, body or prompt;
   - the worker's own environment (read through a protocol-test `init`) has only allowlisted keys;
   - the worker's stderr and the child's stdout and stderr are empty.
-- **Worker death and faults: always a `BamlWorkerError`, the parent survives, and there is no wrong answer.** Each case runs in a subprocess that must exit 0. Assertions use `.kind` and `.rc`, never message text.
-  - **The spawn hook:** the patched raw-read seam supplies a hostile `phase_loop_bridge.baml` whose `phase_loop_parse_closeout` runs `spawn with baml.spawn.options(detach = true) { throw baml.errors.Io { … } }`.
-    - Call 1 must return **either** the correct result **or** `BamlWorkerError`, never a wrong answer. Its result is computed before the hook fires (measured about 138 ms after return).
-    - Wait up to 5 s for the worker to exit with rc 1.
-    - Call 2, with the **packaged** sources restored, succeeds on a fresh pid.
-    - `worker_fault_log()` shows **exactly one** death with `rc == 1`. A death between calls is recorded, not charged to the next call.
-  - **SIGKILL mid-call:** a hostile bridge sleeps via `baml.sys.sleep`, and the worker is killed after 0.5 s. With retries allowed, the call succeeds on a fresh pid, and the fault log shows the kill (`kind="died"`, `rc=-9`). With retries forced to 0, the call raises `BamlWorkerError(kind="died", rc=-9)`.
-  - **Timeout:** with a test-sized deadline and retries at 0, the call raises `BamlWorkerError(kind="timeout")`, and the worker is gone.
-  - **Blocked write** (codex 2): a scripted peer never reads stdin, and the request is larger than the pipe buffer. The call raises `BamlWorkerError(kind="timeout")` within the deadline, and the lock is free again.
-  - **Framing** (codex 2): scripted peers emit, in turn:
-    - an oversized line (over 4 MiB);
-    - an unterminated line followed by EOF;
-    - non-JSON;
-    - a JSON array;
-    - a wrong `id`;
-    - a wrong fingerprint;
-    - an extra key;
-    - an `ok` that is not JSON.
-
-    Each gives `BamlWorkerError` with the matching `kind`, and the peer is killed. An oversized request is refused before sending. The scripted peers live in `tests/fixtures/baml_worker_peers.py`; they are legitimate stand-ins for a misbehaving peer, which the real worker cannot be made to produce. Every other test uses the real worker.
-  - **Broken source at init:** `BamlWorkerError(kind="init_fault")` at both public entry points. The next call with packaged sources succeeds.
-  - **In-BAML panic** (claude B3): `BamlWorkerError(kind="fault")`. The worker pid is **dead**, and the next call succeeds on a **new** pid.
-  - **Protocol checks:** an op before `init` gives a `fault`, and a second `init` gives a `fault`.
-  - **Fingerprint:** a client that is handed a different map than the worker loaded raises `BamlWorkerError(kind="fingerprint")`. Changing only the evidence prompt changes the rendered-map hash.
-- **Owner liveness** (codex 3), in a subprocess on Linux:
-  - A parent starts the worker inside a 30 s hostile `baml.sys.sleep` op, then is SIGKILLed. The worker must be gone within 3 s. This is tested twice: once with PDEATHSIG enabled, and once with only the watchdog (a test flag in the `init` message disables prctl).
-  - A second test runs the call from a short-lived pool thread that exits. The worker must **survive** that thread's exit, which pins the spawner-thread design.
-  - Spike: both mechanisms remove a worker blocked in BAML within 1.5 s.
-- **Signals** (claude N1): `os.killpg(parent_pgid, SIGINT)` interrupts the parent (the test catches `KeyboardInterrupt`), the worker survives it (it runs in its own session), and the parent's next call succeeds on the same pid.
-- **`KeyboardInterrupt` in the parent** mid-wait, as a separate subprocess test: SIGINT to the parent's pid only. The process ends with an unmapped `KeyboardInterrupt` traceback, the worker is killed, and no `BamlValidationError` is printed.
-- **Environment inside the worker** (codex 4; #15): the parent env holds distinct sentinels for `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `BAML_LOG`, `BAML_TRACE`, `BAML_HOME`, `BOUNDARY_API_KEY`, `BOUNDARY_PROJECT_ID`, `HOME` and `HTTPS_PROXY`. Then:
-  - a test-only `env` op (enabled by the same test flag) returns `sorted(os.environ)` **from inside the worker**, which must be a subset of the allowlist. `LC_CTYPE` from coercion must be absent;
+- **Worker faults** (codex B3; each case runs in a subprocess that must exit 0; assertions use `.kind` and `.rc`, never message text). The tests are split so that none contradicts the recovery contract:
+  - **IDLE death, the recovery contract.** Between two calls, kill the idle worker, three ways: SIGKILL; the spawn hook; and a native `os._exit` by the hostile bridge on a *previous* call. The next call returns the **correct** answer on a new pid. `worker_fault_log()` gains **exactly one** entry for that death. The retry budget is untouched.
+  - **IN-FLIGHT fault with retries forced to 0.** A hostile bridge sleeps via `baml.sys.sleep`, and the worker is SIGKILLed after 0.5 s. The call raises `BamlWorkerError(kind="died", rc=-9)`. The log gains one entry.
+  - **IN-FLIGHT fault within the retry budget.** The same kill happens on attempt 1 only; the test harness kills only the first worker pid. The call returns the correct answer, byte-equal to a healthy call. The log gains exactly one entry, one per actual death.
+  - **Retry-budget exhaustion.** Every attempt's worker is killed mid-call (a hostile bridge that always sleeps, plus the harness kill). There are 3 attempts, then `BamlWorkerError`, and the log gains **exactly 3** entries.
+  - **Spawn hook, retries forced to 0.** The hostile `phase_loop_parse_closeout` does a detached failing `spawn`. Call 1 returns the correct result or `BamlWorkerError(kind="died")`, never a wrong answer. The worker exits rc 1 within 5 s. The log has **exactly one** entry (`rc == 1`). A **separate** test runs the same hook with the default budget and asserts one log entry per worker death that actually happened (checked against the set of pids started).
+  - **Recovery parity for all three production ops** (codex B2). For `parse_closeout`, `closeout_request` and `evidence_request`, kill attempt 1 mid-call. The retried answer must be byte-equal to a healthy call's answer. The snapshot fingerprint and the request bytes (captured through a pass-through spy on the writer) must be identical across attempts.
+  - **Timeout** (retries 0): `BamlWorkerError(kind="timeout")`, and the worker is gone.
+  - **Blocked write** (scripted peer that never reads stdin; request larger than the pipe buffer): `BamlWorkerError(kind="timeout")` within the deadline, and the lock is free again.
+  - **Spawn under the deadline:** the spawner is patched to block, and the call raises `BamlWorkerError(kind="spawn")` within the deadline. With the spawner thread killed (a test hook), the next call recreates it and succeeds. A spawn exception, such as a missing interpreter path, gives `kind="spawn"`.
+  - **Framing** (scripted peers in `tests/fixtures/baml_worker_peers.py`): unterminated line plus EOF, non-JSON, JSON array, wrong id, wrong fingerprint, extra key, non-JSON `ok`. Each gives `BamlWorkerError` with the matching kind, and the peer is killed. **Caps** (#27): an oversized request gives a plain `BamlValidationError` (`type(e) is BamlValidationError`) before sending, with the worker untouched. An oversized response gives a plain `BamlValidationError`, the worker is killed, and there is no retry.
+  - **Broken source at init:** `BamlWorkerError(kind="init_fault")` at both entry points.
+  - **In-BAML panic:** `BamlWorkerError(kind="fault")`, the pid is dead, and the next call succeeds on a new pid.
+  - **Protocol:** an op before `init` gives a fault, and so does a second `init`.
+  - **Fingerprint:** a mismatched map gives `kind="fingerprint"`.
+- **Owner death, per platform, exactly as in the contract table.** The worker is inside a 30 s hostile `baml.sys.sleep` when its owner is killed, and it must be gone within 3 s (zombie-aware):
+  - **Linux:** PDEATHSIG enabled; and separately, PDEATHSIG off (test flag) with the watchdog only. A further case calls from a short-lived pool thread that exits, and the worker must **survive** that exit, which pins the spawner-thread design.
+  - **Windows** (dispatch run): kill via `TerminateProcess`. Also assert `IsProcessInJob(worker) == True`, and that the worker's image is `sys._base_executable` (no redirector).
+  - **macOS** (dispatch run): watchdog path.
+- **Signals:** a `killpg` SIGINT to the runner's group leaves the worker alive (own session), and the next call uses the same pid. A separate test sends SIGINT to the parent pid mid-wait: the parent ends with an unmapped `KeyboardInterrupt`, the worker is killed, and no `BamlValidationError` is printed.
+- **Environment inside the worker** (#15): sentinels for `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `BAML_LOG`, `BAML_TRACE`, `BAML_HOME`, `BOUNDARY_API_KEY`, `BOUNDARY_PROJECT_ID`, `HOME` and `HTTPS_PROXY` are set in the parent. Then:
+  - the test-mode `env` op returns the worker's `sorted(os.environ)`, which must be a subset of the allowlist, with `LC_CTYPE` absent;
   - both `BamlRequest`s equal their goldens;
-  - no sentinel appears in url, headers, body or prompt;
-  - the worker's stderr and the child's stdout and stderr are empty.
-- **Callers of `BamlWorkerError`** (#24, the caller table), real worker, killing it between calls and mid-call with retries forced to 0:
-  - `discovery.parse_closeout_payload_doc` raises `BamlWorkerError`, not a content verdict;
-  - `runner._parse_native_closeout_status` returns `automation_parse_error` with `unretryable_external_outage`, and **never** `contract_bug`;
-  - `run_evidence_audit` returns a blocker with `unretryable_external_outage`, and **never** an `uncertain`-only warning;
-  - the serial `run_loop` raises `BamlWorkerError`, and the executor launch spy is never entered;
-  - the concurrent-wave prepare raises before `run_phase_worker_pool` is called, and only unlaunched worktrees are reclaimed;
-  - the delegated branch records the parent as `blocked` with the child not launched;
-  - `launch_harness_lane_work_unit` raises `BamlWorkerError` and spawns nothing.
-- **Test-only ops.** `env` and the prctl-off flag are accepted **only** when `init` carries `"test_mode": true`, which only `_reset_worker_for_tests(test_mode=True)` sets. A tripwire asserts that no `src/` caller sets it.
-- **Concurrency:** 8 threads start from a cold slot. Exactly one worker pid is started. All 8 results equal the single-threaded parse. The test has a 60 s timeout.
-- **Fork** (codex 1): thread A holds the lock inside a 3 s hostile op while the main thread forks.
-  - The child's call succeeds within 5 s on its own new pid.
-  - The parent's A-request completes, and the parent's worker keeps serving on the same pid.
-  - In the child, the inherited worker fds are closed: `os.fstat` on them raises `EBADF`.
-  - The test is POSIX-only; there is no `os.fork` on Windows.
+  - no sentinel appears anywhere in them;
+  - stdout and stderr are empty;
+  - the worker's cwd is the package directory.
+- **Callers of `BamlWorkerError`** (#24, the caller table). These are **in-flight faults with retries forced to 0.** Idle deaths are covered above and recover.
+  - `discovery.parse_closeout_payload_doc` raises `BamlWorkerError`.
+  - `_parse_native_closeout_status` gives `automation_parse_error` with `unretryable_external_outage`, never `contract_bug`.
+  - **Downstream** through `_parsed_child_automation`, in both serial and wave finalize:
+    - the phase is persisted as `blocked` / `unretryable_external_outage`;
+    - no fallback (owned-dirty handling, #785 executor-exited handling) upgrades it to evaluated or complete;
+    - sibling worktrees are untouched.
+  - `run_evidence_audit` gives an `unretryable_external_outage` blocker, never an `uncertain`-only warning.
+  - The serial `run_loop` raises, and the launch spy is never entered.
+  - **Wave prepare** raises before `run_phase_worker_pool`. The wave contains one phase **already carrying preserved work** (in `preserve_branches`), and that branch and worktree must survive the `finally`. Only the freshly created, unlaunched worktrees are reclaimed.
+  - The delegated branch records the parent as `blocked`, with the child not launched.
+  - `launch_harness_lane_work_unit` raises and spawns nothing.
+- **Structural handler tripwire** (claude r4 Q8). An AST scan of `runner.py`, `discovery.py`, `evidence_audit.py`, `injection.py` and `prompts.py`:
+  - It finds every `try` whose body **directly calls** one of the BAML-reaching functions (`parse_baml_response`, `build_baml_request`, `parse_closeout_payload_doc`, `parse_closeout_payload`, `evaluate_suspected_fake_evidence`, `build_prompt`, `build_prompt_bundle`, `build_lane_prompt_bundle`, `launch_delegated_child`, `_parsed_child_automation`) and has a handler catching `BamlValidationError`, `ValueError`, `Exception` or `BaseException`.
+  - Each such handler must be preceded by an `except BamlWorkerError` or be listed in `tests/data/baml_worker_handler_allowlist.json`, which records file, function, handler and reason.
+  - The scan covers direct calls only, and says so. Deeper call chains are covered by the caller table and its tests.
+- **Concurrency:** 8 threads from a cold `_CLIENT`, exactly one worker pid, all results equal, 60 s timeout.
+- **Fork** (claude B2), POSIX: thread A holds the request lock inside a 3 s hostile op while the main thread forks. In the child:
+  - **before any BAML call**, `os.fstat` on each recorded inherited fd integer raises `EBADF`. Additionally, and robust to fd reuse, the inode of each fd the child's fresh worker later opens is compared against the parent-pipe inodes recorded before the fork, and none may match;
+  - `_CLIENT is None`, and the old object is in `_STALE_CLIENTS`;
+  - the child's call succeeds within 5 s on a new pid, with a **new spawner thread**.
+
+  In the parent, A's request completes and the same worker pid keeps serving. A variant forks while the spawner hand-off is in progress (a slow patched spawn); the child still succeeds within 5 s.
 - **Latency (#16):** a second call reuses the same worker pid and completes in < 250 ms.
 - **Tripwires:**
   - after a full public call, `'baml_bridge' not in sys.modules`;
-  - no `\bspawn\b` in any packaged `.baml`;
+  - no `spawn` **statement** in any packaged `.baml`. The scan strips `//` comments and string or backtick-template contents first, so prompt prose that says "spawn" does not trip it;
   - `_read_baml_files()` output contains no `{{` or `{%`;
   - the #18 grep;
   - the #19 grep;
   - `_worker_env()` keys are a subset of the allowlist;
   - `import phase_loop_runtime._baml_worker` has no side effects: fds 1 and 2 are unchanged and no thread is started.
-- **Platform guards** (claude N5): the fork, SIGKILL, `killpg` and PDEATHSIG tests are skipped with an explicit reason on Windows, and the watchdog test runs everywhere. On Windows, the env test tolerates `__PYVENV_LAUNCHER__` only because the worker normalization removes it, and it asserts that it is gone inside the worker.
+- **Platform guards:**
+  - The fork, SIGKILL, `killpg` and PDEATHSIG tests are POSIX- or Linux-only, and skip with an explicit reason elsewhere.
+  - The Windows owner-death test (Job Object) runs only on Windows, and the macOS watchdog test only on macOS, exactly as in the owner-death table.
+  - The env test asserts, inside the worker, that `__PYVENV_LAUNCHER__` is gone.
 - **`tests/test_phase_loop_baml_dependency.py`:**
   - the pins become `"baml-bridge==0.20.1"` and `"protobuf>=6.31.1,<8"`;
   - `test_baml_py_imports_after_install` becomes `test_baml_bridge_loads_after_install`, unmarked, so it runs on every pytest lane. It checks the installed version and does a real parse through the worker;
@@ -460,7 +487,7 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
     - an allowlist environment;
     - its own session, so a terminal Ctrl-C does not kill it;
     - it dies with its owner;
-  - **the new `BamlWorkerError(BamlValidationError)`**: faults are retried at most twice on a fresh worker. After that, the closeout parse and the Tier-3 audit record a `blocked` / `unretryable_external_outage` "NOT evaluated" outcome instead of a verdict or a skip, and a launch fails typed. Any worker fault, including a death since the previous call, can therefore abort `phase-loop run` before launch (#22, #24);
+  - **the new `BamlWorkerError(BamlValidationError)`**: faults are retried at most twice on a fresh worker. After that, the closeout parse and the Tier-3 audit record a `blocked` / `unretryable_external_outage` "NOT evaluated" outcome instead of a verdict or a skip, and a launch fails typed. An in-flight worker fault that persists through the retry budget, i.e. the restarted workers also fail, can therefore abort `phase-loop run` before launch (#22, #24). A death between calls is recovered transparently and logged;
   - v1 source syntax;
   - the public API is unchanged;
   - **the closeout prompt text changed (D1)**; the envelope and the evidence request are unchanged;
@@ -469,6 +496,9 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
   - the pixel `null` (#12);
   - `baml` / `baml-cli` scripts are gone (#18);
   - platform coverage;
+  - **vendoring repos must run `phase-loop adoption-bundle refresh` after upgrading**, because the raw `.baml` digests change (#26);
+  - frame caps of 16 MiB per request and 4 MiB per response (#27);
+  - owner-death guarantees per platform (the table) and the macOS residual;
   - the pin-bump checklist;
   - rollback.
 - `docs/reviews/2026-09-01-codebase-review.md`: none (historical). The CHANGELOG notes that C-8 is now covered by the D3 regex, the schema-dump test and the CI fmt round-trip.
@@ -546,7 +576,7 @@ bash scripts/gate_a_cleanroom.sh
 for img in python:3.10-alpine python:3.12-alpine; do
   vol="bamlv1-$(echo "$img" | tr ':.' '--')"
   docker run --rm -v "$vol:/venv" -v "$PWD/dist:/d:ro" "$img" sh -c 'python -m venv /venv/v && /venv/v/bin/pip install -q /d/*.whl pytest'
-  docker run --rm --network none -v "$vol:/venv" -v "$PWD:/w:ro" -w /w "$img" \
+  docker run --rm --init --network none -v "$vol:/venv" -v "$PWD:/w:ro" -w /w "$img" \
     /venv/v/bin/python -m pytest -q -p no:cacheprovider tests/test_phase_loop_baml_v1_runtime.py tests/test_phase_loop_baml_dependency.py
   docker volume rm "$vol"
 done
@@ -559,7 +589,9 @@ done
   - parity with every golden;
   - every register row's pin;
   - worker faults of every kind give `BamlWorkerError` with the right `.kind`/`.rc`, discard and kill the worker, and never produce a wrong answer. The kinds are: spawn hook, SIGKILL, timeout, blocked write, each framing case, init fault, panic and fingerprint;
-  - owner liveness (worker gone within 3 s of the parent's SIGKILL while hung; it survives a spawning-thread exit and a `killpg` SIGINT);
+  - owner death per the platform table: Linux in CI and musl, Windows and macOS in the dispatch run; the worker survives a spawning-thread exit and a `killpg` SIGINT;
+  - recovery parity for all three ops under a mid-call kill, with identical snapshot and request bytes across attempts;
+  - idle-death recovery, in-flight faults at retries 0, and exact per-death log counts;
   - the environment **inside the worker** is a subset of the allowlist, with no sentinels, and output is empty;
   - concurrency and fork-while-locked;
   - every caller-table outcome (#22, #24).
