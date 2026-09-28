@@ -42,6 +42,45 @@ MARKER = "agy-watch-base-route-core:"
 CATALOG = "plans/evidence/qualified-provider-images.json"
 HEARTBEAT = "phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py"
 OPERATIONS = ("completion", "cancel", "owner-loss")
+REPO_SLUG = "Consiliency/agent-harness"
+REPO_OWNER = REPO_SLUG.split("/")[0]
+
+
+def owned_prs(runner, repo: Path, branch: str) -> tuple[list[dict], list[dict]]:
+    """Split open PRs on ``branch`` into those the watch can PROVE are its own and the rest
+    (claude B1 on agent-harness#1130 r1). ``gh pr list --head`` filters on the branch NAME
+    only, so a fork's same-named branch is returned too. Owned means: same repository
+    (not cross-repository, head owner is this repo's owner), authored by the identity
+    running the watch, a body carrying the watch marker, and a head commit whose message
+    carries the marker the watch writes into every commit it makes."""
+    login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
+    listed = _run(runner, ["gh", "pr", "list", "--repo", REPO_SLUG, "--head", branch, "--state", "open",
+                           "--json", "number,body,isCrossRepository,headRepositoryOwner,author,headRefOid"],
+                  cwd=repo)
+    owned, foreign = [], []
+    for pr in json.loads(listed.stdout or "[]"):
+        ok = (bool(login) and pr.get("isCrossRepository") is False
+              and (pr.get("headRepositoryOwner") or {}).get("login") == REPO_OWNER
+              and (pr.get("author") or {}).get("login") == login
+              and MARKER in (pr.get("body") or "")
+              and _commit_carries_marker(runner, repo, pr.get("headRefOid")))
+        (owned if ok else foreign).append(pr)
+    return owned, foreign
+
+
+def _commit_carries_marker(runner, repo: Path, oid) -> bool:
+    if not isinstance(oid, str) or not re.fullmatch(r"[0-9a-f]{40}", oid):
+        return False
+    message = _run(runner, ["gh", "api", f"repos/{REPO_SLUG}/commits/{oid}", "-q", ".commit.message"],
+                   cwd=repo, check=False)
+    return getattr(message, "returncode", 1) == 0 and MARKER in (message.stdout or "")
+
+
+def remote_branch_is_foreign(runner, repo: Path, branch: str) -> bool:
+    """A same-named branch already in origin that the watch cannot prove it pushed."""
+    listed = _run(runner, ["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"])
+    oid = (listed.stdout or "").split()[0] if (listed.stdout or "").strip() else None
+    return oid is not None and not _commit_carries_marker(runner, repo, oid)
 
 
 def _run(runner, argv, **kwargs):
@@ -182,12 +221,15 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
             return 0
         base = route_core_digest(tree)
-        existing = _run(runner, ["gh", "pr", "list", "--repo", "Consiliency/agent-harness", "--head", branch,
-                                 "--state", "open", "--json", "number,body"], cwd=repo)
-        prs = json.loads(existing.stdout or "[]")
+        prs, foreign = owned_prs(runner, repo, branch)
+        if foreign:
+            out(json.dumps({"agy_watch": "ignored_foreign_prs", "numbers": [pr.get("number") for pr in foreign]}))
         if any(f"{MARKER} {base}" in (pr.get("body") or "") for pr in prs):
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
             return 0
+        if not dry_run and remote_branch_is_foreign(runner, repo, branch):
+            out(json.dumps({"agy_watch": "refused_foreign_branch", "branch": branch}))
+            return 2
         member_sha256, member = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
         images = {asset.version: (asset, gh.VerifiedImage.from_bytes(member), None)}
         del member
@@ -242,16 +284,17 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             return 0
         _run(runner, ["git", "-C", str(tree), "add", "-A"])
         _run(runner, ["git", "-C", str(tree), "-c", "commit.gpgsign=false", "commit", "-m",
-                      f"feat(agy): qualify the {asset.version} entry image (agy watch, agent-harness#1076)"])
+                      f"feat(agy): qualify the {asset.version} entry image (agy watch, agent-harness#1076)\n\n"
+                      f"{MARKER} {base}"])
         _run(runner, ["git", "-C", str(tree), "push", "--force-with-lease", "origin", f"{branch}:{branch}"])
         body = (f"Automated upstream-watch qualification of agy {asset.version} (agent-harness#1076).\n\n"
                 f"Record produced from this branch's own tree; `verify_qualified_agy_image.py --route-core` passed.\n"
                 f"Never merged by the watch.\n\n{MARKER} {base}\n")
         if prs:
-            _run(runner, ["gh", "pr", "edit", str(prs[0]["number"]), "--repo", "Consiliency/agent-harness",
+            _run(runner, ["gh", "pr", "edit", str(prs[0]["number"]), "--repo", REPO_SLUG,
                           "--body", body], cwd=repo)
         else:
-            _run(runner, ["gh", "pr", "create", "--draft", "--repo", "Consiliency/agent-harness", "--base", "main",
+            _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
                           "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
                           "--body", body], cwd=repo)
         out(json.dumps({"agy_watch": "draft_pr", "version": asset.version}))

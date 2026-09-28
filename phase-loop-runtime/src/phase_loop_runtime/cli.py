@@ -417,7 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
     agy_qual_sub.add_argument("action", choices=("status", "run", "clear", "watch"))
     agy_qual_sub.add_argument("--all", action="store_true", help="clear: every entry, not only failed ones")
     agy_qual_sub.add_argument("--repo", help="watch: the agent-harness checkout to prepare a branch in")
-    agy_qual_sub.add_argument("--dry-run", action="store_true", help="watch: qualify and verify, open no PR")
+    agy_qual_sub.add_argument("--dry-run", dest="watch_dry_run", action="store_true",
+                              help="watch: qualify and verify, open no PR")
     agy_qual_sub.add_argument("--version", help="watch: a specific in-window stable release instead of the newest")
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
     agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")

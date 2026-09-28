@@ -140,6 +140,9 @@ def world(tmp_path, monkeypatch):
     return world_ns
 
 
+_REAL_QUALIFY = q.qualify_image
+
+
 def _ensure(world, **kwargs):
     kwargs.setdefault("transport", world.transport)
     admission = q.ensure_admitted(world.env, **kwargs)
@@ -546,7 +549,7 @@ def test_tampered_or_loose_store_is_absent_with_zero_executions(world, how):
     world.counter.help = 0
     q._HELP_MEMO.clear()
     _tamper(world, how)
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         _admit(world)
     assert world.counter.help == 0
 
@@ -570,7 +573,7 @@ def test_first_use_refuses_on_a_loose_or_foreign_store_before_provenance(world, 
 def test_foreign_owner_is_absent(world):
     _ensure(world)
     q._HELP_MEMO.clear()
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         q.lookup(world.env, world.image, str(world.agy), store=q.Store(euid=os.geteuid() + 1))
 
 
@@ -585,15 +588,7 @@ def test_store_copied_from_another_host_is_absent(world, monkeypatch):
         (dst / path.name).write_bytes(path.read_bytes())
         (dst / path.name).chmod(0o600)
     monkeypatch.setattr(q, "read_machine_id", lambda path="/etc/machine-id": other)
-    with pytest.raises(gh.AdmissionMiss):
-        _admit(world)
-    # the copied entry, renamed into the other host's slot, still fails its MAC
-    for path in dst.iterdir():
-        if path.name.startswith(("provenance-", "qualified-")):
-            kind = path.name.split("-", 1)[0]
-            twin = next(p for p in src.iterdir() if p.name.startswith(kind + "-"))
-            path.write_bytes(twin.read_bytes())
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         _admit(world)
     assert world.counter.help == 1  # only the original first use ever executed
 
@@ -607,7 +602,7 @@ def test_whole_store_copied_to_another_user_is_absent(world):
     other._lstat = lambda p: _as_uid(os.lstat(p), other.euid)
     other._fstat = lambda fd: _as_uid(os.fstat(fd), other.euid)
     assert other.status() == "ok"
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         q.lookup(world.env, world.image, str(world.agy), store=other)
     assert world.counter.help == 1
 
@@ -642,7 +637,7 @@ def test_entry_type_and_operation_status_are_mac_bound(world):
     forged = dict(raw, payload=dict(raw["payload"], operations={"completion": "passed"}))
     qualified.write_text(json.dumps(forged))
     q._HELP_MEMO.clear()
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         _admit(world)
     # the same bytes relabelled as a failed entry: its type is in the MAC context
     failed = store._path("failed", store._failed_context(world.digest, HOST, q.runtime_identity()))
@@ -674,7 +669,7 @@ def test_forged_qualified_entry_without_authenticated_provenance_executes_nothin
         path.unlink()
     world.counter.help = 0
     q._HELP_MEMO.clear()
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         _admit(world)
     assert world.counter.help == 0
 
@@ -698,7 +693,7 @@ def test_record_differing_in_one_key_field_is_absent(world, monkeypatch, field):
         monkeypatch.setattr(prov, "detect_platform", lambda **_: prov.HostPlatform("linux", "x64", "musl"))
     elif field == "help":
         monkeypatch.setattr(q, "_run_help", lambda verified, env: b"different help\n")
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         _admit(world)
 
 
@@ -776,18 +771,76 @@ def test_transients_and_cancellation_write_no_verdict_entry(world, status):
     assert "failed" not in _entries(world) and "qualified" not in _entries(world)
 
 
-@pytest.mark.parametrize("stage,result,expected", [
-    ("admission_observation", "OK", "transient"),
-    ("launch", None, "transient"),
-    ("validation", "UNAVAILABLE", "transient"),  # completion the provider did not answer (5xx/quota/auth)
-    ("validation", "OK", "failed"),
-    ("cleanup_observation", "OK", "failed"),
+@pytest.mark.parametrize("failure,result,expected", [
+    (None, None, "transient"),  # never started observing
+    ({"stage": "admission_observation", "reason": "qualification ended before complete admission observation"},
+     None, "transient"),
+    ({"stage": "launch", "reason": "qualification local failure"}, None, "transient"),
+    ({"stage": "validation", "reason": "gemini qualification record rejected"}, "UNAVAILABLE", "transient"),
+    ({"stage": "validation", "reason": "gemini qualification record rejected"}, "OK", "failed"),
+    ({"stage": "cleanup_observation", "reason": "qualification observed a surviving owned process"}, "OK", "failed"),
+    # codex B1: an observed violation is terminal at ANY stage
+    ({"stage": "helper_observation", "reason": "qualification helper executable is outside the registered identity policy",
+      "rejected_image": {"pid": 1}}, None, "failed"),
+    ({"stage": "admission_observation", "reason": "qualification observed an unqualified provider image"}, None, "failed"),
+    ({"stage": "admission_observation", "reason": "qualification executable mount is not read-only"}, None, "failed"),
+    ({"stage": "admission_observation", "reason": "qualification network rule observation failed"}, None, "failed"),
 ])
-def test_failure_classification(tmp_path, stage, result, expected):
-    (tmp_path / "failure.json").write_text(json.dumps({"stage": stage}))
+def test_failure_classification(tmp_path, failure, result, expected):
+    """codex B1 on agent-harness#1130 r1. Mutation: classifying by stage alone."""
+    if failure is not None:
+        (tmp_path / "failure.json").write_text(json.dumps(failure))
     if result is not None:
         (tmp_path / "terminal.json").write_text(json.dumps({"result": {"status": result}}))
     assert q._classify_failure(tmp_path, "completion") == expected
+
+
+def test_real_helper_policy_rejection_writes_a_terminal_failed_entry(world, monkeypatch):
+    """codex B1: drive the REAL HelperObserver against a live process whose executable is
+    outside the registered policy, record it with the driver's own write_failure, and let
+    the real qualify_image classify it. A failed entry results and the next admission
+    executes nothing. Mutation: treating helper_observation failures as transient."""
+    monkeypatch.setattr(q, "qualify_image", _REAL_QUALIFY)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        def run_operation(operation, root, *a, **k):
+            root.mkdir(parents=True)
+            helpers = q.HelperObserver("0" * 64, {})
+            start = q.gh._proc_stat(child.pid)[2]
+            try:
+                helpers.observe(child.pid, start)
+            except q.QualificationFailure as exc:
+                q.write_failure(root, exc, "helper_observation", helpers, {})
+                raise
+            raise AssertionError("the observer admitted an unregistered executable")
+
+        monkeypatch.setattr(q, "run_operation", run_operation)
+        with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+            _ensure(world)
+    finally:
+        child.kill()
+        child.wait()
+    assert "failed" in _entries(world)
+    world.counter.help = 0
+    q._HELP_MEMO.clear()
+    for call in (lambda: _admit(world), lambda: _ensure(world)):
+        with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+            call()
+    assert world.counter.help == 0
+
+
+def test_repeated_transients_become_a_failed_entry(world):
+    """claude N2: a deterministic incompatibility that always looks transient stops
+    re-running after MAX_TRANSIENT_ATTEMPTS. Mutation: never counting transients."""
+    world.outcome = {"status": "transient", "operation": "completion"}
+    for _ in range(q.MAX_TRANSIENT_ATTEMPTS - 1):
+        with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_UNAVAILABLE):
+            _ensure(world)
+        assert "failed" not in _entries(world)
+    with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+        _ensure(world)
+    assert "failed" in _entries(world)
+    assert world.counter.qualify == q.MAX_TRANSIENT_ATTEMPTS
 
 
 def test_local_path_validates_with_the_release_paths_own_validator(world, monkeypatch, tmp_path):
@@ -1108,15 +1161,31 @@ def test_opt_out_is_exactly_todays_require_capability(world, monkeypatch, image)
     panel = q._panel()
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
     monkeypatch.setattr(panel, "_broker_subscription_env", lambda env=None: dict(world.env))
+    def leg_profile():
+        # the per-leg owned profile with no admission passed: it admits by lookup itself
+        with gh.owned_profile(world.env, settings_bytes=b"{}\n", credential_path=world.token):
+            return golden[1]
+
+    def president():
+        from phase_loop_runtime import president_adapter
+        try:
+            president_adapter.PresidentInvoke._launch_gemini(
+                SimpleNamespace(base_env=world.env), "gemini-3.8-flash-high", "prompt", world.tmp, monitor=object())
+        except ValueError:
+            raise
+        except Exception:  # noqa: BLE001 - admitted; the fake monitor stops the launch after admission
+            return golden[1]
+
     paths = {
         "per_leg": lambda: gh.require_capability(world.env),
-        "president": lambda: gh.require_capability(world.env),
+        "leg_profile": leg_profile,
+        "president": president,
         "preflight": lambda: panel._preflight_gemini_heartbeat(DEFAULT_BOARD, "heartbeat_only") or golden[1],
     }
     for name, call in paths.items():
         outcome = _outcome(call)
-        if golden[0] == "ok" and name == "preflight":
-            assert outcome == ("ok", golden[1])
+        if golden[0] == "ok" and name != "per_leg":
+            assert outcome == ("ok", golden[1]), name
         else:
             assert outcome == golden, name
     assert reads == [] and world.transport.calls == []
@@ -1259,7 +1328,7 @@ def test_locally_qualified_evidence_records_the_verified_image_digest(world):
 def test_legs_and_president_never_qualify(world):
     """Only the whole-board preflight qualifies. Mutation: require_capability/owned_profile
     falling through to ensure_admitted."""
-    with pytest.raises(gh.AdmissionMiss):
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
         gh.require_capability(world.env)
     with pytest.raises(ValueError):
         with gh.owned_profile(world.env, settings_bytes=b"{}\n", credential_path=world.token):
@@ -1284,16 +1353,31 @@ def _watch_repo(tmp_path):
 
 
 class _Runner:
-    def __init__(self, prs="[]"):
-        self.calls, self.prs = [], prs
+    """Fake git/gh. ``prs`` is the ``gh pr list`` JSON; ``commits`` maps oid -> message;
+    ``remote`` is the oid ``git ls-remote`` reports for the watch branch (or None)."""
+
+    def __init__(self, prs="[]", *, login="watch-bot", commits=None, remote=None):
+        self.calls, self.prs, self.login, self.commits, self.remote = [], prs, login, commits or {}, remote
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
         if argv[:3] == ["gh", "pr", "list"]:
             return SimpleNamespace(stdout=self.prs, returncode=0)
-        if argv[:2] == ["git", "-C"] and "worktree" in argv and "add" in argv:
-            return SimpleNamespace(stdout="", returncode=0)
+        if argv[:3] == ["gh", "api", "user"]:
+            return SimpleNamespace(stdout=self.login + "\n", returncode=0)
+        if argv[:2] == ["gh", "api"] and "/commits/" in argv[2]:
+            oid = argv[2].rsplit("/", 1)[1]
+            if oid in self.commits:
+                return SimpleNamespace(stdout=self.commits[oid], returncode=0)
+            return SimpleNamespace(stdout="", returncode=1)
+        if "ls-remote" in argv:
+            return SimpleNamespace(stdout=f"{self.remote}\trefs/heads/x\n" if self.remote else "", returncode=0)
         return SimpleNamespace(stdout="", returncode=0)
+
+
+def _pr(number, body, *, login="watch-bot", cross=False, owner="Consiliency", oid="a" * 40):
+    return {"number": number, "body": body, "isCrossRepository": cross,
+            "headRepositoryOwner": {"login": owner}, "author": {"login": login}, "headRefOid": oid}
 
 
 def test_watch_opens_nothing_on_a_platform_it_cannot_propose(tmp_path):
@@ -1310,7 +1394,8 @@ def test_watch_second_tick_for_the_same_version_is_a_no_op(tmp_path, monkeypatch
     t = FakeTransport()
     t.add("9.9.9", b"new agy")
     base = agy_watch.route_core_digest(tree)
-    runner = _Runner(prs=json.dumps([{"number": 1, "body": f"x\n{agy_watch.MARKER} {base}\n"}]))
+    runner = _Runner(prs=json.dumps([_pr(1, f"x\n{agy_watch.MARKER} {base}\n")]),
+                     commits={"a" * 40: f"feat\n\n{agy_watch.MARKER} {base}\n"})
     out = []
     assert agy_watch.main(repo=tmp_path, runner=runner, host=HOST, transport=t, workdir=tmp_path,
                           out=out.append) == 0
@@ -1421,3 +1506,250 @@ def test_watch_base_ref_is_dry_run_only(tmp_path):
     from phase_loop_runtime import agy_watch
     with pytest.raises(ValueError, match="dry-run"):
         agy_watch.main(repo=tmp_path, runner=_Runner(), host=HOST, base_ref="HEAD")
+
+
+# ------------------------------------------------------------ round-1 (agent-harness#1130)
+
+def _fd_count():
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_lookup_only_misses_close_their_image_memfds(world):
+    """codex B2 / claude N1. Mutation: not closing the miss's image in admit."""
+    for _ in range(3):  # warm any lazily opened descriptors
+        with pytest.raises(ValueError):
+            gh.require_capability(world.env)
+    before = _fd_count()
+    for _ in range(25):
+        with pytest.raises(ValueError, match=gh._CAPABILITY):
+            gh.require_capability(world.env)
+        with pytest.raises(ValueError, match=gh._CAPABILITY):
+            with gh.owned_profile(world.env, settings_bytes=b"{}\n", credential_path=world.token):
+                pass
+    assert _fd_count() == before
+
+
+def test_first_use_admission_and_refusals_do_not_leak_memfds(world):
+    _ensure(world)
+    before = _fd_count()
+    for _ in range(10):
+        _ensure(world)
+    world.agy.write_bytes(b"#!/bin/sh\necho tampered\n")
+    for _ in range(10):
+        with pytest.raises(ValueError):
+            _ensure(world)
+    assert _fd_count() == before
+
+
+def _president_seat_leg(leg_name, text, admission_class, *, policy="heartbeat_only"):
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    seat = next(s for s in DEFAULT_BOARD.seats if s.harness == leg_name)
+    leg = _leg(text, leg=leg_name, admission_class=admission_class, policy=policy)
+    return seat, leg
+
+
+@pytest.mark.parametrize("admission_class", [None, "qualification_candidate"])
+def test_president_input_builder_withholds_an_uncounted_approval_but_keeps_its_objection(admission_class, monkeypatch):
+    """codex B3, settled by EXECUTION against the real ``president_findings_from_legs``.
+    Before this change the builder rendered an uncounted approving leg's review as its
+    seat's findings (run with ``president_input_items`` disabled below). Now it renders a
+    ``not counted`` item instead, while an uncounted DISAGREE keeps its objections.
+    Mutation: dropping the builder's call into agy_qualification."""
+    from phase_loop_runtime import panel_invoker as panel
+    approve = _president_seat_leg("gemini", "The design is sound.\n\nAGREE", admission_class)
+    block = _president_seat_leg("gemini", "Real defect: the lock is never released.\n\nDISAGREE", admission_class)
+    counted = _president_seat_leg("gemini", "The design is sound.\n\nAGREE", "locally_qualified")
+    render = lambda pair: panel.president_findings_from_legs((pair[0],), (pair[1],))  # noqa: E731
+    assert render(approve) == (f"F001: [{approve[1].seat_key}] not counted (admission {admission_class or 'missing'})",)
+    assert render(block) == (f"F001: [{block[1].seat_key}] Real defect: the lock is never released.",)
+    assert render(counted) == (f"F001: [{counted[1].seat_key}] The design is sound.",)
+    # the pre-change behaviour, reproduced: the uncounted approval reaches the president
+    monkeypatch.setattr(q, "president_input_items", lambda leg: None)
+    assert render(approve) == (f"F001: [{approve[1].seat_key}] The design is sound.",)
+
+
+def test_president_builder_leaves_non_gemini_and_bounded_legs_alone():
+    from phase_loop_runtime import panel_invoker as panel
+    for pair in (_president_seat_leg("codex", "Fine.\n\nAGREE", None),
+                 _president_seat_leg("gemini", "Fine.\n\nAGREE", None, policy="bounded")):
+        assert panel.president_findings_from_legs((pair[0],), (pair[1],)) == (f"F001: [{pair[1].seat_key}] Fine.",)
+
+
+def test_board_preflight_emits_lock_wait_heartbeats_and_stays_cancellable(world, monkeypatch, tmp_path, capsys):
+    """codex B4: contention driven through the REAL board preflight call site.
+    Mutation: _preflight_gemini_heartbeat not passing a heartbeat."""
+    from phase_loop_runtime import panel_invoker as panel
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    monkeypatch.setattr(panel, "_broker_subscription_env", lambda env=None: dict(world.env))
+    real_find = prov.find_provenance
+    monkeypatch.setattr(prov, "find_provenance", lambda *a, **k: real_find(*a, **dict(k, transport=world.transport)))
+    store = q.Store()
+    store.create()
+    cancel, result = threading.Event(), {}
+    stream = tmp_path / "stream"
+
+    def preflight():
+        try:
+            panel._preflight_gemini_heartbeat(DEFAULT_BOARD, "heartbeat_only", None, cancel, stream)
+        except ValueError as exc:
+            result["error"] = str(exc)
+
+    with store.lock():
+        thread = threading.Thread(target=preflight)
+        thread.start()
+        _wait_for(lambda: (stream / "agy-qualification.json").exists(), timeout=10)
+        cancel.set()
+        thread.join(10)
+    progress = json.loads((stream / "agy-qualification.json").read_text())
+    assert progress["phase"] == "agy_qualification_lock_wait"
+    assert result == {"error": "review_operation_cancelled"}
+    assert "agy-qualification: agy_qualification_lock_wait" in capsys.readouterr().err
+
+
+def test_board_heartbeat_is_throttled_per_phase(tmp_path, capsys):
+    now = [0.0]
+    beat = q.board_heartbeat(tmp_path, every_s=5, clock=lambda: now[0])
+    for t in (0, 1, 2, 6):
+        now[0] = t
+        beat("agy_qualification_lock_wait")
+    beat("agy_qualification_help")
+    assert capsys.readouterr().err.count("lock_wait") == 2
+
+
+# --- watch ownership (claude B1)
+
+def _watch_tick(tmp_path, runner, version="9.9.9", **kwargs):
+    from phase_loop_runtime import agy_watch
+    t = FakeTransport()
+    t.add(version, b"new agy")
+    out = []
+    return agy_watch.main(repo=tmp_path, runner=runner, host=HOST, transport=t, workdir=tmp_path,
+                          out=out.append, **kwargs), out, t
+
+
+def test_watch_ignores_a_same_named_foreign_pr_even_with_a_forged_marker(tmp_path, monkeypatch):
+    """claude B1: a fork PR on ``agy-watch/<V>`` whose body carries the current marker must
+    neither suppress the tick nor ever be edited. Mutation: selecting PRs by name alone."""
+    from phase_loop_runtime import agy_watch
+    tree = _watch_repo(tmp_path)
+    base = agy_watch.route_core_digest(tree)
+    body = f"x\n{agy_watch.MARKER} {base}\n"
+    foreign = [_pr(7, body, cross=True, owner="mallory", login="mallory"),
+               _pr(8, body, login="mallory"),                                  # same repo, other author
+               _pr(9, "no marker"),                                            # our author, no marker
+               _pr(10, body, oid="b" * 40)]                                    # head commit lacks the marker
+    runner = _Runner(prs=json.dumps(foreign), commits={"a" * 40: f"m\n\n{agy_watch.MARKER} {base}\n"})
+    monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop after the ownership decision")))
+    with pytest.raises(RuntimeError, match="stop after"):
+        _watch_tick(tmp_path, runner)
+    assert not [c for c in runner.calls if c[:3] == ["gh", "pr", "edit"]]
+    owned, rejected = agy_watch.owned_prs(runner, tmp_path, "agy-watch/9.9.9")
+    assert owned == [] and [pr["number"] for pr in rejected] == [7, 8, 9, 10]
+
+
+def test_watch_recognises_only_its_own_pr_as_up_to_date(tmp_path):
+    from phase_loop_runtime import agy_watch
+    tree = _watch_repo(tmp_path)
+    base = agy_watch.route_core_digest(tree)
+    body = f"x\n{agy_watch.MARKER} {base}\n"
+    runner = _Runner(prs=json.dumps([_pr(7, body, cross=True, owner="mallory", login="mallory"), _pr(3, body)]),
+                     commits={"a" * 40: f"m\n\n{agy_watch.MARKER} {base}\n"})
+    code, out, _ = _watch_tick(tmp_path, runner)
+    assert code == 0 and "up_to_date" in out[-1] and "ignored_foreign_prs" in out[0]
+
+
+def test_watch_refuses_to_push_over_a_foreign_same_named_branch(tmp_path, monkeypatch):
+    _watch_repo(tmp_path)
+    runner = _Runner(remote="c" * 40)  # exists in origin, head commit not the watch's
+    code, out, t = _watch_tick(tmp_path, runner)
+    assert code == 2 and "refused_foreign_branch" in out[-1]
+    assert not [c for c in t.calls if "releases/download" in c]
+    assert not [c for c in runner.calls if "push" in c]
+
+
+def test_top_level_dry_run_makes_the_watch_a_dry_run(monkeypatch):
+    """claude N7. Mutation: the subparser default overriding the parent's --dry-run."""
+    from phase_loop_runtime import agy_watch, cli
+    seen = {}
+    monkeypatch.setattr(agy_watch, "main", lambda **kw: seen.update(kw) or 0)
+    assert cli.main(["--dry-run", "agy-qualification", "watch"]) == 0
+    assert seen["dry_run"] is True
+    assert cli.main(["agy-qualification", "watch"]) == 0
+    assert seen["dry_run"] is False
+
+
+# --- smaller round-1 items
+
+def test_one_malformed_asset_does_not_hide_older_in_window_releases(world):
+    """claude N5. Mutation: aborting the search on the first unverifiable asset."""
+    t = FakeTransport()
+    t.add("1.2.98", world.image)
+    t.add("1.2.99", world.image, archive=b"not a tarball")
+    assert _ensure(world, transport=t)[0] == "locally_qualified"
+
+
+def test_a_differently_named_agy_leg_is_still_classified(monkeypatch):
+    """claude N6: identify an agy leg by the coordinator's profile evidence, not its name."""
+    leg = _leg(leg="antigravity", admission_class=None)
+    object.__setattr__(leg, "_harden_isolation_evidence", {"provider_isolation_profile": gh.PROFILE_ID})
+    assert q.counts_toward_landing(leg) is False
+
+
+@pytest.mark.parametrize("field", ["version", "route_core", "profile_id", "platform"])
+def test_qualified_mac_alone_binds_each_key_field(world, monkeypatch, field):
+    """claude r1 (D2 weak mapping): a genuine qualified entry written under a key differing
+    only in ``field``, then moved to the LIVE key's filename (valid provenance present), is
+    absent. Mutation: dropping that field from the qualified MAC context."""
+    _ensure(world)
+    store, runtime, host = q.Store(), q.runtime_identity(), HOST
+    help_sha = sha256(b"synthetic help\n").hexdigest()
+    live_path = store._path("qualified", store._qualified_contexts(world.digest, help_sha, host, runtime)[0])
+    other_runtime, other_host = runtime, host
+    if field == "version":
+        other_runtime = dict(runtime, version="0.0.0")
+    elif field == "route_core":
+        other_runtime = dict(runtime, route_core=dict(runtime["route_core"], **{"agy_provenance.py": "0" * 64}))
+    elif field == "platform":
+        other_host = prov.HostPlatform("linux", "x64", "musl")
+    with monkeypatch.context() as scoped:
+        if field == "profile_id":
+            scoped.setattr(gh, "PROFILE_ID", "other_profile")
+        store.put_qualified(world.digest, help_sha, other_host, other_runtime, "1.2.99")
+        other_path = store._path("qualified",
+                                 store._qualified_contexts(world.digest, help_sha, other_host, other_runtime)[0])
+    other_path.replace(live_path)
+    assert store.get_provenance(world.digest, host, runtime) is not None
+    assert store.get_qualified(world.digest, help_sha, host, runtime) is None
+
+
+def test_caller_keys_cannot_override_the_mac_base_context(world):
+    store = q.Store()
+    context = store._context("provenance", {"type": "qualified", "euid": -1, "machine_id": "x"})
+    assert (context["type"], context["euid"], context["machine_id"]) == ("provenance", os.geteuid(), MACHINE)
+
+
+def test_production_worker_binds_its_parent_death_signal_first(world, monkeypatch):
+    """codex r1 (5.4 mapping): the REAL worker entry sets PDEATHSIG before it inspects the
+    fd. Mutation: removing that call from worker()."""
+    order = []
+    monkeypatch.setattr(q, "_set_parent_death_signal", lambda: order.append("pdeathsig"))
+    monkeypatch.setattr(q, "verified_fd_image", lambda fd: order.append("fd") or (_ for _ in ()).throw(
+        q.QualificationFailure("stop")))
+    with pytest.raises(q.QualificationFailure):
+        q.worker(world.tmp, 99, None)
+    assert order == ["pdeathsig", "fd"]
+
+
+def test_the_real_president_entry_never_qualifies(world, monkeypatch, tmp_path):
+    """claude r1: drive president_adapter's real Gemini launch (heartbeat route) with a
+    non-release image and no record: it refuses by lookup and qualifies nothing."""
+    from phase_loop_runtime import president_adapter
+    from phase_loop_runtime import panel_invoker as panel
+    monkeypatch.setattr(panel, "_broker_subscription_env", lambda env=None: dict(world.env))
+    fake_self = SimpleNamespace(base_env=world.env)
+    with pytest.raises(ValueError, match=gh._CAPABILITY):
+        president_adapter.PresidentInvoke._launch_gemini(fake_self, "gemini-3.8-flash-high", "prompt", tmp_path,
+                                                         monitor=object())
+    assert (world.counter.help, world.counter.qualify) == (0, 0) and world.transport.calls == []
+    assert q.Store().status() == "absent"

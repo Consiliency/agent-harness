@@ -779,9 +779,13 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   no match refuses `gemini_heartbeat_provenance_unverified`.
 - **Behaviour.** Only after the provenance entry is written: help, then the three live
   operations through the packaged driver and the release path's own validators. All
-  passing writes the `qualified` entry. An operation the provider ran to a terminal
-  state that validation rejected writes a `failed` entry (until `agy-qualification
-  clear`); provider transients, cancellation and fetch failures write nothing.
+  passing writes the `qualified` entry. Any observed isolation or identity violation (an
+  executable outside the helper policy, an unqualified provider image, a writable image
+  mount, an unverified network policy, a surviving process, a rejected record) writes a
+  `failed` entry at whatever stage it was seen (until `agy-qualification clear`). Only a
+  provider that was never observed running, a completion the provider did not answer
+  (HTTP 5xx, quota, auth), our own local failure and cancellation are transient; each
+  transient is counted, and the third for one key writes a `failed` entry.
 - **Worker gate.** The qualification worker receives the image as an inherited fd and,
   before hashing, requires a regular-file memfd with `F_SEAL_WRITE`, `F_SEAL_GROW`,
   `F_SEAL_SHRINK` and `F_SEAL_SEAL` (`F_SEAL_FUTURE_WRITE` alone is refused). It admits
@@ -796,8 +800,10 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   a context recomputed from the live key (type, euid, machine-id, image digest, platform,
   runtime identity, plus the asset name, profile id or help digest as the type requires).
   Without a readable machine-id, self-qualification refuses; the release path is unaffected.
-- **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat, and
-  re-check the store after acquiring. Qualification happens once per key per user per host.
+- **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat (the board
+  preflight writes a content-free `agy-qualification.json` progress record into the
+  board's stream directory and a line on stderr, throttled per phase), and re-check the
+  store after acquiring. Qualification happens once per key per user per host.
 - **Runtime identity (D2).** `__version__` plus the digests of the installed
   `agy_qualification.ROUTE_CORE` files (`gemini_heartbeat.py`, `agy_qualification.py`,
   `agy_provenance.py`), the same tuple `verify_qualified_agy_image.py --route-core` checks.
@@ -805,10 +811,16 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   `agy_qualification.counts_toward_landing`), a usable heartbeat Gemini leg is a vote at every
   tier only if its recorded class is `release_qualified` or `locally_qualified`. A
   candidate leg, or a leg with no class (including legs from boards run before the class
-  existed: re-run the board), cannot approve; a blocking verdict from it still blocks. A
+  existed: re-run the board), cannot approve; a blocking verdict from it still blocks. The
+  president's input builder applies the same rule (`agy_qualification.president_input_items`):
+  an uncounted non-blocking leg contributes a `not counted` item instead of its review, and an
+  uncounted `DISAGREE` keeps its objections. A leg is an agy leg by name or by the
+  coordinator's profile evidence. A
   Gemini leg whose admitted digest appears in the reviewed artifact is flagged
   (`gemini_seat_reviews_its_own_pin`, non-gating). Boards admit with the installed base
   runtime, never the reviewed tree.
 - **Upstream watch.** `phase-loop agy-qualification watch` (a host timer on a subscribed
   host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64 glibc release
-  route, from a fresh checkout of `main`, and opens a draft PR; it never merges.
+  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. It edits
+  only a PR it can prove it owns (same repository, its own author, its marker in the body
+  and in the head commit) and refuses to push over a same-named branch it did not write.

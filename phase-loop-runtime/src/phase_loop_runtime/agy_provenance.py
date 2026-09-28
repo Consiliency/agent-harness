@@ -301,7 +301,12 @@ def find_provenance(image_sha256: str, *, host: HostPlatform, transport: _Transp
             continue
         member = cached_member(asset)
         if member is None:
-            member, _ = fetch_member(transport, asset)
+            try:
+                member, _ = fetch_member(transport, asset)
+            except ProvenanceError as exc:
+                if str(exc) == UNAVAILABLE:
+                    raise
+                continue  # one malformed asset does not hide older in-window releases
             remember_member(asset, member)
         if member == image_sha256:
             return Provenance(image_sha256, host.name, asset)

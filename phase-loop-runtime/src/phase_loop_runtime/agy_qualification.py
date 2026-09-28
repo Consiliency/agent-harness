@@ -735,7 +735,11 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
 # ------------------------------------------------------------------------------- store
 
 _ENTRY_SCHEMA = "agy_qualification_entry.v1"
-_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache")
+_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient")
+# After this many consecutive transient attempts for one key, the image is refused with
+# a failed entry (claude N2 on agent-harness#1130 r1): a deterministic incompatibility
+# must not re-run help and a real completion on every board forever.
+MAX_TRANSIENT_ATTEMPTS = 3
 _MAX_ENTRY_BYTES = 256 * 1024
 
 
@@ -786,6 +790,8 @@ class Store:
             info = self._lstat(path)
         except FileNotFoundError:
             return None
+        except OSError:
+            return False
         return (stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
                 and info.st_uid == self.euid and stat.S_IMODE(info.st_mode) == 0o700)
 
@@ -864,7 +870,7 @@ class Store:
     def _context(self, entry_type, context):
         if entry_type not in _ENTRY_TYPES:
             raise ValueError(STORE_UNSAFE)
-        return {"type": entry_type, "euid": self.euid, "machine_id": self.machine_id, **context}
+        return {**context, "type": entry_type, "euid": self.euid, "machine_id": self.machine_id}
 
     def _path(self, entry_type, name_context):
         name = sha256(_canonical(self._context(entry_type, name_context))).hexdigest()
@@ -980,6 +986,14 @@ class Store:
     def get_failed(self, image_sha256, host, runtime):
         context = self._failed_context(image_sha256, host, runtime)
         return self.get("failed", context, context)
+
+    def note_transient(self, image_sha256, host, runtime):
+        """Count one transient attempt for this key; return the new count."""
+        context = self._failed_context(image_sha256, host, runtime)
+        payload = self.get("transient", context, context) or {}
+        count = payload.get("count") if isinstance(payload.get("count"), int) else 0
+        self.put("transient", context, context, {"count": count + 1})
+        return count + 1
 
     def _member_context(self, asset, host, runtime):
         return {"asset": asset.name, "asset_sha256": asset.digest, "platform": host.name, "runtime": runtime}
@@ -1103,7 +1117,7 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
     fetch failures write nothing.
     """
     try:
-        return gh.admit(env)
+        return gh.admit(env, keep_miss=True)
     except gh.AdmissionMiss as miss:
         image, path = miss.image, miss.path
     try:
@@ -1122,6 +1136,8 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
             if store.get_failed(image.sha256, host, runtime) is not None:
                 raise ValueError(SELF_QUALIFICATION_FAILED)
             if store.get_provenance(image.sha256, host, runtime) is None:
+                if heartbeat is not None:
+                    heartbeat("agy_qualification_provenance")
                 try:
                     prov = agy_provenance.find_provenance(
                         image.sha256, host=host, transport=transport,
@@ -1135,6 +1151,8 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
             if provenance is None:
                 raise ValueError(STORE_UNSAFE)
             # Phase 2: only now does anything execute, and only the verified memfd.
+            if heartbeat is not None:
+                heartbeat("agy_qualification_help")
             help_bytes = measure_help(image, env, runtime)
             help_sha256 = sha256(help_bytes).hexdigest()
             if store.get_qualified(image.sha256, help_sha256, host, runtime) is None:
@@ -1151,6 +1169,10 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
                 elif outcome["status"] == "cancelled":
                     raise ValueError(CANCELLED)
                 else:
+                    if store.note_transient(image.sha256, host, runtime) >= MAX_TRANSIENT_ATTEMPTS:
+                        store.put_failed(image.sha256, help_sha256, host, runtime,
+                                         outcome.get("operation"), "repeated_transient")
+                        raise ValueError(SELF_QUALIFICATION_FAILED)
                     raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
             if store.get_qualified(image.sha256, help_sha256, host, runtime) is None:
                 raise ValueError(STORE_UNSAFE)
@@ -1163,21 +1185,37 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
         raise
 
 
+# Failures that say nothing about the image: the provider was never observed running, or
+# the provider did not answer the completion (HTTP 5xx, quota, auth), or our own local
+# failure. Everything else the observer or validator raises is an observed violation.
+_TRANSIENT_REASONS = frozenset({
+    "qualification ended before complete admission observation",
+    "qualification local failure",
+    CANCELLED,
+})
+
+
 def _classify_failure(root, operation):
-    """``failed`` only when the provider ran to a terminal state and the route's own
-    validation rejected it; anything earlier, or a completion the provider did not answer
-    (HTTP 5xx, quota, auth), is a transient that writes nothing."""
+    """``failed`` (terminal, written as a negative record) unless the failure is one of the
+    few provider-availability or local transients (codex B1 on agent-harness#1130 r1).
+
+    An observed isolation or identity violation -- an executable outside the registered
+    helper policy, an unqualified provider image, a writable image mount, a settings or
+    request mismatch, an unverified network policy, a surviving process -- is terminal,
+    at whatever stage it was observed."""
     try:
         failure = json.loads((root / "failure.json").read_text())
     except (OSError, ValueError):
+        return "transient"  # the operation never started observing
+    if failure.get("rejected_image"):
+        return "failed"
+    if failure.get("reason") in _TRANSIENT_REASONS:
         return "transient"
-    if failure.get("stage") not in ("cleanup_observation", "validation"):
-        return "transient"
-    if operation == "completion":
+    if failure.get("stage") == "validation" and operation == "completion":
         try:
             terminal = json.loads((root / "terminal.json").read_text())
             if terminal["result"]["status"] != "OK":
-                return "transient"
+                return "transient"  # the provider did not answer
         except (OSError, ValueError, KeyError, TypeError):
             return "transient"
     return "failed"
@@ -1230,8 +1268,12 @@ COUNTED_ADMISSION_CLASSES = frozenset({"release_qualified", "locally_qualified"}
 
 
 def _gemini_heartbeat_leg(leg):
+    """A heartbeat leg that ran an agy image: by name, or by the coordinator's own profile
+    evidence (claude N6), so a differently named agy leg is never counted unclassified."""
     monitoring = getattr(leg, "review_monitoring", None) or {}
-    return leg.leg == "gemini" and monitoring.get("effective_policy") == "heartbeat_only"
+    evidence = getattr(leg, "harden_isolation_evidence", None) or {}
+    agy = leg.leg == "gemini" or evidence.get("provider_isolation_profile") == gh.PROFILE_ID
+    return agy and monitoring.get("effective_policy") == "heartbeat_only"
 
 
 def leg_admission_class(leg):
@@ -1247,6 +1289,44 @@ def counts_toward_landing(leg):
     if _gemini_heartbeat_leg(leg):
         return leg_admission_class(leg) in COUNTED_ADMISSION_CLASSES
     return True
+
+
+def president_input_items(leg):
+    """The president's input for an UNCOUNTED usable heartbeat Gemini leg (plan D1: the
+    president's input legs follow the same eligibility rule). ``None`` for every other
+    leg -- the builder's own rule applies, and a blocking objection (``DISAGREE``) from an
+    uncounted leg is kept as its findings. An uncounted non-blocking leg contributes one
+    synthetic item instead of its review, so it can never stand as a seat's review."""
+    if not leg.usable or counts_toward_landing(leg) or not _gemini_heartbeat_leg(leg):
+        return None
+    if _panel().terminal_verdict(leg.text) == "DISAGREE":
+        return None
+    return [f"not counted (admission {leg_admission_class(leg) or 'missing'})"]
+
+
+def board_heartbeat(stream_dir=None, *, every_s=5.0, clock=time.monotonic):
+    """The board's qualification heartbeat (codex B4): a content-free progress record in the
+    board's stream directory when it has one, and a line on stderr, at most once per
+    ``every_s`` per phase so a lock waiter's 0.1 s poll does not flood."""
+    last = {}
+
+    def beat(phase):
+        now = clock()
+        if phase in last and now - last[phase] < every_s:
+            return
+        last[phase] = now
+        print(f"agy-qualification: {phase}", file=sys.stderr, flush=True)
+        if stream_dir is not None:
+            try:
+                target = Path(stream_dir) / "agy-qualification.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_suffix(".tmp")
+                temporary.write_text(json.dumps({"schema": "agy_qualification_progress.v1", "phase": phase,
+                                                 "monotonic_s": now}, sort_keys=True) + "\n")
+                os.replace(temporary, target)
+            except OSError:
+                pass
+    return beat
 
 
 def landing_findings(legs, *, artifact=None, reviewed_sha=None):
@@ -1426,7 +1506,9 @@ def cli_main(args):
     """``phase-loop agy-qualification {status,run,clear,watch}``."""
     if args.action == "watch":
         from . import agy_watch
-        return agy_watch.main(repo=args.repo, dry_run=args.dry_run, version=getattr(args, "version", None),
+        # A top-level ``phase-loop --dry-run`` also makes the watch a dry run (claude N7).
+        dry_run = bool(getattr(args, "watch_dry_run", False) or getattr(args, "dry_run", False))
+        return agy_watch.main(repo=args.repo, dry_run=dry_run, version=getattr(args, "version", None),
                               base_ref=getattr(args, "base_ref", "origin/main"))
     store = Store()
     if args.action == "status":

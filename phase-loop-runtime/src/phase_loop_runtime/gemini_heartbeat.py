@@ -146,13 +146,14 @@ def _local_capabilities():
         os.close(fd)
 
 
-def admit(env):
+def admit(env, *, keep_miss=False):
     """Admission, lookup only; never qualifies, never touches the network.
 
     1. A release-qualified digest is admitted before any config, store or network read (I6).
     2. Otherwise the lookup (opt-out, failed entry, provenance-gated help, qualified entry)
-       lives in ``agy_qualification``; a miss raises ``AdmissionMiss`` whose message is
-       today's ``gemini_heartbeat_capability_unavailable``.
+       lives in ``agy_qualification``; a miss refuses with today's
+       ``gemini_heartbeat_capability_unavailable`` (``keep_miss=True``, for
+       ``ensure_admitted`` only, raises ``AdmissionMiss`` carrying the image instead).
     """
     try:
         _local_capabilities()
@@ -170,7 +171,17 @@ def admit(env):
     except (OSError, AgyCanaryEvidenceError, ValueError) as exc:
         raise ValueError(_CAPABILITY) from exc
     from . import agy_qualification
-    return agy_qualification.lookup(env, data, path)
+    try:
+        return agy_qualification.lookup(env, data, path)
+    except AdmissionMiss as miss:
+        # Only ensure_admitted takes the miss's image for first use; every lookup-only
+        # caller closes it here, so a refusal never leaks a memfd (codex B2).
+        if keep_miss:
+            raise
+        miss.image.close()
+        raise ValueError(_CAPABILITY) from None
+    except (OSError, AgyCanaryEvidenceError) as exc:
+        raise ValueError(_CAPABILITY) from exc
 
 
 def require_capability(env):
