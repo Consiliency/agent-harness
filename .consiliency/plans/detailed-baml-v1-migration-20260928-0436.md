@@ -250,8 +250,14 @@ The plan states **what the client must guarantee and how each guarantee is prove
   - **fds:** the process's open-fd count (`/proc/self/fd`, or `psutil` on macOS and Windows);
   - **threads:** `threading.active_count()`;
   - **process and Job handles** (codex r14 9):
-    - **POSIX:** every disposed worker has been reaped. `os.waitpid(-1, os.WNOHANG)` finds no zombie child and raises `ChildProcessError` (the only live child being the current worker, if any). On Linux, **no pidfd** is left open: there is no `anon_inode:[pidfd]` entry among `/proc/self/fd` links beyond baseline;
+    - **POSIX:** every disposed worker has been reaped. The test records each disposed worker's pid. By the reap deadline, for **each** recorded pid, `os.waitpid(pid, os.WNOHANG)` must **raise `ChildProcessError`**. Both other outcomes are **failures**:
+      - a `(0, 0)` result means the worker has not exited or has not been reaped;
+      - a returned pid means the probe itself reaped a worker that cleanup had left behind.
+
+      The global `os.waitpid(-1, …)` is **not** used for this assertion, because it returns `(0, 0)` while the permitted current worker is alive (codex r15).
+    - **Linux:** **no pidfd** is left open; there is no `anon_inode:[pidfd]` entry among the `/proc/self/fd` links beyond baseline;
     - **Windows:** the process handle count (`GetProcessHandleCount` via `ctypes`) returns to baseline, and **every disposed generation's Job handle is closed**. The client exposes each generation's Job handle to the test seam, and `GetHandleInformation` on it fails with `ERROR_INVALID_HANDLE` after disposal.
+    - **Carried to implementation review (codex r15 note):** numeric Job-handle reuse must not invalidate the checks on disposed generations. A handle value that the OS reuses for a new handle would make `GetHandleInformation` succeed on a stale number. So the check must identify a disposed generation's Job other than by its bare handle value, for example by a per-generation Job name or object identity.
 
 **Reference design (NON-NORMATIVE; the implementation may choose any design that passes I1–I9).**
 - One non-main supervisor daemon thread owns every lifecycle transition and disposal, because `KeyboardInterrupt` is only delivered on the main thread.
