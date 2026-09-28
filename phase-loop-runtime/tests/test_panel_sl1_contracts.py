@@ -605,7 +605,7 @@ class _FakeGitHub:
             return self._done(1, "", "unexpected api call")
         if rest[:2] == ["pr", "view"]:
             data = {
-                "number": 1, "baseRefName": self.base_ref, "headRefOid": self.head(),
+                "id": "PR_node_1", "number": 1, "baseRefName": self.base_ref, "headRefOid": self.head(),
                 "headRefName": self.branch, "headRepository": {"name": "r", "owner": {"login": "o"}},
                 "headRepositoryOwner": {"login": "o"}, "url": "https://github.com/o/r/pull/1",
                 "state": self.state, "isDraft": False,
@@ -946,7 +946,10 @@ def test_sl1_ec1_the_no_landing_path_keeps_todays_argv_byte_for_byte(tmp_path, m
                      action=mg.LegacyPush(remote="origin", refspec=f"{land.t.change_head}:refs/heads/closeout",
                                           cwd=str(land.t.path)))
     pushes = [c for c in land.gh.calls if "push" in c]
-    assert pushes and pushes[0][-3:] == ["push", "origin", f"{land.t.change_head}:refs/heads/closeout"]
+    # Today's remote and refspec exactly; the hook suppression every merge_guard git call
+    # carries (plan item 7) is the one addition.
+    assert pushes and pushes[0][-4:] == ["push", "--no-verify", "origin", f"{land.t.change_head}:refs/heads/closeout"]
+    assert pushes[0][1:3] == ["-c", "core.hooksPath=/dev/null"]
 
 
 POST_ATTEMPT = ["enqueued", "enqueue-visible-late", "dequeue-failed", "lease-rejected", "match-head-rejected",
@@ -955,8 +958,18 @@ POST_ATTEMPT = ["enqueued", "enqueue-visible-late", "dequeue-failed", "lease-rej
 
 @pytest.mark.parametrize("case", POST_ATTEMPT)
 def test_sl1_ec1_every_merge_site_handles_post_attempt_outcomes(tmp_path, monkeypatch, case):
-    site = "push" if case == "lease-rejected" else "pr-merge"
-    land = _site(tmp_path, monkeypatch, site)
+    if case == "lease-rejected":
+        # The commit is two steps past B0 (B1, then the reviewed head); the target will
+        # advance to B1, an ancestor of the commit, after B0 was fetched.
+        land = _Landing(tmp_path, monkeypatch, pr=False, land=False)
+        b1 = land.t.change_head
+        head = land.t.change({"src.py": "change = 9\n"}, "second change commit")
+        _git(land.t.path, "push", "-q", "-f", "origin", "change")
+        land.ctx = land.s.build("code-review", land.snap, repo_dir=land.t.path, base_revision=land.b0,
+                                head_revision=head, monitoring_policy="bounded")
+        land.decide(reviewed_head=head)
+    else:
+        land = _site(tmp_path, monkeypatch, "pr-merge")
     mg, gh = land.mg, land.gh
     gh.calls.clear()
     if case == "enqueued":
@@ -976,15 +989,10 @@ def test_sl1_ec1_every_merge_site_handles_post_attempt_outcomes(tmp_path, monkey
     elif case == "unreadable-merge":
         gh.merge_mode = "unreadable-merge"
     elif case == "lease-rejected":
-        # The target advances to B1, an ancestor of the commit, after B0 was fetched.
-        b1 = _git(land.t.path, "rev-parse", "change~0")
-
         def advance():
-            _git(land.t.upstream, "fetch", "-q", "origin")
-            _git(land.t.upstream, "push", "-q", "origin", "origin/change:refs/heads/main")
+            _git(land.t.path, "push", "-q", "origin", f"{b1}:refs/heads/main")
 
         gh.before_push = advance
-        assert b1
     if case == "merged-then-cli-error":
         assert land.merge()
         assert len([c for c in gh.calls if c[1:3] == ["pr", "merge"]]) == 1
@@ -1904,7 +1912,7 @@ _TW_HOST_ALLOWLIST = frozenset({
 })
 _MERGE_GUARD_REL = "phase-loop-runtime/src/phase_loop_runtime/merge_guard.py"
 _MG_ALLOWED = {
-    "guarded_merge": {"git push", "gh pr merge"},
+    "guarded_merge": {"git push", "gh pr merge", "gh pr ready"},
     "publish_nontarget": {"git push", "gh pr create", "gh pr comment", "gh pr edit", "gh pr ready",
                           "gh issue create", "gh issue comment"},
     "publish_new_branch": {"git push", "gh pr create"},
