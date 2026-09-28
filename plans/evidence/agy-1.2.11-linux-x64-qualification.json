@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "f19231b965271030436ccf042b9095e14df23af86751b01ae9bedb4b7dd53f62",
+      "raw_receipt_sha256": "bfc8234f8a0d35a4de38acd9af67104597e3994dff4e4d42323206df0697c044",
       "record_sha256": {
-        "broker": "b131527afbde73cbbf81d6619aaf3d4a9b07c37da1fc90f9ceb7d8907c416e78",
-        "monitoring": "8107c9f06949775af6b833b97046ae0cbfc591a4e34804b858417e2217504b89",
-        "observer": "0ecd8db8be6657309422057d32a8c4820a3fcaa1750ef694c294e58668045e53",
-        "result": "d519b50b51d761ab4767ab18bc342dc2d5e4390f27c0b805ea26a89723a70ccc"
+        "broker": "8181c478a304029a1366c861c59ac46e102e846bf5379bb87e955ab487d1bd6e",
+        "monitoring": "aee0063a99515bcc2a7d7698b966086d4b64594977025796fb74c2af063f9076",
+        "observer": "c43657ff8fb4bb8f3fd8b53118108279a4f9c7b17e52d26c7a63d145c395ae60",
+        "result": "2ab5f2ff7c7390556a268fddf6bb64b43660475212744511b78e8987e2685db2"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "2b91b895775d89639fc2af90084aff3c144b30f2321220e0666d668b8012e7b7",
+      "raw_receipt_sha256": "32952f0f7f6ef99157cd530119859aa5d31a8e73d6a6087bfb0e8e79ae7b6b48",
       "record_sha256": {
-        "broker": "45dce19b62e2360724a5f16f02c120e09cb2f40cd27b6cb19017bfa5016f7710",
-        "monitoring": "785f4f60c368b3b926eb9e67135d2af56110a3a26659694800e28c197c37ce88",
-        "observer": "09b7e56e15adfab5866d2b2f6e5895a8d9f21e05f173ffb0d5a8bf97acb6a0dc",
+        "broker": "e196b64a7478065b8c3ff498f188b8b677587303057c1d00f40b19d4979385f5",
+        "monitoring": "aefe31bf4cc401cc3d4bfe4dd5d6b782f7fa1ce9b44233d2215dc39a49e166d1",
+        "observer": "9d4a20552e185a61a7e291eb05c0057d671726d274a727e8d0df51fdd19fd3b6",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "17bb9a848239782d87fdf957e0ad3e43ab9f0446b615cbb04bf0fdb5990f36c5",
+      "raw_receipt_sha256": "acaf5ee577dfb34164d011eb137af03cf3c333575082059c037d71ca85373440",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "aeaeb2228a039f57e3e421bd33b053e79a132eda6cee5ff80be1326b402e69b9",
-        "observer": "0fdc28a689eade823a58df6c1ff2e0bd79c094fbabe5909ed6c97f58a54c55c0",
+        "monitoring": "758e41fc380e37c9c94d3dd64022065c2213cd01399e93fffbcf68ab428066b2",
+        "observer": "c53bf10774509062fdf72aa0922f013d20006665459f5343b433ab7a14d79bcd",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -220,7 +220,7 @@
     "agent_runtime_provider.py": "958e4f115369a1cc59dbc40585e03dece1be4476bd1fe03c323bf3b1fb9182a2",
     "agy_canary_evidence.py": "7a679349765acb7f5791fe50f2b99056e8df2087b662f7b2da3c7a852caebc7e",
     "agy_provenance.py": "178f744358a577715f4f837f9d213c639612487ad6d04708791cfb4f2e4b5f14",
-    "agy_qualification.py": "090464f12324949499597c0c59c9119d87487d173745dd3b1fcd5811f551ed06",
+    "agy_qualification.py": "e4fb30c120e3320ef25d5c3e87c50f9bed10a6d9924140224c93cca08b7577ec",
     "agy_watch.py": "1b8daa8b5fa9e5a4ee612f06154e7855969f9a724063628e22941cff37d0b85c",
     "baml_modular.py": "3e9275e21d90db3bdd522be9d01e72254b47bbde67b898101f6d5890cd883485",
     "broker.py": "f91cc789383c0d29caa5c52b841873c21fa871fadc277cfa26416ceaf8d3e2df",
@@ -310,7 +310,7 @@
     "goal_coverage.py": "f51594f87aae01f93553f4ad12fb55d770bec1e052245830a5b2a313d9031ae5",
     "governed_bundle.py": "0c11f6538215c4480282fd7c0184fea768524bb4b44bd391e74d1c8131acd3ce",
     "governed_premerge.py": "fb07e83ec2578a1e31633eb47349338fd16de8cc41c7e4567f548b830dc90ae9",
-    "governed_review.py": "7b3d6364da11ffaa49dde39868b3a6ef9cb56e671c731ce9995188b1dbf1366a",
+    "governed_review.py": "bf6bce6dc551dcd3ba78b2154488f68f8cb12b90f4bd7566cac2cf85759d1c49",
     "handoff.py": "2d59d3e9cc92935f72745c38b267af1af28110ba87d5e38f70a4070252f71e6d",
     "handoff_path.py": "97c50b874d65a04327e6eeb2f112fc51e311d98518d5c0baa78e04a59e977ab3",
     "harness_env_signatures.py": "c5d74cb91c72fa180d4b49e6cba7204c822cd90019ab499489b8eac8f39c6fa3",
