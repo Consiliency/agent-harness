@@ -172,6 +172,26 @@ def stable_releases(transport: _Transport, *, window: int = RECENCY_WINDOW) -> l
     return stable[:window]
 
 
+def release_by_tag(transport: _Transport, tag: str) -> dict:
+    """One stable release by tag (the upstream watch re-fetches already-pinned members)."""
+    if not _TAG.fullmatch(tag):
+        raise ProvenanceError(UNVERIFIED)
+    try:
+        response = transport.open(f"https://{API_HOST}/repos/{REPO}/releases/tags/{tag}",
+                                  accept="application/vnd.github+json")
+        body = response.read(MAX_LISTING_BYTES + 1)
+        response.close()
+        release = json.loads(body)
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        if isinstance(exc, ProvenanceError):
+            raise
+        raise ProvenanceError(UNAVAILABLE) from exc
+    if (not isinstance(release, dict) or release.get("draft") is not False
+            or release.get("prerelease") is not False or release.get("tag_name") != tag):
+        raise ProvenanceError(UNVERIFIED)
+    return release
+
+
 def release_asset(release: dict, host: HostPlatform) -> ReleaseAsset:
     """The exact platform asset of one release, with its URL and digest checked."""
     tag = release.get("tag_name")

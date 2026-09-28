@@ -28,10 +28,14 @@ subscribed host, once.
    `--image-fd`, and the worker applies its seal check. The tree's release constant
    satisfies the worker gate, so the record matches the tree and never depends on the
    recency window.
+   Adding a member edits `gemini_heartbeat.py`, a route-core file that every existing
+   record pins, so the tick requalifies **every** catalog member on the prepared tree.
+   It re-fetches each existing member's image from that member's own release and
+   refuses unless the asset and image digests equal the committed record's.
 5. It writes the redacted record, runs `verify_qualified_agy_image.py --route-core` on
    the prepared tree, commits, pushes and opens a **draft** PR. It never merges.
 
-Budget about a minute of real inference per new release.
+Budget about a minute of real inference per catalog member per new release.
 
 ## Installing the timer (operator, one host)
 
@@ -50,7 +54,9 @@ systemctl --user enable --now agy-upstream-watch.timer
 
 For a dry run, which qualifies and verifies but opens no PR:
 `phase-loop agy-qualification watch --repo ~/code/agent-harness --dry-run`. A dry run
-keeps its prepared tree and prints its path.
+keeps its prepared tree and prints its path. `--version <tag>` picks a specific in-window
+stable release, and `--base-ref <ref>` (dry run only) prepares from a ref other than
+`origin/main`.
 
 ## Related commands
 

@@ -1383,3 +1383,39 @@ def test_watch_record_passes_route_core_on_its_prepared_tree(tmp_path):
     result = subprocess.run([sys.executable, str(verifier), "--route-core"], cwd=tree, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["qualified_releases"] == ["9.9.9"]
+
+
+class _TagTransport(FakeTransport):
+    def open(self, url, *, accept):
+        if "/releases/tags/" in url:
+            self.calls.append(url)
+            tag = url.rsplit("/", 1)[1]
+            return io.BytesIO(json.dumps(next(r for r in self.releases if r["tag_name"] == tag)).encode())
+        return super().open(url, accept=accept)
+
+
+@pytest.mark.parametrize("flag", ["prerelease", "draft"])
+def test_release_by_tag_refuses_non_stable(flag):
+    t = _TagTransport()
+    t.add("1.2.99", b"x", **{flag: True})
+    with pytest.raises(prov.ProvenanceError, match=prov.UNVERIFIED):
+        prov.release_by_tag(t, "1.2.99")
+
+
+def test_watch_refetched_member_must_match_its_record(tmp_path):
+    """The watch requalifies every catalog member on the prepared tree (adding a member
+    edits a route-core file every record pins); an existing member's re-fetched image
+    must equal its committed record. Mutation: trusting the upstream bytes."""
+    from phase_loop_runtime import agy_watch
+    tree = _watch_repo(tmp_path)
+    member = agy_watch._catalog_members(tree)[-1]
+    t = _TagTransport()
+    t.add(member["release_version"], b"not the pinned image")
+    with pytest.raises(prov.ProvenanceError):
+        agy_watch._pinned_member(tree, member, HOST, t)
+
+
+def test_watch_base_ref_is_dry_run_only(tmp_path):
+    from phase_loop_runtime import agy_watch
+    with pytest.raises(ValueError, match="dry-run"):
+        agy_watch.main(repo=tmp_path, runner=_Runner(), host=HOST, base_ref="HEAD")

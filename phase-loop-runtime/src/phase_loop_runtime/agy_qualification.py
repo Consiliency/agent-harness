@@ -1367,7 +1367,8 @@ def cli_main(args):
     """``phase-loop agy-qualification {status,run,clear,watch}``."""
     if args.action == "watch":
         from . import agy_watch
-        return agy_watch.main(repo=args.repo, dry_run=args.dry_run, version=getattr(args, "version", None))
+        return agy_watch.main(repo=args.repo, dry_run=args.dry_run, version=getattr(args, "version", None),
+                              base_ref=getattr(args, "base_ref", "origin/main"))
     store = Store()
     if args.action == "status":
         print(json.dumps({"store": str(store.host_dir), "store_status": store.status(),

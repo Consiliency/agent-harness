@@ -12,7 +12,10 @@ a requalification. For the newest stable release not yet pinned on ``main`` it:
    that tree, handing the image over as a sealed fd (``--image-fd``, the worker's seal
    check applies). The tree's own release constant satisfies the worker gate, so the
    record matches the tree -- what ``--route-core`` requires -- and never depends on the
-   recency window;
+   recency window. Adding a member edits ``gemini_heartbeat.py``, which every existing
+   record pins, so EVERY catalog member is requalified on the prepared tree: each existing
+   member's image is re-fetched from its own release and must match its record's asset
+   and image digests;
 4. opens a DRAFT PR. It never merges.
 
 Only the release route (Linux x64 glibc; ``qualified_provider_images.v2`` has only that
@@ -79,13 +82,32 @@ def edit_constants(tree: Path, image_sha256: str, help_sha256: str, version: str
     catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
 
 
-def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: str) -> dict:
-    """The redacted record, in the shape of the newest committed record (see the release
-    process's regeneration rule): each operation row is its receipt restricted to the
-    template row's keys."""
+def _catalog_members(tree: Path) -> list[dict]:
+    return list(json.loads((tree / CATALOG).read_text())["routes"]["gemini_heartbeat_linux_x64"]["images"])
+
+
+def _pinned_member(tree: Path, member: dict, host, transport):
+    """Re-fetch an already-pinned member's image; its release asset digest and image digest
+    must equal its committed record's."""
+    record = json.loads((tree / "plans/evidence" / member["record"]).read_text())
+    asset = agy_provenance.release_asset(agy_provenance.release_by_tag(transport, member["release_version"]), host)
+    if asset.digest != record["upstream_asset_sha256"]:
+        raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED)
+    digest, data = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
+    if digest != member["image_sha256"] or digest != record["image_sha256"]:
+        raise agy_provenance.ProvenanceError(agy_provenance.UNVERIFIED)
+    return asset, gh.VerifiedImage.from_bytes(data), member["help_sha256"]
+
+
+def summarize(tree: Path, series: Path, asset, image_sha256: str, help_sha256: str, *,
+              template_name: str | None = None) -> dict:
+    """The redacted record, in the shape of a committed record (see the release process's
+    regeneration rule): each operation row is its receipt restricted to the template row's
+    keys. A requalified member is its own template; a new one takes the newest other."""
     catalog = json.loads((tree / CATALOG).read_text())
     members = catalog["routes"]["gemini_heartbeat_linux_x64"]["images"]
-    template_name = next(m["record"] for m in reversed(members) if m["release_version"] != asset.version)
+    if template_name is None:
+        template_name = next(m["record"] for m in reversed(members) if m["release_version"] != asset.version)
     template = json.loads((tree / "plans/evidence" / template_name).read_text())
 
     def restrict(value, shape):
@@ -131,9 +153,12 @@ def _tree_python(tree: Path, python: str, args, *, image_fd: int, runner, env):
 
 
 def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transport=None,
-         python=sys.executable, workdir=None, out=print, version=None) -> int:
+         python=sys.executable, workdir=None, out=print, version=None, base_ref="origin/main") -> int:
     """One watch tick. ``version`` selects a specific in-window stable release instead of
-    the newest (an operator re-run, or a dry run against a non-pinned build)."""
+    the newest (an operator re-run, or a dry run against a non-pinned build). ``base_ref``
+    is for a dry run only: a published tick always prepares from ``origin/main``."""
+    if base_ref != "origin/main" and not dry_run:
+        raise ValueError("agy watch: --base-ref is only for --dry-run")
     host = host or agy_provenance.detect_platform()
     if host.name != RELEASE_ROUTE_PLATFORM:
         out(json.dumps({"agy_watch": "platform_not_proposed", "platform": host.name}))
@@ -151,7 +176,7 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
     workdir = Path(workdir or tempfile.mkdtemp(prefix="agy-watch-"))
     tree = workdir / "tree"
     branch = BRANCH_PREFIX + asset.version
-    _run(runner, ["git", "-C", str(repo), "worktree", "add", "--force", "-B", branch, str(tree), "origin/main"])
+    _run(runner, ["git", "-C", str(repo), "worktree", "add", "--force", "-B", branch, str(tree), base_ref])
     try:
         if asset.version in pinned_versions(tree):
             out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
@@ -164,39 +189,53 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
             return 0
         member_sha256, member = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
-        image = gh.VerifiedImage.from_bytes(member)
+        images = {asset.version: (asset, gh.VerifiedImage.from_bytes(member), None)}
         del member
         try:
+            for existing_member in _catalog_members(tree):
+                images[existing_member["release_version"]] = _pinned_member(tree, existing_member, host, transport)
             env = dict(os.environ)
-            edit_constants(tree, image.sha256, "0" * 64, asset.version)
-            help_path = workdir / "agy-help.txt"
-            fd = image.reopen()
-            try:
-                _tree_python(tree, python, ["--measure-help", "--output", str(help_path)], image_fd=fd,
-                             runner=runner, env=env)
-            finally:
-                os.close(fd)
-            help_sha256 = sha256(help_path.read_bytes()).hexdigest()
-            edit_constants(tree, image.sha256, help_sha256, asset.version)
-            series = workdir / "series"
-            series.mkdir()
-            for operation in OPERATIONS:
+            new_image = images[asset.version][1]
+            edit_constants(tree, new_image.sha256, "0" * 64, asset.version)
+            help_paths = {}
+            for version_key, (member_asset, image, pinned_help) in images.items():
+                help_path = workdir / f"agy-help-{version_key}.txt"
                 fd = image.reopen()
                 try:
-                    _tree_python(tree, python, ["--operation", operation, "--output", str(series / operation),
-                                                "--help-evidence", str(help_path)], image_fd=fd, runner=runner, env=env)
+                    _tree_python(tree, python, ["--measure-help", "--output", str(help_path)], image_fd=fd,
+                                 runner=runner, env=env)
                 finally:
                     os.close(fd)
-            _run(runner, [python, str(tree / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py"),
-                          "--validate", str(series)], cwd=tree / "phase-loop-runtime",
-                 env={**env, "PYTHONPATH": str(tree / "phase-loop-runtime/src")})
-            record = summarize(tree, series, asset, image.sha256, help_sha256)
-            (tree / "plans/evidence" / f"agy-{asset.version}-linux-x64-qualification.json").write_text(
-                json.dumps(record, indent=2, sort_keys=True) + "\n")
+                measured = sha256(help_path.read_bytes()).hexdigest()
+                if pinned_help is not None and measured != pinned_help:
+                    raise ValueError(f"agy watch: pinned member {version_key} help changed")
+                help_paths[version_key] = help_path
+            help_sha256 = sha256(help_paths[asset.version].read_bytes()).hexdigest()
+            edit_constants(tree, new_image.sha256, help_sha256, asset.version)
+            for version_key, (member_asset, image, _) in images.items():
+                series = workdir / "series" / version_key
+                series.mkdir(parents=True)
+                for operation in OPERATIONS:
+                    fd = image.reopen()
+                    try:
+                        _tree_python(tree, python, ["--operation", operation, "--output", str(series / operation),
+                                                    "--help-evidence", str(help_paths[version_key])],
+                                     image_fd=fd, runner=runner, env=env)
+                    finally:
+                        os.close(fd)
+                _run(runner, [python, str(tree / "phase-loop-runtime/scripts/qualify_gemini_heartbeat.py"),
+                              "--validate", str(series)], cwd=tree / "phase-loop-runtime",
+                     env={**env, "PYTHONPATH": str(tree / "phase-loop-runtime/src")})
+                member_help = sha256(help_paths[version_key].read_bytes()).hexdigest()
+                record_name = f"agy-{version_key}-linux-x64-qualification.json"
+                record = summarize(tree, series, member_asset, image.sha256, member_help,
+                                   template_name=None if version_key == asset.version else record_name)
+                (tree / "plans/evidence" / record_name).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
             _run(runner, [python, str(tree / "phase-loop-runtime/scripts/verify_qualified_agy_image.py"),
                           "--route-core"], cwd=tree)
         finally:
-            image.close()
+            for _, image, _ in images.values():
+                image.close()
         if dry_run:
             out(json.dumps({"agy_watch": "dry_run_verified", "version": asset.version, "tree": str(tree),
                             "image_sha256": member_sha256}))
