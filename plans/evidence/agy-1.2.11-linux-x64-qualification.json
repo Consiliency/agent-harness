@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "5687b2a5a83fb655d8af458a83ef21cb962d3e0a9876312ee15ed50dc3d1fc80",
+      "raw_receipt_sha256": "e23cdce2b7b09d7e9349396f6401225e24e845ad64c22e45f6c1c5d8d1b97e9b",
       "record_sha256": {
-        "broker": "edeb8756c5f9b6dfecf8c7afe6615e95196483b71eaf193df21918adf1d38c4f",
-        "monitoring": "2dbfe17c637afff93f4d86ec8a7140328f75672ad540b942e1287c4cce4cf200",
-        "observer": "01e1a3a53fc0a84cdc0241a6868d8ace3c6d320830213315a38bd584fda2c1bf",
-        "result": "1a73df8f4d308f6ec9f9c32923da6952b0d3f650fe0f106615d81c6815c7963c"
+        "broker": "7ce1cd0d4ef3a86f73e93a5301917c612a4bed68f9e1432bbf9b23e00f38a92c",
+        "monitoring": "4a2f15342bd3fb84255f74c42aff6e970003b329a56ee506af79ab92edf11a59",
+        "observer": "5e0216131308902f094579c9124a2dfad1135b8ebf3ace687a75e4f6963ebe23",
+        "result": "777803245cc29bc529a3af8ba28f4dc28de2964678869d54d470684b419aa483"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "5c3e040eee3b1b09ed72b6e18fc512e2022f69667a8acf637480686419eb27e9",
+      "raw_receipt_sha256": "96dc0dd6294347bf1fa829479dc318196212bb1bb6ff1e90c2b2b680bf39efdb",
       "record_sha256": {
-        "broker": "ccb7555e522105101c2a7fe0133a05bbe85e696d0c2f966568eca1ad63c41961",
-        "monitoring": "517c79562203af2467146fa65a51b6fd137db443f2f75f5b375150ca6b1edc8e",
-        "observer": "5c597c8c59c8d8c835bfd7bb78fd62e22e3fe5e9220a818975ce8d39076b4c55",
+        "broker": "d7c885115b1ad4aa12a5430196ca92138da4811743616b3f6c85e2747efa30d6",
+        "monitoring": "6101066fbc94b94810d3cfe04a42123cfee2b792087157c225a5d5e95c38fecc",
+        "observer": "2dd1dfa71d87256d3753044f27ba58c3347e6ae76f3eb7a7f206f06fa7109e11",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "e04deef1656c7d0a1ef9dcdb45405cbc3591c0cac7daf891af130cc848946831",
+      "raw_receipt_sha256": "6ea3614dad27234e8c837ff364818db251074964910ad2dad0867e7c82fa9925",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "279c8641dc9474b9b19ca9827977d330dd3376baf7112915208d355eec776f5a",
-        "observer": "359f97ace781f8e4d630beb56bdc628b96e0924b7166214d16eb13086c53573c",
+        "monitoring": "35f82373d42ee26f249644f9be5dbb332460f3a1db9b367f73b8e0ab258b3c30",
+        "observer": "830325c704bc6cec6018f583ec37c93a3ff4e4ca2d66662cd07e4f1e2ddeb782",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -220,8 +220,8 @@
     "agent_runtime_provider.py": "958e4f115369a1cc59dbc40585e03dece1be4476bd1fe03c323bf3b1fb9182a2",
     "agy_canary_evidence.py": "7a679349765acb7f5791fe50f2b99056e8df2087b662f7b2da3c7a852caebc7e",
     "agy_provenance.py": "82aa037260125327de4b5fde80e6121484fbc11abf17482973f9a91a86cc2c6e",
-    "agy_qualification.py": "fc8ba272520f8255e7a92876f87747ee143951183effff7ee284acee6acfa071",
-    "agy_watch.py": "6c7364a376cf4b3765d45a14d8486d13e259d3fd762983bed9d7790efe09542e",
+    "agy_qualification.py": "8713cecd42dbb29f51ddad8afdc02902dfdedebfe3a3c90bc40bebf9bec3e4a5",
+    "agy_watch.py": "d32d749b23e4724f8dbe947981f909fa1fec3d4632a261be723e1ee9c9416a2f",
     "baml_modular.py": "3e9275e21d90db3bdd522be9d01e72254b47bbde67b898101f6d5890cd883485",
     "broker.py": "f91cc789383c0d29caa5c52b841873c21fa871fadc277cfa26416ceaf8d3e2df",
     "build_bundle.py": "4432918670c8a650fd591afa560efbc3c7c7df9acd594640bc258bd4dd4a4b75",
