@@ -1353,11 +1353,11 @@ def _watch_repo(tmp_path):
 
 
 class _Runner:
-    """Fake git/gh. ``prs`` is the ``gh pr list`` JSON; ``commits`` maps oid -> message;
-    ``remote`` is the oid ``git ls-remote`` reports for the watch branch (or None)."""
+    """Fake git/gh. ``prs`` is the ``gh pr list --state all`` JSON; ``ls_remote`` is the raw
+    ``git ls-remote`` output for the watch branch."""
 
-    def __init__(self, prs="[]", *, login="watch-bot", commits=None, remote=None):
-        self.calls, self.prs, self.login, self.commits, self.remote = [], prs, login, commits or {}, remote
+    def __init__(self, prs="[]", *, login="watch-bot", ls_remote=""):
+        self.calls, self.prs, self.login, self.ls_remote = [], prs, login, ls_remote
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
@@ -1365,19 +1365,24 @@ class _Runner:
             return SimpleNamespace(stdout=self.prs, returncode=0)
         if argv[:3] == ["gh", "api", "user"]:
             return SimpleNamespace(stdout=self.login + "\n", returncode=0)
-        if argv[:2] == ["gh", "api"] and "/commits/" in argv[2]:
-            oid = argv[2].rsplit("/", 1)[1]
-            if oid in self.commits:
-                return SimpleNamespace(stdout=self.commits[oid], returncode=0)
-            return SimpleNamespace(stdout="", returncode=1)
         if "ls-remote" in argv:
-            return SimpleNamespace(stdout=f"{self.remote}\trefs/heads/x\n" if self.remote else "", returncode=0)
+            return SimpleNamespace(stdout=self.ls_remote, returncode=0)
         return SimpleNamespace(stdout="", returncode=0)
 
+    def pushes(self):
+        return [c for c in self.calls if "push" in c]
 
-def _pr(number, body, *, login="watch-bot", cross=False, owner="Consiliency", oid="a" * 40):
-    return {"number": number, "body": body, "isCrossRepository": cross,
-            "headRepositoryOwner": {"login": owner}, "author": {"login": login}, "headRefOid": oid}
+    def edits(self):
+        return [c for c in self.calls if c[:3] == ["gh", "pr", "edit"]]
+
+
+def _pr(number, body="", *, login="watch-bot", cross=False, owner="Consiliency", state="OPEN"):
+    return {"number": number, "body": body, "isCrossRepository": cross, "state": state,
+            "headRepositoryOwner": {"login": owner}, "author": {"login": login}}
+
+
+def _ref(oid, branch="agy-watch/9.9.9"):
+    return f"{oid}\trefs/heads/{branch}\n"
 
 
 def test_watch_opens_nothing_on_a_platform_it_cannot_propose(tmp_path):
@@ -1394,8 +1399,7 @@ def test_watch_second_tick_for_the_same_version_is_a_no_op(tmp_path, monkeypatch
     t = FakeTransport()
     t.add("9.9.9", b"new agy")
     base = agy_watch.route_core_digest(tree)
-    runner = _Runner(prs=json.dumps([_pr(1, f"x\n{agy_watch.MARKER} {base}\n")]),
-                     commits={"a" * 40: f"feat\n\n{agy_watch.MARKER} {base}\n"})
+    runner = _Runner(prs=json.dumps([_pr(1, f"x\n{agy_watch.MARKER} {base}\n")]), ls_remote=_ref("a" * 40))
     out = []
     assert agy_watch.main(repo=tmp_path, runner=runner, host=HOST, transport=t, workdir=tmp_path,
                           out=out.append) == 0
@@ -1627,45 +1631,75 @@ def _watch_tick(tmp_path, runner, version="9.9.9", **kwargs):
                           out=out.append, **kwargs), out, t
 
 
-def test_watch_ignores_a_same_named_foreign_pr_even_with_a_forged_marker(tmp_path, monkeypatch):
-    """claude B1: a fork PR on ``agy-watch/<V>`` whose body carries the current marker must
-    neither suppress the tick nor ever be edited. Mutation: selecting PRs by name alone."""
+def _stop_before_download(monkeypatch):
     from phase_loop_runtime import agy_watch
-    tree = _watch_repo(tmp_path)
-    base = agy_watch.route_core_digest(tree)
-    body = f"x\n{agy_watch.MARKER} {base}\n"
-    foreign = [_pr(7, body, cross=True, owner="mallory", login="mallory"),
-               _pr(8, body, login="mallory"),                                  # same repo, other author
-               _pr(9, "no marker"),                                            # our author, no marker
-               _pr(10, body, oid="b" * 40)]                                    # head commit lacks the marker
-    runner = _Runner(prs=json.dumps(foreign), commits={"a" * 40: f"m\n\n{agy_watch.MARKER} {base}\n"})
     monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop after the ownership decision")))
-    with pytest.raises(RuntimeError, match="stop after"):
-        _watch_tick(tmp_path, runner)
-    assert not [c for c in runner.calls if c[:3] == ["gh", "pr", "edit"]]
-    owned, rejected = agy_watch.owned_prs(runner, tmp_path, "agy-watch/9.9.9")
-    assert owned == [] and [pr["number"] for pr in rejected] == [7, 8, 9, 10]
 
 
-def test_watch_recognises_only_its_own_pr_as_up_to_date(tmp_path):
+def test_marker_bearing_foreign_branch_with_a_foreign_pr_gets_zero_pushes(tmp_path, monkeypatch):
+    """codex R2-B1 on agent-harness#1130 (claude N6b): another same-repository author owns a
+    PR on ``agy-watch/<V>`` whose origin head carries the watch marker and whose body carries
+    the CURRENT base marker. The watch must neither adopt the branch nor be suppressed by the
+    forged label: zero pushes, zero edits, no qualification. Mutation: any marker test as
+    an ownership signal, or a push gate that ignores foreign same-repository PRs."""
     from phase_loop_runtime import agy_watch
     tree = _watch_repo(tmp_path)
     base = agy_watch.route_core_digest(tree)
     body = f"x\n{agy_watch.MARKER} {base}\n"
-    runner = _Runner(prs=json.dumps([_pr(7, body, cross=True, owner="mallory", login="mallory"), _pr(3, body)]),
-                     commits={"a" * 40: f"m\n\n{agy_watch.MARKER} {base}\n"})
+    runner = _Runner(prs=json.dumps([_pr(8, body, login="mallory"), _pr(9, body, state="CLOSED")]),
+                     ls_remote=_ref("c" * 40))
+    _stop_before_download(monkeypatch)
+    code, out, t = _watch_tick(tmp_path, runner)
+    assert code == 2 and "refused_foreign_branch" in out[-1]
+    assert runner.pushes() == [] and runner.edits() == []
+    assert not [c for c in t.calls if "releases/download" in c]
+
+
+def test_foreign_branch_with_no_pr_is_never_adopted(tmp_path, monkeypatch):
+    runner = _Runner(ls_remote=_ref("c" * 40))
+    _watch_repo(tmp_path)
+    _stop_before_download(monkeypatch)
+    code, out, _ = _watch_tick(tmp_path, runner)
+    assert code == 2 and "refused_foreign_branch" in out[-1] and runner.pushes() == []
+
+
+def test_a_closed_foreign_pr_on_the_head_also_blocks_adoption(tmp_path):
+    from phase_loop_runtime import agy_watch
+    runner = _Runner(prs=json.dumps([_pr(3), _pr(4, login="mallory", state="MERGED")]), ls_remote=_ref("c" * 40))
+    ownership = agy_watch.branch_ownership(runner, tmp_path, "agy-watch/9.9.9")
+    assert ownership["may_push"] is False and ownership["owned_open"] == []
+
+
+def test_own_branch_and_prs_are_recognised_and_forks_are_only_reported(tmp_path):
+    from phase_loop_runtime import agy_watch
+    tree = _watch_repo(tmp_path)
+    base = agy_watch.route_core_digest(tree)
+    body = f"x\n{agy_watch.MARKER} {base}\n"
+    runner = _Runner(prs=json.dumps([_pr(7, body, cross=True, owner="mallory", login="mallory"),
+                                     _pr(2, state="CLOSED"), _pr(3, body)]), ls_remote=_ref("a" * 40))
+    ownership = agy_watch.branch_ownership(runner, tmp_path, "agy-watch/9.9.9")
+    assert ownership["may_push"] is True
+    assert [pr["number"] for pr in ownership["owned_open"]] == [3]
+    assert [pr["number"] for pr in ownership["foreign"]] == [7]
     code, out, _ = _watch_tick(tmp_path, runner)
     assert code == 0 and "up_to_date" in out[-1] and "ignored_foreign_prs" in out[0]
 
 
-def test_watch_refuses_to_push_over_a_foreign_same_named_branch(tmp_path, monkeypatch):
-    _watch_repo(tmp_path)
-    runner = _Runner(remote="c" * 40)  # exists in origin, head commit not the watch's
-    code, out, t = _watch_tick(tmp_path, runner)
-    assert code == 2 and "refused_foreign_branch" in out[-1]
-    assert not [c for c in t.calls if "releases/download" in c]
-    assert not [c for c in runner.calls if "push" in c]
+def test_a_new_branch_may_be_pushed_despite_a_fork_pr_but_the_fork_is_never_edited(tmp_path):
+    from phase_loop_runtime import agy_watch
+    runner = _Runner(prs=json.dumps([_pr(7, cross=True, owner="mallory", login="mallory")]))
+    ownership = agy_watch.branch_ownership(runner, tmp_path, "agy-watch/9.9.9")
+    assert ownership["may_push"] is True and ownership["owned_open"] == []
+
+
+def test_ls_remote_selects_the_exact_refname(tmp_path):
+    """claude N6c: ``ls-remote`` matches by tail pattern. Mutation: taking the first line."""
+    from phase_loop_runtime import agy_watch
+    decoy = "d" * 40 + "\trefs/heads/x/refs/heads/agy-watch/9.9.9\n"
+    runner = _Runner(ls_remote=decoy + _ref("a" * 40))
+    assert agy_watch.remote_branch_head(runner, tmp_path, "agy-watch/9.9.9") == "a" * 40
+    assert agy_watch.remote_branch_head(_Runner(ls_remote=decoy), tmp_path, "agy-watch/9.9.9") is None
 
 
 def test_top_level_dry_run_makes_the_watch_a_dry_run(monkeypatch):
@@ -1753,3 +1787,177 @@ def test_the_real_president_entry_never_qualifies(world, monkeypatch, tmp_path):
                                                          monitor=object())
     assert (world.counter.help, world.counter.qualify) == (0, 0) and world.transport.calls == []
     assert q.Store().status() == "absent"
+
+
+# ------------------------------------------------------------ round-2 (agent-harness#1130)
+
+def test_transient_count_resets_on_success(world):
+    """claude N1: the counter is consecutive. Mutation: never resetting it on success."""
+    world.outcome = {"status": "transient", "operation": "completion"}
+    for _ in range(q.MAX_TRANSIENT_ATTEMPTS - 1):
+        with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_UNAVAILABLE):
+            _ensure(world)
+    world.outcome = {"status": "passed"}
+    assert _ensure(world)[0] == "locally_qualified"
+    assert "transient" not in _entries(world)
+
+
+def test_clear_removes_the_transient_counter(world, capsys):
+    world.outcome = {"status": "transient", "operation": "completion"}
+    with pytest.raises(ValueError):
+        _ensure(world)
+    assert "transient" in _entries(world)
+    assert q.cli_main(SimpleNamespace(action="clear", all=False)) == 0
+    assert "transient" not in _entries(world)
+
+
+def test_a_lock_waiter_after_a_transient_refuses_without_running_or_counting(world):
+    """claude N1: N boards queued on the lock during a provider outage cost ONE attempt.
+    Mutation: waiters re-running qualification after a transient seen while waiting."""
+    store = q.Store()
+    store.create()
+    world.outcome = {"status": "transient", "operation": "completion"}
+    result = {}
+
+    def waiter():
+        try:
+            _ensure(world)
+        except ValueError as exc:
+            result["error"] = str(exc)
+
+    with store.lock():
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(0.3)  # the waiter is now blocked on the lock
+        # the holder's attempt ends in a transient while the waiter waits
+        store.note_transient(world.digest, HOST, q.runtime_identity())
+    thread.join(10)
+    assert result == {"error": q.SELF_QUALIFICATION_UNAVAILABLE}
+    assert world.counter.qualify == 0 and world.counter.help == 0
+    context = store._failed_context(world.digest, HOST, q.runtime_identity())
+    assert store.get("transient", context, context)["count"] == 1
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (OSError("disk"), "transient"),                                        # our own local failure
+    ("ended_before_admission", "transient"),                              # provider never observed
+    ("unqualified_image", "failed"),
+])
+def test_real_driver_write_failure_is_classified(tmp_path, exc, expected):
+    """claude N2: the classifier and the driver share reason constants; exercised through
+    the driver's real write_failure. Mutation: a drifted literal in _TRANSIENT_REASONS."""
+    if exc == "ended_before_admission":
+        exc = q.QualificationFailure(q.ENDED_BEFORE_ADMISSION)
+    elif exc == "unqualified_image":
+        exc = q.QualificationFailure("qualification observed an unqualified provider image")
+    tmp_path.mkdir(exist_ok=True)
+    q.write_failure(tmp_path, exc, "admission_observation", q.HelperObserver("0" * 64, {}), {})
+    assert q._classify_failure(tmp_path, "completion") == expected
+    assert q.ENDED_BEFORE_ADMISSION in q._TRANSIENT_REASONS and q.LOCAL_FAILURE in q._TRANSIENT_REASONS
+
+
+def _no_fd_growth(fn, n=10):
+    fn()  # warm
+    before = _fd_count()
+    for _ in range(n):
+        fn()
+    assert _fd_count() == before
+
+
+def _refused(fn):
+    def call():
+        with pytest.raises(ValueError):
+            fn()
+    return call
+
+
+def test_no_memfd_leak_on_the_failed_entry_exit(world):
+    """claude N3. Mutation: lookup not closing its image on a raise."""
+    world.outcome = {"status": "failed", "operation": "cancel"}
+    with pytest.raises(ValueError):
+        _ensure(world)
+    _no_fd_growth(_refused(lambda: gh.require_capability(world.env)))
+    _no_fd_growth(_refused(lambda: _ensure(world)))
+
+
+def test_no_memfd_leak_on_the_opt_out_exit(world):
+    _opt_out(world)
+    _no_fd_growth(_refused(lambda: gh.require_capability(world.env)))
+    _no_fd_growth(_refused(lambda: _ensure(world)))
+
+
+def test_no_memfd_leak_on_the_store_unsafe_exit(world):
+    q.Store().create()
+    q.Store().host_dir.chmod(0o755)
+    _no_fd_growth(_refused(lambda: _ensure(world)))
+
+
+def test_no_memfd_leak_when_help_spawn_raises(world, monkeypatch):
+    _ensure(world)
+    q._HELP_MEMO.clear()
+
+    def boom(verified, env):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(q, "_run_help", boom)
+    _no_fd_growth(_refused(lambda: gh.require_capability(world.env)))
+
+
+def _resume_round_trip(tmp_path, gemini_leg):
+    from phase_loop_runtime import panel_invoker as panel
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from phase_loop_runtime.president_adapter import seat_for_rung
+    from phase_loop_runtime.president_operation import brief_digest, findings_digest
+    board = DEFAULT_BOARD
+    legs = []
+    for seat in board.seats:
+        if seat.harness == "gemini":
+            leg = gemini_leg
+            object.__setattr__(leg, "seat_key", seat.seat_key)
+        else:
+            leg = panel.PanelLegResult(leg=seat.harness, status="OK", text="Fine.\n\nAGREE", seat_key=seat.seat_key)
+        legs.append(leg)
+    findings = panel.president_findings_from_legs(board.seats, legs)
+    rung = next(r for r in panel.PRESIDENT_LADDER
+                if (seat := seat_for_rung(board, r)) is not None and str(seat.harness).lower() == "claude")
+    deferred = panel.PresidentNativeFillDeferred(rung, {
+        "brief_digest": brief_digest(panel._president_prompt(findings)),
+        "findings_digest": findings_digest(findings)})
+    stream = tmp_path / "stream"
+    pending = panel._resolve_native_president(board, legs, findings, deferred, stream_dir=stream, fill=None, binding={})
+    request = pending.needs_native_president
+    text = "\n".join(f"FINDING {f.split(':', 1)[0]}: DEFERRED — ruled" for f in findings) + "\nFORCING DECISION: LAND"
+    fill = {"rung": request["rung"], "brief_digest": request["brief_digest"],
+            "findings_digest": request["findings_digest"], "text": text}
+    return panel._resume_native_president(board, stream_dir=stream, fill=fill, binding={}), findings
+
+
+def test_native_fill_resume_with_a_counted_heartbeat_gemini_leg_succeeds(tmp_path):
+    """claude N4: rebuilt legs lose their evidence; a COUNTED heartbeat Gemini leg must
+    rebuild to the same findings and resume. Mutation: treating an evidence-less rebuilt
+    leg as an uncounted agy leg."""
+    leg = _leg("The design is sound.\n\nAGREE", admission_class="locally_qualified")
+    result, findings = _resume_round_trip(tmp_path, leg)
+    assert result.president is not None and result.president_findings == findings
+
+
+def test_native_fill_resume_with_an_uncounted_leg_fails_closed(tmp_path):
+    from phase_loop_runtime import panel_invoker as panel
+    leg = _leg("The design is sound.\n\nAGREE", admission_class=None)
+    with pytest.raises(panel.PresidentPolicyError):
+        _resume_round_trip(tmp_path, leg)
+
+
+def test_agy_profile_evidence_alone_identifies_the_leg():
+    """claude N5: no monitoring record, but the owned agy profile ran it."""
+    from phase_loop_runtime import panel_invoker as panel
+    leg = panel.PanelLegResult(leg="gemini", status="OK", text="Fine.\nAGREE")
+    object.__setattr__(leg, "_harden_isolation_evidence", {"provider_isolation_profile": gh.PROFILE_ID})
+    assert q.counts_toward_landing(leg) is False
+
+
+def test_heartbeat_creates_a_missing_stream_dir_private(tmp_path):
+    """claude N7: the heartbeat never creates the board's stream directory world-readable."""
+    stream = tmp_path / "new-stream"
+    q.board_heartbeat(stream)("agy_qualification_lock_wait")
+    assert stat.S_IMODE(stream.stat().st_mode) == 0o700

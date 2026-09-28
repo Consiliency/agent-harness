@@ -784,8 +784,10 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   mount, an unverified network policy, a surviving process, a rejected record) writes a
   `failed` entry at whatever stage it was seen (until `agy-qualification clear`). Only a
   provider that was never observed running, a completion the provider did not answer
-  (HTTP 5xx, quota, auth), our own local failure and cancellation are transient; each
-  transient is counted, and the third for one key writes a `failed` entry.
+  (HTTP 5xx, quota, auth), and our own local failure are transient, and cancellation writes
+  nothing. Transients are counted per key; the third consecutive one writes a `failed`
+  entry, success resets the count, and `agy-qualification clear` removes it. A lock waiter
+  that finds a transient recorded while it waited refuses without running or counting.
 - **Worker gate.** The qualification worker receives the image as an inherited fd and,
   before hashing, requires a regular-file memfd with `F_SEAL_WRITE`, `F_SEAL_GROW`,
   `F_SEAL_SHRINK` and `F_SEAL_SEAL` (`F_SEAL_FUTURE_WRITE` alone is refused). It admits
@@ -821,6 +823,8 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   runtime, never the reviewed tree.
 - **Upstream watch.** `phase-loop agy-qualification watch` (a host timer on a subscribed
   host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64 glibc release
-  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. It edits
-  only a PR it can prove it owns (same repository, its own author, its marker in the body
-  and in the head commit) and refuses to push over a same-named branch it did not write.
+  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. Ownership
+  is decided by construction, never by a marker: it pushes to an existing `origin` branch
+  only if every same-repository PR ever opened on it (open or closed) was authored by the
+  identity running the watch, never adopts an existing branch with no owned PR, and edits
+  only its own open PR. The marker is a label of which route-core a PR was built from.

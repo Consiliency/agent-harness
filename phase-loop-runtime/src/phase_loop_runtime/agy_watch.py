@@ -46,41 +46,52 @@ REPO_SLUG = "Consiliency/agent-harness"
 REPO_OWNER = REPO_SLUG.split("/")[0]
 
 
-def owned_prs(runner, repo: Path, branch: str) -> tuple[list[dict], list[dict]]:
-    """Split open PRs on ``branch`` into those the watch can PROVE are its own and the rest
-    (claude B1 on agent-harness#1130 r1). ``gh pr list --head`` filters on the branch NAME
-    only, so a fork's same-named branch is returned too. Owned means: same repository
-    (not cross-repository, head owner is this repo's owner), authored by the identity
-    running the watch, a body carrying the watch marker, and a head commit whose message
-    carries the marker the watch writes into every commit it makes."""
+def _same_repo(pr: dict) -> bool:
+    return pr.get("isCrossRepository") is False and (pr.get("headRepositoryOwner") or {}).get("login") == REPO_OWNER
+
+
+def branch_ownership(runner, repo: Path, branch: str) -> dict:
+    """Who owns ``origin/<branch>`` and its PRs (agent-harness#1130 r2: codex R2-B1).
+
+    Ownership is decided by construction, never by a marker: a marker in a body or a
+    commit message proves nothing, since anyone can write it.
+
+    * ``same_repo``: every PR, open OR closed, whose head is this repository's branch
+      (``gh pr list --head`` matches a branch NAME, so a fork's same-named PR is listed
+      too; a cross-repository PR's head is the fork's branch, not ``origin/<branch>``).
+    * ``owned_open``: the open same-repository PRs, if and only if EVERY same-repository PR
+      ever opened on that head was authored by the identity running the watch; else empty.
+    * ``may_push``: ``origin/<branch>`` does not exist, or it exists and at least one
+      same-repository PR was opened on it and every one was ours. An origin branch with no
+      owned PR is never adopted.
+    """
     login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
-    listed = _run(runner, ["gh", "pr", "list", "--repo", REPO_SLUG, "--head", branch, "--state", "open",
-                           "--json", "number,body,isCrossRepository,headRepositoryOwner,author,headRefOid"],
+    listed = _run(runner, ["gh", "pr", "list", "--repo", REPO_SLUG, "--head", branch, "--state", "all",
+                           "--limit", "200",
+                           "--json", "number,state,body,isCrossRepository,headRepositoryOwner,author"],
                   cwd=repo)
-    owned, foreign = [], []
-    for pr in json.loads(listed.stdout or "[]"):
-        ok = (bool(login) and pr.get("isCrossRepository") is False
-              and (pr.get("headRepositoryOwner") or {}).get("login") == REPO_OWNER
-              and (pr.get("author") or {}).get("login") == login
-              and MARKER in (pr.get("body") or "")
-              and _commit_carries_marker(runner, repo, pr.get("headRefOid")))
-        (owned if ok else foreign).append(pr)
-    return owned, foreign
+    prs = json.loads(listed.stdout or "[]")
+    same_repo = [pr for pr in prs if _same_repo(pr)]
+    all_ours = bool(login) and all((pr.get("author") or {}).get("login") == login for pr in same_repo)
+    exists = remote_branch_head(runner, repo, branch) is not None
+    return {
+        "login": login,
+        "foreign": [pr for pr in prs if pr not in same_repo or not all_ours],
+        "owned_open": [pr for pr in same_repo if all_ours and pr.get("state") == "OPEN"],
+        "branch_exists": exists,
+        "may_push": (not exists) or (bool(same_repo) and all_ours),
+    }
 
 
-def _commit_carries_marker(runner, repo: Path, oid) -> bool:
-    if not isinstance(oid, str) or not re.fullmatch(r"[0-9a-f]{40}", oid):
-        return False
-    message = _run(runner, ["gh", "api", f"repos/{REPO_SLUG}/commits/{oid}", "-q", ".commit.message"],
-                   cwd=repo, check=False)
-    return getattr(message, "returncode", 1) == 0 and MARKER in (message.stdout or "")
-
-
-def remote_branch_is_foreign(runner, repo: Path, branch: str) -> bool:
-    """A same-named branch already in origin that the watch cannot prove it pushed."""
+def remote_branch_head(runner, repo: Path, branch: str) -> str | None:
+    """The oid of EXACTLY ``refs/heads/<branch>`` in origin (``ls-remote`` matches refs by
+    tail pattern, so ``refs/heads/x/refs/heads/<branch>`` would also be listed)."""
     listed = _run(runner, ["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"])
-    oid = (listed.stdout or "").split()[0] if (listed.stdout or "").strip() else None
-    return oid is not None and not _commit_carries_marker(runner, repo, oid)
+    for line in (listed.stdout or "").splitlines():
+        oid, _, ref = line.partition("\t")
+        if ref.strip() == f"refs/heads/{branch}" and re.fullmatch(r"[0-9a-f]{40}", oid.strip()):
+            return oid.strip()
+    return None
 
 
 def _run(runner, argv, **kwargs):
@@ -221,13 +232,16 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
             return 0
         base = route_core_digest(tree)
-        prs, foreign = owned_prs(runner, repo, branch)
-        if foreign:
-            out(json.dumps({"agy_watch": "ignored_foreign_prs", "numbers": [pr.get("number") for pr in foreign]}))
+        ownership = branch_ownership(runner, repo, branch)
+        prs = ownership["owned_open"]
+        if ownership["foreign"]:
+            out(json.dumps({"agy_watch": "ignored_foreign_prs",
+                            "numbers": [pr.get("number") for pr in ownership["foreign"]]}))
+        # The marker is a label (which route-core an owned PR was built from), never ownership.
         if any(f"{MARKER} {base}" in (pr.get("body") or "") for pr in prs):
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
             return 0
-        if not dry_run and remote_branch_is_foreign(runner, repo, branch):
+        if not dry_run and not ownership["may_push"]:
             out(json.dumps({"agy_watch": "refused_foreign_branch", "branch": branch}))
             return 2
         member_sha256, member = agy_provenance.fetch_member(transport, asset, keep_bytes=True)

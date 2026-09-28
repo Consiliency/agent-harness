@@ -82,6 +82,12 @@ def runtime_identity(package_dir=None):
             "route_core": {name: file_hash(package_dir / name) for name in ROUTE_CORE}}
 
 
+# Driver reasons the failure classifier treats as transients (claude N2 on agent-harness#1130
+# r2): named once here and used both where they are raised and by _classify_failure.
+ENDED_BEFORE_ADMISSION = "qualification ended before complete admission observation"
+LOCAL_FAILURE = "qualification local failure"
+
+
 class QualificationFailure(ValueError):
     """A diagnostic raised with a fixed, content-free message by this driver."""
 
@@ -357,7 +363,7 @@ def write_json(path, value):
 def write_failure(root, exc, stage, helpers, observed_processes):
     value = {"schema": "gemini_heartbeat_qualification_failure.v1",
              "exception_type": type(exc).__name__, "stage": stage,
-             "reason": str(exc) if isinstance(exc, QualificationFailure) else "qualification local failure",
+             "reason": str(exc) if isinstance(exc, QualificationFailure) else LOCAL_FAILURE,
              "helpers": helpers.records, "rejected_image": helpers.rejected_image,
              "observed_processes": list(observed_processes.values()),
              "qualification_passed": False, "same_candidate_retry_authorized": False}
@@ -679,7 +685,7 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
         proc.wait()
         stage = "terminal_observation"
         if observer is None or monitor is None or not triggered:
-            raise QualificationFailure("qualification ended before complete admission observation")
+            raise QualificationFailure(ENDED_BEFORE_ADMISSION)
         if operation == "owner-loss":
             if proc.returncode != -signal.SIGKILL:
                 raise QualificationFailure("qualification owner-loss exit differs from requested signal")
@@ -736,9 +742,13 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
 
 _ENTRY_SCHEMA = "agy_qualification_entry.v1"
 _ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient")
-# After this many consecutive transient attempts for one key, the image is refused with
-# a failed entry (claude N2 on agent-harness#1130 r1): a deterministic incompatibility
-# must not re-run help and a real completion on every board forever.
+# After this many CONSECUTIVE transient attempts for one key, the image is refused with a
+# failed entry (claude N2 on agent-harness#1130 r1): a deterministic incompatibility must not
+# re-run help and a real completion on every board forever. The count resets when the key
+# qualifies and is removed by ``agy-qualification clear``. Cancellation is not counted. A
+# lock waiter that finds a transient recorded while it waited refuses without running
+# anything and without counting, so N queued boards cost one attempt, not N (claude N1 on
+# agent-harness#1130 r2).
 MAX_TRANSIENT_ATTEMPTS = 3
 _MAX_ENTRY_BYTES = 256 * 1024
 
@@ -987,13 +997,22 @@ class Store:
         context = self._failed_context(image_sha256, host, runtime)
         return self.get("failed", context, context)
 
-    def note_transient(self, image_sha256, host, runtime):
-        """Count one transient attempt for this key; return the new count."""
+    def note_transient(self, image_sha256, host, runtime, *, now=None):
+        """Count one consecutive transient attempt for this key; return the new count."""
         context = self._failed_context(image_sha256, host, runtime)
         payload = self.get("transient", context, context) or {}
         count = payload.get("count") if isinstance(payload.get("count"), int) else 0
-        self.put("transient", context, context, {"count": count + 1})
+        self.put("transient", context, context, {"count": count + 1, "at": time.time() if now is None else now})
         return count + 1
+
+    def last_transient_at(self, image_sha256, host, runtime):
+        context = self._failed_context(image_sha256, host, runtime)
+        payload = self.get("transient", context, context) or {}
+        value = payload.get("at")
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def reset_transients(self, image_sha256, host, runtime):
+        self._path("transient", self._failed_context(image_sha256, host, runtime)).unlink(missing_ok=True)
 
     def _member_context(self, asset, host, runtime):
         return {"asset": asset.name, "asset_sha256": asset.digest, "platform": host.name, "runtime": runtime}
@@ -1084,11 +1103,13 @@ def lookup(env, data, path, *, store=None):
     if not self_qualification_enabled():
         raise ValueError(gh._CAPABILITY)
     image = gh.VerifiedImage.from_bytes(data, path)
+    handed_off = False  # the memfd leaves only inside an Admission or an AdmissionMiss
     try:
         store = store or Store()
         try:
             host = _host()
         except ValueError:
+            handed_off = True
             raise gh.AdmissionMiss(image, path) from None
         runtime = runtime_identity()
         if store.status() == "ok":
@@ -1097,13 +1118,13 @@ def lookup(env, data, path, *, store=None):
             if store.get_provenance(image.sha256, host, runtime) is not None:
                 help_sha256 = sha256(measure_help(image, env, runtime)).hexdigest()
                 if store.get_qualified(image.sha256, help_sha256, host, runtime) is not None:
+                    handed_off = True
                     return gh.Admission(image, help_sha256, "locally_qualified", Path(path))
+        handed_off = True
         raise gh.AdmissionMiss(image, path)
-    except gh.AdmissionMiss:
-        raise
-    except BaseException:
-        image.close()
-        raise
+    finally:
+        if not handed_off:
+            image.close()
 
 
 def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
@@ -1131,10 +1152,15 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
         host = _host()
         if state == "absent":
             store.create()
+        wait_started = time.time()
         with store.lock(cancel_event, heartbeat):
             runtime = runtime_identity()
             if store.get_failed(image.sha256, host, runtime) is not None:
                 raise ValueError(SELF_QUALIFICATION_FAILED)
+            last = store.last_transient_at(image.sha256, host, runtime)
+            if last is not None and last >= wait_started:
+                # Another holder hit a transient while we waited: refuse, run nothing, count nothing.
+                raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
             if store.get_provenance(image.sha256, host, runtime) is None:
                 if heartbeat is not None:
                     heartbeat("agy_qualification_provenance")
@@ -1162,6 +1188,7 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
                                                      heartbeat=heartbeat, store=store)
                 if outcome["status"] == "passed":
                     store.put_qualified(image.sha256, help_sha256, host, runtime, provenance["release_version"])
+                    store.reset_transients(image.sha256, host, runtime)
                 elif outcome["status"] == "failed":
                     store.put_failed(image.sha256, help_sha256, host, runtime,
                                      outcome.get("operation"), outcome.get("reason", "qualification_failed"))
@@ -1188,11 +1215,7 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
 # Failures that say nothing about the image: the provider was never observed running, or
 # the provider did not answer the completion (HTTP 5xx, quota, auth), or our own local
 # failure. Everything else the observer or validator raises is an observed violation.
-_TRANSIENT_REASONS = frozenset({
-    "qualification ended before complete admission observation",
-    "qualification local failure",
-    CANCELLED,
-})
+_TRANSIENT_REASONS = frozenset({ENDED_BEFORE_ADMISSION, LOCAL_FAILURE, CANCELLED})
 
 
 def _classify_failure(root, operation):
@@ -1272,8 +1295,9 @@ def _gemini_heartbeat_leg(leg):
     evidence (claude N6), so a differently named agy leg is never counted unclassified."""
     monitoring = getattr(leg, "review_monitoring", None) or {}
     evidence = getattr(leg, "harden_isolation_evidence", None) or {}
-    agy = leg.leg == "gemini" or evidence.get("provider_isolation_profile") == gh.PROFILE_ID
-    return agy and monitoring.get("effective_policy") == "heartbeat_only"
+    if evidence.get("provider_isolation_profile") == gh.PROFILE_ID:
+        return True  # the owned heartbeat agy profile ran it, whatever the monitoring record says
+    return leg.leg == "gemini" and monitoring.get("effective_policy") == "heartbeat_only"
 
 
 def leg_admission_class(leg):
@@ -1319,7 +1343,9 @@ def board_heartbeat(stream_dir=None, *, every_s=5.0, clock=time.monotonic):
         if stream_dir is not None:
             try:
                 target = Path(stream_dir) / "agy-qualification.json"
-                target.parent.mkdir(parents=True, exist_ok=True)
+                # Never create the board's stream directory with a default mode; an
+                # existing one keeps whatever mode the board gave it (claude N7).
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 temporary = target.with_suffix(".tmp")
                 temporary.write_text(json.dumps({"schema": "agy_qualification_progress.v1", "phase": phase,
                                                  "monotonic_s": now}, sort_keys=True) + "\n")
@@ -1517,7 +1543,7 @@ def cli_main(args):
                           "runtime": runtime_identity()}, sort_keys=True))
         return 0
     if args.action == "clear":
-        removed = store.remove(_ENTRY_TYPES if args.all else ("failed",))
+        removed = store.remove(_ENTRY_TYPES if args.all else ("failed", "transient"))
         _HELP_MEMO.clear()
         print(json.dumps({"removed": removed}))
         return 0

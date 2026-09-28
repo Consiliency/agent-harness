@@ -35,12 +35,15 @@ subscribed host, once.
 5. It writes the redacted record, runs `verify_qualified_agy_image.py --route-core` on
    the prepared tree, commits, pushes and opens a **draft** PR. It never merges.
 
-Ownership: `gh pr list --head` matches a branch *name*, which a fork can reuse. The watch
-treats a PR as its own only if it is from this repository (not cross-repository), was
-authored by the identity running the watch, and carries the watch marker in its body and
-in its head commit's message. It ignores every other same-named PR and reports it
-(`ignored_foreign_prs`), never edits one, and refuses (`refused_foreign_branch`, exit 2) to
-push over a same-named branch in `origin` whose head commit it did not write.
+Ownership: `gh pr list --head` matches a branch *name*, which a fork can reuse, and a
+marker in a PR body or commit message proves nothing, since anyone can write one. So the
+watch decides ownership by construction. It lists every PR ever opened on the branch
+(open or closed). It pushes to an existing `origin/agy-watch/<version>` only if at least
+one same-repository PR was opened on it and every one of them was authored by the
+identity running the watch. It never adopts an existing branch that has no owned PR; it
+refuses with `refused_foreign_branch` and exit 2. It edits only its own open PR and
+reports every other one (`ignored_foreign_prs`). The body marker only labels which
+route-core an owned PR was built from.
 
 Budget about a minute of real inference per catalog member per new release.
 
