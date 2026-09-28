@@ -5,6 +5,7 @@ import ast
 from hashlib import sha256
 import json
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 from urllib.request import Request, urlopen
@@ -20,7 +21,10 @@ API = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/
 # whole route: modules they import can change its behaviour too. The FULL pin set (every
 # package source) is the guarantee, enforced before publication (publish-pypi.yml) and on a
 # release-cut PR, so ordinary runtime changes need a live requalification once per release.
-ROUTE_CORE = ("gemini_heartbeat.py", "qualify_gemini_heartbeat.py")
+# agent-harness#1076: the tuple is the PACKAGED one, the same object the runtime's local
+# qualification key hashes, so the CI gate and the local key cover the same files.
+sys.path.insert(0, str(PACKAGE.parent))
+from phase_loop_runtime.agy_qualification import ROUTE_CORE  # noqa: E402
 
 
 def require(condition, reason):

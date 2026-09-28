@@ -10,7 +10,7 @@ child plays the provider.
 from __future__ import annotations
 
 import errno
-import importlib.util
+import importlib
 import os
 import shutil
 import signal
@@ -20,16 +20,9 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "qualify_gemini_heartbeat.py"
-# The sdist ships tests/ but not scripts/ (a standalone-from-sdist run has no script).
-pytestmark = pytest.mark.skipif(not SCRIPT.is_file(), reason="scripts/ is not shipped in this tree")
-
-
 def _load():
-    spec = importlib.util.spec_from_file_location("qualify_gemini_heartbeat_under_test", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # agent-harness#1076: the driver moved into the package; the script is a shim.
+    return importlib.import_module("phase_loop_runtime.agy_qualification")
 
 
 def _descendants(pid: int) -> list[int]:
