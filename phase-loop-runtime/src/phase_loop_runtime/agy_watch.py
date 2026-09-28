@@ -151,27 +151,51 @@ def _push_state(store=None):
     return store or Store()
 
 
-def record_push(branch: str, oid: str, store=None) -> None:
+def _push_context(branch: str, version: str, base: str) -> dict:
+    # The version and route-core base are bound into the MAC too (claude N3 on
+    # agent-harness#1130 r6): a body relabelled to the current base cannot reuse an old push.
+    return {"branch": branch, "version": version, "base": base}
+
+
+def ensure_push_state(store=None) -> bool:
+    """Pre-flight (claude N2 on agent-harness#1130 r6): the store must be writable and read
+    back BEFORE anything is pushed, so a verified push can always be recorded."""
+    try:
+        store = _push_state(store)
+        if store.status() == "absent":
+            store.create()
+        context = {"branch": "\0preflight", "version": "", "base": ""}
+        store.put("watch_push", context, context, {"oid": "preflight"})
+        ok = (store.get("watch_push", context, context) or {}).get("oid") == "preflight"
+        store._path("watch_push", context).unlink(missing_ok=True)
+        return ok
+    except (OSError, ValueError):
+        return False
+
+
+def record_push(branch: str, oid: str, version: str, base: str, store=None) -> None:
     store = _push_state(store)
     if store.status() == "absent":
         store.create()
-    context = {"branch": branch}
+    context = _push_context(branch, version, base)
     store.put("watch_push", context, context, {"oid": oid})
 
 
-def recorded_push(branch: str, store=None) -> str | None:
-    """The oid this watch pushed to ``branch``, or None when missing, tampered or foreign
-    (then the PR is simply not up to date: a duplicate PR, never adoption)."""
-    context = {"branch": branch}
-    payload = _push_state(store).get("watch_push", context, context)
+def recorded_push(branch: str, version: str, base: str, store=None) -> str | None:
+    """The oid this watch pushed to ``branch`` for ``version`` at route-core ``base``, or None
+    when missing, tampered, foreign or for another branch/version/base (then the PR is simply
+    not up to date: a duplicate PR, never adoption)."""
+    context = _push_context(branch, version, base)
+    try:
+        payload = _push_state(store).get("watch_push", context, context)
+    except (OSError, ValueError):
+        return None
     value = payload.get("oid") if payload else None
     return value if isinstance(value, str) and value else None
 
 
 def single_push_url(runner, tree: Path) -> str | None:
-    """``origin``'s push URL, iff there is exactly one (codex B2 on agent-harness#1130 r5):
-    ``git push origin`` writes to EVERY configured push URL, so the destination is fixed
-    before pushing, never counted after."""
+    """``origin``'s push URL (as git itself resolves it, rewrites applied), iff exactly one."""
     listed = _run(runner, ["git", "-C", str(tree), "remote", "get-url", "--push", "--all", "origin"], check=False)
     if getattr(listed, "returncode", 1) != 0:
         return None
@@ -179,27 +203,48 @@ def single_push_url(runner, tree: Path) -> str | None:
     return urls[0] if len(urls) == 1 else None
 
 
-def publish_branch(runner, tree: Path, name: str) -> str:
-    """Create ``refs/heads/<name>`` in origin; return ``"created"`` or a typed refusal.
+def _push_argv(tree: Path, ref: str, *, dry_run: bool) -> list:
+    return ["git", "-C", str(tree), "push", *(["--dry-run"] if dry_run else []), "--porcelain",
+            "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
+            "--", "origin", f"HEAD:{ref}"]
 
-    The lease's EMPTY expected value means "must not exist" and the destination is fully
-    qualified, but a zero exit is NOT proof of creation: if the ref already exists at
-    exactly HEAD, git reports it up to date and exits 0 (agent-harness#1130 r4, codex B2).
-    So creation is read from ``--porcelain``: exactly one line, flag ``*`` (new ref), for
-    exactly ``refs/heads/<name>``. ``--no-follow-tags --recurse-submodules=no`` keep host
-    git config from adding refs to the push (claude N7).
+
+def _anonymized(url: str) -> str:
+    # git prints push destinations with any userinfo removed; compare like with like.
+    return re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@", r"\1", url)
+
+
+def _to_lines(result) -> list:
+    return [_anonymized(line[3:].strip()) for line in (result.stdout or "").splitlines() if line.startswith("To ")]
+
+
+def publish_branch(runner, tree: Path, name: str) -> str:
+    """Create ``refs/heads/<name>`` at exactly ONE destination; ``"created"`` or a typed refusal.
+
+    Nothing is resolved twice (codex B2 on agent-harness#1130 r5/r6). ``git remote get-url
+    --push --all origin`` must list exactly one URL, and the push then goes to the remote
+    NAME ``origin`` -- exactly the list git just enumerated -- never to the printed string,
+    which git would resolve again (as a remote name first, then through insteadOf /
+    pushInsteadOf). A ``--dry-run`` pre-flight must show exactly one ``To <url>`` block equal
+    to that URL, and so must the real push. The URL never appears on argv (claude N4).
+
+    The lease's EMPTY expected value means "must not exist", but a zero exit is NOT proof of
+    creation (a ref already at HEAD is "up to date", exit 0): creation is read from
+    ``--porcelain`` -- exactly one row, flag ``*``, for exactly ``refs/heads/<name>``.
+    ``--no-follow-tags --recurse-submodules=no`` keep host config from widening the push.
     """
     ref = f"refs/heads/{name}"
     url = single_push_url(runner, tree)
     if url is None:
         return "refused_push_destination_ambiguous"  # zero or several push URLs: push nothing
-    result = _run(runner, ["git", "-C", str(tree), "push", "--porcelain", "--no-follow-tags",
-                           "--recurse-submodules=no", f"--force-with-lease={ref}:",
-                           url, f"HEAD:{ref}"], check=False)
+    preflight = _run(runner, _push_argv(tree, ref, dry_run=True), check=False)
+    if _to_lines(preflight) != [_anonymized(url)]:
+        return "refused_push_destination_ambiguous"  # git would push somewhere else: push nothing
+    result = _run(runner, _push_argv(tree, ref, dry_run=False), check=False)
     lines = [line.split("\t") for line in (result.stdout or "").splitlines() if "\t" in line]
     rows = [row for row in lines if len(row) >= 2]
-    if len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
-        return "push_unavailable"  # no single row for exactly our ref: auth/network, or a wrong/extra row
+    if _to_lines(result) != [_anonymized(url)] or len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
+        return "push_unavailable"  # no single row for exactly our ref at exactly our URL
     flag, summary = rows[0][0].strip(), (rows[0][2] if len(rows[0]) > 2 else "")
     if flag == "*" and getattr(result, "returncode", 1) == 0:
         return "created"
@@ -365,8 +410,8 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
         # visible in BOTH live reads, so the recorded oid is what exposes it (r4 B3).
         # The pushed oid comes from the watch's OWN local record (r5), never the editable body.
         if any(_label_value(pr.get("body"), MARKER) == base
-               and recorded_push(pr["headRefName"]) is not None
-               and recorded_push(pr["headRefName"]) == pr.get("headRefOid")
+               and recorded_push(pr["headRefName"], asset.version, base) is not None
+               and recorded_push(pr["headRefName"], asset.version, base) == pr.get("headRefOid")
                == remote_branch_head(runner, repo, pr["headRefName"])
                for pr in prs):
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
@@ -429,11 +474,17 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
                       f"{MARKER} {base}"])
         branch = fresh_branch_name(asset.version)
         pushed = _run(runner, ["git", "-C", str(tree), "rev-parse", "HEAD"]).stdout.strip()
+        if not ensure_push_state():
+            out(json.dumps({"agy_watch": "refused_push_state_unavailable"}))
+            return 2  # nothing pushed: a push the watch could not record must never happen
         outcome = publish_branch(runner, tree, branch)
         if outcome != "created":
             out(json.dumps({"agy_watch": outcome, "branch": branch}))
             return 2
-        record_push(branch, pushed)
+        record_push(branch, pushed, asset.version, base)
+        if recorded_push(branch, asset.version, base) != pushed:
+            out(json.dumps({"agy_watch": "push_record_unverified", "branch": branch}))
+            return 2  # the branch is an orphan (documented); no PR is opened for it
         supersedes = ", ".join(f"#{pr['number']}" for pr in prs)
         body = (f"Automated upstream-watch qualification of agy {asset.version} (agent-harness#1076).\n\n"
                 f"Record produced from this branch's own tree; `verify_qualified_agy_image.py --route-core` passed.\n"

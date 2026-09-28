@@ -797,10 +797,12 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
 - **Store.** `$XDG_STATE_HOME/phase-loop/agy-qualification/hosts/<machine>/`, per user,
   namespaced by machine-id. Directories 0700 and files 0600, owned by the euid, opened
   `O_NOFOLLOW`; otherwise the store is absent to lookups and first use refuses
-  (`gemini_heartbeat_self_qualification_store_unsafe`). Entry types `provenance`,
-  `qualified`, `failed`, `member_cache`, `transient` and `watch_push`; each is HMAC-SHA256'd under a per-host key over
-  a context recomputed from the live key (type, euid, machine-id, image digest, platform,
-  runtime identity, plus the asset name, profile id or help digest as the type requires).
+  (`gemini_heartbeat_self_qualification_store_unsafe`). Every entry is HMAC-SHA256'd under
+  a per-host key over its type, the euid, the machine-id and a context recomputed from the
+  live key. The qualification entries (`provenance`, `qualified`, `failed`, `member_cache`,
+  `transient`) bind the image digest, platform and runtime identity, plus the asset name,
+  profile id or help digest as the type requires. The watch's `watch_push` entry binds the
+  branch, the version and the route-core base.
   Without a readable machine-id, self-qualification refuses; the release path is unaffected.
 - **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat (the board
   preflight writes a content-free `agy-qualification.json` progress record into the
@@ -828,8 +830,10 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   with an empty-expected-value lease and accepted only when `--porcelain` reports that exact
   ref as newly created) and one object create (the PR). It never updates, force-pushes,
   adopts, closes, edits or deletes anything that existed before the tick; the new PR body
-  names the own older PRs it supersedes for a maintainer to close. It pushes only to
-  `origin`'s single push URL (several refuse before any push), records the verified pushed
-  oid in its own `watch_push` store entry (the PR body's copy is display-only), and reads the
-  created PR back. "Up to date" requires that local record, `headRefOid` and `ls-remote` to
+  names the own older PRs it supersedes for a maintainer to close. It requires `origin` to
+  have exactly one push URL, pushes to the remote NAME `origin` (never to the printed URL,
+  which git would resolve again), and requires a `--dry-run` pre-flight and the real push
+  each to show exactly one `To <url>` equal to it. It pre-flights its store, records the
+  verified pushed oid in its own `watch_push` entry, and reads both the record and the
+  created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
   agree. It refuses when it cannot prove its open-PR listing complete.

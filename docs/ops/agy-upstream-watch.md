@@ -43,8 +43,15 @@ subscribed host, once.
    the prepared tree, and commits. It resolves `git remote get-url --push --all origin`
    and refuses (`refused_push_destination_ambiguous`, exit 2, nothing pushed) unless there
    is exactly one push URL, because `git push origin` writes to every configured push URL.
-   It then pushes a **fresh**, unique branch `agy-watch/<version>-<utc>-<random>` to that
-   single URL, with create-only semantics:
+   It then pushes to the remote NAME `origin`, which is exactly the list git just
+   enumerated. It never pushes to the printed string, because git would resolve that again:
+   first as a remote name, then through `insteadOf`/`pushInsteadOf`. A `--dry-run`
+   pre-flight must show exactly one `To <url>` equal to the verified URL, and the real push
+   must too. A URL with embedded credentials never appears on argv. Before pushing, it also
+   checks that its own state store can be written and read back
+   (`refused_push_state_unavailable` otherwise, nothing pushed).
+   The branch is a **fresh**, unique `agy-watch/<version>-<utc>-<random>`, pushed with
+   create-only semantics:
    `--force-with-lease=refs/heads/<name>:` (an empty expected value), a fully qualified
    destination, `--no-follow-tags --recurse-submodules=no`, and `--porcelain`. A zero exit
    status is not trusted, because a ref that already exists at exactly HEAD is reported
@@ -59,7 +66,9 @@ subscribed host, once.
    - `push_unavailable`: no single row for exactly our ref, which covers auth or network
      failures and also a wrong or extra row.
 
-   After a verified push it records the pushed oid locally and opens a **draft** PR whose
+   After a verified push it records the pushed oid locally (bound to the branch, the
+   version and the route-core base) and reads that record back (`push_record_unverified`
+   otherwise: the branch is left as an orphan, no PR), then opens a **draft** PR whose
    body names the own older PRs it supersedes ("Supersedes (maintainer to close): #a,
    #b") and shows the pushed oid for display only. It then reads the PR back
    (`gh pr view --json headRefOid`, read-only). If the PR's head is not the pushed commit,

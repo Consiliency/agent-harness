@@ -1373,9 +1373,16 @@ def _node(number, body="", *, login="watch-bot", cross=False, owner="Consiliency
             "headRepositoryOwner": {"login": owner}, "author": {"login": login}}
 
 
-def _record(branch, oid="a" * 40):
+def _current_base():
     from phase_loop_runtime import agy_watch
-    agy_watch.record_push(branch, oid)
+    root = Path(__file__).resolve().parents[2]
+    return agy_watch.route_core_digest(root)
+
+
+def _record(branch, oid="a" * 40, base=None, version="9.9.9"):
+    """The watch's own local push record (bound to branch, version and route-core base)."""
+    from phase_loop_runtime import agy_watch
+    agy_watch.record_push(branch, oid, version, base or _current_base())
 
 
 def _label(base, version="9.9.9", *, pushed="a" * 40, crlf=False):
@@ -1451,7 +1458,8 @@ class _Runner:
         return ok
 
     def pushes(self):
-        return [c for c in self.calls if "push" in c]
+        """Real (writing) pushes; the read-only --dry-run pre-flight is not one."""
+        return [c for c in self.calls if "push" in c and "--dry-run" not in c]
 
     def closes(self):
         return [c for c in self.calls if c[:3] == ["gh", "pr", "close"]]
@@ -1461,29 +1469,55 @@ class _Runner:
                                                    ["gh", "pr", "merge"], ["gh", "pr", "reopen"])]
 
     def outside_allowlist(self):
-        """Every call that is NOT one of the watch's permitted operations (claude r5 nit 4):
-        reads, local git in its own checkout, the tree's own scripts, exactly ONE push, and
-        exactly ONE PR create. Anything else (comment, ready, api PATCH, a second push...)
-        is reported."""
-        allowed_git = {"fetch", "worktree", "add", "-c", "rev-parse", "remote", "ls-remote", "push"}
-        bad, pushes, creates = [], 0, 0
+        """Every call that is NOT one of the watch's permitted operations (claude r5 nit 4, r6
+        oracle holes): a real parse of git's global options and of gh api's arguments, the
+        tree's two exact scripts only, and the one real push matched argv-for-argv."""
+        from phase_loop_runtime import agy_watch
+        bad, real_pushes, creates = [], [], 0
         for c in self.calls:
             if c[:1] == ["git"]:
-                verb = c[3] if len(c) > 3 and c[1] == "-C" else c[1]
-                if verb not in allowed_git or (verb == "remote" and "get-url" not in c):
+                i = 1
+                while i < len(c) and c[i] in ("-C", "-c"):
+                    i += 2
+                verb, rest = (c[i], c[i + 1:]) if i < len(c) else (None, [])
+                if verb == "push":
+                    if "--dry-run" not in rest:
+                        real_pushes.append(c)
+                    tail = rest[rest.index("--") + 1:] if "--" in rest else None
+                    if tail is None or len(tail) != 2 or tail[0] != "origin" or not re.fullmatch(
+                            r"HEAD:refs/heads/agy-watch/[0-9.]+-\d{8}T\d{6}Z-[0-9a-f]{8}", tail[1]):
+                        bad.append(c)
+                elif verb == "remote":
+                    if rest[:4] != ["get-url", "--push", "--all", "origin"]:
+                        bad.append(c)
+                elif verb == "worktree":
+                    if rest[:1] not in (["add"], ["remove"]):
+                        bad.append(c)
+                elif verb not in ("fetch", "add", "commit", "rev-parse", "ls-remote"):
                     bad.append(c)
-                pushes += verb == "push"
-            elif c[:3] in (["gh", "api", "user"], ["gh", "api", "graphql"], ["gh", "pr", "view"]):
-                if c[:3] == ["gh", "api", "graphql"] and "mutation" in " ".join(c):
+            elif c[:2] == ["gh", "api"]:
+                args = c[2:]
+                if "-X" in args or "--method" in args or "--input" in args \
+                        or any(a.startswith("query=@") or a.startswith("@") for a in args):
+                    bad.append(c)
+                elif args[:1] == ["user"]:
+                    continue
+                elif args != ["graphql", "--paginate", "-f", f"query={agy_watch._OPEN_PRS_QUERY}",
+                              "-F", "owner=Consiliency", "-F", "repo=agent-harness"]:
+                    bad.append(c)
+            elif c[:3] == ["gh", "pr", "view"]:
+                if "--json" not in c or c[c.index("--json") + 1] != "headRefOid":
                     bad.append(c)
             elif c[:3] == ["gh", "pr", "create"]:
                 creates += 1
-            elif c and c[0] == sys.executable:
-                continue  # the prepared tree's own shim/verifier
+            elif c and c[0] == sys.executable and len(c) > 1 and Path(c[1]).name in (
+                    "qualify_gemini_heartbeat.py", "verify_qualified_agy_image.py") \
+                    and Path(c[1]).parent.name == "scripts":
+                continue  # the prepared tree's own shim / verifier
             else:
                 bad.append(c)
-        if pushes > 1 or creates > 1:
-            bad.append(["counts", str(pushes), str(creates)])
+        if len(real_pushes) > 1 or creates > 1:
+            bad.append(["counts", str(len(real_pushes)), str(creates)])
         return bad
 
     def created_body(self):
@@ -2194,7 +2228,7 @@ def test_a_missing_or_tampered_push_record_is_never_up_to_date(tmp_path, monkeyp
         entry.chmod(0o644)
     else:
         entry.unlink()
-    assert agy_watch.recorded_push(head) is None
+    assert agy_watch.recorded_push(head, "9.9.9", _current_base()) is None
     runner = _Runner([_page([_node(3, _label(base), head=head)])], refs={head: "a" * 40})
     monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
@@ -2222,7 +2256,7 @@ def test_a_non_own_pr_with_the_current_label_never_makes_the_tick_up_to_date(tmp
             "fork": _node(3, _label(base), head=head, cross=True, owner="mallory"),
             "non_fresh_head": _node(3, _label(base), head="agy-watch/9.9.9"),
             "other_version": _node(3, _label(base, "9.9.8"), head="agy-watch/9.9.8-20260101T000000Z-aaaaaaaa")}[kind]
-    _record(node["headRefName"])
+    _record(node["headRefName"], version="9.9.8" if kind == "other_version" else "9.9.9")
     runner = _Runner([_page([node])], refs={node["headRefName"]: "a" * 40})
     monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
@@ -2338,10 +2372,15 @@ def test_a_directory_file_ref_conflict_is_typed(tmp_path):
 def test_push_outcomes_are_typed_from_porcelain(tmp_path, stdout, rc, outcome):
     """claude r4 N3. Mutations: trusting rc, or counting every failure as branch-exists."""
     from phase_loop_runtime import agy_watch
+    url = "https://example.invalid/o.git"
+
     def runner(argv, **k):
         if "get-url" in argv:
-            return SimpleNamespace(stdout="https://example.invalid/o.git\n", returncode=0)
-        return SimpleNamespace(stdout=stdout.replace("B", "agy-watch/9.9.9-x"), returncode=rc)
+            return SimpleNamespace(stdout=url + "\n", returncode=0)
+        if "--dry-run" in argv:
+            return SimpleNamespace(stdout=f"To {url}\n", returncode=0)
+        return SimpleNamespace(stdout=stdout.replace("To o", f"To {url}").replace("B", "agy-watch/9.9.9-x"),
+                               returncode=rc)
     assert agy_watch.publish_branch(runner, tmp_path, "agy-watch/9.9.9-x") == outcome
 
 
@@ -2349,14 +2388,23 @@ def test_the_push_cannot_carry_extra_refs(tmp_path, monkeypatch):
     """claude r4 N7: host push.followTags / push.recurseSubmodules cannot widen the push."""
     from phase_loop_runtime import agy_watch
     seen = []
+    url = "https://user:TOKEN@example.invalid/o.git"
+
     def runner(argv, **k):
         seen.append(argv)
-        return SimpleNamespace(stdout="https://example.invalid/o.git\n" if "get-url" in argv else "", returncode=0)
+        if "get-url" in argv:
+            return SimpleNamespace(stdout=url + "\n", returncode=0)
+        return SimpleNamespace(stdout="To https://example.invalid/o.git\n", returncode=0)
 
     agy_watch.publish_branch(runner, tmp_path, "agy-watch/9.9.9-x")
-    (push,) = [argv for argv in seen if "push" in argv]
-    assert "--no-follow-tags" in push and "--recurse-submodules=no" in push
-    assert push[-2] == "https://example.invalid/o.git"  # the single resolved URL, not the remote name
+    pushes = [argv for argv in seen if "push" in argv]
+    assert [("--dry-run" in argv) for argv in pushes] == [True, False]
+    for push in pushes:
+        assert "--no-follow-tags" in push and "--recurse-submodules=no" in push
+        # r6: pushed to the remote NAME after `--`, never to the printed URL string (which git
+        # would resolve again, and which may carry a token: claude N4)
+        assert push[-3:] == ["--", "origin", "HEAD:refs/heads/agy-watch/9.9.9-x"]
+        assert not any("example.invalid" in part for part in push)
 
 
 def test_cancellation_is_never_counted_as_a_transient(world, monkeypatch):
@@ -2425,5 +2473,172 @@ def test_a_verified_push_is_recorded_locally_and_the_body_oid_is_display_only(tm
     code, out = _end_to_end(tmp_path, monkeypatch, runner)
     assert code == 0, out
     (ref, oid), = [(r, o) for r, o in _origin_refs(origin).items() if r.startswith("refs/heads/agy-watch/")]
-    assert agy_watch.recorded_push(ref[len("refs/heads/"):]) == oid
+    assert agy_watch.recorded_push(ref[len("refs/heads/"):], "9.9.9", _current_base()) == oid
     assert "display only" in runner.created_body()
+
+
+# ------------------------------------------------------------ round-6 (agent-harness#1130)
+
+def _tree_with_commit(tmp_path):
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    subprocess.run(["git", "-C", str(tree), "-c", "commit.gpgsign=false", "-c", "user.name=w", "-c", "user.email=w@x",
+                    "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+    return tree
+
+
+def _bare(tmp_path, name):
+    path = tmp_path / f"{name}.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(path)], check=True)
+    return path
+
+
+def _git(tree, *args):
+    subprocess.run(["git", "-C", str(tree), *args], check=True)
+
+
+NAME = "agy-watch/9.9.9-20260101T000000Z-deadbeef"
+
+
+def test_an_insteadof_rewrite_to_a_fanout_remote_writes_nowhere(tmp_path):
+    """codex r6 B2, verbatim config: origin's pushurl `alias:destination` rewrites (insteadOf)
+    to `fanout`, which is ALSO the name of a remote with two push URLs. Pushing the printed
+    string would re-resolve it as that remote and write twice. The watch pushes to the NAME
+    `origin`, which git resolves once. Checks the DESTINATION refs of every bare repository.
+    Mutation: pushing to the printed URL string (M75)."""
+    from phase_loop_runtime import agy_watch
+    o, a, b = (_bare(tmp_path, n) for n in ("o", "a", "b"))
+    tree = _tree_with_commit(tmp_path)
+    _git(tree, "remote", "add", "origin", str(o))
+    _git(tree, "config", "remote.origin.pushurl", "alias:destination")
+    _git(tree, "config", "url.fanout.insteadOf", "alias:destination")
+    _git(tree, "remote", "add", "fanout", str(a))
+    _git(tree, "config", "--add", "remote.fanout.pushurl", str(a))
+    _git(tree, "config", "--add", "remote.fanout.pushurl", str(b))
+    assert agy_watch.single_push_url(subprocess.run, tree) == "fanout"  # one printed "URL"
+    assert agy_watch.publish_branch(subprocess.run, tree, NAME) != "created"
+    assert _origin_refs(o) == _origin_refs(a) == _origin_refs(b) == {}
+
+
+def test_a_remote_name_as_pushurl_writes_nowhere(tmp_path):
+    """r6: origin.pushurl is literally the name of another remote with two push URLs."""
+    from phase_loop_runtime import agy_watch
+    o, a, b = (_bare(tmp_path, n) for n in ("o", "a", "b"))
+    tree = _tree_with_commit(tmp_path)
+    _git(tree, "remote", "add", "origin", str(o))
+    _git(tree, "config", "remote.origin.pushurl", "fanout")
+    _git(tree, "remote", "add", "fanout", str(a))
+    _git(tree, "config", "--add", "remote.fanout.pushurl", str(a))
+    _git(tree, "config", "--add", "remote.fanout.pushurl", str(b))
+    assert agy_watch.publish_branch(subprocess.run, tree, NAME) != "created"
+    assert _origin_refs(o) == _origin_refs(a) == _origin_refs(b) == {}
+
+
+def test_pushinsteadof_is_applied_once_only_to_the_verified_url(tmp_path):
+    """r6: an explicit origin.pushurl X bypasses pushInsteadOf for the remote, but passing the
+    STRING X as the repository would apply `url.Y.pushInsteadOf = X` and write to Y. Pushing
+    to the name writes exactly where get-url said (X), and Y is never touched."""
+    from phase_loop_runtime import agy_watch
+    o, x, y = (_bare(tmp_path, n) for n in ("o", "x", "y"))
+    tree = _tree_with_commit(tmp_path)
+    _git(tree, "remote", "add", "origin", str(o))
+    _git(tree, "config", "remote.origin.pushurl", str(x))
+    _git(tree, "config", f"url.{y}.pushInsteadOf", str(x))
+    assert agy_watch.single_push_url(subprocess.run, tree) == str(x)
+    assert agy_watch.publish_branch(subprocess.run, tree, NAME) == "created"
+    assert list(_origin_refs(x)) == [f"refs/heads/{NAME}"]
+    assert _origin_refs(y) == {} and _origin_refs(o) == {}
+
+
+def test_the_dry_run_gate_refuses_when_git_would_push_elsewhere(tmp_path):
+    """r6: the pre-flight must show exactly one `To <url>` equal to the verified URL.
+    Mutation: skipping the dry-run gate (M76)."""
+    from phase_loop_runtime import agy_watch
+    calls = []
+
+    def runner(argv, **k):
+        calls.append(argv)
+        if "get-url" in argv:
+            return SimpleNamespace(stdout="https://example.invalid/o.git\n", returncode=0)
+        if "--dry-run" in argv:
+            return SimpleNamespace(stdout="To https://example.invalid/o.git\nTo https://other.invalid/p.git\n",
+                                   returncode=0)
+        return SimpleNamespace(stdout="", returncode=0)
+
+    assert agy_watch.publish_branch(runner, tmp_path, NAME) == "refused_push_destination_ambiguous"
+    assert [c for c in calls if "push" in c and "--dry-run" not in c] == []
+
+
+def test_an_unusable_push_state_pushes_nothing(tmp_path, monkeypatch):
+    """claude r6 N2: the store is pre-flighted before any push. Mutation: M77."""
+    from phase_loop_runtime import agy_watch
+    origin, _ = _bare_origin(tmp_path, [])
+    monkeypatch.setattr(agy_watch, "ensure_push_state", lambda store=None: False)
+    runner = _Runner(origin=origin)
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    assert code == 2 and "refused_push_state_unavailable" in out[-1]
+    assert runner.pushes() == [] and _origin_refs(origin) == {}
+
+
+def test_ensure_push_state_really_writes_and_reads_back(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_watch
+    assert agy_watch.ensure_push_state() is True
+    assert not list(q.Store().host_dir.glob("watch_push-*.json"))  # the probe is removed
+    q.Store().host_dir.chmod(0o755)  # unsafe store
+    assert agy_watch.ensure_push_state() is False
+
+
+def test_an_unverifiable_push_record_opens_no_pr(tmp_path, monkeypatch):
+    """claude r6 N2: after the push, the record must read back as the pushed oid before the
+    PR is opened. Mutation: M78."""
+    from phase_loop_runtime import agy_watch
+    origin, _ = _bare_origin(tmp_path, [])
+    monkeypatch.setattr(agy_watch, "record_push", lambda *a, **k: None)
+    runner = _Runner(origin=origin)
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    assert code == 2 and "push_record_unverified" in out[-1] and runner.created == 0
+
+
+def test_a_refused_push_leaves_no_record(tmp_path, monkeypatch):
+    """claude r6 N6: only a verified push is ever recorded."""
+    from phase_loop_runtime import agy_watch
+    monkeypatch.setattr(agy_watch, "fresh_branch_name", lambda version, **k: NAME)
+    origin, _ = _bare_origin(tmp_path, [])
+    runner = _Runner(origin=origin)
+    runner.seed_after_checkout = NAME
+    code, _ = _end_to_end(tmp_path, monkeypatch, runner)
+    assert code == 2
+    assert not list(q.Store().host_dir.glob("watch_push-*.json"))
+
+
+def test_a_record_copied_to_another_branch_reads_as_none(tmp_path):
+    """claude r6 N6: the branch is in the MAC context."""
+    from phase_loop_runtime import agy_watch
+    base = _current_base()
+    x, y = NAME, NAME.replace("deadbeef", "0badf00d")
+    _record(x, "a" * 40, base)
+    store = q.Store()
+    src = store._path("watch_push", agy_watch._push_context(x, "9.9.9", base))
+    dst = store._path("watch_push", agy_watch._push_context(y, "9.9.9", base))
+    dst.write_bytes(src.read_bytes())
+    dst.chmod(0o600)
+    assert agy_watch.recorded_push(y, "9.9.9", base) is None
+    assert agy_watch.recorded_push(x, "9.9.9", base) == "a" * 40
+
+
+@pytest.mark.parametrize("field", ["version", "base"])
+def test_the_push_record_binds_version_and_base(tmp_path, monkeypatch, field):
+    """claude r6 N3: a body relabelled to the CURRENT base (or another version) cannot reuse
+    a push recorded under the old one; the body labels are display-only too. Mutation: M79."""
+    from phase_loop_runtime import agy_watch
+    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
+    if field == "base":
+        _record(head, "a" * 40, base="0" * 64)
+    else:
+        _record(head, "a" * 40, base=base, version="9.9.8")
+    runner = _Runner([_page([_node(3, _label(base), head=head)])], refs={head: "a" * 40})
+    monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
+    with pytest.raises(RuntimeError, match="proceeded"):
+        _watch_tick(tmp_path, runner)
