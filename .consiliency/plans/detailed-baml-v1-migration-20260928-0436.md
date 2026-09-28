@@ -42,8 +42,8 @@ All the new mechanisms were exercised in the round-3 spike (issue comment).
   - "re-run" wording corrected;
   - **adoption-bundle raw digests (#26), newly found**.
 
-**Revision 6 changes the fork and spawn mechanisms** (round 5: codex and claude DISAGREE). The fork class had failed in rounds 3, 4 and 5 in new shapes each time.
-- **The at-fork child handler closes nothing.** It does exactly one thing: `_CLIENT = _Client(retain=_CLIENT)`.
+**Revision 6 changes the fork and spawn mechanisms** (round 5: codex and claude DISAGREE). *History only: revision 7 supersedes its fork design (the close-nothing handler, `retain`, and leaked fds). The design sections below are authoritative.* The fork class had failed in rounds 3, 4 and 5 in new shapes each time.
+- **The at-fork child handler closes nothing.** It does exactly one thing: `_CLIENT = _Client(retain=_CLIENT)`. *(Superseded in revision 7; see below.)*
   - `_Client.__init__` only allocates, and `_CLIENT = _Client()` is created at import, so there is **no module-level lock at all**.
   - A fork child leaks its inherited parent-worker pipe fds, a bounded handful, and the ownership section justifies this. Owner death is kernel- or OS-enforced, so EOF is not load-bearing, and a test proves it.
   - The recorded-fd-integer machinery is deleted.
@@ -51,6 +51,30 @@ All the new mechanisms were exercised in the round-3 spike (issue comment).
 - **Frame caps are consistent by derivation.** Request cap 4 MiB; response cap 17 MiB, from a measured worst-case expansion of 4.01×. An in-cap request can never produce an over-cap response, and a test pins it.
 - **The delegated wrapper catches the whole `BamlValidationError` family**, with `BamlWorkerError` first, and #27 outcomes are listed for every caller site.
 - **Claude's r5 notes folded in:** `-I -S`, absolute `sys.path` only, and the #26 bridge exclusion, among others.
+
+**Revision 7 makes fork state consistent by construction.** "Close nothing" (revision 6) had side effects, so forks are now prevented from landing mid-operation instead:
+- **One `_Client._fd_lock`** is held by every operation that creates, publishes or closes worker fds: the spawn through `Popen`'s exec, discard, owner-thread close and teardown.
+- **`register_at_fork`:**
+  - `before` does a bounded acquire;
+  - `after_in_parent` releases;
+  - `after_in_child` closes exactly the owned fds, then sets `_CLIENT = _Client()`.
+- **The client creates its own `os.pipe()`s and uses raw fds** with `os.read`/`os.write` and its own framing. There are no buffered objects, and `retain` is gone.
+- **The reader and writer threads own their fds and close them themselves.** Discard only kills, reaps with a bound and abandons.
+- **EOF is restored** as the graceful exit path. Kernel- or OS-enforced owner death remains the guarantee.
+- **The Changes list is swept** against the design:
+  - no module lock;
+  - an over-cap response is `BamlWorkerError(kind="framing")`;
+  - the delegated wrapper has two handlers.
+- **Claude's r6 notes folded in:**
+  - lone surrogates become a content error (a spike-found misclassification);
+  - the `parse_closeout` error branch expands 2.0× and is included in the derivation;
+  - the deadline is 60 s per attempt;
+  - the request cap applies to the body, with an envelope allowance;
+  - threads are daemons;
+  - a late spawn reaps outside the lock;
+  - `BamlWorkerError` is picklable;
+  - rows #28 and #29;
+  - unverified musl-aarch64 and win-arm64.
 
 ## Task
 
@@ -105,9 +129,9 @@ Replace the `baml-py>=0.222,<0.223` dependency of `phase-loop-runtime` with BAML
 ### Owner death: one kernel- or OS-level mechanism per platform, stated exactly as tested
 | Platform | Primary mechanism (works while the worker is hung in a native op) | Secondary | Tested where |
 |---|---|---|---|
-| **Linux** (glibc, musl) | `prctl(PR_SET_PDEATHSIG, SIGKILL)` via `ctypes.CDLL(None, use_errno=True)`. That form works on musl, where `find_library("c")` / `libc.so.6` do not. After the prctl, the worker re-checks `getppid()` against the owner pid in argv. PDEATHSIG fires when the forking **thread** exits, so the worker is spawned only from the client's long-lived spawner thread | `getppid` watchdog thread (every 0.5 s). Stdin EOF is **not** relied on, because fork children may hold the write end | CI pytest (Linux) and verification step 6 (musl). The step-6 containers run with **`docker run --init`**, so an orphaned worker is reaped and the "gone within 3 s" check never sees a zombie. The check also treats a zombie state (`Z` in `/proc/<pid>/stat`) as gone |
+| **Linux** (glibc, musl) | `prctl(PR_SET_PDEATHSIG, SIGKILL)` via `ctypes.CDLL(None, use_errno=True)`. That form works on musl, where `find_library("c")` / `libc.so.6` do not. After the prctl, the worker re-checks `getppid()` against the owner pid in argv. PDEATHSIG fires when the forking **thread** exits, so the worker is spawned only from the client's long-lived spawner thread | `getppid` watchdog thread (every 0.5 s). Stdin EOF is the **graceful** path only: synchronized fork children close their copies, so it works, but it is not the guarantee | CI pytest (Linux) and verification step 6 (musl). The step-6 containers run with **`docker run --init`**, so an orphaned worker is reaped and the "gone within 3 s" check never sees a zombie. The check also treats a zombie state (`Z` in `/proc/<pid>/stat`) as gone |
 | **Windows** | **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, created by the parent through `ctypes` (`CreateJobObjectW` → `SetInformationJobObject(JobObjectExtendedLimitInformation)` → `AssignProcessToJobObject`). The job handle is non-inheritable and held only by the `_Client`. When the owner dies, its last handle closes and the kernel kills every process in the job, even a worker hung inside a native op. **To avoid the venv redirector**, the worker is started with `sys._base_executable` (the real interpreter; `sys.executable` elsewhere), so the process in the job is the worker itself, not a launcher whose child could escape. The venv's `site-packages` still resolve, because `init` carries the parent's `sys.path`. **Ordering:** the parent assigns the job **before** it sends `init`. Until `init` arrives the worker only blocks on stdin, so if the owner dies before assignment, the worker exits on that idle EOF. There is no window in which a hung worker is outside the job | stdin EOF when idle. `getppid` is **not** used on Windows: it does not change when the parent exits | the pre-merge `windows-latest` dispatch run, required by the acceptance criteria. The owner is killed (`TerminateProcess`) while the worker is inside a 30 s hostile `baml.sys.sleep`, and the worker must be gone within 3 s. A second assertion checks that the worker process is in the job (`IsProcessInJob`) |
-| **macOS** | `getppid` watchdog thread. On POSIX the worker is reparented when the owner dies, so `getppid` changes. This needs the GIL. **Verified that the GIL is released during all three real ops**, not only during `baml.sys.sleep`: watchdog ticks were 45/46 during a 232 ms `parse_closeout` of a 1.8 MiB input, 113/124 during a 619 ms `closeout_request` with 40 k owned files, and 6/6 during a 31 ms `evidence_request` with a 2 MiB sample. That was measured on Linux against the same PyO3 build source | none. Stdin EOF is not relied on | the pre-merge `macos-14` and `macos-15-intel` dispatch run (`macos-13` is being retired; if `macos-15-intel` is unavailable, macOS x86_64 is listed as unverified): owner SIGKILL while the worker is in the hostile sleep, worker gone within 3 s. **Residuals, disclosed:** (1) **`initialize_runtime` holds the GIL for about 0.8 s** (measured: 1 watchdog tick in 788 ms), so during init the watchdog cannot run. An init that hung forever *after the owner died* would orphan the worker on macOS. While the owner lives, the spawn/init deadline kills it. (2) A future native op that held the GIL would delay the watchdog in the same way. There is no macOS kernel equivalent of PDEATHSIG |
+| **macOS** | `getppid` watchdog thread. On POSIX the worker is reparented when the owner dies, so `getppid` changes. This needs the GIL. **Verified that the GIL is released during all three real ops**, not only during `baml.sys.sleep`: watchdog ticks were 45/46 during a 232 ms `parse_closeout` of a 1.8 MiB input, 113/124 during a 619 ms `closeout_request` with 40 k owned files, and 6/6 during a 31 ms `evidence_request` with a 2 MiB sample. That was measured on Linux against the same PyO3 build source | stdin EOF as the graceful path only | the pre-merge `macos-14` and `macos-15-intel` dispatch run (`macos-13` is being retired; if `macos-15-intel` is unavailable, macOS x86_64 is listed as unverified): owner SIGKILL while the worker is in the hostile sleep, worker gone within 3 s. **Residuals, disclosed:** (1) **`initialize_runtime` holds the GIL for about 0.8 s** (measured: 1 watchdog tick in 788 ms), so during init the watchdog cannot run. An init that hung forever *after the owner died* would orphan the worker on macOS. While the owner lives, the spawn/init deadline kills it. (2) A future native op that held the GIL would delay the watchdog in the same way. There is no macOS kernel equivalent of PDEATHSIG |
 
 The worker also runs in its own session or process group (`start_new_session=True` on POSIX, `CREATE_NEW_PROCESS_GROUP` on Windows), so a terminal Ctrl-C or a `killpg` aimed at the runner does not kill it.
 
@@ -131,51 +155,74 @@ The worker also runs in its own session or process group (`start_new_session=Tru
 - **Per call:** `_worker_call(op, args)` serializes the request body **once** (`json.dumps(args, ensure_ascii=True, sort_keys=True)`) and captures the expected fingerprint **once**. Every attempt in the retry budget sends a frame whose **body bytes are identical**, and that **differs only in the monotonic `id`** (claude r5 N6), to a worker initialized from exactly that snapshot. A retry therefore cannot answer from different sources or different arguments.
 - **Pinned:** recovery-parity tests for all three production ops against the real runtime. The first worker is killed mid-call, and the retried answer must be byte-equal to a healthy single call's answer.
 
-### Client state: one `_Client` object; the fork handler closes nothing (claude r5 B1, codex r5 B2)
+### Client state and fork: forks cannot land mid-operation (revision 7; codex r6 1–2, claude r6 B2)
 - **All client state lives in one `_Client` instance**, referenced by the module-level `_CLIENT`. It holds:
-  - the request lock;
+  - the request lock `_lock`, which serializes calls;
+  - **the fd lock `_fd_lock`** (described below);
   - the worker slot;
-  - the spawner thread with its hand-off queue, events and generation counter;
-  - the writer thread, the daemon reader thread and their queues;
-  - the `Popen` and its file objects;
+  - the spawner thread, its hand-off queue and events, and the generation counter;
+  - the writer thread, the reader thread and their queues;
+  - **the set of raw worker fds the client currently owns** (`_owned_fds`);
   - on Windows, the Job handle;
   - the source snapshot;
   - the fault log.
-- **`_Client.__init__` only allocates.** It creates locks, queues and events. It starts no thread, does no I/O and takes no snapshot.
-  - Spawner, worker and snapshot are created lazily, inside the `_Client`, under its own lock.
-  - **`_CLIENT = _Client()` runs at import**, so first use needs no module-level lock and two threads cannot race to create two clients. **There is no module-level lock or primitive at all.**
-- **The at-fork child handler does exactly one thing:** `_CLIENT = _Client(retain=_CLIENT)`.
-  - It closes nothing and touches no fd.
-  - `retain` only stores a reference to the predecessor, so the stale object is never finalized in the child. Finalizing it would close its `BufferedReader`, whose internal lock may have been held by the parent's reader thread at fork time.
-  - The chain is one object per fork generation.
-  - Because the handler only allocates, it is safe in `Popen(preexec_fn=…)` children, where `PyOS_AfterFork_Child` runs it before `_posixsubprocess` sets up the child's stdio. It cannot close a reused descriptor or a new child's pipes or errpipe.
-- **The recorded-fd-integer machinery is deleted.**
-- **Consequence: a fork child leaks the parent-worker pipe fds it inherited.** State and justification:
-  - **How many:** a handful per fork. That is the parent worker's stdin write end and stdout read end, plus at most one in-flight spawn's 3 pipe pairs if the fork lands inside `Popen`.
-  - **Exec'd children never hold them.** Python creates these pipes non-inheritable (PEP 446 `O_CLOEXEC`), and `close_fds=True` is the default. So a fork child that execs (`subprocess`, `multiprocessing` spawn/forkserver) drops them.
-  - **Owner death does not depend on these fds.** It is kernel- or OS-enforced (PDEATHSIG / Job Object / watchdog, as in the table), so a fork child holding the parent worker's stdin write end cannot keep that worker alive after the parent dies. **Stdin EOF is no longer load-bearing anywhere on POSIX.** On Windows, `os.fork` does not exist, so the pre-assignment EOF path still holds there.
-  - **Graceful parent exit:** if the parent exits while a fork child still holds the stdin write end, the parent's `atexit` close-stdin step does not produce EOF. The bounded wait (5 s) then ends in kill. That costs at most 5 s at exit.
-- **Spawn ownership protocol** (codex r5 B3):
-  - Every spawn request carries a **generation token** from the `_Client`'s counter. The caller waits on the hand-off under the per-call deadline.
-  - **On timeout, the caller abandons its token and replaces the spawner:** a fresh spawner thread with a fresh queue. Later calls therefore never queue behind a hung `Popen`. The call raises `BamlWorkerError(kind="spawn")`.
-  - **When an old spawner returns late**, it checks its token under the `_Client` lock before publishing. If the token was abandoned, it kills its process, reaps it, closes its pipes and drops the Job handle. It never publishes, and it records one fault-log entry (`kind="spawn_late"`).
-  - On Windows, **a failed `AssignProcessToJobObject` kills the new worker and raises `kind="spawn"`.** A worker is never published outside a job.
-  - A dead spawner thread is recreated on the next request.
-- **Bounded IPC:** one deadline covers spawn, send and receive. Writes go through a writer thread. The daemon reader uses `readline(MAX_RESPONSE_BYTES + 1)`.
-- **Serialization errors:** a `TypeError` from `json.dumps(args)`, or a lone surrogate in the arguments, raises a plain `BamlValidationError` in the parent before anything is sent. It is not retried (claude r5 N9).
-- **Frame caps are consistent by derivation** (codex r5 B1, claude r5 B2). They are content errors, not transport faults.
-  - `MAX_REQUEST_BYTES = 4 MiB` for every op. It is checked on the serialized request frame before sending, and exceeding it raises a plain `BamlValidationError` with the worker untouched and no retry.
-  - `MAX_RESPONSE_BYTES = 4 × MAX_REQUEST_BYTES + 1 MiB = 17 MiB`.
-  - **Derivation, measured** on the real runtime (round-5 addendum). The response/request frame ratio in the worst case, all-backslash or all-quote payloads, is **4.00 for `evidence_request`, 4.01 for `closeout_request` and 1.00 for `parse_closeout`**. The other shapes (astral, BMP, control characters, ASCII) are at most 1.5. The fixed template overhead is at most 5.4 KB.
-  - So **an in-cap request cannot produce an over-cap response**: 4.01 × 4 MiB plus 5.4 KB is less than 17 MiB. This is pinned by a test that sends, for every op and every pathological shape, a request sized just under the cap and asserts the response fits under the response cap.
-  - The response cap therefore fires only on a misbehaving worker. It is then treated as `BamlWorkerError(kind="framing")`: discard, kill, and retry per budget. It is not a content error.
-  - **Realistic inputs are far below the request cap.** Tier-3 samples are capped at `max_sample_bytes` (8 KiB by default). The runner's closeout parse sends `json.dumps(<extracted closeout object>)`, not the executor log. A launch prompt's plan lists are KB-scale.
-- **`atexit`** acts only when `os.getpid()` equals the owning pid. It closes stdin, waits 5 s, then kills; on Windows it also closes the job handle.
+- **`_Client.__init__` only allocates.** `_CLIENT = _Client()` runs at import. **There is no module-level lock or primitive.**
+- **No Python buffered file objects for the worker pipes** (codex r6 2).
+  - **The client creates the pipes itself.** Under `_fd_lock` it calls `os.pipe()` twice (non-inheritable, `O_CLOEXEC`, per PEP 446), passes the child ends to `Popen(stdin=<r_fd>, stdout=<w_fd>, …)`, which `dup2`s them into the worker, and closes its copies of the child ends as soon as `Popen` returns, still under `_fd_lock`. The parent-side ends are raw ints from the start. **No Python file object ever wraps a worker pipe.**
+  - Framing is our own: the reader accumulates `os.read(fd, 65536)` chunks into a `bytearray` and splits on `b"\n"`, with the cap enforced on the accumulated length. The writer loops `os.write` until the whole frame is written.
+  - No Python-level I/O lock exists that a fork child could inherit held, or that could be finalized in the child. So there is **no `retain`**; it is deleted.
+- **`_fd_lock` is held by EVERY operation that creates, publishes or closes worker fds.** That is:
+  - the **spawn**, from before `Popen` until the fds are recorded in `_owned_fds`. This covers `Popen`'s whole pipe → fork/exec → `_close_pipe_fds` span, including its errpipe window;
+  - **discard/kill**;
+  - **the owner thread closing its fd** (see below);
+  - **teardown / atexit**.
+
+  Each hold is short. `Popen` returns once the worker has exec'd: no Python fork can land in the window, so no one else can hold the errpipe write end.
+- **`os.register_at_fork`:**
+  - **`before`**: acquire the current `_CLIENT._fd_lock`, with a bound of **10 s** (a spawn holds it only through `Popen`, milliseconds when healthy).
+  - **`after_in_parent`**: release it, if the `before` hook acquired it.
+  - **`after_in_child`**:
+    - If `before` acquired the lock: `os.close()` **exactly** the ints in `_owned_fds`. Because the lock was held across the fork, that set is exact. Nothing was mid-creation or mid-close, so no int is stale or reused. Then `_CLIENT = _Client()`.
+    - **If `before` could not acquire within 10 s** (a pathologically slow exec, for example on a hung filesystem): the fork proceeds unsynchronized, because a `before` hook cannot abort a fork. The child closes **nothing**, sets `_CLIENT = _Client()`, and records a `fork_unsynchronized` fault-log entry.
+    - **Degraded consequence, disclosed:** that one child may hold the parent worker's pipe ends, including a `Popen` errpipe write end. The parent's spawn then stays blocked until the child exits or execs. That is bounded by the spawn ownership protocol: the caller times out, the spawner is replaced, and the late process is disposed of when `Popen` returns. Owner death stays kernel- or OS-enforced.
+  - The hooks run for `os.fork`, `multiprocessing` fork-context starts and `subprocess` children with `preexec_fn`.
+  - **We never fork while holding `_fd_lock`.** Our own `Popen` uses no `preexec_fn`, and `start_new_session` is done in C without Python hooks. So the `before` hook cannot self-deadlock.
+- **Fd ownership in the parent** (claude r6 B2):
+  - The **reader thread owns the stdout fd** and the **writer thread owns the stdin fd**.
+  - Discard, reset and atexit never close an fd that an owner thread may be blocked on. They only:
+    1. kill the worker;
+    2. reap it with a bound (2 s);
+    3. mark the worker abandoned.
+  - Killing the worker ends its side of the pipes, so the blocked `os.read` returns `b""` (EOF) and a blocked `os.write` gets `EPIPE`. No other process can hold those ends: forks are synchronized, and a synchronized child closed its copies. **The owner thread then closes its own fd under `_fd_lock` and removes it from `_owned_fds`.**
+  - Death is also detected by `poll()` while waiting, not only by EOF.
+- **Graceful exit (POSIX EOF restored):**
+  - atexit, only when `os.getpid()` equals the owning pid, asks the writer thread to close stdin if it is idle. The writer does that under `_fd_lock`. The worker sees EOF and exits.
+  - atexit waits up to 5 s with `poll()`, then kills.
+  - Because synchronized fork children close their inherited copies, EOF works for graceful exit even while such a child is alive. **Kernel- or OS-enforced owner death remains the guarantee; EOF is the graceful path.**
+- **Threads.** The spawner, writer and reader threads are **daemon** threads, so interpreter exit never joins a thread stuck in a syscall.
+- **Spawn ownership protocol:**
+  - Each spawn carries a generation token.
+  - On timeout, the caller **abandons the token under the `_Client` lock**, the same lock the spawner's check-and-publish uses, so the two are race-free. It also replaces the spawner with a fresh thread and queue, and raises `BamlWorkerError(kind="spawn")`.
+  - A late spawner does **only the token check and the abandon mark under the lock**. The kill, the bounded reap and the fd close (under `_fd_lock`) happen **outside** the `_Client` lock, so a slow reap never queues later calls.
+  - A failed Windows job assignment kills the process and raises `kind="spawn"`.
+- **Deadline:** **60 s per attempt**, covering spawn, send and receive. It is per attempt, not per call, so a call takes at most 3 attempts × 60 s. Tests override it.
+- **Frame caps** (the single statement; every other section defers to this one):
+  - **Request:** a serialized request **body** over `MAX_REQUEST_BYTES = 4 MiB` is refused before sending with a **plain `BamlValidationError`** (content; not sent; worker untouched; no retry). A fixed 1 KiB envelope allowance is added for `op`, `id` and delimiters, so a growing `id` can never turn a retry into a content error.
+  - **Response:** a response frame over `MAX_RESPONSE_BYTES = 17 MiB` is **`BamlWorkerError(kind="framing")`**. The worker is discarded and killed, and the retry budget applies. It can only come from a misbehaving worker, because the derivation shows an in-cap request never produces an over-cap response.
+  - **Derivation, measured:**
+    - worst-case response/request ratio: 4.00 (evidence), 4.01 (closeout), **2.00 for the `parse_closeout` error branch**, which echoes the input, and 1.00 for its success branch;
+    - fixed overhead at most 5.4 KB;
+    - 4.01 × 4 MiB + 5.4 KB < 17 MiB.
+  - The derivation test covers the error branch and nested inputs.
+- **Serialization errors are content errors** (claude r6):
+  - A `TypeError` from `json.dumps(args)` gives a plain `BamlValidationError`.
+  - **So does any `str` argument containing a lone surrogate.** The parent checks every string with `.encode("utf-8")` before sending. Spike: `json.dumps(…, ensure_ascii=True)` escapes it happily, and the worker's bridge then raises `UnicodeEncodeError`, which without this check would become a worker `fault`, i.e. be misclassified as an outage.
+  - Neither is sent or retried.
 
 ### Failure semantics
-- **`BamlWorkerError(BamlValidationError)`**, with `.kind` in {`spawn`, `init_fault`, `died`, `timeout`, `desync`, `framing`, `fingerprint`, `fault`} and `.rc` set only when the worker is known dead. It is raised only for transport and liveness faults. Content verdicts, the frame caps and names outside the bridge table raise a plain `BamlValidationError`.
+- **`BamlWorkerError(BamlValidationError)`**, with `.kind` in {`spawn`, `init_fault`, `died`, `timeout`, `desync`, `framing`, `fingerprint`, `fault`} and `.rc` set only when the worker is known dead. It is raised only for transport and liveness faults, **including an over-cap response** (`kind="framing"`). Content verdicts, **the request cap**, serialization errors (including lone surrogates) and names outside the bridge table raise a plain `BamlValidationError`. `BamlWorkerError` is picklable: `kind` and `rc` travel in `args` via `__reduce__`.
 - **Any `BamlWorkerError` discards and kills the worker.**
-- **Retry budget:** at most 2 retries of a `BamlWorkerError`, each on a fresh worker built from the **same** snapshot with the **same** request bytes. Content errors are never retried.
+- **Retry budget:** at most 2 retries of a `BamlWorkerError`, each on a fresh worker built from the **same** snapshot with the **same** request body bytes (frames differ only in `id`), each attempt with its own 60 s deadline. Content errors are never retried.
 - **Idle death** (the worker died between calls): the pre-send liveness check records it once, restarts, and proceeds. This is not a retry and does not consume the budget. The call's answer is the healthy answer.
 - **`worker_fault_log()`** records **one entry per actual worker death or kill**: kind, rc, stderr tail, timestamp. It also emits a `logging.warning`.
 - A `KeyboardInterrupt` or any other `BaseException` in the parent during spawn, write or wait kills and discards the worker, then re-raises unmapped.
@@ -187,7 +234,7 @@ The worker also runs in its own session or process group (`start_new_session=Tru
 
 ## Caller handling of `BamlWorkerError` (claude B1, B2; code-read on main `b687e311`)
 
-| Call site | Enclosing function and path to the CLI | Durable state written before the call | Can a sibling executor be live? | Rev-4 handling |
+| Call site | Enclosing function and path to the CLI | Durable state written before the call | Can a sibling executor be live? | Handling (revision 7) |
 |---|---|---|---|---|
 | Closeout parse: `runner._parse_native_closeout_status` → `discovery.parse_closeout_payload_doc` → `parse_baml_response("EmitPhaseCloseout")` (runner.py around line 10466) | `_parsed_child_automation` (around 10389). It is called after `launch_with_spec` returns: from `run_loop` (around 3924, serial and wave finalize after `run_phase_worker_pool` has joined), `launch_delegated_child` (around 5404/5446) and the lane helpers (around 10616/10962) | The executor has **finished**. Its output is in the launch artifacts (log). The phase status is still the launch-time status | No. Serial: one executor, already exited. Wave: the pool has joined every job before finalization | **Today `except BamlValidationError` maps to `automation_status=blocked`, `blocker_class=contract_bug`, "BAML closeout validation failed"**, a durable invalid-closeout verdict. Rev 4 adds `except BamlWorkerError` **before** it, after the bounded retries, and maps to `automation_parse_error` with `blocker_class="unretryable_external_outage"` (existing frozen vocabulary; no new term). The summary reads `"closeout NOT evaluated: BAML worker <kind> (rc=<rc>) after 3 attempts; executor output preserved at <log>"`. **No claim is made that a re-run re-parses the preserved output.** A re-run applies the runner's existing handling for a blocked phase, which may relaunch the executor; the preserved log is there for inspection, `human_required=false`. It is **never** `contract_bug` and never a verdict on the closeout content. It goes through the same code path v0 used for a parse error, so wave teardown and branch preservation behave exactly as they did for v0 parse errors. It does not propagate, because propagating out of wave finalization would run the wave `finally` (around runner.py 5006), which reclaims worktrees not in `preserve_branches`, i.e. it could discard sibling phases' completed work. **#27:** only an extracted closeout object over 4 MiB can hit the cap. That is an absurd closeout, and it is genuinely a content problem, so the plain `BamlValidationError` takes the existing `contract_bug` mapping with the summary naming the cap. Nothing propagates |
 | Tier 3: `evidence_audit.evaluate_suspected_fake_evidence` → `build_baml_request("EvaluateSuspectedFakeEvidence")` (around line 905) | `run_evidence_audit` loop (around 845) → the runner's closeout evidence gate | The executor has finished. The Tier-2 findings are in memory | No (post-launch) | **Today every exception becomes `_uncertain_fallback` → verdict `uncertain` → `tier3_judgment_blocker` returns `None`**, a warning only. That is fail-open. Rev 4: `evaluate_suspected_fake_evidence` re-raises `BamlWorkerError`, placed before its `except (…, ValueError, …)`. The loop at around line 845 catches `BamlWorkerError` **before** `except Exception` and sets `blocker = {"human_required": False, "blocker_class": "unretryable_external_outage", "blocker_summary": "Tier 3 evidence audit NOT run: BAML worker <kind> after 3 attempts"}`. The closeout is blocked, **never skipped**, and never judged fake. Other Tier-3 call errors (HTTP down, and so on) keep v0's `uncertain` policy; that is unchanged and out of scope. **#27:** the cap is unreachable with default inputs (sample at most `max_sample_bytes`, 8 KiB). If it were hit, the plain `BamlValidationError` would take v0's content-error path (`uncertain`), exactly as v0 treated a `BamlValidationError` from `build_request_sync` |
@@ -227,6 +274,8 @@ The worker also runs in its own session or process group (`start_new_session=Tru
 | 25 | **Memory**: the v1 runtime is about 240 MB resident (worker ~281 MB after init), against ~21 MB added by v0 in-process | **Accepted**, disclosed (CHANGELOG, D6 risk list); inherent to v1 | test: the worker's VmRSS after init is recorded in the verification log (Linux); no threshold is asserted, because the number is informative |
 | 26 | **Adoption-bundle digests.** `adoption_bundle._schema_refs` hashes the RAW bytes of every `baml_src/*.baml` (around `adoption_bundle.py:151`). `fmt` and the syntax edits change 8 digests. **`phase_loop_bridge.baml` is excluded from `_schema_refs`**: it is host glue with no classes, so glue edits never force downstream refreshes (claude r5 N11; a one-line filter in `adoption_bundle.py`). A vendoring repo's committed adoption bundle therefore reports `stale` until `adoption-bundle refresh` | **Accepted**, disclosed (CHANGELOG: "downstream repos run `phase-loop adoption-bundle refresh` after upgrading"). This was not found in revision 4; claude r4 asked to confirm nothing hashes raw `.baml` bytes | test: on this tree, `check_adoption_bundle` of a freshly refreshed bundle is `fresh`, its `schema_refs` equal the 8 schema files, and it has **no** bridge ref. Editing the bridge file leaves it `fresh` |
 | 27 | **Request cap** (new observable limit): a serialized request over 4 MiB raises a plain `BamlValidationError` before sending. The 17 MiB response cap is derived from it so that it can never fire on an in-cap request, and it is treated as a worker framing fault. Per-site outcomes are in the caller table's #27 column | **Accepted**. v0 had no cap. Real inputs are KB-scale (Tier-3 samples at most 8 KiB; the runner parses the extracted closeout object, not the log) | derivation test (every op × pathological shapes); per-site #27 tests, including a **real** cap failure on the delegated path |
+| 28 | **Fork after first use warns.** The parent now has background (daemon) threads, so on Python 3.12+ `os.fork()` emits a `DeprecationWarning` about forking a multi-threaded process | **Accepted**, disclosed. Fork is still safe by construction (`_fd_lock` plus the at-fork hooks) | test: under `-W error::DeprecationWarning`, forking **before** first use raises nothing, and forking after first use on 3.12 raises the warning (documenting the behaviour) |
+| 29 | **The regex readers read a per-process snapshot.** v0's `export_function_schema` and the prompt helpers re-read the `.baml` files on every call (only `_enum_literal_map` was cached). v1 reads the snapshot taken at first use | **Accepted**. Installed package files do not change mid-process; tests reset through `_reset_worker_for_tests()` | test: editing a source file after first use does not change `export_function_schema` until the reset |
 
 ## Decisions (all decided)
 
@@ -304,12 +353,12 @@ The worker also runs in its own session or process group (`start_new_session=Tru
 ### `phase-loop-runtime/src/phase_loop_runtime/baml_modular.py` (modify)
 - **Add:**
   - `class BamlWorkerError(BamlValidationError)` with `.kind` and `.rc`;
-  - **one `_Client` class holding all client state:** lock, slot, spawner thread and hand-off, generation counter, writer and daemon reader threads, `Popen`, file objects, the Windows Job handle, the source snapshot and the fault log. It is referenced by `_CLIENT`. `__init__` is allocation-only, and a `retain` reference keeps predecessors alive after fork;
+  - **one `_Client` class holding all client state:** the request lock, `_fd_lock`, the slot, the spawner thread and hand-off, the generation counter, the daemon writer and reader threads, the `Popen` (used for pid, poll and kill only; its stdio is not `PIPE`), `_owned_fds` (raw ints), the Windows Job handle, the source snapshot and the fault log. It is referenced by `_CLIENT`, created at import, and `__init__` only allocates;
   - the spawn ownership protocol: generation tokens, spawner replacement on timeout, and late-spawn self-disposal;
   - the Windows Job Object helper (ctypes) and the `sys._base_executable` launch;
   - `_worker_env()` (`_filtered_env` given a real job);
-  - the module slot plus lock;
-  - `os.register_at_fork(after_in_child=lambda: <_CLIENT = _Client(retain=_CLIENT)>)`. It is allocation-only, closes nothing, and touches no fd;
+  - `os.register_at_fork(before=<bounded acquire of _CLIENT._fd_lock>, after_in_parent=<release>, after_in_child=<close exactly _owned_fds if synchronized, then _CLIENT = _Client()>)`;
+  - client-created `os.pipe()`s with raw-fd I/O (`os.read`/`os.write`, our own line framing); no Python file objects on worker pipes;
   - `_CLIENT = _Client()` at import. There is no module-level lock;
   - the pid-guarded `atexit`;
   - `_worker_call(op, args)`: a per-call snapshot (request bytes plus expected fingerprint) reused across the bounded retry (at most 2, transport and liveness faults only);
@@ -337,7 +386,7 @@ The worker also runs in its own session or process group (`start_new_session=Tru
 
 ### `phase-loop-runtime/src/phase_loop_runtime/runner.py` (modify; #24 caller table)
 - `_parse_native_closeout_status` (around line 10466): add `except BamlWorkerError` **before** the existing `except BamlValidationError`. It maps to the "not evaluated" `automation_parse_error` with `blocker_class="unretryable_external_outage"`, as in the caller table. The existing `contract_bug` mapping stays for content verdicts only.
-- `run_loop`'s delegated branch (around line 4059): wrap `launch_delegated_child(...)` with `except BamlWorkerError` and route it into the branch's existing blocked flow, as in the caller table.
+- `run_loop`'s delegated branch (around line 4059): wrap `launch_delegated_child(...)` with **two handlers, in this order**: `except BamlWorkerError` gives `unretryable_external_outage` "delegated child NOT launched: BAML worker <kind> …", and `except BamlValidationError` gives `contract_bug` "delegated child NOT launched: closeout contract render refused (<reason>)". Both route into the branch's existing blocked flow, as in the caller table. **Only pre-launch failures take these handlers.** A fault raised *after* the child launched (for example, the child's own closeout parse inside `launch_delegated_child`) is recorded against the **child** through its own `_parsed_child_automation` path, never reported as "NOT launched". The test pins this.
 - The serial and wave prompt builds are **not** wrapped. They propagate, as the caller table shows.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/evidence_audit.py` (modify; #24 caller table)
@@ -432,22 +481,41 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
   - Each such handler must be preceded by an `except BamlWorkerError` or be listed in `tests/data/baml_worker_handler_allowlist.json`, which records file, function, handler and reason.
   - The scan covers direct calls only, and says so. Deeper call chains are covered by the caller table and its tests.
 - **Concurrency:** 8 threads from a cold `_CLIENT`, exactly one worker pid, all results equal, 60 s timeout.
-- **Fork** (POSIX). The handler closes nothing, so each test asserts survival and progress, not closure:
-  - **Fork while another thread holds the request lock** inside a 3 s hostile op. In the child, `_CLIENT` is a new object, the old one is reachable through `retain`, and the first call succeeds within its deadline on a new pid with a new spawner thread. In the parent, A's request completes and the same worker pid keeps serving.
-  - **Fork during first-use `_Client` work**, i.e. during the lazy snapshot and spawner creation inside the import-time `_Client`, driven by a slowed snapshot. The child's first call succeeds within its deadline. There is no module lock to inherit, because none exists.
-  - **Fork during a spawn after the pipes are created but before publication.** A pass-through spy on `Popen` sleeps after `Popen.__init__` returns, while the spawner is still unpublished. The child's first call succeeds within its deadline. The parent's spawn completes and is published normally.
-  - **Fork after a discard, with an unrelated fd reusing the old number.** Kill and discard the worker, open an unrelated file (the test asserts it reuses the discarded worker's former stdin fd number), then:
-    - `os.fork()`: in the child, the unrelated fd is still open and readable (same inode), and the child's first call succeeds within its deadline;
-    - **`Popen(preexec_fn=lambda: None, ...)`** of a small script that writes to its stdout: the child runs and exits 0 with its expected output, which shows the at-fork handler did not touch its stdio or errpipe. The parent's unrelated fd is also intact.
-  - **Owner death does not depend on the inherited pipes.** The parent starts a worker (inside a 30 s hostile sleep), forks a child that sleeps holding the inherited pipe fds, then the parent is SIGKILLed. The worker must be gone within 3 s while the fork child is still alive. This proves EOF is not load-bearing. Linux (PDEATHSIG) and the watchdog-only variant are both run.
+- **Fork** (POSIX). Forks are synchronized with `_fd_lock`, so each test asserts that the fork **waited** and that the child's view is **exact**:
+  - **Fork while a spawn is inside `Popen`.** A pass-through spy pauses inside `subprocess.Popen._close_pipe_fds` (claude r6 B2's window: the child-side ends and the errpipe are still open) while another thread calls `os.fork()`.
+    - The fork does not return until the spawn has published: the fork timestamp is after the publish timestamp.
+    - The child then holds **no worker fds**: every int in the parent's `_owned_fds` at fork time gives `EBADF` in the child **before** the child does anything else, and `/proc/self/fd` shows no pipe whose inode matches the worker's pipes.
+    - The parent's `Popen` returns promptly (the errpipe was not inherited), and its worker serves.
+  - **Fork while the reader thread is blocked in `os.read`** (the worker is in a 3 s hostile op). The fork proceeds, because the reader does not hold `_fd_lock` while blocked. In the child the owned fds are closed and `_CLIENT` is fresh. The child's first call succeeds within its deadline on a new pid. The parent's in-flight call completes on the same pid.
+  - **Fork while another thread holds the request lock:** the same assertions as the reader case.
+  - **Graceful parent exit while a forked child is alive** (claude r6 B2 / lead item 4).
+    - Setup: the parent uses the worker, forks a child that sleeps 30 s, then exits normally, which runs `atexit`.
+    - The worker must exit **on EOF within 1 s**, measured from the parent's stdin close to the worker's exit. That shows the child's closed copies restore EOF.
+    - A second variant SIGKILLs the parent instead: the worker is gone within 3 s by PDEATHSIG, and separately by the watchdog. That shows the kernel guarantee.
+  - **Discard with a blocked owner thread** (claude r6 B2), in two variants:
+    - (a) the worker is killed mid-read;
+    - (b) a scripted peer never reads stdin, and a write larger than the pipe buffer is forced.
+
+    Each must raise `BamlWorkerError` within the deadline, the request lock must be free, the next call must run on a new pid, and the owner thread must close its own fd (it disappears from `_owned_fds`).
+  - **Unrelated fd reusing a discarded number.** After discard, the owner threads have closed their fds, and an unrelated file takes the old number.
+    - An `os.fork()` child: the unrelated fd is intact (same inode) in both processes, and the child's first call succeeds.
+    - A `Popen(preexec_fn=lambda: None)` child runs and exits 0 with its expected output.
+    - After both children exit, the parent's unrelated fd is still intact.
+  - **Unsynchronized fallback:** a spawn is patched to hold `_fd_lock` for 12 s, and another thread forks.
+    - After the 10 s bound the fork proceeds. The child closes nothing and records `fork_unsynchronized`.
+    - The parent's spawn is either published or abandoned under the ownership protocol.
+    - The next parent call succeeds within its deadline.
+  - **Shutdown of a fork child through normal Python exit** (codex r6 2): the child exits via `sys.exit(0)`, not `os._exit`, after a successful call. It must finish within 5 s with exit code 0 and no fatal error on stderr. With raw fds there is no buffered object to finalize.
 - **Spawn ownership** (codex r5 B3), without any spawner-kill hook:
   - A pass-through spy delays `Popen` return by 3 s against a 1 s deadline. The call raises `BamlWorkerError(kind="spawn")`, and the spawner is replaced.
   - An immediate next call succeeds on a fresh worker within its deadline. It does not queue behind the hung spawn.
   - When the late `Popen` returns, its process is killed and reaped **by the old spawner**: the pid no longer exists within 2 s, it never answers any request, and the slot never holds it.
   - `worker_fault_log()` gains exactly one `spawn_late` entry.
   - Windows: an injected `AssignProcessToJobObject` failure raises `kind="spawn"`, and the created process is gone.
-- **Frame-cap derivation** (#27): for each of the three ops and each shape (all backslash, all quote, astral, control, BMP, ASCII), build a request whose serialized frame is just under 4 MiB, send it to the real worker, and assert the response frame is under 17 MiB. That shows an in-cap request can never produce an over-cap response. A request just over 4 MiB raises a plain `BamlValidationError` (`type(e) is BamlValidationError`), is not sent, and leaves the worker untouched with the same pid. A scripted peer that emits an over-cap response gives `BamlWorkerError(kind="framing")`, and the peer is killed.
+- **Serialization** (claude r6): a `str` argument containing a lone surrogate (`"\ud83d"` as a character), and a non-serializable argument (`object()`), each raise `type(e) is BamlValidationError`. Nothing is sent, the worker pid is unchanged, and `worker_fault_log()` is unchanged. A corpus input containing the character is added to Step 0 and the parity test.
+- **Frame-cap derivation** (#27): for each of the three ops, including the **`parse_closeout` error branch** (non-JSON input echoed back, measured 2.0×) and **nested inputs** (a closeout whose list values are all backslashes), and each shape (all backslash, all quote, astral, control, BMP, ASCII), build a request whose serialized frame is just under 4 MiB, send it to the real worker, and assert the response frame is under 17 MiB. That shows an in-cap request can never produce an over-cap response. A request just over 4 MiB raises a plain `BamlValidationError` (`type(e) is BamlValidationError`), is not sent, and leaves the worker untouched with the same pid. A scripted peer that emits an over-cap response gives `BamlWorkerError(kind="framing")`, and the peer is killed.
 - **#27 per caller site**, with **real** cap failures, not mocks:
+  - **Delegated path, post-launch fault:** the child launches, then its own closeout parse hits an in-flight worker fault. That is recorded against the **child** (`automation_parse_error` / `unretryable_external_outage` on the child's result) and **never** as "delegated child NOT launched".
   - **Delegated path:** a delegation request whose plan lists push the closeout-prompt request frame over 4 MiB. The parent phase is persisted `blocked` with the `contract_bug` "closeout contract render refused" summary, and **no child is launched** (launch spy not entered).
   - Serial `run_loop` and wave prepare raise the plain type before launch.
   - The lane entry point raises and spawns nothing.
@@ -520,6 +588,7 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
 ## Platforms
 
 - **Verified:** x86_64 glibc (host 3.10 and 3.12, `python:3.10-slim`) and musl (`python:3.10-alpine`, `python:3.12-alpine`).
+- **Not in any matrix, listed as unverified in the CHANGELOG:** musl-aarch64 and win-arm64 (claude r6).
 - **Pre-merge, and part of the acceptance criteria:** run verification step 3 once on GitHub-hosted `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel` (`macos-13` is being retired; if `macos-15-intel` is unavailable, macOS x86_64 is listed as unverified) and `windows-latest` (in a stdlib venv and in a uv venv), via a throwaway `workflow_dispatch` on an unmerged scratch branch, with the platform guards above. Record the results in the PR.
   - **Re-dispatch requirement** (claude r5 N3): the run must be repeated on the final head **whenever `_baml_worker.py` or the `_Client` code changes** after the recorded run. A result from an older head does not count.
   - **A platform that runs and FAILS blocks merge**, unless the maintainer explicitly accepts it as unsupported (claude N5). Under #22, `phase-loop run` cannot launch anything on such a platform.
@@ -546,7 +615,8 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
   - **vendoring repos must run `phase-loop adoption-bundle refresh` after upgrading**, because the raw `.baml` digests change (#26);
   - a 4 MiB request cap (plain `BamlValidationError`), with the response cap derived from it (#27);
   - `worker_fault_log()` as a new public diagnostic function;
-  - fork children inherit and leak a handful of parent-worker pipe fds, which is bounded and harmless (the ownership section explains why);
+  - fork safety: forks are synchronized with the client's fd operations, and a fork child closes its inherited copies of the worker pipes. If the lock cannot be acquired within 10 s, the fork proceeds unsynchronized; that degraded path is disclosed;
+  - on Python 3.12+, forking after the first BAML call emits a `DeprecationWarning` (#28);
   - owner-death guarantees per platform (the table) and the macOS residual;
   - the pin-bump checklist;
   - rollback.
@@ -554,7 +624,7 @@ New file: `tests/test_phase_loop_baml_v1_runtime.py`. It uses the real worker an
 - `protocol.md` (both copies), skills, READMEs and `docs/TEAM-ONBOARDING.md`: none. See the frozen-surface section; there are no BAML references elsewhere.
 
 ## Release and agy-requalification consequences
-- **This PR** touches `phase_loop_runtime/**/*.py` (`baml_modular.py`, `injection.py`, `runner.py`, `evidence_audit.py` and the new `_baml_worker.py`), so it runs `--route-core` only. No requalification is needed here.
+- **This PR** touches `phase_loop_runtime/**/*.py` (`baml_modular.py`, `injection.py`, `runner.py`, `evidence_audit.py`, `adoption_bundle.py` and the new `_baml_worker.py`), so it runs `--route-core` only. No requalification is needed here.
 - **The next release cut** requalifies both agy images, because `source_sha256` covers all `phase_loop_runtime/**/*.py`, including the new worker.
   - The recipe: `qualify_gemini_heartbeat.py` (completion, cancel and owner-loss), then `--validate`, then regenerate the record, then `verify_qualified_agy_image.py --source-only`.
   - Budget for observer repair (agent-harness#1067).
