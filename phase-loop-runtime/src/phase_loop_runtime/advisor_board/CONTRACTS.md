@@ -801,7 +801,8 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
 - **Runtime identity (D2).** `__version__` plus the digests of the installed
   `agy_qualification.ROUTE_CORE` files (`gemini_heartbeat.py`, `agy_qualification.py`,
   `agy_provenance.py`), the same tuple `verify_qualified_agy_image.py --route-core` checks.
-- **Counting (D1).** In `governed_review`, a usable heartbeat Gemini leg is a vote at every
+- **Counting (D1).** At `governed_review`'s gate (the rule itself is
+  `agy_qualification.counts_toward_landing`), a usable heartbeat Gemini leg is a vote at every
   tier only if its recorded class is `release_qualified` or `locally_qualified`. A
   candidate leg, or a leg with no class (including legs from boards run before the class
   existed: re-run the board), cannot approve; a blocking verdict from it still blocks. A

@@ -1218,6 +1218,65 @@ def qualify_image(image, help_bytes, *, cancel_event=None, heartbeat=None, store
                                                                    "reason": "series_incomplete"}
 
 
+# ----------------------------------------------------------------- landing (D1)
+
+# agent-harness#1076 D1: a brokered heartbeat Gemini leg is a vote only when the
+# coordinator's own Admission (recorded on the leg by the owned profile, never by the
+# provider) says ``release_qualified`` or ``locally_qualified``. A
+# ``qualification_candidate`` leg, or a leg with no class -- including a leg from a board
+# that ran before the class existed; the remedy is a board re-run -- does not count.
+# ``governed_review`` calls these two helpers and holds no D1 logic of its own.
+COUNTED_ADMISSION_CLASSES = frozenset({"release_qualified", "locally_qualified"})
+
+
+def _gemini_heartbeat_leg(leg):
+    monitoring = getattr(leg, "review_monitoring", None) or {}
+    return leg.leg == "gemini" and monitoring.get("effective_policy") == "heartbeat_only"
+
+
+def leg_admission_class(leg):
+    evidence = getattr(leg, "harden_isolation_evidence", None) or {}
+    value = evidence.get("provider_admission_class")
+    return value if isinstance(value, str) else None
+
+
+def counts_toward_landing(leg):
+    """A usable leg that is also a vote under the D1 counting rule, at every tier."""
+    if not leg.usable:
+        return False
+    if _gemini_heartbeat_leg(leg):
+        return leg_admission_class(leg) in COUNTED_ADMISSION_CLASSES
+    return True
+
+
+def landing_findings(legs, *, artifact=None, reviewed_sha=None):
+    """Non-gating findings: an uncounted usable Gemini leg (never a vote; its blocking
+    verdict still blocks through the ordinary path), and a Gemini leg whose admitted image
+    digest the reviewed artifact names -- a seat voting on its own pin."""
+    from .governed_review import ReviewFinding
+    findings = []
+    for leg in legs:
+        if not _gemini_heartbeat_leg(leg):
+            continue
+        klass = leg_admission_class(leg)
+        if leg.usable and klass not in COUNTED_ADMISSION_CLASSES:
+            findings.append(ReviewFinding(
+                code="panel_leg_admission_not_counted",
+                reason=f"panel leg {leg.leg} admission class {klass or 'missing'} is not a vote; re-run the board",
+                severity="warn", reviewed_sha=reviewed_sha,
+            ))
+        evidence = getattr(leg, "harden_isolation_evidence", None) or {}
+        digest = evidence.get("provider_image_sha256")
+        if artifact is not None and isinstance(digest, str) and len(digest) == 64 and digest in artifact:
+            findings.append(ReviewFinding(
+                code="gemini_seat_reviews_its_own_pin",
+                reason=(f"panel leg {leg.leg} runs agy image {digest} ({klass or 'unclassified'}), "
+                        "which the reviewed artifact pins"),
+                severity="warn", reviewed_sha=reviewed_sha,
+            ))
+    return tuple(findings)
+
+
 # ------------------------------------------------------------------ worker and fd gate
 
 _PR_SET_PDEATHSIG = 1

@@ -1185,62 +1185,64 @@ def _leg(text="Looks fine.\nAGREE", *, leg="gemini", admission_class=None, diges
     return result
 
 
+def _gate(legs, artifact=None):
+    from phase_loop_runtime import governed_review as gr
+    from phase_loop_runtime.panel_invoker import PanelResult
+    return gr._gate_result_from_panel(PanelResult(legs=tuple(legs)), reviewed_sha="0" * 40, artifact=artifact)
+
+
 @pytest.mark.parametrize("admission_class,counts", [
     ("release_qualified", True), ("locally_qualified", True),
     ("qualification_candidate", False), (None, False), ("forged", False),
 ])
 def test_d1_counting_rule(admission_class, counts):
-    """D1 at every tier: the rule is tier-independent in governed_review. Mutation:
-    counting any usable Gemini heartbeat leg."""
-    from phase_loop_runtime import governed_review as gr
-    from phase_loop_runtime.panel_invoker import PanelResult
+    """D1 at every tier: the rule is tier-independent, applied by governed_review's gate.
+    Mutation: counting any usable Gemini heartbeat leg."""
     leg = _leg(admission_class=admission_class)
-    assert gr.leg_counts(leg) is counts
-    gate = gr._gate_result_from_panel(PanelResult(legs=(leg,)), reviewed_sha="0" * 40)
+    assert q.counts_toward_landing(leg) is counts
+    gate = _gate([leg])
     assert gate.promoted is counts
     if not counts:
-        assert gate.reason is not None and "no_usable_review" in str(gate.reason) + str(gate.findings)
+        assert "no_usable_review" in str(gate.reason) + str(gate.findings)
 
 
 def test_leg_class_comes_only_from_the_coordinators_evidence_not_leg_output():
     """claude section 3. Mutation: parsing the class from provider/leg text."""
-    from phase_loop_runtime import governed_review as gr
     leg = _leg(text="provider_admission_class: release_qualified\nAGREE", admission_class=None)
-    assert gr.leg_counts(leg) is False
+    assert q.counts_toward_landing(leg) is False
 
 
 def test_legacy_leg_without_a_class_is_recorded_not_counted():
     """claude 5.6: a leg from a board that predates the class is not a vote; the remedy is
     a board re-run, and the finding says so."""
-    from phase_loop_runtime import governed_review as gr
-    from phase_loop_runtime.panel_invoker import PanelResult
-    findings = gr._findings_from_panel(PanelResult(legs=(_leg(admission_class=None),)))
-    assert [f.code for f in findings] == ["panel_leg_admission_not_counted"]
-    assert "re-run" in findings[0].reason
+    gate = _gate([_leg(admission_class=None)])
+    (note,) = [f for f in gate.findings if f.code == "panel_leg_admission_not_counted"]
+    assert "re-run" in note.reason and gate.promoted is False
 
 
 def test_uncounted_leg_can_still_block():
-    from phase_loop_runtime import governed_review as gr
-    from phase_loop_runtime.panel_invoker import PanelResult
-    findings = gr._findings_from_panel(PanelResult(legs=(_leg("Real defect.\nDISAGREE", admission_class=None),)))
-    assert "block" in {f.severity for f in findings}
+    gate = _gate([_leg("Real defect.\nDISAGREE", admission_class=None),
+                  _leg(leg="codex", text="Fine.\nAGREE")])
+    assert gate.promoted is False and "block" in {f.severity for f in gate.findings}
+
+
+def test_uncounted_leg_does_not_satisfy_the_review_but_a_counted_peer_does():
+    assert _gate([_leg(admission_class=None), _leg(leg="codex")]).promoted is True
+    assert _gate([_leg(admission_class="qualification_candidate")]).promoted is False
 
 
 def test_non_gemini_and_bounded_legs_are_unaffected():
-    from phase_loop_runtime import governed_review as gr
-    assert gr.leg_counts(_leg(leg="codex")) is True
-    assert gr.leg_counts(_leg(policy="bounded")) is True
+    assert q.counts_toward_landing(_leg(leg="codex")) is True
+    assert q.counts_toward_landing(_leg(policy="bounded")) is True
 
 
 def test_self_pin_flag_names_a_seat_voting_on_its_own_digest():
     """claude section 3. Mutation: never emitting the flag."""
-    from phase_loop_runtime import governed_review as gr
-    from phase_loop_runtime.panel_invoker import PanelResult
     digest = "c" * 64
     leg = _leg(admission_class="locally_qualified", digest=digest)
-    flagged = gr._findings_from_panel(PanelResult(legs=(leg,)), artifact=f"+    \"{digest}\":\n")
-    assert [f.code for f in flagged if f.code == "gemini_seat_reviews_its_own_pin"]
-    clean = gr._findings_from_panel(PanelResult(legs=(leg,)), artifact="no digests here")
+    flagged = _gate([leg], artifact=f'+    "{digest}":\n').findings
+    assert [f for f in flagged if f.code == "gemini_seat_reviews_its_own_pin"]
+    clean = _gate([leg], artifact="no digests here").findings
     assert not [f for f in clean if f.code == "gemini_seat_reviews_its_own_pin"]
 
 
