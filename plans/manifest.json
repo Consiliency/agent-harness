@@ -3624,7 +3624,53 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T09:30:10Z"
+      "updated_at": "2026-08-25T09:30:10Z",
+      "sl0_repairs": [
+        {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:FABREADMIT",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1078",
+          "decision": "maintainer 2026-09-28 (agent-harness#1078, second amendment): PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
+          "frozen_by": "FABREADMIT SL-0 (phase-loop-runtime/tests/_fabreadmit_tdd_guard.py FABREADMIT_TEST_PATHS)",
+          "reason": "the agent-harness#1111 merge-guard rulings (queue-protected targets refused, an enqueued merge dequeued and refused, merge authority required at every merge site) change what these nodes' live-merge path does",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_fab_activation_promotion.py",
+              "base_blob": "aaf74ec3941e6aaa859ed00c71a0e3a0c62c121a",
+              "nodes": [
+                "TestLiveMergePrFabPromotion::test_fab_queue_enqueue_polls_to_terminal_and_records",
+                "TestLiveMergePrFabPromotion::test_fab_queue_rewritten_head_fails_closed",
+                "TestLiveMergePrFabPromotion::test_fab_queue_closed_without_merge_blocks",
+                "TestLiveMergePrFabPromotion::test_fab_queue_kicked_open_early_blocks_no_hang",
+                "TestLiveMergePrFabPromotion::test_fab_queue_merge_between_nonatomic_reads_is_recorded",
+                "TestLiveMergePrFabPromotion::test_fab_queue_not_yet_enqueued_window_does_not_false_block",
+                "TestLiveMergePrFabPromotion::test_fab_queue_surviving_auto_merge_is_not_confirmed_dequeued",
+                "TestLiveMergePrFabPromotion::test_fab_queue_unreadable_membership_does_not_early_break",
+                "TestLiveMergePrFabPromotion::test_fab_queue_merge_during_dequeue_is_recorded_not_halted",
+                "TestLiveMergePrFabPromotion::test_fab_queue_timeout_dequeue_confirmed_blocks",
+                "TestLiveMergePrFabPromotion::test_fab_queue_timeout_but_already_merged_records_not_blocks",
+                "TestLiveMergePrFabPromotion::test_fab_queue_unreconcilable_halts_loud",
+                "TestLiveMergePrFabPromotion::test_flag_on_no_run_id_is_inert",
+                "TestLiveMergePrFabPromotion::test_flag_on_run_id_scoped_missing_provenance_fails_closed",
+                "TestLiveMergePrFabPromotion::test_flag_on_run_id_unreadable_provenance_fails_closed",
+                "TestLiveMergePrFabPromotion::test_flag_on_provenance_exists_unchanged_merges",
+                "TestLiveMergePrFabPromotion::test_flag_on_content_drift_refuses_merge",
+                "TestLiveMergePrFabPromotion::test_flag_on_unresolvable_live_head_fails_closed",
+                "TestLiveMergePrFabPromotion::test_flag_off_stays_inert_even_with_drifted_provenance",
+                "TestLiveMergePrFabPromotion::test_fab_queue_graphql_pinned_to_broker_host_not_ambient_gh_host",
+                "TestLiveMergePrFabPromotion::test_flag_off_resume_with_stale_run_id_is_byte_neutral",
+                "TestLiveMergePrFabPromotion::test_non_fab_queue_node_is_byte_neutral_fail_closed",
+                "TestLiveMergePrFabPromotion::test_flag_off_no_merge_queue_gh_api",
+                "TestPiece3aRegateEndToEnd::test_fab_queue_terminal_sha_recorded_in_ledger_through_run_train",
+                "TestPiece3aRegateEndToEnd::test_regate_passes_legit_admitted_head",
+                "TestPiece3aRegateEndToEnd::test_regate_fail_closes_on_tampered_provenance"
+              ]
+            }
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:FABREADMIT: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; a pending authorization accepts nothing; each authorization is spent by exactly one merge. This entry is never mutated once on main."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
@@ -4354,6 +4400,12 @@
         },
         {
           "plan_sha256": "2ae79d2cafd999cb46b63ecf5e2687346bd926ea8d57783501ff0ffaa7495dce",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "405bfc657ba7e13610306f40d33fa6aa411f7a3ad5be44b0046925aa5cdd75e3",
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
@@ -10410,6 +10462,12 @@
         },
         {
           "plan_sha256": "f3a230840b8e9c8a375bef6e48c451e0bdc92f882934a2991d1b013050db77e4",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "60a3cf80b7b9ea8b69ea3053e894e016145449934eb7a1b6da41139f9649f2c1",
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"

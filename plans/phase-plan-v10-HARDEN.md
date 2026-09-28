@@ -256,7 +256,9 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     parent. Its new blob must equal the path's blob at that merge, and the merge must be an
     ancestor of the verified commit. Each link's merge descends from its predecessor link's
     merge. Links are followed by old-to-new blob and by merge ancestry, never by manifest
-    order. PANEL SL-1 is the first such repair
+    order. An authorization with no landed entry yet is pending: it accepts nothing and is
+    not refused. A landed entry names exactly one merge. SL-5's falsifiers cover both.
+    PANEL SL-1 is the first such repair
     (agent-harness#1078).
     Any other drift in a frozen path is refused. Five earlier edits have no record, and
     SL-5 disposes of them under agent-harness#742: agent-harness#1102 r7 and r8,
