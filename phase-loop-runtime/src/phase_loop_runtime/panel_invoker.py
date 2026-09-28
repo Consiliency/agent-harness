@@ -2151,6 +2151,10 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_heartbeat_broker_required", "gemini_heartbeat_capability_unavailable",
     "gemini_heartbeat_admission_handshake_failed", "gemini_broker_diagnostic_invalid",
     "gemini_broker_diagnostic_status_mismatch",
+    # agent-harness#1076 first-use self-qualification refusals
+    "gemini_heartbeat_self_qualification_failed", "gemini_heartbeat_self_qualification_unavailable",
+    "gemini_heartbeat_self_qualification_store_unsafe", "gemini_heartbeat_provenance_unavailable",
+    "gemini_heartbeat_provenance_unverified", "gemini_heartbeat_platform_unsupported",
     "Gemini broker stream rejected: malformed JSON",
     "Gemini broker stream rejected: malformed stream event",
     "Gemini broker stream rejected: tool or subagent activity observed",
@@ -4367,9 +4371,13 @@ def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[
     return {key: value for key, value in env.items() if key in allowed}
 
 
-def _preflight_gemini_heartbeat(board, monitoring_policy, env=None):
+def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None):
     if monitoring_policy == "heartbeat_only" and any(str(seat.harness or "").lower() == "gemini" for seat in board.seats):
-        gemini_heartbeat.require_capability(_broker_subscription_env(env))
+        # agent-harness#1076: the whole-board preflight is the ONLY caller that may
+        # self-qualify a genuine upstream agy release on first use; legs and the
+        # president admit by lookup only (gemini_heartbeat.admit).
+        from . import agy_qualification
+        agy_qualification.ensure_admitted(_broker_subscription_env(env), cancel_event).close()
 
 
 def _broker_agy_settings_bytes():
@@ -9771,7 +9779,7 @@ def invoke_board(
             # here, before minting or any launch (agent-harness#908 board r4 (d)).
             native_fill_requested=bool(native_leg_fills),
         )
-        _preflight_gemini_heartbeat(board, monitoring_policy, base_env)
+        _preflight_gemini_heartbeat(board, monitoring_policy, base_env, cancel_event)
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(
             leg=seat.harness or seat.vendor_family, status="UNAVAILABLE",

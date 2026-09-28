@@ -12,6 +12,12 @@
 # Optional: the board a bare `advisor-board` invocation resolves to.
 default_board = "default"
 
+# Optional (agent-harness#1076, user file only): first-use self-qualification of a genuine
+# upstream agy release whose digest is not release-qualified. On by default; `false`
+# restores the hard refusal (`gemini_heartbeat_capability_unavailable`).
+# [agy]
+# self_qualification = false
+
 # The default board reproduces today's 3-leg panel (byte-for-byte back-compat).
 # Its three seats, in panel-leg order, render to today's exact CLI invocations:
 #   codex  gpt-6-astra          effort=max  -> -c model_reasoning_effort=xhigh

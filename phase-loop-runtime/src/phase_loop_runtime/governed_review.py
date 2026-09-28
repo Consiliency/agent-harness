@@ -117,7 +117,54 @@ class GateResult:
     panel: PanelResult | None = None
 
 
-def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) -> tuple[ReviewFinding, ...]:
+# agent-harness#1076 D1: a brokered heartbeat Gemini leg is a vote only when the
+# coordinator's own Admission (recorded on the leg by the owned profile, never by the
+# provider) says ``release_qualified`` or ``locally_qualified``. A
+# ``qualification_candidate`` leg, or a leg with no class -- including a leg from a board
+# that ran before the class existed; the remedy is a board re-run -- does not count.
+_COUNTED_GEMINI_ADMISSION = frozenset({"release_qualified", "locally_qualified"})
+
+
+def _gemini_heartbeat_leg(leg) -> bool:
+    monitoring = getattr(leg, "review_monitoring", None) or {}
+    return leg.leg == "gemini" and monitoring.get("effective_policy") == "heartbeat_only"
+
+
+def leg_admission_class(leg) -> str | None:
+    evidence = getattr(leg, "harden_isolation_evidence", None) or {}
+    value = evidence.get("provider_admission_class")
+    return value if isinstance(value, str) else None
+
+
+def leg_counts(leg) -> bool:
+    """A usable leg that is also a vote under the D1 counting rule, at every tier."""
+    if not leg.usable:
+        return False
+    if _gemini_heartbeat_leg(leg):
+        return leg_admission_class(leg) in _COUNTED_GEMINI_ADMISSION
+    return True
+
+
+def _self_pin_finding(leg, artifact: str | None, reviewed_sha: str | None) -> "ReviewFinding | None":
+    """Flag (non-gating) a Gemini leg whose admitted image digest the reviewed artifact names,
+    i.e. a seat voting on its own pin (agent-harness#1076 "Counting")."""
+    if artifact is None or not _gemini_heartbeat_leg(leg):
+        return None
+    evidence = getattr(leg, "harden_isolation_evidence", None) or {}
+    digest = evidence.get("provider_image_sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or digest not in artifact:
+        return None
+    return ReviewFinding(
+        code="gemini_seat_reviews_its_own_pin",
+        reason=(f"panel leg {leg.leg} runs agy image {digest} "
+                f"({leg_admission_class(leg) or 'unclassified'}), which the reviewed artifact pins"),
+        severity="warn",
+        reviewed_sha=reviewed_sha,
+    )
+
+
+def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None,
+                         artifact: str | None = None) -> tuple[ReviewFinding, ...]:
     """Fail-closed translation of panel leg outputs into findings. A leg that is
     not usable (empty/timeout/degraded/unavailable) becomes a `warn` finding so
     the reduced confidence is recorded; a usable leg whose verdict signals a
@@ -130,6 +177,20 @@ def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) ->
     is bound to ``reviewed_sha`` (the exact reviewed commit) when known."""
     findings: list[ReviewFinding] = []
     for leg in panel.legs:
+        self_pin = _self_pin_finding(leg, artifact, reviewed_sha)
+        if self_pin is not None:
+            findings.append(self_pin)
+        if leg.usable and not leg_counts(leg) and not _leg_blocks(leg.text):
+            # D1: an uncounted Gemini leg can never approve. (A blocking one still
+            # blocks below: an objection is never discarded.)
+            findings.append(ReviewFinding(
+                code="panel_leg_admission_not_counted",
+                reason=(f"panel leg {leg.leg} admission class "
+                        f"{leg_admission_class(leg) or 'missing'} is not a vote; re-run the board"),
+                severity="warn",
+                reviewed_sha=reviewed_sha,
+            ))
+            continue
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so
@@ -283,12 +344,13 @@ def governed_planning_gate(
     if max_concurrency is not None:
         invoke_kwargs["max_concurrency"] = max_concurrency
     panel = invoke(artifact, pool, **invoke_kwargs)
-    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha, artifact=artifact)
 
 
-def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None) -> GateResult:
-    findings = _findings_from_panel(panel, reviewed_sha=reviewed_sha)
-    if not panel.usable_legs:
+def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None,
+                            artifact: str | None = None) -> GateResult:
+    findings = _findings_from_panel(panel, reviewed_sha=reviewed_sha, artifact=artifact)
+    if not any(leg_counts(leg) for leg in panel.legs):
         # Pool existed but no leg produced a usable, conforming review → the review
         # did not actually happen. Fail closed, never silent-pass. The per-leg
         # findings ride along (agent-harness#906) so the hold names each refusal.
@@ -605,7 +667,7 @@ def governed_board_gate(
             _backing.reset_review_instruction_digest(token)
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
-    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha, artifact=staged_artifact)
 
 
 # agent-harness#802: the landing-brief pin re-enters the real gate with the same arguments.

@@ -51,11 +51,14 @@ from .schema import (
 )
 
 # Recognised keys — anything else is a hard error (no silent drop).
-_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president"})
+_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president", "agy"})
 # A repository file configures the president ladder only: repo-level boards are not a
 # feature, so a ``[[boards]]`` there is refused rather than silently ignored.
 _KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president"})
 _KNOWN_PRESIDENT_KEYS: frozenset[str] = frozenset({"ladder"})
+# agent-harness#1076 D3: the USER file's ``[agy] self_qualification = false`` restores the
+# hard refusal of a non-release agy image. A repository file cannot carry it.
+_KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification"})
 # Repository-level config, relative to the repository root.
 REPO_CONFIG_RELATIVE_PATH = ".agent-harness/advisor-boards.toml"
 _KNOWN_BOARD_KEYS: frozenset[str] = frozenset(
@@ -212,6 +215,31 @@ def _parse_president(data: Mapping[str, Any], where: str) -> tuple[str, ...] | N
         raise BoardConfigError(f"{where} [president] ladder: {exc}") from exc
 
 
+def _parse_agy(data: Mapping[str, Any], where: str) -> bool:
+    """The user file's ``[agy] self_qualification`` (default ``True``), validated."""
+    raw = data.get("agy")
+    if raw is None:
+        return True
+    if not isinstance(raw, Mapping):
+        raise BoardConfigError(f"{where}: 'agy' must be a table")
+    _reject_unknown(raw.keys(), _KNOWN_AGY_KEYS, f"{where} [agy]")
+    return _require_bool(raw, "self_qualification", True, f"{where} [agy]")
+
+
+def load_agy_self_qualification(*, path: Path | None = None) -> bool:
+    """D3 (agent-harness#1076): whether first-use self-qualification is enabled.
+
+    Reads the user file only (this process's ``board_config_path()``). A malformed file
+    raises; the admission caller treats any error as opted out (today's refusal).
+    """
+    user_path = path if path is not None else board_config_path(None)
+    user = _load_toml(user_path)
+    if user is None:
+        return True
+    _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
+    return _parse_agy(user, str(user_path))
+
+
 def _user_config_path(env: Mapping[str, str] | None) -> Path | None:
     """The user file for ``env``: resolved from the GIVEN environment only.
 
@@ -343,6 +371,7 @@ def load_boards(
                 raise BoardConfigError(f"{cfg_path} is not valid TOML: {exc}") from exc
         _reject_unknown(data.keys(), _KNOWN_TOP_KEYS, str(cfg_path))
         _parse_president(data, str(cfg_path))  # a bad [president] fails at load too
+        _parse_agy(data, str(cfg_path))  # and a bad [agy] (agent-harness#1076)
         raw_boards = data.get("boards", [])
         if not isinstance(raw_boards, list):
             raise BoardConfigError(f"{cfg_path}: 'boards' must be an array of tables")
