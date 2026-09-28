@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: EXECFIND
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 92f8bc7e4384a7e3f49e95d4c2405a336bb6d1ceb33a5743fcf3c62e08b4ba75
+roadmap_sha256: 1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066
 automation:
   suite_command:
     - bash
@@ -27,7 +27,8 @@ EXECFIND lets a seat attach a `falsifier` block as text; the harness applies and
 runs it in a staged tree under its own authorization identity. The test result
 is an untrusted observation that accompanies a finding to a president ruling;
 RED and GREEN alone neither bind nor dismiss it (the 2026-09-25 roadmap ruling).
-Seats never execute (agent-harness#935).
+Seats on the sealed inline route never execute (agent-harness#935); a jailed seat's own
+execution (agent-harness#1132) is never a falsifier run.
 
 Current shape: `PanelLegResult` (`panel_invoker.py`) carries
 non-field affordances attached with `object.__setattr__` and read through a property
