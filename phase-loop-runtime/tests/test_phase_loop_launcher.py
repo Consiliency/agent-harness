@@ -1939,11 +1939,13 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             # for the live grandchild and the lease.  The test never kills that
             # grandchild: a conformant supervisor waits for and reaps it itself.
             def process_live(pid):
+                # A zombie has exited: the supervisor keeps the executor leader
+                # unreaped while it can still forward signals (agent-harness#1142).
                 try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+                    state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+                except (OSError, IndexError):
                     return False
-                return True
+                return state != "Z"
 
             deadline = time.monotonic() + 5
             while process_live(executor_pid):
