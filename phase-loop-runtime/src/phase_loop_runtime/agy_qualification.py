@@ -741,7 +741,7 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
 # ------------------------------------------------------------------------------- store
 
 _ENTRY_SCHEMA = "agy_qualification_entry.v1"
-_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient")
+_ENTRY_TYPES = ("provenance", "qualified", "failed", "member_cache", "transient", "watch_push")
 # After this many CONSECUTIVE transient attempts for one key, the image is refused with a
 # failed entry (claude N2 on agent-harness#1130 r1): a deterministic incompatibility must not
 # re-run help and a real completion on every board forever. The count resets when the key

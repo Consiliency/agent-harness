@@ -798,7 +798,7 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   namespaced by machine-id. Directories 0700 and files 0600, owned by the euid, opened
   `O_NOFOLLOW`; otherwise the store is absent to lookups and first use refuses
   (`gemini_heartbeat_self_qualification_store_unsafe`). Entry types `provenance`,
-  `qualified`, `failed` and `member_cache`; each is HMAC-SHA256'd under a per-host key over
+  `qualified`, `failed`, `member_cache`, `transient` and `watch_push`; each is HMAC-SHA256'd under a per-host key over
   a context recomputed from the live key (type, euid, machine-id, image digest, platform,
   runtime identity, plus the asset name, profile id or help digest as the type requires).
   Without a readable machine-id, self-qualification refuses; the release path is unaffected.
@@ -828,5 +828,8 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   with an empty-expected-value lease and accepted only when `--porcelain` reports that exact
   ref as newly created) and one object create (the PR). It never updates, force-pushes,
   adopts, closes, edits or deletes anything that existed before the tick; the new PR body
-  names the own older PRs it supersedes for a maintainer to close, and records the pushed
-  oid. It refuses when it cannot prove its open-PR listing complete.
+  names the own older PRs it supersedes for a maintainer to close. It pushes only to
+  `origin`'s single push URL (several refuse before any push), records the verified pushed
+  oid in its own `watch_push` store entry (the PR body's copy is display-only), and reads the
+  created PR back. "Up to date" requires that local record, `headRefOid` and `ls-remote` to
+  agree. It refuses when it cannot prove its open-PR listing complete.

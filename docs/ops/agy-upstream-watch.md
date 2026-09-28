@@ -19,9 +19,13 @@ subscribed host, once.
    cannot prove the listing complete (`totalCount` against distinct nodes, and the last
    page reached), it refuses with `refused_incomplete_pr_listing` and exit 2. The tick is a
    no-op (`up_to_date`) only if one of its own open PRs for that version carries the
-   current `main` route-core label AND the pushed oid it recorded at creation, GitHub's
-   `headRefOid` and the branch's `ls-remote` oid all agree. A maintainer push onto the
-   branch shows up in both live reads, but not in the recorded oid, so it is detected.
+   current `main` route-core label AND three oids agree: the one the watch recorded when it
+   pushed the branch, GitHub's `headRefOid`, and the branch's `ls-remote` oid. The recorded
+   oid lives in the watch's own operator-only state: an HMAC-bound `watch_push` entry in
+   the per-user, per-host store, owner-only, no symlinks. It is never read from the PR
+   body, which anyone with write access can edit. A maintainer push onto the branch, even
+   one paired with an edited body, is therefore detected. A missing or tampered record
+   means "not up to date": the result is a duplicate PR, never adoption.
 3. It fetches the release asset through the pinned provenance transport, checks the
    published archive digest, and builds a sealed memfd from the archive's single
    `antigravity` member. Nothing is installed on disk.
@@ -36,18 +40,30 @@ subscribed host, once.
    It re-fetches each existing member's image from that member's own release and
    refuses unless the asset and image digests equal the committed record's.
 5. It writes the redacted record, runs `verify_qualified_agy_image.py --route-core` on
-   the prepared tree, and commits. It pushes a **fresh**, unique branch
-   `agy-watch/<version>-<utc>-<random>` with create-only semantics:
+   the prepared tree, and commits. It resolves `git remote get-url --push --all origin`
+   and refuses (`refused_push_destination_ambiguous`, exit 2, nothing pushed) unless there
+   is exactly one push URL, because `git push origin` writes to every configured push URL.
+   It then pushes a **fresh**, unique branch `agy-watch/<version>-<utc>-<random>` to that
+   single URL, with create-only semantics:
    `--force-with-lease=refs/heads/<name>:` (an empty expected value), a fully qualified
    destination, `--no-follow-tags --recurse-submodules=no`, and `--porcelain`. A zero exit
    status is not trusted, because a ref that already exists at exactly HEAD is reported
    "up to date" with exit 0. The push counts as done only when the porcelain output shows
-   exactly that ref with the `*` (new ref) flag. Otherwise the tick exits 2 with a typed
-   reason: `refused_branch_exists`, `refused_ref_conflict` (for example, a plain
-   `agy-watch` branch), `refused_push_remote_rejected` (a hook or ruleset),
-   `refused_push_failed`, or `push_unavailable` (auth or network). It then opens a
-   **draft** PR whose body records the pushed oid and names the own older PRs it
-   supersedes ("Supersedes (maintainer to close): #a, #b"). It never merges.
+   exactly one row, for exactly that ref, with the `*` (new ref) flag. Otherwise the tick
+   exits 2 with a typed reason:
+   - `refused_branch_exists`: stale info, or the ref is already up to date;
+   - `refused_ref_conflict`: for example a plain `agy-watch` branch (the wording is
+     git-version dependent, and older servers report `refused_push_remote_rejected`);
+   - `refused_push_remote_rejected`: a hook or ruleset;
+   - `refused_push_failed`;
+   - `push_unavailable`: no single row for exactly our ref, which covers auth or network
+     failures and also a wrong or extra row.
+
+   After a verified push it records the pushed oid locally and opens a **draft** PR whose
+   body names the own older PRs it supersedes ("Supersedes (maintainer to close): #a,
+   #b") and shows the pushed oid for display only. It then reads the PR back
+   (`gh pr view --json headRefOid`, read-only). If the PR's head is not the pushed commit,
+   the tick reports `pr_head_mismatch` with exit 2 and edits nothing. It never merges.
 
 Each tick makes exactly one ref write (the new branch) and one object create (the new PR).
 The watch never updates, force-pushes, adopts, closes, edits or deletes anything that
@@ -63,8 +79,14 @@ name, any plain `agy-watch/<version>` branch would cause a git directory/file re
 and block the version's whole namespace.
 
 If `gh pr create` fails after the push succeeded, the fresh branch is left as an orphan.
-The watch never deletes a ref, so an operator removes it; the next tick uses another fresh
-name.
+The watch never deletes a ref, so a persistently failing `gh pr create` leaves one orphan
+branch per tick until an operator notices the `gh` failures and removes the
+`agy-watch/*` orphans.
+
+A watch PR that is "up to date" keys on the route-core label, but its evidence pins EVERY
+package file. So when other package code lands on `main`, the PR's full source-pin check
+goes red, while the watch still considers it up to date and does nothing. To refresh it, a
+maintainer closes the PR; the next tick then opens a fresh one against current `main`.
 
 Budget about a minute of real inference per catalog member per new release.
 

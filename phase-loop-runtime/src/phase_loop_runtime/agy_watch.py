@@ -96,12 +96,13 @@ def open_prs(runner, repo: Path) -> list[dict]:
         nodes = [node for page in pages for node in page["nodes"]]
         totals = {page["totalCount"] for page in pages}
         numbers = [node["number"] for node in nodes]
+        distinct = len(set(numbers))
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         if isinstance(exc, IncompleteListing):
             raise
         raise IncompleteListing("agy watch: unparseable PR listing") from exc
-    if len(totals) != 1 or len(set(numbers)) != len(numbers) or len(nodes) != totals.pop():
-        raise IncompleteListing("agy watch: PR listing is truncated, duplicated or changed while paging")
+    if len(totals) != 1 or distinct != len(numbers) or len(nodes) != totals.pop():
+        raise IncompleteListing("agy watch: PR listing is truncated, has duplicates or changed while paging")
     return nodes
 
 
@@ -142,6 +143,42 @@ def fresh_branch_name(version: str, *, now=None, token=None) -> str:
     return f"{BRANCH_PREFIX}{version}-{stamp}-{token or secrets.token_hex(4)}"
 
 
+def _push_state(store=None):
+    """The watch's OWN record of what it pushed (agent-harness#1130 r5, codex B1): an
+    HMAC-bound ``watch_push`` entry in the operator-only per-user, per-host store (0700/0600,
+    owner-checked, O_NOFOLLOW). The PR body's oid is display-only and never read back."""
+    from .agy_qualification import Store
+    return store or Store()
+
+
+def record_push(branch: str, oid: str, store=None) -> None:
+    store = _push_state(store)
+    if store.status() == "absent":
+        store.create()
+    context = {"branch": branch}
+    store.put("watch_push", context, context, {"oid": oid})
+
+
+def recorded_push(branch: str, store=None) -> str | None:
+    """The oid this watch pushed to ``branch``, or None when missing, tampered or foreign
+    (then the PR is simply not up to date: a duplicate PR, never adoption)."""
+    context = {"branch": branch}
+    payload = _push_state(store).get("watch_push", context, context)
+    value = payload.get("oid") if payload else None
+    return value if isinstance(value, str) and value else None
+
+
+def single_push_url(runner, tree: Path) -> str | None:
+    """``origin``'s push URL, iff there is exactly one (codex B2 on agent-harness#1130 r5):
+    ``git push origin`` writes to EVERY configured push URL, so the destination is fixed
+    before pushing, never counted after."""
+    listed = _run(runner, ["git", "-C", str(tree), "remote", "get-url", "--push", "--all", "origin"], check=False)
+    if getattr(listed, "returncode", 1) != 0:
+        return None
+    urls = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+    return urls[0] if len(urls) == 1 else None
+
+
 def publish_branch(runner, tree: Path, name: str) -> str:
     """Create ``refs/heads/<name>`` in origin; return ``"created"`` or a typed refusal.
 
@@ -153,13 +190,16 @@ def publish_branch(runner, tree: Path, name: str) -> str:
     git config from adding refs to the push (claude N7).
     """
     ref = f"refs/heads/{name}"
+    url = single_push_url(runner, tree)
+    if url is None:
+        return "refused_push_destination_ambiguous"  # zero or several push URLs: push nothing
     result = _run(runner, ["git", "-C", str(tree), "push", "--porcelain", "--no-follow-tags",
                            "--recurse-submodules=no", f"--force-with-lease={ref}:",
-                           "origin", f"HEAD:{ref}"], check=False)
+                           url, f"HEAD:{ref}"], check=False)
     lines = [line.split("\t") for line in (result.stdout or "").splitlines() if "\t" in line]
     rows = [row for row in lines if len(row) >= 2]
     if len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
-        return "push_unavailable"  # auth, network, or no per-ref result at all
+        return "push_unavailable"  # no single row for exactly our ref: auth/network, or a wrong/extra row
     flag, summary = rows[0][0].strip(), (rows[0][2] if len(rows[0]) > 2 else "")
     if flag == "*" and getattr(result, "returncode", 1) == 0:
         return "created"
@@ -323,9 +363,10 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
         # its head is still exactly the commit the watch pushed: the recorded oid, GitHub's
         # headRefOid and the branch's ls-remote oid must all agree. A maintainer push is
         # visible in BOTH live reads, so the recorded oid is what exposes it (r4 B3).
+        # The pushed oid comes from the watch's OWN local record (r5), never the editable body.
         if any(_label_value(pr.get("body"), MARKER) == base
-               and _label_value(pr.get("body"), PUSHED_LABEL) is not None
-               and _label_value(pr.get("body"), PUSHED_LABEL) == pr.get("headRefOid")
+               and recorded_push(pr["headRefName"]) is not None
+               and recorded_push(pr["headRefName"]) == pr.get("headRefOid")
                == remote_branch_head(runner, repo, pr["headRefName"])
                for pr in prs):
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
@@ -392,17 +433,26 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
         if outcome != "created":
             out(json.dumps({"agy_watch": outcome, "branch": branch}))
             return 2
+        record_push(branch, pushed)
         supersedes = ", ".join(f"#{pr['number']}" for pr in prs)
         body = (f"Automated upstream-watch qualification of agy {asset.version} (agent-harness#1076).\n\n"
                 f"Record produced from this branch's own tree; `verify_qualified_agy_image.py --route-core` passed.\n"
                 f"Never merged by the watch.\n\n"
                 + (f"Supersedes (maintainer to close): {supersedes}\n\n" if supersedes else "")
-                + f"{VERSION_LABEL} {asset.version}\n{MARKER} {base}\n{PUSHED_LABEL} {pushed}\n")
+                + f"{VERSION_LABEL} {asset.version}\n{MARKER} {base}\n"
+                f"{PUSHED_LABEL} {pushed} (display only; the watch reads its own local record)\n")
         # If this fails after the push, the fresh branch is left as an orphan: the watch never
         # deletes a ref (docs/ops/agy-upstream-watch.md).
-        _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
-                      "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
-                      "--body", body], cwd=repo)
+        created = _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
+                                "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
+                                "--body", body], cwd=repo)
+        # Read the PR back (read-only): it must sit on exactly the commit the watch pushed.
+        url = (created.stdout or "").strip().splitlines()[-1] if (created.stdout or "").strip() else branch
+        head = _run(runner, ["gh", "pr", "view", url, "--repo", REPO_SLUG, "--json", "headRefOid",
+                             "-q", ".headRefOid"], cwd=repo, check=False)
+        if (head.stdout or "").strip() != pushed:
+            out(json.dumps({"agy_watch": "pr_head_mismatch", "branch": branch}))
+            return 2
         out(json.dumps({"agy_watch": "draft_pr", "version": asset.version}))
         return 0
     finally:
