@@ -262,6 +262,7 @@ def _exec_executor(
     go_fd: int,
     grouped_fd: int,
     environment: dict[bytes, bytes],
+    inherited_sigchld: object = signal.SIG_DFL,
 ) -> None:
     """Forked-executor half: become a subreaping session leader, wait for go, then exec."""
 
@@ -279,6 +280,8 @@ def _exec_executor(
             LeaseSupervisor.enable_subreaper()
             for signum in _STARTUP_IGNORED_SIGNALS:
                 signal.signal(signum, signal.SIG_DFL)
+            # The executor inherits exactly the SIGCHLD disposition we were given.
+            signal.signal(signal.SIGCHLD, inherited_sigchld)
             _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd, go_fd) if fd is not None))
             if status_fd is not None:
                 os.set_inheritable(status_fd, False)
@@ -307,6 +310,13 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         held_status_fd = status_fd if _handed_through(status_fd) else None
         held_lease_fd = lease_fd if _handed_through(lease_fd) else None
         environment = _initial_environment()
+        # An inherited SIGCHLD=SIG_IGN would make the kernel auto-reap the
+        # executor, so its zombie could not pin pid/pgid E (and its status would
+        # be lost).  Supervise with the default; the child restores the original.
+        inherited_sigchld = signal.getsignal(signal.SIGCHLD)
+        if inherited_sigchld not in (signal.SIG_DFL, signal.SIG_IGN):
+            inherited_sigchld = signal.SIG_DFL
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         go_read, go_write = (_above_stdio(fd) for fd in os.pipe())
         grouped_read, grouped_write = (_above_stdio(fd) for fd in os.pipe())
         LeaseSupervisor.enable_subreaper()
@@ -315,7 +325,7 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         _report(held_status_fd, _setup_reason(exc))
         os._exit(255)
     if executor_pid == 0:
-        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment)
+        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment, inherited_sigchld)
 
     os.close(go_read)
     os.close(grouped_write)

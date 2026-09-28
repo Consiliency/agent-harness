@@ -882,3 +882,88 @@ def test_executor_leader_stays_a_zombie_while_forwarding_is_possible(monkeypatch
     finally:
         sentinel.kill()
         sentinel.wait()
+
+
+def test_inherited_ignored_sigchld_neither_breaks_supervision_nor_reaches_the_executor_changed(monkeypatch, lease_fd, tmp_path):
+    # SIGCHLD=SIG_IGN survives exec.  Left in place, the kernel would auto-reap
+    # the executor (no zombie to pin pid/pgid E, no exit status, no descendant
+    # reaping).  The supervisor must run with the default and hand the executor
+    # exactly the disposition it inherited.
+    marker = tmp_path / "marker.json"
+    # Genuinely inherited: a wrapper ignores SIGCHLD and execs the real
+    # supervisor command (dash's ``trap "" CHLD`` does not survive exec).
+    real_command = launcher._lease_supervisor_command
+    ignore_then_exec = "import os, signal, sys; signal.signal(signal.SIGCHLD, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])"
+    monkeypatch.setattr(
+        launcher,
+        "_lease_supervisor_command",
+        lambda *args: [sys.executable, "-I", "-S", "-c", ignore_then_exec, *real_command(*args)],
+    )
+    command = _python(
+        """
+        import json, os, signal, subprocess, sys
+        detached = subprocess.Popen([sys.executable, "-c", "import time\\nwhile True: time.sleep(0.1)"],
+                                    start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open(sys.argv[1], "w").write(json.dumps({
+            "pid": os.getpid(), "ppid": os.getppid(), "detached": detached.pid,
+            "sigchld_ignored": signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN,
+        }))
+        raise SystemExit(7)
+        """,
+        str(marker),
+    )
+    launched = _BackgroundLaunch(command, lease_fd, tmp_path)
+    observed = _wait_for_json(marker, launched)
+    assert observed["sigchld_ignored"] is True, "the executor did not inherit SIGCHLD=SIG_IGN"
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            state = _stat_fields(observed["pid"])[0]
+        except OSError:
+            state = None
+        if state == "Z":
+            break
+        assert state is not None, "the executor was auto-reaped: SIGCHLD=SIG_IGN reached the supervisor"
+        assert time.monotonic() < deadline, "executor did not exit"
+        time.sleep(0.01)
+    time.sleep(1.0)
+    assert _stat_fields(observed["pid"])[0] == "Z", "the executor leader was not kept as a zombie"
+    assert _alive(observed["detached"]), "the detached descendant was cut short before the grace"
+    result = launched.result(timeout=20)
+    assert result.returncode == 7, "the executor's exit status was lost"
+    assert not _alive(observed["detached"]), "the detached descendant outlived the supervisor"
+
+
+def test_forwarding_is_off_before_the_executor_leader_is_reaped(monkeypatch, lease_fd, tmp_path):
+    # The leader's final reap frees pid/pgid E, so by then the TERM/INT
+    # handlers and the SIGKILL escalation must already be disarmed.  A forwarded
+    # SIGTERM arms the escalation timer just before the executor exits.
+    record, marker = tmp_path / "at-reap.json", tmp_path / "marker.json"
+    _supervisor_with_prelude(
+        monkeypatch,
+        "import json, signal",
+        "real_reap = module._ForkedExecutor.reap",
+        "def recording_reap(self):",
+        "    names = {signal.SIG_IGN: 'SIG_IGN', signal.SIG_DFL: 'SIG_DFL'}",
+        "    state = {name: names.get(signal.getsignal(getattr(signal, name)), 'handler') for name in ('SIGTERM', 'SIGINT', 'SIGALRM')}",
+        "    state['timer'] = list(signal.getitimer(signal.ITIMER_REAL))",
+        f"    open({str(record)!r}, 'w').write(json.dumps(state))",
+        "    return real_reap(self)",
+        "module._ForkedExecutor.reap = recording_reap",
+    )
+    command = _python(
+        """
+        import json, os, signal, sys, time
+        signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+        open(sys.argv[1], "w").write(json.dumps({"ppid": os.getppid()}))
+        time.sleep(30)
+        """,
+        str(marker),
+    )
+    launched = _BackgroundLaunch(command, lease_fd, tmp_path)
+    observed = _wait_for_json(marker, launched)
+    os.kill(observed["ppid"], signal.SIGTERM)
+    assert launched.result(timeout=15).returncode == 0
+    state = json.loads(record.read_text())
+    assert state["SIGTERM"] == state["SIGINT"] == state["SIGALRM"] == "SIG_IGN", state
+    assert state["timer"] == [0.0, 0.0], state
