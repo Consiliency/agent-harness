@@ -1365,9 +1365,11 @@ def _node(number, body="", *, login="watch-bot", cross=False, owner="Consiliency
             "headRepositoryOwner": {"login": owner}, "author": {"login": login}}
 
 
-def _label(base, version="9.9.9"):
+def _label(base, version="9.9.9", *, pushed="a" * 40, crlf=False):
     from phase_loop_runtime import agy_watch
-    return f"x\n{agy_watch.VERSION_LABEL} {version}\n{agy_watch.MARKER} {base}\n"
+    body = (f"x\n{agy_watch.VERSION_LABEL} {version}\n{agy_watch.MARKER} {base}\n"
+            f"{agy_watch.PUSHED_LABEL} {pushed}\n")
+    return body.replace("\n", "\r\n") if crlf else body
 
 
 class _Runner:
@@ -1414,7 +1416,7 @@ class _Runner:
             branch = argv[-1][len("refs/heads/"):]
             oid = self.refs.get(branch)
             return SimpleNamespace(stdout=f"{oid}\trefs/heads/{branch}\n" if oid else "", returncode=0)
-        if argv[:1] == ["git"] and self.origin is not None and len(argv) > 3 and argv[3] in ("add", "-c", "push"):
+        if argv[:1] == ["git"] and self.origin is not None and len(argv) > 3 and argv[3] in ("add", "-c", "push", "rev-parse"):
             env = dict(os.environ, GIT_AUTHOR_NAME="w", GIT_AUTHOR_EMAIL="w@x", GIT_COMMITTER_NAME="w",
                        GIT_COMMITTER_EMAIL="w@x")
             return subprocess.run(argv, capture_output=True, text=True, check=kwargs.get("check", True), env=env)
@@ -1425,6 +1427,14 @@ class _Runner:
 
     def closes(self):
         return [c for c in self.calls if c[:3] == ["gh", "pr", "close"]]
+
+    def mutations_of_existing_prs(self):
+        return [c for c in self.calls if c[:3] in (["gh", "pr", "close"], ["gh", "pr", "edit"],
+                                                   ["gh", "pr", "merge"], ["gh", "pr", "reopen"])]
+
+    def created_body(self):
+        (create,) = [c for c in self.calls if c[:3] == ["gh", "pr", "create"]]
+        return create[create.index("--body") + 1]
 
 
 def test_watch_opens_nothing_on_a_platform_it_cannot_propose(tmp_path):
@@ -2035,29 +2045,42 @@ def test_a_branch_created_between_decision_and_push_is_rejected_by_the_lease(tmp
 
 
 def test_an_owned_pr_with_a_maintainer_follow_up_is_never_force_pushed(tmp_path, monkeypatch):
-    """r3: our open PR carries the current label, but a maintainer pushed onto its branch
-    (headRefOid != the branch's ls-remote oid). It is not up to date: a fresh branch and PR
-    are made, the old PR is only CLOSED, and its branch keeps the maintainer's commit."""
+    """r4 B3 (claude N1): the maintainer's push landed BEFORE both reads, so GitHub's
+    headRefOid and the branch's ls-remote oid AGREE on the maintainer commit. Only the
+    recorded pushed oid exposes it: not up to date, a fresh branch and PR are made, the old
+    PR is named as superseded but never touched, and its branch keeps the maintainer's
+    commit. Mutation: up_to_date comparing only the two live reads."""
     from phase_loop_runtime import agy_watch
     old = "agy-watch/9.9.9-20250101T000000Z-0000aaaa"
-    origin, oids = _bare_origin(tmp_path, [old])
+    origin, oids = _bare_origin(tmp_path, [old])  # the branch head is now the maintainer's commit
     probe = tmp_path / "probe"
     probe.mkdir()
     base = agy_watch.route_core_digest(_watch_repo(probe))
-    runner = _Runner([_page([_node(41, _label(base), head=old, oid="f" * 40)])], origin=origin)
+    runner = _Runner([_page([_node(41, _label(base, pushed="c" * 40), head=old, oid=oids[old])])], origin=origin)
     code, out = _end_to_end(tmp_path, monkeypatch, runner)
     assert code == 0 and "draft_pr" in out[-1], out
     assert _origin_refs(origin)[f"refs/heads/{old}"] == oids[old]
     assert not [p for p in runner.pushes() if old in " ".join(p)]
-    assert [c[3] for c in runner.closes()] == ["41"]
+    assert runner.mutations_of_existing_prs() == []
+    assert "Supersedes (maintainer to close): #41" in runner.created_body()
 
 
-@pytest.mark.parametrize("oid,up_to_date", [("a" * 40, True), ("b" * 40, False), (None, False)])
-def test_up_to_date_requires_an_own_pr_whose_head_is_its_branch_head(tmp_path, monkeypatch, oid, up_to_date):
+@pytest.mark.parametrize("recorded,head_oid,ref_oid,up_to_date", [
+    ("a" * 40, "a" * 40, "a" * 40, True),
+    ("c" * 40, "a" * 40, "a" * 40, False),   # maintainer push seen by both live reads
+    ("a" * 40, "a" * 40, "b" * 40, False),   # push between the listing and ls-remote
+    ("a" * 40, "a" * 40, None, False),       # branch gone
+    (None, "a" * 40, "a" * 40, False),       # no recorded oid
+])
+def test_up_to_date_requires_recorded_head_and_branch_to_agree(tmp_path, monkeypatch, recorded, head_oid,
+                                                               ref_oid, up_to_date):
     from phase_loop_runtime import agy_watch
     base = agy_watch.route_core_digest(_watch_repo(tmp_path))
     head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
-    runner = _Runner([_page([_node(3, _label(base), head=head)])], refs={head: oid} if oid else {})
+    body = _label(base, pushed=recorded or "x")
+    if recorded is None:
+        body = "\n".join(line for line in body.splitlines() if agy_watch.PUSHED_LABEL not in line) + "\n"
+    runner = _Runner([_page([_node(3, body, head=head, oid=head_oid)])], refs={head: ref_oid} if ref_oid else {})
     monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
     if up_to_date:
@@ -2067,11 +2090,39 @@ def test_up_to_date_requires_an_own_pr_whose_head_is_its_branch_head(tmp_path, m
             _watch_tick(tmp_path, runner)
 
 
+def test_a_crlf_body_is_still_recognised(tmp_path, monkeypatch):
+    """claude r4 N5: a body saved with CRLF by the web UI keeps its labels."""
+    from phase_loop_runtime import agy_watch
+    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
+    runner = _Runner([_page([_node(3, _label(base, crlf=True), head=head)])], refs={head: "a" * 40})
+    assert "up_to_date" in _watch_tick(tmp_path, runner)[1][-1]
+
+
+@pytest.mark.parametrize("kind", ["other_author", "fork", "non_fresh_head", "other_version"])
+def test_a_non_own_pr_with_the_current_label_never_makes_the_tick_up_to_date(tmp_path, monkeypatch, kind):
+    """claude r4 N2. Mutation: evaluating up_to_date over unfiltered nodes."""
+    from phase_loop_runtime import agy_watch
+    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
+    node = {"other_author": _node(3, _label(base), head=head, login="mallory"),
+            "fork": _node(3, _label(base), head=head, cross=True, owner="mallory"),
+            "non_fresh_head": _node(3, _label(base), head="agy-watch/9.9.9"),
+            "other_version": _node(3, _label(base, "9.9.8"), head="agy-watch/9.9.8-20260101T000000Z-aaaaaaaa")}[kind]
+    runner = _Runner([_page([node])], refs={node["headRefName"]: "a" * 40})
+    monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
+    with pytest.raises(RuntimeError, match="proceeded"):
+        _watch_tick(tmp_path, runner)
+
+
 @pytest.mark.parametrize("pages", [
     [_page([_node(1)], total=2)],                                   # truncated: fewer nodes than totalCount
     [_page([_node(1)], has_next=True)],                             # stopped before the last page
     [_page([_node(1)], total=3, has_next=True), _page([_node(2)], total=2)],  # totalCount changed
     [],                                                             # nothing parseable
+    [{"data": {"repository": {"pullRequests": {"nodes": []}}}}],    # page without pageInfo/totalCount
+    [_page([_node(1), _node(1)])],                                  # duplicated node
 ])
 def test_an_incomplete_pr_listing_refuses(tmp_path, pages):
     """r3: no fixed limit; completeness is established or the tick refuses (exit 2) before
@@ -2099,10 +2150,13 @@ def test_a_complete_multi_page_listing_is_accepted(tmp_path):
     assert "--paginate" in listing and not [a for a in listing if "limit" in a.lower()]
 
 
-def test_only_own_same_repo_labelled_prs_for_the_version_are_closed(tmp_path, monkeypatch):
+def test_the_tick_never_mutates_an_existing_pr_and_only_names_own_supersessions(tmp_path, monkeypatch):
+    """r4 B1: exactly one ref write (the fresh branch) and one object create (the PR). Older
+    PRs, own or not, are never closed or edited; only OWN ones for the version are NAMED in
+    the new body. Mutation: any gh pr close/edit, or naming a non-own PR."""
     stale = "0" * 64
     h = "-20250101T000000Z-0000000"
-    nodes = [_node(1, _label(stale), head=f"agy-watch/9.9.9{h}a"),                          # ours, stale: closed
+    nodes = [_node(1, _label(stale), head=f"agy-watch/9.9.9{h}a"),                          # ours, stale
              _node(2, _label(stale), head=f"agy-watch/9.9.9{h}b", login="mallory"),         # other author
              _node(3, _label(stale), head=f"agy-watch/9.9.9{h}c", cross=True, owner="m"),   # fork
              _node(4, "no label", head=f"agy-watch/9.9.9{h}d"),                            # unlabelled
@@ -2112,8 +2166,72 @@ def test_only_own_same_repo_labelled_prs_for_the_version_are_closed(tmp_path, mo
     runner = _Runner([_page(nodes)], origin=origin)
     code, out = _end_to_end(tmp_path, monkeypatch, runner)
     assert code == 0, out
-    assert [c[3] for c in runner.closes()] == ["1"]
+    assert runner.mutations_of_existing_prs() == []
     assert len(runner.pushes()) == 1
+    body = runner.created_body()
+    assert "Supersedes (maintainer to close): #1\n" in body
+    pushed = _origin_refs(origin)
+    fresh = [oid for ref, oid in pushed.items() if ref.startswith("refs/heads/agy-watch/9.9.9-")]
+    assert f"agy-watch-pushed-oid: {fresh[0]}" in body
+
+
+def test_an_existing_destination_equal_to_head_is_not_adopted(tmp_path):
+    """r4 B2, SETTLED BY EXECUTION with real git: when the fresh name already exists at
+    exactly HEAD, the empty-lease push exits 0 ("up to date"), so the exit status alone
+    would adopt it. The porcelain parse refuses. Mutation: trusting the exit status."""
+    from phase_loop_runtime import agy_watch
+    origin, _ = _bare_origin(tmp_path, [])
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    subprocess.run(["git", "-C", str(tree), "-c", "commit.gpgsign=false", "-c", "user.name=w", "-c", "user.email=w@x",
+                    "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+    subprocess.run(["git", "-C", str(tree), "remote", "add", "origin", str(origin)], check=True)
+    name = "agy-watch/9.9.9-20260101T000000Z-deadbeef"
+    subprocess.run(["git", "-C", str(tree), "push", "-q", "origin", f"HEAD:refs/heads/{name}"], check=True)
+    raw = subprocess.run(["git", "-C", str(tree), "push", "--porcelain", f"--force-with-lease=refs/heads/{name}:",
+                          "origin", f"HEAD:refs/heads/{name}"], capture_output=True, text=True)
+    assert raw.returncode == 0 and "[up to date]" in raw.stdout  # the exit status proves nothing
+    assert agy_watch.publish_branch(subprocess.run, tree, name) == "refused_branch_exists"
+    assert agy_watch.publish_branch(subprocess.run, tree, name.replace("deadbeef", "0badf00d")) == "created"
+
+
+def test_a_directory_file_ref_conflict_is_typed(tmp_path):
+    """claude r4 N3 with real git: a plain `agy-watch` branch blocks every fresh name."""
+    from phase_loop_runtime import agy_watch
+    origin, _ = _bare_origin(tmp_path, ["agy-watch"])
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "clone", "-q", str(origin), str(tree)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tree), "checkout", "-q", "agy-watch"], check=True)
+    assert agy_watch.publish_branch(subprocess.run, tree, "agy-watch/9.9.9-20260101T000000Z-deadbeef") \
+        == "refused_ref_conflict"
+
+
+@pytest.mark.parametrize("stdout,rc,outcome", [
+    ("To o\n*\tHEAD:refs/heads/B\t[new branch]\nDone\n", 0, "created"),
+    ("To o\n=\tHEAD:refs/heads/B\t[up to date]\nDone\n", 0, "refused_branch_exists"),
+    ("To o\n!\tHEAD:refs/heads/B\t[rejected] (stale info)\nDone\n", 1, "refused_branch_exists"),
+    ("To o\n!\tHEAD:refs/heads/B\t[remote rejected] (pre-receive hook declined)\nDone\n", 1,
+     "refused_push_remote_rejected"),
+    ("To o\n!\tHEAD:refs/heads/B\t[remote rejected] (refname conflict)\nDone\n", 1, "refused_ref_conflict"),
+    ("", 128, "push_unavailable"),                                             # auth / network
+    ("To o\n*\tHEAD:refs/heads/OTHER\t[new branch]\nDone\n", 0, "push_unavailable"),  # wrong ref
+    ("To o\n*\tHEAD:refs/heads/B\t[new branch]\n*\trefs/tags/t:refs/tags/t\t[new tag]\nDone\n", 0,
+     "push_unavailable"),                                                      # extra ref pushed
+])
+def test_push_outcomes_are_typed_from_porcelain(tmp_path, stdout, rc, outcome):
+    """claude r4 N3. Mutations: trusting rc, or counting every failure as branch-exists."""
+    from phase_loop_runtime import agy_watch
+    runner = lambda argv, **k: SimpleNamespace(stdout=stdout.replace("B", "agy-watch/9.9.9-x"), returncode=rc)  # noqa: E731
+    assert agy_watch.publish_branch(runner, tmp_path, "agy-watch/9.9.9-x") == outcome
+
+
+def test_the_push_cannot_carry_extra_refs(tmp_path, monkeypatch):
+    """claude r4 N7: host push.followTags / push.recurseSubmodules cannot widen the push."""
+    from phase_loop_runtime import agy_watch
+    seen = []
+    agy_watch.publish_branch(lambda argv, **k: seen.append(argv) or SimpleNamespace(stdout="", returncode=1),
+                             tmp_path, "agy-watch/9.9.9-x")
+    assert "--no-follow-tags" in seen[0] and "--recurse-submodules=no" in seen[0]
 
 
 def test_cancellation_is_never_counted_as_a_transient(world, monkeypatch):

@@ -16,10 +16,12 @@ subscribed host, once.
    prints `platform_not_proposed` and opens nothing.
 2. It reads the newest stable release. If that version is already pinned on `origin/main`,
    the tick is a no-op. It then lists **every** open PR, paginated to the end; if it
-   cannot prove the listing complete (`totalCount` against the nodes, and the last page
-   reached), it refuses with `refused_incomplete_pr_listing` and exit 2. The tick is a
-   no-op (`up_to_date`) if one of its own open PRs for that version carries the current
-   `main` route-core label and its head is still exactly the commit on its branch.
+   cannot prove the listing complete (`totalCount` against distinct nodes, and the last
+   page reached), it refuses with `refused_incomplete_pr_listing` and exit 2. The tick is a
+   no-op (`up_to_date`) only if one of its own open PRs for that version carries the
+   current `main` route-core label AND the pushed oid it recorded at creation, GitHub's
+   `headRefOid` and the branch's `ls-remote` oid all agree. A maintainer push onto the
+   branch shows up in both live reads, but not in the recorded oid, so it is detected.
 3. It fetches the release asset through the pinned provenance transport, checks the
    published archive digest, and builds a sealed memfd from the archive's single
    `antigravity` member. Nothing is installed on disk.
@@ -35,20 +37,34 @@ subscribed host, once.
    refuses unless the asset and image digests equal the committed record's.
 5. It writes the redacted record, runs `verify_qualified_agy_image.py --route-core` on
    the prepared tree, and commits. It pushes a **fresh**, unique branch
-   `agy-watch/<version>-<utc>-<random>` with create-only semantics
-   (`--force-with-lease=refs/heads/<name>:`, an empty expected value, to a fully qualified
-   destination). If that ref already exists, the push fails atomically and the tick exits 2
-   (`refused_branch_exists`). It opens a **draft** PR from the branch, and then closes its
-   own older open PRs for that version. It never merges.
+   `agy-watch/<version>-<utc>-<random>` with create-only semantics:
+   `--force-with-lease=refs/heads/<name>:` (an empty expected value), a fully qualified
+   destination, `--no-follow-tags --recurse-submodules=no`, and `--porcelain`. A zero exit
+   status is not trusted, because a ref that already exists at exactly HEAD is reported
+   "up to date" with exit 0. The push counts as done only when the porcelain output shows
+   exactly that ref with the `*` (new ref) flag. Otherwise the tick exits 2 with a typed
+   reason: `refused_branch_exists`, `refused_ref_conflict` (for example, a plain
+   `agy-watch` branch), `refused_push_remote_rejected` (a hook or ruleset),
+   `refused_push_failed`, or `push_unavailable` (auth or network). It then opens a
+   **draft** PR whose body records the pushed oid and names the own older PRs it
+   supersedes ("Supersedes (maintainer to close): #a, #b"). It never merges.
 
-The watch never updates, force-pushes, adopts or deletes an existing branch, so it never
-has to decide who owns one. "Its own PRs" means open, same-repository PRs authored by the
-identity running the watch, on a fresh-named branch, carrying the version label. It only
-ever *closes* those, and never pushes to their branches. A PR a maintainer has pushed onto
-is not up to date, so it is superseded (closed), never overwritten. The fresh name is a
-sibling (`<version>-...`), not a child (`<version>/...`), because a plain
-`agy-watch/<version>` branch pushed by anyone would otherwise block the whole namespace
-with a git directory/file ref conflict.
+Each tick makes exactly one ref write (the new branch) and one object create (the new PR).
+The watch never updates, force-pushes, adopts, closes, edits or deletes anything that
+existed before the tick, so it never has to decide who owns an existing object. Its own
+PRs are open, same-repository PRs, authored by the identity running the watch, on a
+fresh-named branch, and carrying the version label. They only ever affect the no-op
+decision and the "Supersedes" list. Run the watch under a dedicated bot identity; under a
+shared human identity, that person's hand-made PRs matching every one of those conditions
+would also be listed.
+
+The fresh name is a sibling (`<version>-...`), not a child (`<version>/...`). With a child
+name, any plain `agy-watch/<version>` branch would cause a git directory/file ref conflict
+and block the version's whole namespace.
+
+If `gh pr create` fails after the push succeeded, the fresh branch is left as an orphan.
+The watch never deletes a ref, so an operator removes it; the next tick uses another fresh
+name.
 
 Budget about a minute of real inference per catalog member per new release.
 
