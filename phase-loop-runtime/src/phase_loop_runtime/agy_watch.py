@@ -131,14 +131,18 @@ def _tree_python(tree: Path, python: str, args, *, image_fd: int, runner, env):
 
 
 def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transport=None,
-         python=sys.executable, workdir=None, out=print) -> int:
+         python=sys.executable, workdir=None, out=print, version=None) -> int:
+    """One watch tick. ``version`` selects a specific in-window stable release instead of
+    the newest (an operator re-run, or a dry run against a non-pinned build)."""
     host = host or agy_provenance.detect_platform()
     if host.name != RELEASE_ROUTE_PLATFORM:
         out(json.dumps({"agy_watch": "platform_not_proposed", "platform": host.name}))
         return 0
     repo = Path(repo or ".").resolve()
     transport = transport or agy_provenance._Transport()
-    releases = agy_provenance.stable_releases(transport, window=1)
+    releases = agy_provenance.stable_releases(transport, window=1 if version is None else agy_provenance.RECENCY_WINDOW)
+    if version is not None:
+        releases = [r for r in releases if r.get("tag_name") == version]
     if not releases:
         out(json.dumps({"agy_watch": "no_stable_release"}))
         return 0
