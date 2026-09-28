@@ -494,7 +494,7 @@ def test_supervisor_setup_failure_raises_like_a_failing_preexec_fn(monkeypatch, 
         _launch_supervised(["/bin/sh", "-c", 'touch "$0"', str(ran)], lease_fd, tmp_path)
     assert not ran.exists(), "the executor ran although setup failed"
     if reason is None:
-        # Nothing reported: caught by the launcher's nonzero-exit-without-fork check.
+        # Nothing reported: caught by the launcher's nonzero-exit-without-release check.
         assert caught.value.__cause__ is None
     else:
         assert str(caught.value.__cause__) == f"lease supervisor {reason}"
@@ -552,3 +552,74 @@ def test_supervisor_does_not_leak_interpreter_locale_coercion(lease_fd, tmp_path
     result = _launch_supervised(["/bin/sh", "-c", "tr '\\0' '\\n' < /proc/$$/environ"], lease_fd, tmp_path, env=env)
     assert result.returncode == 0
     assert "LC_CTYPE=" not in result.output, result.output
+
+
+def _processes_mentioning(token: str) -> list[int]:
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if token.encode() in (entry / "cmdline").read_bytes():
+                found.append(int(entry.name))
+        except OSError:
+            continue
+    return found
+
+
+@pytest.mark.parametrize(
+    ("signum", "pause"),
+    [(signal.SIGKILL, "before"), (signal.SIGTERM, "before"), (signal.SIGTERM, "after")],
+    ids=["SIGKILL-before-release", "SIGTERM-before-release", "SIGTERM-after-release"],
+)
+def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, lease_fd, tmp_path, signum, pause):
+    # The supervisor is paused just before (or just after) it releases the forked
+    # child to exec, and is then signalled.  Before release, the launch must fail
+    # and nothing may have run: the child reads EOF (SIGKILL) or is terminated by
+    # the already-installed forwarding (SIGTERM).  After release, SIGTERM must be
+    # forwarded, so no executor-side process may outlive the launch either way.
+    pause_file, resume_file = tmp_path / "supervisor-paused", tmp_path / "supervisor-resume"
+    wait_lines = (
+        f"        open({str(pause_file)!r}, 'w').write(str(os.getpid()))",
+        "        deadline = time.monotonic() + 60",
+        f"        while not os.path.exists({str(resume_file)!r}) and time.monotonic() < deadline:",
+        "            time.sleep(0.01)",
+    )
+    if pause == "before":
+        body = ("    if data == module._GO:", *wait_lines, "    return real_write(fd, data)")
+    else:
+        body = ("    written = real_write(fd, data)", "    if data == module._GO:", *wait_lines, "    return written")
+    _supervisor_with_prelude(
+        monkeypatch, "import time", "real_write = os.write", "def paused_write(fd, data):", *body, "os.write = paused_write"
+    )
+    token = f"phase-loop-release-probe-{os.getpid()}-{int(signum)}-{pause}"
+    ran = tmp_path / "executor-ran"
+    launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; sleep 30', str(ran), token], lease_fd, tmp_path)
+    deadline = time.monotonic() + 15
+    while not pause_file.exists() or not pause_file.read_text():
+        assert "error" not in launched.outcome, launched.outcome.get("error")
+        assert time.monotonic() < deadline, "supervisor never reached the release point"
+        time.sleep(0.01)
+    supervisor_pid = int(pause_file.read_text())
+    try:
+        os.kill(supervisor_pid, signum)
+        if signum == signal.SIGTERM:
+            time.sleep(0.2)
+    finally:
+        resume_file.write_text("resume")
+    launched.thread.join(20)
+    assert not launched.thread.is_alive(), "launch did not return after the supervisor was signalled"
+    deadline = time.monotonic() + 5
+    while _processes_mentioning(token):
+        assert time.monotonic() < deadline, f"executor-side process left running: {_processes_mentioning(token)}"
+        time.sleep(0.02)
+    error = launched.outcome.get("error")
+    if pause == "before":
+        assert isinstance(error, subprocess.SubprocessError), launched.outcome
+        assert str(error) == "Exception occurred in preexec_fn."
+        time.sleep(0.3)
+        assert not ran.exists(), "the executor ran although the supervisor died before releasing it"
+    else:
+        # Released: the executor may or may not have reached exec before the
+        # forwarded SIGTERM; either outcome is a clean, fully reaped launch.
+        assert error is None or isinstance(error, subprocess.SubprocessError), launched.outcome

@@ -9,10 +9,16 @@ before ``exec``.  The supervisor is a fresh single-threaded interpreter, which
 makes its own ``fork`` of the executor safe; ``-S`` keeps site initialization
 (``.pth`` files, ``sitecustomize``) from starting threads before that fork.
 
+Startup is a handshake, so the executor never runs unsupervised: the forked
+child blocks on a private go-pipe until the supervisor has installed its
+forwarding handlers and released it.  If the supervisor dies first, the child
+reads EOF and exits without ``exec``.
+
 The status descriptor carries newline-terminated records to the launcher:
-``forked`` once the executor is forked, ``exec:<errno>`` if its ``exec``
-fails, and ``setup:<reason>`` if anything before that ``exec`` fails.  An
-empty status therefore means the supervisor died before forking.
+``released`` from the child once it holds the go signal and is about to
+``exec``, ``exec:<errno>`` if that ``exec`` fails, and ``setup:<reason>`` if
+anything before it fails.  No ``released`` record therefore means the
+executor never ran.
 
 This file must stay stdlib-only: ``-I`` drops ``PYTHONPATH``, so importing
 ``phase_loop_runtime`` here would resolve to whatever copy is installed rather
@@ -23,6 +29,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import os
 import signal
 import sys
@@ -175,6 +182,29 @@ def _initial_environment() -> dict[bytes, bytes]:
     return environment
 
 
+_GO = b"go"
+
+
+def _above_stdio(fd: int) -> int:
+    """Move a close-on-exec descriptor to 3 or above."""
+    if fd > 2:
+        return fd
+    moved = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+    os.close(fd)
+    return moved
+
+
+def _signal_executor(executor_pid: int, signum: int) -> None:
+    try:
+        os.killpg(executor_pid, signum)
+    except ProcessLookupError:
+        # Before its ``setsid`` the child has no group of its own yet.
+        try:
+            os.kill(executor_pid, signum)
+        except ProcessLookupError:
+            pass
+
+
 def _report(status_fd: int | None, record: str) -> None:
     if status_fd is not None:
         try:
@@ -190,8 +220,10 @@ def _setup_reason(exc: BaseException) -> str:
     return f"setup:{type(exc).__name__}"
 
 
-def _exec_executor(command: list[str], lease_fd: int | None, status_fd: int | None, environment: dict[bytes, bytes]) -> None:
-    """Forked-executor half: become a subreaping session leader, then exec."""
+def _exec_executor(
+    command: list[str], lease_fd: int | None, status_fd: int | None, go_fd: int, environment: dict[bytes, bytes]
+) -> None:
+    """Forked-executor half: become a subreaping session leader, wait for go, then exec."""
 
     try:
         try:
@@ -199,12 +231,16 @@ def _exec_executor(command: list[str], lease_fd: int | None, status_fd: int | No
             LeaseSupervisor.enable_subreaper()
             for signum in _STARTUP_IGNORED_SIGNALS:
                 signal.signal(signum, signal.SIG_DFL)
-            _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd) if fd is not None))
+            _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd, go_fd) if fd is not None))
             if status_fd is not None:
                 os.set_inheritable(status_fd, False)
+            os.set_inheritable(go_fd, False)
         except BaseException as exc:
             _report(status_fd, _setup_reason(exc))
             return
+        if os.read(go_fd, len(_GO)) != _GO:
+            return  # the supervisor died before supervision was ready: never exec
+        _report(status_fd, "released")
         try:
             os.execvpe(command[0], command, environment)
         except OSError as exc:
@@ -223,34 +259,40 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         held_status_fd = status_fd if _handed_through(status_fd) else None
         held_lease_fd = lease_fd if _handed_through(lease_fd) else None
         environment = _initial_environment()
+        go_read, go_write = (_above_stdio(fd) for fd in os.pipe())
         LeaseSupervisor.enable_subreaper()
         executor_pid = os.fork()
     except BaseException as exc:
         _report(held_status_fd, _setup_reason(exc))
         os._exit(255)
     if executor_pid == 0:
-        _exec_executor(command, held_lease_fd, held_status_fd, environment)
+        _exec_executor(command, held_lease_fd, held_status_fd, go_read, environment)
 
-    _report(held_status_fd, "forked")
-    _close_supervisor_descriptors(lease_fd)
+    terminated = False
 
     def terminate_executor(_signum, _frame) -> None:
-        try:
-            os.killpg(executor_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        nonlocal terminated
+        terminated = True
+        _signal_executor(executor_pid, signal.SIGTERM)
 
         def force_kill(_alarm_signum, _alarm_frame) -> None:
-            try:
-                os.killpg(executor_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _signal_executor(executor_pid, signal.SIGKILL)
 
         signal.signal(signal.SIGALRM, force_kill)
         signal.setitimer(signal.ITIMER_REAL, 1)
 
+    # Forwarding is live before the child may exec: release it only afterwards,
+    # and not at all once a termination request has arrived.
     signal.signal(signal.SIGTERM, terminate_executor)
     signal.signal(signal.SIGINT, terminate_executor)
+    os.close(go_read)
+    if not terminated:
+        try:
+            os.write(go_write, _GO)
+        except OSError:
+            pass
+    os.close(go_write)
+    _close_supervisor_descriptors(lease_fd)
     try:
         executor = _ForkedExecutor(executor_pid)
         returncode = LeaseSupervisor().reap_descendants(executor)

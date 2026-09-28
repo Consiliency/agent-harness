@@ -459,7 +459,8 @@ def _supervisor_status_pipe() -> tuple[int, int]:
 def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: list[str]) -> bool:
     """Read the supervisor's status records; raise as a direct ``Popen`` would.
 
-    Returns whether the supervisor reported forking the executor.  An
+    Returns whether the executor was released to ``exec`` (the ``released``
+    record); without it the executor never ran.  An
     ``exec:<errno>`` record raises the executor's ``OSError``; a
     ``setup:<reason>`` record raises the ``SubprocessError`` a failing
     ``preexec_fn`` used to.  See ``lease_supervisor`` for the protocol.
@@ -477,7 +478,7 @@ def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: 
     exec_failures = [record for record in records if record.startswith("exec:")]
     setup_failures = [record for record in records if record.startswith("setup:")]
     if not exec_failures and not setup_failures:
-        return "forked" in records
+        return "released" in records
     for stream in (process.stdin, process.stdout):
         if stream is not None:
             try:
@@ -2734,9 +2735,9 @@ def launch(
             finally:
                 if exec_status_write is not None:
                     os.close(exec_status_write)
-            supervisor_forked = True
+            executor_released = True
             if exec_status_read is not None:
-                supervisor_forked = _read_supervisor_status(process, exec_status_read, command)
+                executor_released = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
             if stdin_text is not None and process.stdin is not None:
@@ -2838,9 +2839,10 @@ def launch(
                 process.stdout.close()
             except OSError:
                 pass
-            if not supervisor_forked and returncode != 0 and not (timed_out or interrupted or stalled):
-                # The supervisor died before forking the executor without saying
-                # why; that is a failed launch, never an executor exit status.
+            if not executor_released and returncode != 0 and not (timed_out or interrupted or stalled):
+                # The supervisor died before releasing the executor, so the
+                # executor never ran (see lease_supervisor's handshake); that is a
+                # failed launch, never an executor exit status.
                 raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
         heartbeat_summary = None
         if heartbeat_path is not None:
