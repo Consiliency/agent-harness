@@ -594,7 +594,8 @@ def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, l
     )
     token = f"phase-loop-release-probe-{os.getpid()}-{int(signum)}-{pause}"
     ran = tmp_path / "executor-ran"
-    launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; sleep 30', str(ran), token], lease_fd, tmp_path)
+    # A loop, not a final ``sleep``: the shell must not exec away the token.
+    launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
     deadline = time.monotonic() + 15
     while not pause_file.exists() or not pause_file.read_text():
         assert "error" not in launched.outcome, launched.outcome.get("error")
@@ -658,3 +659,154 @@ def test_failed_launches_do_not_leak_descriptors(monkeypatch, lease_fd, tmp_path
             _launch_supervised(command, lease_fd, tmp_path / f"run-{index}", **kwargs)
     leaked = _open_fds() - before
     assert not leaked, {fd: os.readlink(f"/proc/self/fd/{fd}") for fd in leaked if os.path.exists(f"/proc/self/fd/{fd}")}
+
+
+
+def _pause_prelude(pause_file: Path, resume_file: Path, pid_expr: str = "os.getpid()") -> tuple[str, ...]:
+    return (
+        f"    open({str(pause_file)!r}, 'w').write(str({pid_expr}))",
+        "    deadline = time.monotonic() + 60",
+        f"    while not os.path.exists({str(resume_file)!r}) and time.monotonic() < deadline:",
+        "        time.sleep(0.01)",
+    )
+
+
+def _wait_for_pid(pause_file: Path, launched: _BackgroundLaunch) -> int:
+    deadline = time.monotonic() + 15
+    while not pause_file.exists() or not pause_file.read_text():
+        assert "error" not in launched.outcome, launched.outcome.get("error")
+        assert time.monotonic() < deadline, "supervisor never reached the pause point"
+        time.sleep(0.01)
+    return int(pause_file.read_text())
+
+
+def _children(pid: int) -> list[int]:
+    return [child for child in (int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()) if _ppid(child) == pid]
+
+
+def _stat_fields(pid: int) -> list[str]:
+    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+
+
+def test_executor_child_is_a_group_leader_before_it_is_released(monkeypatch, lease_fd, tmp_path):
+    # killpg(executor_pid) is the only forwarding target, so the child must own
+    # that group before release (and before any forwarding can happen).
+    pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
+    _supervisor_with_prelude(
+        monkeypatch, "import time", "real_write = os.write", "def paused_write(fd, data):",
+        "  if data == module._GO:", *("  " + line for line in _pause_prelude(pause_file, resume_file)),
+        "  return real_write(fd, data)", "os.write = paused_write",
+    )
+    launched = _BackgroundLaunch(["/bin/true"], lease_fd, tmp_path)
+    try:
+        supervisor_pid = _wait_for_pid(pause_file, launched)
+        (child,) = _children(supervisor_pid)
+        fields = _stat_fields(child)
+        assert int(fields[2]) == child, "child is not its own process-group leader before release"
+        assert int(fields[3]) == child, "child is not its own session leader before release"
+    finally:
+        resume_file.write_text("resume")
+    assert launched.result(timeout=15).returncode == 0
+
+
+@pytest.mark.parametrize("signum", [signal.SIGKILL, signal.SIGTERM], ids=["SIGKILL", "SIGTERM"])
+def test_supervisor_death_before_grouped_leaves_no_executor(monkeypatch, lease_fd, tmp_path, signum):
+    # The child is held before its setsid (so before ``grouped``) while the
+    # supervisor waits for ``grouped``; the supervisor is killed, then the child
+    # continues and must find the supervisor gone and never exec.
+    pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
+    _supervisor_with_prelude(
+        monkeypatch, "import time", "real_setsid = os.setsid", "def paused_setsid():",
+        *_pause_prelude(pause_file, resume_file, "os.getppid()"), "    return real_setsid()", "os.setsid = paused_setsid",
+    )
+    token = f"phase-loop-grouped-probe-{os.getpid()}-{int(signum)}"
+    ran = tmp_path / "executor-ran"
+    launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
+    try:
+        os.kill(_wait_for_pid(pause_file, launched), signum)
+        time.sleep(0.2)
+    finally:
+        resume_file.write_text("resume")
+    launched.thread.join(20)
+    assert not launched.thread.is_alive()
+    assert isinstance(launched.outcome.get("error"), subprocess.SubprocessError), launched.outcome
+    deadline = time.monotonic() + 5
+    while _processes_mentioning(token):
+        assert time.monotonic() < deadline, _processes_mentioning(token)
+        time.sleep(0.02)
+    time.sleep(0.3)
+    assert not ran.exists(), "the executor ran although the supervisor died before it was grouped"
+
+
+def test_forwarding_never_signals_a_bare_pid_after_the_executor_is_reaped(monkeypatch, lease_fd, tmp_path):
+    # Pid-reuse regression: once the executor is reaped (the supervisor stays in
+    # its reap grace for a session-detached orphan), a forwarded SIGTERM and its
+    # SIGKILL escalation may only target the executor's process group.
+    signal_log, marker = tmp_path / "signals.log", tmp_path / "marker.json"
+    _supervisor_with_prelude(
+        monkeypatch, "real_kill, real_killpg = os.kill, os.killpg",
+        "def record(kind, target, signum):",
+        f"    with open({str(signal_log)!r}, 'a') as log: log.write(f'{{kind}} {{target}} {{int(signum)}}\\n')",
+        "def spy_kill(pid, signum):", "    record('kill', pid, signum)", "    return real_kill(pid, signum)",
+        "def spy_killpg(pgid, signum):", "    record('killpg', pgid, signum)", "    return real_killpg(pgid, signum)",
+        "os.kill, os.killpg = spy_kill, spy_killpg",
+    )
+    command = _python(
+        """
+        import json, os, subprocess, sys
+        orphan = subprocess.Popen([sys.executable, "-c", "import time\\nwhile True: time.sleep(0.1)"],
+                                  start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open(sys.argv[1], "w").write(json.dumps({"pid": os.getpid(), "ppid": os.getppid(), "orphan": orphan.pid}))
+        """,
+        str(marker),
+    )
+    launched = _BackgroundLaunch(command, lease_fd, tmp_path)
+    observed = _wait_for_json(marker, launched)
+    deadline = time.monotonic() + 5
+    while _alive(observed["pid"]):
+        assert time.monotonic() < deadline, "executor did not exit"
+        time.sleep(0.01)
+    os.kill(observed["ppid"], signal.SIGTERM)
+    result = launched.result(timeout=20)
+    assert not _alive(observed["orphan"])
+    entries = signal_log.read_text().splitlines()
+    assert f"killpg {observed['pid']} {int(signal.SIGTERM)}" in entries, entries
+    assert f"killpg {observed['pid']} {int(signal.SIGKILL)}" in entries, entries
+    assert not [entry for entry in entries if entry.startswith("kill ")], entries
+    assert result.returncode == 0
+
+
+def test_termination_before_release_withholds_go_even_when_the_child_ignores_sigterm(monkeypatch, lease_fd, tmp_path):
+    # Pins the ``terminated`` flag itself: the child ignores SIGTERM, so the
+    # forwarded signal cannot stop it; only withholding GO keeps it from exec.
+    pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
+    _supervisor_with_prelude(
+        monkeypatch, "import signal, time", "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+        "real_sigmask = signal.pthread_sigmask", "def paused_sigmask(how, mask):",
+        "  if how == signal.SIG_BLOCK:", *("  " + line for line in _pause_prelude(pause_file, resume_file)),
+        "  return real_sigmask(how, mask)", "signal.pthread_sigmask = paused_sigmask",
+    )
+    token = f"phase-loop-terminated-probe-{os.getpid()}"
+    ran = tmp_path / "executor-ran"
+    launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
+    try:
+        os.kill(_wait_for_pid(pause_file, launched), signal.SIGTERM)
+        time.sleep(0.2)
+    finally:
+        resume_file.write_text("resume")
+    launched.thread.join(20)
+    assert not launched.thread.is_alive()
+    assert isinstance(launched.outcome.get("error"), subprocess.SubprocessError), launched.outcome
+    deadline = time.monotonic() + 5
+    while _processes_mentioning(token):
+        assert time.monotonic() < deadline, _processes_mentioning(token)
+        time.sleep(0.02)
+    assert not ran.exists(), "GO was released after a termination request"
+
+
+def test_silent_death_after_the_early_settle_is_caught_at_exit(monkeypatch, lease_fd, tmp_path):
+    # Pins the exit-time check on its own: the status pipe closes, the early
+    # settle times out, and only then does the supervisor die unreported.
+    _supervisor_with_prelude(monkeypatch, "import time", "os.close(int(sys.argv[4]))", "time.sleep(1.5)", "os._exit(3)")
+    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
+        _launch_supervised(["/bin/true"], lease_fd, tmp_path)

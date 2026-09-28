@@ -9,10 +9,13 @@ before ``exec``.  The supervisor is a fresh single-threaded interpreter, which
 makes its own ``fork`` of the executor safe; ``-S`` keeps site initialization
 (``.pth`` files, ``sitecustomize``) from starting threads before that fork.
 
-Startup is a handshake, so the executor never runs unsupervised: the forked
-child blocks on a private go-pipe until the supervisor has installed its
-forwarding handlers and released it.  If the supervisor dies first, the child
-reads EOF and exits without ``exec``.
+Startup is a handshake, so the executor never runs unsupervised.  The forked
+child first becomes a session and process-group leader and reports
+``grouped`` on a private pipe, so that ``killpg(executor_pid)`` addresses it
+from then on; it then blocks on a private go-pipe.  The supervisor waits for
+``grouped``, installs its forwarding handlers, and only then releases the
+child.  If the supervisor dies first, the child reads EOF and exits without
+``exec``; if the child dies before ``grouped``, it is never released.
 
 The status descriptor carries newline-terminated records to the launcher:
 ``released`` from the child once it holds the go signal and is about to
@@ -183,6 +186,7 @@ def _initial_environment() -> dict[bytes, bytes]:
 
 
 _GO = b"go"
+_GROUPED = b"grouped"
 
 
 def _above_stdio(fd: int) -> int:
@@ -195,14 +199,23 @@ def _above_stdio(fd: int) -> int:
 
 
 def _signal_executor(executor_pid: int, signum: int) -> None:
+    # Only the executor's process group, never its bare pid: the child is a
+    # group leader before it can be released (``grouped``), and once its group
+    # is gone a stale pid may name an unrelated process.
     try:
         os.killpg(executor_pid, signum)
     except ProcessLookupError:
-        # Before its ``setsid`` the child has no group of its own yet.
-        try:
-            os.kill(executor_pid, signum)
-        except ProcessLookupError:
-            pass
+        pass
+
+
+def _read_exactly(fd: int, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = os.read(fd, size - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return data
 
 
 def _report(status_fd: int | None, record: str) -> None:
@@ -221,13 +234,26 @@ def _setup_reason(exc: BaseException) -> str:
 
 
 def _exec_executor(
-    command: list[str], lease_fd: int | None, status_fd: int | None, go_fd: int, environment: dict[bytes, bytes]
+    command: list[str],
+    lease_fd: int | None,
+    status_fd: int | None,
+    go_fd: int,
+    grouped_fd: int,
+    environment: dict[bytes, bytes],
 ) -> None:
     """Forked-executor half: become a subreaping session leader, wait for go, then exec."""
 
     try:
         try:
             os.setsid()
+        except BaseException as exc:
+            _report(status_fd, _setup_reason(exc))
+            return
+        try:
+            os.write(grouped_fd, _GROUPED)
+        except OSError:
+            return  # the supervisor is gone: never exec
+        try:
             LeaseSupervisor.enable_subreaper()
             for signum in _STARTUP_IGNORED_SIGNALS:
                 signal.signal(signum, signal.SIG_DFL)
@@ -260,13 +286,24 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         held_lease_fd = lease_fd if _handed_through(lease_fd) else None
         environment = _initial_environment()
         go_read, go_write = (_above_stdio(fd) for fd in os.pipe())
+        grouped_read, grouped_write = (_above_stdio(fd) for fd in os.pipe())
         LeaseSupervisor.enable_subreaper()
         executor_pid = os.fork()
     except BaseException as exc:
         _report(held_status_fd, _setup_reason(exc))
         os._exit(255)
     if executor_pid == 0:
-        _exec_executor(command, held_lease_fd, held_status_fd, go_read, environment)
+        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment)
+
+    os.close(go_read)
+    os.close(grouped_write)
+    grouped = _read_exactly(grouped_read, len(_GROUPED)) == _GROUPED
+    os.close(grouped_read)
+    if not grouped:
+        # The child died before becoming a group leader; it is never released.
+        os.close(go_write)
+        _close_supervisor_descriptors(lease_fd)
+        _exit_with(_reap(executor_pid))
 
     terminated = False
 
@@ -282,22 +319,34 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         signal.setitimer(signal.ITIMER_REAL, 1)
 
     # Forwarding is live before the child may exec: release it only afterwards,
-    # and not at all once a termination request has arrived.
+    # and not at all once a termination request has arrived.  TERM/INT are held
+    # across the flag test and the release so neither can fall between them; a
+    # held signal is forwarded to the (already existing) group on unblock.
     signal.signal(signal.SIGTERM, terminate_executor)
     signal.signal(signal.SIGINT, terminate_executor)
-    os.close(go_read)
-    if not terminated:
-        try:
-            os.write(go_write, _GO)
-        except OSError:
-            pass
-    os.close(go_write)
-    _close_supervisor_descriptors(lease_fd)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
     try:
-        executor = _ForkedExecutor(executor_pid)
-        returncode = LeaseSupervisor().reap_descendants(executor)
+        _close_descriptors_except((lease_fd, go_write))
+        if not terminated:
+            try:
+                os.write(go_write, _GO)
+            except OSError:
+                pass
+        os.close(go_write)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    _close_supervisor_descriptors(lease_fd)
+    _exit_with(_reap(executor_pid))
+
+
+def _reap(executor_pid: int) -> object:
+    try:
+        return LeaseSupervisor().reap_descendants(_ForkedExecutor(executor_pid))
     except BaseException:
-        returncode = 1
+        return 1
+
+
+def _exit_with(returncode: object) -> None:
     os._exit(returncode if isinstance(returncode, int) and 0 <= returncode <= 255 else 1)
 
 
