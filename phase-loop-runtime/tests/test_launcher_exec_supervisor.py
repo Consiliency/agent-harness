@@ -554,6 +554,22 @@ def test_supervisor_does_not_leak_interpreter_locale_coercion(lease_fd, tmp_path
     assert "LC_CTYPE=" not in result.output, result.output
 
 
+@pytest.fixture
+def probe_token(request):
+    """A unique argv token; anything still carrying it is killed at teardown.
+
+    A mutated supervisor can let a probe executor escape; it must not outlive
+    the test run.
+    """
+    token = f"phase-loop-probe-{os.getpid()}-{abs(hash(request.node.nodeid))}"
+    yield token
+    for pid in _processes_mentioning(token):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def _processes_mentioning(token: str) -> list[int]:
     found = []
     for entry in Path("/proc").iterdir():
@@ -572,7 +588,7 @@ def _processes_mentioning(token: str) -> list[int]:
     [(signal.SIGKILL, "before"), (signal.SIGTERM, "before"), (signal.SIGTERM, "after")],
     ids=["SIGKILL-before-release", "SIGTERM-before-release", "SIGTERM-after-release"],
 )
-def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, lease_fd, tmp_path, signum, pause):
+def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, lease_fd, tmp_path, signum, pause, probe_token):
     # The supervisor is paused just before (or just after) it releases the forked
     # child to exec, and is then signalled.  Before release, the launch must fail
     # and nothing may have run: the child reads EOF (SIGKILL) or is terminated by
@@ -592,7 +608,7 @@ def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, l
     _supervisor_with_prelude(
         monkeypatch, "import time", "real_write = os.write", "def paused_write(fd, data):", *body, "os.write = paused_write"
     )
-    token = f"phase-loop-release-probe-{os.getpid()}-{int(signum)}-{pause}"
+    token = probe_token
     ran = tmp_path / "executor-ran"
     # A loop, not a final ``sleep``: the shell must not exec away the token.
     launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
@@ -710,7 +726,7 @@ def test_executor_child_is_a_group_leader_before_it_is_released(monkeypatch, lea
 
 
 @pytest.mark.parametrize("signum", [signal.SIGKILL, signal.SIGTERM], ids=["SIGKILL", "SIGTERM"])
-def test_supervisor_death_before_grouped_leaves_no_executor(monkeypatch, lease_fd, tmp_path, signum):
+def test_supervisor_death_before_grouped_leaves_no_executor(monkeypatch, lease_fd, tmp_path, signum, probe_token):
     # The child is held before its setsid (so before ``grouped``) while the
     # supervisor waits for ``grouped``; the supervisor is killed, then the child
     # continues and must find the supervisor gone and never exec.
@@ -719,7 +735,7 @@ def test_supervisor_death_before_grouped_leaves_no_executor(monkeypatch, lease_f
         monkeypatch, "import time", "real_setsid = os.setsid", "def paused_setsid():",
         *_pause_prelude(pause_file, resume_file, "os.getppid()"), "    return real_setsid()", "os.setsid = paused_setsid",
     )
-    token = f"phase-loop-grouped-probe-{os.getpid()}-{int(signum)}"
+    token = probe_token
     ran = tmp_path / "executor-ran"
     launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
     try:
@@ -776,7 +792,7 @@ def test_forwarding_never_signals_a_bare_pid_after_the_executor_is_reaped(monkey
     assert result.returncode == 0
 
 
-def test_termination_before_release_withholds_go_even_when_the_child_ignores_sigterm(monkeypatch, lease_fd, tmp_path):
+def test_termination_before_release_withholds_go_even_when_the_child_ignores_sigterm(monkeypatch, lease_fd, tmp_path, probe_token):
     # Pins the ``terminated`` flag itself: the child ignores SIGTERM, so the
     # forwarded signal cannot stop it; only withholding GO keeps it from exec.
     pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
@@ -786,7 +802,7 @@ def test_termination_before_release_withholds_go_even_when_the_child_ignores_sig
         "  if how == signal.SIG_BLOCK:", *("  " + line for line in _pause_prelude(pause_file, resume_file)),
         "  return real_sigmask(how, mask)", "signal.pthread_sigmask = paused_sigmask",
     )
-    token = f"phase-loop-terminated-probe-{os.getpid()}"
+    token = probe_token
     ran = tmp_path / "executor-ran"
     launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
     try:
