@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "cdb15a597ec9455b381bf609b32e06df5d60c9614672e7a490c11b4dda463176",
+      "raw_receipt_sha256": "1b432eb7c69b1483f9fa44dfeaaecac6175610abba3d1836429230f46ff6d260",
       "record_sha256": {
-        "broker": "e00719bda2f970330fcbf32bb46c90884d0678c59532578b41e8a7576c5cad6a",
-        "monitoring": "e48d26a721eebc721e02cda1e15ff9673c1a028d5fae4cfd24c4389f0628a109",
-        "observer": "c8106682b980d2a3d1939d10a5419f80f884b7da4b1e7f03243eb236e42f2b5f",
-        "result": "a94f960ade487d3d86b4711f4df0b6a5daf83ed2e4f806ebdc9a4c06ede1c420"
+        "broker": "cfc27f3df7a59583d4b32b4141d97f7fd341790952c22a38c4042d5f446f0b20",
+        "monitoring": "fdb40f301e59923e808fc96def4ada7d925b4e02a9e8aad0b5808cf131dc14d1",
+        "observer": "9b1f041d146a4719e494f9ff698f4192c2f06610fb8feef1c52d6017f3c1bfc3",
+        "result": "60b130dc683f5bacfec9d2affcfe407c7f13c1ef4440ca64e0200095acc55e2f"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "ed41ea01d8b888a6f7f3ec2efb3dd9206ffe063964f9c4a1f418d71cd4cc86ef",
+      "raw_receipt_sha256": "36968fc06afd16088335f8b872e352d14bfaf8ee3bdfe9592c4a02ca1e55c18d",
       "record_sha256": {
-        "broker": "c1a676d3b6f65e073e7c446ec9f0d243bca3d7f3cd103aa39428022955b9631a",
-        "monitoring": "d7065bd4c43aa9a8124cf377976ca8bf0ee6e2f4385b1dab72f6598442dd8ec9",
-        "observer": "6cb283a876c63a3e0ac10cdddbd257b299455b0e30487a5375a62903aa0b4ae6",
+        "broker": "268b79069502dd36631541315a3e6870e88cf8b2f374a55ea8c46d64a3e430fb",
+        "monitoring": "ee1fdd6f7cdae51df47d25985a4f485d599a7a3344fdb5c7175384af0abfe90f",
+        "observer": "6fa109bf82c36d0f67a71010e449028d6c1836b5f8e6ec52a1c07aae1fd6bfe8",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "443eede94f56f7e5efb6e2e5fbd1bb79627b6f3631aef819a2b515ecb143fa1a",
+      "raw_receipt_sha256": "247deb4c894bf03d7c809031d99aeffa2d4b5cda518d14e4335c376a0750e2ea",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "10043e9dd6cc71d84029b7a7f8b1ec892feb76f6849c4d5bc5baa1a27687d1cc",
-        "observer": "58dcc7921179626f8b5bacc80292d34a8d326bbfd27bf48f66ef8d1375e3fbad",
+        "monitoring": "11115300dc22c313ba418dd4d581e4900bf3ef74015133f4f77de56e2b3420bb",
+        "observer": "5f571ad355991e0940d894cb8a4dad52599325d7bf83d807e06ac72a57aa5527",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -221,7 +221,7 @@
     "agy_canary_evidence.py": "7a679349765acb7f5791fe50f2b99056e8df2087b662f7b2da3c7a852caebc7e",
     "agy_provenance.py": "82aa037260125327de4b5fde80e6121484fbc11abf17482973f9a91a86cc2c6e",
     "agy_qualification.py": "8713cecd42dbb29f51ddad8afdc02902dfdedebfe3a3c90bc40bebf9bec3e4a5",
-    "agy_watch.py": "d32d749b23e4724f8dbe947981f909fa1fec3d4632a261be723e1ee9c9416a2f",
+    "agy_watch.py": "4203995c5451422a75dc848cd60f39e6275a760749b3699949897eea4ee37062",
     "baml_modular.py": "3e9275e21d90db3bdd522be9d01e72254b47bbde67b898101f6d5890cd883485",
     "broker.py": "f91cc789383c0d29caa5c52b841873c21fa871fadc277cfa26416ceaf8d3e2df",
     "build_bundle.py": "4432918670c8a650fd591afa560efbc3c7c7df9acd594640bc258bd4dd4a4b75",
@@ -357,7 +357,7 @@
     "review_stage.py": "b49548413af2c51a7308488524fccb0772a1610a5cc23d8301b71cb9dd845c9c",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "0d07028530889bffa9237a8b93ff937a497192342923012dd215bf94d7c04903",
+    "roadmap_assumptions.py": "05cd0a65b5a8d7bf5a4d6626b2d0ed930273fa52c02391e03dafca62cb9cf1cb",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
