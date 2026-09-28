@@ -1497,11 +1497,14 @@ class _Runner:
                     bad.append(c)
             elif c[:2] == ["gh", "api"]:
                 args = c[2:]
-                if "-X" in args or "--method" in args or "--input" in args \
+                opts = {a.split("=", 1)[0] if a.startswith("--") else a[:2] for a in args if a.startswith("-")}
+                if opts & {"-X", "--method", "--input"} \
                         or any(a.startswith("query=@") or a.startswith("@") for a in args):
                     bad.append(c)
                 elif args[:1] == ["user"]:
-                    continue
+                    # r7: a non-graphql call carries no fields at all (they would make it a write)
+                    if opts & {"-f", "-F", "--field", "--raw-field"} or args[1:] not in ([], ["-q", ".login"]):
+                        bad.append(c)
                 elif args != ["graphql", "--paginate", "-f", f"query={agy_watch._OPEN_PRS_QUERY}",
                               "-F", "owner=Consiliency", "-F", "repo=agent-harness"]:
                     bad.append(c)
@@ -2534,10 +2537,10 @@ def test_a_remote_name_as_pushurl_writes_nowhere(tmp_path):
     assert _origin_refs(o) == _origin_refs(a) == _origin_refs(b) == {}
 
 
-def test_pushinsteadof_is_applied_once_only_to_the_verified_url(tmp_path):
-    """r6: an explicit origin.pushurl X bypasses pushInsteadOf for the remote, but passing the
-    STRING X as the repository would apply `url.Y.pushInsteadOf = X` and write to Y. Pushing
-    to the name writes exactly where get-url said (X), and Y is never touched."""
+def test_an_explicit_pushurl_is_not_rewritten_by_pushinsteadof(tmp_path):
+    """r6/r7: an explicit origin.pushurl X bypasses pushInsteadOf for the remote, but passing
+    the STRING X as the repository would apply `url.Y.pushInsteadOf = X` and write to Y.
+    Pushing to the name writes exactly where get-url said (X), and Y is never touched."""
     from phase_loop_runtime import agy_watch
     o, x, y = (_bare(tmp_path, n) for n in ("o", "x", "y"))
     tree = _tree_with_commit(tmp_path)
@@ -2642,3 +2645,97 @@ def test_the_push_record_binds_version_and_base(tmp_path, monkeypatch, field):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
     with pytest.raises(RuntimeError, match="proceeded"):
         _watch_tick(tmp_path, runner)
+
+
+
+# ------------------------------------------------------------ round-7 (agent-harness#1130)
+
+def _fake_ssh(tmp_path, base):
+    """A GIT_SSH_COMMAND that runs the requested git-receive-pack/upload-pack locally in
+    ``base`` (so an scp-style URL is exercised end to end without a network)."""
+    script = tmp_path / "fake-ssh"
+    script.write_text('#!/bin/sh\nfor last; do :; done\ncd "%s" && exec sh -c "$last"\n' % base)
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_an_scp_style_origin_publishes(tmp_path, monkeypatch):
+    """r7: with an scp-style origin git prints `To example.invalid:o.git` (no user), which no
+    URL string compare matches; the count gates publish. Mutation: re-adding a string compare
+    of the printed destination with get-url (M80)."""
+    from phase_loop_runtime import agy_watch
+    o = _bare(tmp_path, "o")
+    tree = _tree_with_commit(tmp_path)
+    _git(tree, "remote", "add", "origin", "git@example.invalid:o.git")
+    monkeypatch.setenv("GIT_SSH_COMMAND", _fake_ssh(tmp_path, tmp_path))
+    assert agy_watch.single_push_url(subprocess.run, tree) == "git@example.invalid:o.git"
+    assert agy_watch.publish_branch(subprocess.run, tree, NAME) == "created"
+    assert list(_origin_refs(o)) == [f"refs/heads/{NAME}"]
+
+
+def test_the_common_pushinsteadof_shape_writes_only_at_the_rewritten_url(tmp_path):
+    """r7: no pushurl, `url = X`, `url.Y.pushInsteadOf = X`: get-url prints Y, the write
+    lands only at Y, and X is untouched."""
+    from phase_loop_runtime import agy_watch
+    x, y = _bare(tmp_path, "x"), _bare(tmp_path, "y")
+    tree = _tree_with_commit(tmp_path)
+    _git(tree, "remote", "add", "origin", str(x))
+    _git(tree, "config", f"url.{y}.pushInsteadOf", str(x))
+    assert agy_watch.single_push_url(subprocess.run, tree) == str(y)
+    assert agy_watch.publish_branch(subprocess.run, tree, NAME) == "created"
+    assert list(_origin_refs(y)) == [f"refs/heads/{NAME}"] and _origin_refs(x) == {}
+
+
+def test_an_empty_destination_listing_is_unavailable_not_ambiguous(tmp_path):
+    """r7: no `To` at all (auth, network or a hook failure before any status) is
+    push_unavailable; nothing is pushed for real."""
+    from phase_loop_runtime import agy_watch
+    calls = []
+
+    def runner(argv, **k):
+        calls.append(argv)
+        if "get-url" in argv:
+            return SimpleNamespace(stdout="git@example.invalid:o.git\n", returncode=0)
+        return SimpleNamespace(stdout="", returncode=128)
+
+    assert agy_watch.publish_branch(runner, tmp_path, NAME) == "push_unavailable"
+    assert [c for c in calls if "push" in c and "--dry-run" not in c] == []
+
+
+def test_a_blank_pushurl_entry_counts_as_a_destination(tmp_path):
+    """r7: git's raw lines are counted, blanks included."""
+    from phase_loop_runtime import agy_watch
+    runner = lambda argv, **k: SimpleNamespace(stdout="https://example.invalid/o.git\n\n", returncode=0)  # noqa: E731
+    assert agy_watch.single_push_url(runner, tmp_path) is None
+    runner = lambda argv, **k: SimpleNamespace(stdout="\n", returncode=0)  # noqa: E731
+    assert agy_watch.single_push_url(runner, tmp_path) is None
+
+
+def test_pre_push_hooks_never_run(tmp_path):
+    """r7: --no-verify on both pushes (a pre-push hook runs even for --dry-run).
+    Mutation: dropping --no-verify (M81)."""
+    from phase_loop_runtime import agy_watch
+    o = _bare(tmp_path, "o")
+    tree = _tree_with_commit(tmp_path)
+    _git(tree, "remote", "add", "origin", str(o))
+    marker = tmp_path / "hook-ran"
+    hook = tree / ".git" / "hooks" / "pre-push"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n")
+    hook.chmod(0o755)
+    assert agy_watch.publish_branch(subprocess.run, tree, NAME) == "created"
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("argv", [
+    ["gh", "api", "user", "--method=PATCH", "-f", "name=x"],
+    ["gh", "api", "user", "-XPATCH"],
+    ["gh", "api", "user", "-f", "name=x"],
+    ["gh", "api", "user", "--raw-field=name=x"],
+    ["gh", "api", "graphql", "-F", "query=@/tmp/mutation.graphql"],
+])
+def test_the_allowlist_oracle_rejects_disguised_api_writes(argv):
+    """codex r7: the oracle parses --opt=value and -Xvalue forms and rejects fields on
+    non-graphql gh api calls."""
+    runner = _Runner()
+    runner.calls.append(argv)
+    assert runner.outside_allowlist() == [argv]

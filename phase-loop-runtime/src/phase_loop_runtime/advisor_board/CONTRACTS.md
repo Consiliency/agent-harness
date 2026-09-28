@@ -832,8 +832,10 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   adopts, closes, edits or deletes anything that existed before the tick; the new PR body
   names the own older PRs it supersedes for a maintainer to close. It requires `origin` to
   have exactly one push URL, pushes to the remote NAME `origin` (never to the printed URL,
-  which git would resolve again), and requires a `--dry-run` pre-flight and the real push
-  each to show exactly one `To <url>` equal to it. It pre-flights its store, records the
+  which git would resolve again). It compares no URL strings; a `--dry-run` pre-flight
+  must print exactly one `To` block, and the real push exactly one `To` block and one `*` row
+  for exactly the new ref. Both pushes carry `--no-verify`; the bot host's git/ssh
+  configuration is trusted. It pre-flights its store, records the
   verified pushed oid in its own `watch_push` entry, and reads both the record and the
   created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
   agree. It refuses when it cannot prove its open-PR listing complete.

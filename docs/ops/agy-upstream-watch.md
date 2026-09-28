@@ -45,11 +45,23 @@ subscribed host, once.
    is exactly one push URL, because `git push origin` writes to every configured push URL.
    It then pushes to the remote NAME `origin`, which is exactly the list git just
    enumerated. It never pushes to the printed string, because git would resolve that again:
-   first as a remote name, then through `insteadOf`/`pushInsteadOf`. A `--dry-run`
-   pre-flight must show exactly one `To <url>` equal to the verified URL, and the real push
-   must too. A URL with embedded credentials never appears on argv. Before pushing, it also
+   first as a remote name, then through `insteadOf`/`pushInsteadOf`. The URL is never
+   compared with anything, since git's display form rewrites scp-style and credentialed
+   URLs; it appears only as display text. The gates are counts:
+   - a `--dry-run` pre-flight must print exactly one `To` block (none gives
+     `push_unavailable`, several give `refused_push_destination_ambiguous`);
+   - the real push must print exactly one `To` block and one row for exactly the new ref.
+
+   Both pushes carry `--no-verify`, so no pre-push hook runs; a pre-push hook runs even for
+   `--dry-run` otherwise. No URL or token appears on argv. Before pushing, the watch also
    checks that its own state store can be written and read back
    (`refused_push_state_unavailable` otherwise, nothing pushed).
+
+   **Trusted configuration.** The bot host's own git and ssh configuration is trusted:
+   `core.sshCommand`, `remote.origin.receivepack`, remote helpers, and `url.*` rewrites.
+   Whoever controls it controls where the push goes. Git reads that configuration afresh at
+   each invocation, so it could change between `get-url` and the push (a time-of-check to
+   time-of-use gap). Keep the bot's config and checkout writable only by the bot.
    The branch is a **fresh**, unique `agy-watch/<version>-<utc>-<random>`, pushed with
    create-only semantics:
    `--force-with-lease=refs/heads/<name>:` (an empty expected value), a fully qualified

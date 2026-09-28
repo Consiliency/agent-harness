@@ -195,56 +195,62 @@ def recorded_push(branch: str, version: str, base: str, store=None) -> str | Non
 
 
 def single_push_url(runner, tree: Path) -> str | None:
-    """``origin``'s push URL (as git itself resolves it, rewrites applied), iff exactly one."""
+    """``origin``'s push URL iff git lists exactly ONE push destination; display text only.
+
+    Counts git's raw output lines, blanks included (an older git keeps an empty
+    ``pushurl =`` as an entry of its own). The value is never compared with anything and
+    never passed back to git: the push goes to the remote NAME ``origin``, which git resolves
+    to exactly this list (agent-harness#1130 r7).
+    """
     listed = _run(runner, ["git", "-C", str(tree), "remote", "get-url", "--push", "--all", "origin"], check=False)
     if getattr(listed, "returncode", 1) != 0:
         return None
-    urls = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
-    return urls[0] if len(urls) == 1 else None
+    lines = (listed.stdout or "").splitlines()
+    return lines[0].strip() if len(lines) == 1 and lines[0].strip() else None
 
 
 def _push_argv(tree: Path, ref: str, *, dry_run: bool) -> list:
+    # --no-verify: a pre-push hook runs even for --dry-run, and must never run here.
     return ["git", "-C", str(tree), "push", *(["--dry-run"] if dry_run else []), "--porcelain",
-            "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
+            "--no-verify", "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
             "--", "origin", f"HEAD:{ref}"]
 
 
-def _anonymized(url: str) -> str:
-    # git prints push destinations with any userinfo removed; compare like with like.
-    return re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@", r"\1", url)
-
-
-def _to_lines(result) -> list:
-    return [_anonymized(line[3:].strip()) for line in (result.stdout or "").splitlines() if line.startswith("To ")]
+def _to_blocks(result) -> int:
+    return sum(1 for line in (result.stdout or "").splitlines() if line.startswith("To "))
 
 
 def publish_branch(runner, tree: Path, name: str) -> str:
     """Create ``refs/heads/<name>`` at exactly ONE destination; ``"created"`` or a typed refusal.
 
-    Nothing is resolved twice (codex B2 on agent-harness#1130 r5/r6). ``git remote get-url
-    --push --all origin`` must list exactly one URL, and the push then goes to the remote
-    NAME ``origin`` -- exactly the list git just enumerated -- never to the printed string,
-    which git would resolve again (as a remote name first, then through insteadOf /
-    pushInsteadOf). A ``--dry-run`` pre-flight must show exactly one ``To <url>`` block equal
-    to that URL, and so must the real push. The URL never appears on argv (claude N4).
+    Nothing is resolved twice (codex B2 on agent-harness#1130 r5-r7). ``git remote get-url
+    --push --all origin`` must list exactly one destination, and the push goes to the remote
+    NAME ``origin`` -- the same list -- never to a printed string. So no URL is compared with
+    git's display form (which rewrites scp-style and credentialed URLs): the gates are COUNTS.
+    A ``--dry-run`` pre-flight must print exactly one ``To`` block (none = unavailable), and
+    the real push exactly one ``To`` block and one row for exactly ``refs/heads/<name>``.
 
     The lease's EMPTY expected value means "must not exist", but a zero exit is NOT proof of
     creation (a ref already at HEAD is "up to date", exit 0): creation is read from
-    ``--porcelain`` -- exactly one row, flag ``*``, for exactly ``refs/heads/<name>``.
-    ``--no-follow-tags --recurse-submodules=no`` keep host config from widening the push.
+    ``--porcelain`` -- flag ``*``. ``--no-follow-tags --recurse-submodules=no`` keep host
+    config from widening the push; ``--no-verify`` keeps pre-push hooks from running. The
+    bot host's own git/ssh configuration (``core.sshCommand``, ``receivepack``, remote
+    helpers) is trusted; it is read at each git invocation (docs/ops/agy-upstream-watch.md).
     """
     ref = f"refs/heads/{name}"
-    url = single_push_url(runner, tree)
-    if url is None:
-        return "refused_push_destination_ambiguous"  # zero or several push URLs: push nothing
+    if single_push_url(runner, tree) is None:
+        return "refused_push_destination_ambiguous"  # zero or several push destinations: push nothing
     preflight = _run(runner, _push_argv(tree, ref, dry_run=True), check=False)
-    if _to_lines(preflight) != [_anonymized(url)]:
-        return "refused_push_destination_ambiguous"  # git would push somewhere else: push nothing
+    blocks = _to_blocks(preflight)
+    if blocks == 0:
+        return "push_unavailable"  # auth, network or a hook failure before any status
+    if blocks != 1:
+        return "refused_push_destination_ambiguous"  # git would push to several places: push nothing
     result = _run(runner, _push_argv(tree, ref, dry_run=False), check=False)
     lines = [line.split("\t") for line in (result.stdout or "").splitlines() if "\t" in line]
     rows = [row for row in lines if len(row) >= 2]
-    if _to_lines(result) != [_anonymized(url)] or len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
-        return "push_unavailable"  # no single row for exactly our ref at exactly our URL
+    if _to_blocks(result) != 1 or len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
+        return "push_unavailable"  # no single row for exactly our ref at a single destination
     flag, summary = rows[0][0].strip(), (rows[0][2] if len(rows[0]) > 2 else "")
     if flag == "*" and getattr(result, "returncode", 1) == 0:
         return "created"
