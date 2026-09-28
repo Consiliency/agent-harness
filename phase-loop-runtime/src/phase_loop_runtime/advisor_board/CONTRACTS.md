@@ -823,8 +823,8 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   runtime, never the reviewed tree.
 - **Upstream watch.** `phase-loop agy-qualification watch` (a host timer on a subscribed
   host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64 glibc release
-  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. Ownership
-  is decided by construction, never by a marker: it pushes to an existing `origin` branch
-  only if every same-repository PR ever opened on it (open or closed) was authored by the
-  identity running the watch, never adopts an existing branch with no owned PR, and edits
-  only its own open PR. The marker is a label of which route-core a PR was built from.
+  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. It never
+  updates, force-pushes, adopts or deletes an existing branch: each PR comes from a fresh
+  `agy-watch/<version>-<utc>-<random>` branch pushed with an empty-expected-value lease, so
+  an existing ref fails the push atomically. It may only close its own older open PRs for
+  the version, and it refuses when it cannot prove its open-PR listing complete.

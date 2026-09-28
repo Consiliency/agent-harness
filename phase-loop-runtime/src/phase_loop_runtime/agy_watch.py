@@ -3,9 +3,9 @@
 It is deliberately OUTSIDE ``agy_qualification.ROUTE_CORE``: a watch-only fix never forces
 a requalification. For the newest stable release not yet pinned on ``main`` it:
 
-1. is idempotent per version: an open PR for that version whose recorded base route-core
-   digest matches current ``main`` is a no-op; if ``main``'s route-core moved, it
-   regenerates and force-updates only its own branch;
+1. is idempotent per version: an open, same-repository PR authored by the running
+   identity, labelled for that version with the CURRENT ``main`` route-core digest, whose
+   head is still exactly the commit on its branch, makes the tick a no-op;
 2. builds a VerifiedImage from the provenance-checked archive member stream (no install);
 3. in a fresh checkout of current ``main`` with the constants and catalog edited, measures
    help with THAT tree's owned profile and runs the manual qualification (the shim) from
@@ -16,7 +16,12 @@ a requalification. For the newest stable release not yet pinned on ``main`` it:
    record pins, so EVERY catalog member is requalified on the prepared tree: each existing
    member's image is re-fetched from its own release and must match its record's asset
    and image digests;
-4. opens a DRAFT PR. It never merges.
+4. pushes a FRESH, unique branch ``agy-watch/<version>-<utc>-<random>`` with create-only
+   semantics (``--force-with-lease=refs/heads/<name>:``, an empty expected value, to a
+   fully qualified destination), opens a DRAFT PR from it, and then closes its own older
+   open watch PRs for that version. It never updates, force-pushes, adopts or deletes an
+   existing branch, and never merges (agent-harness#1130 r3: ownership of an existing
+   branch is not something the watch tries to prove).
 
 Only the release route (Linux x64 glibc; ``qualified_provider_images.v2`` has only that
 route) is proposed; any other platform reports and opens nothing.
@@ -28,6 +33,8 @@ import json
 import os
 from pathlib import Path
 import re
+from datetime import datetime, timezone
+import secrets
 import shutil
 import subprocess
 import sys
@@ -46,52 +53,85 @@ REPO_SLUG = "Consiliency/agent-harness"
 REPO_OWNER = REPO_SLUG.split("/")[0]
 
 
-def _same_repo(pr: dict) -> bool:
-    return pr.get("isCrossRepository") is False and (pr.get("headRepositoryOwner") or {}).get("login") == REPO_OWNER
+VERSION_LABEL = "agy-watch-version:"
+_OPEN_PRS_QUERY = (
+    "query($owner:String!,$repo:String!,$endCursor:String){repository(owner:$owner,name:$repo){"
+    "pullRequests(states:OPEN,first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor}"
+    "nodes{number body headRefName headRefOid isCrossRepository author{login} headRepositoryOwner{login}}}}}"
+)
 
 
-def branch_ownership(runner, repo: Path, branch: str) -> dict:
-    """Who owns ``origin/<branch>`` and its PRs (agent-harness#1130 r2: codex R2-B1).
+class IncompleteListing(RuntimeError):
+    """The open-PR listing could not be proven complete."""
 
-    Ownership is decided by construction, never by a marker: a marker in a body or a
-    commit message proves nothing, since anyone can write it.
 
-    * ``same_repo``: every PR, open OR closed, whose head is this repository's branch
-      (``gh pr list --head`` matches a branch NAME, so a fork's same-named PR is listed
-      too; a cross-repository PR's head is the fork's branch, not ``origin/<branch>``).
-    * ``owned_open``: the open same-repository PRs, if and only if EVERY same-repository PR
-      ever opened on that head was authored by the identity running the watch; else empty.
-    * ``may_push``: ``origin/<branch>`` does not exist, or it exists and at least one
-      same-repository PR was opened on it and every one was ours. An origin branch with no
-      owned PR is never adopted.
-    """
-    login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
-    listed = _run(runner, ["gh", "pr", "list", "--repo", REPO_SLUG, "--head", branch, "--state", "all",
-                           "--limit", "200",
-                           "--json", "number,state,body,isCrossRepository,headRepositoryOwner,author"],
-                  cwd=repo)
-    prs = json.loads(listed.stdout or "[]")
-    same_repo = [pr for pr in prs if _same_repo(pr)]
-    all_ours = bool(login) and all((pr.get("author") or {}).get("login") == login for pr in same_repo)
-    exists = remote_branch_head(runner, repo, branch) is not None
-    return {
-        "login": login,
-        "foreign": [pr for pr in prs if pr not in same_repo or not all_ours],
-        "owned_open": [pr for pr in same_repo if all_ours and pr.get("state") == "OPEN"],
-        "branch_exists": exists,
-        "may_push": (not exists) or (bool(same_repo) and all_ours),
-    }
+def open_prs(runner, repo: Path) -> list[dict]:
+    """EVERY open PR of this repository, paginated to the end, or IncompleteListing.
+
+    Completeness is established, not assumed: the pages must end with ``hasNextPage``
+    false and together hold exactly ``totalCount`` nodes. No fixed limit anywhere."""
+    owner, name = REPO_SLUG.split("/")
+    listed = _run(runner, ["gh", "api", "graphql", "--paginate", "-f", f"query={_OPEN_PRS_QUERY}",
+                           "-F", f"owner={owner}", "-F", f"repo={name}"], cwd=repo)
+    decoder, text, pages = json.JSONDecoder(), (listed.stdout or "").strip(), []
+    try:
+        while text:
+            page, index = decoder.raw_decode(text)
+            pages.append(page["data"]["repository"]["pullRequests"])
+            text = text[index:].strip()
+    except (ValueError, KeyError, TypeError) as exc:
+        raise IncompleteListing("agy watch: unparseable PR listing") from exc
+    if not pages or pages[-1]["pageInfo"]["hasNextPage"] is not False:
+        raise IncompleteListing("agy watch: PR listing did not reach its last page")
+    nodes = [node for page in pages for node in page["nodes"]]
+    totals = {page["totalCount"] for page in pages}
+    if len(totals) != 1 or len(nodes) != totals.pop():
+        raise IncompleteListing("agy watch: PR listing is truncated or changed while paging")
+    return nodes
+
+
+def _fresh_name_re(version: str):
+    return re.compile(rf"{re.escape(BRANCH_PREFIX + version)}-\d{{8}}T\d{{6}}Z-[0-9a-f]{{8}}")
+
+
+def own_version_prs(nodes: list[dict], login: str, version: str) -> list[dict]:
+    """Open PRs the watch opened for ``version``: same repository, authored by the running
+    identity, head on a fresh ``agy-watch/<version>-<utc>-<random>`` branch, carrying the
+    version label."""
+    name = _fresh_name_re(version)
+    return [pr for pr in nodes
+            if bool(login) and pr.get("isCrossRepository") is False
+            and (pr.get("headRepositoryOwner") or {}).get("login") == REPO_OWNER
+            and (pr.get("author") or {}).get("login") == login
+            and name.fullmatch(str(pr.get("headRefName") or "")) is not None
+            and f"{VERSION_LABEL} {version}\n" in (pr.get("body") or "")]
 
 
 def remote_branch_head(runner, repo: Path, branch: str) -> str | None:
     """The oid of EXACTLY ``refs/heads/<branch>`` in origin (``ls-remote`` matches refs by
-    tail pattern, so ``refs/heads/x/refs/heads/<branch>`` would also be listed)."""
+    tail pattern, so ``refs/heads/x/refs/heads/<branch>`` would also be listed). Any
+    exact-ref line counts as existing, whatever its oid format."""
     listed = _run(runner, ["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"])
     for line in (listed.stdout or "").splitlines():
         oid, _, ref = line.partition("\t")
-        if ref.strip() == f"refs/heads/{branch}" and re.fullmatch(r"[0-9a-f]{40}", oid.strip()):
-            return oid.strip()
+        if ref.strip() == f"refs/heads/{branch}":
+            return oid.strip() or "unknown"
     return None
+
+
+def fresh_branch_name(version: str, *, now=None, token=None) -> str:
+    """A sibling of every other watch branch, never a child: ``<version>/...`` would be
+    blocked (a git directory/file ref conflict) by anyone pushing a plain
+    ``agy-watch/<version>``, including the pre-agent-harness#1130-r3 watch's own name."""
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    return f"{BRANCH_PREFIX}{version}-{stamp}-{token or secrets.token_hex(4)}"
+
+
+def publish_branch(runner, tree: Path, name: str) -> None:
+    """Create ``refs/heads/<name>`` in origin, or fail atomically if it exists: the lease's
+    EMPTY expected value means "must not exist", and the destination is fully qualified."""
+    _run(runner, ["git", "-C", str(tree), "push", "--porcelain", f"--force-with-lease=refs/heads/{name}:",
+                  "origin", f"HEAD:refs/heads/{name}"])
 
 
 def _run(runner, argv, **kwargs):
@@ -225,25 +265,27 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
     _run(runner, ["git", "-C", str(repo), "fetch", "origin", "main"])
     workdir = Path(workdir or tempfile.mkdtemp(prefix="agy-watch-"))
     tree = workdir / "tree"
-    branch = BRANCH_PREFIX + asset.version
-    _run(runner, ["git", "-C", str(repo), "worktree", "add", "--force", "-B", branch, str(tree), base_ref])
+    # Detached: the watch never creates or moves a named branch, locally or in origin,
+    # except the one fresh branch it publishes below.
+    _run(runner, ["git", "-C", str(repo), "worktree", "add", "--force", "--detach", str(tree), base_ref])
     try:
         if asset.version in pinned_versions(tree):
             out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
             return 0
         base = route_core_digest(tree)
-        ownership = branch_ownership(runner, repo, branch)
-        prs = ownership["owned_open"]
-        if ownership["foreign"]:
-            out(json.dumps({"agy_watch": "ignored_foreign_prs",
-                            "numbers": [pr.get("number") for pr in ownership["foreign"]]}))
-        # The marker is a label (which route-core an owned PR was built from), never ownership.
-        if any(f"{MARKER} {base}" in (pr.get("body") or "") for pr in prs):
+        login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
+        try:
+            prs = own_version_prs(open_prs(runner, repo), login, asset.version)
+        except IncompleteListing as exc:
+            out(json.dumps({"agy_watch": "refused_incomplete_pr_listing", "reason": str(exc)}))
+            return 2
+        # Up to date only when an own PR for this version carries the CURRENT base label AND
+        # its head is still exactly the commit on its branch (nobody pushed onto it).
+        if any(f"{MARKER} {base}" in (pr.get("body") or "")
+               and remote_branch_head(runner, repo, pr["headRefName"]) == pr.get("headRefOid")
+               for pr in prs):
             out(json.dumps({"agy_watch": "up_to_date", "version": asset.version}))
             return 0
-        if not dry_run and not ownership["may_push"]:
-            out(json.dumps({"agy_watch": "refused_foreign_branch", "branch": branch}))
-            return 2
         member_sha256, member = agy_provenance.fetch_member(transport, asset, keep_bytes=True)
         images = {asset.version: (asset, gh.VerifiedImage.from_bytes(member), None)}
         del member
@@ -300,17 +342,22 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
         _run(runner, ["git", "-C", str(tree), "-c", "commit.gpgsign=false", "commit", "-m",
                       f"feat(agy): qualify the {asset.version} entry image (agy watch, agent-harness#1076)\n\n"
                       f"{MARKER} {base}"])
-        _run(runner, ["git", "-C", str(tree), "push", "--force-with-lease", "origin", f"{branch}:{branch}"])
+        branch = fresh_branch_name(asset.version)
+        try:
+            publish_branch(runner, tree, branch)
+        except subprocess.CalledProcessError:
+            out(json.dumps({"agy_watch": "refused_branch_exists", "branch": branch}))
+            return 2
         body = (f"Automated upstream-watch qualification of agy {asset.version} (agent-harness#1076).\n\n"
                 f"Record produced from this branch's own tree; `verify_qualified_agy_image.py --route-core` passed.\n"
-                f"Never merged by the watch.\n\n{MARKER} {base}\n")
-        if prs:
-            _run(runner, ["gh", "pr", "edit", str(prs[0]["number"]), "--repo", REPO_SLUG,
-                          "--body", body], cwd=repo)
-        else:
-            _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
-                          "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
-                          "--body", body], cwd=repo)
+                f"Never merged by the watch.\n\n{VERSION_LABEL} {asset.version}\n{MARKER} {base}\n")
+        created = _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
+                                "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
+                                "--body", body], cwd=repo)
+        new_url = (created.stdout or "").strip()
+        for pr in prs:  # supersede: CLOSE our own older PRs for this version; never push, never delete
+            _run(runner, ["gh", "pr", "close", str(pr["number"]), "--repo", REPO_SLUG,
+                          "--comment", f"Superseded by {new_url or branch} (agy watch)."], cwd=repo)
         out(json.dumps({"agy_watch": "draft_pr", "version": asset.version}))
         return 0
     finally:

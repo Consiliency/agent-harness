@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import re
 import textwrap
 import threading
 import time
@@ -1352,37 +1353,78 @@ def _watch_repo(tmp_path):
     return tree
 
 
-class _Runner:
-    """Fake git/gh. ``prs`` is the ``gh pr list --state all`` JSON; ``ls_remote`` is the raw
-    ``git ls-remote`` output for the watch branch."""
+def _page(nodes, *, total=None, has_next=False, cursor="c"):
+    return {"data": {"repository": {"pullRequests": {
+        "totalCount": len(nodes) if total is None else total,
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor}, "nodes": nodes}}}}
 
-    def __init__(self, prs="[]", *, login="watch-bot", ls_remote=""):
-        self.calls, self.prs, self.login, self.ls_remote = [], prs, login, ls_remote
+
+def _node(number, body="", *, login="watch-bot", cross=False, owner="Consiliency",
+          head="agy-watch/9.9.9-20260101T000000Z-aaaaaaaa", oid="a" * 40):
+    return {"number": number, "body": body, "isCrossRepository": cross, "headRefName": head, "headRefOid": oid,
+            "headRepositoryOwner": {"login": owner}, "author": {"login": login}}
+
+
+def _label(base, version="9.9.9"):
+    from phase_loop_runtime import agy_watch
+    return f"x\n{agy_watch.VERSION_LABEL} {version}\n{agy_watch.MARKER} {base}\n"
+
+
+class _Runner:
+    """Fake gh (and, when ``origin`` is a real bare repository, real git for the tree).
+
+    ``pages``: the GraphQL listing pages. ``refs``: branch -> oid that ``ls-remote`` reports
+    (when ``origin`` is set, ``ls-remote`` is real)."""
+
+    def __init__(self, pages=None, *, login="watch-bot", refs=None, origin=None, layout=None, help_bytes=None):
+        self.calls, self.login, self.refs, self.origin, self.layout = [], login, refs or {}, origin, layout
+        self.pages = pages if pages is not None else [_page([])]
+        self.created, self.help_bytes = 0, help_bytes
 
     def __call__(self, argv, **kwargs):
-        self.calls.append(list(argv))
-        if argv[:3] == ["gh", "pr", "list"]:
-            return SimpleNamespace(stdout=self.prs, returncode=0)
+        argv = list(argv)
+        self.calls.append(argv)
+        ok = SimpleNamespace(stdout="", returncode=0)
+        if self.help_bytes is not None and "--measure-help" in argv:
+            Path(argv[argv.index("--output") + 1]).write_bytes(self.help_bytes)
+            return ok
         if argv[:3] == ["gh", "api", "user"]:
             return SimpleNamespace(stdout=self.login + "\n", returncode=0)
-        if "ls-remote" in argv:
-            return SimpleNamespace(stdout=self.ls_remote, returncode=0)
-        return SimpleNamespace(stdout="", returncode=0)
+        if argv[:3] == ["gh", "api", "graphql"]:
+            return SimpleNamespace(stdout="".join(json.dumps(page) for page in self.pages), returncode=0)
+        if argv[:3] == ["gh", "pr", "create"]:
+            self.created += 1
+            return SimpleNamespace(stdout="https://github.com/Consiliency/agent-harness/pull/9999\n", returncode=0)
+        if argv[:1] == ["git"] and "worktree" in argv and "add" in argv and self.origin is not None:
+            import shutil
+            tree = Path(argv[argv.index("--detach") + 1])
+            shutil.copytree(self.layout, tree)
+            # A real checkout knows origin's refs: fetch, so remote-tracking refs exist (a
+            # tracking-based --force-with-lease would then MATCH a foreign branch).
+            for cmd in (["init", "-q"], ["remote", "add", "origin", str(self.origin)], ["fetch", "-q", "origin"],
+                        ["add", "-A"],
+                        ["-c", "commit.gpgsign=false", "-c", "user.name=w", "-c", "user.email=w@x",
+                         "commit", "-qm", "base"]):
+                subprocess.run(["git", "-C", str(tree), *cmd], check=True, capture_output=True)
+            return ok
+        if argv[:1] == ["git"] and "ls-remote" in argv:
+            if self.origin is not None:
+                return subprocess.run(["git", "ls-remote", str(self.origin), argv[-1]], capture_output=True,
+                                      text=True, check=True)
+            branch = argv[-1][len("refs/heads/"):]
+            oid = self.refs.get(branch)
+            return SimpleNamespace(stdout=f"{oid}\trefs/heads/{branch}\n" if oid else "", returncode=0)
+        if argv[:1] == ["git"] and self.origin is not None and len(argv) > 3 and argv[3] in ("add", "-c", "push"):
+            env = dict(os.environ, GIT_AUTHOR_NAME="w", GIT_AUTHOR_EMAIL="w@x", GIT_COMMITTER_NAME="w",
+                       GIT_COMMITTER_EMAIL="w@x")
+            return subprocess.run(argv, capture_output=True, text=True, check=kwargs.get("check", True), env=env)
+        return ok
 
     def pushes(self):
         return [c for c in self.calls if "push" in c]
 
-    def edits(self):
-        return [c for c in self.calls if c[:3] == ["gh", "pr", "edit"]]
-
-
-def _pr(number, body="", *, login="watch-bot", cross=False, owner="Consiliency", state="OPEN"):
-    return {"number": number, "body": body, "isCrossRepository": cross, "state": state,
-            "headRepositoryOwner": {"login": owner}, "author": {"login": login}}
-
-
-def _ref(oid, branch="agy-watch/9.9.9"):
-    return f"{oid}\trefs/heads/{branch}\n"
+    def closes(self):
+        return [c for c in self.calls if c[:3] == ["gh", "pr", "close"]]
 
 
 def test_watch_opens_nothing_on_a_platform_it_cannot_propose(tmp_path):
@@ -1399,7 +1441,7 @@ def test_watch_second_tick_for_the_same_version_is_a_no_op(tmp_path, monkeypatch
     t = FakeTransport()
     t.add("9.9.9", b"new agy")
     base = agy_watch.route_core_digest(tree)
-    runner = _Runner(prs=json.dumps([_pr(1, f"x\n{agy_watch.MARKER} {base}\n")]), ls_remote=_ref("a" * 40))
+    runner = _Runner([_page([_node(1, _label(base))])], refs={"agy-watch/9.9.9-20260101T000000Z-aaaaaaaa": "a" * 40})
     out = []
     assert agy_watch.main(repo=tmp_path, runner=runner, host=HOST, transport=t, workdir=tmp_path,
                           out=out.append) == 0
@@ -1631,75 +1673,20 @@ def _watch_tick(tmp_path, runner, version="9.9.9", **kwargs):
                           out=out.append, **kwargs), out, t
 
 
-def _stop_before_download(monkeypatch):
-    from phase_loop_runtime import agy_watch
-    monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop after the ownership decision")))
-
-
-def test_marker_bearing_foreign_branch_with_a_foreign_pr_gets_zero_pushes(tmp_path, monkeypatch):
-    """codex R2-B1 on agent-harness#1130 (claude N6b): another same-repository author owns a
-    PR on ``agy-watch/<V>`` whose origin head carries the watch marker and whose body carries
-    the CURRENT base marker. The watch must neither adopt the branch nor be suppressed by the
-    forged label: zero pushes, zero edits, no qualification. Mutation: any marker test as
-    an ownership signal, or a push gate that ignores foreign same-repository PRs."""
-    from phase_loop_runtime import agy_watch
-    tree = _watch_repo(tmp_path)
-    base = agy_watch.route_core_digest(tree)
-    body = f"x\n{agy_watch.MARKER} {base}\n"
-    runner = _Runner(prs=json.dumps([_pr(8, body, login="mallory"), _pr(9, body, state="CLOSED")]),
-                     ls_remote=_ref("c" * 40))
-    _stop_before_download(monkeypatch)
-    code, out, t = _watch_tick(tmp_path, runner)
-    assert code == 2 and "refused_foreign_branch" in out[-1]
-    assert runner.pushes() == [] and runner.edits() == []
-    assert not [c for c in t.calls if "releases/download" in c]
-
-
-def test_foreign_branch_with_no_pr_is_never_adopted(tmp_path, monkeypatch):
-    runner = _Runner(ls_remote=_ref("c" * 40))
-    _watch_repo(tmp_path)
-    _stop_before_download(monkeypatch)
-    code, out, _ = _watch_tick(tmp_path, runner)
-    assert code == 2 and "refused_foreign_branch" in out[-1] and runner.pushes() == []
-
-
-def test_a_closed_foreign_pr_on_the_head_also_blocks_adoption(tmp_path):
-    from phase_loop_runtime import agy_watch
-    runner = _Runner(prs=json.dumps([_pr(3), _pr(4, login="mallory", state="MERGED")]), ls_remote=_ref("c" * 40))
-    ownership = agy_watch.branch_ownership(runner, tmp_path, "agy-watch/9.9.9")
-    assert ownership["may_push"] is False and ownership["owned_open"] == []
-
-
-def test_own_branch_and_prs_are_recognised_and_forks_are_only_reported(tmp_path):
-    from phase_loop_runtime import agy_watch
-    tree = _watch_repo(tmp_path)
-    base = agy_watch.route_core_digest(tree)
-    body = f"x\n{agy_watch.MARKER} {base}\n"
-    runner = _Runner(prs=json.dumps([_pr(7, body, cross=True, owner="mallory", login="mallory"),
-                                     _pr(2, state="CLOSED"), _pr(3, body)]), ls_remote=_ref("a" * 40))
-    ownership = agy_watch.branch_ownership(runner, tmp_path, "agy-watch/9.9.9")
-    assert ownership["may_push"] is True
-    assert [pr["number"] for pr in ownership["owned_open"]] == [3]
-    assert [pr["number"] for pr in ownership["foreign"]] == [7]
-    code, out, _ = _watch_tick(tmp_path, runner)
-    assert code == 0 and "up_to_date" in out[-1] and "ignored_foreign_prs" in out[0]
-
-
-def test_a_new_branch_may_be_pushed_despite_a_fork_pr_but_the_fork_is_never_edited(tmp_path):
-    from phase_loop_runtime import agy_watch
-    runner = _Runner(prs=json.dumps([_pr(7, cross=True, owner="mallory", login="mallory")]))
-    ownership = agy_watch.branch_ownership(runner, tmp_path, "agy-watch/9.9.9")
-    assert ownership["may_push"] is True and ownership["owned_open"] == []
-
-
 def test_ls_remote_selects_the_exact_refname(tmp_path):
-    """claude N6c: ``ls-remote`` matches by tail pattern. Mutation: taking the first line."""
+    """claude N6c: ``ls-remote`` matches by tail pattern. Mutation: taking the first line.
+    Any exact-ref line means "exists", whatever its oid format (claude r3 N3)."""
     from phase_loop_runtime import agy_watch
     decoy = "d" * 40 + "\trefs/heads/x/refs/heads/agy-watch/9.9.9\n"
-    runner = _Runner(ls_remote=decoy + _ref("a" * 40))
-    assert agy_watch.remote_branch_head(runner, tmp_path, "agy-watch/9.9.9") == "a" * 40
-    assert agy_watch.remote_branch_head(_Runner(ls_remote=decoy), tmp_path, "agy-watch/9.9.9") is None
+
+    def runner(output):
+        return lambda argv, **k: SimpleNamespace(stdout=output, returncode=0)
+
+    exact = "a" * 40 + "\trefs/heads/agy-watch/9.9.9\n"
+    assert agy_watch.remote_branch_head(runner(decoy + exact), tmp_path, "agy-watch/9.9.9") == "a" * 40
+    assert agy_watch.remote_branch_head(runner(decoy), tmp_path, "agy-watch/9.9.9") is None
+    assert agy_watch.remote_branch_head(runner("b" * 64 + "\trefs/heads/agy-watch/9.9.9\n"), tmp_path,
+                                        "agy-watch/9.9.9") == "b" * 64
 
 
 def test_top_level_dry_run_makes_the_watch_a_dry_run(monkeypatch):
@@ -1819,16 +1806,18 @@ def test_a_lock_waiter_after_a_transient_refuses_without_running_or_counting(wor
     world.outcome = {"status": "transient", "operation": "completion"}
     result = {}
 
+    waiting = threading.Event()
+
     def waiter():
         try:
-            _ensure(world)
+            _ensure(world, heartbeat=lambda phase: phase == "agy_qualification_lock_wait" and waiting.set())
         except ValueError as exc:
             result["error"] = str(exc)
 
     with store.lock():
         thread = threading.Thread(target=waiter)
         thread.start()
-        time.sleep(0.3)  # the waiter is now blocked on the lock
+        assert waiting.wait(10)  # the waiter is now blocked on the lock
         # the holder's attempt ends in a transient while the waiter waits
         store.note_transient(world.digest, HOST, q.runtime_identity())
     thread.join(10)
@@ -1961,3 +1950,186 @@ def test_heartbeat_creates_a_missing_stream_dir_private(tmp_path):
     stream = tmp_path / "new-stream"
     q.board_heartbeat(stream)("agy_qualification_lock_wait")
     assert stat.S_IMODE(stream.stat().st_mode) == 0o700
+
+
+# ------------------------------------------------------------ round-3 (agent-harness#1130)
+# The watch never updates, force-pushes, adopts or deletes an existing branch: every PR it
+# needs comes from a FRESH branch created with an empty-expected-value lease.
+
+def _bare_origin(tmp_path, branches=()):
+    """A real bare origin holding ``branches``, each at a commit someone else made."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "-q", str(seed)], check=True)
+    oids = {}
+    for name in branches:
+        (seed / "f").write_text(name)
+        subprocess.run(["git", "-C", str(seed), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(seed), "-c", "commit.gpgsign=false", "-c", "user.name=m",
+                        "-c", "user.email=m@x", "commit", "-qm", f"foreign {name}"], check=True)
+        subprocess.run(["git", "-C", str(seed), "push", "-q", str(origin), f"HEAD:refs/heads/{name}"], check=True)
+        oids[name] = subprocess.run(["git", "-C", str(seed), "rev-parse", "HEAD"], capture_output=True,
+                                    text=True, check=True).stdout.strip()
+    return origin, oids
+
+
+def _origin_refs(origin):
+    out = subprocess.run(["git", "ls-remote", str(origin)], capture_output=True, text=True, check=True).stdout
+    return {ref: oid for oid, ref in (line.split("\t") for line in out.splitlines())}
+
+
+def _end_to_end(tmp_path, monkeypatch, runner):
+    """A real (non-dry) watch tick: qualification faked, git real against ``runner.origin``."""
+    from phase_loop_runtime import agy_watch
+    layout = tmp_path / "layout"
+    layout.mkdir()
+    runner.layout = _watch_repo(layout)
+    runner.help_bytes = b"synthetic help\n"
+
+    def pinned(tree, member, host, transport):
+        return (prov.ReleaseAsset(member["release_version"], HOST.asset, "u", "1" * 64),
+                gh.VerifiedImage.from_bytes(member["release_version"].encode()),
+                sha256(runner.help_bytes).hexdigest())
+
+    monkeypatch.setattr(agy_watch, "_pinned_member", pinned)
+    monkeypatch.setattr(agy_watch, "summarize", lambda *a, **k: {"synthetic": True})
+    t = FakeTransport()
+    t.add("9.9.9", b"new agy image")
+    out = []
+    work = tmp_path / "work"
+    work.mkdir()
+    code = agy_watch.main(repo=tmp_path, runner=runner, host=HOST, transport=t, workdir=work, out=out.append)
+    return code, out
+
+
+def test_recreated_foreign_branch_with_a_closed_own_pr_is_never_pushed(tmp_path, monkeypatch):
+    """codex B1 / claude B1 (r3). The watch's old PR on ``agy-watch/9.9.9`` was closed and
+    someone recreated that branch. The watch never pushes to it; it creates a fresh branch.
+    Mutation: publishing to an existing (or the legacy fixed) branch name."""
+    origin, oids = _bare_origin(tmp_path, ["agy-watch/9.9.9"])
+    runner = _Runner(origin=origin)  # the closed own PR is not in the OPEN listing
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    refs = _origin_refs(origin)
+    assert code == 0 and "draft_pr" in out[-1], out
+    assert refs["refs/heads/agy-watch/9.9.9"] == oids["agy-watch/9.9.9"]  # untouched
+    fresh = [ref for ref in refs if ref.startswith("refs/heads/agy-watch/9.9.9-")]
+    assert len(fresh) == 1 and re.fullmatch(r"refs/heads/agy-watch/9\.9\.9-\d{8}T\d{6}Z-[0-9a-f]{8}", fresh[0])
+    (push,) = runner.pushes()
+    assert f"--force-with-lease={fresh[0]}:" in push and push[-1] == f"HEAD:{fresh[0]}"
+
+
+def test_a_branch_created_between_decision_and_push_is_rejected_by_the_lease(tmp_path, monkeypatch):
+    """r3: create-only push. A ref that appears between the decision and the push (here the
+    exact fresh name, created first by someone else) fails the push atomically; the watch
+    exits 2 and opens no PR. Mutation: a non-empty lease, or --force."""
+    from phase_loop_runtime import agy_watch
+    name = "agy-watch/9.9.9-20260101T000000Z-deadbeef"
+    origin, oids = _bare_origin(tmp_path, [name])
+    monkeypatch.setattr(agy_watch, "fresh_branch_name", lambda version, **k: name)
+    runner = _Runner(origin=origin)
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    assert code == 2 and "refused_branch_exists" in out[-1], out
+    assert _origin_refs(origin)[f"refs/heads/{name}"] == oids[name]
+    assert runner.created == 0
+
+
+def test_an_owned_pr_with_a_maintainer_follow_up_is_never_force_pushed(tmp_path, monkeypatch):
+    """r3: our open PR carries the current label, but a maintainer pushed onto its branch
+    (headRefOid != the branch's ls-remote oid). It is not up to date: a fresh branch and PR
+    are made, the old PR is only CLOSED, and its branch keeps the maintainer's commit."""
+    from phase_loop_runtime import agy_watch
+    old = "agy-watch/9.9.9-20250101T000000Z-0000aaaa"
+    origin, oids = _bare_origin(tmp_path, [old])
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    base = agy_watch.route_core_digest(_watch_repo(probe))
+    runner = _Runner([_page([_node(41, _label(base), head=old, oid="f" * 40)])], origin=origin)
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    assert code == 0 and "draft_pr" in out[-1], out
+    assert _origin_refs(origin)[f"refs/heads/{old}"] == oids[old]
+    assert not [p for p in runner.pushes() if old in " ".join(p)]
+    assert [c[3] for c in runner.closes()] == ["41"]
+
+
+@pytest.mark.parametrize("oid,up_to_date", [("a" * 40, True), ("b" * 40, False), (None, False)])
+def test_up_to_date_requires_an_own_pr_whose_head_is_its_branch_head(tmp_path, monkeypatch, oid, up_to_date):
+    from phase_loop_runtime import agy_watch
+    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
+    runner = _Runner([_page([_node(3, _label(base), head=head)])], refs={head: oid} if oid else {})
+    monkeypatch.setattr(agy_watch.agy_provenance, "fetch_member",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("proceeded")))
+    if up_to_date:
+        assert "up_to_date" in _watch_tick(tmp_path, runner)[1][-1]
+    else:
+        with pytest.raises(RuntimeError, match="proceeded"):
+            _watch_tick(tmp_path, runner)
+
+
+@pytest.mark.parametrize("pages", [
+    [_page([_node(1)], total=2)],                                   # truncated: fewer nodes than totalCount
+    [_page([_node(1)], has_next=True)],                             # stopped before the last page
+    [_page([_node(1)], total=3, has_next=True), _page([_node(2)], total=2)],  # totalCount changed
+    [],                                                             # nothing parseable
+])
+def test_an_incomplete_pr_listing_refuses(tmp_path, pages):
+    """r3: no fixed limit; completeness is established or the tick refuses (exit 2) before
+    any download or push. Mutation: trusting a partial listing."""
+    _watch_repo(tmp_path)
+    runner = _Runner(pages)
+    code, out, t = _watch_tick(tmp_path, runner)
+    assert code == 2 and "refused_incomplete_pr_listing" in out[-1]
+    assert runner.pushes() == [] and not [c for c in t.calls if "releases/download" in c]
+
+
+def test_a_complete_multi_page_listing_is_accepted(tmp_path):
+    """250 open PRs over three pages; the only own up-to-date PR is the last one.
+    Mutation: any fixed limit (e.g. keeping the first 200 nodes)."""
+    from phase_loop_runtime import agy_watch
+    base = agy_watch.route_core_digest(_watch_repo(tmp_path))
+    head = "agy-watch/9.9.9-20260101T000000Z-aaaaaaaa"
+    nodes = [_node(i, login="someone", head=f"feature/{i}") for i in range(249)] + [_node(999, _label(base), head=head)]
+    pages = [_page(nodes[:100], total=250, has_next=True), _page(nodes[100:200], total=250, has_next=True),
+             _page(nodes[200:], total=250)]
+    runner = _Runner(pages, refs={head: "a" * 40})
+    code, out, _ = _watch_tick(tmp_path, runner)
+    assert code == 0 and "up_to_date" in out[-1]
+    (listing,) = [c for c in runner.calls if c[:3] == ["gh", "api", "graphql"]]
+    assert "--paginate" in listing and not [a for a in listing if "limit" in a.lower()]
+
+
+def test_only_own_same_repo_labelled_prs_for_the_version_are_closed(tmp_path, monkeypatch):
+    stale = "0" * 64
+    h = "-20250101T000000Z-0000000"
+    nodes = [_node(1, _label(stale), head=f"agy-watch/9.9.9{h}a"),                          # ours, stale: closed
+             _node(2, _label(stale), head=f"agy-watch/9.9.9{h}b", login="mallory"),         # other author
+             _node(3, _label(stale), head=f"agy-watch/9.9.9{h}c", cross=True, owner="m"),   # fork
+             _node(4, "no label", head=f"agy-watch/9.9.9{h}d"),                            # unlabelled
+             _node(5, _label(stale, "9.9.8"), head=f"agy-watch/9.9.8{h}e"),                 # other version
+             _node(6, _label(stale), head="agy-watch/9.9.9")]                               # not a fresh name
+    origin, _ = _bare_origin(tmp_path, [])
+    runner = _Runner([_page(nodes)], origin=origin)
+    code, out = _end_to_end(tmp_path, monkeypatch, runner)
+    assert code == 0, out
+    assert [c[3] for c in runner.closes()] == ["1"]
+    assert len(runner.pushes()) == 1
+
+
+def test_cancellation_is_never_counted_as_a_transient(world, monkeypatch):
+    """claude r3: the contract says cancellation is not counted. Drive the REAL qualify_image
+    with a cancelled operation: no transient counter, no failed entry."""
+    monkeypatch.setattr(q, "qualify_image", _REAL_QUALIFY)
+    cancel = threading.Event()
+
+    def run_operation(operation, root, *a, **k):
+        cancel.set()
+        root.mkdir(parents=True)
+        exc = q.QualificationFailure(q.CANCELLED)
+        q.write_failure(root, exc, "helper_observation", q.HelperObserver("0" * 64, {}), {})
+        raise exc
+
+    monkeypatch.setattr(q, "run_operation", run_operation)
+    with pytest.raises(ValueError, match=q.CANCELLED):
+        _ensure(world, cancel_event=cancel)
+    assert "transient" not in _entries(world) and "failed" not in _entries(world)

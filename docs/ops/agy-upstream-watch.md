@@ -15,10 +15,11 @@ subscribed host, once.
    because `qualified_provider_images.v2` has only that route. On any other platform it
    prints `platform_not_proposed` and opens nothing.
 2. It reads the newest stable release. If that version is already pinned on `origin/main`,
-   the tick is a no-op. It is also a no-op if an open `agy-watch/<version>` PR already
-   records the current `main` route-core digest in its body marker. If `main`'s route-core
-   has moved since then, the tick regenerates the record and force-updates only its own
-   branch.
+   the tick is a no-op. It then lists **every** open PR, paginated to the end; if it
+   cannot prove the listing complete (`totalCount` against the nodes, and the last page
+   reached), it refuses with `refused_incomplete_pr_listing` and exit 2. The tick is a
+   no-op (`up_to_date`) if one of its own open PRs for that version carries the current
+   `main` route-core label and its head is still exactly the commit on its branch.
 3. It fetches the release asset through the pinned provenance transport, checks the
    published archive digest, and builds a sealed memfd from the archive's single
    `antigravity` member. Nothing is installed on disk.
@@ -33,17 +34,21 @@ subscribed host, once.
    It re-fetches each existing member's image from that member's own release and
    refuses unless the asset and image digests equal the committed record's.
 5. It writes the redacted record, runs `verify_qualified_agy_image.py --route-core` on
-   the prepared tree, commits, pushes and opens a **draft** PR. It never merges.
+   the prepared tree, and commits. It pushes a **fresh**, unique branch
+   `agy-watch/<version>-<utc>-<random>` with create-only semantics
+   (`--force-with-lease=refs/heads/<name>:`, an empty expected value, to a fully qualified
+   destination). If that ref already exists, the push fails atomically and the tick exits 2
+   (`refused_branch_exists`). It opens a **draft** PR from the branch, and then closes its
+   own older open PRs for that version. It never merges.
 
-Ownership: `gh pr list --head` matches a branch *name*, which a fork can reuse, and a
-marker in a PR body or commit message proves nothing, since anyone can write one. So the
-watch decides ownership by construction. It lists every PR ever opened on the branch
-(open or closed). It pushes to an existing `origin/agy-watch/<version>` only if at least
-one same-repository PR was opened on it and every one of them was authored by the
-identity running the watch. It never adopts an existing branch that has no owned PR; it
-refuses with `refused_foreign_branch` and exit 2. It edits only its own open PR and
-reports every other one (`ignored_foreign_prs`). The body marker only labels which
-route-core an owned PR was built from.
+The watch never updates, force-pushes, adopts or deletes an existing branch, so it never
+has to decide who owns one. "Its own PRs" means open, same-repository PRs authored by the
+identity running the watch, on a fresh-named branch, carrying the version label. It only
+ever *closes* those, and never pushes to their branches. A PR a maintainer has pushed onto
+is not up to date, so it is superseded (closed), never overwritten. The fresh name is a
+sibling (`<version>-...`), not a child (`<version>/...`), because a plain
+`agy-watch/<version>` branch pushed by anyone would otherwise block the whole namespace
+with a git directory/file ref conflict.
 
 Budget about a minute of real inference per catalog member per new release.
 
