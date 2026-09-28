@@ -350,17 +350,20 @@ def test_executor_env_cwd_descriptors_and_signals_match_the_popen_handoff(monkey
     # No LANG/LC_*: an interpreter in the handoff would coerce LC_CTYPE (PEP 538).
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "PHASE_LOOP_EXEC_SUPERVISOR_PROBE": "café ü"}
     launched = _BackgroundLaunch(["/bin/sh", "-c", script, "sh", str(out)], lease_fd, tmp_path, env=env, cwd=workdir)
-    deadline = time.monotonic() + 15
-    while not Path(f"{out}.ppid").exists() or not Path(f"{out}.ppid").read_text().strip():
-        assert "error" not in launched.outcome, launched.outcome.get("error")
-        assert time.monotonic() < deadline, "executor probe never ran"
-        time.sleep(0.02)
-    supervisor_pid = int(Path(f"{out}.ppid").read_text())
-    deadline = time.monotonic() + 5
-    while sorted(os.listdir(f"/proc/{supervisor_pid}/fd")) != [str(lease_fd)]:
-        assert time.monotonic() < deadline, os.listdir(f"/proc/{supervisor_pid}/fd")
-        time.sleep(0.02)
-    Path(f"{out}.release").write_text("release")
+    try:
+        deadline = time.monotonic() + 15
+        while not Path(f"{out}.ppid").exists() or not Path(f"{out}.ppid").read_text().strip():
+            assert "error" not in launched.outcome, launched.outcome.get("error")
+            assert time.monotonic() < deadline, "executor probe never ran"
+            time.sleep(0.02)
+        supervisor_pid = int(Path(f"{out}.ppid").read_text())
+        deadline = time.monotonic() + 5
+        while sorted(os.listdir(f"/proc/{supervisor_pid}/fd")) != [str(lease_fd)]:
+            assert time.monotonic() < deadline, os.listdir(f"/proc/{supervisor_pid}/fd")
+            time.sleep(0.02)
+    finally:
+        # Release the probe even when an assertion fails, so it never outlives the test.
+        Path(f"{out}.release").write_text("release")
     result = launched.result(timeout=15)
 
     assert result.returncode == 0
