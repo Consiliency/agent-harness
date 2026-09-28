@@ -3628,14 +3628,10 @@
       "sl0_repairs": [
         {
           "authorization_id": "agent-harness#1078:PANEL-SL1:FABREADMIT",
-          "entry": "authorization",
-          "issue": "Consiliency/agent-harness#1078",
           "decision": "maintainer 2026-09-28 (agent-harness#1078, second amendment): PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
-          "frozen_by": "FABREADMIT SL-0 (phase-loop-runtime/tests/_fabreadmit_tdd_guard.py FABREADMIT_TEST_PATHS)",
-          "reason": "the agent-harness#1111 merge-guard rulings (queue-protected targets refused, an enqueued merge dequeued and refused, merge authority required at every merge site) change what these nodes' live-merge path does",
+          "entry": "authorization",
           "files": [
             {
-              "path": "phase-loop-runtime/tests/test_fab_activation_promotion.py",
               "base_blob": "aaf74ec3941e6aaa859ed00c71a0e3a0c62c121a",
               "nodes": [
                 "TestLiveMergePrFabPromotion::test_fab_queue_enqueue_polls_to_terminal_and_records",
@@ -3664,11 +3660,15 @@
                 "TestPiece3aRegateEndToEnd::test_fab_queue_terminal_sha_recorded_in_ledger_through_run_train",
                 "TestPiece3aRegateEndToEnd::test_regate_passes_legit_admitted_head",
                 "TestPiece3aRegateEndToEnd::test_regate_fail_closes_on_tampered_provenance"
-              ]
+              ],
+              "path": "phase-loop-runtime/tests/test_fab_activation_promotion.py"
             }
           ],
+          "frozen_by": "FABREADMIT SL-0 (phase-loop-runtime/tests/_fabreadmit_tdd_guard.py FABREADMIT_TEST_PATHS)",
+          "issue": "Consiliency/agent-harness#1078",
           "landed": null,
-          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:FABREADMIT: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; a pending authorization accepts nothing; each authorization is spent by exactly one merge. This entry is never mutated once on main."
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:FABREADMIT: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; a pending authorization accepts nothing; each authorization is spent by exactly one merge. This entry is never mutated once on main.",
+          "reason": "the agent-harness#1111 merge-guard rulings (queue-protected targets refused, an enqueued merge dequeued and refused, merge authority required at every merge site) change what these nodes' live-merge path does"
         }
       ]
     },
@@ -10468,6 +10468,12 @@
         },
         {
           "plan_sha256": "60a3cf80b7b9ea8b69ea3053e894e016145449934eb7a1b6da41139f9649f2c1",
+          "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "fbd7f847e19c64cc18b2ce7d008b1a460f1d88dc5ebbb49f7e742eb85e3af820",
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
