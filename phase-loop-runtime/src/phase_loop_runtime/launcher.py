@@ -478,7 +478,19 @@ def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: 
     exec_failures = [record for record in records if record.startswith("exec:")]
     setup_failures = [record for record in records if record.startswith("setup:")]
     if not exec_failures and not setup_failures:
-        return "released" in records
+        if "released" in records:
+            return True
+        # No record: the executor was never released.  With the status pipe
+        # handed through, EOF then means the supervisor is gone or going, so
+        # settle it now rather than feed stdin to a dead process; if it is still
+        # running (the pipe never reached it), the caller checks at exit.
+        try:
+            returncode = process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return False
+        if returncode == 0:
+            return False
+        setup_failures = ["setup:unreported"]
     for stream in (process.stdin, process.stdout):
         if stream is not None:
             try:
@@ -491,6 +503,8 @@ def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: 
         raise OSError(errno_num, os.strerror(errno_num), command[0])
     # Same type and message as a failing preexec_fn; the supervisor's reason
     # (e.g. ``setup:EAGAIN``) rides along as the cause.
+    if setup_failures == ["setup:unreported"]:
+        raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
     raise subprocess.SubprocessError("Exception occurred in preexec_fn.") from RuntimeError(
         f"lease supervisor {', '.join(setup_failures or exec_failures)}"
     )

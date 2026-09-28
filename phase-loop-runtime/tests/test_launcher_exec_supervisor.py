@@ -623,3 +623,11 @@ def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, l
         # Released: the executor may or may not have reached exec before the
         # forwarded SIGTERM; either outcome is a clean, fully reaped launch.
         assert error is None or isinstance(error, subprocess.SubprocessError), launched.outcome
+
+
+def test_silent_supervisor_death_with_stdin_raises_the_launch_error(monkeypatch, lease_fd, tmp_path):
+    # With no record the launcher settles the dead supervisor before feeding it
+    # stdin, so the caller sees the launch failure, not a BrokenPipeError.
+    _supervisor_with_prelude(monkeypatch, "os._exit(3)")
+    with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
+        _launch_supervised(["/bin/cat"], lease_fd, tmp_path, stdin_text="x" * 262144)
