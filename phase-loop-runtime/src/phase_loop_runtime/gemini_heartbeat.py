@@ -36,42 +36,161 @@ class GeminiQuiescenceError(RuntimeError):
     pass
 
 
+_MAX_IMAGE_BYTES = 300_000_000
+ADMISSION_CLASSES = ("release_qualified", "locally_qualified", "qualification_candidate")
+# Process-local qualification candidate. Set ONLY by the qualification worker entry
+# (agy_qualification._worker_entry) after it has proved its inherited fd is a fully
+# sealed memfd whose digest passes the provenance gate (agent-harness#1076).
+_CANDIDATE = None
+
+
+class VerifiedImage:
+    """One read of one file (agent-harness#1076 I1).
+
+    The digest is taken over the buffer that fills the sealed memfd, and the memfd is
+    re-hashed before use. Everything downstream executes this memfd and never opens a
+    path again.
+    """
+
+    def __init__(self, fd, sha256_hex, path=None):
+        self.fd, self.sha256, self.path = fd, sha256_hex, path
+
+    @classmethod
+    def from_bytes(cls, data, path=None):
+        digest = sha256(data).hexdigest()
+        fd = _sealed_tree_fd(data=data, executable=True, label="agy-image")
+        try:
+            os.fchmod(fd, 0o500)
+            if _fd_digest(fd) != digest:
+                raise ValueError(_CAPABILITY)
+        except BaseException:
+            os.close(fd)
+            raise
+        return cls(fd, digest, path)
+
+    def reopen(self):
+        """An independent, re-verified read of the SAME sealed memfd (own file offset)."""
+        fd = os.open(f"/proc/self/fd/{self.fd}", os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            if (os.fstat(fd).st_ino, os.fstat(fd).st_dev) != (os.fstat(self.fd).st_ino, os.fstat(self.fd).st_dev) \
+                    or _fd_digest(fd) != self.sha256:
+                raise ValueError(_CAPABILITY)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def _fd_digest(fd):
+    value, offset = sha256(), 0
+    while chunk := os.pread(fd, 1024 * 1024, offset):
+        value.update(chunk)
+        offset += len(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return value.hexdigest()
+
+
+class Admission:
+    """The image a Gemini heartbeat leg executes, with exactly one admission class."""
+
+    def __init__(self, image, help_sha256, admission_class, path=None):
+        if admission_class not in ADMISSION_CLASSES:
+            raise ValueError(_CAPABILITY)
+        self.image, self.help_sha256, self.admission_class, self.path = image, help_sha256, admission_class, path
+
+    def close(self):
+        self.image.close()
+
+
+class AdmissionMiss(ValueError):
+    """No admission for a non-release image; carries the VerifiedImage for first use."""
+
+    def __init__(self, image, path):
+        super().__init__(_CAPABILITY)
+        self.image, self.path = image, path
+
+
 def _read_image(path):
-    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+    """The single read of the resolved agy (I1): final target, O_NOFOLLOW, regular, capped."""
+    fd = os.open(os.path.realpath(path), os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_IMAGE_BYTES:
             raise ValueError(_CAPABILITY)
-        chunks = []
+        chunks, size = [], 0
         while chunk := os.read(fd, 1024 * 1024):
+            size += len(chunk)
+            if size > _MAX_IMAGE_BYTES:
+                raise ValueError(_CAPABILITY)
             chunks.append(chunk)
-        data = b"".join(chunks)
-        if sha256(data).hexdigest() not in QUALIFIED_IMAGES:
-            raise ValueError(_CAPABILITY)
-        return data
+        return b"".join(chunks)
     finally:
         os.close(fd)
 
 
-def require_capability(env):
-    """Probe only local capabilities and image bytes; never launch a provider."""
+def _local_capabilities():
+    _linux_memfd_seal_abi()
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise ValueError(_CAPABILITY)
+    fd = _sealed_tree_fd(data=b"", executable=False, label="agy-capability")
+    os.close(fd)
+    fd = os.pidfd_open(os.getpid())
     try:
-        _linux_memfd_seal_abi()
-        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
-            raise ValueError(_CAPABILITY)
-        image = shutil.which("agy", path=env.get("PATH", os.defpath))
-        if image is None:
-            raise ValueError(_CAPABILITY)
-        _read_image(image)
-        fd = _sealed_tree_fd(data=b"", executable=False, label="agy-capability")
+        signal.pidfd_send_signal(fd, 0)
+    finally:
         os.close(fd)
-        fd = os.pidfd_open(os.getpid())
-        try:
-            signal.pidfd_send_signal(fd, 0)
-        finally:
-            os.close(fd)
-        return Path(image)
+
+
+def admit(env, *, keep_miss=False):
+    """Admission, lookup only; never qualifies, never touches the network.
+
+    1. A release-qualified digest is admitted before any config, store or network read (I6).
+    2. Otherwise the lookup (opt-out, failed entry, provenance-gated help, qualified entry)
+       lives in ``agy_qualification``; a miss refuses with today's
+       ``gemini_heartbeat_capability_unavailable`` (``keep_miss=True``, for
+       ``ensure_admitted`` only, raises ``AdmissionMiss`` carrying the image instead).
+    """
+    try:
+        _local_capabilities()
+        if _CANDIDATE is not None:
+            return Admission(VerifiedImage(_CANDIDATE.reopen(), _CANDIDATE.sha256),
+                             QUALIFIED_IMAGES.get(_CANDIDATE.sha256), "qualification_candidate")
+        path = shutil.which("agy", path=env.get("PATH", os.defpath))
+        if path is None:
+            raise ValueError(_CAPABILITY)
+        data = _read_image(path)
+        digest = sha256(data).hexdigest()
+        if digest in QUALIFIED_IMAGES:
+            image = VerifiedImage.from_bytes(data, path)
+            return Admission(image, QUALIFIED_IMAGES[digest], "release_qualified", Path(path))
     except (OSError, AgyCanaryEvidenceError, ValueError) as exc:
         raise ValueError(_CAPABILITY) from exc
+    from . import agy_qualification
+    try:
+        return agy_qualification.lookup(env, data, path)
+    except AdmissionMiss as miss:
+        # Only ensure_admitted takes the miss's image for first use; every lookup-only
+        # caller closes it here, so a refusal never leaks a memfd (codex B2).
+        if keep_miss:
+            raise
+        miss.image.close()
+        raise ValueError(_CAPABILITY) from None
+    except (OSError, AgyCanaryEvidenceError) as exc:
+        raise ValueError(_CAPABILITY) from exc
+
+
+def require_capability(env):
+    """Probe local capabilities and admission; never launch a provider or qualify."""
+    admission = admit(env)
+    try:
+        return admission.path if admission.path is not None else Path(PRIVATE_HOME + "/agy")
+    finally:
+        admission.close()
 
 
 def _proc_stat(pid):
@@ -251,8 +370,16 @@ class GeminiHeartbeatProfile:
 
 
 @contextmanager
-def owned_profile(env, *, settings_bytes, credential_path):
-    image = require_capability(env)
+def owned_profile(env, *, settings_bytes, credential_path, admission=None):
+    """An owned agy profile over ONE admitted image (agent-harness#1076).
+
+    With no ``admission`` the profile admits once (lookup only). The image bound into the
+    sandbox is an independent read of the admission's sealed memfd, re-hashed here, so
+    the executed bytes are the verified bytes whatever happens to the PATH file.
+    """
+    owned = admission is None
+    if owned:
+        admission = admit(env)
     profile = GeminiHeartbeatProfile(env)
     try:
         try:
@@ -262,16 +389,8 @@ def owned_profile(env, *, settings_bytes, credential_path):
         if not stat.S_ISREG(credential_mode):
             raise ValueError("brokered Gemini subscription credential reference is invalid")
         try:
-            data = _read_image(image)
-            image_sha256 = sha256(data).hexdigest()
-            profile.image_fd = profile._own(_sealed_tree_fd(data=data, executable=True, label="agy-image"))
-            copied = sha256()
-            while chunk := os.read(profile.image_fd, 1024 * 1024):
-                copied.update(chunk)
-            if copied.hexdigest() != image_sha256 or image_sha256 not in QUALIFIED_IMAGES:
-                raise ValueError(_CAPABILITY)
-            os.lseek(profile.image_fd, 0, os.SEEK_SET)
-            os.fchmod(profile.image_fd, 0o500)
+            image_sha256 = admission.image.sha256
+            profile.image_fd = profile._own(admission.image.reopen())
             profile.settings_fd = profile._own(_sealed_tree_fd(data=settings_bytes, executable=False, label="agy-settings"))
             os.fchmod(profile.settings_fd, 0o400)
             profile.info_read_fd, profile.info_write_fd = os.pipe2(os.O_CLOEXEC)
@@ -292,6 +411,7 @@ def owned_profile(env, *, settings_bytes, credential_path):
                            "settings_sha256": settings_hash, "home": PRIVATE_HOME}
             profile.evidence.update({
                 "provider_image_sha256": image_sha256,
+                "provider_admission_class": admission.admission_class,
                 "provider_agy_settings_sha256": settings_hash,
                 "provider_profile_sha256": sha256(json.dumps(description, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
                 "provider_agy_subscription_reference": "private_symlink",
@@ -300,4 +420,8 @@ def owned_profile(env, *, settings_bytes, credential_path):
             raise ValueError(_CAPABILITY) from exc
         yield profile
     finally:
-        profile.close()
+        try:
+            profile.close()
+        finally:
+            if owned:
+                admission.close()

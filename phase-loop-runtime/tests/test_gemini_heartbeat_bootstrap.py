@@ -1081,11 +1081,8 @@ panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heart
 
 
 def _qualification_validator():
-    path = Path(__file__).resolve().parents[1] / "scripts/qualify_gemini_heartbeat.py"
-    spec = importlib.util.spec_from_file_location("gemini_qualification_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.validate_records
+    # agent-harness#1076: the driver moved into the package; the script is a shim.
+    return importlib.import_module("phase_loop_runtime.agy_qualification").validate_records
 
 
 def _digest_record(value):

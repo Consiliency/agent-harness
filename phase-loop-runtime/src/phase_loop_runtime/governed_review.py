@@ -283,12 +283,15 @@ def governed_planning_gate(
     if max_concurrency is not None:
         invoke_kwargs["max_concurrency"] = max_concurrency
     panel = invoke(artifact, pool, **invoke_kwargs)
-    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha, artifact=artifact)
 
 
-def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None) -> GateResult:
+def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None, artifact: str | None = None) -> GateResult:
     findings = _findings_from_panel(panel, reviewed_sha=reviewed_sha)
-    if not panel.usable_legs:
+    # agent-harness#1076 D1: only a leg that counts toward landing is a review.
+    from .agy_qualification import counts_toward_landing, landing_findings
+    findings += landing_findings(panel.legs, artifact=artifact, reviewed_sha=reviewed_sha)
+    if not any(counts_toward_landing(leg) for leg in panel.legs):
         # Pool existed but no leg produced a usable, conforming review → the review
         # did not actually happen. Fail closed, never silent-pass. The per-leg
         # findings ride along (agent-harness#906) so the hold names each refusal.
@@ -605,7 +608,7 @@ def governed_board_gate(
             _backing.reset_review_instruction_digest(token)
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
-    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha, artifact=staged_artifact)
 
 
 # agent-harness#802: the landing-brief pin re-enters the real gate with the same arguments.

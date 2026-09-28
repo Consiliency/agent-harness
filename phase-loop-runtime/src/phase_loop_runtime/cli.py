@@ -410,6 +410,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    agy_qual_sub = subparsers.add_parser(
+        "agy-qualification",
+        help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
+    )
+    agy_qual_sub.add_argument("action", choices=("status", "run", "clear", "watch"))
+    agy_qual_sub.add_argument("--all", action="store_true", help="clear: every entry, not only failed ones")
+    agy_qual_sub.add_argument("--repo", help="watch: the agent-harness checkout to prepare a branch in")
+    agy_qual_sub.add_argument("--dry-run", dest="watch_dry_run", action="store_true",
+                              help="watch: qualify and verify, open no PR")
+    agy_qual_sub.add_argument("--version", help="watch: a specific in-window stable release instead of the newest")
+    agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
     agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")
     agy_clean_sub.add_argument("--evidence-root", required=True)
     agy_clean_sub.add_argument("--settings-path", required=True)
@@ -1220,6 +1231,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    if command == "agy-qualification":
+        from .agy_qualification import cli_main as _agy_qualification_main
+
+        return _agy_qualification_main(args)
     if command == "agy-canary-clean-settings":
         from .agy_canary_evidence import AgyCanaryEvidenceError, clean_settings
 

@@ -735,3 +735,107 @@ root, rejecting failures, omissions and terminal/admission mismatches. Preserve
 failed series; diagnose a changed candidate before another attempt. Validation
 uses that host's measured helper images. These receipts do not replace the
 historical bounded-success evidence verifier.
+
+The driver lives in the package, `phase_loop_runtime.agy_qualification`; the script
+is a shim over it, so an installed runtime can run it too (agent-harness#1076).
+
+### First-use self-qualification (agent-harness#1076)
+
+A non-release `agy` image is admitted only by verifying it, never by trusting it.
+
+- **Admission classes.** Every Gemini heartbeat leg carries exactly one class in
+  its profile evidence (`provider_admission_class`): `release_qualified` (digest in
+  `QUALIFIED_IMAGES`), `locally_qualified` (a verified local record), or
+  `qualification_candidate` (only inside a qualification run; never counted, never
+  persisted). The evidence's `provider_image_sha256` is the admitted image's own digest.
+- **VerifiedImage.** `PATH` is resolved once (a versioned-install symlink to its final
+  target), the target is opened once (`O_NOFOLLOW`, regular file, size cap) and read
+  into memory; that buffer is hashed and fills a sealed memfd, which is re-hashed.
+  Help measurement, the three live operations, board legs and the president execute
+  that memfd (an independent, re-hashed read of it per profile) and never open the path
+  again.
+- **Admission order.** (1) A release-qualified digest is admitted before any config,
+  store or network access. (2) If the user config sets `[agy] self_qualification = false`
+  (the repository config cannot), today's `gemini_heartbeat_capability_unavailable`
+  refusal is returned and nothing else is read. (3) A `failed` entry refuses
+  (`gemini_heartbeat_self_qualification_failed`) with no execution. (4) Help is measured
+  from the memfd only after a `provenance` entry verifies against the live key; the
+  `qualified` entry is then verified against the full live key, including that help
+  digest. (5) Otherwise the image is absent: legs and the president refuse; only the
+  whole-board preflight (`_preflight_gemini_heartbeat`) and `phase-loop
+  agy-qualification run` go on to first use. Legs re-admit by lookup rather than
+  receiving the preflight's Admission object; any future cross-process hand-off of an
+  image memfd must reuse the worker's seal check.
+- **Provenance** (coordinator process, nothing executes). Host platform from the running
+  host (D4: `linux-{x64,arm64}[-musl]`); the newest `agy_provenance.RECENCY_WINDOW`
+  stable releases (no prerelease, no draft); the exact platform asset; its URL equal to
+  `https://github.com/google-antigravity/antigravity-cli/releases/download/<tag>/<asset>`;
+  a strict `sha256:<hex>` asset digest equal to the streamed archive digest; exactly one
+  regular-file `antigravity` member (duplicates and links refuse), stream-hashed and
+  never extracted, equal to the image digest. The transport sends no credentials, has
+  no proxy support, uses the interpreter's compiled-in OpenSSL trust store (not
+  `SSL_CERT_FILE`/`SSL_CERT_DIR`), and follows at most three https redirects within
+  GitHub's download hosts. Fetch failure refuses `gemini_heartbeat_provenance_unavailable`;
+  no match refuses `gemini_heartbeat_provenance_unverified`.
+- **Behaviour.** Only after the provenance entry is written: help, then the three live
+  operations through the packaged driver and the release path's own validators. All
+  passing writes the `qualified` entry. Any observed isolation or identity violation (an
+  executable outside the helper policy, an unqualified provider image, a writable image
+  mount, an unverified network policy, a surviving process, a rejected record) writes a
+  `failed` entry at whatever stage it was seen (until `agy-qualification clear`). Only a
+  provider that was never observed running, a completion the provider did not answer
+  (HTTP 5xx, quota, auth), and our own local failure are transient, and cancellation writes
+  nothing. Transients are counted per key; the third consecutive one writes a `failed`
+  entry, success resets the count, and `agy-qualification clear` removes it. A lock waiter
+  that finds a transient recorded while it waited refuses without running or counting.
+- **Worker gate.** The qualification worker receives the image as an inherited fd and,
+  before hashing, requires a regular-file memfd with `F_SEAL_WRITE`, `F_SEAL_GROW`,
+  `F_SEAL_SHRINK` and `F_SEAL_SEAL` (`F_SEAL_FUTURE_WRITE` alone is refused). It admits
+  the fd as a candidate only if its digest is a release constant (the manual shim and the
+  upstream watch's prepared tree) or has a provenance entry for the current runtime
+  identity. It sets `PR_SET_PDEATHSIG`, so a killed coordinator leaves no worker.
+- **Store.** `$XDG_STATE_HOME/phase-loop/agy-qualification/hosts/<machine>/`, per user,
+  namespaced by machine-id. Directories 0700 and files 0600, owned by the euid, opened
+  `O_NOFOLLOW`; otherwise the store is absent to lookups and first use refuses
+  (`gemini_heartbeat_self_qualification_store_unsafe`). Every entry is HMAC-SHA256'd under
+  a per-host key over its type, the euid, the machine-id and a context recomputed from the
+  live key. The qualification entries (`provenance`, `qualified`, `failed`, `member_cache`,
+  `transient`) bind the image digest, platform and runtime identity, plus the asset name,
+  profile id or help digest as the type requires. The watch's `watch_push` entry binds the
+  branch, the version and the route-core base.
+  Without a readable machine-id, self-qualification refuses; the release path is unaffected.
+- **Lock.** One `flock` per host namespace; waiters are cancellable and heartbeat (the board
+  preflight writes a content-free `agy-qualification.json` progress record into the
+  board's stream directory and a line on stderr, throttled per phase), and re-check the
+  store after acquiring. Qualification happens once per key per user per host.
+- **Runtime identity (D2).** `__version__` plus the digests of the installed
+  `agy_qualification.ROUTE_CORE` files (`gemini_heartbeat.py`, `agy_qualification.py`,
+  `agy_provenance.py`), the same tuple `verify_qualified_agy_image.py --route-core` checks.
+- **Counting (D1).** At `governed_review`'s gate (the rule itself is
+  `agy_qualification.counts_toward_landing`), a usable heartbeat Gemini leg is a vote at every
+  tier only if its recorded class is `release_qualified` or `locally_qualified`. A
+  candidate leg, or a leg with no class (including legs from boards run before the class
+  existed: re-run the board), cannot approve; a blocking verdict from it still blocks. The
+  president's input builder applies the same rule (`agy_qualification.president_input_items`):
+  an uncounted non-blocking leg contributes a `not counted` item instead of its review, and an
+  uncounted `DISAGREE` keeps its objections. A leg is an agy leg by name or by the
+  coordinator's profile evidence. A
+  Gemini leg whose admitted digest appears in the reviewed artifact is flagged
+  (`gemini_seat_reviews_its_own_pin`, non-gating). Boards admit with the installed base
+  runtime, never the reviewed tree.
+- **Upstream watch.** `phase-loop agy-qualification watch` (a host timer on a subscribed
+  host; see `docs/ops/agy-upstream-watch.md`) proposes only the Linux x64 glibc release
+  route, from a fresh checkout of `main`, and opens a draft PR; it never merges. Each tick
+  makes exactly one ref write (a fresh `agy-watch/<version>-<utc>-<random>` branch, pushed
+  with an empty-expected-value lease and accepted only when `--porcelain` reports that exact
+  ref as newly created) and one object create (the PR). It never updates, force-pushes,
+  adopts, closes, edits or deletes anything that existed before the tick; the new PR body
+  names the own older PRs it supersedes for a maintainer to close. It requires `origin` to
+  have exactly one push URL, pushes to the remote NAME `origin` (never to the printed URL,
+  which git would resolve again). It compares no URL strings; a `--dry-run` pre-flight
+  must print exactly one `To` block, and the real push exactly one `To` block and one `*` row
+  for exactly the new ref. Both pushes carry `--no-verify`; the bot host's git/ssh
+  configuration is trusted. It pre-flights its store, records the
+  verified pushed oid in its own `watch_push` entry, and reads both the record and the
+  created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
+  agree. It refuses when it cannot prove its open-PR listing complete.

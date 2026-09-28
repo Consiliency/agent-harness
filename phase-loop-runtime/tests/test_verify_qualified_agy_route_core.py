@@ -64,7 +64,8 @@ def test_a_non_core_drift_passes_route_core_but_fails_the_release_check(verifier
         verifier.validate_records()
 
 
-@pytest.mark.parametrize("name", ["gemini_heartbeat.py", "qualify_gemini_heartbeat.py"])
+# agent-harness#1076: route-core is the packaged tuple; the shim script left it.
+@pytest.mark.parametrize("name", ["gemini_heartbeat.py", "agy_qualification.py", "agy_provenance.py"])
 def test_a_route_core_drift_fails_route_core(verifier, monkeypatch, name):
     _drift(verifier, monkeypatch, name)
     with pytest.raises(ValueError, match=f"route-core file {name}"):

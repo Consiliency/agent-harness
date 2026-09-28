@@ -1,0 +1,11 @@
+# agent-harness#1076: the agy upstream watch. User unit; see docs/ops/agy-upstream-watch.md.
+[Unit]
+Description=agy upstream release watch (agent-harness#1076)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/code/agent-harness
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ExecStart=%h/.local/bin/phase-loop agy-qualification watch --repo %h/code/agent-harness
