@@ -631,3 +631,30 @@ def test_silent_supervisor_death_with_stdin_raises_the_launch_error(monkeypatch,
     _supervisor_with_prelude(monkeypatch, "os._exit(3)")
     with pytest.raises(subprocess.SubprocessError, match=r"^Exception occurred in preexec_fn\.$"):
         _launch_supervised(["/bin/cat"], lease_fd, tmp_path, stdin_text="x" * 262144)
+
+
+def _open_fds() -> set[str]:
+    return set(os.listdir("/proc/self/fd"))
+
+
+@pytest.mark.parametrize("failure", ["popen-raises", "exec-fails", "setup-fails", "silent-death"])
+def test_failed_launches_do_not_leak_descriptors(monkeypatch, lease_fd, tmp_path, failure):
+    # Every failure path closes both ends of the status pipe (the go-pipe lives
+    # only in the supervisor and its child, which are gone).  Count across N.
+    command, kwargs, expected = ["/bin/true"], {}, subprocess.SubprocessError
+    if failure == "popen-raises":
+        kwargs, expected = {"cwd": tmp_path / "no-such-cwd"}, FileNotFoundError
+    elif failure == "exec-fails":
+        command, expected = [str(tmp_path / "no-such-executor")], FileNotFoundError
+    elif failure == "setup-fails":
+        _supervisor_with_prelude(monkeypatch, *_FAILING_FORK)
+    else:
+        _supervisor_with_prelude(monkeypatch, "os._exit(3)")
+    with pytest.raises(expected):
+        _launch_supervised(command, lease_fd, tmp_path / "warm-up", **kwargs)
+    before = _open_fds()
+    for index in range(20):
+        with pytest.raises(expected):
+            _launch_supervised(command, lease_fd, tmp_path / f"run-{index}", **kwargs)
+    leaked = _open_fds() - before
+    assert not leaked, {fd: os.readlink(f"/proc/self/fd/{fd}") for fd in leaked if os.path.exists(f"/proc/self/fd/{fd}")}

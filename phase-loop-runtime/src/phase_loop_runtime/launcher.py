@@ -445,14 +445,19 @@ def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd:
 
 def _supervisor_status_pipe() -> tuple[int, int]:
     """A status pipe whose ends sit above stdio, so Popen's stdio setup cannot clobber them."""
-    read_fd, write_fd = os.pipe()
-    ends = []
-    for fd in (read_fd, write_fd):
-        if fd <= 2:
-            moved = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
-            os.close(fd)
-            fd = moved
-        ends.append(fd)
+    ends = list(os.pipe())
+    try:
+        for index, fd in enumerate(ends):
+            if fd <= 2:
+                ends[index] = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+                os.close(fd)
+    except BaseException:
+        for fd in ends:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
     return ends[0], ends[1]
 
 
@@ -2735,12 +2740,13 @@ def launch(
             exec_status_write: int | None = None
             if _supervisor_lease_fd is not None:
                 exec_status_read, exec_status_write = _supervisor_status_pipe()
-                popen_command = _lease_supervisor_command(command, _supervisor_lease_fd, exec_status_write)
-                popen_kwargs.update(
-                    close_fds=True,
-                    pass_fds=(_supervisor_lease_fd, exec_status_write),
-                )
             try:
+                if exec_status_write is not None:
+                    popen_command = _lease_supervisor_command(command, _supervisor_lease_fd, exec_status_write)
+                    popen_kwargs.update(
+                        close_fds=True,
+                        pass_fds=(_supervisor_lease_fd, exec_status_write),
+                    )
                 process = subprocess.Popen(popen_command, **popen_kwargs)
             except BaseException:
                 if exec_status_read is not None:
