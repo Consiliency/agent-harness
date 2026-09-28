@@ -35,6 +35,9 @@ strings (``schema.py``): the legal lenses/purposes below need no enum extension.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Mapping
+
 from .composition import compose_review_board
 from .fixtures import DEFAULT_BOARD
 from .schema import Board, Seat
@@ -176,6 +179,92 @@ def get_preset(name: str) -> Board:
         raise KeyError(f"unknown board preset {name!r}; known presets: {known}") from exc
 
 
+# --- PANEL lane tables (v10 Phase 18, agent-harness#1078; EC-PANEL-1/2) -----------
+#
+# Each built-in task declares its lanes: a lens with an ordered vendor preference. A
+# lane's first vendor is the vendor that task seats today, so with every vendor up the
+# built-in table composes exactly the preset's seats; every lane then lists every board
+# vendor, so any one available vendor fills every lane (``composition.compose_panel_board``).
+
+PANEL_VENDORS: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
+
+
+@dataclass(frozen=True)
+class ResolvedLens:
+    """A seat's lens: its name, its instruction text, and ``built-in`` or ``declared``."""
+
+    name: str
+    text: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class PanelLane:
+    """One lane: a lens name and the ordered vendors that may seat it."""
+
+    lens: str
+    vendors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PanelTable:
+    """A ``[panel.<task>]`` table: its lanes, its declared lenses (name -> text) and the
+    optional ``min_distinct_vendors`` (``None`` when omitted; ``code-review`` only)."""
+
+    task: str
+    lanes: tuple[PanelLane, ...]
+    lenses: Mapping[str, str] = field(default_factory=dict)
+    min_distinct_vendors: int | None = None
+
+
+# The instruction text of every built-in lens. A lens narrows what a reviewer looks at;
+# the verdict protocol stays the same for every seat.
+BUILTIN_LENS_TEXT: dict[str, str] = {
+    "adversarial": "Look for the ways this change fails: inputs, states and orderings that break it.",
+    "correctness": "Check that the change does what it claims, and that every claim is backed by the code.",
+    "red-team": "Attack the change as an adversary would: bypasses, escalations and unsafe defaults.",
+    "alternative-approach": "Ask whether a simpler or safer design reaches the same goal, and say which.",
+    "opposing-counsel": "Argue the other side: the strongest case against every conclusion the artifact draws.",
+    "conservative": "Prefer the least risky reading and flag anything that raises risk without need.",
+    "supportive": "Find what works and how to build on it, without hiding real problems.",
+    "lateral": "Look sideways: connections, analogies and options the artifact did not consider.",
+    "copyedit": "Check wording, grammar, consistency and clarity, sentence by sentence.",
+    "structure": "Check the document's organisation: order, headings, and what belongs where.",
+    "risk-liability": "Find the risks and liabilities the artifact creates or leaves unaddressed.",
+    "authority-verification": "Verify every cited authority, precedent and citation is real and says what is claimed.",
+    "alternatives": "Lay out the alternative strategies and how each compares.",
+    "downside-ethics": "Stress the downside cases and any ethical exposure.",
+    "aggressive": "Push for the boldest defensible position and say what it would take.",
+    "creative": "Offer unexpected approaches the artifact has not tried.",
+    "alternative": "Look for a different angle on the problem and what it changes.",
+    "completeness": "Check that nothing needed is missing: cases, steps, evidence and follow-through.",
+}
+
+
+def _seat_vendor(seat: Seat) -> str:
+    return seat.vendor_family
+
+
+def _builtin_table(board: Board) -> PanelTable:
+    lanes = []
+    for seat in board.seats:
+        first = _seat_vendor(seat)
+        lanes.append(PanelLane(
+            lens=str(seat.lens),
+            vendors=(first, *(v for v in PANEL_VENDORS if v != first)),
+        ))
+    return PanelTable(task=board.name, lanes=tuple(lanes))
+
+
+# Every built-in preset task has a built-in table (EC-PANEL-1).
+BUILTIN_PANEL_TABLES: dict[str, PanelTable] = {name: _builtin_table(board) for name, board in PRESETS.items()}
+
+
+def panel_task_board(task: str) -> Board:
+    """The preset board whose name, purpose and per-vendor seat specs a task composes with."""
+    return PRESETS[task]
+
+
 __all__ = [
     "PRESETS",
     "PRESET_NAMES",
@@ -189,4 +278,11 @@ __all__ = [
     "GENERAL_BOARD",
     "SOLO_BOARD",
     "get_preset",
+    "PANEL_VENDORS",
+    "BUILTIN_LENS_TEXT",
+    "BUILTIN_PANEL_TABLES",
+    "ResolvedLens",
+    "PanelLane",
+    "PanelTable",
+    "panel_task_board",
 ]

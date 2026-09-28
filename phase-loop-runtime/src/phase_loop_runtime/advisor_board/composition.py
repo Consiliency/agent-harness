@@ -299,6 +299,73 @@ __all__ = [
 ]
 
 
+class ComposedPanel(NamedTuple):
+    """A task's lanes seated by lane fallback (EC-PANEL-2).
+
+    ``seat_lenses`` (keyed by ``Seat.seat_key``) is the only lens source; a lane is in
+    ``fallback_lanes`` when its seated vendor is not its first listed vendor, and in
+    ``unfilled_lanes`` when no listed vendor is available, authenticated and preflighted."""
+
+    board: Board
+    seat_lenses: dict
+    fallback_lanes: tuple
+    unfilled_lanes: tuple
+
+
+def _panel_seat(task_board: Board, vendor: str, lens: str) -> Seat:
+    """The task's own seat spec for ``vendor`` (model, effort, lane), else the vendor's
+    code-review default; the lens is the lane's."""
+    for seat in task_board.seats:
+        if seat.vendor_family == vendor:
+            return Seat(model=seat.model, effort=seat.effort, harness=seat.harness, lens=lens,
+                        auth=seat.auth, backing=seat.backing, host_leg=seat.host_leg)
+    return _seat_for(vendor, lens)
+
+
+def compose_panel_board(
+    table,
+    *,
+    is_available: Callable[[str], bool],
+    auth_ok: Callable[[str], bool],
+    preflight: Callable[[str], bool],
+) -> ComposedPanel:
+    """Seat each lane of ``table`` from the first vendor in its list that is available,
+    authenticated and passes the route preflight (EC-PANEL-2). Probes run lazily, at
+    most once per vendor, in lane order."""
+    from .presets import BUILTIN_LENS_TEXT, ResolvedLens, panel_task_board
+
+    task_board = panel_task_board(table.task)
+    verdicts: dict[str, bool] = {}
+
+    def eligible(vendor: str) -> bool:
+        if vendor not in verdicts:
+            verdicts[vendor] = bool(is_available(vendor)) and bool(auth_ok(vendor)) and bool(preflight(vendor))
+        return verdicts[vendor]
+
+    declared = dict(table.lenses or {})
+    seats: list[Seat] = []
+    seat_lenses: dict = {}
+    fallback: list = []
+    unfilled: list = []
+    for lane in table.lanes:
+        vendor = next((v for v in lane.vendors if eligible(v)), None)
+        if vendor is None:
+            unfilled.append(lane.lens)
+            continue
+        if vendor != lane.vendors[0]:
+            fallback.append(lane.lens)
+        seat = _panel_seat(task_board, vendor, lane.lens)
+        seats.append(seat)
+        if lane.lens in declared:
+            lens = ResolvedLens(name=lane.lens, text=declared[lane.lens], kind="declared")
+        else:
+            lens = ResolvedLens(name=lane.lens, text=BUILTIN_LENS_TEXT[lane.lens], kind="built-in")
+        seat_lenses[seat.seat_key] = lens
+    board = Board(name=task_board.name, purpose=task_board.purpose, seats=tuple(seats))
+    return ComposedPanel(board=board, seat_lenses=seat_lenses, fallback_lanes=tuple(fallback),
+                         unfilled_lanes=tuple(unfilled))
+
+
 def composition_digest(board: "Board") -> str:
     """SHA-256 over the sorted ``seat_key``s of a composed board (REVIEWTRUTH early slice, D3).
 
