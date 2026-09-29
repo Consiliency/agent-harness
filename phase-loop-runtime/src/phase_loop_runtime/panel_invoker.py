@@ -446,6 +446,7 @@ DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "gpt-6-astra": "sol",  # model-id-source: frozen review policy default seat
     "gpt-5.6-sol": "sol",  # model-id-source: explicit legacy review seat
     "gpt-6-sol": "sol",  # model-id-source: explicit review seat
+    "gpt-6.1-sol": "sol",  # model-id-source: explicit review seat (board-config selected)
     "gemini-3.8-flash": "gemini",  # model-id-source: frozen review policy default seat
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
