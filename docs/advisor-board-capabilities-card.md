@@ -414,7 +414,8 @@ The Gemini extension (agent-harness#905) admits only a closed set of qualified
 and 1.2.12 (SHA256 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`),
 so a host that has not yet auto-updated keeps its Gemini seat (agent-harness#1008).
 It requires sealed memfd/pidfd support in the running Python/kernel. It uses
-literal `--print-timeout 0`, acknowledged stdin input, deny-all settings and no
+literal `--print-timeout 0`, stdin input (one event when the sealed prompt fits one
+chunk, acknowledged chunks otherwise; agent-harness#1175), deny-all settings and no
 staged-tree attachment. The executable/settings are immutable mounts in a private
 namespace-owned HOME. Credential targets are referenced, never copied or restored;
 legitimate refresh writes survive. Required bwrap flags are checked at admission.

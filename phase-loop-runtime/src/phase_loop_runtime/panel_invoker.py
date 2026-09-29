@@ -3085,6 +3085,13 @@ def _artifact_metadata(artifact: str) -> tuple[str, int]:
 # explicit upper bound because this remains one bounded review operation.
 _BROKER_SEALED_PROMPT_MAX_BYTES = 512 * 1024
 _BROKER_AGY_STREAM_PROTOCOL = "agy_ndjson_same_session_ingestion_v1"
+# agent-harness#1175: a sealed prompt that fits in ONE chunk is sent as ONE user event
+# with the final instruction, never behind an acknowledgement turn.  Measured on agy
+# 1.2.13 / gemini-3.8-flash-high: the ack turn holds the whole review task, and the
+# model acted on it there -- denied tool calls (6 of 8 single-chunk legs failed, 4 on
+# tool activity, 2 on a review in place of the ack) -- while 6 of 6 single-event legs
+# were accepted with no tool step.  Prompts larger than one chunk keep ingestion v1.
+_BROKER_AGY_SINGLE_EVENT_PROTOCOL = "agy_ndjson_single_event_v1"
 # Keep every individual user event comfortably below the empirically observed
 # Antigravity single-event window while retaining the complete sealed prompt.
 _BROKER_AGY_STREAM_CHUNK_MAX_BYTES = 96 * 1024
@@ -4173,7 +4180,11 @@ def _assemble_broker_inline_prompt(
 
 @dataclass(frozen=True)
 class _BrokerGeminiStreamProtocol:
-    """Exact multi-turn ingestion transcript for one broker-owned agy process."""
+    """Exact agy stdin transcript for one broker-owned agy process.
+
+    ``acknowledgements`` is empty for the single-event protocol, so the stream parser
+    requires exactly one result: the review.
+    """
 
     transport: str
     prompt_sha256: str
@@ -4181,6 +4192,7 @@ class _BrokerGeminiStreamProtocol:
     chunk_bytes: tuple[int, ...]
     acknowledgements: tuple[str, ...]
     final_event_sha256: str
+    protocol: str = _BROKER_AGY_STREAM_PROTOCOL
 
 
 def _utf8_chunks(value: str, maximum_bytes: int) -> tuple[str, ...]:
@@ -4202,13 +4214,35 @@ def _utf8_chunks(value: str, maximum_bytes: int) -> tuple[str, ...]:
 
 
 def _broker_gemini_stream_protocol(prompt: str) -> _BrokerGeminiStreamProtocol:
-    """Encode complete sealed input as bounded, acknowledged agy user events."""
+    """Encode complete sealed input as agy user events: one event when it fits one
+    chunk (agent-harness#1175), otherwise bounded, acknowledged ingestion turns."""
     payload = prompt.encode("utf-8", errors="strict")
     if not payload or len(payload) > _BROKER_SEALED_PROMPT_MAX_BYTES:
         raise ValueError("brokered Gemini prompt is outside the sealed transport bound")
     prompt_sha256 = sha256(payload).hexdigest()
     chunks = _utf8_chunks(prompt, _BROKER_AGY_STREAM_CHUNK_MAX_BYTES)
     chunk_sha256 = tuple(sha256(chunk.encode("utf-8", errors="strict")).hexdigest() for chunk in chunks)
+    final_instructions = (
+        "Do not use or request tools, commands, files, network, browser, MCP, agents, subagents, memory, provider routing, or another session.",
+        "Return the complete review and its required terminal verdict; do not mention truncation.",
+    )
+    if len(chunks) == 1:
+        single_event = json.dumps({"event": "user", "message": {"content": "\n".join((
+            _BROKER_AGY_SINGLE_EVENT_PROTOCOL,
+            f"sealed_prompt_sha256={prompt_sha256}",
+            prompt,
+            "Analyze the input above as the complete intended-inference review input.",
+            *final_instructions,
+        ))}}, separators=(",", ":"), ensure_ascii=False)
+        return _BrokerGeminiStreamProtocol(
+            transport=single_event + "\n",
+            prompt_sha256=prompt_sha256,
+            chunk_sha256=chunk_sha256,
+            chunk_bytes=(len(payload),),
+            acknowledgements=(),
+            final_event_sha256=sha256(single_event.encode("utf-8", errors="strict")).hexdigest(),
+            protocol=_BROKER_AGY_SINGLE_EVENT_PROTOCOL,
+        )
     acknowledgements = tuple(
         f"{_BROKER_AGY_STREAM_ACK_PREFIX} {prompt_sha256} {index}/{len(chunks)} {digest}"
         for index, digest in enumerate(chunk_sha256, start=1)
@@ -4239,8 +4273,7 @@ def _broker_gemini_stream_protocol(prompt: str) -> _BrokerGeminiStreamProtocol:
         f"chunk_count={len(chunks)}",
         "All exact sealed-prompt fragments were supplied in this same session.",
         "Now analyze their bytewise concatenation as the complete intended-inference review input.",
-        "Do not use or request tools, commands, files, network, browser, MCP, agents, subagents, memory, provider routing, or another session.",
-        "Return the complete review and its required terminal verdict; do not mention truncation.",
+        *final_instructions,
     ))
     final_event = json.dumps({"event": "user", "message": {"content": final_content}}, separators=(",", ":"), ensure_ascii=False)
     events.append(final_event)
@@ -4296,7 +4329,7 @@ def _broker_gemini_stream_result(
         final_no_truncation: bool = False,
     ) -> dict[str, object]:
         return {
-            "provider_stream_protocol": _BROKER_AGY_STREAM_PROTOCOL,
+            "provider_stream_protocol": protocol.protocol,
             "provider_stream_chunk_count": len(protocol.chunk_sha256),
             "provider_stream_chunk_sha256": protocol.chunk_sha256,
             "provider_stream_chunk_bytes": protocol.chunk_bytes,
@@ -8042,7 +8075,7 @@ def _exec_leg(
                                 stdin_prompt=True,
                                 transport_payload=broker_stream_input,
                                 transport_metadata={
-                                    "provider_stream_protocol": _BROKER_AGY_STREAM_PROTOCOL,
+                                    "provider_stream_protocol": broker_stream.protocol,
                                     "provider_stream_chunk_count": len(broker_stream.chunk_sha256),
                                     "provider_stream_chunk_sha256": broker_stream.chunk_sha256,
                                     "provider_stream_chunk_bytes": broker_stream.chunk_bytes,
