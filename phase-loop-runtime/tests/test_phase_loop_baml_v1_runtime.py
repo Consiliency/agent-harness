@@ -2534,7 +2534,9 @@ def scenario_i9_resources() -> None:
     """N = 50 mixed dispose cycles (kill, timeout, abandon, fault); every
     resource returns to baseline within the reap bound."""
     _deadline()  # measure the cold start before the baseline
-    _scenario_setup(abandon_grace_s=1.0)
+    # No _DeliverySpy here: it keeps every _Request (and so its reply queue's
+    # lock) alive, which on Windows shows up as leaked Semaphore handles.
+    _scenario_setup(abandon_grace_s=1.0).close()
     _parse()
     _settled(2)
     time.sleep(0.5)
