@@ -48,7 +48,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from pathlib import PurePosixPath
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
