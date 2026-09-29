@@ -694,7 +694,7 @@ class TestLiveMergePrFabPromotion:
 
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq", fab_fetch_origin="fetchsrc",
-                _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline,
+                _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline
                 authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-queuemerge"
