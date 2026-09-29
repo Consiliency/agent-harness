@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-import json
+import atexit
+import collections
 import hashlib
+import json
+import logging
 import os
+import queue
 import re
 import site
+import subprocess
+import sys
 import sysconfig
-import types
+import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -80,34 +88,32 @@ class ParsedResponse:
 
 
 def build_baml_request(function_name: str, payload: dict[str, Any] | None = None) -> BamlRequest:
+    if os.getpid() != _CLIENT.owner_pid:
+        raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
+    bridge = _BRIDGE_TABLE.get(function_name)
+    if bridge is None:
+        raise BamlValidationError(f"BAML function not found: {function_name}")
+    op, params = bridge
+    args = _bridge_args(function_name, params, payload or {})
+    outcome, request = _worker_call(op, args)
+    body = request["body"]
+    headers = request.get("headers") or {}
+    prompt = _extract_prompt(body)
     if function_name == "EmitPhaseCloseout":
-        return _build_emit_phase_closeout_request(payload or {})
-
-    runtime, ctx_manager = _runtime()
-    try:
-        request = runtime.build_request_sync(
-            function_name,
-            payload or {},
-            ctx_manager.clone_context(),
-            None,
-            None,
-            _filtered_env(),
-            False,
-        )
-    except Exception as exc:  # pragma: no cover - exact BAML errors vary by version
-        _raise_baml_validation_error(exc)
-    except BaseException as exc:  # pragma: no cover - depends on PyO3 runtime panics
-        if _is_pyo3_panic(exc):
-            _raise_baml_validation_error(exc)
-        raise
-    body = request.body.json()
+        # D1a: the schema description stays byte-identical to v0's tail, so
+        # schema_sha256 and the injection.py marker cut keep working.
+        prompt = prompt + "\n\n" + _render_schema_description(export_function_schema("EmitPhaseCloseout"))
+        messages = body.get("messages") or []
+        if len(messages) != 1 or not isinstance(messages[0], dict) or not isinstance(messages[0].get("content"), str):
+            raise BamlWorkerError("framing", "closeout request does not carry exactly one text message")
+        body["messages"][0]["content"] = prompt
     return BamlRequest(
-        id=getattr(request, "id", None),
-        url=str(request.url),
-        method=str(request.method),
-        headers={str(key): str(value) for key, value in dict(request.headers).items()},
+        id=None,
+        url=str(request.get("url")),
+        method=str(request.get("method")),
+        headers={str(key): str(value) for key, value in dict(headers).items()},
         body=body,
-        prompt=_extract_prompt(body),
+        prompt=prompt,
     )
 
 
@@ -118,40 +124,48 @@ def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
         _validate_payload_against_schema(payload, schema)
         return ParsedResponse(function_name=function_name, payload=payload, value=payload)
 
-    runtime, ctx_manager = _runtime()
-    enum_module, class_module = _type_modules()
+    if os.getpid() != _CLIENT.owner_pid:
+        raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
+    if function_name != "EmitPhaseCloseout":
+        raise BamlValidationError(f"BAML function not found: {function_name}")
+    outcome, value = _worker_call("parse_closeout", {"raw": str(raw_text or "")})
+    if outcome == "error":
+        raise BamlValidationError(_sanitize_text(value))
     try:
-        value = runtime.parse_llm_response(
-            function_name,
-            str(raw_text or ""),
-            enum_module,
-            class_module,
-            class_module,
-            False,
-            ctx_manager.clone_context(),
-            None,
-            None,
-            _filtered_env(),
-        )
-        if isinstance(value, PhaseLoopCloseoutV1):
-            typed = value
-        elif hasattr(value, "model_dump"):
-            typed = PhaseLoopCloseoutV1.model_validate(value.model_dump())
-        elif isinstance(value, dict):
-            typed = PhaseLoopCloseoutV1.model_validate(value)
-        else:
-            typed = PhaseLoopCloseoutV1.model_validate(_find_json_payload(str(raw_text or "")))
-    except Exception as exc:
+        typed = PhaseLoopCloseoutV1.model_validate(value)
+    except ValidationError as exc:
         _raise_baml_validation_error(exc)
-    except BaseException as exc:  # pragma: no cover - depends on PyO3 runtime panics
-        if _is_pyo3_panic(exc):
-            _raise_baml_validation_error(exc)
-        raise
     return ParsedResponse(function_name=function_name, payload=typed.model_dump(), value=typed)
 
 
+def _bridge_args(function_name: str, params: tuple[str, ...], payload: dict[str, Any]) -> dict[str, Any]:
+    """Filter the payload to the bridge signature (#7), require it (#8), normalize it (#9)."""
+    if not isinstance(payload, dict):
+        raise BamlValidationError(f"BAML payload for {function_name} must be an object")
+    if function_name == "EmitPhaseCloseout":
+        # v0 rendered the closeout prompt in Python from payload.get(...) with
+        # these defaults; the normalization keeps every v0-accepted payload valid.
+        sha = payload.get("closeout_commit_sha")
+        return {
+            "phase_alias": str(payload.get("phase_alias") or ""),
+            "plan_produces": [str(item) for item in (payload.get("plan_produces") or [])],
+            "plan_owned_files": [str(item) for item in (payload.get("plan_owned_files") or [])],
+            "closeout_commit_sha": str(sha) if sha else None,
+        }
+    missing = [name for name in params if name not in payload]
+    if missing:
+        raise BamlValidationError(f"BAML payload for {function_name} is missing: {', '.join(missing)}")
+    args: dict[str, Any] = {}
+    for name in params:
+        value = payload[name]
+        if not isinstance(value, str):
+            raise BamlValidationError(f"BAML payload field {function_name}.{name} must be a string")
+        args[name] = value
+    return args
+
+
 def export_function_schema(function_name: str) -> dict[str, Any]:
-    baml_files = _read_baml_files()
+    baml_files = _snapshot_files()
     baml_text = "\n".join(baml_files.values())
     return_type = _export_target_type(baml_text, function_name)
     fields = _class_fields(baml_text, return_type)
@@ -204,23 +218,25 @@ def render_baml_prompt(prompt_template: str, context_constants: dict[str, Any]) 
     return re.sub(r"\{\{\s*(?P<expression>.*?)\s*\}\}", replace, str(prompt_template or ""))
 
 
-@lru_cache(maxsize=1)
-def _runtime():
-    from baml_py import BamlCtxManager, BamlRuntime
-
-    files = _read_baml_files()
-    runtime = BamlRuntime.from_files("baml_src", files, _filtered_env())
-    return runtime, BamlCtxManager(runtime)
+def _read_raw_baml_files() -> dict[str, str]:
+    """The raw-read seam: every packaged ``.baml`` source, by file name."""
+    src_dir = _baml_src_dir()
+    return {path.name: path.read_text(encoding="utf-8") for path in sorted(src_dir.glob("*.baml")) if path.is_file()}
 
 
 def _read_baml_files() -> dict[str, str]:
-    src_dir = _baml_src_dir()
+    """Render the taxonomy placeholders; fail closed on any template syntax left over."""
     context_constants = _baml_prompt_context_constants()
-    return {
-        path.name: render_baml_prompt(path.read_text(encoding="utf-8"), context_constants)
-        for path in sorted(src_dir.glob("*.baml"))
-        if path.is_file()
-    }
+    rendered = {name: render_baml_prompt(text, context_constants) for name, text in _read_raw_baml_files().items()}
+    for name, text in rendered.items():
+        if "{{" in text or "{%" in text:
+            raise BamlValidationError(f"BAML source {name} still contains template syntax after rendering")
+    return rendered
+
+
+def _snapshot_files() -> dict[str, str]:
+    """The per-process source snapshot shared by the worker and the regex readers (#29)."""
+    return _CLIENT.files()[0]
 
 
 def _baml_prompt_context_constants() -> dict[str, tuple[str, ...]]:
@@ -282,7 +298,7 @@ def _export_target_type(baml_text: str, name: str) -> str:
 
 
 def _is_class_name(name: str) -> bool:
-    return _class_exists("\n".join(_read_baml_files().values()), name)
+    return _class_exists("\n".join(_snapshot_files().values()), name)
 
 
 def _class_exists(baml_text: str, class_name: str) -> bool:
@@ -311,7 +327,7 @@ def _class_fields(baml_text: str, class_name: str) -> list[tuple[str, str, bool]
 
 @lru_cache(maxsize=1)
 def _enum_literal_map() -> dict[str, tuple[str, ...]]:
-    baml_text = "\n".join(_read_baml_files().values())
+    baml_text = "\n".join(_snapshot_files().values())
     result: dict[str, list[str]] = {}
     current: str | None = None
     for raw_line in baml_text.splitlines():
@@ -512,111 +528,6 @@ def _render_schema_description(schema: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_emit_phase_closeout_request(payload: dict[str, Any]) -> BamlRequest:
-    prompt = _render_emit_phase_closeout_prompt(payload)
-    return BamlRequest(
-        id=None,
-        url="https://example.invalid/v1/chat/completions",
-        method="POST",
-        headers={"content-type": "application/json"},
-        body={
-            "model": "phase-loop-closeout",
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        prompt=prompt,
-    )
-
-
-def _render_emit_phase_closeout_prompt(payload: dict[str, Any]) -> str:
-    template = _function_prompt_template("EmitPhaseCloseout")
-    rendered = _render_baml_list_loop(template, "plan_produces", payload.get("plan_produces") or [])
-    rendered = _render_baml_list_loop(rendered, "plan_owned_files", payload.get("plan_owned_files") or [])
-    rendered = re.sub(
-        r"\{\{\s*closeout_commit_sha\s*\|\s*default\((['\"])none\1\)\s*\}\}",
-        str(payload.get("closeout_commit_sha") or "none"),
-        rendered,
-    )
-    rendered = re.sub(r"\{\{\s*ctx\.output_format\s*\}\}", _closeout_output_format(), rendered)
-    return render_baml_prompt(
-        rendered,
-        {
-            **_baml_prompt_context_constants(),
-            "phase_alias": str(payload.get("phase_alias") or ""),
-        },
-    ).strip()
-
-
-def _render_baml_list_loop(template: str, list_name: str, items: list[Any]) -> str:
-    pattern = re.compile(
-        r"\{%\s*for\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s+in\s+"
-        + re.escape(list_name)
-        + r"\s*%\}(?P<body>.*?)\{%\s*endfor\s*%\}",
-        re.DOTALL,
-    )
-
-    def replace(match: re.Match[str]) -> str:
-        loop_var = match.group("var")
-        body = match.group("body")
-        rendered_items = []
-        for item in items:
-            rendered_items.append(
-                re.sub(r"\{\{\s*" + re.escape(loop_var) + r"\s*\}\}", str(item), body)
-            )
-        return "".join(rendered_items)
-
-    return pattern.sub(replace, template)
-
-
-def _function_prompt_template(function_name: str) -> str:
-    baml_text = (_baml_src_dir() / "emit_phase_closeout.baml").read_text(encoding="utf-8")
-    match = re.search(
-        rf"\bfunction\s+{re.escape(function_name)}\s*\([^)]*\)\s*->\s*[A-Za-z_][A-Za-z0-9_]*\s*\{{.*?prompt\s+#\"(?P<prompt>.*?)\"#",
-        baml_text,
-        re.DOTALL,
-    )
-    if not match:
-        raise BamlValidationError(f"BAML prompt not found: {function_name}")
-    return match.group("prompt")
-
-
-def _closeout_output_format() -> str:
-    schema = export_function_schema("EmitPhaseCloseout")
-    lines = ["Answer in JSON using this schema:"]
-    for field_name in schema.get("required", ()):
-        field_schema = schema.get("properties", {}).get(field_name, {})
-        line = f"- {field_name}: {_schema_type_label(field_schema)}"
-        if "enum" in field_schema:
-            line += "; enum=" + ", ".join("null" if value is None else str(value) for value in field_schema["enum"])
-        lines.append(line)
-    lines.append("")
-    lines.append(_render_schema_description(schema))
-    return "\n".join(lines)
-
-
-def _schema_type_label(field_schema: dict[str, Any]) -> str:
-    field_type = field_schema.get("type")
-    if isinstance(field_type, list):
-        return " | ".join(str(item) for item in field_type)
-    if field_type == "array":
-        item_type = field_schema.get("items", {}).get("type", "unknown")
-        return f"{item_type}[]"
-    if field_type == "integer":
-        return "int"
-    return str(field_type or "unknown")
-
-
-@lru_cache(maxsize=1)
-def _type_modules() -> tuple[types.ModuleType, types.ModuleType]:
-    enum_module = types.ModuleType("phase_loop_runtime.baml_enums")
-    class_module = types.ModuleType("phase_loop_runtime.baml_classes")
-    class_module.PhaseLoopCloseoutV1 = PhaseLoopCloseoutV1
-    return enum_module, class_module
-
-
-def _filtered_env() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if value is not None}
-
-
 def _extract_prompt(body: dict[str, Any]) -> str:
     parts: list[str] = []
     for message in body.get("messages") or []:
@@ -648,17 +559,1062 @@ def _sanitize_error(exc: BaseException) -> str:
     message = str(exc)
     if isinstance(exc, ValidationError):
         message = "; ".join(error.get("msg", "validation error") for error in exc.errors())
+    return _sanitize_text(message) or exc.__class__.__name__
+
+
+def _sanitize_text(message: str) -> str:
     message = re.sub(r"(?i)(api[_-]?key|authorization|token|secret|password)[^\\s,;]*", r"\\1=<redacted>", message)
     message = " ".join(message.split())
     if len(message) > 500:
         message = message[:497] + "..."
-    return message or exc.__class__.__name__
-
-
-def _is_pyo3_panic(exc: BaseException) -> bool:
-    cls = exc.__class__
-    return cls.__module__ == "pyo3_runtime" and cls.__name__ == "PanicException"
+    return message or "BAML validation failed"
 
 
 def _raise_baml_validation_error(exc: BaseException) -> None:
     raise BamlValidationError(_sanitize_error(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# BAML v1 worker client (agent-harness#1135).
+#
+# The v1 runtime is a process-global native singleton with its own exit hooks,
+# so it never runs in this process: it runs in ``_baml_worker.py``, a
+# dedicated subprocess.  The client below is specified by invariants I1-I9 of
+# the migration plan (``.consiliency/plans/detailed-baml-v1-migration-*.md``);
+# ``tests/test_phase_loop_baml_v1_runtime.py`` holds their falsifiers.
+#
+# Design:
+# - One lifecycle OWNER thread (``_Client._own``) performs every transition
+#   and every disposal.  Exactly one owner runs at a time: a thread becomes
+#   the owner only by taking the single baton out of ``_Client.baton`` (a
+#   ``SimpleQueue`` holding one token), and it puts the baton back when it
+#   exits.  Extra candidate threads find the queue empty and exit at once.
+# - The CALLING thread never takes a lock.  It does C-atomic ``SimpleQueue``
+#   puts and timed gets, and stamps ``_Request.heartbeat`` while it waits.  A
+#   ``BaseException`` on the calling thread sends one abandonment notice and is
+#   re-raised unchanged.  If that notice is lost, the owner's backstop
+#   abandons a request whose heartbeat is older than ``abandon_grace_s``.
+# - One long-lived SPAWNER thread runs every ``Popen``, because Linux
+#   PR_SET_PDEATHSIG fires when the forking *thread* exits.
+# - Per generation, a READER thread owns the worker's stdout fd and a WRITER
+#   thread owns its stdin fd; each closes its fd when it stops.
+# - Daemon threads never log.  Owner-side notes go to ``_Client.pending``,
+#   which the calling thread drains lock-free on its next call.
+# ---------------------------------------------------------------------------
+
+_REQUEST_CAP = 4 * 1024 * 1024  # serialized request body bytes (#27)
+_ENVELOPE_ALLOWANCE = 1024
+_RESPONSE_CAP = 17 * 1024 * 1024  # derived from the request cap (#27)
+_ATTEMPT_DEADLINE_S = 60.0
+_MAX_RETRIES = 2
+_QUEUE_BUDGET_S = (_MAX_RETRIES + 1) * _ATTEMPT_DEADLINE_S + 10.0
+_REAP_BOUND_S = 2.0
+# I1 backstop: a request whose caller stopped stamping its heartbeat for this
+# long is abandoned without a notice.  Disposal then finishes within
+# ``abandon_grace_s + _REAP_BOUND_S`` of the last heartbeat.
+_ABANDON_GRACE_S = 5.0
+_HEARTBEAT_S = 0.1
+_OWNER_TICK_S = 0.05
+_OWNER_IDLE_TICK_S = 0.5
+_OWNER_STALE_S = 2.0
+_EXIT_GRACE_S = 4.5  # atexit: graceful EOF wait before kill; the whole exit stays under 5 s
+_EOF_RC_WAIT_S = 0.5
+
+_WORKER_KINDS = frozenset(
+    {"spawn", "init_fault", "died", "timeout", "desync", "framing", "fingerprint", "fault", "busy", "forked", "shutdown"}
+)
+# Transport and liveness faults are retried on a fresh worker; content-like
+# faults (init_fault, fault, fingerprint) are deterministic and are not.
+_RETRYABLE_KINDS = frozenset({"spawn", "died", "timeout", "desync", "framing"})
+_WORKER_ENV_KEYS = ("SYSTEMROOT", "WINDIR", "TMPDIR", "TMP", "TEMP")
+_WORKER_LOADER_KEYS = {
+    "linux": ("LD_LIBRARY_PATH",),
+    "darwin": ("DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"),
+}
+
+# Bridge table (#23): the only functions that reach the worker.
+_BRIDGE_TABLE: dict[str, tuple[str, tuple[str, ...]]] = {
+    "EmitPhaseCloseout": ("closeout_request", ("phase_alias", "plan_produces", "plan_owned_files", "closeout_commit_sha")),
+    "EvaluateSuspectedFakeEvidence": (
+        "evidence_request",
+        ("tier2_signal_summary", "sample_artifact_content", "expected_artifact_characteristics"),
+    ),
+}
+
+
+class BamlWorkerError(BamlValidationError):
+    """The BAML worker could not answer: a transport, liveness or lifecycle fault.
+
+    ``kind`` is one of ``spawn``, ``init_fault``, ``died``, ``timeout``,
+    ``desync``, ``framing``, ``fingerprint``, ``fault``, ``busy``, ``forked``,
+    ``shutdown``.  ``rc`` is set only when the worker is known to be dead.
+    Callers treat it as "not evaluated", never as a verdict on content.
+    """
+
+    def __init__(self, kind: str, message: str = "", rc: int | None = None) -> None:
+        self.kind = kind
+        self.rc = rc
+        super().__init__(message or f"BAML worker {kind}" + (f" (rc={rc})" if rc is not None else ""))
+
+    def __reduce__(self):
+        return (type(self), (self.kind, str(self), self.rc))
+
+
+def worker_fault_log() -> list[dict[str, Any]]:
+    """Every worker disposal and idle death recorded by this process, oldest first."""
+    return list(_CLIENT.fault_log)
+
+
+class _Request:
+    __slots__ = (
+        "op", "body", "files", "fp", "reply", "enqueued_at", "started_at", "heartbeat",
+        "attempts", "attempt_deadline", "done", "consumed", "gen", "spawn",
+    )
+
+    def __init__(self, op: str, body: bytes, files: dict[str, str], fp: str) -> None:
+        self.op = op
+        self.body = body
+        self.files = files
+        self.fp = fp
+        self.reply: queue.SimpleQueue = queue.SimpleQueue()
+        now = time.monotonic()
+        self.enqueued_at = now
+        self.heartbeat = now
+        self.started_at: float | None = None
+        self.attempts = 0
+        self.attempt_deadline = 0.0
+        self.done = False
+        self.consumed = False
+        self.gen: _Gen | None = None
+        self.spawn: _Spawn | None = None
+
+
+class _Spawn:
+    __slots__ = ("token", "retired", "files", "fp", "requested_at")
+
+    def __init__(self, token: int, files: dict[str, str], fp: str) -> None:
+        self.token = token
+        self.retired = False
+        self.files = files
+        self.fp = fp
+        self.requested_at = time.monotonic()
+
+
+class _Gen:
+    """One worker process and its helper threads."""
+
+    def __init__(self, number: int, proc: subprocess.Popen, read_fd: int, write_fd: int, err_file, fp: str, job: Any) -> None:
+        self.number = number
+        self.proc = proc
+        self.pid = proc.pid
+        self.read_fd = read_fd
+        self.write_fd = write_fd
+        self.err_file = err_file
+        self.fp = fp
+        self.job = job
+        self.writes: queue.SimpleQueue = queue.SimpleQueue()
+        self.state = "new"  # new -> init -> idle <-> busy -> dying -> disposed
+        self.pending_id: int | None = None
+        self.request: _Request | None = None
+        self.dying_since = 0.0
+        self.killed_at: float | None = None
+        self.eof_state = ""
+        self.threads: list[threading.Thread] = []
+        self.eof_partial = False
+
+
+def _spawn_popen(argv: list[str], **kwargs: Any) -> subprocess.Popen:
+    """The single spawn seam: every worker process starts here."""
+    return subprocess.Popen(argv, **kwargs)
+
+
+def _deliver(req: _Request, outcome: tuple[str, Any]) -> None:
+    """The single reply seam: each request is answered exactly once, here."""
+    req.done = True
+    req.reply.put(outcome)
+
+
+def _send_abandon(client: "_Client", req: _Request) -> None:
+    """The abandonment-notice seam (the calling thread's only notice path)."""
+    client.events.put(("abandon", req))
+
+
+def _worker_env() -> dict[str, str]:
+    """The worker's whole environment (#15): an allowlist, nothing inherited wholesale."""
+    env = {"PATH": os.path.dirname(_worker_interpreter())}
+    keys = list(_WORKER_ENV_KEYS)
+    keys.extend(_WORKER_LOADER_KEYS.get(sys.platform, ()))
+    for key in keys:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env
+
+
+def _worker_interpreter() -> str:
+    if os.name == "nt":
+        # The real interpreter, not the venv redirector, so the process in the
+        # Job Object is the worker itself.
+        return getattr(sys, "_base_executable", None) or sys.executable
+    return sys.executable
+
+
+def _worker_script() -> str:
+    return str(Path(__file__).resolve().parent / "_baml_worker.py")
+
+
+def _worker_cwd() -> str:
+    return str(Path(__file__).resolve().parent)
+
+
+def _worker_sys_path() -> list[str]:
+    return [entry for entry in sys.path if isinstance(entry, str) and entry and os.path.isabs(entry)]
+
+
+class _WindowsJob:
+    """A KILL_ON_JOB_CLOSE Job Object holding exactly one worker (Windows only)."""
+
+    def __init__(self, pid_handle: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32 = kernel32
+        self.name = f"phase-loop-baml-{os.getpid()}-{id(self)}"
+        handle = kernel32.CreateJobObjectW(None, self.name)
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+            )]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimits),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        info = _ExtendedLimits()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        job_object_extended_limit_information = 9
+        try:
+            if not kernel32.SetInformationJobObject(handle, job_object_extended_limit_information, ctypes.byref(info), ctypes.sizeof(info)):
+                raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
+            if not kernel32.AssignProcessToJobObject(handle, wintypes.HANDLE(pid_handle)):
+                raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+        except BaseException:
+            kernel32.CloseHandle(handle)
+            raise
+        self.handle = handle
+
+    def close(self) -> None:
+        handle, self.handle = self.handle, None
+        if handle:
+            self._kernel32.CloseHandle(handle)
+
+
+class _Client:
+    """Owner of the BAML worker for this process (one instance, ``_CLIENT``)."""
+
+    def __init__(self, *, test_mode: bool = False, **config: Any) -> None:
+        # Allocation only: no thread, no process, no file access.
+        self.owner_pid = os.getpid()
+        self.test_mode = test_mode
+        self.deadline_s = float(config.pop("deadline_s", _ATTEMPT_DEADLINE_S))
+        self.retries = int(config.pop("retries", _MAX_RETRIES))
+        self.queue_budget_s = float(config.pop("queue_budget_s", (self.retries + 1) * self.deadline_s + 10.0))
+        self.abandon_grace_s = float(config.pop("abandon_grace_s", _ABANDON_GRACE_S))
+        self.no_pdeathsig = bool(config.pop("no_pdeathsig", False))
+        if config:
+            raise TypeError(f"unknown worker client options: {sorted(config)}")
+        if self.no_pdeathsig and not test_mode:
+            raise ValueError("no_pdeathsig requires test_mode")
+        self.events: queue.SimpleQueue = queue.SimpleQueue()
+        self.baton: queue.SimpleQueue = queue.SimpleQueue()
+        self.baton.put(object())
+        self.spawns: queue.SimpleQueue = queue.SimpleQueue()
+        self.snapshot: tuple[dict[str, str], str] | None = None
+        self.fault_log: list[dict[str, Any]] = []
+        self.pending: list[str] = []
+        self.closing = False
+        self.closed = False
+        # Owner-only state below (touched only by the thread holding the baton).
+        self.owner_running = False
+        self.owner_beat = 0.0
+        self.owner_launches: dict[int, object] = {}
+        self.owner_starts = 0
+        self.recover = False
+        self.backlog: collections.deque[_Request] = collections.deque()
+        self.active: _Request | None = None
+        self.gen: _Gen | None = None
+        self.spawn: _Spawn | None = None
+        self.dying: list[_Gen] = []
+        self.late: list[_Gen] = []
+        self.spawner: threading.Thread | None = None
+        self.next_frame_id = 0
+        self.next_gen = 0
+        self.next_token = 0
+        self.stop_acks: list[queue.SimpleQueue] = []
+        self.stop_graceful = False
+        self.stop_started = 0.0
+        self.jobs: dict[int, Any] = {}
+
+    # -- snapshot (lock-free: computed locally, published by one store) ------
+    def files(self) -> tuple[dict[str, str], str]:
+        snap = self.snapshot
+        if snap is None:
+            from ._baml_worker import fingerprint
+
+            files = _read_baml_files()
+            snap = (files, fingerprint(files))
+            self.snapshot = snap
+        return snap
+
+    # -- calling thread ------------------------------------------------------
+    def call(self, op: str, args: dict[str, Any]) -> tuple[str, str]:
+        if os.getpid() != self.owner_pid:
+            raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
+        self._drain_pending()
+        if self.closing:
+            raise BamlWorkerError("shutdown", "BAML worker client is shutting down")
+        body = _serialize_args(args)
+        files, fp = self.files()
+        req = _Request(op, body, files, fp)
+        try:
+            self._ensure_owner()
+            self.events.put(("request", req))
+            return self._wait(req)
+        except BaseException:
+            if not req.consumed:
+                _send_abandon(self, req)
+            raise
+
+    def _wait(self, req: _Request) -> tuple[str, str]:
+        get = req.reply.get
+        while True:
+            req.heartbeat = time.monotonic()
+            try:
+                outcome = get(True, _HEARTBEAT_S)
+            except queue.Empty:
+                if not self.owner_running:
+                    self._ensure_owner()
+                continue
+            req.consumed = True
+            status, value = outcome
+            if status == "reply":
+                return value
+            if status == "abandoned":
+                raise BamlWorkerError("timeout", "request abandoned by the client backstop")
+            raise value
+
+    def _ensure_owner(self) -> None:
+        if self.owner_running and time.monotonic() - self.owner_beat < _OWNER_STALE_S:
+            return
+        if self.closed:
+            raise BamlWorkerError("shutdown", "BAML worker client is closed")
+        bucket = int(time.monotonic() / _OWNER_STALE_S)
+        mine = object()
+        if self.owner_launches.setdefault(bucket, mine) is not mine:
+            return
+        try:
+            threading.Thread(target=self._own, name="phase-loop-baml-owner", daemon=True).start()
+        except RuntimeError as exc:
+            del self.owner_launches[bucket]
+            raise BamlWorkerError("spawn", f"cannot start the BAML owner thread: {exc}") from None
+
+    def _drain_pending(self) -> None:
+        pending = self.pending
+        while True:
+            try:
+                message = pending.pop(0)
+            except IndexError:
+                return
+            _LOG.warning("%s", message)
+
+    # -- owner thread --------------------------------------------------------
+    def _own(self) -> None:
+        try:
+            baton = self.baton.get_nowait()
+        except queue.Empty:
+            return
+        self.owner_starts += 1
+        self.owner_beat = time.monotonic()
+        self.owner_running = True
+        clean = False
+        try:
+            if self.recover:
+                self._recover()
+            self.recover = True
+            clean = self._loop()
+        except BaseException:  # noqa: BLE001 - the owner must hand the baton back
+            clean = False
+        finally:
+            self.recover = not clean
+            self.owner_running = False
+            self.baton.put(baton)
+
+    def _loop(self) -> bool:
+        get = self.events.get
+        while True:
+            busy = self.active is not None or self.backlog or self.dying or self.late or self.spawn is not None or self.stop_acks
+            try:
+                event = get(True, _OWNER_TICK_S if busy else _OWNER_IDLE_TICK_S)
+            except queue.Empty:
+                event = None
+            if event is not None:
+                self._handle(event)
+            self._service()
+            self.owner_beat = time.monotonic()
+            if self.closed and not self.dying and not self.late and self.gen is None and not self.stop_acks:
+                return True
+
+    def _recover(self) -> None:
+        # A previous owner died.  Finish everything it left behind.
+        active = self.active
+        self.active = None
+        if self.spawn is not None:
+            self.spawn.retired = True
+            self.spawn = None
+        if self.gen is not None:
+            self._dispose(self.gen, "fault", phase="owner_death")
+        if active is not None and not active.done:
+            _deliver(active, ("error", BamlWorkerError("fault", "BAML worker client owner died")))
+
+    def _handle(self, event: tuple) -> None:
+        kind = event[0]
+        if kind == "request":
+            req = event[1]
+            if self.closing:
+                _deliver(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+            else:
+                self.backlog.append(req)
+        elif kind == "abandon":
+            self._abandon(event[1])
+        elif kind == "spawned":
+            self._on_spawned(event[1], event[2])
+        elif kind == "frame":
+            self._on_frame(event[1], event[2])
+        elif kind == "eof":
+            self._on_eof(event[1], event[2])
+        elif kind == "overflow":
+            gen = event[1]
+            if gen is self.gen:
+                self._fail(gen, "framing", "worker response frame over the 17 MiB cap")
+        elif kind == "write_error":
+            gen = event[1]
+            if gen is self.gen and gen.state in ("init", "busy"):
+                self._fail(gen, "died", "worker stdin closed")
+        elif kind == "stop":
+            self._begin_stop(event[1], graceful=event[2])
+
+    def _service(self) -> None:
+        now = time.monotonic()
+        # Queue budget and abandoned-in-queue requests.
+        if self.backlog:
+            for req in list(self.backlog):
+                if req.done:
+                    self.backlog.remove(req)
+                elif now - req.heartbeat > self.abandon_grace_s:
+                    self.backlog.remove(req)
+                    _deliver(req, ("abandoned", None))
+                elif now - req.enqueued_at > self.queue_budget_s:
+                    self.backlog.remove(req)
+                    _deliver(req, ("error", BamlWorkerError("busy", "BAML worker queue budget exhausted")))
+        active = self.active
+        if active is not None:
+            if now - active.heartbeat > self.abandon_grace_s:
+                self._abandon(active)
+            elif now >= active.attempt_deadline:
+                self._expire(active)
+        if self.active is None and self.backlog and not self.closing:
+            self._start(self.backlog.popleft())
+        self._reap(now)
+        if self.stop_acks:
+            self._continue_stop(now)
+
+    def _start(self, req: _Request) -> None:
+        self.active = req
+        req.started_at = time.monotonic()
+        self._attempt(req)
+
+    def _attempt(self, req: _Request) -> None:
+        req.attempts += 1
+        req.attempt_deadline = time.monotonic() + self.deadline_s
+        gen = self.gen
+        if gen is not None and gen.state == "idle":
+            if gen.proc.poll() is not None or gen.fp != req.fp:
+                # Died between calls: recorded, not charged to this request.
+                self._dispose(gen, "died", phase="idle")
+                gen = None
+            else:
+                self._send_op(gen, req)
+                return
+        if gen is not None and gen.state == "dying":
+            self.gen = None  # its idle death is still recorded by _reap
+        self._request_spawn(req)
+
+    def _request_spawn(self, req: _Request) -> None:
+        try:
+            self._ensure_spawner()
+        except BaseException as exc:  # noqa: BLE001
+            self._attempt_failed(req, BamlWorkerError("spawn", f"cannot start the BAML spawner thread: {_sanitize_error(exc)}"))
+            return
+        self.next_token += 1
+        spawn = _Spawn(self.next_token, req.files, req.fp)
+        self.spawn = spawn
+        req.spawn = spawn
+        self.spawns.put(spawn)
+
+    def _ensure_spawner(self) -> None:
+        spawner = self.spawner
+        if spawner is not None and spawner.is_alive():
+            return
+        spawner = threading.Thread(target=self._spawner_loop, name="phase-loop-baml-spawner", daemon=True)
+        spawner.start()
+        self.spawner = spawner
+
+    def _on_spawned(self, spawn: _Spawn, result: Any) -> None:
+        if spawn is not self.spawn or spawn.retired:
+            if isinstance(result, _Gen):
+                result.state = "dying"
+                self._kill(result)
+                self.late.append(result)
+                self._log("spawn_late", result, phase="spawn")
+            return
+        self.spawn = None
+        req = self.active
+        if req is not None:
+            req.spawn = None
+        if not isinstance(result, _Gen):
+            if req is not None:
+                self._attempt_failed(req, BamlWorkerError("spawn", f"BAML worker spawn failed: {_sanitize_error(result)}"))
+            return
+        gen = result
+        self.gen = gen
+        self.next_frame_id += 1
+        gen.pending_id = self.next_frame_id
+        gen.state = "init"
+        init = {"id": gen.pending_id, "op": "init", "files": spawn.files, "sys_path": _worker_sys_path()}
+        if self.test_mode:
+            init["test_mode"] = True
+        gen.writes.put((json.dumps(init, ensure_ascii=True, sort_keys=True) + "\n").encode("ascii"))
+        if req is not None and req.fp == gen.fp:
+            gen.request = req
+            req.gen = gen
+
+    def _send_op(self, gen: _Gen, req: _Request) -> None:
+        self.next_frame_id += 1
+        gen.pending_id = self.next_frame_id
+        gen.state = "busy"
+        gen.request = req
+        req.gen = gen
+        frame = b'{"id":%d,"op":"%s","args":' % (gen.pending_id, req.op.encode("ascii")) + req.body + b"}\n"
+        gen.writes.put(frame)
+
+    def _on_frame(self, gen: _Gen, line: bytes) -> None:
+        if gen is not self.gen or gen.state not in ("init", "busy", "idle"):
+            return  # a frame from a disposed generation is never attributed to a successor
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            self._fail(gen, "framing", "worker frame is not JSON")
+            return
+        if not isinstance(frame, dict):
+            self._fail(gen, "framing", "worker frame is not a JSON object")
+            return
+        outcome_keys = set(frame) - {"id", "fingerprint"}
+        if "id" not in frame or "fingerprint" not in frame or len(outcome_keys) != 1 or not outcome_keys <= {"ok", "error", "request", "fault"}:
+            self._fail(gen, "framing", "worker frame has unexpected keys")
+            return
+        if gen.state == "idle" or frame["id"] != gen.pending_id:
+            self._fail(gen, "desync", "worker frame id does not match the request")
+            return
+        (outcome,) = outcome_keys
+        value = frame[outcome]
+        if outcome == "fault":
+            self._fail(gen, "init_fault" if gen.state == "init" else "fault", f"worker fault: {value}")
+            return
+        if frame["fingerprint"] != gen.fp:
+            self._fail(gen, "fingerprint", "worker fingerprint does not match the source snapshot")
+            return
+        if gen.state == "init":
+            if outcome != "ok":
+                self._fail(gen, "framing", "worker init reply is not ok")
+                return
+            gen.state = "idle"
+            gen.pending_id = None
+            req = gen.request
+            gen.request = None
+            if req is not None and req is self.active and req.gen is gen:
+                self._send_op(gen, req)
+            return
+        req = gen.request
+        try:
+            decoded = _decode_outcome(req.op if req is not None else "", outcome, value)
+        except ValueError as exc:
+            self._fail(gen, "framing", str(exc))
+            return
+        gen.state = "idle"
+        gen.pending_id = None
+        gen.request = None
+        if req is not None and req is self.active:
+            self.active = None
+            req.gen = None
+            _deliver(req, ("reply", (outcome, decoded)))
+
+    def _on_eof(self, gen: _Gen, partial: bool) -> None:
+        if gen is not self.gen or self.closing:
+            return
+        if gen.state in ("idle", "init", "busy"):
+            # Wait briefly for the exit status, so the log and .rc are exact.
+            gen.eof_partial = partial
+            gen.eof_state = gen.state
+            gen.state = "dying"
+            gen.dying_since = time.monotonic()
+            self.dying.append(gen)
+
+    def _expire(self, req: _Request) -> None:
+        spawn = req.spawn
+        if spawn is not None and spawn is self.spawn:
+            spawn.retired = True
+            self.spawn = None
+            req.spawn = None
+            self._attempt_failed(req, BamlWorkerError("spawn", "BAML worker spawn exceeded its deadline"))
+            return
+        gen = req.gen
+        if gen is not None and gen is self.gen and gen.state in ("init", "busy", "dying"):
+            if gen in self.dying:
+                self.dying.remove(gen)
+            self._fail(gen, "timeout", "BAML worker call exceeded its deadline", phase="in_flight")
+            return
+        self._attempt_failed(req, BamlWorkerError("timeout", "BAML worker call exceeded its deadline"))
+
+    def _abandon(self, req: _Request) -> None:
+        if req.done:
+            return
+        if req in self.backlog:
+            self.backlog.remove(req)
+            _deliver(req, ("abandoned", None))
+            return
+        if req is not self.active:
+            return
+        self.active = None
+        spawn = req.spawn
+        if spawn is not None and spawn is self.spawn:
+            spawn.retired = True
+            self.spawn = None
+        gen = req.gen
+        if gen is not None and gen is self.gen and gen.state in ("init", "busy", "dying"):
+            if gen in self.dying:
+                self.dying.remove(gen)
+            self._dispose(gen, "abandoned", phase=gen.state)
+        req.gen = None
+        req.spawn = None
+        _deliver(req, ("abandoned", None))
+
+    def _fail(self, gen: _Gen, kind: str, message: str, *, phase: str | None = None) -> None:
+        req = gen.request if gen.request is not None and gen.request is self.active else None
+        rc = gen.proc.poll()
+        self._dispose(gen, kind, phase=phase or gen.state, rc=rc)
+        if req is not None:
+            req.gen = None
+            self._attempt_failed(req, BamlWorkerError(kind, message, rc=rc))
+
+    def _attempt_failed(self, req: _Request, error: BamlWorkerError) -> None:
+        if req is not self.active or req.done:
+            return
+        started = req.started_at or time.monotonic()
+        budget_left = (self.retries + 1) * self.deadline_s - (time.monotonic() - started)
+        if error.kind in _RETRYABLE_KINDS and req.attempts <= self.retries and budget_left > 0 and not self.closing:
+            self._attempt(req)
+            return
+        self.active = None
+        _deliver(req, ("error", error))
+
+    # -- disposal -------------------------------------------------------------
+    def _dispose(self, gen: _Gen, kind: str, *, phase: str, rc: int | None = None) -> None:
+        if gen.state == "disposed":
+            return
+        if gen is self.gen:
+            self.gen = None
+        gen.state = "disposed"
+        gen.request = None
+        self._kill(gen)
+        self.late.append(gen)
+        self._log(kind, gen, phase=phase, rc=rc if rc is not None else gen.proc.returncode)
+
+    def _kill(self, gen: _Gen) -> None:
+        gen.writes.put(None)
+        if gen.killed_at is None:
+            gen.killed_at = time.monotonic()
+            try:
+                gen.proc.kill()
+            except OSError:
+                pass
+
+    def _log(self, kind: str, gen: _Gen, *, phase: str, rc: int | None = None) -> None:
+        self.fault_log.append({"kind": kind, "phase": phase, "pid": gen.pid, "generation": gen.number, "rc": rc})
+        self.pending.append(f"BAML worker pid {gen.pid} disposed: {kind} ({phase}, rc={rc})")
+
+    def _reap(self, now: float) -> None:
+        for gen in list(self.dying):
+            rc = gen.proc.poll()
+            if rc is not None or now - gen.dying_since > _EOF_RC_WAIT_S:
+                self.dying.remove(gen)
+                req = gen.request
+                if gen.eof_state == "idle" or req is None or req is not self.active:
+                    # Died between calls: recorded once, never charged to a request.
+                    self._dispose(gen, "died", phase="idle", rc=rc)
+                else:
+                    kind = "framing" if gen.eof_partial else "died"
+                    message = "worker closed its output mid-frame" if gen.eof_partial else "worker exited"
+                    self._fail(gen, kind, message, phase="in_flight")
+        for gen in list(self.late):
+            if gen.proc.poll() is not None or (gen.killed_at is not None and now - gen.killed_at > _REAP_BOUND_S):
+                self.late.remove(gen)
+                self._release(gen)
+
+    def _release(self, gen: _Gen) -> None:
+        try:
+            gen.err_file.close()
+        except OSError:
+            pass
+        job = gen.job
+        if job is not None:
+            job.close()
+
+    # -- stop / shutdown ------------------------------------------------------
+    def _begin_stop(self, ack: queue.SimpleQueue, graceful: bool) -> None:
+        self.closing = True
+        self.closed = True
+        self.stop_acks.append(ack)
+        self.stop_graceful = graceful
+        self.stop_started = time.monotonic()
+        for req in list(self.backlog):
+            self.backlog.remove(req)
+            if not req.done:
+                _deliver(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+        active, self.active = self.active, None
+        if active is not None and not active.done:
+            _deliver(active, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+        if self.spawn is not None:
+            self.spawn.retired = True
+            self.spawn = None
+        gen = self.gen
+        if gen is not None:
+            if graceful and gen.state == "idle":
+                gen.writes.put(None)  # EOF on the worker's stdin: the graceful path
+            else:
+                self._stop_gen(gen)
+        self.spawns.put(None)
+
+    def _stop_gen(self, gen: _Gen) -> None:
+        if gen is self.gen:
+            self.gen = None
+        if gen in self.dying:
+            self.dying.remove(gen)
+        gen.state = "disposed"
+        self._kill(gen)
+        self.late.append(gen)
+
+    def _continue_stop(self, now: float) -> None:
+        gen = self.gen
+        if gen is not None:
+            if gen.proc.poll() is not None:
+                self.gen = None
+                gen.state = "disposed"
+                gen.killed_at = gen.killed_at or now
+                self.late.append(gen)
+            elif now - self.stop_started > _EXIT_GRACE_S:
+                self._stop_gen(gen)
+        for g in list(self.dying):
+            self._stop_gen(g)
+        if self.gen is None and not self.late:
+            acks, self.stop_acks = self.stop_acks, []
+            for ack in acks:
+                ack.put(True)
+
+    def stop(self, *, graceful: bool, timeout: float) -> None:
+        """Dispose of every worker and stop the owner.  Used by atexit and reset."""
+        if os.getpid() != self.owner_pid:
+            return
+        self.closing = True
+        ack: queue.SimpleQueue = queue.SimpleQueue()
+        try:
+            baton = self.baton.get_nowait()
+        except queue.Empty:
+            # An owner is running (or starting): it does the work.
+            self.events.put(("stop", ack, graceful))
+            try:
+                ack.get(True, timeout)
+            except queue.Empty:
+                pass
+            return
+        # No owner runs, so this thread may touch owner state; it starts no thread.
+        try:
+            self._begin_stop(ack, graceful)
+            deadline = time.monotonic() + timeout
+            while self.stop_acks and time.monotonic() < deadline:
+                self._service_stop_inline()
+                time.sleep(_OWNER_TICK_S)
+        finally:
+            self.baton.put(baton)
+
+    def _service_stop_inline(self) -> None:
+        now = time.monotonic()
+        self._reap(now)
+        self._continue_stop(now)
+
+    # -- spawner thread -------------------------------------------------------
+    def _spawner_loop(self) -> None:
+        try:
+            while True:
+                spawn = self.spawns.get()
+                if spawn is None:
+                    return
+                try:
+                    result: Any = self._spawn_worker(spawn)
+                except BaseException as exc:  # noqa: BLE001 - reported to the owner as kind="spawn"
+                    result = exc
+                self.events.put(("spawned", spawn, result))
+        except BaseException:  # noqa: BLE001 - a dead spawner is recreated on the next spawn
+            return
+
+    def _spawn_worker(self, spawn: _Spawn) -> _Gen:
+        read_in, write_in = os.pipe()
+        try:
+            read_out, write_out = os.pipe()
+        except BaseException:
+            os.close(read_in)
+            os.close(write_in)
+            raise
+        err_file = None
+        proc = None
+        try:
+            err_file = tempfile.TemporaryFile()
+            argv = [_worker_interpreter(), "-I", "-S", _worker_script(), str(os.getpid()), ",".join(sorted(_worker_env()))]
+            if self.no_pdeathsig:
+                argv.append("--no-pdeathsig")
+            kwargs: dict[str, Any] = {
+                "stdin": read_in,
+                "stdout": write_out,
+                "stderr": err_file,
+                "env": _worker_env(),
+                "cwd": _worker_cwd(),
+                "close_fds": True,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            proc = _spawn_popen(argv, **kwargs)
+        except BaseException:
+            for fd in (read_in, write_in, read_out, write_out):
+                os.close(fd)
+            if err_file is not None:
+                err_file.close()
+            raise
+        os.close(read_in)
+        os.close(write_out)
+        job = None
+        try:
+            if os.name == "nt":
+                job = _WindowsJob(int(proc._handle))  # assigned before init is sent
+            self.next_gen += 1
+            gen = _Gen(self.next_gen, proc, read_out, write_in, err_file, spawn.fp, job)
+            reader = threading.Thread(target=self._reader_loop, args=(gen,), name=f"phase-loop-baml-reader-{gen.pid}", daemon=True)
+            writer = threading.Thread(target=self._writer_loop, args=(gen,), name=f"phase-loop-baml-writer-{gen.pid}", daemon=True)
+            gen.threads = [reader, writer]
+            reader.start()
+        except BaseException:
+            try:
+                proc.kill()
+                proc.wait(_REAP_BOUND_S)
+            except BaseException:  # noqa: BLE001
+                pass
+            os.close(read_out)
+            os.close(write_in)
+            err_file.close()
+            if job is not None:
+                job.close()
+            raise
+        try:
+            writer.start()
+        except BaseException:
+            try:
+                proc.kill()
+                proc.wait(_REAP_BOUND_S)
+            except BaseException:  # noqa: BLE001
+                pass
+            os.close(write_in)  # the reader closes read_out on EOF
+            err_file.close()
+            if job is not None:
+                job.close()
+            raise
+        return gen
+
+    # -- per-generation helpers ----------------------------------------------
+    def _reader_loop(self, gen: _Gen) -> None:
+        fd = gen.read_fd
+        events = self.events
+        try:
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = os.read(fd, 1 << 16)
+                if not chunk:
+                    events.put(("eof", gen, size > 0))
+                    return
+                start = 0
+                while True:
+                    newline = chunk.find(b"\n", start)
+                    if newline < 0:
+                        break
+                    piece = chunk[start:newline]
+                    if size + len(piece) > _RESPONSE_CAP:
+                        events.put(("overflow", gen))
+                        return
+                    chunks.append(piece)
+                    events.put(("frame", gen, b"".join(chunks)))
+                    chunks = []
+                    size = 0
+                    start = newline + 1
+                rest = chunk[start:]
+                if rest:
+                    chunks.append(rest)
+                    size += len(rest)
+                    if size > _RESPONSE_CAP:
+                        events.put(("overflow", gen))
+                        return
+        except BaseException:  # noqa: BLE001 - treated as the worker's output closing
+            try:
+                events.put(("eof", gen, True))
+            except BaseException:  # noqa: BLE001
+                pass
+        finally:
+            os.close(fd)
+
+    def _writer_loop(self, gen: _Gen) -> None:
+        fd = gen.write_fd
+        get = gen.writes.get
+        try:
+            while True:
+                data = get()
+                if data is None:
+                    return
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    view = view[written:]
+        except BaseException:  # noqa: BLE001 - EPIPE and friends: the worker is gone
+            try:
+                self.events.put(("write_error", gen))
+            except BaseException:  # noqa: BLE001
+                pass
+        finally:
+            os.close(fd)
+
+
+_OUTCOMES_BY_OP = {
+    "parse_closeout": ("ok", "error"),
+    "closeout_request": ("request",),
+    "evidence_request": ("request",),
+    "env": ("ok",),
+}
+
+
+def _decode_outcome(op: str, outcome: str, value: Any) -> Any:
+    """Owner-side validation of an op reply; a ValueError is a framing fault."""
+    if outcome not in _OUTCOMES_BY_OP.get(op, ()):
+        raise ValueError(f"worker outcome {outcome!r} is not valid for op {op!r}")
+    if op == "env":
+        if not isinstance(value, dict):
+            raise ValueError("worker env reply is not an object")
+        return value
+    if not isinstance(value, str):
+        raise ValueError("worker outcome is not a string")
+    if outcome == "error":
+        return value
+    decoded = json.loads(value)
+    if outcome == "request":
+        if not isinstance(decoded, dict) or not isinstance(decoded.get("body"), str):
+            raise ValueError("worker request reply is not an HTTP request object")
+        body = json.loads(decoded["body"])
+        if not isinstance(body, dict):
+            raise ValueError("worker request body is not an object")
+        decoded = {**decoded, "body": body}
+    return decoded
+
+
+def _serialize_args(args: dict[str, Any]) -> bytes:
+    """Serialize a request body once (#27, lone-surrogate and type checks)."""
+    _reject_lone_surrogates(args)
+    try:
+        body = json.dumps(args, ensure_ascii=True, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise BamlValidationError(f"BAML request is not serializable: {_sanitize_error(exc)}") from None
+    data = body.encode("ascii")
+    if len(data) > _REQUEST_CAP:
+        raise BamlValidationError(f"BAML request body is {len(data)} bytes, over the {_REQUEST_CAP}-byte cap")
+    return data
+
+
+def _reject_lone_surrogates(value: Any) -> None:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise BamlValidationError("BAML request contains a lone surrogate") from None
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _reject_lone_surrogates(key)
+            _reject_lone_surrogates(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_lone_surrogates(item)
+
+
+def _worker_call(op: str, args: dict[str, Any]) -> tuple[str, str]:
+    """Run one fixed op on the worker; returns ``(outcome, value)``."""
+    return _CLIENT.call(op, args)
+
+
+def _reset_worker_for_tests(test_mode: bool = False, **config: Any) -> None:
+    """Terminate and discard the worker, the source snapshot and the fault log."""
+    global _CLIENT
+    old = _CLIENT
+    old.stop(graceful=False, timeout=_REAP_BOUND_S + 3.0)
+    _enum_literal_map.cache_clear()
+    _CLIENT = _Client(test_mode=test_mode, **config)
+
+
+def _atexit_shutdown() -> None:
+    client = _CLIENT
+    if os.getpid() != client.owner_pid:
+        return  # a fork child never touches inherited worker state
+    client.stop(graceful=True, timeout=_EXIT_GRACE_S + 0.4)
+
+
+_LOG = logging.getLogger(__name__)
+_CLIENT = _Client()
+atexit.register(_atexit_shutdown)

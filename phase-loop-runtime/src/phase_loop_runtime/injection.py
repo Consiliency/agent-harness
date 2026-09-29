@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import shutil
 
-from .baml_modular import BamlValidationError, build_baml_request
+from .baml_modular import build_baml_request
 from .closeout_validation import extract_plan_produces as _extract_closeout_plan_produces
 from .models import HarnessLaneAssignment, PromptBundle
 from .runtime_paths import (
@@ -432,10 +432,9 @@ def _render_baml_closeout_instruction(
         "plan_owned_files": list(plan_owned_files),
         "closeout_commit_sha": closeout_commit_sha,
     }
-    try:
-        prompt = build_baml_request("EmitPhaseCloseout", payload).prompt
-    except BamlValidationError as exc:
-        prompt = f"Emit one closeout conforming to emit_phase_closeout.baml / EmitPhaseCloseout. BAML prompt render failed: {exc}"
+    # agent-harness#1135 (#22): no fallback instruction.  A launch without the
+    # closeout contract is never made; the typed error reaches the caller.
+    prompt = build_baml_request("EmitPhaseCloseout", payload).prompt
     if not include_schema_description:
         marker = "\n\nPhase-loop closeout JSON schema description:\n"
         if marker in prompt:
