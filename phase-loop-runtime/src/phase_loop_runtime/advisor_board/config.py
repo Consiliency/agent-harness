@@ -794,8 +794,9 @@ def _merged_file(repo_dir: Path | str, base: str, head: str) -> bytes | None:
         return contents[head]
     import tempfile
 
-    # The change's own edit (merge base -> head) applied onto the base's file: a scratch
-    # repository holds the base bytes, and an edit that does not apply cleanly conflicts.
+    # The change's own edit (merge base -> head) three-way merged onto the base's file: a
+    # scratch repository holds the base bytes (indexed) and the merge-base blob, and
+    # ``apply --3way`` merges the edit; a conflict refuses.
     patch = _git_read(repo_dir, "diff", "--no-ext-diff", "--no-textconv", "--binary", mb, head, "--",
                       REPO_CONFIG_RELATIVE_PATH)
     if patch.returncode != 0:
@@ -805,12 +806,19 @@ def _merged_file(repo_dir: Path | str, base: str, head: str) -> bytes | None:
         if _git_read(td, "init", "-q", str(scratch)).returncode != 0:
             raise BoardConfigError("a scratch tree for the three-way check cannot be created")
         target = scratch / REPO_CONFIG_RELATIVE_PATH
+        if contents[mb] is not None:
+            ancestor = Path(td) / "ancestor"
+            ancestor.write_bytes(contents[mb])
+            if _git_read(scratch, "hash-object", "-w", str(ancestor)).returncode != 0:
+                raise BoardConfigError("a scratch tree for the three-way check cannot be created")
         if contents[base] is not None:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(contents[base])
+            if _git_read(scratch, "add", "--", REPO_CONFIG_RELATIVE_PATH).returncode != 0:
+                raise BoardConfigError("a scratch tree for the three-way check cannot be created")
         patch_path = Path(td) / "change.patch"
         patch_path.write_bytes(patch.stdout)
-        applied = _git_read(scratch, "apply", str(patch_path))
+        applied = _git_read(scratch, "apply", "--3way", str(patch_path))
         if applied.returncode != 0:
             raise BoardConfigError(f"the change's {REPO_CONFIG_RELATIVE_PATH} does not apply cleanly onto {base!r}")
         return target.read_bytes() if target.exists() else None
