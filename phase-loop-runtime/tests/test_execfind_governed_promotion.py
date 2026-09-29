@@ -61,8 +61,8 @@ def test_blocked_prose_finding_preserves_dissenting_seat():
         assert not result.mergeable
         finding = next(f for f in result.findings if f.code == "finding_prose")
         assert finding.reviewed_sha == reviewed_sha
-        assert finding.seat_key == seat
-        assert finding.to_json()["seat_key"] == seat
+        assert f"seat {seat} " in finding.reason
+        assert f"seat {seat} " in finding.to_json()["reason"]
         results.append(asdict(result))
 
     assert results[0] != results[1]
@@ -112,8 +112,7 @@ def test_four_vendor_agreement_still_promotes():
 
     assert gate.promoted
     assert gate.reason is None
-    assert {finding.seat_key for finding in gate.findings} == {leg.seat_key for leg in panel.legs}
-    assert all(finding.reviewed_sha == "a" * 40 for finding in gate.findings)
+    assert all(finding.code == "panel_nit" for finding in gate.findings)
 
 
 def test_inline_falsifier_fence_mention_is_not_an_attachment():
@@ -156,9 +155,9 @@ def test_invalid_falsifier_keeps_other_seats_prose_finding(tmp_path):
         invoke=lambda _board, _artifact, **_kwargs: panel,
     )
     assert gate.ran and not gate.promoted and gate.reason == "invalid_falsifier"
-    assert any(f.code == "finding_prose" and f.seat_key == prose_seat
+    assert any(f.code == "finding_prose" and f"seat {prose_seat} " in f.reason
                and f.body == panel.legs[1].text for f in gate.findings)
-    assert any(f.code == "governed_invalid_falsifier" and f.seat_key == invalid_seat
+    assert any(f.code == "governed_invalid_falsifier" and f"seat {invalid_seat} " in f.reason
                for f in gate.findings)
 
 
@@ -173,11 +172,10 @@ def test_falsifier_count_refusal_names_offending_seat(tmp_path):
         gate = _count_gate(repo, head, counts)
         assert gate.ran and not gate.promoted and gate.reason == "falsifier_count_exceeded"
         refusal = next(f for f in gate.findings if f.code == "governed_falsifier_count_exceeded")
-        assert refusal.seat_key == expected_seat
         assert expected_seat in refusal.reason
-        assert any(f.code == "finding_receipt" and f.seat_key == expected_seat
+        assert any(f.code == "finding_receipt" and f"seat {expected_seat} " in f.reason
                    for f in gate.findings)
-        outcomes.append((refusal.reason, refusal.seat_key))
+        outcomes.append(refusal.reason)
     assert outcomes[0] != outcomes[1]
 
 
@@ -209,6 +207,8 @@ def test_approval_verdict_cannot_discard_a_valid_falsifier_receipt(tmp_path):
             max_rounds=1, invoke=lambda **_kwargs: gate,
         )
         receipts = tuple(f for f in gate.findings if f.code == "finding_receipt")
+        assert all("observed_outcome=red_on_head" in f.reason
+                   and "record_digest=unresolved" not in f.reason for f in receipts), receipts
         observed[verdict] = (gate.promoted, loop.mergeable, len(receipts))
     assert observed == {
         "DISAGREE": (False, False, 1),
@@ -217,7 +217,7 @@ def test_approval_verdict_cannot_discard_a_valid_falsifier_receipt(tmp_path):
     }
 
 
-def test_invalid_early_falsifier_keeps_later_valid_receipt(tmp_path):
+def test_invalid_early_falsifier_keeps_later_attachment_as_unresolved_receipt(tmp_path):
     repo, head = _source_repo(tmp_path)
     board = Board(name="execfind-invalid", purpose="code-review", seats=DEFAULT_SEATS)
     valid = _falsifier_text(_golden()["attachment"]["falsifiers"][0]).removesuffix("DISAGREE\n") + "AGREE\n"
@@ -237,7 +237,7 @@ def test_invalid_early_falsifier_keeps_later_valid_receipt(tmp_path):
         invoke=lambda _board, _artifact, **_kwargs: panel,
     )
     assert gate.reason == "invalid_falsifier" and not gate.promoted
-    assert any(f.code == "finding_receipt" and f.seat_key == panel.legs[1].seat_key
+    assert any(f.code == "finding_receipt" and f"seat {panel.legs[1].seat_key} " in f.reason
                and "record_digest=unresolved" in f.reason for f in gate.findings)
 
 
@@ -297,7 +297,7 @@ def test_preattached_falsifier_is_refused_before_any_run(tmp_path, monkeypatch):
     assert gate.ran and not gate.promoted
     assert gate.reason == "foreign_falsifier_attachment"
     refusal = next(f for f in gate.findings if f.code == "governed_foreign_falsifier_attachment")
-    assert refusal.seat_key == legs[1].seat_key
+    assert f"seat {legs[1].seat_key} " in refusal.reason
     assert not any(f.code == "finding_receipt" for f in gate.findings)
     assert runs == []
 
@@ -328,7 +328,7 @@ def test_seat_claimed_outcome_is_not_a_receipt(tmp_path, monkeypatch):
     )
     assert not gate.promoted
     assert not any(f.code == "finding_receipt" for f in gate.findings)
-    assert any(f.code == "finding_prose" and f.seat_key == panel.legs[0].seat_key
+    assert any(f.code == "finding_prose" and f"seat {panel.legs[0].seat_key} " in f.reason
                for f in gate.findings)
     assert runs == []
 
@@ -375,3 +375,67 @@ def test_runner_contract_refusal_retains_unresolved_receipt(tmp_path, monkeypatc
     assert any(f.code == "finding_receipt" and "record_digest=unresolved" in f.reason
                for f in gate.findings)
     assert minted and all(backing._falsifier_authorization_lease(item).closed for item in minted)
+
+
+def test_foreign_attachment_hold_keeps_other_seats_dissent(tmp_path, monkeypatch):
+    from phase_loop_runtime.panel_invoker import attach_finding_falsifiers
+
+    repo, head = _source_repo(tmp_path)
+    board = Board(name="execfind-foreign-dissent", purpose="code-review", seats=DEFAULT_SEATS)
+    dissent = "FINDING F002: independent blocking concern\nDISAGREE"
+    panel = _four_vendor_panel(claude_text=dissent)
+    attach_finding_falsifiers(panel.legs[0], parse_finding_falsifiers(
+        _falsifier_text(_golden()["attachment"]["falsifiers"][0])
+    ))
+    runs = []
+    monkeypatch.setattr(governed_review, "run_finding_falsifier",
+                        lambda **kwargs: runs.append(kwargs))
+    gate = governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed",
+        reviewed_sha=head, canonical_repo_authority=repo,
+        compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
+    assert not gate.promoted and gate.reason == "foreign_falsifier_attachment"
+    assert runs == []
+    assert not any(f.code == "finding_receipt" for f in gate.findings)
+    assert any(
+        f.code == "finding_prose" and f.body == dissent and f.reviewed_sha == head
+        and f"seat {panel.legs[-1].seat_key} " in f.reason
+        for f in gate.findings
+    ), gate.findings
+    result = run_governed_premerge_loop(
+        artifact="reviewed artifact", author_executor="train-coordinator",
+        run_mode="governed", max_rounds=1, invoke=lambda **_kwargs: gate,
+    )
+    assert not result.mergeable
+    assert any(f.code == "finding_prose" and f.body == dissent for f in result.findings)
+
+
+def test_planning_gate_holds_a_preattached_falsifier():
+    from phase_loop_runtime.governed_review import governed_planning_gate
+    from phase_loop_runtime.panel_invoker import attach_finding_falsifiers
+
+    panel = _four_vendor_panel(claude_text="AGREE")
+    attach_finding_falsifiers(panel.legs[1], parse_finding_falsifiers(
+        _falsifier_text(_golden()["attachment"]["falsifiers"][0])
+    ))
+    gate = governed_planning_gate(
+        artifact="plan artifact", author_executor="train-coordinator", run_mode="governed",
+        available_legs=("codex", "gemini", "grok", "claude"),
+        invoke=lambda *_args, **_kwargs: panel, reviewed_sha="a" * 40,
+    )
+    assert gate.ran and not gate.promoted
+    assert gate.reason == "foreign_falsifier_attachment"
+    assert not any(f.code == "finding_receipt" for f in gate.findings)
+
+
+def test_unclosed_falsifier_fences_parse_in_bounded_time():
+    import time
+
+    text = "FINDING F001: BLOCKING — test\n" + "```falsifier\n" * 10000
+    started = time.monotonic()
+    with pytest.raises(ValueError):
+        parse_finding_falsifiers(text)
+    assert time.monotonic() - started < 10.0

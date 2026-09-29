@@ -23,6 +23,7 @@ import json
 import re
 from hashlib import sha256
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Callable, Iterable, Mapping, Sequence
 
 from .advisor_board.schema import vendor_family, vendor_of_harness
@@ -129,6 +130,29 @@ class FalsifierRunBinding:
     record_digest: str
 
 
+def _foreign_falsifier_hold(
+    panel: PanelResult, *, reviewed_sha: str | None, falsifier_policy: str,
+) -> "GateResult | None":
+    """agent-harness#1134 (EC-EXECFIND-2): hold a panel whose legs arrived already
+    carrying a falsifier attachment. Only ``governed_board_gate`` parses and runs
+    attachments, so an outcome or receipt never comes from a seat, jailed or not.
+    Every leg's findings are kept, reduced from copies without the attachment, so
+    the refused attachment is never read as a receipt and no dissent is dropped."""
+    foreign = tuple(leg.seat_key or leg.leg for leg in panel.legs
+                    if leg.finding_falsifiers is not None)
+    if not foreign:
+        return None
+    stripped = PanelResult(tuple(replace(leg) for leg in panel.legs))
+    return _block_result(
+        "foreign_falsifier_attachment", "governed_foreign_falsifier_attachment",
+        f"seat {foreign[0]} arrived with a falsifier attachment the gate did not parse; "
+        "holding (non-human)",
+        extra_findings=_findings_from_panel(
+            stripped, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+        ),
+    )
+
+
 def _findings_from_panel(
     panel: PanelResult, reviewed_sha: str | None = None, *,
     falsifier_runs: Mapping[tuple[str, str], FalsifierRunBinding] | None = None,
@@ -197,7 +221,6 @@ def _findings_from_panel(
                 f"record_digest={digest}; president ruling required")
 
     for leg in panel.legs:
-        seat_key = leg.seat_key or leg.leg
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so
@@ -216,7 +239,6 @@ def _findings_from_panel(
                     blocker_class="review_gate_block",
                     body=leg.text,
                     reviewed_sha=reviewed_sha,
-                    seat_key=seat_key,
                 ))
             else:
                 # agent-harness#906: keep the leg's DETAIL, not only its status. Without it
@@ -229,35 +251,34 @@ def _findings_from_panel(
                     reason=f"panel leg {leg.leg} unusable ({leg.status}{detail})",
                     severity="warn",
                     reviewed_sha=reviewed_sha,
-                    seat_key=seat_key,
                 ))
             continue
+        # EXECFIND per-finding branch (EC-EXECFIND-3): a leg with an attached falsifier
+        # or a blocking verdict naming FINDING ids decomposes per finding; the
+        # whole-leg branches below are reached only when it does not.
         attachment = leg.finding_falsifiers
         attached = {item.finding_id: item for item in attachment.falsifiers} if attachment else {}
-        if _leg_blocks(leg.text) or attached:
-            ids = tuple(dict.fromkeys(re.findall(
-                r"(?m)^FINDING ([A-Za-z0-9_]+):", leg.text,
-            )))
-            if ids or attached:
-                for finding_id in dict.fromkeys((*ids, *attached)):
-                    item = attached.get(finding_id)
-                    if item is not None:
-                        findings.append(ReviewFinding(
-                            code="finding_receipt", reason=receipt_reason(leg, item),
-                            severity="block", blocker_class="review_gate_block",
-                            body=leg.text, reviewed_sha=reviewed_sha,
-                            seat_key=seat_key,
-                        ))
-                    else:
-                        findings.append(ReviewFinding(
-                            code="finding_prose",
-                            reason=f"finding {finding_id} has no executable receipt",
-                            severity="block" if falsifier_policy == "required" else "warn",
-                            blocker_class="review_gate_block" if falsifier_policy == "required" else None,
-                            body=leg.text, reviewed_sha=reviewed_sha,
-                            seat_key=seat_key,
-                        ))
-                continue
+        ids = tuple(dict.fromkeys(re.findall(r"(?m)^FINDING ([A-Za-z0-9_]+):", leg.text)))
+        if (_leg_blocks(leg.text) or attached) and (ids or attached):
+            seat = leg.seat_key or leg.leg
+            for finding_id in dict.fromkeys((*ids, *attached)):
+                item = attached.get(finding_id)
+                if item is not None:
+                    findings.append(ReviewFinding(
+                        code="finding_receipt", reason=f"seat {seat} {receipt_reason(leg, item)}",
+                        severity="block", blocker_class="review_gate_block",
+                        body=leg.text, reviewed_sha=reviewed_sha,
+                    ))
+                else:
+                    findings.append(ReviewFinding(
+                        code="finding_prose",
+                        reason=f"seat {seat} finding {finding_id} has no executable receipt",
+                        severity="block" if falsifier_policy == "required" else "warn",
+                        blocker_class="review_gate_block" if falsifier_policy == "required" else None,
+                        body=leg.text, reviewed_sha=reviewed_sha,
+                    ))
+            continue
+        if _leg_blocks(leg.text):
             findings.append(ReviewFinding(
                 code="panel_block",
                 reason=f"panel leg {leg.leg} raised a blocking concern",
@@ -266,7 +287,6 @@ def _findings_from_panel(
                 # #80: the actual blocking review text, not just the generic reason.
                 body=leg.text,
                 reviewed_sha=reviewed_sha,
-                seat_key=seat_key,
             ))
         else:
             # A "nit" is non-blocking; recorded at `warn` severity (the rigor-v1
@@ -275,8 +295,6 @@ def _findings_from_panel(
                 code="panel_nit",
                 reason=f"panel leg {leg.leg} reviewed with non-blocking notes",
                 severity="warn",
-                reviewed_sha=reviewed_sha,
-                seat_key=seat_key,
             ))
     return tuple(findings)
 
@@ -287,13 +305,11 @@ def _block_result(
     detail: str,
     *,
     extra_findings: tuple[ReviewFinding, ...] = (),
-    seat_key: str | None = None,
-    reviewed_sha: str | None = None,
 ) -> GateResult:
     """A fail-closed governed result: held (not promoted), non-degraded block.
 
-    ``extra_findings`` (agent-harness#906) carries per-leg diagnostics or review
-    findings behind a structural hold so their seat attribution survives. ``panel`` stays
+    ``extra_findings`` (agent-harness#906) carries the per-leg diagnostics behind a
+    structural hold so the reason each leg was unusable survives. ``panel`` stays
     ``None`` on purpose: ``run_governed_premerge_loop``'s reviewer-floor guard keys on
     ``gate.panel``, and attaching a zero-usable panel here would relabel the hold
     ``below_reviewer_floor`` with the wrong remedy.
@@ -308,8 +324,6 @@ def _block_result(
             reason=detail,
             severity="block",
             blocker_class="review_gate_block",
-            seat_key=seat_key,
-            reviewed_sha=reviewed_sha,
         ),) + tuple(extra_findings),
     )
 
@@ -393,6 +407,14 @@ def _gate_result_from_panel(
     falsifier_runs: Mapping[tuple[str, str], FalsifierRunBinding] | None = None,
     falsifier_policy: str = "optional",
 ) -> GateResult:
+    if falsifier_runs is None:
+        # Only governed_board_gate runs attachments and passes its results; any other
+        # caller (the planning gate, a direct reduction) holds an attached leg.
+        held = _foreign_falsifier_hold(
+            panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+        )
+        if held is not None:
+            return held
     findings = _findings_from_panel(
         panel, reviewed_sha=reviewed_sha, falsifier_runs=falsifier_runs,
         falsifier_policy=falsifier_policy,
@@ -729,18 +751,11 @@ def governed_board_gate(
             _backing.reset_review_instruction_digest(token)
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
-    # agent-harness#1134 (EC-EXECFIND-2): a falsifier outcome or receipt comes only from
-    # this gate's own runs over the canonical repository, never from a seat, jailed or
-    # not. A leg that already carries a parsed attachment did not get it here; hold.
-    foreign = tuple(leg.seat_key or leg.leg for leg in panel.legs
-                    if leg.finding_falsifiers is not None)
-    if foreign:
-        return _block_result(
-            "foreign_falsifier_attachment", "governed_foreign_falsifier_attachment",
-            f"seat {foreign[0]} arrived with a falsifier attachment the gate did not parse; "
-            "holding (non-human)",
-            seat_key=foreign[0], reviewed_sha=reviewed_sha,
-        )
+    held = _foreign_falsifier_hold(
+        panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+    )
+    if held is not None:
+        return held
     attachments = []
     invalid: list[tuple[str, ValueError]] = []
     for leg in panel.legs:
@@ -759,7 +774,6 @@ def governed_board_gate(
         return _block_result(
             "invalid_falsifier", "governed_invalid_falsifier",
             f"seat {seat_key} supplied an invalid falsifier: {exc}; holding (non-human)",
-            seat_key=seat_key, reviewed_sha=reviewed_sha,
             extra_findings=_findings_from_panel(
                 panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
             ),
@@ -774,8 +788,6 @@ def governed_board_gate(
             "falsifier_count_exceeded", "governed_falsifier_count_exceeded",
             f"falsifier count exceeds four per seat or twelve per board "
             f"(seats: {', '.join(involved_seats)}); holding (non-human)",
-            seat_key=involved_seats[0] if len(involved_seats) == 1 else None,
-            reviewed_sha=reviewed_sha,
             extra_findings=_findings_from_panel(
                 panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
             ),
