@@ -40,7 +40,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
 
 from . import agy_provenance
 from . import gemini_heartbeat as gh
@@ -210,21 +209,60 @@ def single_push_url(runner, tree: Path) -> str | None:
     return lines[0].strip() if len(lines) == 1 and lines[0].strip() else None
 
 
+def _push_argv(tree: Path, ref: str, *, dry_run: bool) -> list:
+    # --no-verify: a pre-push hook runs even for --dry-run, and must never run here.
+    return ["git", "-C", str(tree), "push", *(["--dry-run"] if dry_run else []), "--porcelain",
+            "--no-verify", "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
+            "--", "origin", f"HEAD:{ref}"]
+
+
+def _to_blocks(result) -> int:
+    return sum(1 for line in (result.stdout or "").splitlines() if line.startswith("To "))
+
+
 def publish_branch(runner, tree: Path, name: str) -> str:
     """Create ``refs/heads/<name>`` at exactly ONE destination; ``"created"`` or a typed refusal.
 
-    PANEL (agent-harness#1078): the create-only push is ``merge_guard.publish_new_branch``,
-    run through this watch's own ``runner``, from the exact commit at ``HEAD``; the count
-    gates, the empty-lease create-only push and the typed outcomes are unchanged
-    (agent-harness#1130 r5-r7), and the push now also runs with ``core.hooksPath=/dev/null``.
-    """
-    from . import merge_guard
+    Nothing is resolved twice (codex B2 on agent-harness#1130 r5-r7). ``git remote get-url
+    --push --all origin`` must list exactly one destination, and the push goes to the remote
+    NAME ``origin`` -- the same list -- never to a printed string. So no URL is compared with
+    git's display form (which rewrites scp-style and credentialed URLs): the gates are COUNTS.
+    A ``--dry-run`` pre-flight must print exactly one ``To`` block (none = unavailable), and
+    the real push exactly one ``To`` block and one row for exactly ``refs/heads/<name>``.
 
-    sha = (_run(runner, ["git", "-C", str(tree), "rev-parse", "HEAD"], check=False).stdout or "").strip()
-    try:
-        return merge_guard.publish_new_branch(tree, name=name, sha=sha, run=runner)
-    except merge_guard.MergeGuardRefusal:
-        return "push_unavailable"  # no exact commit to publish: push nothing
+    The lease's EMPTY expected value means "must not exist", but a zero exit is NOT proof of
+    creation (a ref already at HEAD is "up to date", exit 0): creation is read from
+    ``--porcelain`` -- flag ``*``. ``--no-follow-tags --recurse-submodules=no`` keep host
+    config from widening the push; ``--no-verify`` keeps pre-push hooks from running. The
+    bot host's own git/ssh configuration (``core.sshCommand``, ``receivepack``, remote
+    helpers) is trusted; it is read at each git invocation (docs/ops/agy-upstream-watch.md).
+    """
+    ref = f"refs/heads/{name}"
+    if single_push_url(runner, tree) is None:
+        return "refused_push_destination_ambiguous"  # zero or several push destinations: push nothing
+    preflight = _run(runner, _push_argv(tree, ref, dry_run=True), check=False)
+    blocks = _to_blocks(preflight)
+    if blocks == 0:
+        return "push_unavailable"  # auth, network or a hook failure before any status
+    if blocks != 1:
+        return "refused_push_destination_ambiguous"  # git would push to several places: push nothing
+    result = _run(runner, _push_argv(tree, ref, dry_run=False), check=False)
+    lines = [line.split("\t") for line in (result.stdout or "").splitlines() if "\t" in line]
+    rows = [row for row in lines if len(row) >= 2]
+    if _to_blocks(result) != 1 or len(rows) != 1 or rows[0][1] != f"HEAD:{ref}":
+        return "push_unavailable"  # no single row for exactly our ref at a single destination
+    flag, summary = rows[0][0].strip(), (rows[0][2] if len(rows[0]) > 2 else "")
+    if flag == "*" and getattr(result, "returncode", 1) == 0:
+        return "created"
+    if flag == "=":
+        return "refused_branch_exists"  # already there, even at our own HEAD: never adopted
+    if flag == "!" and "stale info" in summary:
+        return "refused_branch_exists"
+    if flag == "!" and "refname conflict" in summary:
+        return "refused_ref_conflict"  # a directory/file ref conflict, e.g. a plain `agy-watch`
+    if flag == "!" and "remote rejected" in summary:
+        return "refused_push_remote_rejected"  # hook, ruleset, protection
+    return "refused_push_failed"
 
 
 def _run(runner, argv, **kwargs):
@@ -462,14 +500,9 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
                 f"{PUSHED_LABEL} {pushed} (display only; the watch reads its own local record)\n")
         # If this fails after the push, the fresh branch is left as an orphan: the watch never
         # deletes a ref (docs/ops/agy-upstream-watch.md).
-        # PANEL (agent-harness#1078): the draft PR through merge_guard, for exactly the branch
-        # published at ``pushed`` (read live), with --head <owner>:<branch>.
-        from . import merge_guard
-
-        created = SimpleNamespace(stdout=merge_guard.publish_new_branch(
-            repo, name=branch, sha=pushed, title=f"feat(agy): qualify agy {asset.version} (upstream watch)",
-            body=body, base="main", repo_slug=REPO_SLUG, push=False, run=runner,
-        ))
+        created = _run(runner, ["gh", "pr", "create", "--draft", "--repo", REPO_SLUG, "--base", "main",
+                                "--head", branch, "--title", f"feat(agy): qualify agy {asset.version} (upstream watch)",
+                                "--body", body], cwd=repo)
         # Read the PR back (read-only): it must sit on exactly the commit the watch pushed.
         url = (created.stdout or "").strip().splitlines()[-1] if (created.stdout or "").strip() else branch
         head = _run(runner, ["gh", "pr", "view", url, "--repo", REPO_SLUG, "--json", "headRefOid",

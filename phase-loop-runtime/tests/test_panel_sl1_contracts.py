@@ -2116,10 +2116,32 @@ def _token_site_violations(repo: Path) -> list[str]:
     return out
 
 
-def _tripwire(repo: Path) -> list[str]:
-    findings = _tw_scan(repo, host_allowlist=_TW_HOST_ALLOWLIST)
+# PANEL-RESIDUAL-SL1B (maintainer decision S1, 2026-09-29): the non-target publish sites of
+# credsep and agy_watch stay unguarded in SL-1 and move to SL-1b (agent-harness#1168), which
+# removes this list. Each entry is (path, enclosing function, finding); the residual is
+# EXACT -- see test_sl1_ec1_the_sl1b_residual_is_exactly_the_four_named_sites.
+_TW_RESIDUAL_SL1B = frozenset({
+    ("phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py", "execute", "git push"),
+    ("phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py", "execute", "gh pr create"),
+    ("phase-loop-runtime/src/phase_loop_runtime/agy_watch.py", "_push_argv", "git push"),
+    ("phase-loop-runtime/src/phase_loop_runtime/agy_watch.py", "main", "gh pr create"),
+})
+
+
+def _enclosing_function(repo: Path, rel: str, line: int) -> str | None:
+    tree = ast.parse((repo / rel).read_text(encoding="utf-8"))
+    best = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno <= line <= node.end_lineno:
+            if best is None or node.lineno > best.lineno:
+                best = node
+    return best.name if best is not None else None
+
+
+def _tripwire_raw(repo: Path) -> list[tuple[str, int, str]]:
+    """Every unclassified finding outside merge_guard.py, as (path, line, why)."""
     out = []
-    for f in findings:
+    for f in _tw_scan(repo, host_allowlist=_TW_HOST_ALLOWLIST):
         if f.verdict != "FAIL":
             continue
         if f.path == _MERGE_GUARD_REL:
@@ -2127,7 +2149,22 @@ def _tripwire(repo: Path) -> list[str]:
         displays = _TW_DATA_DISPLAYS.get(f.path, set())
         if any(f.why == f"git {second}" for _first, second in displays):
             continue
-        out.append(f"{f.path}:{f.line}: {f.why}")
+        out.append((f.path, f.line, f.why))
+    return out
+
+
+def _residual_key(repo: Path, finding: tuple[str, int, str]) -> tuple[str, str | None, str]:
+    path, line, why = finding
+    return path, _enclosing_function(repo, path, line), why
+
+
+def _tripwire(repo: Path, *, residual=_TW_RESIDUAL_SL1B) -> list[str]:
+    out = []
+    for finding in _tripwire_raw(repo):
+        if _residual_key(repo, finding) in residual:
+            continue
+        path, line, why = finding
+        out.append(f"{path}:{line}: {why}")
     mg = repo / _MERGE_GUARD_REL
     if not mg.exists():
         out.append("merge_guard.py is missing")
@@ -2142,6 +2179,20 @@ def test_sl1_ec1_gateway_tripwire():
     its one merge_guard function, and the authority names appear only where allowed."""
     findings = _tripwire(REPO_ROOT)
     assert findings == [], "\n".join(findings)
+
+
+def test_sl1_ec1_the_sl1b_residual_is_exactly_the_four_named_sites():
+    """PANEL-RESIDUAL-SL1B (maintainer decision S1; agent-harness#1168): the residual is exact.
+    Each of the four named sites is still an unguarded finding (a site guarded without
+    updating the list fails), and each maps to exactly one finding (so a fifth unguarded
+    site in the same function cannot hide behind an entry; any other site already fails
+    the gateway tripwire)."""
+    keys = [_residual_key(REPO_ROOT, finding) for finding in _tripwire_raw(REPO_ROOT)]
+    present = [key for key in keys if key in _TW_RESIDUAL_SL1B]
+    assert sorted(set(present)) == sorted(_TW_RESIDUAL_SL1B), (
+        f"residual entries no longer unguarded (update the list): {sorted(_TW_RESIDUAL_SL1B - set(present))}")
+    assert len(present) == len(_TW_RESIDUAL_SL1B), f"a residual entry covers more than one site: {present}"
+    assert not [key for key in keys if key not in _TW_RESIDUAL_SL1B], "an unguarded site outside the residual"
 
 
 def _snippet_findings(tmp_path: Path, source: str, *, name: str = "mod.py") -> list[str]:
