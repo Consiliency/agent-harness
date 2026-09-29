@@ -8507,6 +8507,23 @@ def _run_legible_c4_early_prover(
 _LEGIBLE_PANEL_LANDINGS: dict[str, tuple[object, object]] = {}
 
 
+def _panel_leg_record_names(seats, legs) -> dict[str, str]:
+    """Per-seat record name stems (``implementation-panel-<stem>.json``), keyed by seat.
+
+    Today's ``<leg>`` whenever a vendor holds one seat, so every existing reader (the HARDEN
+    evidence verifier, the legible readers) is unchanged; ``<leg>.<lens>`` for each seat of a
+    vendor that holds several (a fallback board). The lens is the seat's lane name, unique on
+    a board, so a name never depends on a seat's position (lead ruling Q2, agent-harness#1078).
+    """
+    from collections import Counter
+
+    per_leg = Counter(str(leg.leg) for leg in legs)
+    return {
+        seat.seat_key: str(leg.leg) if per_leg[str(leg.leg)] == 1 else f"{leg.leg}.{seat.lens}"
+        for seat, leg in zip(seats, legs, strict=True)
+    }
+
+
 def _panel_require_landing(repo, result, context, snapshot, tier, expected_head) -> None:
     """PANEL: refuse the landing unless ``invoke_board`` admitted it and, after a re-gate
     at a target head that changed ``[panel.*]`` or the profile, the rebuilt context still
@@ -8651,13 +8668,11 @@ def _run_legible_panel(
         _panel_require_landing(repo, result, panel_context, panel_snapshot, panel_tier, expected_head)
         # The admitted decision and its context, for this run directory's merge site only.
         _LEGIBLE_PANEL_LANDINGS[str(Path(run_dir).resolve())] = (result.landing_decision, panel_context)
-    from collections import Counter
-
-    leg_names = Counter(str(outcome.leg) for outcome in result.legs)
+    leg_record_names = _panel_leg_record_names(board.seats, result.legs)
     for seat, outcome in zip(board.seats, result.legs, strict=True):
         lines = [line.strip() for line in outcome.text.splitlines() if line.strip()]
         verdict = lines[-1] if lines and lines[-1] in {"AGREE", "PARTIALLY AGREE", "DISAGREE"} else "EMPTY"
-        leg_name = outcome.leg if leg_names[str(outcome.leg)] == 1 else f"{outcome.leg}.{seat.lens}"
+        leg_name = leg_record_names[seat.seat_key]
         leg_path = run_dir / f"implementation-panel-{leg_name}.json"
         leg_payload = {
             "leg": outcome.leg,

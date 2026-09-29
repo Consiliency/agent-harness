@@ -2558,3 +2558,47 @@ def test_sl1_q7_the_closeout_push_is_a_token_push_only_where_no_landing_exists(t
         assert refused is None and remote.split()[0] == t.change_head
     else:
         assert refused == "panel_merge_authority_missing" and remote == ""
+
+
+def _record_fixture(available, *, tmp_path, monkeypatch):
+    s = _names()
+    c = _context(s, tmp_path, monkeypatch, user=_rotated_cr_table(), available=available)
+    seats = c.ctx.composed.board.seats
+    legs = tuple(pi.PanelLegResult(leg=str(seat.harness), status="OK", text="AGREE", seat_key=seat.seat_key)
+                 for seat in seats)
+    return seats, legs
+
+
+def test_sl1_q2_a_one_seat_per_vendor_board_keeps_todays_record_names(tmp_path, monkeypatch):
+    """Q2 (a): every vendor holds one seat -> exactly today's ``implementation-panel-<leg>``."""
+    from phase_loop_runtime import runner
+
+    seats, legs = _record_fixture(BOARD_VENDORS, tmp_path=tmp_path, monkeypatch=monkeypatch)
+    names = runner._panel_leg_record_names(seats, legs)
+    assert sorted(names.values()) == sorted(BOARD_VENDORS)
+
+
+def test_sl1_q2_a_fallback_board_names_each_seat_by_leg_and_lens_regardless_of_position(tmp_path, monkeypatch):
+    """Q2 (a): a vendor holding several seats gets ``<leg>.<lens>`` names, unique across the
+    board, identical across runs, and independent of seat order (never position-keyed); the
+    runner's ``implementation-panel-*.json`` glob collects both forms."""
+    from phase_loop_runtime import runner
+
+    seats, legs = _record_fixture(("claude", "codex"), tmp_path=tmp_path, monkeypatch=monkeypatch)
+    names = runner._panel_leg_record_names(seats, legs)
+    assert len(set(names.values())) == len(seats)
+    lens_of = {seat.seat_key: str(seat.lens) for seat in seats}
+    per_leg = {leg.leg: sum(1 for other in legs if other.leg == leg.leg) for leg in legs}
+    assert any(n > 1 for n in per_leg.values()), "fixture precondition: a vendor holds several seats"
+    for seat, leg in zip(seats, legs):
+        expected = f"{leg.leg}.{lens_of[seat.seat_key]}" if per_leg[leg.leg] > 1 else leg.leg
+        assert names[seat.seat_key] == expected
+    assert runner._panel_leg_record_names(seats, legs) == names  # stable across runs
+    reversed_names = runner._panel_leg_record_names(tuple(reversed(seats)), tuple(reversed(legs)))
+    assert reversed_names == names, "a record name moved with the seat's position"
+    run_dir = tmp_path / "records"
+    run_dir.mkdir()
+    for stem in ("codex", *names.values()):
+        (run_dir / f"implementation-panel-{stem}.json").write_text("{}\n", encoding="utf-8")
+    collected = {p.name for p in run_dir.glob("implementation-panel-*.json")}
+    assert collected == {f"implementation-panel-{stem}.json" for stem in ("codex", *names.values())}
