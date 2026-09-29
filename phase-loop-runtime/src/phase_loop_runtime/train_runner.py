@@ -1993,7 +1993,9 @@ def _live_merge_pr(
         # (a queue-protected target is refused up front), B0, the re-gate, the user
         # file and the PR's live state, then merges the bound PR once. An enqueued
         # merge is dequeued and refused; the queue is never followed on this path.
-        slug = resolve_broker_repo_identity(Path(workspace))
+        # The broker-validated `--repo` binding resolved above; `guarded_merge` refuses
+        # a missing or mismatched one against the decision's own bindings.
+        slug = repo_args[1] if len(repo_args) >= 2 and repo_args[0] == "--repo" else ""
         return merge_guard.guarded_merge(workspace, authority=authority, action=merge_guard.GhPrMerge(
             repo_slug=slug, pr_number=int(pr_number) if pr_number is not None else -1,
             head_sha=head_sha or "", target_branch=base, context=panel_context,
