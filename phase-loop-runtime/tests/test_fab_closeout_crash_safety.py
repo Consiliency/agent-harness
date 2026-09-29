@@ -556,7 +556,20 @@ def test_push_uses_gate_time_coordinates_on_concurrent_switch(tmp_path, monkeypa
         return ok
 
     monkeypatch.setattr(R, "_fab_advance_ref", advance_then_detach)
-    pushes = _spy_pushes(monkeypatch)
+    # PANEL SL-1 (agent-harness#1078, granted): the closeout push runs through merge_guard
+    # (guarded argv: -c core.hooksPath=/dev/null, --no-verify); record its push as
+    # ("push", <remote>, <refspec>), still performing the real push.
+    from phase_loop_runtime import merge_guard
+
+    pushes: list = []
+    real_spawn = merge_guard._spawn
+
+    def spy_spawn(argv, **kw):
+        if "push" in argv:
+            pushes.append(("push", argv[-2], argv[-1]))
+        return real_spawn(argv, **kw)
+
+    monkeypatch.setattr(merge_guard, "_spawn", spy_spawn)
 
     branch = _git(repo, "symbolic-ref", "--short", "HEAD")
     gated_before = _git(repo, "rev-parse", f"refs/heads/{branch}")  # pre-advance tip == parent
