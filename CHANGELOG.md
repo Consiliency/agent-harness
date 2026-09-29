@@ -6,6 +6,60 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### BAML v1 0.20.1 (agent-harness#1135)
+
+- **Dependency.** `baml-py>=0.222,<0.223` is replaced by `baml-bridge==0.20.1` (exact pin, D6)
+  and `protobuf>=6.31.1,<8`. The protobuf floor is baml-bridge's own gencode check, so an
+  environment pinned to `protobuf<6` no longer resolves. The `baml` / `baml-cli` console scripts
+  that `baml-py` installed are gone. The public `baml_modular` API is unchanged.
+- **A BAML worker subprocess.** The v1 runtime never loads in the runner process: it runs in
+  `phase_loop_runtime/_baml_worker.py`, started on first use (about 0.8 s cold start per process,
+  about 3 ms per call after), with **about 280 MB resident** (v0 added about 21 MB in-process).
+  Its environment is an allowlist (`PATH` to the interpreter, the temp and Windows system
+  variables, and the dynamic-loader variables); no credential, proxy, `HOME`, `BAML_*` or
+  locale variable reaches it. It runs in its own session, so a terminal Ctrl-C does not kill
+  it, and in the package directory, never the caller's cwd. Its native exit hooks are confined
+  to it.
+- **Owner death.** Linux (glibc and musl): `PR_SET_PDEATHSIG`, with a `getppid` watchdog as
+  backup. Windows: a `KILL_ON_JOB_CLOSE` Job Object; the worker is started with the real
+  interpreter (`sys._base_executable`) so the venv redirector cannot escape the job. macOS:
+  the `getppid` watchdog; residual: during the ~0.8 s `initialize_runtime` the watchdog cannot
+  run, so an init that hung forever *after* the owner died would orphan the worker.
+- **New `BamlWorkerError(BamlValidationError)`** with `.kind` and `.rc`. Transport and liveness
+  faults are retried at most twice, each on a fresh worker with the same source snapshot and
+  byte-identical request body; a death between calls is recovered and logged, not charged.
+  After the retry budget the closeout parse and the Tier-3 gate record a `blocked` /
+  `unretryable_external_outage` "NOT evaluated" outcome, never a verdict and never a skip, and a
+  launch fails typed. A fault that persists through the retry budget can therefore abort
+  `phase-loop run` before launch (#22, #24). `worker_fault_log()` is a new public diagnostic.
+- **Closeout prompt text changed (D1).** v1 renders the EmitPhaseCloseout prompt; the request
+  envelope, the D1a schema description (`schema_sha256` unchanged) and the Tier-3 evidence
+  request are byte-identical to v0.
+- **`injection.py` no longer launches with a fallback instruction** when the closeout contract
+  cannot be rendered (#22).
+- **Behaviour fixes and limits.** A backslash in a closeout list value no longer crashes the
+  render (#10). A closeout integer beyond i64 now parses as `null` where v0 clamped it (#12). A
+  serialized request over 4 MiB is refused with a plain `BamlValidationError` before anything
+  is sent; the 17 MiB response cap is derived from it (#27).
+- **Not usable in a forked child that has not exec'd.** Call BAML from the parent or from a
+  spawn- or exec-started process; a non-exec fork child gets `BamlWorkerError(kind="forked")`
+  (#30). Nothing in-tree forks without exec (agent-harness#1140).
+- **Sources.** The `.baml` files move to v1 syntax and gain `phase_loop_bridge.baml` (host glue,
+  excluded from adoption-bundle schema refs). The raw digests of the 8 schema files change, so
+  **vendoring repos must run `phase-loop adoption-bundle refresh` after upgrading** (#26). CI
+  gains a blocking `baml-sources` job (sha-verified `baml-cli 0.20.1`, fmt round-trip, `check` on
+  raw and rendered sources); C-8 of the 2026-09-01 codebase review is covered by the D3 field
+  regex, the schema-dump test and that fmt round-trip.
+- **Platforms.** Verified: x86_64 glibc (py3.10, py3.12). Pre-merge dispatch pending for
+  `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel` and `windows-latest`; not in any matrix and
+  unverified: musl-aarch64 and win-arm64.
+- **Pin-bump checklist** for any future `baml-bridge` change: re-run the `baml describe` builtin
+  `spawn` audit, the release-notes review and Step 0-style parity against the v0 goldens.
+- **agy requalification at the release cut.** This change touches `phase_loop_runtime/**/*.py`
+  (including the new worker), so the next release cut requalifies both agy images and records
+  the `baml-bridge` and `protobuf` versions in the release notes.
+- **Rollback:** revert to `baml-py>=0.222,<0.223` and cut a patch release.
+
 ### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140)
 
 - The lease supervisor no longer runs as Python between fork and exec in a child of the
