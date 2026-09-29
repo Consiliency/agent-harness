@@ -686,19 +686,24 @@ class TestLiveMergePrFabPromotion:
         _base, head = _reviewed_pr(repo, "run-mq")
 
         calls: list = []
-        fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=1, calls=calls)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-            # no-landing token (option C) and runs today's primitive byte-for-byte.
-            from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing on a
+        # queue-protected target is refused up front (agent-harness#1111 queue ruling) --
+        # zero merge attempts, no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
-            sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq", fab_fetch_origin="fetchsrc",
-                _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline
-                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
-            )
-        assert sha == "sha-queuemerge"
-        assert [c for c in calls if _gh_subcommand(c) == "merge"], "the merge (enqueue) must be issued — prohibition removed"
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=True)
+        fake = land.wrap(_make_queue_gh_fake(base_ref="main", head=head, merges_after=1, calls=calls))
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises(land.mg.MergeGuardRefusal) as refused:
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq", fab_fetch_origin="fetchsrc",
+                    _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline
+                    **land.merge_kwargs(),
+                )
+        assert refused.value.code == "panel_merge_queue_target"
+        assert land.merge_attempts == 0, "a queue-protected target saw a merge attempt"
+        assert not [c for c in calls if _gh_subcommand(c) == "merge"], "a queue-protected target saw a merge attempt"
 
     def test_fab_queue_rewritten_head_fails_closed(self, tmp_path: Path, monkeypatch):
         """#265 detective binding + known limitation: the terminal re-assertion is
@@ -712,17 +717,23 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-rebase")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merged_head="sha-rebased-by-queue")
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing on a
+        # queue-protected target is refused up front (agent-harness#1111 queue ruling): zero merge
+        # attempts, no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-rebase",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_queue_target"
+        assert land.merge_attempts == 0, "a queue-protected target saw a merge attempt"
 
     def test_fab_queue_closed_without_merge_blocks(self, tmp_path: Path, monkeypatch):
         """#265 fail-closed: an enqueued PR that goes CLOSED without merging (dequeued
@@ -732,17 +743,23 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-closed")
         fake = _make_queue_gh_fake(base_ref="main", head=head, closes=True)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="merge-queue-dequeued"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing on a
+        # queue-protected target is refused up front (agent-harness#1111 queue ruling): zero merge
+        # attempts, no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-closed",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_queue_target"
+        assert land.merge_attempts == 0, "a queue-protected target saw a merge attempt"
 
     def test_fab_queue_kicked_open_early_blocks_no_hang(self, tmp_path: Path, monkeypatch):
         """#265 CR round 1 Blocker A-ii: a PR KICKED from the queue (merge-group check
@@ -755,17 +772,23 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-kick")
         fake = _make_queue_gh_fake(base_ref="main", head=head, kicked=True)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="merge-queue-removed"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) and is refused panel_merge_enqueued; no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-kick",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_fab_queue_merge_between_nonatomic_reads_is_recorded(self, tmp_path: Path, monkeypatch):
         """#265 CR round 2 Blocker 1: `_live_pr_queue_status` reads `state` and
@@ -780,17 +803,23 @@ class TestLiveMergePrFabPromotion:
         # iter 1 → in queue (seen_live); iter 2 → merge lands between the state and
         # membership reads (stale-OPEN + in_queue False).
         fake = _make_queue_gh_fake(base_ref="main", head=head, race_merge_at=2)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-            # no-landing token (option C) and runs today's primitive byte-for-byte.
-            from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing on a
+        # queue-protected target is refused up front (agent-harness#1111 queue ruling): zero merge
+        # attempts, no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
-            sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race2",
-                fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
-                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
-            )
-        assert sha == "sha-queuemerge", "a merge racing the non-atomic reads must be RECORDED, not false-removed"
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race2",
+                    fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                    **land.merge_kwargs(),
+                )
+        assert refused.value.code == "panel_merge_queue_target"
+        assert land.merge_attempts == 0, "a queue-protected target saw a merge attempt"
 
     def test_fab_queue_graphql_pinned_to_broker_host_not_ambient_gh_host(self, tmp_path: Path, monkeypatch):
         """#265 CR round 2 Blocker 2: `gh api graphql` takes no `--repo` and resolves
@@ -806,17 +835,24 @@ class TestLiveMergePrFabPromotion:
         calls: list = []
         # merges_after high + timeout → drives the dequeue graphql too; membership polls run.
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=True, calls=calls)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError):  # times out → dequeue ladder; we assert the host binding
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing on a
+        # target that is not queue-protected and a merge that comes back enqueued, so
+        # merge_guard's membership read runs (the dequeue is faked at the seam); every GraphQL
+        # call stays pinned to the broker host.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-host",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
         graphql_calls = [c for c in calls if c[:2] == ["gh", "api"] and "graphql" in " ".join(c)]
         assert graphql_calls, "the queue path must issue GraphQL calls"
         for c in graphql_calls:
@@ -836,17 +872,23 @@ class TestLiveMergePrFabPromotion:
         _base, head = _reviewed_pr(repo, "run-mq-window")
         # Poll 1: not yet in queue (window). Poll 2+: in queue. Merges after poll 2.
         fake = _make_queue_gh_fake(base_ref="main", head=head, enqueue_after=1, merges_after=2)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-            # no-landing token (option C) and runs today's primitive byte-for-byte.
-            from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing on a
+        # queue-protected target is refused up front (agent-harness#1111 queue ruling): zero merge
+        # attempts, no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
-            sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-window",
-                fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
-                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
-            )
-        assert sha == "sha-queuemerge", "the not-yet-enqueued window must NOT early-block; it merges once queued"
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-window",
+                    fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                    **land.merge_kwargs(),
+                )
+        assert refused.value.code == "panel_merge_queue_target"
+        assert land.merge_attempts == 0, "a queue-protected target saw a merge attempt"
 
     def test_fab_queue_surviving_auto_merge_is_not_confirmed_dequeued(self, tmp_path: Path, monkeypatch):
         """#265 CR round 1 Blocker A-i: dequeue that removes the queue entry but leaves
@@ -859,17 +901,23 @@ class TestLiveMergePrFabPromotion:
         _base, head = _reviewed_pr(repo, "run-mq-auto")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999,
                                    auto_merge=True, dequeue_ok=True, disable_auto_ok=False)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) that cannot confirm: the escalation panel_merge_dequeue_failed.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=False)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-auto",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_dequeue_failed"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_fab_queue_unreadable_membership_does_not_early_break(self, tmp_path: Path, monkeypatch):
         """#265 CR round 1: UNREADABLE membership (`isInMergeQueue` null) must NOT be
@@ -880,17 +928,23 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-unreadable")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, membership_unreadable=True)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) and is refused panel_merge_enqueued; no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-unreadable",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_fab_queue_merge_during_dequeue_is_recorded_not_halted(self, tmp_path: Path, monkeypatch):
         """#265 CR round 1 Blocker B: if the PR MERGES during the (now-failing) dequeue
@@ -901,17 +955,23 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-race")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, merge_during_dequeue=True)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-            # no-landing token (option C) and runs today's primitive byte-for-byte.
-            from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) and is refused panel_merge_enqueued; no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
-            sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
-                fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
-            )
-        assert sha == "sha-queuemerge"
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
+                    fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    **land.merge_kwargs(),
+                )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_fab_queue_timeout_dequeue_confirmed_blocks(self, tmp_path: Path, monkeypatch):
         """#265 risk-1: the queue never terminalizes within the bound; on timeout the
@@ -921,18 +981,24 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-to")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=True)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="merge-queue-timeout-dequeued"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) and is refused panel_merge_enqueued; no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-to",
                     fab_fetch_origin="fetchsrc", queue_poll_timeout_s=1800.0,
                     _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_fab_queue_timeout_but_already_merged_records_not_blocks(self, tmp_path: Path, monkeypatch):
         """#265 risk-1 (do NOT block a merge that happened): the deadline passes, but
@@ -944,17 +1010,23 @@ class TestLiveMergePrFabPromotion:
         _base, head = _reviewed_pr(repo, "run-mq-race")
         # merges_after=1 → after the first state poll, the timeout re-read observes MERGED.
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=1)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-            # no-landing token (option C) and runs today's primitive byte-for-byte.
-            from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) and is refused panel_merge_enqueued; no SHA recorded.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
-            sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
-                fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
-            )
-        assert sha == "sha-queuemerge"
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
+                _live_merge_pr(
+                    repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
+                    fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    **land.merge_kwargs(),
+                )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_fab_queue_unreconcilable_halts_loud(self, tmp_path: Path, monkeypatch):
         """#265 risk-1 crux: the queue never terminalizes AND the dequeue cannot be
@@ -965,17 +1037,23 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-unrec")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=False)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch landing whose
+        # merge comes back enqueued makes one `gh pr merge`, then one merge_guard.dequeue
+        # (faked at the seam) that cannot confirm: the escalation panel_merge_dequeue_failed.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=False)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-unrec",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_dequeue_failed"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_flag_off_resume_with_stale_run_id_is_byte_neutral(self, tmp_path: Path, monkeypatch):
         """#265 CR round 3: a flag-OFF RESUME of a node whose ledger persisted a
@@ -991,23 +1069,28 @@ class TestLiveMergePrFabPromotion:
         _base, head = _reviewed_pr(repo, "run-stale")  # provenance persisted, but flag is OFF
         calls: list = []
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, calls=calls)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="could not determine merge commit SHA"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch
+        # flag-off landing pins the guarded argv in place of today's; the FAB queue wait stays
+        # dormant (train_runner's queue poll never runs).
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head,
                     run_id="run-stale",  # STALE persisted run_id restored on a flag-off resume
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
-        assert merge_calls and "--delete-branch" in merge_calls[0], (
-            "a flag-off resume with a stale run_id must KEEP --delete-branch (byte-neutral vs non-FAB main)"
-        )
-        assert not any("isInMergeQueue" in " ".join(c) for c in calls), (
+        assert merge_calls and merge_calls[0] == ["gh", "pr", "merge", "123", "--repo", land.SLUG, "--merge",
+                                                 "--match-head-commit", head], merge_calls
+        assert not any("autoMergeRequest" in " ".join(c) and "number,state" in " ".join(c) for c in calls), (
             "the FAB queue wait must NOT run when the flag is off — FAB stays dormant"
         )
 
@@ -1021,16 +1104,21 @@ class TestLiveMergePrFabPromotion:
         repo = _make_fab_repo(tmp_path)
         _base, head = _reviewed_pr(repo, "run-mq-nonfab")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999)
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            with pytest.raises(RuntimeError, match="could not determine merge commit SHA"):
-                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-                # no-landing token (option C) and runs today's primitive byte-for-byte.
-                from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch
+        # non-FAB landing pins the guarded argv; an enqueued merge is dequeued and refused.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, dequeue_confirms=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
+            with pytest.raises((land.mg.MergeGuardRefusal, land.mg.MergeGuardEscalation)) as refused:
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc",
-                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                    **land.merge_kwargs(),
                 )
+        assert refused.value.code == "panel_merge_enqueued"
+        assert land.merge_attempts == 1 and len(land.dequeue_calls) == 1
 
     def test_repo_slug_owner_repo_extraction(self):
         from phase_loop_runtime import train_runner as tr
@@ -1055,36 +1143,22 @@ class TestLiveMergePrFabPromotion:
                 raise AssertionError("no `gh api` call may run on the byte-neutral flag-off merge path")
             return base_fake(cmd, **kwargs)
 
-        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
-            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
-            # no-landing token (option C) and runs today's primitive byte-for-byte.
-            from phase_loop_runtime import merge_guard as _merge_guard
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): a post-switch
+        # flag-off landing reads the target's branch rules (always, now) but makes no
+        # merge-queue GraphQL call; the synchronous merge returns its real merge commit.
+        from test_panel_sl1_contracts import FabDecisionLanding
 
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=False, sync_merge=True)
+        fake = land.wrap(fake)
+        with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc",
-                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
+                **land.merge_kwargs(),
             )
-        assert sha == "sha-realmerge"
+        assert sha == land.merged and land.merged is not None
 
 
-# =========================================================================== #
-# PIECE 3a — the durable admission bridge (Consiliency/agent-harness#191).
-#
-# Piece 3a binds the trusted `fab_run_id` at ADMISSION time (the same append
-# that records the admitted head) into the durable train ledger, which ACTIVATES
-# piece 1's previously-inert merge-time re-gate. Coverage:
-#   A1-A5  `_resolve_admission_fab_run_id` fail-closed matrix (unit).
-#   A6     fresh admission binds fab_run_id in the ledger AND threads it to the
-#          merge fn (the re-gate now runs for FAB-admitted nodes).
-#   A7     BYTE-NEUTRAL off: flag off ⇒ no fab_run_id bound even if a snapshot
-#          leaks one; the ledger record is unchanged and no run_id threads.
-#   A8     RESUME: the fab_run_id bound at first admission is recovered from the
-#          durable ledger (the only source on resume) and threaded to the merge.
-#   A9     admission head-mismatch ⇒ node BLOCKS (fail-closed), no merge.
-#   A10/11 end-to-end through run_train with the REAL `_live_merge_pr`: the
-#          re-gate fires for an admitted node — passes a legit gated head,
-#          fail-closes on tampered provenance.
-# =========================================================================== #
 
 from types import SimpleNamespace  # noqa: E402
 
@@ -1545,7 +1619,18 @@ class TestPiece3aRegateEndToEnd:
         roadmap, ws_map, ledger = self._one_node_resume(tmp_path, repo, head, "run-mq-e2e")
 
         fake = _make_queue_gh_fake(base_ref="main", head=head, merged_sha="sha-queue-terminal", merges_after=1)
+        # PANEL SL-1 (agent-harness#1078, granted; lead ruling Q8): through run_train, a train
+        # review that carries an admitted, bound landing decision onto a queue-protected
+        # target is refused up front (agent-harness#1111): run-train halts, no merge attempt,
+        # and no SHA enters the ledger.
+        from test_panel_sl1_contracts import FabDecisionLanding
+
+        from phase_loop_runtime.governed_premerge import LoopResult
+
+        land = FabDecisionLanding(monkeypatch, repo, head=head, queue_protected=True, pr_number=1)
+        fake = land.wrap(fake)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            land.decide()
             result = run_train(
                 roadmap, ledger, run_mode="governed",
                 resolve_workspace=lambda n: ws_map[n.node_id],
@@ -1557,14 +1642,15 @@ class TestPiece3aRegateEndToEnd:
                 _live_pr_head_sha_fn=lambda ws, br: None,
                 _merge_phase_enabled=True,  # REAL _live_merge_pr → the queue wait runs here
                 _reverify_fn=_reverify_pass,
-                _train_review_fn=_approval_review_fn,
+                _train_review_fn=lambda _artifact, _run_mode: LoopResult(
+                    mergeable=True, ran=True, rounds=1, panel=land.result),
                 fab_fetch_origin="fetchsrc",
             )
-        assert result["status"] == "merged", result
+        assert result["status"] == "merge_halted" and result["reason"] == "panel_merge_queue_target", result
+        assert land.merge_attempts == 0
         rec = read_ledger(ledger)["repo-a/specs/plan-a.md"]
-        assert rec.status == "merged"
-        assert rec.upstream_merge_sha == "sha-queue-terminal", (
-            "the QUEUE-produced terminal SHA must be recorded in the durable ledger, not lost"
+        assert rec.status != "merged" and rec.upstream_merge_sha is None, (
+            "a refused queue-protected landing must record no SHA in the durable ledger"
         )
 
     def test_regate_fail_closes_on_tampered_provenance(self, tmp_path: Path, monkeypatch):

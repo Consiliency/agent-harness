@@ -2602,3 +2602,119 @@ def test_sl1_q2_a_fallback_board_names_each_seat_by_leg_and_lens_regardless_of_p
         (run_dir / f"implementation-panel-{stem}.json").write_text("{}\n", encoding="utf-8")
     collected = {p.name for p in run_dir.glob("implementation-panel-*.json")}
     assert collected == {f"implementation-panel-{stem}.json" for stem in ("codex", *names.values())}
+
+
+# ---------------------------------------------------------------------------------------
+# Shared fixture for FABREADMIT's granted decision-path nodes (lead ruling Q8). Not a test.
+# ---------------------------------------------------------------------------------------
+
+
+class FabDecisionLanding:
+    """Turn a FABREADMIT fixture repository into a post-switch PR landing: the GOVLEAN
+    switch, a real gate-time context, and a decision ``invoke_board`` registered with its
+    bindings (the PR's live number, base and head read back from the fixture's fake ``gh``).
+
+    ``wrap(fake)`` answers merge_guard's own reads -- the number-selected ``gh pr view``s, the
+    branch-rules lookups -- and passes every other command to the fixture's fake, so
+    today's train_runner reads keep their lifecycle. ``queue_protected`` makes the target's
+    rules a merge queue. The dequeue is faked at the merge_guard seam (``dequeue_confirms``),
+    as the grant states, and so is the target fetch: merge_guard's origin read names the
+    fixture's real bare remote, while ``origin`` keeps the GitHub URL FAB resolves."""
+
+    SLUG = "github.com/testorg/testrepo"
+
+    def __init__(self, monkeypatch, repo: Path, *, head: str, base_ref: str = "main", pr_number: int = 123,
+                 queue_protected: bool = False, dequeue_confirms: bool = True, fetchsrc: str = "fetchsrc",
+                 sync_merge: bool = False) -> None:
+        from phase_loop_runtime import merge_guard as mg
+        from phase_loop_runtime import train_runner as tr
+
+        self.mg, self.repo, self.head, self.base_ref = mg, Path(repo), head, base_ref
+        self.pr_number, self.queue_protected, self.sync_merge = pr_number, queue_protected, sync_merge
+        self.merged: str | None = None
+        self.merge_attempts = 0
+        self.fetchsrc = fetchsrc
+        self.dequeue_calls: list = []
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        run = lambda *a: subprocess.run(["git", "-C", str(self.repo), *a], check=True, capture_output=True,  # noqa: E731
+                                        text=True, env=env).stdout.strip()
+        # The guard's target fetch goes to the fixture's real bare remote (the grant: "each
+        # fakes merge_guard's added target fetch"); FAB keeps reading origin's GitHub URL.
+        target_remote = run("remote", "get-url", fetchsrc)
+        monkeypatch.setattr(mg, "_origin_url", lambda repo_dir: target_remote)
+        (self.repo / "plans").mkdir(exist_ok=True)
+        (self.repo / "plans" / "manifest.json").write_text(lanes._GOVLEAN_SWITCH, encoding="utf-8")
+        with open(self.repo / ".git" / "info" / "exclude", "a", encoding="utf-8") as handle:
+            handle.write("plans/manifest.json\n")
+        monkeypatch.setattr(mg, "_repo_slug", lambda repo_dir: self.SLUG)
+        monkeypatch.setattr(tr, "_gh_repo_binding", lambda workspace: (["--repo", self.SLUG], dict(os.environ)))
+
+        def dequeue(workspace, **kwargs):
+            self.dequeue_calls.append(kwargs)
+            return dequeue_confirms
+
+        monkeypatch.setattr(mg, "dequeue", dequeue)
+        s = _names()
+        _user_file(self.repo.parent / "panel-xdg", monkeypatch, USER_BODY)
+        lanes._ForcedProbes(s, monkeypatch)
+        run("fetch", "-q", fetchsrc)
+        self.b0 = run("rev-parse", f"refs/remotes/{fetchsrc}/{base_ref}")
+        self.s, self.snap = s, s.snapshot()
+        self.ctx = s.build("code-review", self.snap, repo_dir=self.repo, base_revision=self.b0,
+                           head_revision=head, monitoring_policy="bounded")
+        self.decision = None
+
+    def _pr(self, fields: str) -> dict:
+        record = {"number": self.pr_number, "baseRefName": self.base_ref, "headRefOid": self.head,
+                  "headRepository": {"name": "testrepo"}, "url": f"https://github.com/testorg/testrepo/pull/{self.pr_number}",
+                  "isDraft": False, "state": "MERGED" if self.merged else "OPEN",
+                  "mergeCommit": {"oid": self.merged} if self.merged else None}
+        return {key: record[key] for key in fields.split(",") if key in record}
+
+    def wrap(self, fake):
+        def guarded(cmd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "merge"] and len(cmd) > 3 and str(cmd[3]).isdigit() and "--disable-auto" not in cmd:
+                self.merge_attempts += 1
+            if cmd[:3] == ["gh", "pr", "view"] and len(cmd) > 3 and str(cmd[3]).isdigit() and "--json" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(self._pr(cmd[cmd.index("--json") + 1])), "")
+            if cmd[:2] == ["gh", "api"] and any("/rules/branches/" in str(a) for a in cmd):
+                rules = [{"type": "merge_queue"}] if self.queue_protected else []
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(rules), "")
+            if cmd[:2] == ["gh", "api"] and any(str(a).endswith("/protection") for a in cmd):
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 404: Not Found")
+            if self.sync_merge and cmd[:3] == ["gh", "pr", "merge"] and len(cmd) > 3 and str(cmd[3]).isdigit():
+                fake(cmd, **kwargs)  # the fixture still observes (and counts) the merge
+                self.merged = self._real_merge()
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return fake(cmd, **kwargs)
+
+        return guarded
+
+    def _real_merge(self) -> str:
+        """GitHub's synchronous merge: a real merge commit [B0, head] on the target."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                    "GIT_COMMITTER_EMAIL": "t@t"})
+        run = lambda *a: subprocess.run(["git", "-C", str(self.repo), *a], check=True, capture_output=True,  # noqa: E731
+                                        text=True, env=env).stdout.strip()
+        tree = run("merge-tree", "--write-tree", self.b0, self.head).splitlines()[0]
+        commit = subprocess.run(["git", "-C", str(self.repo), "commit-tree", tree, "-p", self.b0, "-p", self.head],
+                                input="merge pr\n", check=True, capture_output=True, text=True, env=env).stdout.strip()
+        run("push", "-q", self.fetchsrc, f"{commit}:refs/heads/{self.base_ref}")
+        return commit
+
+    def decide(self):
+        """The landing: ``invoke_board`` admits and registers the bound decision (call it
+        with the wrapped fake installed)."""
+        result = invoke_sanctioned_review_transport(
+            self.ctx.composed.board, "artifact", spawn=_ok_spawn(), landing_tier="plan", panel_context=self.ctx,
+            review_policy=self.s.landing_policy("plan", context=self.ctx), president_invoke=deferring_president,
+            repo_dir=str(self.repo), target_branch=self.base_ref, reviewed_head=self.head,
+            reviewed_pr=self.pr_number)
+        self.result = result
+        self.decision = result.landing_decision
+        assert self.decision is not None and self.decision.admitted
+        return self.decision
+
+    def merge_kwargs(self) -> dict:
+        return {"authority": self.decision, "panel_context": self.ctx, "pr_number": self.pr_number}

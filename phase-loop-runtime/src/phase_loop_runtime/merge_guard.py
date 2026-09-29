@@ -489,7 +489,11 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
         if state != "OPEN":
             raise MergeGuardEscalation("panel_merge_base_moved", f"unexpected PR state {state!r} after the merge")
         host = _slug_parts(slug)[0]
-        queued = merged.returncode == 0 or _in_merge_queue(slug, host, int(number)) is not False
+        # Membership is read on every still-open outcome (bound to the broker host); an
+        # accepted merge that left the PR open, or any membership that is not "no", is
+        # treated as enqueued.
+        membership = _in_merge_queue(slug, host, int(number))
+        queued = merged.returncode == 0 or membership is not False
         if queued:
             if not dequeue(repo_dir, repo_slug=slug, pr_number=int(number), host=host):
                 raise MergeGuardEscalation("panel_merge_dequeue_failed", "the enqueued PR could not be dequeued")

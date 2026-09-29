@@ -2448,7 +2448,7 @@ def _train_panel_review_binding(pending_nodes: Sequence[Any], completed_nodes: M
     head = info.get("admitted_head_sha") or info.get("head_sha")
     if head:
         binding["reviewed_sha"] = str(head)
-    match = re.search(r"/pull/(\d+)/?$", str(info.get("pr_url") or ""))
+    match = re.search(r"/(\d+)/?$", str(info.get("pr_url") or ""))
     if match:
         binding["reviewed_pr"] = int(match.group(1))
     return binding
@@ -2468,7 +2468,7 @@ def _train_merge_authority(panel_landing: bool, review_panel: object,
         # Every P4 merge is governed; ``guarded_merge`` accepts the token only in a node
         # repository before the switch (option C, agent-harness#1078).
         return {"authority": merge_guard.mint_no_landing_token(run_mode="governed")}
-    match = re.search(r"/pull/(\d+)/?$", str(node_info.get("pr_url") or ""))
+    match = re.search(r"/(\d+)/?$", str(node_info.get("pr_url") or ""))
     return {
         "authority": getattr(review_panel, "landing_decision", None),
         "panel_context": getattr(review_panel, "panel_context", None),
@@ -3989,6 +3989,7 @@ def _run_train_unfenced(
             _panel_labels_out = getattr(_review_panel_m, "panel_labels", None)
         else:
             review_result = train_review_fn(bundle_text, run_mode)
+            _review_panel_m = getattr(review_result, "panel", None)
 
         if not review_result.mergeable:
             # Non-approval → NON-HUMAN terminal, ZERO merges.
@@ -4217,8 +4218,12 @@ def _run_train_unfenced(
             if _merge_pr_fn is None:
                 # PANEL (agent-harness#1078): the default merge site carries its merge
                 # authority; an injected `_merge_pr_fn` never receives one.
+                # A review that carries an admitted landing decision (the production gate's)
+                # merges on it; otherwise no landing was made.
                 _merge_kwargs_m.update(_train_merge_authority(
-                    _panel_snapshot is not None, _review_panel_m, completed_nodes[_nid_m]))
+                    _panel_snapshot is not None
+                    or getattr(_review_panel_m, "landing_decision", None) is not None,
+                    _review_panel_m, completed_nodes[_nid_m]))
             _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m, **_merge_kwargs_m)
         except Exception as _merge_exc_m:
             _guard_code_m = getattr(_merge_exc_m, "code", None)
