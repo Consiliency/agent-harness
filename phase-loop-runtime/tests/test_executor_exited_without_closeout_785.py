@@ -76,6 +76,19 @@ def test_golden_delta_is_only_final_schema_exclusion():
     at = agent_view.index("--disallowedTools")
     del agent_view[at:at + 2]
     agent_view[2:2] = ["--cwd", "/repo"]
+    # The third permitted delta (agent-harness#1135, D1): BAML v1 renders the
+    # EmitPhaseCloseout block, so only the text between the block header and the
+    # D1a schema description changed.  Everything around it is byte-identical.
+    pre_d1 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_d1_closeout_prompt.json").read_text())
+    header, tail = "EmitPhaseCloseout (`vendor", "Phase-loop closeout JSON schema description:"
+    for case in ("claude_print_solo", "claude_agent_view_solo"):
+        argv = golden[case]["command"]
+        (at,) = [i for i, arg in enumerate(argv) if header in arg]
+        start, end = argv[at].index(header), argv[at].index(tail)
+        argv[at] = argv[at][:start] + pre_d1["closeout_block"] + argv[at][end:]
+    codex = golden["codex"]["command"]
+    (at,) = [i for i, arg in enumerate(codex) if arg.startswith("<prompt redacted sha256=")]
+    codex[at] = pre_d1["codex_prompt"]
     # Historical INPUT, not regenerated candidate output: the normalized golden
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
