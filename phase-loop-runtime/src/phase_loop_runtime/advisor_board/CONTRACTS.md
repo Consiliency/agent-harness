@@ -417,6 +417,15 @@ only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 070
 reasons or the board summary. Its name carries only closed fields:
 `leg-logs/<registry harness | leg>-<24 hex>.log`.
 
+**Seat-jail codes (agent-harness#1132, F030).** Every seat-jail notice code is an exact
+literal of `_HARNESS_DETAIL_CODES`: `seat_sandbox_unavailable_{host,seat_uid,tiocsti}`,
+`seat_sandbox_not_staged`, each `seat_sandbox_refused:<sub>` as its own literal
+(`jail_build`, `namespace`, `identity`, `preseed`, `token_file_unsafe`,
+`gemini_credential_unsafe`, `stage_not_private`, `stage_changed`, `output_unsafe`),
+`seat_sandbox_retained_after_teardown`, and the `claude_seat_*` / `gemini_seat_*` codes. No
+regex template admits a seat code, and there is no parallel vocabulary: `seat_jail.NOTICES`
+only renders each code's literal what/why/fix, and a test holds the two sets equal.
+
 **Threat model.** I3 defends against untrusted TEXT: CLI stdout/stderr, leg bodies, exception messages and PTY output. None of it can choose or enter `detail`. In-process Python code is trusted runtime code and is out of scope: it can do anything (for example `object.__setattr__` on arbitrary objects, or replacing this module's functions). The exact-type checks (`PanelLegResult` refuses any subclass instance; only an exact `_HarnessCode` / `_LegFailure` has provenance; contents are read with `str.__str__` and re-created as a fresh `_HarnessCode`) close the cheap structural bypasses, but they are not a sandbox against hostile in-process code.
 
 ## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
@@ -839,3 +848,61 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   verified pushed oid in its own `watch_push` entry, and reads both the record and the
   created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
   agree. It refuses when it cannot prove its open-PR listing complete.
+
+## SEATJAIL — Full-permission review seats inside a per-seat jail (agent-harness#1132)
+
+Plan: `plans/detailed-seat-sandbox-permissions-1132-20260928.md`. Maintainer decisions D1-D8
+are recorded on agent-harness#1132.
+
+- **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
+  the public-entry authorization and before staging, in this order; the first failure wins
+  and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
+  recorded Gemini P4/P3 stop -> its code (today `gemini_seat_credential_unusable`: P4 has
+  not run, so Gemini stays sealed); (2) host capability -> `seat_sandbox_unavailable_host`,
+  `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
+  `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
+  `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
+  byte-identical to before, with that notice. Codex and grok are not jailed
+  (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+- **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no recorded
+  EC-EXECFIND-2 falsifier pass is REFUSED before any effect with
+  `seat_sandbox_refused:identity`. Recording that pass waits on agent-harness#1071, so the
+  jailed route is inert in this release.
+- **Jail profile (`seat_jail_v1`).** bwrap, no `--unshare-user` and no `--unshare-net`:
+  read-only `/usr` (merged-`/usr` links recreated), an `/etc` subset, the provider image at
+  `/seat/bin/<leg>`, the bundle and instructions as sealed memfds at `/seat/review/`, the
+  staged clone read-write at `/seat/tree`, fresh `/seat/home` and `/seat/out`, tmpfs `/tmp`
+  and `/dev/shm`, `--remount-ro /`, `--clearenv` plus a declared environment, and the J14
+  seccomp filter (architecture kill, x32 EPERM, nested user/mount namespaces, `setns`,
+  `clone3` ENOSYS, key syscalls, AF_ALG sockets, TIOCSTI/TIOCLINUX). The profile digest
+  covers the mount set, the flags and the filter digest.
+- **Seat uid (D8).** The seat runs as a subordinate uid leased from the operator's
+  `/etc/subuid` range, inside an egress holder namespace mapped by `newuidmap`/`newgidmap`
+  (in it, uid 0 is the operator). Launch order: fresh session keyring, `nsenter` into H,
+  the private-inode hand-off (`seat_sandbox_refused:stage_not_private` on any hard link),
+  bwrap with exactly `CAP_SETUID`, `CAP_SETGID`, `CAP_SETPCAP`, then `setpriv` to the seat
+  uid with every capability set, the bounding set included, emptied and no-new-privs set.
+  The host prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`) is a
+  one-time root step by the maintainer, never run by the runtime.
+- **Credential channels.** Claude: a dedicated `claude setup-token` seat token at
+  `$XDG_STATE_HOME/phase-loop/seat-credentials/claude` (0600 in 0700, owned by the euid),
+  delivered only through one drained pipe named by `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`.
+  No token is in any argv, environment value, evidence or log; seat output is scanned for
+  its bytes and standard/URL-safe/hex encodings (`claude_seat_token_in_output`). Gemini: the
+  D7 access-token-only copy (builder only; the tooled Gemini route is gated on P4 then P3).
+- **Pointer mode.** A jailed seat gets a pointer brief: jail-path preamble, the
+  AUTHORITATIVE INSTRUCTIONS inline, and POINTER frames naming the bundle (path, sha256,
+  size) and the tree (path, source commit, approved digest). Evidence records
+  `provider_input_mode: "pointer"`, `provider_input_inline: false`,
+  `sandbox_filesystem_confined: true` and the jail profile id and digests;
+  `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
+  agent-harness#361, D3) on every such record.
+- **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the
+  `advisor-board` payload (`notices`, `legs[].notices`) and text summary. The governed-path
+  surface is lane L4b, after agent-harness#1071.
+- **Retention.** A failed in-namespace teardown keeps the seat directories under the leg's
+  operator-owned 0700 scratch dir, adds `seat_sandbox_retained_after_teardown`, and records
+  the path. `phase-loop seat-sandbox reap PATH` accepts only a recorded path under the
+  stage root, opened `O_NOFOLLOW|O_DIRECTORY` component by component, and owned by a
+  subordinate uid.
+

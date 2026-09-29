@@ -377,6 +377,9 @@ def isolated_network(
                 os.close(gate_read)
                 gate_read = None
                 try:
+                    # The map can only be written once the holder IS in its new user
+                    # namespace; `Popen` returns before `unshare` has made the call.
+                    _wait_for_new_user_namespace(holder)
                     seat_uid.map_holder(holder.pid)
                 except (OSError, subprocess.SubprocessError, ValueError):
                     yield _degrade("network namespace did not come up; launch is UNISOLATED")
@@ -520,3 +523,17 @@ def isolated_network(
                             process.kill()
                             process.wait(timeout=2)
 
+
+def _wait_for_new_user_namespace(process: "subprocess.Popen[bytes]", timeout_s: float = 15.0) -> None:
+    own = os.readlink("/proc/self/ns/user")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise OSError("namespace holder exited before it was mapped")
+        try:
+            if os.readlink(f"/proc/{process.pid}/ns/user") != own:
+                return
+        except OSError:
+            pass
+        time.sleep(0.01)
+    raise OSError("namespace holder never entered its user namespace")

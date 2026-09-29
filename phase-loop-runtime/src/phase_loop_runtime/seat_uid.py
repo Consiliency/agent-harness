@@ -19,10 +19,8 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import json
 import os
-import pwd
 import stat
 import subprocess
 import sys
@@ -54,6 +52,8 @@ class SubordinateRange:
 
 
 def _operator_name(uid: int) -> str | None:
+    import pwd  # POSIX-only; imported lazily so panel_invoker imports on Windows
+
     try:
         return pwd.getpwuid(uid).pw_name
     except KeyError:
@@ -155,6 +155,8 @@ def lease_seat_id(count: int, *, directory: Path | None = None) -> Iterator[int]
 
     An ``flock`` on ``<runtime>/phase-loop/seat-uid/<n>.lock``: concurrent seats never
     share a uid, and a crashed holder's lease is released by the kernel."""
+    import fcntl  # POSIX-only; imported lazily so panel_invoker imports on Windows
+
     directory = directory or seat_runtime_dir()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     for n in range(1, count + 1):

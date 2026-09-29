@@ -2,7 +2,7 @@
 type: detailed
 status: planned
 owner_skill: claude-plan-detailed
-input_base_commit: b687e311
+input_base_commit: 3c61b270
 related_issues: [agent-harness#1132, agent-harness#848, agent-harness#895, agent-harness#1104, agent-harness#983, agent-harness#1109, agent-harness#1102, agent-harness#1096, agent-harness#1098, agent-harness#1076, agent-harness#1050, agent-harness#1071, agent-harness#1130, agent-harness#1134, agent-harness#361]
 automation:
   suite_command: "PYTHONPATH=phase-loop-runtime/src python -m pytest -q phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_sandbox_permissions.py phase-loop-runtime/tests/test_seat_notices.py phase-loop-runtime/tests/test_review_leg_sandbox.py phase-loop-runtime/tests/test_harden_evidence_producer.py phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py phase-loop-runtime/tests/test_verify_qualified_agy_route_core.py"
@@ -12,9 +12,9 @@ automation:
 
 # Detailed plan: full-permission review seats inside the per-seat sandbox (agent-harness#1132)
 
-Status: round-7 revision for board and president review. Maintainer decisions D1–D8 were
-recorded 2026-09-28. This is a planning artifact only; no source
-file changes.
+Status: merged plan (agent-harness#1133), amended by the implementation PR with the
+president follow-ups F030, F038, F035, F022 and F020. Maintainer decisions D1–D8 were
+recorded 2026-09-28.
 Spec: agent-harness#1132 and its maintainer decision of 2026-09-28. A seat launched inside the
 per-seat sandbox gets full tool permissions regardless of local tool settings, because the
 sandbox is the boundary. Outside a sandbox nothing changes. Decisions D1–D8 were ruled by the maintainer
@@ -92,8 +92,10 @@ These are inputs, not outputs.
   (`shortfall`, `legs[].detail`).
 - **Evidence verifier.** `scripts/verify_harden_evidence.py` requires
   `provider_input_inline is True` and `provider_live_tree_cwd is False` on every broker record.
-- **agy route-core.** `scripts/verify_qualified_agy_image.py` defines
-  `ROUTE_CORE = ("gemini_heartbeat.py", "qualify_gemini_heartbeat.py")`.
+- **agy route-core.** `agy_qualification.ROUTE_CORE` (agent-harness#1130) is
+  `("gemini_heartbeat.py", "agy_qualification.py", "agy_provenance.py")`, and
+  `scripts/verify_qualified_agy_image.py --route-core` checks every qualification record
+  against it.
 - **Governing criteria.** EC-HARDEN-5 is at `specs/phase-plans-v10.md`. EC-EXECFIND-2 and
   EC-EXECFIND-4 are in the same file, under Phase 15.
 
@@ -542,8 +544,13 @@ it does block every later namespace or key operation.
   and the leg carries `seat_sandbox_retained_after_teardown`, which names the retained path.
   - The retained directory may hold anything the seat wrote, its token included, so it stays
     owned by the seat uid and unreadable to other local users.
+  - **F020.** Every retained directory sits under the leg's `mkdtemp` scratch directory,
+    which is owned by the operator and mode 0700, so no other local user can reach it.
   - `phase-loop seat-sandbox reap` removes it later. It builds a new mapped namespace through
     the same `newuidmap` path and runs the same fd-relative teardown.
+  - **F022.** `reap` accepts only a path recorded by a retention notice, under the stage
+    root, opened `O_NOFOLLOW|O_DIRECTORY` one component at a time, and owned by a
+    subordinate uid. Anything else is refused, and a falsifier proves each refusal.
 
 **Launcher integration.** These are the named `panel_invoker.py` sites:
 - `_compose_launch_prefix` composes the D8 order above for a `SeatJail` owner. It replaces the
@@ -865,9 +872,12 @@ puts two obligations on this plan:
 
 `review_summary.py` and `_broker_subscription_env` are not touched.
 - agent-harness#1130 has landed (`f9d9726a`). Its `panel_invoker.py` hunks
-  (`president_findings_from_legs`, the `_HARNESS_DETAIL_CODES` vocabulary,
-  `_preflight_gemini_heartbeat` and `invoke_board`) are now part of main. None of them is a
-  named site.
+  (`president_findings_from_legs`, `_preflight_gemini_heartbeat` and `invoke_board`) are
+  part of main and are not named sites.
+- **F030.** `_HARNESS_DETAIL_CODES` IS a named site: every leg-ending code joins it as an
+  exact literal (each `seat_sandbox_refused:<sub>` separately), with no regex template and
+  no parallel vocabulary. The delivery test asserts that `legs[].detail` equals the literal
+  after `_finalize_leg_detail`; dropping one code from the set turns it red.
 - At the time of writing, the open agent-harness#1071 changes these `panel_invoker.py` hunks:
   `PanelLegResult.usable`, `attach_native_agent_request`, `terminal_verdict` and
   `_president_ruling_complete`. None of these is a named site either.
@@ -900,7 +910,9 @@ At rebase, re-check the #1071 hunks, together with `_ReviewMonitor.owned_command
   host: `apt install uidmap`, then `usermod --add-subuids` and `--add-subgids` for the
   operator. The runtime and the lanes never run these.
 - **L5 live.** Replay the probes that were reached, and any recorded stop, on the final
-  candidate. Run the boards in "Acceptance". If L3 is in scope, requalify agy.
+  candidate. Run the boards in "Acceptance". Requalify agy for both the sealed and, if L3
+  is in scope, the tooled profile, and require `verify_qualified_agy_image.py --route-core`
+  to exit 0 on the final tree (F035).
 
 Everything lands in one implementation PR. agent-harness#1134 and agent-harness#1130 have
 already landed, so the PR waits only for agent-harness#1071.
@@ -1229,7 +1241,8 @@ areas are:
     (J7 step 1). The board run must also show that no tooled Gemini launch and no
     full-credential Gemini launch occurred. P3 is replayed only if P4 passed.
   - A forced no-sandbox board showing `seat_sandbox_unavailable_host`.
-  - agy requalified, if L3 is in scope.
+  - agy requalified for the sealed profile, and for the tooled profile if L3 is in scope;
+    `verify_qualified_agy_image.py --route-core` exits 0 on the final tree (F035).
 - [ ] The D3 residual text above is recorded in agent-harness#361. agent-harness#1134 has
   landed (merged).
 - [ ] EC-EXECFIND-2's jail falsifiers pass against the shipped jail's profile digest, using the

@@ -488,10 +488,6 @@ def decide_seat_route(
         return SeatRoute(False, "seat_sandbox_not_staged")
     if leg == "gemini" and gemini_recorded_stop is not None:
         return SeatRoute(False, gemini_recorded_stop)
-    if leg not in JAILED_LEGS:
-        # Unreachable while GEMINI_RECORDED_STOP is set; kept so that clearing the stop
-        # without also enabling the leg can never jail it.
-        return SeatRoute(False, "gemini_seat_profile_unqualified")
     code = capable()
     if code is not None:
         return SeatRoute(False, code)
@@ -502,7 +498,9 @@ def decide_seat_route(
     else:
         if not (gemini_credential_present or gemini_operator_credential_present)():
             return SeatRoute(False, "gemini_seat_credential_missing")
-        if gemini_qualified is None or not gemini_qualified():
+        # Step 4. A leg outside JAILED_LEGS is never qualified: clearing the recorded stop
+        # without also shipping the tooled profile (L3) can never jail it.
+        if leg not in JAILED_LEGS or gemini_qualified is None or not gemini_qualified():
             return SeatRoute(False, "gemini_seat_profile_unqualified")
     return SeatRoute(True)
 

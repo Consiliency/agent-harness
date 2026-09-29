@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Full-permission review seats inside a per-seat jail (agent-harness#1132)
+
+- New `seat_jail`, `seat_uid` and `seat_keyring_exec` modules: a per-seat bwrap jail (J1
+  mounts, `--remount-ro /`, declared environment and descriptors, the J14 seccomp filter),
+  a subordinate seat uid (maintainer decision D8) leased from the operator's `/etc/subuid`
+  range and mapped with `newuidmap`/`newgidmap`, a fresh session keyring, fd-relative
+  no-follow reads, walks and teardown, the Claude seat-token pipe and output scan, and the
+  D7 Gemini copy builder. Plan: `plans/detailed-seat-sandbox-permissions-1132-20260928.md`.
+- A production brokered Claude or Gemini leg now decides its route once (J7) and carries a
+  typed notice when it stays on the sealed inline route (`seat_sandbox_not_staged`,
+  `seat_sandbox_unavailable_{host,tiocsti,seat_uid}`, `claude_seat_token_missing`,
+  `gemini_seat_credential_unusable`, ...). Codex and grok given a tree carry
+  `seat_filesystem_unconfined`. Notices appear in the `advisor-board` JSON payload
+  (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
+  closed detail vocabulary (F030).
+- **The jailed route is inert in this release.** A jail digest with no recorded
+  EC-EXECFIND-2 falsifier pass is refused (`seat_sandbox_refused:identity`) before any
+  effect; recording the pass waits on agent-harness#1071. Hosts also need the one-time root
+  prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
+  runtime never runs. Gemini stays sealed until live probes P4 and P3 pass.
+- The sealed Claude, president and agy launches are byte-identical to before (J9 goldens).
+- `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
+  agent-harness#361) on every tooled or pointer seat record.
+- New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;
+  it accepts only a recorded, contained, subuid-owned path.
+- **Release cut:** agy requalification is required at the next release cut (both the sealed
+  and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
+  must pass on the final tree.
+
 ## [0.7.21] - 2026-09-29
 
 ### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140; PR agent-harness#1142)

@@ -6484,15 +6484,14 @@ def _run_claude_tui_session(
                 # `_popen`, so a TUI seat launched OUTSIDE the namespace entirely -- the
                 # gap the board named as "I cannot establish that every alternative
                 # provider-launch path uses `_popen`".
-                if seat_jail is not None:
-                    return launch_provider(
-                        command, process_owner=seat_jail, probe_owner=probe_jail,
-                        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, text=False,
-                        start_new_session=True,
-                    )
+                # A jailed seat (agent-harness#1132) launches through its jail, whose own
+                # --unshare-pid owns the process tree; `launch_provider` replaces the cwd,
+                # environment and descriptors with the jail's declared ones.
                 return launch_provider(
                     command,
-                    process_owner=() if review_monitor is None else review_monitor.owned_command(()),
+                    process_owner=seat_jail if seat_jail is not None
+                    else () if review_monitor is None else review_monitor.owned_command(()),
+                    probe_owner=probe_jail,
                     cwd=str(cwd),
                     env=dict(env),
                     stdin=slave_fd,
@@ -8824,6 +8823,33 @@ class _BrokeredSpawnResult(tuple):
         return result
 
 
+def _seat_route_for_spawn(
+    leg: str, review_authorization: "ReviewIsolationAuthorization | None", *, eligible: bool,
+    decide: "Callable[..., _seat_jail.SeatRoute | None] | None" = None,
+    pass_recorded: "Callable[[str], bool] | None" = None,
+) -> "tuple[_seat_jail.SeatRoute | None, list[str], str | None]":
+    """J7 steps 0-4 for one production brokered launch, plus the EC-EXECFIND-2 gate.
+
+    Returns ``(route, notices, refusal)``. A sealed route carries its one notice code; a
+    jailed route whose jail digest has no recorded EC-EXECFIND-2 falsifier pass is REFUSED
+    (``seat_sandbox_refused:identity``) before any effect -- it is never put on the jailed
+    route and never silently sent sealed (plan "EC-EXECFIND-2 obligations on the jail")."""
+    if not eligible:
+        return None, [], None
+    route = (decide or _seat_jail.decide_seat_route)(
+        leg, staged_tree_approved=getattr(review_authorization, "staged_tree_sha256", None)
+        is not None,
+    )
+    if route is None:
+        return None, [], None
+    if not route.jailed:
+        return route, [str(route.code)], None
+    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(
+            _seat_jail.jail_profile_digest(leg)):
+        return route, [], _seat_jail.refused("identity")
+    return route, [], None
+
+
 def _dedupe(codes: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(codes))
 
@@ -8938,30 +8964,21 @@ def _default_spawn(
     # agent-harness#1132, J7 steps 0-4: decided once, after the public-entry authorization
     # (validated above) and BEFORE staging. `None` for a leg this plan does not jail, and
     # for every non-production route (an injected seam, the native-host deferral).
-    seat_route: "_seat_jail.SeatRoute | None" = None
-    seat_notices: list[str] = []
-    if (
-        mode == "review"
-        and review_authorization is not None
-        and not _has_injected_review_execution_seam(leg=leg)
-        and not (leg == "claude" and model is not None and _under_claude_code(env))
-        and agy_capture is None and research_seat is None
-    ):
-        seat_route = _seat_jail.decide_seat_route(
-            leg, staged_tree_approved=getattr(review_authorization, "staged_tree_sha256", None)
-            is not None,
-        )
-        if seat_route is not None and not seat_route.jailed:
-            seat_notices.append(str(seat_route.code))
-        elif seat_route is not None and not _seat_jail.execfind_pass_recorded(
-                _seat_jail.jail_profile_digest(leg)):
-            # EC-EXECFIND-2: a jail digest with no recorded falsifier pass is never put on
-            # the jailed route; the leg is refused before any effect (J7 step 5).
-            if base is not None:
-                shutil.rmtree(base, ignore_errors=True)
-            code = _seat_jail.refused("identity")
-            return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code),
-                                        seat_notices=(code,))
+    seat_route, seat_notices, seat_refusal = _seat_route_for_spawn(
+        leg, review_authorization,
+        eligible=(
+            mode == "review"
+            and review_authorization is not None
+            and not _has_injected_review_execution_seam(leg=leg)
+            and not (leg == "claude" and model is not None and _under_claude_code(env))
+            and agy_capture is None and research_seat is None
+        ),
+    )
+    if seat_refusal is not None:
+        if base is not None:
+            shutil.rmtree(base, ignore_errors=True)
+        return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
+                                    seat_notices=(seat_refusal,))
     jailed = seat_route is not None and seat_route.jailed
     staged_tree_path: Path | None = None
     # Set only when a sandbox was staged; it is what gates the egress acquisition after

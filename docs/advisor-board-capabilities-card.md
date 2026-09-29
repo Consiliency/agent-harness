@@ -467,3 +467,46 @@ exit or owner death closes them. The provider ownership namespace is created
 after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
+
+## Jailed review seats (agent-harness#1132)
+
+A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
+staged clone and the review bundle through tools instead of receiving the bundle inline.
+The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
+changes: the seat keeps the sealed inline route and reports why in a typed notice.
+
+**Status in this release: inert.** A jailed launch also needs a recorded EC-EXECFIND-2
+falsifier pass for the jail's profile digest (agent-harness#1071); until then a seat that
+would be jailed is refused with `seat_sandbox_refused:identity`. Gemini stays sealed
+(`gemini_seat_credential_unusable`) until live probes P4 and P3 pass. Codex and grok are
+not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+
+**Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
+`usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
+conventional). The runtime never runs these. Without them the seat stays sealed with
+`seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
+
+**Claude seat token.** The seat uses a dedicated token, never your primary login:
+
+```bash
+claude setup-token          # mint a long-lived subscription token
+install -d -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/phase-loop/seat-credentials"
+( umask 077; cat > "${XDG_STATE_HOME:-$HOME/.local/state}/phase-loop/seat-credentials/claude" )
+```
+
+The file must be 0600 in a 0700 directory owned by you, or the leg is refused with
+`seat_sandbox_refused:token_file_unsafe`. The token reaches the seat only through one
+drained pipe; it is never in an argv, environment value, log or evidence record. **Revoke
+it** from your Claude account settings if a leg reports `claude_seat_token_in_output` or
+`seat_sandbox_retained_after_teardown` on a suspect leg, then mint a new one. A jailed seat
+can read its own token and use it for the token's lifetime; that residual is recorded
+under agent-harness#361 (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
+
+**Notices.** Each seat's notices are `{code, seat_key, what, why, fix}` in the
+`advisor-board --json` payload (`notices`, `legs[].notices`) and in the text summary. The
+full vocabulary is in `advisor_board/CONTRACTS.md` ("SEATJAIL").
+
+**Retained directories.** If teardown cannot remove a seat's directories, they are kept
+under the leg's private 0700 scratch directory and the leg carries
+`seat_sandbox_retained_after_teardown`. Remove them with
+`phase-loop seat-sandbox reap PATH`; it accepts only a path recorded by that notice.
