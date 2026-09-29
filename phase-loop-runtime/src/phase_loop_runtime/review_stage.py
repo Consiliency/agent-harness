@@ -416,8 +416,8 @@ def run_bounded_falsifier_node(
     # one link before and after the run. The shared system interpreter is read-only
     # to the run and only digested; a change during the run is an error. The child
     # launches the exact resolved executable the digest measures.
-    executable, interpreter_dirs = _falsifier_interpreter_scope()
-    interpreter = _falsifier_interpreter_digest(executable, interpreter_dirs)
+    executable, entries, identity = _falsifier_interpreter_scope()
+    interpreter = _falsifier_interpreter_digest(executable, entries)
     with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-") as temporary:
         dependencies = Path(temporary)
         _snapshot_falsifier_dependencies(stage, dependencies)
@@ -428,7 +428,8 @@ def run_bounded_falsifier_node(
             interpreter=executable,
         )
         _require_single_link_files((stage, dependencies))
-    if _falsifier_interpreter_digest(executable, interpreter_dirs) != interpreter:
+    if (_falsifier_interpreter_scope() != (executable, entries, identity)
+            or _falsifier_interpreter_digest(executable, entries) != interpreter):
         raise ValueError("falsifier system interpreter changed during the run")
     return result
 
@@ -443,32 +444,58 @@ def _falsifier_resolved_interpreter() -> Path:
     return executable
 
 
-def _falsifier_interpreter_scope() -> tuple[Path, tuple[Path, ...]]:
-    """The shared interpreter the child reads: its binary, stdlib and system site dirs."""
+# The child's interpreter flags and environment, less the run's own PYTHONPATH (its
+# staged tree and copied dependencies, which are protected objects checked by link).
+_FALSIFIER_PYTHON_FLAGS = ("-s",)
+_FALSIFIER_PYTHON_ENV = {
+    "PATH": "/usr/bin:/bin", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+}
+
+
+def _falsifier_interpreter_scope() -> tuple[Path, tuple[Path, ...], str]:
+    """Ask the resolved interpreter, launched as the run launches it, what it imports from.
+
+    Returns the executable, every absolute ``sys.path`` entry, and an identity string
+    over ``sys.path`` and the prefixes. The measured set is derived from the
+    interpreter itself, never from a list of expected directories.
+    """
     executable = _falsifier_resolved_interpreter()
     inventory = subprocess.run(
-        [str(executable), "-S", "-c",
-         "import json,site,sysconfig; print(json.dumps("
-         "[sysconfig.get_paths()['stdlib'],*site.getsitepackages()]))"],
-        capture_output=True, text=True, check=True, timeout=3,
-        cwd="/", env={"PATH": "/usr/bin:/bin"},
+        [str(executable), *_FALSIFIER_PYTHON_FLAGS, "-c",
+         "import json,sys; print(json.dumps({'path':sys.path,'prefix':sys.prefix,"
+         "'exec_prefix':sys.exec_prefix,'base_prefix':sys.base_prefix}))"],
+        capture_output=True, text=True, check=True, timeout=5,
+        cwd="/", env=dict(_FALSIFIER_PYTHON_ENV),
     )
-    dirs = json.loads(inventory.stdout)
-    if (not isinstance(dirs, list)
-            or not all(isinstance(item, str) and item.startswith("/") for item in dirs)):
+    scope = json.loads(inventory.stdout)
+    paths = scope.get("path") if isinstance(scope, dict) else None
+    if (not isinstance(paths, list) or not all(isinstance(item, str) for item in paths)
+            or not all(isinstance(scope.get(key), str)
+                       for key in ("prefix", "exec_prefix", "base_prefix"))):
         raise ValueError("falsifier system interpreter scope is invalid")
-    return executable, tuple(dict.fromkeys(Path(item) for item in dirs))
+    # "" is the child's working directory, the staged tree; any other relative entry
+    # has no fixed meaning and is refused.
+    if any(item and not item.startswith("/") for item in paths):
+        raise ValueError("falsifier system interpreter scope has a relative entry")
+    entries = tuple(dict.fromkeys(Path(item) for item in paths if item))
+    return executable, entries, json.dumps(scope, sort_keys=True)
 
 
 _FALSIFIER_INTERPRETER_ENTRY_LIMIT = 1_000_000
+# Files the import system executes or opens as a path entry are hashed by content.
+_FALSIFIER_CONTENT_SUFFIXES = (".pth", ".zip", ".egg", ".whl")
+_FALSIFIER_CONTENT_NAMES = frozenset({"sitecustomize.py", "usercustomize.py"})
 
 
 def _falsifier_interpreter_digest(executable: Path, directories: tuple[Path, ...]) -> str:
-    """Digest the interpreter binary and everything its directories resolve to.
+    """Digest the interpreter binary and every path entry it imports from.
 
-    The binary and every file reached through a symlink that leaves the measured
-    directories are hashed by content; the directories themselves are digested by
-    an lstat manifest whose ctime changes on any content or metadata write.
+    The binary, every file path entry (an archive), every ``.pth``/archive/customize
+    file and every file reached through a symlink that leaves the measured entries
+    are hashed by content; directories are digested by an lstat manifest whose
+    ctime changes on any content or metadata write. An entry of any other type
+    fails closed.
     """
     def reject_unenumerable(error):
         raise ValueError("falsifier system interpreter cannot be enumerated") from error
@@ -509,14 +536,21 @@ def _falsifier_interpreter_digest(executable: Path, directories: tuple[Path, ...
             digest.update(repr((str(root), None)).encode())
             continue
         if not stat.S_ISDIR(details.st_mode):
-            record(str(root), details, content=stat.S_ISREG(details.st_mode))
+            if not stat.S_ISREG(details.st_mode):
+                raise ValueError("falsifier interpreter path entry cannot be digested")
+            record(str(root), details, content=True)
             continue
         for directory, dirs, files in os.walk(root, followlinks=False, onerror=reject_unenumerable):
             dirs.sort()
             for name in sorted((*dirs, *files)):
                 path = os.path.join(directory, name)
                 details = os.lstat(path)
-                record(path, details, content=external and stat.S_ISREG(details.st_mode))
+                if not (stat.S_ISREG(details.st_mode) or stat.S_ISDIR(details.st_mode)
+                        or stat.S_ISLNK(details.st_mode)):
+                    raise ValueError("falsifier interpreter path entry cannot be digested")
+                record(path, details, content=stat.S_ISREG(details.st_mode) and (
+                    external or name.endswith(_FALSIFIER_CONTENT_SUFFIXES)
+                    or name in _FALSIFIER_CONTENT_NAMES))
                 if stat.S_ISLNK(details.st_mode):
                     digest.update(os.readlink(path).encode("utf-8", "surrogateescape"))
                     target = Path(os.path.realpath(path))
@@ -569,6 +603,20 @@ def _filesystem_location(
         raise ValueError("falsifier path has no containing mount")
     _depth, _index, device, root, point = max(containing)
     return device, root / path.relative_to(point).as_posix()
+
+
+FALSIFIER_REPOSITORY_SUBMOUNT = "falsifier_repository_submount_refused"
+
+
+def _falsifier_repo_has_submount(repo: Path) -> bool:
+    """Whether any mount point is at or under the repository.
+
+    A repository that contains a mount is refused as a layout, rather than by
+    enumerating where else that mount's content might be reachable.
+    """
+    source = Path(repo).resolve()
+    return any(point == source or source in point.parents
+               for _device, _root, point in _falsifier_mounts())
 
 
 def _falsifier_repo_exposed_by_system_mount(repo: Path) -> bool:
@@ -692,7 +740,7 @@ def _run_bounded_falsifier_node(
         "/work/phase-loop-runtime/src:/work/phase-loop-runtime/tests:/deps",
         "--setenv", "PYTHONNOUSERSITE", "1", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
         "--setenv", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1",
-        str(python), "-s", "-c", wrapper, nodeid, token,
+        str(python), *_FALSIFIER_PYTHON_FLAGS, "-c", wrapper, nodeid, token,
     ))
     proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

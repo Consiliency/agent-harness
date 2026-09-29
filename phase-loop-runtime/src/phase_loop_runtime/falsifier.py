@@ -190,6 +190,10 @@ def run_finding_falsifier(
         backing.revalidate_falsifier_isolation_authorization(authorization, repo=repo)
         if review_stage._falsifier_repo_exposed_by_system_mount(repo):
             raise ValueError("canonical repository exposed by falsifier system mount")
+        if review_stage._falsifier_repo_has_submount(repo):
+            raise ValueError(
+                f"{review_stage.FALSIFIER_REPOSITORY_SUBMOUNT}: canonical repository contains a mount point"
+            )
         _clean_exact_source(repo, authorization.reviewed_sha)
         backing.activate_falsifier_isolation_authorization(authorization, repo=repo)
         staged = review_stage.stage_review_tree(repo)

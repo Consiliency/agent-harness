@@ -866,14 +866,18 @@ Those two trees are the run's protected objects: every regular file in them,
 `.git` included, must have a link count of exactly one before the node starts
 and after it exits, or the run is `error` (agent-harness#1134). The shared system
 interpreter is read-only to the run and is not a protected object. The runner
-resolves `/usr/bin/python3` once, launches exactly that resolved file, and
-digests it before and after the run: the executable's bytes, an lstat manifest
-(mode, size, device, inode, mtime, ctime) of its stdlib and system site
-directories, and every symlink target outside those directories, followed and
-hashed by content. A changed digest is `error`. Before staging, the canonical
-repository must not be reachable through any system-root mount: each exposed
-root and every mount beneath it is compared by device and in-filesystem path
-(mount identity), not by pathname. The record schema is unchanged; the reason
+resolves `/usr/bin/python3` once and launches exactly that file. The measured set
+is derived from the interpreter itself: launched with the run's flags and
+environment (less the run's own staged and dependency paths), it reports its
+`sys.path` and prefixes. Every existing `sys.path` entry is digested before and
+after the run: archive entries and `.pth`, archive and customize files by content,
+directories by an lstat manifest (mode, size, device, inode, mtime, ctime), and
+every symlink target outside the set followed and hashed by content. An entry the
+runner cannot digest fails closed, and a changed scope or digest is `error`.
+Before staging, the canonical repository must not be reachable through any
+system-root mount (compared by device and in-filesystem path, not by pathname),
+and a repository that contains any mount point is refused as
+`falsifier_repository_submount_refused`. The record schema is unchanged; the reason
 stays in the result's `detail`.
 
 The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
