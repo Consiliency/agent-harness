@@ -440,11 +440,12 @@ JAILED_LEGS: frozenset[str] = frozenset({"claude"})
 """Legs with a jailed route in this runtime. Gemini joins only when P4 and P3 pass (L3);
 codex and grok follow under agent-harness#895."""
 
-# The recorded P4/P3 outcome for Gemini (J7 step 1): one of the three stop codes once a
-# probe has actually recorded a stop, else None. No probe has run yet, so nothing is
-# recorded; the Gemini seat stays sealed through steps 2-4 instead -- at the latest with
-# `gemini_seat_profile_unqualified`, because no tooled profile ships until L3.
-GEMINI_RECORDED_STOP: str | None = None
+# The recorded P4/P3 outcome for Gemini (J7 step 1). Live probe P4 STOPPED on 2026-09-29
+# (plans/evidence/seat-jail-1132/p4-agy-d7-credential.json): agy runs on the D7 copy, but
+# the access token's OAuth scopes include `cloud-platform`, `cclog` and
+# `experimentsandconfigs`, beyond inference. Gemini stays sealed with this code until the
+# maintainer rules on the measured scopes and P4 is re-run; P3 was not run.
+GEMINI_RECORDED_STOP: str | None = "gemini_seat_token_scope_excess"
 
 
 @dataclass(frozen=True)
@@ -808,7 +809,7 @@ def contains_secret(data: bytes, secret: bytes) -> bool:
 # --------------------------------------------------------------------------------------
 
 def gemini_operator_credential_path() -> Path:
-    return Path.home() / ".gemini" / "antigravity-oauth-token"
+    return Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
 
 
 def gemini_operator_credential_present(path: Path | None = None) -> bool:
@@ -861,11 +862,16 @@ def build_gemini_seat_copy(path: Path | None = None, *, keep_id_token: bool = Fa
 # The jail (J1-J5, J11, J14).
 # --------------------------------------------------------------------------------------
 
-# The Claude pre-seed: the exact `.claude.json` keys P1 pins to suppress the trust modal
-# and the bypass acknowledgement. EMPTY until P1 runs on the D8 prefix; keys are never
-# guessed. With it empty the modal detector stays armed and a modal refuses the leg with
-# `claude_tui_workspace_trust_blocked` / `claude_seat_bypass_ack_blocked`.
-CLAUDE_PRESEED: Mapping[str, object] = {}
+# The Claude pre-seed, pinned by live probe P1 (plans/evidence/seat-jail-1132/
+# p1-claude-config-pty.json, Claude Code 2.1.284): an ablation showed each key suppresses
+# exactly one modal -- onboarding (theme), workspace trust for /seat/tree, and the
+# bypass-permissions acknowledgement -- and `lastOnboardingVersion` is not needed. A CLI
+# that adds a modal still fails closed: the detector never answers one on a jailed seat.
+CLAUDE_PRESEED: Mapping[str, object] = {
+    "hasCompletedOnboarding": True,
+    "bypassPermissionsModeAccepted": True,
+    "projects": {SEAT_TREE: {"hasTrustDialogAccepted": True}},
+}
 
 
 @dataclass(frozen=True)
@@ -909,6 +915,9 @@ def _system_mounts() -> list[str]:
             args += ["--symlink", os.readlink(path), path]
         elif os.path.isdir(path):
             args += ["--ro-bind", path, path]
+    # `/etc` is created explicitly world-searchable, like the seat directories: as the
+    # parent of file binds bwrap would create it 0700 and owned by H-root (P5).
+    args += ["--perms", "0755", "--dir", "/etc"]
     for name in ETC_READONLY_SUBSET:
         host = os.path.join("/etc", name)
         if os.path.lexists(host):
@@ -931,9 +940,10 @@ def jail_profile(leg: str, arch: str | None = None) -> dict[str, object]:
         "etc_subset": list(ETC_READONLY_SUBSET),
         "seat_paths": [SEAT_BIN, SEAT_REVIEW, SEAT_TREE, SEAT_HOME, SEAT_OUT],
         "flags": ["--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-                  "--unshare-cgroup-try", "--proc", "--dev", "--tmpfs /tmp",
-                  "--tmpfs /dev/shm", "--remount-ro /", "--clearenv", "--seccomp",
-                  *(f"--cap-add {c}" for c in JAIL_CAP_ADD),
+                  "--unshare-cgroup-try", "--proc", "--dev", "--tmpfs 1777 /tmp",
+                  "--tmpfs 1777 /dev/shm", "--remount-ro /", "--clearenv", "--seccomp",
+                  "--cap-drop ALL", *(f"--cap-add {c}" for c in JAIL_CAP_ADD),
+                  "--dir 0755 /seat /seat/bin /seat/review /etc", "cwd after drop",
                   *(["--new-session"] if leg == "gemini" else [])],
         "filter_sha256": production_filter_digest(arch),
     }
@@ -1033,9 +1043,19 @@ def build_seat_jail(
     owner: list[str] = [
         BWRAP, "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
         "--unshare-cgroup-try",
+        # P5 (measured): bwrap run as H-root keeps EVERY capability unless told otherwise,
+        # so the set is emptied first and exactly the three the drop needs are added back.
+        "--cap-drop", "ALL",
         *(item for cap in JAIL_CAP_ADD for item in ("--cap-add", cap)),
         *_system_mounts(),
-        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/dev/shm",
+        # The tmpfs mounts are sticky world-writable: bwrap would make them 0755 and owned by
+        # H-root, and the seat could not create its own temp files (P1: Claude EACCES).
+        "--proc", "/proc", "--dev", "/dev", "--perms", "1777", "--tmpfs", "/tmp",
+        "--perms", "1777", "--tmpfs", "/dev/shm",
+        # Explicit, world-searchable seat directories (P5): bwrap creates the parent of a
+        # FILE bind 0700 and owned by H-root, which the seat uid could not traverse.
+        *(item for directory in (SEAT_ROOT, SEAT_BIN, SEAT_REVIEW)
+          for item in ("--perms", "0755", "--dir", directory)),
         "--ro-bind", str(provider), seat_bin,
         "--perms", "0444", "--ro-bind-data", str(bundle_memfd), SEAT_BUNDLE,
         "--perms", "0444", "--ro-bind-data", str(instructions_memfd), SEAT_INSTRUCTIONS,
@@ -1043,7 +1063,8 @@ def build_seat_jail(
         "--bind", str(home), SEAT_HOME,
         "--bind", str(out), SEAT_OUT,
         "--remount-ro", "/",
-        "--chdir", SEAT_TREE,
+        # No `--chdir`: with no DAC capability, H-root cannot enter the seat's 0700 tree.
+        # The cwd is entered after the drop, as the seat (`seat_cwd`).
         "--clearenv",
     ]
     env = seat_env(leg, token_fd=token_fd)
@@ -1129,6 +1150,11 @@ def setpriv_drop(seat_id: int) -> list[str]:
     return ["/usr/bin/setpriv", "--reuid", str(seat_id), "--regid", str(seat_id),
             "--clear-groups", "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all",
             "--no-new-privs", "--"]
+
+
+def seat_cwd() -> list[str]:
+    """The seat enters its tree AFTER the drop, as the tree's owner (P5)."""
+    return ["/usr/bin/env", f"--chdir={SEAT_TREE}", "--"]
 
 
 def close_jail_fds(jail: SeatJail) -> None:

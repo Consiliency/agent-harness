@@ -66,11 +66,19 @@ def test_j7_step1_recorded_gemini_stop_beats_qualification():
     assert route.code == "gemini_seat_stream_split_unavailable"
 
 
-def test_j7_gemini_stays_sealed_until_p4_and_p3_pass():
-    """No probe stop is recorded (none has run), and no tooled profile ships: on a fully
-    capable host with a credential the seat is still sealed, at step 4."""
-    assert seat_jail.GEMINI_RECORDED_STOP is None
+def test_j7_gemini_stays_sealed_on_the_recorded_p4_stop():
+    """P4 stopped on the token's scopes; the recorded stop wins at step 1, and it is
+    witnessed by the pinned evidence record."""
+    assert seat_jail.GEMINI_RECORDED_STOP == "gemini_seat_token_scope_excess"
+    record = json.loads((Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-jail-1132"
+                         / "p4-agy-d7-credential.json").read_text())
+    assert record["result"] == "stop" and record["gemini_route_code"] == seat_jail.GEMINI_RECORDED_STOP
     assert "gemini" not in seat_jail.JAILED_LEGS
+    route = seat_jail.decide_seat_route("gemini", staged_tree_approved=True)
+    assert route == seat_jail.SeatRoute(False, "gemini_seat_token_scope_excess")
+
+
+def test_j7_without_a_stop_gemini_is_still_unqualified_until_l3():
     route = _decide("gemini", stop=None, qualified=True)
     assert route == seat_jail.SeatRoute(False, "gemini_seat_profile_unqualified")
 
@@ -279,7 +287,10 @@ def test_d8_prefix_order_replaces_the_1109_switch(tmp_path):
     # An independent literal, never derived from the module under test.
     assert prefix[drop:] == ["/usr/bin/setpriv", "--reuid", "3", "--regid", "3", "--clear-groups",
                              "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all",
-                             "--no-new-privs", "--"]
+                             "--no-new-privs", "--", "/usr/bin/env", "--chdir=/seat/tree", "--"]
+    # P5: bwrap as H-root keeps every capability unless emptied first.
+    assert prefix.index("--cap-drop") < prefix.index("--cap-add")
+    assert prefix[prefix.index("--cap-drop") + 1] == "ALL" and "--chdir" not in prefix
     caps = [prefix[i + 1] for i, item in enumerate(prefix) if item == "--cap-add"]
     assert caps == ["CAP_SETUID", "CAP_SETGID", "CAP_SETPCAP"]
 
@@ -378,12 +389,6 @@ def test_handoff_refuses_a_hard_linked_stage_before_any_chown(tmp_path, monkeypa
     assert outside.stat().st_uid == os.getuid() and outside.stat().st_mode & 0o777 == 0o600
 
 
-def test_handoff_mutation_skipping_nlink_rechowns_the_outside_inode(tmp_path):
-    """The red half of the hand-off falsifier needs H-root and a seat uid."""
-    require_seat_uid()
-    pytest.skip("run on a prerequisite host by L5; see plans/evidence/seat-jail-1132")
-
-
 # --------------------------------------------------------------------------------------
 # The unmapped holder (sandbox_egress, D8): gate mechanics with a single-uid map.
 # --------------------------------------------------------------------------------------
@@ -424,16 +429,6 @@ def test_unmapped_holder_that_cannot_be_mapped_refuses(monkeypatch):
 # --------------------------------------------------------------------------------------
 # Live D8 (P5-shaped): skip-guarded on the maintainer's prerequisite.
 # --------------------------------------------------------------------------------------
-
-def test_j6_j15_live_seat_runs_as_its_subordinate_uid_with_nothing_left():
-    require_seat_uid()
-    pytest.skip("P5/L5 live replay on a prerequisite host; see plans/evidence/seat-jail-1132")
-
-
-def test_j4_live_concurrent_seats_cannot_reach_each_other():
-    require_seat_uid()
-    pytest.skip("L5 live check on a prerequisite host; see plans/evidence/seat-jail-1132")
-
 
 def test_live_jailed_claude_runs_a_tool_and_quotes_it():
     require_seat_uid()

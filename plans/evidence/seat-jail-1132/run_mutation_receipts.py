@@ -36,6 +36,7 @@ VH = RUNTIME / "scripts" / "verify_harden_evidence.py"
 T_JAIL = "tests/test_seat_jail.py"
 T_PERM = "tests/test_seat_sandbox_permissions.py"
 T_NOTE = "tests/test_seat_notices.py"
+T_LIVE = "tests/test_seat_jail_live_d8.py"
 
 MUTATIONS: list[dict[str, object]] = [
     {"id": "F030-drop-identity-literal", "file": PI,
@@ -137,6 +138,22 @@ MUTATIONS: list[dict[str, object]] = [
      "old": '"--tools", "", "--allowedTools", "", "--disallowedTools",',
      "new": '"--tools", "default", "--allowedTools", "", "--disallowedTools",',
      "nodes": [f"{T_PERM}::test_j9_sealed_claude_argv_is_golden"]},
+    {"id": "LIVE-handoff-skip-nlink-check", "file": SU,
+     "old": "            if not seat_jail.tree_is_private(tree_fd):", "new": "            if False:",
+     "nodes": [f"{T_LIVE}::test_handoff_live_refuses_a_hard_link_and_leaves_the_outside_file_alone"]},
+    {"id": "LIVE-P5-no-cap-drop-all", "file": SJ,
+     "old": '        "--cap-drop", "ALL",\n', "new": "",
+     "nodes": [f"{T_LIVE}::test_live_pre_drop_set_is_exactly_the_three_capabilities"]},
+    {"id": "LIVE-P1-tmpfs-not-sticky", "file": SJ,
+     "old": '"--perms", "1777", "--tmpfs", "/tmp",', "new": '"--tmpfs", "/tmp",',
+     "nodes": [f"{T_LIVE}::test_live_seat_can_use_tmp_etc_and_its_tree"]},
+    {"id": "LIVE-P5-etc-not-traversable", "file": SJ,
+     "old": '    args += ["--perms", "0755", "--dir", "/etc"]\n', "new": "",
+     "nodes": [f"{T_LIVE}::test_live_seat_can_use_tmp_etc_and_its_tree"]},
+    {"id": "LIVE-J4-shared-seat-uid", "file": SU,
+     "old": "        try:\n            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+     "new": "        try:\n            n = 1  # mutation: every seat leases uid 1\n            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)",
+     "nodes": [f"{T_LIVE}::test_j4_live_concurrent_seats_are_isolated"]},
     {"id": "sealed-notice-dropped", "file": PI,
      "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
      "new": "    if not route.jailed:\n        return route, [], None",

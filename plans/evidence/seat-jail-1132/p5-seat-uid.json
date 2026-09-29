@@ -1,0 +1,235 @@
+{
+  "argv_shape": [
+    "/usr/bin/nsenter",
+    "-t",
+    "<n>",
+    "-U",
+    "-m",
+    "-n",
+    "--preserve-credentials",
+    "/usr/bin/bwrap",
+    "..."
+  ],
+  "bwrap_builds_j1_as_h_root": true,
+  "clis": {
+    "agy --version": {
+      "rc": 0,
+      "stderr": "",
+      "stdout": "1.2.13"
+    },
+    "claude --version": {
+      "rc": 0,
+      "stderr": "",
+      "stdout": "2.1.284 (Claude Code)"
+    },
+    "git": {
+      "rc": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "node": {
+      "rc": 0,
+      "stderr": "",
+      "stdout": "v24.13.0"
+    },
+    "pip": {
+      "rc": 0,
+      "stderr": "",
+      "stdout": "pip 22.0.2 from /usr/lib/python3/dist-packages/pip (python 3.10)"
+    },
+    "python3 threads+subprocess": {
+      "rc": 0,
+      "stderr": "",
+      "stdout": "0"
+    },
+    "uv": {
+      "note": "uv is installed outside /usr on this host (/home/viperjuice/.local/bin/uv); toolchains outside /usr are a plan non-goal",
+      "rc": null
+    }
+  },
+  "decision": "D8",
+  "filter_is_production": true,
+  "filter_sha256": "c9b01bfbc9996883bc7f023b453b965144219837d0fc8dac1db44f8c2d62a46e",
+  "handoff_chown_rc": 0,
+  "holder_uid_map": [
+    "         0       1000          1",
+    "         1     200000        256"
+  ],
+  "host": {
+    "bwrap": "bubblewrap 0.6.1",
+    "kernel": "6.8.0-138-generic",
+    "legacy_tiocsti": "0",
+    "operator_uid": 1000,
+    "subgid": [
+      200000,
+      65536
+    ],
+    "subuid": [
+      200000,
+      65536
+    ]
+  },
+  "in_h_reader": {
+    "in_h_reader_rc": 0,
+    "in_h_reader_read": true,
+    "listing": "total 4\n-rw------- 1 7 7 12 Sep 29 17:17 private.txt",
+    "operator_can_read_from_host": false,
+    "seat_write_rc": 0
+  },
+  "issue": "agent-harness#1132",
+  "plan_deviations": [
+    "bwrap run as H-root keeps EVERY capability (see pre_drop_without_cap_drop_all); the plan's premise that bwrap leaves none by default holds only when bwrap is not real root. Production adds `--cap-drop ALL` before the three `--cap-add`s, so the pre-drop effective set is exactly CAP_SETUID, CAP_SETGID, CAP_SETPCAP.",
+    "With `--cap-drop ALL`, bwrap's `--chdir /seat/tree` fails (a capability-less H-root cannot enter the seat's 0700 tree). The cwd is entered after the drop, as the seat, with `/usr/bin/env --chdir=/seat/tree`.",
+    "bwrap creates the parent of a FILE bind 0700 and owned by H-root, so the seat could not traverse /seat, /seat/bin, /seat/review or /etc (node: OpenSSL config EACCES; git: /etc/gitconfig EACCES). Production creates those four directories with `--perms 0755 --dir`."
+  ],
+  "post_drop": {
+    "ids": [
+      "7",
+      "7",
+      "7"
+    ],
+    "mount_points": [
+      "/",
+      "/dev",
+      "/dev/full",
+      "/dev/null",
+      "/dev/pts",
+      "/dev/random",
+      "/dev/shm",
+      "/dev/tty",
+      "/dev/urandom",
+      "/dev/zero",
+      "/etc/alternatives",
+      "/etc/group",
+      "/etc/hosts",
+      "/etc/ld.so.cache",
+      "/etc/ld.so.conf",
+      "/etc/ld.so.conf.d",
+      "/etc/localtime",
+      "/etc/nsswitch.conf",
+      "/etc/passwd",
+      "/etc/resolv.conf",
+      "/etc/ssl",
+      "/proc",
+      "/seat/bin/agy",
+      "/seat/bin/claude",
+      "/seat/home",
+      "/seat/out",
+      "/seat/review/review-bundle.md",
+      "/seat/tree",
+      "/tmp",
+      "/usr"
+    ],
+    "rc": 0,
+    "status": {
+      "CapAmb": "0000000000000000",
+      "CapBnd": "0000000000000000",
+      "CapEff": "0000000000000000",
+      "CapInh": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "2",
+      "Seccomp_filters": "1"
+    },
+    "stderr": ""
+  },
+  "post_drop_ok": true,
+  "pre_drop_is_exactly_three": true,
+  "pre_drop_with_cap_drop_all": {
+    "bounding_caps_count": 41,
+    "effective_caps": [
+      "CAP_SETGID",
+      "CAP_SETUID",
+      "CAP_SETPCAP"
+    ],
+    "ids": [
+      "0",
+      "0",
+      "0 65534"
+    ],
+    "rc": 0,
+    "status": {
+      "CapAmb": "00000000000001c0",
+      "CapBnd": "000001ffffffffff",
+      "CapEff": "00000000000001c0",
+      "CapInh": "00000000000001c0",
+      "CapPrm": "00000000000001c0",
+      "NoNewPrivs": "1",
+      "Seccomp": "0",
+      "Seccomp_filters": "0"
+    },
+    "stderr": ""
+  },
+  "pre_drop_without_cap_drop_all": {
+    "bounding_caps_count": 41,
+    "effective_caps": [
+      "cap0",
+      "cap1",
+      "cap2",
+      "cap3",
+      "cap4",
+      "cap5",
+      "CAP_SETGID",
+      "CAP_SETUID",
+      "CAP_SETPCAP",
+      "cap9",
+      "cap10",
+      "cap11",
+      "cap12",
+      "cap13",
+      "cap14",
+      "cap15",
+      "cap16",
+      "cap17",
+      "cap18",
+      "cap19",
+      "cap20",
+      "cap21",
+      "cap22",
+      "cap23",
+      "cap24",
+      "cap25",
+      "cap26",
+      "cap27",
+      "cap28",
+      "cap29",
+      "cap30",
+      "cap31",
+      "cap32",
+      "cap33",
+      "cap34",
+      "cap35",
+      "cap36",
+      "cap37",
+      "cap38",
+      "cap39",
+      "cap40"
+    ],
+    "ids": [
+      "0",
+      "0",
+      "0 65534"
+    ],
+    "rc": 0,
+    "status": {
+      "CapAmb": "000001ffffffffff",
+      "CapBnd": "000001ffffffffff",
+      "CapEff": "000001ffffffffff",
+      "CapInh": "000001ffffffffff",
+      "CapPrm": "000001ffffffffff",
+      "NoNewPrivs": "1",
+      "Seccomp": "0",
+      "Seccomp_filters": "0"
+    },
+    "stderr": ""
+  },
+  "providers": {
+    "agy": "/home/viperjuice/.local/bin/agy",
+    "claude": "/home/viperjuice/.npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+  },
+  "recorded_at": "2026-09-29T17:17:01+00:00",
+  "result": "pass",
+  "schema": "seat_jail_probe_p5.v1",
+  "seat_id": 7,
+  "stops": []
+}

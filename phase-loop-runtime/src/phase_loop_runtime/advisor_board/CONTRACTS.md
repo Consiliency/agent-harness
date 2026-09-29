@@ -857,8 +857,9 @@ are recorded on agent-harness#1132.
 - **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
   the public-entry authorization and before staging, in this order; the first failure wins
   and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
-  recorded Gemini P4/P3 stop -> its code (none is recorded: the probes have not run, and
-  Gemini stays sealed at step 2, 3 or 4 -- no tooled profile ships until L3); (2) host capability -> `seat_sandbox_unavailable_host`,
+  recorded Gemini P4/P3 stop -> its code (P4 recorded `gemini_seat_token_scope_excess` on
+  2026-09-29: the agy access token carries `cloud-platform`, beyond inference; P3 was not
+  run and the tooled profile is not built); (2) host capability -> `seat_sandbox_unavailable_host`,
   `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
   `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
   `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
@@ -880,8 +881,12 @@ are recorded on agent-harness#1132.
   `/etc/subuid` range, inside an egress holder namespace mapped by `newuidmap`/`newgidmap`
   (in it, uid 0 is the operator). Launch order: fresh session keyring, `nsenter` into H,
   the private-inode hand-off (`seat_sandbox_refused:stage_not_private` on any hard link),
-  bwrap with exactly `CAP_SETUID`, `CAP_SETGID`, `CAP_SETPCAP`, then `setpriv` to the seat
-  uid with every capability set, the bounding set included, emptied and no-new-privs set.
+  bwrap with `--cap-drop ALL` then exactly `CAP_SETUID`, `CAP_SETGID`, `CAP_SETPCAP` (P5:
+  bwrap as namespace root otherwise keeps every capability), then `setpriv` to the seat
+  uid with every capability set, the bounding set included, emptied and no-new-privs set,
+  then `env --chdir=/seat/tree` as the seat. `/seat`, `/seat/bin`, `/seat/review` and
+  `/etc` are created 0755 and the tmpfs mounts 1777, so the seat uid can traverse and use
+  them (P5, P1).
   The host prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`) is a
   one-time root step by the maintainer, never run by the runtime.
 - **Credential channels.** Claude: a dedicated `claude setup-token` seat token at

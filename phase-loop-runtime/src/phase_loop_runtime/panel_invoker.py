@@ -1205,8 +1205,9 @@ _CLAUDE_TUI_TRUST_PROMPT = "enter y/n"
 _CLAUDE_TUI_TRUST_REJECT = "please answer y or n"  # Claude rejected a non-y/n answer
 _CLAUDE_TUI_TRUST_ANSWER = b"y\r"
 # The bypass-permissions acknowledgement a JAILED seat's pre-seed must suppress
-# (agent-harness#1132). Provisional until P1 pins the rendered text on the D8 prefix; a
-# drifted string still fails closed (`claude_tui_editor_not_ready`), never pastes.
+# (agent-harness#1132). Pinned by live probe P1 on the D8 prefix ("WARNING: Claude Code
+# running in Bypass Permissions mode", 2.1.284); a drifted string still fails closed
+# (`claude_tui_editor_not_ready`), never pastes.
 _CLAUDE_TUI_BYPASS_ACK_SIGNATURE = "bypass permissions mode"
 # Editor readiness = QUIESCENCE, armed ONLY after real post-gate output (never treat
 # pre-output silence as ready — that would race a late-rendering modal into a paste).
@@ -3465,6 +3466,7 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
         jail.tree_dir, str(seat_id), *(("--gemini",) if jail.leg == "gemini" else ()), "--",
         *jail.process_owner,
         *_seat_jail.setpriv_drop(seat_id),
+        *_seat_jail.seat_cwd(),
     ]
 
 

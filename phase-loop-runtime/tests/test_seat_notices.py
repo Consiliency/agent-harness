@@ -22,7 +22,6 @@ import pytest
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import seat_jail, seat_uid
 
-from ._seat_prereq import require_seat_uid
 
 GOVERNED_1071 = "L4b governed-path notice rendering waits on agent-harness#1071"
 
@@ -291,8 +290,3 @@ def test_retention_record_sits_under_an_operator_owned_0700_parent(tmp_path):
     assert info.st_uid == os.getuid() and info.st_mode & 0o777 == 0o700
     record = seat_uid.record_retention(scratch / "seat" / "seat-home", directory=tmp_path / "r")
     assert json.loads(record.read_text())["path"] == str(scratch / "seat" / "seat-home")
-
-
-def test_live_reap_removes_a_retained_seat_owned_directory():
-    require_seat_uid()
-    pytest.skip("L5 live check on a prerequisite host; see plans/evidence/seat-jail-1132")

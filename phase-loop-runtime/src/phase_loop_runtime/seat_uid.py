@@ -380,7 +380,10 @@ def validate_reap_target(path: str, *, records: Path | None = None,
         for part in parts[:-1]:
             current = seat_jail.open_dir_nofollow(part, dir_fd=current)
             fds.append(current)
-        leaf = seat_jail.open_dir_nofollow(parts[-1], dir_fd=current)
+        # O_PATH: the operator cannot READ a seat-owned 0700 directory, but may name it
+        # and fstat it -- which is all the owner check needs.
+        leaf = os.open(parts[-1], os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                       dir_fd=current)
     except OSError as exc:
         for fd in fds:
             os.close(fd)

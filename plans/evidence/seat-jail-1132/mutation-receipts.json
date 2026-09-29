@@ -1,12 +1,12 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
-  "head": "bb9fdfc34196f077d7a15902dd7792c4dc911166",
+  "head": "6eaba275f0fe88a1dc9fffb89fe247963ac0a429",
   "issue": "agent-harness#1132",
   "receipts": [
     {
       "id": "F030-drop-identity-literal",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "4d4c32d832c42adb174fd7557f8b121161fe3a876541400533219ec8ba437ce7",
+      "file_sha256": "b08490a07e6a862dbca909dc3c1c641f10f7c6515f278f711481299f8694a171",
       "mutation": {
         "old": "\"seat_sandbox_refused:jail_build\", \"seat_sandbox_refused:namespace\",\n    \"seat_sandbox_refused:identity\", \"seat_sandbox_refused:preseed\",",
         "new": "\"seat_sandbox_refused:jail_build\", \"seat_sandbox_refused:namespace\",\n    \"seat_sandbox_refused:preseed\","
@@ -17,18 +17,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m38 passed\u001b[0m\u001b[32m in 1.23s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m38 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m, \u001b[32m36 passed\u001b[0m\u001b[31m in 1.29s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m, \u001b[32m36 passed\u001b[0m\u001b[31m in 1.22s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-remove-arch-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "emit(_JEQ_K, _AUDIT_ARCH[arch], 0, \"kill\")",
         "new": "emit(_JEQ_K, _AUDIT_ARCH[arch], 0, 0)"
@@ -39,18 +39,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.37s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.22s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.33s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.17s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-remove-x32-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "emit(_JGE_K, X32_SYSCALL_BIT, \"eperm\", 0)",
         "new": "emit(_JGE_K, X32_SYSCALL_BIT, 0, 0)"
@@ -60,18 +60,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.14s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.13s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.08s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-condition-setns-on-flags",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "emit(_JEQ_K, nr[\"setns\"], \"eperm\", 0)",
         "new": "emit(_JEQ_K, nr[\"setns\"], \"ns_flags\", 0)"
@@ -81,18 +81,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.00s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.03s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-remove-af-alg-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "emit(_JEQ_K, AF_ALG, \"eperm\", \"allow\")",
         "new": "emit(_JEQ_K, AF_ALG, \"allow\", \"allow\")"
@@ -103,18 +103,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.30s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.21s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.35s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.21s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-ioctl-compare-high-half",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "emit(_LD_W_ABS, _arg_low(1), label=\"ioctl\")",
         "new": "emit(_LD_W_ABS, _arg_low(1) + 4, label=\"ioctl\")"
@@ -124,7 +124,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.07s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -135,7 +135,7 @@
     {
       "id": "J1-bind-home",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "    for name in ETC_READONLY_SUBSET:\n        host = os.path.join(\"/etc\", name)",
         "new": "    args += [\"--ro-bind\", str(Path.home()), str(Path.home())]\n    for name in ETC_READONLY_SUBSET:\n        host = os.path.join(\"/etc\", name)"
@@ -145,18 +145,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.30s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.17s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J2-drop-remount-ro",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "        \"--remount-ro\", \"/\",\n",
         "new": ""
@@ -166,18 +166,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J3-drop-clearenv",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "        \"--clearenv\",\n    ]",
         "new": "    ]"
@@ -187,18 +187,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.07s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.14s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.09s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J10-link-following-read",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "_O_READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC",
         "new": "_O_READ = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC"
@@ -208,18 +208,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.08s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.14s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J10-link-following-tree-walk",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)\n            if stat.S_ISLNK(info.st_mode):",
         "new": "            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=True)\n            if stat.S_ISLNK(info.st_mode):"
@@ -229,18 +229,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.17s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.10s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.27s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.39s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J2-link-following-teardown",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)\n    if not stat.S_ISDIR(info.st_mode):\n        os.unlink(name, dir_fd=parent_fd)",
         "new": "    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=True)\n    if not stat.S_ISDIR(info.st_mode):\n        os.unlink(name, dir_fd=parent_fd)"
@@ -254,14 +254,14 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.17s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "handoff-skip-nlink-check",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_uid.py",
-      "file_sha256": "2d95434c196837171a8da4776947f36c46bafd5516c191cc752ffd5d9a2bb4c3",
+      "file_sha256": "6139055dca57e0426724347e548e03ca1fbeab3df57b135d38e849a4f1ee760b",
       "mutation": {
         "old": "            if not seat_jail.tree_is_private(tree_fd):",
         "new": "            if False:"
@@ -271,18 +271,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.00s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.08s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "token-scan-disabled",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "    return any(form in data for form in secret_encodings(secret))",
         "new": "    return False"
@@ -292,18 +292,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.15s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.18s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "token-file-mode-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()\n                or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > TOKEN_FILE_CAP_BYTES):",
         "new": "        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()\n                or info.st_size > TOKEN_FILE_CAP_BYTES):"
@@ -313,18 +313,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.10s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.24s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.02s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "D7-keep-refresh-token",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "    copy[\"token\"] = {k: v for k, v in token.items() if k != \"refresh_token\"}",
         "new": "    copy[\"token\"] = dict(token)"
@@ -334,18 +334,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.20s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J7-capability-before-step0",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "    if not staged_tree_approved:\n        return SeatRoute(False, \"seat_sandbox_not_staged\")",
         "new": "    capable()\n    if not staged_tree_approved:\n        return SeatRoute(False, \"seat_sandbox_not_staged\")"
@@ -355,7 +355,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.08s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -366,7 +366,7 @@
     {
       "id": "J7-qualification-before-credential",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "        if not (gemini_credential_present or gemini_operator_credential_present)():\n            return SeatRoute(False, \"gemini_seat_credential_missing\")\n",
         "new": "        if leg not in JAILED_LEGS:\n            return SeatRoute(False, \"gemini_seat_profile_unqualified\")\n        if not (gemini_credential_present or gemini_operator_credential_present)():\n            return SeatRoute(False, \"gemini_seat_credential_missing\")\n"
@@ -376,18 +376,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "EXECFIND-carry-unrecorded-digest",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "4d4c32d832c42adb174fd7557f8b121161fe3a876541400533219ec8ba437ce7",
+      "file_sha256": "b08490a07e6a862dbca909dc3c1c641f10f7c6515f278f711481299f8694a171",
       "mutation": {
         "old": "    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(",
         "new": "    if False and not (pass_recorded or _seat_jail.execfind_pass_recorded)("
@@ -398,11 +398,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 2.46s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 2.47s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 5.34s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 5.19s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -423,14 +423,14 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.36s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.48s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "reap-any-owner",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_uid.py",
-      "file_sha256": "2d95434c196837171a8da4776947f36c46bafd5516c191cc752ffd5d9a2bb4c3",
+      "file_sha256": "6139055dca57e0426724347e548e03ca1fbeab3df57b135d38e849a4f1ee760b",
       "mutation": {
         "old": "    if not owned_by_subordinate(owner, subuid=subuid):",
         "new": "    if False:"
@@ -444,7 +444,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.06s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -461,18 +461,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.21s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.20s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 2.17s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 2.04s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "notices-accept-str-subclass",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "4d4c32d832c42adb174fd7557f8b121161fe3a876541400533219ec8ba437ce7",
+      "file_sha256": "b08490a07e6a862dbca909dc3c1c641f10f7c6515f278f711481299f8694a171",
       "mutation": {
         "old": "                 if type(code) is str and code in _seat_jail.NOTICE_CODES)",
         "new": "                 if isinstance(code, str) and code in _seat_jail.NOTICE_CODES)"
@@ -482,7 +482,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.96s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -493,7 +493,7 @@
     {
       "id": "J6-skip-filter-digest-check",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "4d4c32d832c42adb174fd7557f8b121161fe3a876541400533219ec8ba437ce7",
+      "file_sha256": "b08490a07e6a862dbca909dc3c1c641f10f7c6515f278f711481299f8694a171",
       "mutation": {
         "old": "    if jail.filter_digest != _seat_jail.production_filter_digest():",
         "new": "    if False:"
@@ -503,18 +503,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.22s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.20s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "D8-skip-bounding-set-drop",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "8a9fa491a90a2827f92b4c5456af2507cba13774a36fa0711a379cfd9eadffe8",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
       "mutation": {
         "old": "\"--clear-groups\", \"--inh-caps=-all\", \"--ambient-caps=-all\", \"--bounding-set=-all\",",
         "new": "\"--clear-groups\", \"--inh-caps=-all\", \"--ambient-caps=-all\","
@@ -524,11 +524,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.00s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.06s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.02s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -545,18 +545,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 6.29s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 6.25s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.16s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "J9-sealed-argv-drift",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "4d4c32d832c42adb174fd7557f8b121161fe3a876541400533219ec8ba437ce7",
+      "file_sha256": "b08490a07e6a862dbca909dc3c1c641f10f7c6515f278f711481299f8694a171",
       "mutation": {
         "old": "\"--tools\", \"\", \"--allowedTools\", \"\", \"--disallowedTools\",",
         "new": "\"--tools\", \"default\", \"--allowedTools\", \"\", \"--disallowedTools\","
@@ -566,18 +566,123 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.09s\u001b[0m\u001b[0m"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "LIVE-handoff-skip-nlink-check",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_uid.py",
+      "file_sha256": "6139055dca57e0426724347e548e03ca1fbeab3df57b135d38e849a4f1ee760b",
+      "mutation": {
+        "old": "            if not seat_jail.tree_is_private(tree_fd):",
+        "new": "            if False:"
+      },
+      "nodes": [
+        "tests/test_seat_jail_live_d8.py::test_handoff_live_refuses_a_hard_link_and_leaves_the_outside_file_alone"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.82s\u001b[0m\u001b[0m"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.85s\u001b[0m\u001b[0m"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "LIVE-P5-no-cap-drop-all",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
+      "mutation": {
+        "old": "        \"--cap-drop\", \"ALL\",\n",
+        "new": ""
+      },
+      "nodes": [
+        "tests/test_seat_jail_live_d8.py::test_live_pre_drop_set_is_exactly_the_three_capabilities"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.80s\u001b[0m\u001b[0m"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.88s\u001b[0m\u001b[0m"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "LIVE-P1-tmpfs-not-sticky",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
+      "mutation": {
+        "old": "\"--perms\", \"1777\", \"--tmpfs\", \"/tmp\",",
+        "new": "\"--tmpfs\", \"/tmp\","
+      },
+      "nodes": [
+        "tests/test_seat_jail_live_d8.py::test_live_seat_can_use_tmp_etc_and_its_tree"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.83s\u001b[0m\u001b[0m"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.86s\u001b[0m\u001b[0m"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "LIVE-P5-etc-not-traversable",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+      "file_sha256": "ad1bb723665f3b06de5aa90b0696381dd66f7a57e19ca05acdfc2903be76c4dd",
+      "mutation": {
+        "old": "    args += [\"--perms\", \"0755\", \"--dir\", \"/etc\"]\n",
+        "new": ""
+      },
+      "nodes": [
+        "tests/test_seat_jail_live_d8.py::test_live_seat_can_use_tmp_etc_and_its_tree"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.77s\u001b[0m\u001b[0m"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.81s\u001b[0m\u001b[0m"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "LIVE-J4-shared-seat-uid",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_uid.py",
+      "file_sha256": "6139055dca57e0426724347e548e03ca1fbeab3df57b135d38e849a4f1ee760b",
+      "mutation": {
+        "old": "        try:\n            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+        "new": "        try:\n            n = 1  # mutation: every seat leases uid 1\n            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)"
+      },
+      "nodes": [
+        "tests/test_seat_jail_live_d8.py::test_j4_live_concurrent_seats_are_isolated"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 6.83s\u001b[0m\u001b[0m"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 6.45s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "sealed-notice-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "4d4c32d832c42adb174fd7557f8b121161fe3a876541400533219ec8ba437ce7",
+      "file_sha256": "b08490a07e6a862dbca909dc3c1c641f10f7c6515f278f711481299f8694a171",
       "mutation": {
         "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
         "new": "    if not route.jailed:\n        return route, [], None"
@@ -587,11 +692,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.37s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.48s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 2.43s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 2.45s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     }

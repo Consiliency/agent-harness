@@ -17,7 +17,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A production brokered Claude or Gemini leg now decides its route once (J7) and carries a
   typed notice when it stays on the sealed inline route (`seat_sandbox_not_staged`,
   `seat_sandbox_unavailable_{host,tiocsti,seat_uid}`, `claude_seat_token_missing`,
-  `gemini_seat_profile_unqualified`, ...). Codex and grok given a tree carry
+  `gemini_seat_token_scope_excess`, ...). Codex and grok given a tree carry
   `seat_filesystem_unconfined`. Notices appear in the `advisor-board` JSON payload
   (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
   closed detail vocabulary (F030).
@@ -25,7 +25,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   EC-EXECFIND-2 falsifier pass is refused (`seat_sandbox_refused:identity`) before any
   effect; recording the pass waits on agent-harness#1071. Hosts also need the one-time root
   prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
-  runtime never runs. Gemini stays sealed until live probes P4 and P3 pass.
+  runtime never runs. Gemini stays sealed with `gemini_seat_token_scope_excess`: live probe
+  P4 measured `cloud-platform`, `cclog` and `experimentsandconfigs` on the agy access token,
+  beyond inference; the tooled Gemini profile (L3) is not built until the maintainer rules.
+- Live probes P5 and P1 passed on the D8 chain and changed the jail: `--cap-drop ALL` before
+  the three `--cap-add`s (bwrap as namespace root otherwise keeps every capability), the
+  seat enters `/seat/tree` after the drop, `/seat`, `/seat/bin`, `/seat/review` and `/etc`
+  are created 0755, the tmpfs mounts are 1777, and the Claude pre-seed is pinned
+  (`hasCompletedOnboarding`, `bypassPermissionsModeAccepted`, workspace trust for
+  `/seat/tree`).
 - The sealed Claude, president and agy launches are byte-identical to before (J9 goldens).
 - `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361) on every tooled or pointer seat record.

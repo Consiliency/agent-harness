@@ -261,6 +261,49 @@ work continues.
     - subagent and tool events cannot be told apart reliably by type;
     - any workspace file that agy loads cannot be disabled.
 
+### Probe records (pinned 2026-09-29, claw; host prerequisite in place)
+
+| probe | record (`plans/evidence/seat-jail-1132/`) | sha256 | result |
+|---|---|---|---|
+| P5 | `p5-seat-uid.json` | `36c9d77d198bfd41d10a0e75bf82a3f660e1e0dd7f76944dfe029f29c84ee8b7` | pass |
+| P1 | `p1-claude-config-pty.json` | `bec8bd08b9ccb99c7d3e774396a27b37b04a615347e77fb43356d2fbf7cf7ad3` | pass |
+| P2 | — | — | not run: waits on the maintainer's seat token |
+| P4 | `p4-agy-d7-credential.json` | `121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035` | **stop**: `gemini_seat_token_scope_excess` |
+| P3 | — | — | not run: P3 runs only after P4 passes |
+
+**P5 changed the D8 launch order as measured. None of these is a P5 stop, because each
+restores a property the plan requires:**
+- bwrap run as H-root keeps every capability. `--cap-drop ALL` therefore precedes the three
+  `--cap-add`s, and the effective set before the drop is exactly SETUID, SETGID and SETPCAP.
+- With no DAC capability, H-root cannot `--chdir` into the seat's 0700 tree. The seat enters
+  `/seat/tree` after the drop, with `/usr/bin/env --chdir`.
+- bwrap creates the parent of a file bind as 0700 root. `/seat`, `/seat/bin`, `/seat/review`
+  and `/etc` are therefore created 0755.
+- P1 found the tmpfs mounts must be 1777.
+
+**P1 pinned the Claude pre-seed:** `hasCompletedOnboarding`, `bypassPermissionsModeAccepted`
+and `projects["/seat/tree"].hasTrustDialogAccepted`. Removing any one of them brings back
+exactly one modal. P1 also recorded:
+- the bypass-acknowledgement text;
+- that bypass mode is refused for uid 0;
+- that input is accepted;
+- that planted `CLAUDE.md`, hooks and `.mcp.json` did not load.
+
+The P1 token was a dummy on the production fd channel, because P2 is pending.
+
+**P4 stopped.** agy completed a turn on the D7 copy, delivered as a read-only directory with
+`installation_id` provided and only `cache/` writable. But the access token's scopes
+include `cloud-platform`, `cclog` and `experimentsandconfigs`, which go beyond inference.
+Gemini therefore stays sealed with `gemini_seat_token_scope_excess` until the maintainer
+rules and P4 is re-run, and L3 is dropped from this PR.
+
+P4 also recorded:
+- the expiry signature: `authentication failed or timed out`, after a 60 s wait for
+  interactive OAuth;
+- that the outside refresh `agy models` works.
+
+It did not measure whether agy picks up a copy renamed in mid-session.
+
 ## Invariants (each has a named falsifier in "Tests")
 
 J1–J4 and J10–J13 apply to **jailed** seats: Claude, and Gemini if L3 is in scope. Codex and
