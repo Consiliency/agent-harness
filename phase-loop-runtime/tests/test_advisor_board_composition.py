@@ -700,7 +700,9 @@ def test_derived_review_explicit_spawn_remains_hermetic_after_marker():
 
     harden_require("review-leg-isolation")
     from phase_loop_runtime import panel_invoker as invoker
-    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    # PANEL SL-1 (agent-harness#1078, granted): the production_code landing carries a
+    # context from build_panel_context; the board under review is its composed board.
+    from test_panel_sl1_contracts import granted_landing_context
 
     callback_calls: list[str] = []
 
@@ -716,21 +718,23 @@ def test_derived_review_explicit_spawn_remains_hermetic_after_marker():
         invoker,
         "_default_spawn_via_provider",
         side_effect=AssertionError("a hermetic spawn must not reach provider launch"),
-    ) as provider_spy:
+    ) as provider_spy, granted_landing_context("production_code") as (panel_context, panel_kwargs):
+        review_board = panel_context.composed.board
         result = invoke_sanctioned_board_control(
-            DEFAULT_BOARD,
+            review_board,
             "hermetic control",
             spawn=hermetic_spawn,
             base_env={},
             landing_tier=invoker.ReviewLandingTier.PRODUCTION_CODE,
             president_invoke=deferring_president,
+            **panel_kwargs,
             max_concurrency=1,
         )
 
     assert revalidate_spy.called
     provider_spy.assert_not_called()
-    assert [leg.status for leg in result.legs] == ["OK"] * len(DEFAULT_BOARD.seats)
-    assert sorted(callback_calls) == sorted(seat.harness for seat in DEFAULT_BOARD.seats)
+    assert [leg.status for leg in result.legs] == ["OK"] * len(review_board.seats)
+    assert sorted(callback_calls) == sorted(seat.harness for seat in review_board.seats)
 
 
 def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monkeypatch):
@@ -756,7 +760,12 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
     from phase_loop_runtime import panel_invoker as invoker
     from phase_loop_runtime.advisor_board import backing
     from phase_loop_runtime.advisor_board import matrix as matrix_module
-    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    # PANEL SL-1 (agent-harness#1078, granted): the production_code landing carries a
+    # context from build_panel_context; the board under review is its composed board.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
+    review_board = panel_context.composed.board
 
     marker_invocations: list[tuple[object, object, str, Path, object]] = []
     if simulate_marker:
@@ -1053,7 +1062,7 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
     staged: list[Path] = []
     expected_launch_identities = tuple(
         ((seat.harness or "").lower(), str(seat.seat_key))
-        for seat in DEFAULT_BOARD.seats
+        for seat in review_board.seats
     )
     prepared_chains: list[tuple[str, str, Path, Path, object]] = []
     sealed_launches: list[tuple[tuple[str, str, Path, Path, object], ...]] = []
@@ -1313,7 +1322,7 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
                 side_effect=stop_at_direct_child,
             ):
                 result = invoke_sanctioned_board_control(
-                    DEFAULT_BOARD,
+                    review_board,
                     "INLINE",
                     artifact_ref=str(artifact_ref),
                     context_refs=(str(context_ref),),
@@ -1322,6 +1331,7 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
                     base_env={},
                     landing_tier=invoker.ReviewLandingTier.PRODUCTION_CODE,
                     president_invoke=deferring_president,
+                    **panel_kwargs,
                     max_concurrency=1,
                     on_leg_complete=complete_leg,
                     sink=CaptureSink(),
@@ -1335,11 +1345,11 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
             if simulate_marker:
                 assert revalidate_spy.call_count == 1
                 assert len(marker_invocations) == 1
-                assert marker_invocations[0][0] is DEFAULT_BOARD
+                assert marker_invocations[0][0] is review_board
                 assert marker_invocations[0][1] == expected_artifact
                 assert marker_invocations[0][2] == "review"
             assert len(staged) == 1
-            assert len(allocated_roots) == len(DEFAULT_BOARD.seats)
+            assert len(allocated_roots) == len(review_board.seats)
             assert len(sealed_launches) == 1
             assert tuple(
                 (provider, seat_key)
@@ -1372,14 +1382,14 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
                     sealed_stage,
                 )
                 assert direct_authority is sealed_authority
-            assert direct_child_artifacts == [expected_artifact] * len(DEFAULT_BOARD.seats)
+            assert direct_child_artifacts == [expected_artifact] * len(review_board.seats)
             assert len(observed_switch_repositories) == 1
             assert direct_child_repositories == observed_switch_repositories * len(
-                DEFAULT_BOARD.seats
+                review_board.seats
             )
             assert switch_manifest.read_bytes() == switch_manifest_bytes
             assert not observed_switch_repositories[0].exists()
-            assert len(completion_results) == len(DEFAULT_BOARD.seats)
+            assert len(completion_results) == len(review_board.seats)
             assert sink_events
             assert live_matrix_calls
             expected_preparation = [
@@ -1435,10 +1445,10 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
                     "sink",
                 }:
                     assert index > matrix_complete
-            assert len(incremental_verdict_calls) == len(DEFAULT_BOARD.seats)
-            assert len(tuple(stream_dir.glob("*.verdict.json"))) == len(DEFAULT_BOARD.seats)
+            assert len(incremental_verdict_calls) == len(review_board.seats)
+            assert len(tuple(stream_dir.glob("*.verdict.json"))) == len(review_board.seats)
             assert [leg.status for leg in result.legs] == ["DEGRADED"] * len(
-                DEFAULT_BOARD.seats
+                review_board.seats
             )
             assert allocated_roots
             assert all(not path.exists() for path in allocated_roots)

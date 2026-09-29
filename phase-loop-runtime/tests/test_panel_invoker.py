@@ -106,25 +106,30 @@ class PanelInvokerTest(unittest.TestCase):
         self.assertEqual(seen["codex"], "FROM_ARTIFACT_REF")
 
     def test_board_threads_artifact_ref_and_context_refs(self):
+        # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+        # context from build_panel_context, its composed board and its landing policy.
+        from test_panel_sl1_contracts import granted_landing_context
+
         seen = {}
 
         def spawn(leg, artifact):
             seen[leg] = artifact
             return ("ok", "AGREE")
 
-        with TemporaryDirectory() as td:
+        with TemporaryDirectory() as td, granted_landing_context("production_code") as (ctx, panel_kwargs):
             bundle = Path(td) / "bundle.md"
             bundle.write_text("FROM_BOARD_REF", encoding="utf-8")
             ref = Path(td) / "private.txt"
             ref.write_text("PRIVATE_BODY_ABSENT", encoding="utf-8")
             invoke_sanctioned_review_transport(
-                DEFAULT_BOARD,
+                ctx.composed.board,
                 "INLINE",
                 artifact_ref=str(bundle),
                 context_refs=[str(ref)],
                 spawn=spawn,
                 landing_tier="production_code",
                 president_invoke=deferring_president,
+                **panel_kwargs,
             )
         self.assertIn("FROM_BOARD_REF", seen["codex"])
         self.assertNotIn("PRIVATE_BODY_ABSENT", seen["codex"])
@@ -137,14 +142,20 @@ class PanelInvokerTest(unittest.TestCase):
             seen_timeouts[leg] = kwargs.get("timeout_s")
             return ("OK", "AGREE")
 
-        with patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn):
+        # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+        # context from build_panel_context, its composed board and its landing policy.
+        from test_panel_sl1_contracts import granted_landing_context
+
+        with patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn), \
+                granted_landing_context("production_code") as (ctx, panel_kwargs):
             invoke_sanctioned_review_transport(
-                DEFAULT_BOARD,
+                ctx.composed.board,
                 "ARTIFACT",
                 timeouts_by_leg={"gemini": 137},
                 max_concurrency=1,
                 landing_tier="production_code",
                 president_invoke=deferring_president,
+                **panel_kwargs,
             )
 
         self.assertEqual(seen_timeouts["gemini"], 137)

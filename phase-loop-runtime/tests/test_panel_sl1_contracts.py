@@ -15,17 +15,20 @@ first, and for a valid tier with a context and no ``review_policy`` it expects
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import json
 import os
 import re
 import shlex
 import subprocess
+import tempfile
 import textwrap
 import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from unittest import mock
 
 import pytest
 
@@ -2182,3 +2185,67 @@ def test_sl1_ec1_gateway_tripwire_confines_the_authority_names(tmp_path):
     assert _token_site_violations(repo), "a stray NoLandingToken was not caught"
     (src / "stray.py").write_text("from .merge_guard import register_landing_decision\n", encoding="utf-8")
     assert _token_site_violations(repo), "a stray registration reference was not caught"
+
+
+# =======================================================================================
+# Shared fixture for other phases' granted nodes (plan: "Other phases' frozen nodes SL-1
+# may change"). Not a test.
+# =======================================================================================
+
+
+_GRANTED_ROOTS: list = []  # removed by each TemporaryDirectory's finalizer
+
+
+def _granted_context(tier, vendors, task, *, setenv, setattr_):
+    from phase_loop_runtime.advisor_board import composition, config
+
+    real = composition.compose_panel_board
+    available = set(vendors)
+
+    def forced(table, **_ignored):
+        return real(table, is_available=lambda v: v in available, auth_ok=lambda v: True,
+                    preflight=lambda v: True)
+
+    root = tempfile.TemporaryDirectory(prefix="panel-granted-")
+    _GRANTED_ROOTS.append(root)
+    td = Path(root.name)
+    setenv("XDG_CONFIG_HOME", str(td / "xdg"))
+    setattr_(composition, "compose_panel_board", forced)
+    repo = td / "repo"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                    "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "base"],
+                   check=True, capture_output=True, env=env)
+    base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True,
+                          text=True, env=env).stdout.strip()
+    snap = config.snapshot_panel_run()
+    ctx = config.build_panel_context(task, snap, repo_dir=repo, base_revision=base, head_revision=None,
+                                     monitoring_policy="bounded")
+    return ctx, {"panel_context": ctx, "review_policy": pi.panel_landing_policy(tier, context=ctx)}
+
+
+@contextlib.contextmanager
+def granted_landing_context(tier: str = "production_code", *, vendors=lanes.BOARD_VENDORS,
+                            task: str = "code-review"):
+    """A production-built context for a granted HARDEN / PRESROUTE node: built by
+    ``build_panel_context`` with every vendor available, so its composed board is the
+    lane board, plus its ``panel_landing_policy`` as ``review_policy``. Availability is
+    forced at the ``compose_panel_board`` call boundary (the frozen corpus's
+    ``_ForcedProbes`` route), never through injected ``probes``, so the context can land;
+    the user file is a private ``XDG_CONFIG_HOME`` path. Yields ``(context, kwargs)``;
+    the landing must happen inside the block."""
+    with contextlib.ExitStack() as stack:
+        def setenv(name, value):
+            stack.enter_context(mock.patch.dict(os.environ, {name: value}))
+
+        def setattr_(obj, name, value):
+            stack.enter_context(mock.patch.object(obj, name, value))
+
+        yield _granted_context(tier, vendors, task, setenv=setenv, setattr_=setattr_)
+
+
+def granted_landing_context_mp(monkeypatch, tier: str = "production_code", *, vendors=lanes.BOARD_VENDORS,
+                               task: str = "code-review"):
+    """:func:`granted_landing_context` for a pytest node, undone by its ``monkeypatch``."""
+    return _granted_context(tier, vendors, task, setenv=monkeypatch.setenv, setattr_=monkeypatch.setattr)
