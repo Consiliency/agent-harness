@@ -28,10 +28,13 @@ from pathlib import Path
 import shutil
 import tarfile
 import time
+from typing import Callable
 
 from .review_stage import REVIEW_STAGE_DIR_PREFIX, remove_review_stage
 
-__all__ = ["SandboxEntry", "discover", "reap", "mark_as_sandbox", "SANDBOX_MARKER"]
+__all__ = [
+    "SandboxEntry", "discover", "reap", "reap_until_free", "mark_as_sandbox", "SANDBOX_MARKER",
+]
 
 WORK_DIRNAME = "work"
 
@@ -66,13 +69,58 @@ def _looks_like_a_sandbox(path: Path) -> bool:
     return path.name.startswith(REVIEW_STAGE_DIR_PREFIX)
 
 
-def mark_as_sandbox(path: Path) -> None:
-    """Claim a directory as reapable. Only the creator of a sandbox may call this."""
+def mark_as_sandbox(path: Path, *, owner_pid: int | None = None) -> None:
+    """Claim a directory as reapable. Only the creator of a sandbox may call this.
+
+    ``owner_pid`` names the process using it. The footprint and free-space reaps skip a
+    sandbox whose owner is still running: every directory under the staging root is
+    either a leak or a round in flight, and reaping oldest-first would otherwise delete a
+    CONCURRENT board's tree mid-review (agent-harness#1147).
+    """
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
+    owner = ""
+    if owner_pid is not None:
+        owner = f"pid={owner_pid} start={_process_start(owner_pid) or ''}\n"
     (path / SANDBOX_MARKER).write_text(
-        "created by phase-loop review staging; safe to reap\n", encoding="utf-8"
+        "created by phase-loop review staging; safe to reap\n" + owner, encoding="utf-8"
     )
+
+
+def _process_start(pid: int) -> str | None:
+    """The kernel start time of ``pid`` (field 22 of ``/proc/<pid>/stat``), to tell a
+    live owner from a recycled pid. ``None`` where there is no ``/proc``."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return stat.rpartition(")")[2].split()[19]
+
+
+def _owner_alive(path: Path) -> bool:
+    """Is the process that marked this sandbox still running? Unknown owner: no."""
+    try:
+        text = (path / SANDBOX_MARKER).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    fields = dict(
+        part.split("=", 1) for line in text.splitlines() for part in line.split() if "=" in part
+    )
+    try:
+        pid = int(fields.get("pid", ""))
+    except ValueError:
+        return False
+    recorded = fields.get("start", "")
+    current = _process_start(pid)
+    if current is not None:
+        return not recorded or current == recorded
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _size_of(path: Path) -> int:
@@ -147,19 +195,9 @@ def reap(
     cutoff = time.time() - ttl_s
 
     def _retire(entry: SandboxEntry) -> bool:
-        if destination is not None:
-            try:
-                _archive_work(entry, destination)
-            except Exception:
-                # Never trade the irreproducible half for disk space. Space can be
-                # recovered on the next pass; the panelist's work cannot.
-                return False
-        try:
-            _remove(entry)
-        except Exception:
-            return False
-        removed.append(entry.path)
-        return True
+        gone = _reap_one(entry, archive_dest=destination)
+        removed.extend(gone)
+        return bool(gone)
 
     entries = discover(root)
     survivors = []
@@ -172,11 +210,59 @@ def reap(
 
     if max_total_bytes is not None:
         total = sum(e.size_bytes for e in survivors)
-        # Oldest first: the newest sandbox is the one most likely to be resumed.
+        # Oldest first: the newest sandbox is the one most likely to be resumed. A sandbox
+        # whose owner is still running is a round in flight, never over-budget waste.
         for entry in sorted(survivors, key=lambda e: e.mtime):
             if total <= max_total_bytes:
                 break
+            if _owner_alive(entry.path):
+                continue
             if _retire(entry):
                 total -= entry.size_bytes
 
     return removed
+
+
+def reap_until_free(
+    root: Path | str,
+    *,
+    floor_bytes: int,
+    free_bytes: Callable[[Path], int],
+    archive_dest: Path | str | None = None,
+) -> list[Path]:
+    """Reap retained sandboxes oldest-first until ``root`` has ``floor_bytes`` free.
+
+    Called before a new round is refused for space: retained sandboxes are reclaimable, and
+    refusing a board while they sit there trades a working review for cold leftovers. Live
+    rounds are skipped and the archive-before-reap rule still holds. Never raises.
+    """
+    root = Path(root)
+    removed: list[Path] = []
+    try:
+        if free_bytes(root) >= floor_bytes:
+            return removed
+        for entry in sorted(discover(root), key=lambda e: e.mtime):
+            if _owner_alive(entry.path):
+                continue
+            removed.extend(_reap_one(entry, archive_dest=archive_dest))
+            if free_bytes(root) >= floor_bytes:
+                break
+    except Exception:
+        pass
+    return removed
+
+
+def _reap_one(entry: SandboxEntry, *, archive_dest: Path | str | None = None) -> list[Path]:
+    """Archive then remove one sandbox; ``[]`` when it was kept."""
+    if archive_dest is not None:
+        try:
+            _archive_work(entry, Path(archive_dest))
+        except Exception:
+            # Never trade the irreproducible half for disk space. Space can be
+            # recovered on the next pass; the panelist's work cannot.
+            return []
+    try:
+        _remove(entry)
+    except Exception:
+        return []
+    return [entry.path]

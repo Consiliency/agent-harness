@@ -90,6 +90,9 @@ def _isolate_host_state(monkeypatch, tmp_path):
     authority_root = tmp_path / "fabpub-authority-isolated"
     authority_root.mkdir()
     monkeypatch.setenv(FABPUB_AUTHORITY_ROOT_ENV, str(authority_root))
+    # Review scratch defaults to a per-user cache dir (agent-harness#1147); keep the
+    # suite's rounds -- and the retention sweep they trigger -- out of the real one.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "sandbox-staging"))
     for name in list(os.environ):
         if name.startswith(_CUSTOMIZATION_ENV_PREFIXES) and name not in _CUSTOMIZATION_ENV_EXEMPT:
             monkeypatch.delenv(name)

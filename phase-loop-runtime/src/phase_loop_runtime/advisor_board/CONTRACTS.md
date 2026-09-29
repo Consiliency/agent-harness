@@ -337,7 +337,26 @@ the caller passes a PATH and the runtime reads it.
   (`max_age_s = 24h`) sweep of `pl-panel-*` dirs, called at the top of
   `_default_spawn`. Reclaims dirs leaked when a run is KILLED before the per-run
   `finally: rmtree` (timeout/crash); a concurrent run's fresh dir is never touched,
-  and a GC failure can NEVER affect the run (fully swallowed).
+  and a GC failure can NEVER affect the run (fully swallowed). It sweeps both the
+  current staging root and the system temp dir, where releases before
+  agent-harness#1147 staged.
+- **Staging root and retention (agent-harness#1147, `sandbox_policy`).** Each round's
+  `pl-panel-*` scratch, and the sandbox clone inside it, is created under
+  `staging_root()`: `PHASE_LOOP_SANDBOX_STAGING_DIR` when set; else, on a team host
+  (`/etc/consiliency/team-host`), `~/workspace/phase-loop/sandboxes`; else
+  `$XDG_CACHE_HOME` (or `~/.cache`)`/phase-loop/sandboxes`; else the system temp dir.
+  A candidate on a tmpfs or ramfs (fstype read from `/proc/self/mountinfo`) is
+  skipped, and a sandbox is refused (`env_failure: staging filesystem is RAM-backed`)
+  rather than staged into RAM, unless the operator set the override explicitly.
+  `TMPDIR` is not the override. The retention ceiling is
+  `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES (40 GiB), 25% of the staging filesystem)`.
+  The default floor (2 GiB) is capped at 25% of the filesystem; an explicit
+  `PHASE_LOOP_SANDBOX_FLOOR_BYTES` is used verbatim. Before a round is refused for
+  space, retained sandboxes are reaped oldest-first until the floor is met. The
+  footprint and free-space reaps skip a sandbox whose owning process is still
+  running. Other knobs: `PHASE_LOOP_SANDBOX_ROOT` (selected root, recorded in the
+  evidence), `PHASE_LOOP_SANDBOX_TTL_S` (24 h), `PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S`,
+  `PHASE_LOOP_SANDBOX_ARCHIVE_DEST`, `PHASE_LOOP_SANDBOX_DISABLE`.
 - **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical
   per-leg argv / env / timeout. `tests/test_advisor_board_golden.py` (Proof A hits
   `_exec_leg`; Proof B injects `spawn=`) is untouched;

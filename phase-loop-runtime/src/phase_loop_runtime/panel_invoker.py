@@ -2345,7 +2345,8 @@ _PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
     "timeout", "auth_failure", "usage_limit", "tool_denied: headless tool permission auto-denied",
     "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
     "env_failure: sandbox command could not be built",
-    "env_failure: staging filesystem below its free-space floor", _UNKNOWN_DETAIL,
+    "env_failure: staging filesystem below its free-space floor",
+    "env_failure: staging filesystem is RAM-backed", _UNKNOWN_DETAIL,
 })
 _FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.ASCII) for p in (
     *(re.escape(t) for t in sorted(_PARAMETER_FREE_FAILURES)),
@@ -2510,6 +2511,9 @@ def _exception_failure(exc: BaseException) -> object:
         # nothing is parsed out of the message and no template is matched, so it cannot
         # carry foreign text. Anything else is an unknown failure.
         return message
+    if isinstance(exc, _sandbox_policy.SandboxRamBackedError):
+        # Not a full disk: the stage would have been held in memory (agent-harness#1147).
+        return "env_failure: staging filesystem is RAM-backed"
     if isinstance(exc, _sandbox_policy.SandboxSpaceError):
         # A full disk is an operator-actionable environment failure (board round 8 of
         # agent-harness#908); its message names paths, so it gets our own template.
@@ -3027,8 +3031,26 @@ def _gc_stale_panel_scratch(
     age-gated so a CONCURRENT run's fresh dir is never touched. It is wrapped so a
     GC failure (permissions, a racing rmtree, an unreadable mtime) can NEVER affect
     the run — advisory hygiene only."""
+    if root is not None:
+        _gc_panel_scratch_root(Path(root), max_age_s)
+        return
+    # Both the current staging root AND the system temp dir: releases before
+    # agent-harness#1147 staged under `/tmp`, and a root nothing sweeps any more would
+    # strand what they left there until reboot -- on a tmpfs host, in RAM.
     try:
-        base = Path(tempfile.gettempdir()) if root is None else Path(root)
+        bases = [_sandbox_policy.staging_root(), _sandbox_policy.legacy_staging_root()]
+    except Exception:
+        return
+    seen: set[str] = set()
+    for base in bases:
+        key = os.path.realpath(base)
+        if key not in seen:
+            seen.add(key)
+            _gc_panel_scratch_root(base, max_age_s)
+
+
+def _gc_panel_scratch_root(base: Path, max_age_s: int) -> None:
+    try:
         cutoff = time.time() - max_age_s
         # Retention FIRST: it archives the irreproducible `work/` before removing anything.
         # The age sweep below used to run first and delete `pl-panel-*` outright, so a
@@ -3037,7 +3059,9 @@ def _gc_stale_panel_scratch(
         _sandbox_retention.reap(
             base,
             ttl_s=_sandbox_policy.ttl_seconds(),
-            max_total_bytes=_sandbox_policy.max_total_bytes(),
+            # Relative to the filesystem `base` is on: a fixed 40 GiB never triggers on a
+            # 15 GiB tmpfs (agent-harness#1147).
+            max_total_bytes=_sandbox_policy.effective_max_total_bytes(base),
             archive_dest=_sandbox_policy.archive_destination(),
         )
         # `pl-egress-ns-*` too: a killed coordinator leaves its namespace holder's work dir.
@@ -3141,9 +3165,11 @@ _BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_m
 # What confines a sandboxed codex seat's WRITES: the `workspace-write` sandbox rooted at
 # the disposable tree, WITH `/tmp` and `$TMPDIR` removed from its writable set. codex's
 # `workspace-write` leaves both writable by default, and the round's scratch directory
-# (`/tmp/pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lives there, so without
+# (`pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lived there, so without
 # these a seat that can run commands could overwrite a SIBLING seat's verdict mid-round
-# (reproduced live on codex 0.156.1). With them, writes land only in the tree; the tree
+# (reproduced live on codex 0.156.1). The scratch now defaults to a per-user cache dir
+# (agent-harness#1147), which is neither the cwd nor `/tmp`, so it is not writable either
+# way; the exclusions stay for an operator who points the staging dir at `/tmp`. With them, writes land only in the tree; the tree
 # itself stays writable because it is the sandbox root. READS are NOT confined: the seat
 # can read any file the invoking user can (credentials included). What bounds that is the
 # egress policy (private networks denied) and the seat's report being the only output.
@@ -8443,7 +8469,10 @@ def _default_spawn(
         )
         # Resolved so the provider argv path slots are byte-identical to the
         # attested ``provider_cwd_sha256`` preimage the verifier recomputes.
-        base = Path(tempfile.mkdtemp(prefix="pl-panel-")).resolve() if capture_stage is None else None
+        # On a disk-backed per-user root, never a tmpfs by default (agent-harness#1147).
+        base = Path(tempfile.mkdtemp(
+            prefix="pl-panel-", dir=_sandbox_policy.staging_root(),
+        )).resolve() if capture_stage is None else None
         review_dir = capture_stage if capture_stage is not None else base / "review"
         out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
         if capture_stage is None:
@@ -8478,13 +8507,26 @@ def _default_spawn(
             # the authorization approved one; `revalidate_...` below refuses both an
             # unattested tree and one whose bytes do not match the approved digest.
             if getattr(review_authorization, "staged_tree_sha256", None) is not None:
+                # The floor is sized to the filesystem the clone lands on, and a
+                # sandbox is never staged into RAM unless the operator chose that place.
+                staging_floor = _sandbox_policy.effective_floor_bytes(review_dir)
+                if base is not None:
+                    _sandbox_policy.ensure_disk_backed(base.parent)
+                    # Retained sandboxes are reclaimable: reap them oldest-first (never a
+                    # live round's) before the floor below refuses this one.
+                    _sandbox_retention.reap_until_free(
+                        base.parent,
+                        floor_bytes=staging_floor,
+                        free_bytes=_sandbox_policy._free_bytes,
+                        archive_dest=_sandbox_policy.archive_destination(),
+                    )
                 # One root for the whole round. Unreachable falls back with a warning;
                 # below the free-space floor REFUSES, because filling this filesystem
                 # takes the host down while a refused round costs minutes.
                 root_choice = _sandbox_policy.select_sandbox_root(
                     configured=_sandbox_policy.configured_root(),
                     fallback=review_dir,
-                    floor_bytes=_sandbox_policy.floor_bytes(),
+                    floor_bytes=staging_floor,
                     probe_timeout_s=_sandbox_policy.probe_timeout_s(),
                 )
                 # The namespace is acquired AFTER both revalidations, not here -- see
@@ -8497,9 +8539,7 @@ def _default_spawn(
                 # filesystem that was never measured. Recording `sandbox_root_applied=
                 # False` documents that; it does not prevent filling the disk the broker
                 # and the host run on (board round 7, codex, BLOCKING).
-                _sandbox_policy.ensure_staging_space(
-                    review_dir, _sandbox_policy.floor_bytes(),
-                )
+                _sandbox_policy.ensure_staging_space(review_dir, staging_floor)
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,
@@ -8513,7 +8553,9 @@ def _default_spawn(
                 # merely LOOKS like a sandbox is never deleted -- which means an unmarked
                 # real sandbox leaks forever. Tightening the check without writing the
                 # marker would trade a data-loss bug for a disk-leak bug.
-                _sandbox_retention.mark_as_sandbox(base if base is not None else review_dir)
+                _sandbox_retention.mark_as_sandbox(
+                    base if base is not None else review_dir, owner_pid=os.getpid(),
+                )
                 # Staging is a NEW effect introduced here, so it is validated here --
                 # unconditionally, not behind the injected-seam predicate that skips
                 # the broader revalidation below. Otherwise a test seam, or any future
@@ -8874,7 +8916,9 @@ def _default_spawn(
             # restores modes on the way down.
             if staged_tree_path is not None:
                 _review_stage.remove_review_stage(staged_tree_path)
-            shutil.rmtree(base, ignore_errors=True)
+            # The same helper for the rest: a panelist can leave a read-only directory in
+            # `work/` too, and a bare rmtree then leaks the whole scratch dir silently.
+            _review_stage.remove_review_stage(base)
         if capture_scratch is not None and agy_capture is None and not quiescence_failed:
             shutil.rmtree(capture_scratch, ignore_errors=True)
 

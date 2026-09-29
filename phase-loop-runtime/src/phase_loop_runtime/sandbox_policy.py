@@ -9,6 +9,27 @@ beyond the local default.
 Every knob here is env-overridable and defaults to a working local setup. With nothing
 configured there is no probe and no fallback decision, only a free-space check.
 
+**Where the stage lands, and how much of it is kept, is sized to the filesystem it is on**
+(agent-harness#1147). On a host whose ``/tmp`` is a tmpfs, staging there spends RAM, and a
+fixed 40 GiB retention cap on a 15 GiB tmpfs can never trigger. So :func:`staging_root`
+never picks a RAM-backed filesystem by default, and :func:`effective_max_total_bytes` /
+:func:`effective_floor_bytes` scale to the size of the filesystem the stage is actually on.
+
+Environment overrides (all optional):
+
+* ``PHASE_LOOP_SANDBOX_STAGING_DIR`` -- the local directory each round's ``pl-panel-*``
+  scratch is created in. Honoured as given, even on a tmpfs (with a warning); the relative
+  cap still bounds it. ``TMPDIR`` is deliberately NOT this override: systems commonly point
+  it at a tmpfs.
+* ``PHASE_LOOP_SANDBOX_ROOT`` -- the *selected* root (``host:path`` allowed), recorded in the
+  evidence as ``sandbox_root_*``; placement does not consume it yet (agent-harness#896).
+* ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` -- free-space floor. When set it is used verbatim; the
+  default (2 GiB) is lowered to a quarter of a filesystem smaller than 8 GiB.
+* ``PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES`` -- retention ceiling (default 40 GiB), always
+  further limited to a quarter of the staging filesystem.
+* ``PHASE_LOOP_SANDBOX_TTL_S`` (default 24 h), ``PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S``,
+  ``PHASE_LOOP_SANDBOX_ARCHIVE_DEST``, ``PHASE_LOOP_SANDBOX_DISABLE``.
+
 Two failure modes drive the shape of :func:`select_sandbox_root`:
 
 * A dead remote root typically **hangs** rather than erroring, so the probe is bounded by a
@@ -24,6 +45,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -33,6 +55,7 @@ __all__ = [
     "SandboxLocation",
     "SandboxRootChoice",
     "SandboxSpaceError",
+    "SandboxRamBackedError",
     "EgressPolicy",
     "parse_location",
     "select_sandbox_root",
@@ -44,6 +67,11 @@ __all__ = [
     "probe_timeout_s",
     "archive_destination",
     "sandbox_enabled",
+    "staging_root",
+    "legacy_staging_root",
+    "is_ram_backed",
+    "effective_max_total_bytes",
+    "effective_floor_bytes",
 ]
 
 # Dev-friendly defaults. Production raises the floor by configuration, not by code.
@@ -51,6 +79,19 @@ _DEFAULT_FLOOR_BYTES = 2 * 1024**3
 _DEFAULT_TTL_S = 24 * 3600
 _DEFAULT_PROBE_TIMEOUT_S = 5.0
 _DEFAULT_MAX_TOTAL_BYTES = 40 * 1024**3
+# Retained sandboxes may occupy at most this share of the filesystem they are on, whatever
+# the configured cap says. A quarter leaves the other three for everything else that shares
+# the filesystem; with the floor below it never exceeds half, so the cap can always be
+# satisfied without breaching the floor.
+_MAX_TOTAL_FRACTION = 0.25
+# The default floor never claims more than this share of the filesystem. A fixed 2 GiB on a
+# filesystem of 8 GiB or less would be a quarter or more of it -- on a 2 GiB filesystem it
+# refuses every round forever -- so below that size the floor scales with the filesystem.
+_FLOOR_FRACTION = 0.25
+_STAGING_DIR_ENV = "PHASE_LOOP_SANDBOX_STAGING_DIR"
+_TEAM_HOST_MARKER = Path("/etc/consiliency/team-host")
+_MOUNTINFO = Path("/proc/self/mountinfo")
+_RAM_FSTYPES = frozenset({"tmpfs", "ramfs"})
 
 # The inference endpoints a seat may reach inside the private network, allowlisted by
 # HOST AND PORT. Never by host alone: the same machine serves qdrant (user data) and a
@@ -63,6 +104,10 @@ _INFERENCE_ALLOW: tuple[tuple[str, int], ...] = (
 
 class SandboxSpaceError(RuntimeError):
     """Refusing to create a sandbox that would exhaust the filesystem."""
+
+
+class SandboxRamBackedError(SandboxSpaceError):
+    """Refusing to stage a sandbox onto a tmpfs/ramfs, where it would be held in RAM."""
 
 
 @dataclass(frozen=True)
@@ -208,6 +253,176 @@ def probe_timeout_s() -> float:
 
 def archive_destination() -> str | None:
     return os.environ.get("PHASE_LOOP_SANDBOX_ARCHIVE_DEST") or None
+
+
+def _existing_ancestor(path: str | os.PathLike[str]) -> Path:
+    probe = Path(os.path.abspath(path))
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe
+
+
+def _unescape_mountinfo(field: str) -> str:
+    # The kernel octal-escapes space, tab, newline and backslash in mountinfo paths.
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _mount_fstype(path: str | os.PathLike[str]) -> str | None:
+    """The fstype of the mount that holds ``path``; ``None`` when it cannot be read.
+
+    Read from ``/proc/self/mountinfo``, never guessed from the path: ``/tmp`` is a disk
+    directory on most hosts and a tmpfs on some, and a per-user cache can be either. The
+    mount is the one whose mountpoint is the longest prefix of the resolved path; among
+    equal mountpoints the LAST line wins, because a later mount hides an earlier one.
+    No ``/proc`` (macOS, Windows) is unknown, and unknown is not tmpfs.
+    """
+    try:
+        text = _MOUNTINFO.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    target = os.path.realpath(_existing_ancestor(path))
+    best: str | None = None
+    best_len = -1
+    for line in text.splitlines():
+        left, sep, right = line.partition(" - ")
+        fields = left.split()
+        if not sep or len(fields) < 5 or not right.split():
+            continue
+        mountpoint = _unescape_mountinfo(fields[4])
+        inside = target == mountpoint or target.startswith(mountpoint.rstrip("/") + "/")
+        if inside and len(mountpoint) >= best_len:
+            best, best_len = right.split()[0], len(mountpoint)
+    return best
+
+
+def _fs_total_bytes(path: str | os.PathLike[str]) -> int | None:
+    """Total size of the filesystem holding ``path``; ``None`` when it cannot be measured."""
+    try:
+        st = os.statvfs(_existing_ancestor(path))
+    except (AttributeError, OSError):
+        return None
+    return st.f_blocks * st.f_frsize
+
+
+def is_ram_backed(path: str | os.PathLike[str]) -> bool:
+    """Is ``path`` on a tmpfs or ramfs -- storage that is spent out of RAM?"""
+    fstype = _mount_fstype(path)
+    if fstype is not None:
+        return fstype in _RAM_FSTYPES
+    # No mount table: a filesystem that reports no blocks at all is ramfs-shaped.
+    return _fs_total_bytes(path) == 0
+
+
+def _staging_candidates() -> list[Path]:
+    """Disk-backed per-user places to stage in, most preferred first."""
+    candidates: list[Path] = []
+    try:
+        home = Path.home()
+    except (KeyError, RuntimeError):
+        home = None
+    if _TEAM_HOST_MARKER.exists():
+        # A shared team host: the per-user workspace volume, not the small shared root disk.
+        if home is not None and (home / "workspace").is_dir():
+            candidates.append(home / "workspace" / "phase-loop" / "sandboxes")
+        try:
+            import getpass
+            user_ws = Path("/mnt/workspace/users") / getpass.getuser()
+        except Exception:
+            user_ws = None
+        if user_ws is not None and user_ws.is_dir():
+            candidates.append(user_ws / "phase-loop" / "sandboxes")
+    xdg = os.environ.get("XDG_CACHE_HOME", "")
+    if os.path.isabs(xdg):
+        candidates.append(Path(xdg) / "phase-loop" / "sandboxes")
+    elif home is not None:
+        candidates.append(home / ".cache" / "phase-loop" / "sandboxes")
+    return candidates
+
+
+def legacy_staging_root() -> Path:
+    """Where releases before agent-harness#1147 staged: the system temp dir."""
+    return Path(tempfile.gettempdir())
+
+
+def staging_root() -> Path:
+    """The local directory a round's ``pl-panel-*`` scratch (and its sandbox) is made in.
+
+    Resolution order: ``PHASE_LOOP_SANDBOX_STAGING_DIR`` if set (honoured as given); else
+    the first disk-backed per-user candidate (the team-host workspace when
+    ``/etc/consiliency/team-host`` exists, then ``$XDG_CACHE_HOME`` or ``~/.cache``); else
+    the system temp dir if it is not RAM-backed. If every candidate is RAM-backed the temp
+    dir is returned with a warning -- small scratch may still go there, but
+    :func:`ensure_disk_backed` refuses to stage a sandbox into it.
+    """
+    override = os.environ.get(_STAGING_DIR_ENV, "").strip()
+    if override:
+        path = Path(override).expanduser()
+        try:
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            pass  # surfaces where the scratch dir is made, with the path in the error
+        if is_ram_backed(path):
+            warnings.warn(
+                f"{_STAGING_DIR_ENV}={override} is RAM-backed; honouring the explicit choice, "
+                "bounded by the filesystem-relative retention cap",
+                RuntimeWarning, stacklevel=2,
+            )
+        return path
+    for candidate in _staging_candidates():
+        if is_ram_backed(candidate):
+            continue
+        try:
+            candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            continue
+        if os.access(candidate, os.W_OK | os.X_OK):
+            return candidate
+    legacy = legacy_staging_root()
+    if is_ram_backed(legacy):
+        warnings.warn(
+            f"no disk-backed staging directory found and {legacy} is RAM-backed; set "
+            f"{_STAGING_DIR_ENV} to a disk-backed directory",
+            RuntimeWarning, stacklevel=2,
+        )
+    return legacy
+
+
+def ensure_disk_backed(path: str | os.PathLike[str]) -> None:
+    """Refuse to stage a sandbox onto RAM unless the operator explicitly chose that place."""
+    if os.environ.get(_STAGING_DIR_ENV, "").strip():
+        return
+    if is_ram_backed(path):
+        raise SandboxRamBackedError(
+            f"refusing to stage a sandbox at {path}: it is on a RAM-backed filesystem "
+            f"(tmpfs/ramfs), so the sandbox would be held in memory. Set {_STAGING_DIR_ENV} "
+            "to a disk-backed directory."
+        )
+
+
+def effective_max_total_bytes(path: str | os.PathLike[str]) -> int:
+    """The retention ceiling for sandboxes under ``path``: the configured cap, but never
+    more than a quarter of the filesystem they are on."""
+    cap = max_total_bytes()
+    total = _fs_total_bytes(path)
+    if total:
+        cap = min(cap, int(total * _MAX_TOTAL_FRACTION))
+    return cap
+
+
+def effective_floor_bytes(path: str | os.PathLike[str]) -> int:
+    """The free-space floor for staging at ``path``.
+
+    An explicit ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` is used verbatim -- the operator's
+    protection is never weakened. The DEFAULT is capped at a quarter of the filesystem, so
+    a small filesystem is not refused forever by a floor as large as itself.
+    """
+    if os.environ.get("PHASE_LOOP_SANDBOX_FLOOR_BYTES", "").strip():
+        return floor_bytes()
+    floor = _DEFAULT_FLOOR_BYTES
+    total = _fs_total_bytes(path)
+    if total:
+        floor = min(floor, int(total * _FLOOR_FRACTION))
+    return floor
 
 
 def ensure_staging_space(destination: Path | str, floor_bytes: int | None = None) -> None:

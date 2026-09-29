@@ -6,6 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Sandbox staging stays off RAM, and retention is sized to its filesystem (agent-harness#1147)
+
+- Review scratch (`pl-panel-*`) and the sandbox clone inside it are no longer created in the
+  system temp dir unconditionally. The staging root is `PHASE_LOOP_SANDBOX_STAGING_DIR` if
+  set; else the per-user workspace on a team host (`/etc/consiliency/team-host`); else
+  `$XDG_CACHE_HOME`/`~/.cache` `phase-loop/sandboxes`; else the temp dir. Any candidate on a
+  tmpfs or ramfs is skipped (the fstype comes from `/proc/self/mountinfo`, not from the
+  path). A sandbox is refused rather than staged into RAM, with the new detail
+  `env_failure: staging filesystem is RAM-backed`, unless the operator chose that directory
+  explicitly.
+- The retention ceiling is now `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging
+  filesystem)`. A fixed 40 GiB could never trigger on a 15 GiB tmpfs. The default 2 GiB
+  floor is capped at 25% of a small filesystem; an explicit `PHASE_LOOP_SANDBOX_FLOOR_BYTES`
+  is used verbatim.
+- Before a round is refused for space, retained sandboxes are reaped oldest-first. The
+  footprint and free-space reaps never remove a sandbox whose owning process is still
+  running, so one board no longer deletes a concurrent board's tree.
+- The crash-residual sweep covers both the new staging root and the old temp-dir root, so
+  sandboxes left in `/tmp` by earlier releases are still reclaimed by the TTL.
+- A round's scratch dir is removed with the mode-restoring helper, so a read-only directory
+  a panelist left in `work/` no longer leaks the whole dir.
+- `panel_invoker.py`, `sandbox_policy.py` and `sandbox_retention.py` changed, so the agy pin
+  set drifts: the next release cut requalifies agy.
+
 ## [0.7.21] - 2026-09-29
 
 ### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140; PR agent-harness#1142)
