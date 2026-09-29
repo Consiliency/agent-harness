@@ -859,6 +859,18 @@ Before applying the diff, the staged materialized path set, bytes, symlink
 targets, and executable bits must equal the reviewed Git tree, including no
 ignored extra files. Only the named pytest node runs in the staged clone.
 
+Each run stages its own tree from the canonical repository at the head under
+test, never from a seat's tree, and copies installed dependency files into a
+per-run import root (copies, never links; uv's `--link-mode=copy` equivalent).
+Those two trees are the run's protected objects: every regular file in them,
+`.git` included, must have a link count of exactly one before the node starts
+and after it exits, or the run is `error` (agent-harness#1134). The shared system
+interpreter is read-only to the run and is not a protected object; the runner
+digests its resolved executable's bytes plus an lstat manifest (mode, size,
+device, inode, mtime, ctime) of its stdlib and system site directories before
+and after the run, and a changed digest is `error`. The record schema is
+unchanged; the reason stays in the result's `detail`.
+
 The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
 `node_missing`, `error`. Pytest emits JUnit, but the recorded outcome comes from
 the wrapper's reported call-phase result; the test-writable XML is not read as

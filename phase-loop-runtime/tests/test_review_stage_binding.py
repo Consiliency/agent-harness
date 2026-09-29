@@ -1484,3 +1484,119 @@ def test_early_broken_stdin_close_still_reaps_falsifier_child(tmp_path, monkeypa
     finally:
         for proc in launched:
             proc.wait(timeout=5)
+
+
+def _falsifier_entry(source: str):
+    from types import SimpleNamespace
+
+    path = "phase-loop-runtime/tests/test_finding_F001.py"
+    lines = source.splitlines()
+    diff = (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n"
+        + "".join(f"+{line}\n" for line in lines)
+    )
+    return SimpleNamespace(
+        finding_id="F001", new_test_path=path,
+        expected_nodeid=f"{path}::test_trigger", diff=diff,
+    )
+
+
+def _run_real_falsifier(repo: Path, entry):
+    from phase_loop_runtime import falsifier
+    from phase_loop_runtime.advisor_board import backing
+
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    authorization = backing.prepare_falsifier_isolation_authorization(repo=repo, reviewed_sha=head)
+    result = falsifier.run_finding_falsifier(
+        falsifier=entry, seat_key="claude:claude-opus-5-5:max:correctness",
+        authorization=authorization, repo=repo, wall_clock_s=30,
+        output_cap_bytes=65536,
+    )
+    assert backing._falsifier_authorization_lease(authorization).closed
+    return result
+
+
+def test_falsifier_node_hard_link_in_stage_is_error(tmp_path):
+    # agent-harness#1134: every protected regular file has exactly one link after
+    # the run, so a node that links a staged file must not yield an outcome.
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("canonical falsifier launcher absent")
+    repo = _git_repo(tmp_path / "repo")
+    entry = _falsifier_entry(
+        "import os\n"
+        "def test_trigger():\n"
+        "    os.link('/work/src.py', '/work/src-link.py')\n"
+        "    assert True\n"
+    )
+    result = _run_real_falsifier(repo, entry)
+    assert result.outcome == result.record["outcome"] == "error", result.detail
+    assert "hard link" in (result.detail or "")
+    assert result.red_output_digest is None
+
+
+def test_falsifier_preexisting_dependency_hard_link_refused_before_run(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    outside = tmp_path / "shared-state.py"
+    outside.write_text("shared = True\n", encoding="utf-8")
+    snapshot = review_stage._snapshot_falsifier_dependencies
+    launched = []
+
+    def linked_snapshot(stage, destination):
+        snapshot(stage, destination)
+        os.link(outside, destination / "shared_state.py")
+
+    def launch(**kwargs):
+        launched.append(kwargs)
+        return 0, b"", b"", None, None
+
+    monkeypatch.setattr(review_stage, "_snapshot_falsifier_dependencies", linked_snapshot)
+    monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node", launch)
+    result = _run_real_falsifier(repo, _falsifier_entry("def test_trigger():\n    assert True\n"))
+    assert result.outcome == "error"
+    assert "hard link" in (result.detail or "")
+    assert launched == []
+
+
+def test_falsifier_interpreter_change_during_run_is_error(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    interpreter = tmp_path / "interpreter"
+    (interpreter / "lib").mkdir(parents=True)
+    executable = interpreter / "python3"
+    executable.write_bytes(b"interpreter")
+    (interpreter / "lib" / "stdlib.py").write_text("before\n", encoding="utf-8")
+
+    def launch(**_kwargs):
+        (interpreter / "lib" / "stdlib.py").write_text("after!\n", encoding="utf-8")
+        return 0, b"", b"", None, {}
+
+    monkeypatch.setattr(
+        review_stage, "_falsifier_interpreter_scope",
+        lambda: (executable, (interpreter / "lib",)),
+    )
+    monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node", launch)
+    result = _run_real_falsifier(repo, _falsifier_entry("def test_trigger():\n    assert True\n"))
+    assert result.outcome == "error"
+    assert "system interpreter changed" in (result.detail or "")
+
+
+def test_falsifier_interpreter_digest_sees_replaced_binary_and_new_entry(tmp_path):
+    executable = tmp_path / "python3"
+    executable.write_bytes(b"interpreter-a")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    before = review_stage._falsifier_interpreter_digest(executable, (lib,))
+    assert review_stage._falsifier_interpreter_digest(executable, (lib,)) == before
+    (lib / "sitecustomize.py").write_text("x = 1\n", encoding="utf-8")
+    added = review_stage._falsifier_interpreter_digest(executable, (lib,))
+    assert added != before
+    executable.write_bytes(b"interpreter-b")
+    assert review_stage._falsifier_interpreter_digest(executable, (lib,)) != added
+
+
+def test_falsifier_real_scope_names_the_launched_interpreter():
+    if not Path("/usr/bin/python3").is_file():
+        pytest.skip("canonical falsifier interpreter absent")
+    executable, dirs = review_stage._falsifier_interpreter_scope()
+    assert executable == Path("/usr/bin/python3").resolve()
+    assert dirs and all(path.is_absolute() for path in dirs)

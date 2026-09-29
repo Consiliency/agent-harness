@@ -411,13 +411,82 @@ def run_bounded_falsifier_node(
 ) -> tuple[int | None, bytes, bytes, str | None, dict[str, object] | None]:
     """Run one pytest node in a credentialless, networkless staged-tree mount."""
     stage = Path(staged).resolve(strict=True)
+    # agent-harness#1134 (EC-EXECFIND-2): the stage and the copied dependency root are
+    # this run's protected objects, so every regular file in them must have exactly
+    # one link before and after the run. The shared system interpreter is read-only
+    # to the run and only digested; a change during the run is an error.
+    executable, interpreter_dirs = _falsifier_interpreter_scope()
+    interpreter = _falsifier_interpreter_digest(executable, interpreter_dirs)
     with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-") as temporary:
         dependencies = Path(temporary)
         _snapshot_falsifier_dependencies(stage, dependencies)
-        return _run_bounded_falsifier_node(
+        _require_single_link_files((stage, dependencies))
+        result = _run_bounded_falsifier_node(
             staged=stage, dependencies=dependencies, nodeid=nodeid,
             wall_clock_s=wall_clock_s, output_cap_bytes=output_cap_bytes,
         )
+        _require_single_link_files((stage, dependencies))
+    if _falsifier_interpreter_digest(executable, interpreter_dirs) != interpreter:
+        raise ValueError("falsifier system interpreter changed during the run")
+    return result
+
+
+def _falsifier_interpreter_scope() -> tuple[Path, tuple[Path, ...]]:
+    """The shared interpreter the child reads: its binary, stdlib and system site dirs."""
+    inventory = subprocess.run(
+        ["/usr/bin/python3", "-S", "-c",
+         "import json,os,site,sys,sysconfig; print(json.dumps({"
+         "'executable':os.path.realpath(sys.executable),"
+         "'dirs':[sysconfig.get_paths()['stdlib'],*site.getsitepackages()]}))"],
+        capture_output=True, text=True, check=True, timeout=3,
+        cwd="/", env={"PATH": "/usr/bin:/bin"},
+    )
+    scope = json.loads(inventory.stdout)
+    executable = scope.get("executable")
+    dirs = scope.get("dirs")
+    if (not isinstance(executable, str) or not executable.startswith("/")
+            or not isinstance(dirs, list)
+            or not all(isinstance(item, str) and item.startswith("/") for item in dirs)):
+        raise ValueError("falsifier system interpreter scope is invalid")
+    return Path(executable), tuple(dict.fromkeys(Path(item) for item in dirs))
+
+
+def _falsifier_interpreter_digest(executable: Path, directories: tuple[Path, ...]) -> str:
+    """Digest the interpreter binary's bytes and a stat manifest of its directories."""
+    def reject_unenumerable(error):
+        raise ValueError("falsifier system interpreter cannot be enumerated") from error
+
+    digest = hashlib.sha256()
+    details = executable.lstat()
+    digest.update(repr((str(executable), details.st_mode, details.st_size,
+                        details.st_mtime_ns, details.st_ctime_ns)).encode())
+    digest.update(hashlib.sha256(executable.read_bytes()).digest())
+    for root in directories:
+        if not root.exists():
+            digest.update(repr((str(root), None)).encode())
+            continue
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=reject_unenumerable):
+            dirs.sort()
+            for name in sorted((*dirs, *files)):
+                path = os.path.join(directory, name)
+                details = os.lstat(path)
+                digest.update(repr((path, details.st_mode, details.st_size, details.st_dev,
+                                    details.st_ino, details.st_mtime_ns,
+                                    details.st_ctime_ns)).encode())
+    return digest.hexdigest()
+
+
+def _require_single_link_files(roots: tuple[Path, ...]) -> None:
+    """Refuse a protected regular file that shares its inode with any other path."""
+    def reject_unenumerable(error):
+        raise ValueError("falsifier protected tree cannot be enumerated") from error
+
+    for root in roots:
+        for directory, _dirs, files in os.walk(root, followlinks=False, onerror=reject_unenumerable):
+            for name in files:
+                details = os.lstat(os.path.join(directory, name))
+                if stat.S_ISREG(details.st_mode) and details.st_nlink != 1:
+                    raise ValueError("falsifier protected file has more than one hard link")
 
 
 def _falsifier_repo_exposed_by_system_mount(repo: Path) -> bool:
