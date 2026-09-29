@@ -33,6 +33,7 @@ from unittest import mock
 import pytest
 
 from harden_tdd_guard import invoke_sanctioned_review_transport
+from test_train_review_packet import synthetic_train_packet  # noqa: F401  (fixture by name, Q4 node)
 from president_fakes import deferring_president
 import test_panel_lanes as lanes
 from test_panel_lanes import (
@@ -2372,3 +2373,170 @@ def granted_landing_context_mp(monkeypatch, tier: str = "production_code", *, ve
     must lack a vendor, a table whose minimum lifts the named-seat rule)."""
     return _granted_context(tier, vendors, task, setenv=monkeypatch.setenv, setattr_=monkeypatch.setattr,
                             user_body=user_body)
+
+
+# =======================================================================================
+# Lead / maintainer rulings on agent-harness#1078 (Q1, Q3, Q4, Q5, advisor-board (b))
+# =======================================================================================
+
+
+def test_sl1_q1_without_lens_frame_both_transports_get_todays_prompt(tmp_path, monkeypatch):
+    """Q1: with ``lens_frame`` absent, the delivery seam hands each brokered and TUI seat
+    the byte-identical prompt the same board gets without a panel context."""
+    s = _names()
+    c = _context(s, tmp_path, monkeypatch)
+    _stub_lens_frame(monkeypatch, None)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
+    artifact = "the reviewed payload\n"
+    env = {"PATH": os.environ.get("PATH", "")}
+    runs = {}
+    for label, extra in (("panel", {"panel_context": c.ctx}), ("plain", {})):
+        recorded: list = []
+        monkeypatch.setattr(pi, "deliver_seat_prompt", lanes.delivery_recorder(recorded))
+        monkeypatch.chdir(lanes.ctx_repo(c.ctx))
+        pi.invoke_board(c.ctx.composed.board, artifact, repo_dir=lanes.ctx_repo(c.ctx), gateway_available=False,
+                        base_env=env, **extra)
+        # Each attempt's private scratch path is fresh; everything else must be byte-identical.
+        runs[label] = {key: (route, re.sub(r"/pl-panel-[A-Za-z0-9_]+/", "/pl-panel-<scratch>/", prompt))
+                       for key, route, prompt in recorded}
+    harness_of = {seat.seat_key: str(seat.harness) for seat in c.ctx.composed.board.seats}
+    assert runs["panel"] and set(runs["panel"]) == set(harness_of)
+    assert {route for route, _ in runs["panel"].values()} == {"brokered", "tui"}
+    # One seat per vendor here: a run without a context names each delivery by its leg.
+    by_harness = {harness_of[key]: delivered for key, delivered in runs["panel"].items()}
+    assert by_harness == runs["plain"], "a lens-less panel run changed a seat's prompt"
+
+
+def _regate_landing(tmp_path, monkeypatch, *, unusable=()):
+    """A decided plan landing gated at origin main (built-in table), with ``unusable`` legs."""
+    s = _names()
+    _user_file(tmp_path, monkeypatch, USER_BODY)
+    t = lanes._TargetRepo(tmp_path, "rg", {})
+    lanes._ForcedProbes(s, monkeypatch)
+    _git(t.path, "fetch", "-q", "origin")
+    b0 = _git(t.path, "rev-parse", "origin/main")
+    snap = s.snapshot()
+    ctx = s.build("code-review", snap, repo_dir=t.path, base_revision=b0, head_revision=t.change_head,
+                  monitoring_policy="bounded")
+    result = invoke_sanctioned_review_transport(
+        ctx.composed.board, "artifact", spawn=_ok_spawn(unusable), landing_tier="plan", panel_context=ctx,
+        review_policy=s.landing_policy("plan", context=ctx), president_invoke=deferring_president,
+        repo_dir=str(t.path))
+    assert result.landing_decision is not None and result.landing_decision.admitted
+    return t, ctx, snap, result
+
+
+def test_sl1_q3_a_regate_that_raises_the_minimum_refuses_on_the_seats_already_run(tmp_path, monkeypatch):
+    """Q3: the re-gate rebuilds the context at the fresh target head and re-evaluates the
+    seats already run (never re-running one); a raised minimum they do not meet refuses."""
+    t, ctx, snap, result = _regate_landing(tmp_path, monkeypatch, unusable={"codex", "gemini"})
+    t.push_target({REPO_REL: _rotated_cr_table(minimum=3)}, "raise the minimum")
+    decision = pi.regated_landing_decision(result, ctx, snap, repo_dir=t.path, head_revision=t.change_head,
+                                           tier="plan")
+    assert decision.admitted is False and "below_distinct_vendor_minimum" in decision.reasons
+    # Control: a target that did not touch [panel.*] leaves the admitted decision standing.
+    t2, ctx2, snap2, result2 = _regate_landing(tmp_path / "control", monkeypatch, unusable={"codex", "gemini"})
+    t2.push_target({"other.txt": "x\n"}, "unrelated")
+    assert pi.regated_landing_decision(result2, ctx2, snap2, repo_dir=t2.path, head_revision=t2.change_head,
+                                       tier="plan") is result2.landing_decision
+
+
+def test_sl1_q3_a_regate_that_changes_the_composition_refuses_typed(tmp_path, monkeypatch):
+    """Q3: a rebuilt context that composes a different board than the seats reviewed is
+    refused with ``panel_regate_composition_changed``, never silently re-seated."""
+    t, ctx, snap, result = _regate_landing(tmp_path, monkeypatch)
+    t.push_target({REPO_REL: _cr_table(minimum=1)}, "every lane lists grok first")
+    decision = pi.regated_landing_decision(result, ctx, snap, repo_dir=t.path, head_revision=t.change_head,
+                                           tier="plan")
+    assert decision.admitted is False and decision.reasons == ("panel_regate_composition_changed",)
+
+
+def test_sl1_q4_only_a_single_pending_node_train_binds_its_change(tmp_path):
+    """Q4 (maintainer: ship strict, extend next; agent-harness#1150): a single pending node
+    binds its admitted head and PR; a multi-node train binds nothing, so its decision
+    authorizes no merge (guarded_merge refuses an unbound decision: see the no-bindings
+    refusal case)."""
+    from phase_loop_runtime import train_runner as tr
+
+    one = [types.SimpleNamespace(node_id="a")]
+    two = one + [types.SimpleNamespace(node_id="b")]
+    info = {"a": {"admitted_head_sha": "a" * 40, "pr_url": "https://github.com/o/r/pull/7"},
+            "b": {"admitted_head_sha": "b" * 40, "pr_url": "https://github.com/o/r/pull/8"}}
+    assert tr._train_panel_review_binding(one, info) == {"reviewed_sha": "a" * 40, "reviewed_pr": 7}
+    assert tr._train_panel_review_binding(two, info) == {}
+
+
+def test_sl1_q4_a_refused_train_merge_halts_before_the_next_node(tmp_path, synthetic_train_packet):
+    """Q4 / item 7: a typed merge_guard refusal is recorded in run-train's result and ledger
+    and the train halts; nothing merges unbound."""
+    from test_train_review_authorization import _ledger, _run_review
+
+    from phase_loop_runtime import merge_guard as mg
+
+    def refuse(workspace, branch, base="main", head_sha=None):
+        raise mg.MergeGuardRefusal("panel_merge_not_merge_capable", "the decision has no bound target or head")
+
+    result, merged = _run_review(tmp_path, _ledger(tmp_path), review_only=False, merge_pr=refuse)
+    assert result["status"] == "merge_halted" and result["reason"] == "panel_merge_not_merge_capable"
+    assert result["terminal_blocker"]["human_required"] is False
+    assert merged == []
+
+
+def test_sl1_q5_a_non_switched_repositorys_gate_call_is_unchanged(tmp_path, monkeypatch):
+    """Q5: before the GOVLEAN switch the governed gate stays tierless and context-free (no
+    snapshot, no landing keywords), even with a declared change under review."""
+    from phase_loop_runtime import governed_review
+    from phase_loop_runtime.advisor_board import backing, config, composition
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    repo, base = _repo(tmp_path, {}, name="unswitched")
+    calls: list = []
+    monkeypatch.setattr(config, "snapshot_panel_run", lambda **k: calls.append("snapshot"))
+    monkeypatch.setattr(composition, "compose_review_board", lambda: DEFAULT_BOARD)
+    monkeypatch.setattr(backing, "prepare_review_isolation_authorization", lambda *a, **k: "authorization")
+
+    def invoke(board, artifact, **kwargs):
+        calls.append(("invoke", sorted(kwargs)))
+        return pi.PanelResult(legs=tuple(
+            pi.PanelLegResult(leg=str(seat.harness), status="OK", text="ok\nAGREE", seat_key=seat.seat_key)
+            for seat in board.seats))
+
+    monkeypatch.setattr(pi, "invoke_board", invoke)
+    governed_review.governed_board_gate(artifact="# bundle\n", author_executor="train-coordinator",
+                                        run_mode="governed", canonical_repo_authority=repo, reviewed_sha=base)
+    (invoked,) = [c for c in calls if isinstance(c, tuple)]
+    assert "snapshot" not in calls
+    assert not {"landing_tier", "panel_context", "review_policy", "president_invoke", "target_branch",
+                "reviewed_head"} & set(invoked[1]), invoked
+
+
+def test_sl1_b_a_non_landing_advisor_board_run_fetches_nothing(tmp_path, monkeypatch):
+    """Advisor-board (b): a non-landing run reads its tables at the checkout's HEAD; it
+    fetches nothing and writes no ref, even with an unreachable ``origin``."""
+    from phase_loop_runtime import cli
+    from phase_loop_runtime.advisor_board import config
+
+    s = _names()
+    _user_file(tmp_path, monkeypatch, USER_BODY)
+    lanes._ForcedProbes(s, monkeypatch)
+    repo, _base = _repo(tmp_path, {}, name="nonlanding")
+    _git(repo, "remote", "add", "origin", str(tmp_path / "does-not-exist.git"))
+    refs_before = _git(repo, "for-each-ref")
+    fetched: list = []
+    real_fetch = config.fetch_gate_target
+    monkeypatch.setattr(config, "fetch_gate_target", lambda *a, **k: fetched.append(a) or real_fetch(*a, **k))
+    monkeypatch.setattr(pi, "invoke_board", lambda board, artifact, **k: pi.PanelResult(legs=tuple(
+        pi.PanelLegResult(leg=str(seat.harness), status="OK", text="ok\nAGREE", seat_key=seat.seat_key)
+        for seat in board.seats)))
+    monkeypatch.chdir(repo)
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("# artifact\n", encoding="utf-8")
+    import contextlib as _cl
+    import io as _io
+
+    out = _io.StringIO()
+    with _cl.redirect_stdout(out):
+        rc = cli.main(["advisor-board", str(artifact), "--json"])
+    assert rc == 0, out.getvalue()
+    assert fetched == [], "a non-landing run fetched its target"
+    assert _git(repo, "for-each-ref") == refs_before, "a non-landing run wrote a ref"
