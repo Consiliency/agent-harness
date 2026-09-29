@@ -114,9 +114,10 @@ def _repo_slug(repo_dir: str | Path) -> str:
     from .convergence.broker.credsep import resolve_broker_repo_identity
 
     caller = _CALLER_RUN.get()
-    if caller is not None:
-        return resolve_broker_repo_identity(Path(repo_dir), run=caller)
-    return resolve_broker_repo_identity(Path(repo_dir))
+    try:
+        return resolve_broker_repo_identity(Path(repo_dir), run=caller if caller is not None else subprocess.run)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise MergeGuardRefusal("panel_merge_repo_unknown", f"the repository's GitHub identity cannot be read: {exc}") from exc
 
 
 def repo_slug(repo_dir: str | Path) -> str:

@@ -4864,8 +4864,34 @@ def test_pr_transition_persists_identity_and_reviews_before_mutation(
 
     monkeypatch.setattr(runner, "fsync_run_store_durable", fake_durability_sync, raising=False)
 
+    # PANEL SL-1 (agent-harness#1078, granted): the ready and the publish run through
+    # merge_guard. Its ready seam reads the repository identity, the PR's head, the open PRs
+    # with that head, their queue membership and their base's branch rules; the fixture
+    # repository is before the authority switch, so the publish is today's push under a
+    # governed no-landing token (with -c core.hooksPath=/dev/null and --no-verify).
+    def guard_read(argv):
+        joined = " ".join(str(a) for a in argv)
+        if argv[:1] == ["git"] and "get-url" in argv:
+            return subprocess.CompletedProcess(argv, 0, "https://github.com/Consiliency/agent-harness.git\n", "")
+        if argv[:3] == ["gh", "pr", "view"] and "headRefName" in joined:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"headRefName": "legible-refresh"}), "")
+        if argv[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(
+                [{"number": 347, "autoMergeRequest": None, "baseRefName": "main", "headRefName": "legible-refresh"}]), "")
+        if argv[:3] == ["gh", "api", "graphql"] and "isInMergeQueue" in joined:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(
+                {"data": {"repository": {"pullRequest": {"isInMergeQueue": False}}}}), "")
+        if argv[:2] == ["gh", "api"] and "/rules/branches/" in joined:
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
+        if argv[:2] == ["gh", "api"] and joined.endswith("--hostname github.com") and "/protection" in joined:
+            return subprocess.CompletedProcess(argv, 1, "", "HTTP 404: Not Found")
+        return None
+
     def fake_run(argv, **kwargs):
         nonlocal merged, post_failure_pending
+        read = guard_read(list(argv))
+        if read is not None:
+            return read
         if argv[:3] == ["gh", "pr", "ready"]:
             events.append("ready")
         elif argv[:3] == ["gh", "pr", "merge"]:
