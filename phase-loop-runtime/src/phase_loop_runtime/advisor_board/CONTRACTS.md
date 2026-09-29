@@ -865,11 +865,16 @@ per-run import root (copies, never links; uv's `--link-mode=copy` equivalent).
 Those two trees are the run's protected objects: every regular file in them,
 `.git` included, must have a link count of exactly one before the node starts
 and after it exits, or the run is `error` (agent-harness#1134). The shared system
-interpreter is read-only to the run and is not a protected object; the runner
-digests its resolved executable's bytes plus an lstat manifest (mode, size,
-device, inode, mtime, ctime) of its stdlib and system site directories before
-and after the run, and a changed digest is `error`. The record schema is
-unchanged; the reason stays in the result's `detail`.
+interpreter is read-only to the run and is not a protected object. The runner
+resolves `/usr/bin/python3` once, launches exactly that resolved file, and
+digests it before and after the run: the executable's bytes, an lstat manifest
+(mode, size, device, inode, mtime, ctime) of its stdlib and system site
+directories, and every symlink target outside those directories, followed and
+hashed by content. A changed digest is `error`. Before staging, the canonical
+repository must not be reachable through any system-root mount: each exposed
+root and every mount beneath it is compared by device and in-filesystem path
+(mount identity), not by pathname. The record schema is unchanged; the reason
+stays in the result's `detail`.
 
 The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
 `node_missing`, `error`. Pytest emits JUnit, but the recorded outcome comes from

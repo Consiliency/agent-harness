@@ -48,7 +48,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
@@ -414,7 +414,8 @@ def run_bounded_falsifier_node(
     # agent-harness#1134 (EC-EXECFIND-2): the stage and the copied dependency root are
     # this run's protected objects, so every regular file in them must have exactly
     # one link before and after the run. The shared system interpreter is read-only
-    # to the run and only digested; a change during the run is an error.
+    # to the run and only digested; a change during the run is an error. The child
+    # launches the exact resolved executable the digest measures.
     executable, interpreter_dirs = _falsifier_interpreter_scope()
     interpreter = _falsifier_interpreter_digest(executable, interpreter_dirs)
     with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-") as temporary:
@@ -424,6 +425,7 @@ def run_bounded_falsifier_node(
         result = _run_bounded_falsifier_node(
             staged=stage, dependencies=dependencies, nodeid=nodeid,
             wall_clock_s=wall_clock_s, output_cap_bytes=output_cap_bytes,
+            interpreter=executable,
         )
         _require_single_link_files((stage, dependencies))
     if _falsifier_interpreter_digest(executable, interpreter_dirs) != interpreter:
@@ -431,48 +433,95 @@ def run_bounded_falsifier_node(
     return result
 
 
+def _falsifier_resolved_interpreter() -> Path:
+    """Resolve the canonical interpreter once; the run launches and measures this path."""
+    executable = Path(os.path.realpath("/usr/bin/python3"))
+    if (not executable.is_absolute() or executable.is_symlink() or not executable.is_file()
+            or not any(executable.is_relative_to(root.resolve())
+                       for root in _FALSIFIER_SYSTEM_ROOTS if root.exists())):
+        raise ValueError("falsifier interpreter is not a system-mounted file")
+    return executable
+
+
 def _falsifier_interpreter_scope() -> tuple[Path, tuple[Path, ...]]:
     """The shared interpreter the child reads: its binary, stdlib and system site dirs."""
+    executable = _falsifier_resolved_interpreter()
     inventory = subprocess.run(
-        ["/usr/bin/python3", "-S", "-c",
-         "import json,os,site,sys,sysconfig; print(json.dumps({"
-         "'executable':os.path.realpath(sys.executable),"
-         "'dirs':[sysconfig.get_paths()['stdlib'],*site.getsitepackages()]}))"],
+        [str(executable), "-S", "-c",
+         "import json,site,sysconfig; print(json.dumps("
+         "[sysconfig.get_paths()['stdlib'],*site.getsitepackages()]))"],
         capture_output=True, text=True, check=True, timeout=3,
         cwd="/", env={"PATH": "/usr/bin:/bin"},
     )
-    scope = json.loads(inventory.stdout)
-    executable = scope.get("executable")
-    dirs = scope.get("dirs")
-    if (not isinstance(executable, str) or not executable.startswith("/")
-            or not isinstance(dirs, list)
+    dirs = json.loads(inventory.stdout)
+    if (not isinstance(dirs, list)
             or not all(isinstance(item, str) and item.startswith("/") for item in dirs)):
         raise ValueError("falsifier system interpreter scope is invalid")
-    return Path(executable), tuple(dict.fromkeys(Path(item) for item in dirs))
+    return executable, tuple(dict.fromkeys(Path(item) for item in dirs))
+
+
+_FALSIFIER_INTERPRETER_ENTRY_LIMIT = 1_000_000
 
 
 def _falsifier_interpreter_digest(executable: Path, directories: tuple[Path, ...]) -> str:
-    """Digest the interpreter binary's bytes and a stat manifest of its directories."""
+    """Digest the interpreter binary and everything its directories resolve to.
+
+    The binary and every file reached through a symlink that leaves the measured
+    directories are hashed by content; the directories themselves are digested by
+    an lstat manifest whose ctime changes on any content or metadata write.
+    """
     def reject_unenumerable(error):
         raise ValueError("falsifier system interpreter cannot be enumerated") from error
 
+    measured = tuple(Path(os.path.realpath(root)) for root in directories)
+
+    def is_measured(path: Path) -> bool:
+        return any(path == root or root in path.parents for root in measured)
+
     digest = hashlib.sha256()
+    entries = 0
+
+    def record(path: str, details: os.stat_result, *, content: bool) -> None:
+        nonlocal entries
+        entries += 1
+        if entries > _FALSIFIER_INTERPRETER_ENTRY_LIMIT:
+            raise ValueError("falsifier system interpreter scope is too large")
+        digest.update(repr((path, details.st_mode, details.st_size, details.st_dev,
+                            details.st_ino, details.st_mtime_ns,
+                            details.st_ctime_ns)).encode())
+        if content:
+            digest.update(hashlib.sha256(Path(path).read_bytes()).digest())
+
     details = executable.lstat()
-    digest.update(repr((str(executable), details.st_mode, details.st_size,
-                        details.st_mtime_ns, details.st_ctime_ns)).encode())
-    digest.update(hashlib.sha256(executable.read_bytes()).digest())
-    for root in directories:
-        if not root.exists():
+    if not stat.S_ISREG(details.st_mode):
+        raise ValueError("falsifier interpreter is not a regular file")
+    record(str(executable), details, content=True)
+    pending: list[tuple[Path, bool]] = [(root, False) for root in measured]
+    visited: set[Path] = set()
+    while pending:
+        root, external = pending.pop(0)
+        if root in visited:
+            continue
+        visited.add(root)
+        try:
+            details = os.stat(root)
+        except FileNotFoundError:
             digest.update(repr((str(root), None)).encode())
+            continue
+        if not stat.S_ISDIR(details.st_mode):
+            record(str(root), details, content=stat.S_ISREG(details.st_mode))
             continue
         for directory, dirs, files in os.walk(root, followlinks=False, onerror=reject_unenumerable):
             dirs.sort()
             for name in sorted((*dirs, *files)):
                 path = os.path.join(directory, name)
                 details = os.lstat(path)
-                digest.update(repr((path, details.st_mode, details.st_size, details.st_dev,
-                                    details.st_ino, details.st_mtime_ns,
-                                    details.st_ctime_ns)).encode())
+                record(path, details, content=external and stat.S_ISREG(details.st_mode))
+                if stat.S_ISLNK(details.st_mode):
+                    digest.update(os.readlink(path).encode("utf-8", "surrogateescape"))
+                    target = Path(os.path.realpath(path))
+                    if not is_measured(target):
+                        pending.append((target, True))
     return digest.hexdigest()
 
 
@@ -489,20 +538,71 @@ def _require_single_link_files(roots: tuple[Path, ...]) -> None:
                     raise ValueError("falsifier protected file has more than one hard link")
 
 
+def _mountinfo_field(value: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _falsifier_mounts() -> list[tuple[str, PurePosixPath, Path]]:
+    """(device, root within that filesystem, mount point) for every visible mount."""
+    mounts = []
+    for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+        fields = line.split(" ")
+        mounts.append((
+            fields[2], PurePosixPath(_mountinfo_field(fields[3])),
+            Path(_mountinfo_field(fields[4])),
+        ))
+    if not mounts:
+        raise ValueError("falsifier mount table is unavailable")
+    return mounts
+
+
+def _filesystem_location(
+    path: Path, mounts: list[tuple[str, PurePosixPath, Path]],
+) -> tuple[str, PurePosixPath]:
+    """Where ``path`` lives: its device and its path within that filesystem."""
+    containing = [
+        (len(point.parts), index, device, root, point)
+        for index, (device, root, point) in enumerate(mounts)
+        if path == point or point in path.parents
+    ]
+    if not containing:
+        raise ValueError("falsifier path has no containing mount")
+    _depth, _index, device, root, point = max(containing)
+    return device, root / path.relative_to(point).as_posix()
+
+
 def _falsifier_repo_exposed_by_system_mount(repo: Path) -> bool:
+    """Whether any part of the live tree is reachable through a system-root mount.
+
+    Checked by identity, not pathname: each exposed root and every mount beneath it
+    is located by device and path within its filesystem (``/proc/self/mountinfo``),
+    so a bind alias of the repository, an ancestor or a descendant is refused.
+    """
     source = Path(repo).resolve()
-    return any(root.exists() and source.is_relative_to(root.resolve())
-               for root in _FALSIFIER_SYSTEM_ROOTS)
+    roots = [root.resolve() for root in _FALSIFIER_SYSTEM_ROOTS if root.exists()]
+    if any(source.is_relative_to(root) for root in roots):
+        return True
+    mounts = _falsifier_mounts()
+    device, location = _filesystem_location(source, mounts)
+    exposed = [_filesystem_location(root, mounts) for root in roots]
+    exposed += [
+        (mount_device, mount_root) for mount_device, mount_root, point in mounts
+        if any(point == root or root in point.parents for root in roots)
+    ]
+    return any(mount_device == device
+               and (location == mount_root or mount_root in location.parents
+                    or location in mount_root.parents)
+               for mount_device, mount_root in exposed)
 
 
 def _run_bounded_falsifier_node(
     *, staged: Path, dependencies: Path, nodeid: str,
-    wall_clock_s: float, output_cap_bytes: int,
+    wall_clock_s: float, output_cap_bytes: int, interpreter: Path | None = None,
 ) -> tuple[int | None, bytes, bytes, str | None, dict[str, object] | None]:
     if wall_clock_s <= 0 or output_cap_bytes <= 0:
         raise ValueError("falsifier bounds must be positive")
     bwrap = Path("/usr/bin/bwrap")
-    python = Path("/usr/bin/python3")
+    python = interpreter if interpreter is not None else _falsifier_resolved_interpreter()
     if not bwrap.is_file() or not python.is_file():
         raise ValueError("falsifier requires canonical bwrap and python3")
     stage = Path(staged).resolve(strict=True)

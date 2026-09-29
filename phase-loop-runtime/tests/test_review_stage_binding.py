@@ -1600,3 +1600,138 @@ def test_falsifier_real_scope_names_the_launched_interpreter():
     executable, dirs = review_stage._falsifier_interpreter_scope()
     assert executable == Path("/usr/bin/python3").resolve()
     assert dirs and all(path.is_absolute() for path in dirs)
+
+
+def test_falsifier_launches_the_interpreter_it_measures(tmp_path, monkeypatch):
+    executable = tmp_path / "python3"
+    executable.write_bytes(b"interpreter")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    launched = []
+
+    def launch(**kwargs):
+        launched.append(kwargs["interpreter"])
+        return 0, b"", b"", None, {}
+
+    monkeypatch.setattr(review_stage, "_falsifier_interpreter_scope", lambda: (executable, ()))
+    monkeypatch.setattr(review_stage, "_snapshot_falsifier_dependencies", lambda *_args: None)
+    monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node", launch)
+    review_stage.run_bounded_falsifier_node(
+        staged=stage, nodeid="t.py::test_x", wall_clock_s=5, output_cap_bytes=1024,
+    )
+    assert launched == [executable]
+
+
+def test_falsifier_child_argv_uses_the_given_interpreter(tmp_path, monkeypatch):
+    interpreter = Path(os.path.realpath("/usr/bin/python3"))
+    if not Path("/usr/bin/bwrap").is_file() or not interpreter.is_file():
+        pytest.skip("canonical falsifier launcher absent")
+    seen = []
+
+    def refuse(argv, *_args, **_kwargs):
+        seen.append(list(argv))
+        raise OSError("launch observed")
+
+    monkeypatch.setattr(review_stage.subprocess, "Popen", refuse)
+    with pytest.raises(OSError):
+        review_stage._run_bounded_falsifier_node(
+            staged=tmp_path, dependencies=tmp_path, nodeid="t.py::test_x",
+            wall_clock_s=5, output_cap_bytes=1024, interpreter=interpreter,
+        )
+    argv = seen[0]
+    assert argv[argv.index("-s") - 1] == str(interpreter)
+
+
+def test_falsifier_resolved_interpreter_is_a_system_file():
+    if not Path("/usr/bin/python3").is_file():
+        pytest.skip("canonical falsifier interpreter absent")
+    executable = review_stage._falsifier_resolved_interpreter()
+    assert executable == Path(os.path.realpath("/usr/bin/python3"))
+    assert not executable.is_symlink()
+    assert review_stage._falsifier_interpreter_scope()[0] == executable
+
+
+def test_falsifier_interpreter_digest_covers_targets_outside_its_directories(tmp_path):
+    executable = tmp_path / "python3"
+    executable.write_bytes(b"interpreter")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "package").mkdir(parents=True)
+    (outside / "module.py").write_text("value = 1\n", encoding="utf-8")
+    (outside / "package" / "inner.py").write_text("value = 1\n", encoding="utf-8")
+    (lib / "module.py").symlink_to(outside / "module.py")
+    (lib / "package").symlink_to(outside / "package")
+    before = review_stage._falsifier_interpreter_digest(executable, (lib,))
+    stamp = (outside / "module.py").stat()
+    (outside / "module.py").write_text("value = 2\n", encoding="utf-8")
+    os.utime(outside / "module.py", ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    changed_file = review_stage._falsifier_interpreter_digest(executable, (lib,))
+    assert changed_file != before
+    (outside / "package" / "inner.py").write_text("value = 2\n", encoding="utf-8")
+    assert review_stage._falsifier_interpreter_digest(executable, (lib,)) != changed_file
+
+
+def test_falsifier_external_interpreter_target_change_is_error(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    executable = tmp_path / "interpreter" / "python3"
+    lib = tmp_path / "interpreter" / "lib"
+    lib.mkdir(parents=True)
+    executable.write_bytes(b"interpreter")
+    outside = tmp_path / "outside.py"
+    outside.write_text("value = 1\n", encoding="utf-8")
+    (lib / "module.py").symlink_to(outside)
+
+    def launch(**_kwargs):
+        outside.write_text("value = 2\n", encoding="utf-8")
+        return 0, b"", b"", None, {}
+
+    monkeypatch.setattr(review_stage, "_falsifier_interpreter_scope", lambda: (executable, (lib,)))
+    monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node", launch)
+    result = _run_real_falsifier(repo, _falsifier_entry("def test_trigger():\n    assert True\n"))
+    assert result.outcome == "error"
+    assert "system interpreter changed" in (result.detail or "")
+
+
+_MOUNT_EXPOSURE_PROBE = """
+import sys
+from pathlib import Path
+from phase_loop_runtime import review_stage
+review_stage._FALSIFIER_SYSTEM_ROOTS = (Path(sys.argv[1]),)
+print(review_stage._falsifier_repo_exposed_by_system_mount(Path(sys.argv[2])))
+"""
+
+
+def _mount_exposure(tmp_path, mounts):
+    unshare = Path("/usr/bin/unshare")
+    if not unshare.is_file():
+        pytest.skip("unshare absent")
+    exposed_root = tmp_path / "exposed-root"
+    (exposed_root / "sub").mkdir(parents=True)
+    repo = tmp_path / "workspace" / "repo"
+    (repo / "inner").mkdir(parents=True)
+    script = "".join(f"mount --bind {source} {target} && " for source, target in mounts(
+        exposed_root, repo,
+    ))
+    src = Path(review_stage.__file__).resolve().parents[1]
+    completed = subprocess.run(
+        [str(unshare), "-rm", "sh", "-c",
+         f'{script}exec "$0" -c "$1" "$2" "$3"',
+         sys.executable, _MOUNT_EXPOSURE_PROBE, str(exposed_root), str(repo)],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(src)},
+    )
+    if (completed.returncode != 0 and not completed.stdout
+            and ("unshare" in completed.stderr or "mount" in completed.stderr)):
+        pytest.skip("unprivileged mount namespaces unavailable")
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+@pytest.mark.parametrize("mounts, expected", [
+    (lambda root, repo: [], "False"),
+    (lambda root, repo: [(repo, root / "sub")], "True"),
+    (lambda root, repo: [(repo.parent, root)], "True"),
+    (lambda root, repo: [(repo / "inner", root / "sub")], "True"),
+])
+def test_falsifier_exposure_check_uses_mount_identity(tmp_path, mounts, expected):
+    assert _mount_exposure(tmp_path, mounts) == expected
