@@ -723,6 +723,21 @@ class _Gen:
         self.eof_partial = False
 
 
+def _exiting(proc: subprocess.Popen) -> bool:
+    """Whether the worker has observably died: reaped, or (Linux) its leader
+    thread is already a zombie while the rest of the process finishes exiting."""
+    if proc.poll() is not None:
+        return True
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{proc.pid}/stat", "rb") as stat:
+                state = stat.read().rsplit(b")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            return True
+        return state in (b"Z", b"X")
+    return False
+
+
 def _spawn_popen(argv: list[str], **kwargs: Any) -> subprocess.Popen:
     """The single spawn seam: every worker process starts here."""
     return subprocess.Popen(argv, **kwargs)
@@ -1062,13 +1077,15 @@ class _Client:
         req.attempt_deadline = time.monotonic() + self.deadline_s
         gen = self.gen
         if gen is not None and gen.state == "idle":
-            if gen.proc.poll() is not None or gen.fp != req.fp:
-                # Died between calls: recorded, not charged to this request.
-                self._dispose(gen, "died", phase="idle")
-                gen = None
-            else:
+            if not _exiting(gen.proc):
                 self._send_op(gen, req)
                 return
+            # Died between calls: recorded by _reap once its exit status is
+            # known, and never charged to this request.
+            gen.eof_state = "idle"
+            gen.state = "dying"
+            gen.dying_since = time.monotonic()
+            self.dying.append(gen)
         if gen is not None and gen.state == "dying":
             self.gen = None  # its idle death is still recorded by _reap
         self._request_spawn(req)
@@ -1203,9 +1220,10 @@ class _Client:
             return
         gen = req.gen
         if gen is not None and gen is self.gen and gen.state in ("init", "busy", "dying"):
+            phase = "init" if gen.state == "init" else "in_flight"
             if gen in self.dying:
                 self.dying.remove(gen)
-            self._fail(gen, "timeout", "BAML worker call exceeded its deadline", phase="in_flight")
+            self._fail(gen, "timeout", "BAML worker call exceeded its deadline", phase=phase)
             return
         self._attempt_failed(req, BamlWorkerError("timeout", "BAML worker call exceeded its deadline"))
 
