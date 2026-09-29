@@ -352,8 +352,10 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
                 raise subprocess.CalledProcessError(done.returncode, argv, done.stdout, done.stderr)
             return done.stdout
         if isinstance(action, LegacyPush):
+            # Today's push inherits the caller's environment (a host may authenticate
+            # through it); only the hook suppression is added.
             done = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", action.cwd, "push", "--no-verify",
-                           action.remote, action.refspec])
+                           action.remote, action.refspec], env=dict(os.environ))
             if done.returncode != 0:
                 raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
             return action.refspec
