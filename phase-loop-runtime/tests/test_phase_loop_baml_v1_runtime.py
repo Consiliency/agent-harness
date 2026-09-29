@@ -1769,7 +1769,7 @@ def _prepare(variant: str) -> None:
         fast = m._spawn_popen
 
         def stalled(argv, **kwargs):
-            time.sleep(0.3)
+            time.sleep(0.15)  # the spawn is still pending when the wait loop starts
             return fast(argv, **kwargs)
 
         m._spawn_popen = stalled
