@@ -290,6 +290,23 @@ class _DeliverySpy:
         ]
 
 
+_COLD: list[float] = []
+
+
+def _deadline() -> float:
+    """A per-attempt deadline that covers this host's real cold start.
+
+    The attempt deadline spans spawn + init + op, and v1's init is ~0.8 s on a
+    fast x86_64 host but slower elsewhere (it timed out at 1 s on
+    macos-15-intel).  Measured once per scenario process."""
+    if not _COLD:
+        _use(None)
+        started = time.perf_counter()
+        _parse()
+        _COLD.append(time.perf_counter() - started)
+    return max(1.5, 4 * _COLD[0])
+
+
 def _isolated(name: str, *, timeout: float = 180.0, env: dict | None = None) -> str:
     """Run ``scenario_<name>`` from this module in a fresh interpreter; it must exit 0."""
     code = (
@@ -947,10 +964,11 @@ def scenario_recovery_parity_evidence_request():
 
 
 def scenario_timeout_disposes_the_worker():
-    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), retries=0, deadline_s=1.5)
+    deadline = _deadline()
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(60)), retries=0, deadline_s=deadline)
     started = time.monotonic()
     exc = _raises(_parse)
-    assert time.monotonic() - started < 1.5 + 1.0
+    assert time.monotonic() - started < deadline + 1.0
     assert type(exc) is BamlWorkerError and exc.kind == "timeout"
     pid = _log()[-1]["pid"]
     assert _wait(lambda: _gone(pid), REAP_BOUND)
@@ -959,11 +977,12 @@ def scenario_timeout_disposes_the_worker():
 
 def scenario_blocked_write():
     """A peer that never reads stdin; the frame is larger than the pipe buffer."""
-    spy = _scenario_setup(retries=0, deadline_s=1.5)
+    deadline = _deadline()
+    spy = _scenario_setup(retries=0, deadline_s=deadline)
     m._spawn_popen = _peer_spawn("stall_after_init")
     started = time.monotonic()
     exc = _raises(m.parse_baml_response, "EmitPhaseCloseout", "x" * (2 * 1024 * 1024))
-    assert time.monotonic() - started < 1.5 + 1.0
+    assert time.monotonic() - started < deadline + 1.0
     assert type(exc) is BamlWorkerError and exc.kind == "timeout"
     entry = _log()[-1]
     assert _wait(lambda: _gone(entry["pid"]), REAP_BOUND)
@@ -975,12 +994,13 @@ def scenario_blocked_write():
 
 
 def scenario_stalled_spawn():
-    spy = _scenario_setup(retries=0, deadline_s=1.0)
+    deadline = _deadline()
+    spy = _scenario_setup(retries=0, deadline_s=deadline)
     returned: list[tuple[float, int]] = []
 
     def slow(argv, **kwargs):
         if not returned:
-            time.sleep(3.0)
+            time.sleep(deadline + 2.0)
         proc = _REAL_SPAWN(argv, **kwargs)
         returned.append((time.monotonic(), proc.pid))
         return proc
@@ -989,8 +1009,8 @@ def scenario_stalled_spawn():
     started = time.monotonic()
     exc = _raises(_parse)
     assert type(exc) is BamlWorkerError and exc.kind == "spawn"
-    assert time.monotonic() - started < 2.0
-    assert _wait(lambda: returned, 5)
+    assert time.monotonic() - started < deadline + 1.0
+    assert _wait(lambda: returned, deadline + 5)
     back_at, late_pid = returned[0]
     assert _wait(lambda: _gone(late_pid), REAP_BOUND)
     assert time.monotonic() - back_at <= REAP_BOUND + 0.3
@@ -1543,12 +1563,13 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
     spy.close()
 
     # (b) a stalled BAML spawn
-    spy = _scenario_setup(retries=0, deadline_s=1.0)
+    deadline = _deadline()
+    spy = _scenario_setup(retries=0, deadline_s=deadline)
     returned: list = []
 
     def slow(argv, **kwargs):
         if not returned:
-            time.sleep(3.0)
+            time.sleep(deadline + 2.0)
         proc = _REAL_SPAWN(argv, **kwargs)
         returned.append(proc.pid)
         return proc
@@ -1561,7 +1582,7 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
     run_executor("stalled")
     stalled.join(10)
     assert type(box["exc"]) is BamlWorkerError and box["exc"].kind == "spawn"
-    assert _wait(lambda: returned and _gone(returned[0]), 5)
+    assert _wait(lambda: returned and _gone(returned[0]), deadline + 5)
     assert _parse() and _pid() not in (None, returned[0])
     spy.assert_each_once()
 
@@ -2176,13 +2197,14 @@ def scenario_i4_busy() -> None:
 
 
 def scenario_i4_backlog_success() -> None:
-    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(2)), deadline_s=3.0, retries=0)
+    deadline = _deadline()
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(deadline / 2)), deadline_s=deadline, retries=0)
     first = threading.Thread(target=_parse)
     first.start()
     _busy_pid()
     started = time.monotonic()
     assert _parse()["terminal_status"] == "complete"
-    assert time.monotonic() - started < 2.0 + 3.0 + 1.0
+    assert time.monotonic() - started < deadline / 2 + deadline + 1.0
     first.join(10)
     assert _log() == []
     spy.assert_each_once()
@@ -2191,7 +2213,7 @@ def scenario_i4_backlog_success() -> None:
 def scenario_i4_publish_before_expiry() -> None:
     """Published, then the deadline fires during init: that worker is disposed
     of and the retry runs on a fresh pid."""
-    spy = _scenario_setup(retries=1, deadline_s=1.0)
+    spy = _scenario_setup(retries=1, deadline_s=_deadline())
     pids: list[int] = []
     m._spawn_popen = _peer_spawn("hang_init", first_only=True, record=pids)
     assert _parse()["terminal_status"] == "complete"
@@ -2203,7 +2225,8 @@ def scenario_i4_publish_before_expiry() -> None:
 
 def scenario_i4_post_handoff_expiries() -> None:
     # blocked write, then a fresh real worker answers (a content error for "x"*2MiB)
-    spy = _scenario_setup(retries=1, deadline_s=1.5)
+    deadline = _deadline()
+    spy = _scenario_setup(retries=1, deadline_s=deadline)
     pids: list[int] = []
     m._spawn_popen = _peer_spawn("stall_after_init", first_only=True, record=pids)
     exc = _raises(m.parse_baml_response, "EmitPhaseCloseout", "x" * (2 * 1024 * 1024))
@@ -2212,7 +2235,7 @@ def scenario_i4_post_handoff_expiries() -> None:
     spy.assert_each_once()
     spy.close()
     # a hung op: each expiry disposes of its worker; each attempt runs on a fresh pid
-    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), retries=1, deadline_s=1.0)
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(60)), retries=1, deadline_s=deadline)
     exc = _raises(_parse)
     assert type(exc) is BamlWorkerError and exc.kind == "timeout"
     entries = _log()
@@ -2424,6 +2447,7 @@ def _pidfds() -> int:
 def scenario_i9_resources() -> None:
     """N = 50 mixed dispose cycles (kill, timeout, abandon, fault); every
     resource returns to baseline within the reap bound."""
+    deadline = _deadline()
     _scenario_setup(abandon_grace_s=1.0)
     _parse()
     _settled(2)
@@ -2431,7 +2455,7 @@ def scenario_i9_resources() -> None:
     gc.collect()
     fds, threads, pidfds = _fd_count(), threading.active_count(), _pidfds()
     disposed: list[int] = []
-    hang = _hostile("phase_loop_parse_closeout", _sleep(30))
+    hang = _hostile("phase_loop_parse_closeout", _sleep(60))
     panic = _panic_files()
     for cycle in range(50):
         kind = ("kill", "timeout", "abandon", "fault")[cycle % 4]
@@ -2443,7 +2467,7 @@ def scenario_i9_resources() -> None:
             _wait(lambda: _gone(pid), 3)
             _parse()
         elif kind == "timeout":
-            _use(hang, deadline_s=0.5, retries=0)
+            _use(hang, deadline_s=deadline, retries=0)
             assert _raises(_parse).kind == "timeout"
         elif kind == "abandon":
             _use(hang, abandon_grace_s=1.0)
