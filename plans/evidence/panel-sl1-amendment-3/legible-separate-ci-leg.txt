@@ -1,0 +1,2 @@
+panel-sl1-measure-base: 83 passed, 2 skipped in 33.05s
+panel-sl1-measure-head: 83 passed, 2 skipped in 34.17s

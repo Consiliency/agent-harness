@@ -4427,6 +4427,12 @@
           "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1154"
+        },
+        {
+          "plan_sha256": "f1c93be33d239497a26bb67f104786a0b007f250ac93678ebc77b5be949a27d0",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4494,7 +4500,18 @@
                 "AdvisorBoardCliTest::test_cli_human_output_includes_verdict_text",
                 "AdvisorBoardCliTest::test_cli_json_emits_independence_and_legs"
               ]
-            },
+            }
+          ],
+          "rule": "plans/phase-plan-v10-PANEL.md: Authorization supplements (amendment #3)"
+        },
+        {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:HARDEN-NATIVEFILL",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1078",
+          "decision": "maintainer 2026-09-29 (agent-harness#1078, amendment #3, option (a)): PANEL SL-1 may change exactly these nodes as plans/phase-plan-v10-PANEL.md states",
+          "frozen_by": "HARDEN SL-0 (verify_harden_evidence.FROZEN_SL0_PATHS)",
+          "reason": "measured by the CLI-less full-suite node-list diff (plans/evidence/panel-sl1-amendment-3/): advisor-board now composes the code-review lanes through build_panel_context, and these nodes patch compose_review_board",
+          "files": [
             {
               "path": "phase-loop-runtime/tests/test_panel_native_fill_183.py",
               "base_blob": "a1b8573022681e27a6b2278cd07012244ab75eb0",
@@ -4504,7 +4521,9 @@
                 "AdvisorBoardLoudShortfall::test_text_shortfall_names_the_requested_seat_model"
               ]
             }
-          ]
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:HARDEN-NATIVEFILL: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit, under the chain rule of this row's first authorization. This entry is never mutated once on main."
         }
       ]
     },
@@ -5383,7 +5402,9 @@
                 "test_runner_rerun_in_the_same_run_dir_invalidates_the_prior_landing"
               ]
             }
-          ]
+          ],
+          "rule": "plans/phase-plan-v10-PANEL.md: Authorization supplements (amendment #3)",
+          "applied_by": "roadmap coordinator (as for agent-harness#1144)"
         }
       ]
     },
@@ -10618,6 +10639,12 @@
         },
         {
           "plan_sha256": "57f1552ee68eac8e368c679dd1c541dfcdb288e5c79f9772b04a39b4654cdac1",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "2984740848641d4848607ed85e67311ad30e87812015a77da42ab9b1e51a7fbe",
           "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"

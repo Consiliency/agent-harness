@@ -1,0 +1,14 @@
+diff --git a/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py b/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
+index 7c901bbf..b77513b3 100644
+--- a/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
++++ b/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
+@@ -11211,7 +11211,8 @@ def _panel_run(call: dict) -> PanelResult:
+     context = call.get("panel_context")
+     tier = _coerce_review_landing_tier(landing_tier) if landing_tier is not None else None
+     landing = tier is not None
+-    if landing and tier.value in _PRESIDENT_TIER_VALUES and context is None:
++    if landing and tier.value in _PRESIDENT_TIER_VALUES and context is None and \
++            _govlean_authority_switched(call.get("canonical_repo_authority") or call.get("repo_dir")):
+         raise _panel_refusal(
+             "panel_context_required", f"a {tier.value} landing requires a panel context (PanelContext)",
+         )
