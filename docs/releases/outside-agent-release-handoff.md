@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.20`
-- Runtime `phase_loop_runtime.__version__`: `0.7.20`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.20`
+- Version: `0.7.21`
+- Runtime `phase_loop_runtime.__version__`: `0.7.21`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.21`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.20`
+- Validator version: `0.7.21`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,36 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.21` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.20` tag commit (`7866b6e2`):
+  - `gpt-6-sol` is a registered advisor-board model on the `codex` lane, answering to the
+    `sol` alias, so a user or ad-hoc board can seat it explicitly; it is not a governed grok
+    substitute (agent-harness#1152). This is what the fleet needs while the Grok
+    subscription is out;
+  - agy first-use self-qualification of genuine upstream releases, admitted as
+    `locally_qualified`; release-qualified images are unchanged (agent-harness#1130,
+    agent-harness#1076). The release-qualified set is still exactly 1.2.11 and 1.2.12, and
+    both members were requalified live on this release tree (validated 3 and
+    `route_qualified` true for each; all 218 source pins verified), with no observer or
+    route change. Each series ran from its member's official release archive,
+    digest-checked against the committed record (1.2.11 asset
+    `c91c62c5e6fa954f5a7e1d7b9ad417d749db4aa60a4ba0b3d604dec1b645d190`, 1.2.12 asset
+    `26c7c4c661d6c9beda734fcf305031056a6ea46e697c4533e8151179724e2950`));
+  - the v10 roadmap's EXECFIND seat clauses scoped to the sealed route (agent-harness#1134,
+    agent-harness#1132; roadmap and reseal only);
+  - the per-seat jail plan (agent-harness#1133, agent-harness#1132), the BAML v1 migration
+    plan (agent-harness#1136, agent-harness#1135) and two PANEL SL-1 plan amendments
+    (agent-harness#1145, agent-harness#1148, agent-harness#1078); planning only;
+  - the 0.7.20 published record (agent-harness#1128).
+- Release tracking: agent-harness#1154; the appended plan-authority rows cite it.
+- Tag: not yet created. The signed `v0.7.21` tag push, which publishes to PyPI, is
+  maintainer-gated.
+
+### Previous release: 0.7.20 (published)
 
 - `publication_status=published`
 - `0.7.20` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -319,7 +349,21 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.20 (published)
+### This release: 0.7.21 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`) from an export of the release commit's tree. They are a
+preparation measurement, not a publication record: the publishing workflow rebuilds from the
+tagged commit and verifies `SHA256SUMS`, and the published digests are recorded here after the
+tag push. As for `0.7.15`–`0.7.20`, the published digests are expected to differ, because
+archive bytes are timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `5541f167d1b00b669d2943d04b74f76c25eb4b51a67defdb4eddcc96f25c80be`
+- prepared direct-sdist sha256: `e84b9589ba825f043dca1b6be94e012d62d61d338eaa172deab5d4d2c117c3c6`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.20 (published)
 
 The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
 `36341122951` from its build of the tagged commit `7866b6e2`, verified by the publish job
@@ -457,26 +501,23 @@ this metadata document.
 
 ## Package Surface Inventory
 
-File counts and top-level entries were measured on the published `0.7.20` artifacts (workflow
-`36341122951`) and are identical to the prepared measurement. The console and plugin entry
-points were read from the distribution metadata of the published wheel's install (checked
-against the direct-wheel sha256 under Sealed Implementation Evidence), and match the index
-install's (see the fresh-install bullets under Release-Check Evidence).
+Measured on the prepared `0.7.21` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.20-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.20.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.20.data`, `phase_loop_runtime-0.7.20.dist-info`
-- Wheel file count: `472`
+- Wheel artifact: `phase_loop_runtime-0.7.21-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.21.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.21.data`, `phase_loop_runtime-0.7.21.dist-info`
+- Wheel file count: `475`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `975` regular files (`1110` archive members including directories)
+- Sdist file count: `979` regular files (`1114` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
 `0.7.20` is published (PyPI, trusted-publish workflow `36341122951`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.20`, then
-calling:
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.20`. Once
+`0.7.21` is published (tag push → PyPI; this document records it as `prepared` until then),
+the pin may move to `phase-loop-runtime==0.7.21`. In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -523,6 +564,9 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
+- For `0.7.20`: the package was not published from this handoff; trusted workflow
+  `36341122951` published it from the signed `v0.7.20` tag (verified tag object
+  `e57dc8bf514ce3e38ed4a22b8e9479bf51f95925`, signed with the maintainer's key).
 - For `0.7.19`: the package was not published from this handoff; trusted workflow
   `36219660271` published it from the signed `v0.7.19` tag (verified tag object
   `6c7e41c64081755b029118dd291f30572df9ce0c`), pushed on the maintainer's explicit
@@ -544,7 +588,7 @@ merge verdict.
 - For `0.7.14`: the package was not published from this handoff; trusted workflow
   `32783112944` published it from the signed `v0.7.14` tag (verified tag object
   `2de6c06973b84890b62184fa023d387f6044a43c`).
-- For `0.7.19`, `0.7.18`, `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
+- For `0.7.20`, `0.7.19`, `0.7.18`, `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
   workflow and it completed successfully; none was
   dispatched from a handoff.
 - Production governed-pipeline enforcement is not claimed by this handoff.
