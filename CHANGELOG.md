@@ -6,7 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140)
+## [0.7.21] - 2026-09-29
+
+### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140; PR agent-harness#1142)
 
 - The lease supervisor no longer runs as Python between fork and exec in a child of the
   (possibly threaded) launcher, which Python documents as unsafe. `launch` now starts
@@ -29,7 +31,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `launcher.py` changed and `lease_supervisor.py` is new, so the full agy pin set drifts: the
   next release cut requalifies agy.
 
-### Register `gpt-6-sol` as an explicit advisor-board seat
+### Register `gpt-6-sol` as an explicit advisor-board seat (PR agent-harness#1152)
 
 - `gpt-6-sol` (Codex's own default model) is now a registered model on the `codex` lane at
   effort `max`, answering to the `sol` review-seat alias. A user or ad-hoc board can seat it
@@ -42,7 +44,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Registration only: no default moves. The codex seat default stays `gpt-6-astra`, and
   `gpt-5.6-sol` stays registered.
 
-### agy first-use self-qualification of genuine upstream releases (agent-harness#1076)
+### agy first-use self-qualification of genuine upstream releases (agent-harness#1076; PR agent-harness#1130)
 
 - An upstream agy release no longer removes the Gemini seat until a runtime release ships
   its digest. The whole-board preflight verifies a non-release image's provenance (GitHub's
@@ -58,6 +60,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   moved into the package (`phase_loop_runtime.agy_qualification`);
   `scripts/qualify_gemini_heartbeat.py` is a shim. The `--route-core` set is the packaged
   `ROUTE_CORE` (`gemini_heartbeat.py`, `agy_qualification.py`, `agy_provenance.py`).
+
+### v10 roadmap: EXECFIND seat clauses scoped to the sealed route (agent-harness#1132; PR agent-harness#1134)
+
+- EC-EXECFIND-2 and EC-EXECFIND-4 now apply to the sealed inline route: a sealed-route seat
+  never executes, and a seat counts as jailed only when its dispatch record carries a jail
+  identity bound to the jail policy digest. The EXECFIND plan is aligned to the same scope.
+- The roadmap change moved the v10 roadmap digest at every seal site, including
+  `roadmap_assumptions.CANONICAL_ROADMAP_SHA256`. No runtime behaviour changes.
+
+### Plans: per-seat jail, BAML v1 migration, PANEL SL-1 repairs (agent-harness#1132, agent-harness#1135, agent-harness#1078; PRs agent-harness#1133, agent-harness#1136, agent-harness#1145, agent-harness#1148)
+
+- `plans/detailed-seat-sandbox-permissions-1132-20260928.md`: full-permission Claude and
+  Gemini review seats inside a per-seat filesystem jail (agent-harness#1132). Planning only.
+- The BAML v1 0.20.1 migration plan, with the v1 runtime in a dedicated worker subprocess
+  (agent-harness#1135). Planning only.
+- Two PANEL plan amendments name the HARDEN-, PRESROUTE- and FABREADMIT-frozen nodes that
+  PANEL SL-1 may update, each recorded as an append-only `sl0_repairs` chain entry. No test,
+  production file or verifier changes.
 
 ## [0.7.20] - 2026-09-27
 
