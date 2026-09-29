@@ -57,11 +57,13 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     `sol` alias, so a user or ad-hoc board can seat it explicitly; it is not a governed grok
     substitute (agent-harness#1152). This is what the fleet needs while the Grok
     subscription is out;
+  - lease-supervised launches exec a supervisor program instead of running Python in
+    `preexec_fn` (agent-harness#1142, agent-harness#1140);
   - agy first-use self-qualification of genuine upstream releases, admitted as
     `locally_qualified`; release-qualified images are unchanged (agent-harness#1130,
     agent-harness#1076). The release-qualified set is still exactly 1.2.11 and 1.2.12, and
     both members were requalified live on this release tree (validated 3 and
-    `route_qualified` true for each; all 218 source pins verified), with no observer or
+    `route_qualified` true for each; all 219 source pins verified), with no observer or
     route change. Each series ran from its member's official release archive,
     digest-checked against the committed record (1.2.11 asset
     `c91c62c5e6fa954f5a7e1d7b9ad417d749db4aa60a4ba0b3d604dec1b645d190`, 1.2.12 asset
@@ -359,8 +361,8 @@ tagged commit and verifies `SHA256SUMS`, and the published digests are recorded 
 tag push. As for `0.7.15`–`0.7.20`, the published digests are expected to differ, because
 archive bytes are timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `5541f167d1b00b669d2943d04b74f76c25eb4b51a67defdb4eddcc96f25c80be`
-- prepared direct-sdist sha256: `e84b9589ba825f043dca1b6be94e012d62d61d338eaa172deab5d4d2c117c3c6`
+- prepared direct-wheel sha256: `e1e134bacfe0fb9d9a6168d5222a11b27f145114772cca2ccba153b4f3eead39`
+- prepared direct-sdist sha256: `809bbc5b2c764841b8be4c6377aedf91ecddda8d361df3988975eb5e262cd9ef`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.20 (published)
@@ -506,9 +508,9 @@ Measured on the prepared `0.7.21` build described above.
 - Wheel artifact: `phase_loop_runtime-0.7.21-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.21.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.21.data`, `phase_loop_runtime-0.7.21.dist-info`
-- Wheel file count: `475`
+- Wheel file count: `476`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `979` regular files (`1114` archive members including directories)
+- Sdist file count: `981` regular files (`1116` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
