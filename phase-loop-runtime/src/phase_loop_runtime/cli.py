@@ -1038,6 +1038,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Load the BOM from a fixture JSON instead of live registries (CI/test wiring).",
     )
+    # seat-sandbox reap (agent-harness#1132, F022): remove a jailed seat's directory that
+    # teardown retained. Only a path recorded by a retention notice is accepted.
+    seat_sandbox_sub = subparsers.add_parser(
+        "seat-sandbox",
+        help="Jailed review-seat maintenance: `reap PATH` removes a retained seat directory.",
+    )
+    seat_sandbox_sub.add_argument("seat_sandbox_action", choices=("reap",))
+    seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH")
     # train-status: non-mutating inspection of the cross-repo train ledger (#45).
     # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
     train_status_sub = subparsers.add_parser(
@@ -1535,6 +1543,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _task_message_broker_serve_command(args=args)
     if command == "advisor-board":
         return _advisor_board_command(args=args)
+    if command == "seat-sandbox":
+        return _seat_sandbox_command(args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -2406,6 +2416,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             "requested_seats": requested_seats,
             "delivered_seats": usable_count,
             "shortfall": shortfall,
+            # agent-harness#1132: typed seat notices, board-wide and per leg.
+            "notices": _board_notices_json(result.legs),
             "independence": {
                 "level": independence.level,
                 # The sealed evidence floor derives these from concrete leg
@@ -2426,6 +2438,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                     # ABDNATIVE (#183): a deferred claude seat carries the
                     # typed native-fill request the harness must run; None otherwise.
                     "needs_native_agent": _native_agent_request_json(leg),
+                    "notices": [notice.as_json() for notice in leg.seat_notices],
                 }
                 for leg in result.legs
             ],
@@ -2475,6 +2488,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         shown = _finalize_leg_detail(leg.detail)
         detail = f" — {shown}" if shown else ""
         print(f"  [{leg.status}] {leg.seat_key}{detail}")
+        for notice in leg.seat_notices:
+            print(f"      notice {notice.code}: {notice.what} / {notice.why} / fix: {notice.fix}")
         # Print each reviewer's actual verdict text so the board can be reconciled
         # from the command's output (not just leg statuses).
         text = (leg.text or "").strip()
@@ -2510,6 +2525,27 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             file=sys.stderr,
         )
     return exit_code
+
+
+def _seat_sandbox_command(args: argparse.Namespace) -> int:
+    from . import seat_uid
+
+    try:
+        seat_uid.reap(str(args.seat_sandbox_path))
+    except seat_uid.ReapRefused as exc:
+        print(f"seat-sandbox reap: refused: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"seat-sandbox reap: failed ({type(exc).__name__}); {seat_uid.PREREQUISITE}",
+              file=sys.stderr)
+        return 1
+    print(f"seat-sandbox reap: removed {args.seat_sandbox_path}")
+    return 0
+
+
+def _board_notices_json(legs) -> list[dict[str, str]]:
+    """Every leg's typed seat notices (agent-harness#1132), rendered from literals."""
+    return [notice.as_json() for leg in legs for notice in leg.seat_notices]
 
 
 def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
