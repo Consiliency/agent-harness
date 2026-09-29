@@ -1694,8 +1694,22 @@ class _AbandonSpy:
 
 
 def _settled(timeout: float) -> bool:
+    """The owner has processed every queued event (notices included) and holds
+    no request: the condition must hold on two polls one owner tick apart."""
     client = m._CLIENT
-    return _wait(lambda: client.active is None and not client.backlog and not client.dying, timeout)
+
+    def idle() -> bool:
+        # With no owner running, nothing is processing and nothing is owned.
+        drained = client.events.empty() or not client.owner_running
+        return drained and client.active is None and not client.backlog and not client.dying
+
+    def stable() -> bool:
+        if not idle():
+            return False
+        time.sleep(2 * m._OWNER_TICK_S)
+        return idle()
+
+    return _wait(stable, timeout)
 
 
 def _check_cleanup(spy: _AbandonSpy, log_before: int, pid_before: int | None, injected_at: float, bound: float) -> None:
@@ -1716,6 +1730,10 @@ def _prepare(variant: str) -> None:
             _parse()
         return
     _use(None, **_VARIANT_CONFIG.get(variant, {}))
+    # Cold LIFECYCLE: no owner thread, no spawner, no worker.  The per-process
+    # source snapshot is taken first: rendering the sources is pure computation
+    # with no lifecycle state (and ~20k boundaries), so it is not swept here.
+    m._CLIENT.files()
     m._spawn_popen = _peer_spawn("echo")
     if variant == "stalled_spawn":
         fast = m._spawn_popen
@@ -1739,12 +1757,17 @@ def _sweep(variant: str, exc_name: str, stride: int = 1) -> dict:
     boundaries = _Boundaries()
     stats = collections.Counter()
     try:
+        # Count on a second, steady-state pass: the first call in a process also
+        # runs one-time code (lazy stdlib initialisation) that later runs never reach.
+        _prepare(variant)
+        _parse()
         _prepare(variant)
         with boundaries:
             _parse()
         points = list(dict.fromkeys(boundaries.trace))
         stats["boundaries"] = len(points)
         for index, key in enumerate(points[::stride]):
+            run_started = time.monotonic()
             _prepare(variant)
             pid_before, log_before = _pid(), len(_log())
             spy = _AbandonSpy()
@@ -1777,6 +1800,8 @@ def _sweep(variant: str, exc_name: str, stride: int = 1) -> dict:
                 spy.close()
             assert _parse()["terminal_status"] == "complete"  # the next call succeeds
             stats["runs"] += 1
+            if os.environ.get("BAML_SWEEP_SLOW") and time.monotonic() - run_started > 0.5:
+                print("SLOW", round(time.monotonic() - run_started, 2), key[0].co_name, key[0].co_filename.rsplit("/", 1)[-1], flush=True)
     finally:
         boundaries.close()
         m._spawn_popen = _REAL_SPAWN
@@ -2291,6 +2316,19 @@ def scenario_i7_machinery_failures() -> None:
         exc = _raises(_parse)
     finally:
         threading.Thread.start = real_start
+    assert type(exc) is BamlWorkerError and exc.kind == "spawn"
+    # the owner's raw C-level thread start fails
+    _use(None, retries=0)
+    real_raw = m._thread.start_new_thread
+
+    def raw_failing(*args, **kwargs):
+        raise RuntimeError("can't start new thread")
+
+    m._thread.start_new_thread = raw_failing
+    try:
+        exc = _raises(_parse)
+    finally:
+        m._thread.start_new_thread = real_raw
     assert type(exc) is BamlWorkerError and exc.kind == "spawn"
     # the spawner's own thread start fails once the owner is up
     _use(None, retries=0)

@@ -15,12 +15,17 @@ import sysconfig
 import tempfile
 import threading
 import time
+import _thread
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+
+# Imported here, never on a calling thread: importing the worker module has no
+# side effects, and it single-sources the fingerprint the worker echoes.
+from ._baml_worker import fingerprint as _fingerprint
 
 
 class BamlValidationError(ValueError):
@@ -617,6 +622,7 @@ _HEARTBEAT_S = 0.1
 _OWNER_TICK_S = 0.05
 _OWNER_IDLE_TICK_S = 0.5
 _OWNER_STALE_S = 2.0
+_OWNER_LAUNCH_BUCKET_S = 0.25
 _EXIT_GRACE_S = 4.5  # atexit: graceful EOF wait before kill; the whole exit stays under 5 s
 _EOF_RC_WAIT_S = 0.5
 
@@ -898,10 +904,8 @@ class _Client:
     def files(self) -> tuple[dict[str, str], str]:
         snap = self.snapshot
         if snap is None:
-            from ._baml_worker import fingerprint
-
             files = _read_baml_files()
-            snap = (files, fingerprint(files))
+            snap = (files, _fingerprint(files))
             self.snapshot = snap
         return snap
 
@@ -947,15 +951,25 @@ class _Client:
             return
         if self.closed:
             raise BamlWorkerError("shutdown", "BAML worker client is closed")
-        bucket = int(time.monotonic() / _OWNER_STALE_S)
+        # One launch per short time bucket (a compare-and-set, never a lock).  A
+        # launch that is interrupted, or a candidate that finds the baton taken,
+        # costs at most one bucket before a waiter launches again.
+        bucket = int(time.monotonic() / _OWNER_LAUNCH_BUCKET_S)
         mine = object()
         if self.owner_launches.setdefault(bucket, mine) is not mine:
             return
         try:
-            threading.Thread(target=self._own, name="phase-loop-baml-owner", daemon=True).start()
+            # A raw C-level start, not threading.Thread.start: that runs Python
+            # under threading's module locks, and an interrupt landing between a
+            # lock's acquire and its ``with`` block would leave the lock held and
+            # wedge every later thread start in the process (found by the I1 sweep).
+            _thread.start_new_thread(self._own, ())
         except RuntimeError as exc:
-            del self.owner_launches[bucket]
+            self.owner_launches.pop(bucket, None)
             raise BamlWorkerError("spawn", f"cannot start the BAML owner thread: {exc}") from None
+        except BaseException:
+            self.owner_launches.pop(bucket, None)
+            raise
 
     def _drain_pending(self) -> None:
         pending = self.pending
@@ -977,6 +991,7 @@ class _Client:
         self.owner_running = True
         clean = False
         try:
+            threading.current_thread().name = "phase-loop-baml-owner"
             if self.recover:
                 self._recover()
             self.recover = True
