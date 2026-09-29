@@ -13,6 +13,7 @@ status so a verbose auth error is never mistaken for a real review.
 from __future__ import annotations
 
 import contextvars
+import importlib
 import logging
 import math
 import mimetypes
@@ -411,6 +412,18 @@ class ReviewLandingTier(str, Enum):
 class ReviewLandingPolicy:
     required_seats: tuple[str, ...]
     requires_president: bool
+    # PANEL (EC-PANEL-4, additive): the distinct-vendor minimum over usable seats and the
+    # usable-seat floor. The defaults keep today's rule for every tier.
+    min_distinct_vendors: int | None = None
+    min_usable_seats: int = 0
+
+    def __post_init__(self) -> None:
+        if self.min_distinct_vendors is not None and (
+            type(self.min_distinct_vendors) is not int or not 1 <= self.min_distinct_vendors <= 4
+        ):
+            raise ValueError(f"min_distinct_vendors must be None or 1..4, got {self.min_distinct_vendors!r}")
+        if type(self.min_usable_seats) is not int or self.min_usable_seats < 0:
+            raise ValueError(f"min_usable_seats must be a non-negative integer, got {self.min_usable_seats!r}")
 
 
 ReviewPolicy = ReviewLandingPolicy
@@ -490,6 +503,19 @@ def _validate_review_board_policy(
     policy: ReviewLandingPolicy,
     seat_aliases: Mapping[str, str] | None,
 ) -> None:
+    # PANEL (orchestrator ruling on agent-harness#1092 r1): under a panel context a supplied
+    # policy is accepted only if it EQUALS the context's own policy, and the named-seat
+    # check is replaced by the configured minimum (evaluated at landing).
+    active = _ACTIVE_PANEL_RUN.get()
+    if active is not None and active.get("context") is not None and active.get("tier") is not None:
+        expected = panel_landing_policy(active["tier"], context=active["context"])
+        if policy != expected:
+            raise PresidentPolicyError(
+                "panel_landing_policy_mismatch",
+                "the supplied review policy is not the panel context's policy",
+            )
+        if policy.min_distinct_vendors is not None:
+            return
     if policy.required_seats == ("grounded",):
         if len(board.seats) != 1:
             raise PresidentPolicyError(
@@ -505,6 +531,226 @@ def _validate_review_board_policy(
             "review_board_policy_mismatch",
             f"review board seats {dict(actual)} do not match policy {dict(required)}",
         )
+
+
+# --- PANEL (v10 Phase 18, agent-harness#1078): the landing seam beside review_policy_for_tier ---
+#
+# IF-0-PANEL-1. ``panel_landing_policy`` is the keyword-only seam: with no configured
+# minimum it is today's named-seat policy plus the two-usable-seat floor; with a minimum
+# set by the user or base-revision repository table it gates on distinct usable vendors
+# instead. ``evaluate_landing`` is the one evaluator ``invoke_board`` calls.
+
+_PRESIDENT_TIER_VALUES: frozenset[str] = frozenset({"plan", "production_code"})
+_ACTIVE_PANEL_RUN: ContextVar[dict | None] = ContextVar("panel_active_run", default=None)
+_LENS_FRAME_MODULE = "phase_loop_runtime.advisor_board.lens_frame"
+LENS_DELIVERY_PROMPT = "prompt"
+LENS_DELIVERY_METADATA = "metadata-only"
+
+
+def panel_landing_policy(tier: ReviewLandingTier | str, *, context) -> ReviewLandingPolicy:
+    """The context's landing policy for ``tier`` (EC-PANEL-4)."""
+    coerced = _coerce_review_landing_tier(tier)
+    today = review_policy_for_tier(coerced)
+    if coerced.value not in _PRESIDENT_TIER_VALUES:
+        return today
+    resolved = context.resolved_table
+    minimum = resolved.table.min_distinct_vendors
+    if minimum is not None and resolved.source.kind in ("user", "repository"):
+        profile = context.explicit_profile
+        return ReviewLandingPolicy(
+            required_seats=tuple(profile.seats) if profile is not None else (),
+            requires_president=True, min_distinct_vendors=minimum, min_usable_seats=2,
+        )
+    return replace(today, min_usable_seats=2)
+
+
+@dataclass(frozen=True)
+class LandingDecision:
+    """The one landing verdict. Merge authority only when ``invoke_board`` admitted and
+    registered it with its bindings (``merge_guard``)."""
+
+    admitted: bool
+    reasons: tuple[str, ...] = ()
+    tier: str | None = None
+    usable_seats: int = 0
+    usable_distinct_vendors: int = 0
+    effective_minimum: int = 4
+
+
+def _seat_alias(seat: Board | object, aliases: Mapping[str, str] | None = None) -> str:
+    table = dict(DEFAULT_REVIEW_SEAT_ALIASES)
+    table.update(aliases or {})
+    model = str(getattr(seat, "model", ""))
+    return table.get(model, model)
+
+
+def evaluate_landing(
+    policy: ReviewLandingPolicy,
+    *,
+    usable_legs: Sequence["PanelLegResult"],
+    president_ruling: "PresidentRuling | None",
+    context,
+    user_digest_now: str | None,
+) -> LandingDecision:
+    """Decide a landing from the policy, the usable legs, the president's ruling and the
+    context. A policy that is not ``panel_landing_policy(tier, context=context)`` for any
+    tier is never admitted, so today's floor-0 policy cannot be reintroduced here."""
+    reasons: list[str] = []
+    tier = next((t.value for t in ReviewLandingTier if policy == panel_landing_policy(t, context=context)), None)
+    if tier is None:
+        reasons.append("panel_landing_policy_mismatch")
+    if user_digest_now != context.snapshot.user_digest:
+        reasons.append("panel_user_file_changed")
+    usable = [leg for leg in usable_legs if leg.usable]
+    seats_by_key = {seat.seat_key: seat for seat in context.composed.board.seats}
+    usable_vendors = {leg.leg for leg in usable}
+    if policy.requires_president:
+        if president_ruling is None:
+            reasons.append("president_ruling_missing")
+        elif president_blocks_landing(president_ruling):
+            reasons.append("president_blocks_landing")
+    if len(usable) < policy.min_usable_seats:
+        reasons.append("below_usable_seat_floor")
+    if policy.min_distinct_vendors is None:
+        if policy.required_seats == ("grounded",):
+            if len(context.composed.board.seats) != 1:
+                reasons.append("review_board_policy_mismatch")
+        elif Counter(_seat_alias(seat) for seat in context.composed.board.seats) != Counter(policy.required_seats):
+            reasons.append("review_board_policy_mismatch")
+    elif len(usable_vendors) < policy.min_distinct_vendors:
+        reasons.append("below_distinct_vendor_minimum")
+    profile = context.explicit_profile
+    if profile is not None:
+        usable_aliases = {_seat_alias(seats_by_key[leg.seat_key]) for leg in usable if leg.seat_key in seats_by_key}
+        missing = [seat for seat in profile.seats if seat not in usable_aliases]
+        if missing:
+            reasons.append("explicit_profile_seat_missing:" + ",".join(missing))
+    minimum = policy.min_distinct_vendors if policy.min_distinct_vendors is not None else 4
+    return LandingDecision(
+        admitted=not reasons, reasons=tuple(reasons), tier=tier, usable_seats=len(usable),
+        usable_distinct_vendors=len(usable_vendors), effective_minimum=minimum,
+    )
+
+
+@dataclass(frozen=True)
+class PanelLabels:
+    """EC-PANEL-5: what every result, ``advisor-board`` JSON and landing record states."""
+
+    usable_distinct_vendors: int
+    composed_seats: int
+    usable_seats: int
+    seats: tuple
+    fallback_lanes: tuple
+    unfilled_lanes: tuple
+    effective_minimum: int
+    minimum_source: dict
+    table_source: dict
+    explicit_profile: dict | None
+    minimum_met: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "usable_distinct_vendors": self.usable_distinct_vendors,
+            "composed_seats": self.composed_seats,
+            "usable_seats": self.usable_seats,
+            "seats": [dict(seat) for seat in self.seats],
+            "fallback_lanes": list(self.fallback_lanes),
+            "unfilled_lanes": list(self.unfilled_lanes),
+            "effective_minimum": self.effective_minimum,
+            "minimum_source": dict(self.minimum_source),
+            "table_source": dict(self.table_source),
+            "explicit_profile": dict(self.explicit_profile) if self.explicit_profile is not None else None,
+            "minimum_met": self.minimum_met,
+        }
+
+
+def _lane_name(item: object) -> str:
+    return str(getattr(item, "lens", item))
+
+
+def panel_labels(context, result: "PanelResult", delivery: Mapping[str, str] | None = None) -> PanelLabels:
+    """The labels for ``result`` over ``context`` (EC-PANEL-5)."""
+    delivery = dict(delivery or {})
+    board = context.composed.board
+    usable = [leg for leg in result.legs if leg.usable]
+    seats = tuple(
+        {
+            "seat_key": seat.seat_key,
+            "vendor": seat.vendor_family,
+            "lens": context.composed.seat_lenses[seat.seat_key].name,
+            "lens_kind": context.composed.seat_lenses[seat.seat_key].kind,
+            "lens_delivery": delivery.get(seat.seat_key, LENS_DELIVERY_METADATA),
+        }
+        for seat in board.seats
+    )
+    resolved = context.resolved_table
+    table_source = resolved.source.to_dict()
+    minimum = resolved.table.min_distinct_vendors
+    if minimum is not None and resolved.source.kind in ("user", "repository"):
+        minimum_source = dict(table_source)
+    else:
+        minimum, minimum_source = 4, {"kind": "built-in", "path": None, "digest": None, "base_revision": None}
+    profile = context.explicit_profile
+    distinct = len({leg.leg for leg in usable})
+    return PanelLabels(
+        usable_distinct_vendors=distinct,
+        composed_seats=len(board.seats),
+        usable_seats=len(usable),
+        seats=seats,
+        fallback_lanes=tuple(_lane_name(lane) for lane in context.composed.fallback_lanes),
+        unfilled_lanes=tuple(_lane_name(lane) for lane in context.composed.unfilled_lanes),
+        effective_minimum=minimum,
+        minimum_source=minimum_source,
+        table_source=table_source,
+        explicit_profile=(
+            {"seats": list(profile.seats), "path": profile.path, "provenance": profile.provenance}
+            if profile is not None else None
+        ),
+        minimum_met=distinct >= minimum,
+    )
+
+
+def _seat_instructions(base: str, lens) -> tuple[str, str]:
+    """The slice-1 lens hook: ``base`` plus the lens section when ``lens_frame`` exists.
+
+    The label is ``prompt`` iff a non-empty section was appended. An absent ``lens_frame``
+    module leaves the instructions unchanged (``metadata-only``); a present module without
+    ``render_lens_section`` propagates its ``ImportError``."""
+    try:
+        module = importlib.import_module(_LENS_FRAME_MODULE)
+    except ModuleNotFoundError as exc:
+        if exc.name not in (_LENS_FRAME_MODULE, None) and not str(exc).startswith(f"import of {_LENS_FRAME_MODULE}"):
+            raise
+        return base, LENS_DELIVERY_METADATA
+    if module is None:
+        return base, LENS_DELIVERY_METADATA
+    render = getattr(module, "render_lens_section", None)
+    if render is None:
+        raise ImportError(f"cannot import name 'render_lens_section' from {_LENS_FRAME_MODULE!r}")
+    section = render(lens)
+    if not section:
+        return base, LENS_DELIVERY_METADATA
+    return base + section, LENS_DELIVERY_PROMPT
+
+
+def deliver_seat_prompt(seat_key: str, route: str, prompt: str, send: Callable[[str], tuple[str, str]]) -> tuple[str, str]:
+    """The per-seat delivery seam (EC-PANEL-6 observation, agent-harness#1094): the exact
+    prompt a seat's brokered or TUI transport receives; the default sends it unchanged."""
+    return send(prompt)
+
+
+def _panel_seat_instructions(seat, base: str, state: dict | None = None) -> str:
+    """Apply the lens hook for ``seat`` inside an active panel run, recording its label.
+    Seat threads do not inherit context variables, so the run's state is passed in."""
+    state = state if state is not None else _ACTIVE_PANEL_RUN.get()
+    if state is None or state.get("context") is None:
+        return base
+    lens = state["context"].composed.seat_lenses.get(seat.seat_key)
+    if lens is None:
+        return base
+    text, label = _seat_instructions(base, lens)
+    state["delivery"][seat.seat_key] = label
+    return text
 
 
 PRESIDENT_LADDER: tuple[str, ...] = (
@@ -1536,6 +1782,17 @@ class PanelResult:
     # board instead of returning ``president=None`` beside usable legs.
     president: PresidentRuling | None = None
     president_findings: tuple[str, ...] = ()
+
+    @property
+    def panel_labels(self) -> "PanelLabels | None":
+        """PANEL (EC-PANEL-5): the labels of a panel run; a non-field attribute, like
+        ``needs_native_president``, so golden serializers never see it."""
+        return getattr(self, "_panel_labels", None)
+
+    @property
+    def landing_decision(self) -> "LandingDecision | None":
+        """PANEL (EC-PANEL-4): the landing decision of a landing call (``None`` otherwise)."""
+        return getattr(self, "_landing_decision", None)
 
     @property
     def usable_legs(self) -> tuple[PanelLegResult, ...]:
@@ -8642,6 +8899,8 @@ def _default_spawn(
             broker_model = harden_subscription_model(
                 leg, model or DEFAULT_LEG_MODELS[leg], effort,
             )
+            # PANEL item 4: a seat may use only the authorization bound to its own instructions.
+            _advisor_board_backing.check_seat_instruction_binding(review_authorization, seat_key)
             leg_authorization = derive_review_leg_authorization(
                 review_authorization, artifact,
                 harness=leg, model=broker_model,
@@ -8698,13 +8957,23 @@ def _default_spawn(
                 # a brokered codex usage-limit death reached the operator as a bare ERROR.
                 leg_detail: _LegFailure | None = None
                 def _parent_infer() -> tuple[str, str]:
+                    # PANEL (IF-0-PANEL-1): each seat's exact sealed prompt is handed to its
+                    # transport through ``deliver_seat_prompt`` (the per-seat delivery seam).
+                    if deliver_seat_prompt is not _PRODUCTION_DELIVER_SEAT_PROMPT:
+                        broker.evidence.update({"deliver_seat_prompt_replaced": True})
+                    return deliver_seat_prompt(
+                        str(seat_key or leg), "tui" if leg == "claude" else "brokered", sealed_prompt,
+                        _deliver_to_transport,
+                    )
+
+                def _deliver_to_transport(prompt: str) -> tuple[str, str]:
                     nonlocal gemini_detail, leg_detail
                     if leg == "claude":
                         claude_sink: list[_LegFailure] = []
                         claude_status, claude_text = _exec_claude_tui_leg(
                             review_dir, out_dir, leg_timeout, artifact,
                             repo_dir=out_dir, mode=provider_mode, model=broker_model,
-                            backstop_s=leg_deadline, broker_prompt=sealed_prompt,
+                            backstop_s=leg_deadline, broker_prompt=prompt,
                             broker_evidence=broker.evidence, failure_detail_sink=claude_sink,
                             **broker_extra,
                         )
@@ -8714,7 +8983,7 @@ def _default_spawn(
                     try:
                         rc, text, log = _exec_leg(
                             leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
-                            deadline_s=leg_deadline, broker_prompt=sealed_prompt,
+                            deadline_s=leg_deadline, broker_prompt=prompt,
                             broker_evidence=broker.evidence, **broker_extra,
                         )
                     except ProviderProcessGroupQuiescenceError:
@@ -8934,6 +9203,8 @@ def _default_spawn_via_provider(
         extra["agy_capture"] = agy_capture
         extra["seat_key"] = seat_key
         extra["provider_authority"] = provider_authority
+    elif seat_key is not None:
+        extra["seat_key"] = seat_key
         extra["capture_stage"] = capture_stage
         extra["capture_scratch"] = capture_scratch
     if quiescence_latch is not None:
@@ -9684,6 +9955,10 @@ def invoke_board(
     cancel_event: threading.Event | None = None,
     native_leg_fills: Sequence[NativeLegFill] | None = None,
     native_president_fill: Mapping[str, str] | None = None,
+    panel_context: object = None,
+    target_branch: str | None = None,
+    reviewed_head: str | None = None,
+    reviewed_pr: int | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -9757,7 +10032,16 @@ def invoke_board(
     (callback + an incremental per-leg verdict file in ``stream_dir``) so a consumer
     can reconcile as seats return; the consolidated ``PanelResult`` stays in seat
     order. Both ``None`` (default) is the byte-identical historical path.
+
+    PANEL (IF-0-PANEL-1): ``panel_context`` is the gate-time ``PanelContext``; a ``plan`` or
+    ``production_code`` landing without one is refused (``panel_context_required``). The
+    context's labels and landing decision ride on the result; ``target_branch``,
+    ``reviewed_head`` and ``reviewed_pr`` are cross-checks for a merge-capable decision.
     """
+    if _ACTIVE_PANEL_RUN.get() is None:
+        return _panel_run({name: value for name, value in locals().items() if name in _INVOKE_BOARD_PARAMS})
+    _panel_state = _ACTIVE_PANEL_RUN.get()
+    _panel_seat_auths: dict[str, ReviewIsolationAuthorization] = {}
     if brief_ref is not None and not _brief_pinned(brief_ref) and (
         landing_tier is not None or review_policy is not None
         or president_invoke is not None or native_president_fill is not None
@@ -10179,7 +10463,8 @@ def invoke_board(
                                 leg=leg, mode=mode, env=base_env, model=seat.model,
                                 seat_key=seat.seat_key, effort=seat.effort, lens=seat.lens,
                                 artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
-                                brief_ref=brief_ref, instructions=effective_instructions,
+                                brief_ref=brief_ref,
+                                instructions=_panel_seat_instructions(seat, effective_instructions, _panel_state),
                             ),
                         )
                     deferred.append(result)
@@ -10249,6 +10534,14 @@ def invoke_board(
                 if review_instruction_token is not None:
                     reset_review_instruction_digest(review_instruction_token)
                     review_instruction_token = None
+                # PANEL item 4: bind each seat to an authorization for its own instructions.
+                if _panel_state is not None and _panel_state.get("context") is not None:
+                    _panel_base = _resolve_brief(mode, brief_ref)
+                    _panel_seat_auths = _advisor_board_backing.derive_seat_instruction_authorizations(
+                        review_authorization,
+                        {seat.seat_key: _panel_seat_instructions(seat, _panel_base, _panel_state)
+                         for seat in board.seats},
+                    )
         except BaseException:
             review_exit(PanelResult(()))
             raise
@@ -10546,6 +10839,20 @@ def invoke_board(
                     if mode == "review" and review_authorization is not None:
                         research_extra["review_authorization"] = review_authorization
                         research_extra["canonical_repo_authority"] = canonical_repo_authority
+                    if _panel_state is not None and _panel_state.get("context") is not None:
+                        # PANEL: the seat's lens section reaches its staged instructions, and
+                        # the seat uses the authorization bound to exactly those instructions.
+                        _seat_base = _resolve_brief(mode, brief_ref)
+                        _seat_text = _panel_seat_instructions(seat, _seat_base, _panel_state)
+                        if _seat_text != _seat_base:
+                            research_extra["brief_append"] = (
+                                _seat_text[len(_seat_base):] + str(research_extra.get("brief_append") or "")
+                            )
+                        research_extra["seat_key"] = seat.seat_key
+                        if "review_authorization" in research_extra:
+                            research_extra["review_authorization"] = _panel_seat_auths.get(
+                                seat.seat_key, review_authorization,
+                            )
                     if agy_canary_capture is not None:
                         research_extra["agy_capture"] = agy_canary_capture
                         research_extra["seat_key"] = seat.seat_key
@@ -10667,7 +10974,7 @@ def invoke_board(
                     if isinstance(artifact_ref, str)
                     else None,
                     brief_ref=str(brief_ref) if isinstance(brief_ref, str) else None,
-                    instructions=effective_instructions,
+                    instructions=_panel_seat_instructions(seat, effective_instructions, _panel_state),
                 )
                 # CR F2: attach post-creation (non-field) so asdict/golden can't see it.
                 attach_native_agent_request(result, request)
@@ -10827,7 +11134,95 @@ def invoke_board(
 
 # agent-harness#802: the landing-brief pin re-enters the real invoker with the same arguments,
 # independent of any later rebinding of the public name.
+def _panel_refusal(code: str, message: str) -> PresidentPolicyError:
+    return PresidentPolicyError(code, message)
+
+
+def _panel_run(call: dict) -> PanelResult:
+    """The PANEL layer around one ``invoke_board`` call (IF-0-PANEL-1).
+
+    Order: coerce the tier; refuse a president-tier landing without a context; refuse a
+    landing context without a review policy; then, for a landing, verify the context is
+    the builder's own unmodified object, refuse injected probes or a replaced delivery
+    seam, and read the user file (the pre-seat read). The board then runs once, with the
+    context active for the policy check and the lens hook; the labels and the landing
+    decision (with the evaluation read of the user file) ride on the result."""
+    from .advisor_board import config as _panel_config
+
+    landing_tier = call.get("landing_tier")
+    context = call.get("panel_context")
+    tier = _coerce_review_landing_tier(landing_tier) if landing_tier is not None else None
+    landing = tier is not None
+    if landing and tier.value in _PRESIDENT_TIER_VALUES and context is None:
+        raise _panel_refusal(
+            "panel_context_required", f"a {tier.value} landing requires a panel context (PanelContext)",
+        )
+    if context is None:
+        token = _ACTIVE_PANEL_RUN.set({"context": None, "tier": tier, "delivery": {}})
+        try:
+            return _INVOKE_BOARD(**call)
+        finally:
+            _ACTIVE_PANEL_RUN.reset(token)
+    if landing and call.get("review_policy") is None:
+        raise _panel_refusal(
+            "panel_review_policy_required",
+            "a panel context was supplied without a review policy; pass panel_landing_policy(tier, context=...)",
+        )
+    facts = _panel_config.verify_panel_object(context)
+    if landing:
+        if facts is None or facts.get("kind") != "context" or \
+                _panel_config.verify_panel_object(context.snapshot) is None:
+            raise _panel_refusal("panel_context_unverified", "the panel context is not the builder's own object")
+        if facts.get("probes_injected"):
+            raise _panel_refusal("panel_probes_injected", "a context built with injected probes cannot land")
+        if deliver_seat_prompt is not _PRODUCTION_DELIVER_SEAT_PROMPT:
+            raise _panel_refusal("panel_delivery_replaced", "a replaced seat-delivery seam cannot land")
+        user_path = facts.get("user_path")
+        pre_seat = _panel_config.read_user_file_digest(user_path) if user_path else None
+        if pre_seat != context.snapshot.user_digest:
+            raise _panel_refusal("panel_user_file_changed", "the user board file changed during the run")
+        tables, _digest = _panel_config._user_tables(Path(user_path) if user_path else None)
+        if tables != dict(context.snapshot.user_table):
+            raise _panel_refusal("panel_context_unverified", "the snapshot's user table is not the user file's")
+        if context.resolved_table.source.kind == "user" and \
+                tables.get(facts.get("task")) != context.resolved_table.table:
+            raise _panel_refusal("panel_context_unverified", "the context's user table is not the user file's")
+        from . import merge_guard as _merge_guard
+
+        _merge_guard.record_landing_call(facts.get("repo_dir"))
+    if call.get("board") != context.composed.board:
+        raise _panel_refusal("panel_board_mismatch", "invoke_board was handed a board other than the context's")
+    state = {"context": context, "tier": tier, "delivery": {}}
+    token = _ACTIVE_PANEL_RUN.set(state)
+    try:
+        result = _INVOKE_BOARD(**call)
+    finally:
+        _ACTIVE_PANEL_RUN.reset(token)
+    object.__setattr__(result, "_panel_labels", panel_labels(context, result, state["delivery"]))
+    if not landing:
+        return result
+    user_path = facts.get("user_path")
+    now = _panel_config.read_user_file_digest(user_path) if user_path else None
+    decision = evaluate_landing(
+        call["review_policy"], usable_legs=result.usable_legs, president_ruling=result.president,
+        context=context, user_digest_now=now,
+    )
+    if decision.admitted and _panel_config.verify_panel_object(context) is None:
+        decision = replace(decision, admitted=False, reasons=(*decision.reasons, "panel_context_unverified"))
+    if decision.admitted:
+        from . import merge_guard as _merge_guard
+
+        bindings = _merge_guard.read_landing_bindings(
+            context, target_branch=call.get("target_branch"), reviewed_head=call.get("reviewed_head"),
+            reviewed_pr=call.get("reviewed_pr"),
+        )
+        _merge_guard.register_landing_decision(decision, context=context, tier=tier.value, bindings=bindings)
+    object.__setattr__(result, "_landing_decision", decision)
+    return result
+
+
 _INVOKE_BOARD = invoke_board
+_PRODUCTION_DELIVER_SEAT_PROMPT = deliver_seat_prompt
 _INVOKE_BOARD_PARAMS = frozenset(
     invoke_board.__code__.co_varnames[
         : invoke_board.__code__.co_argcount + invoke_board.__code__.co_kwonlyargcount

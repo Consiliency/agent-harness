@@ -1211,6 +1211,54 @@ def close_review_isolation_authorization(
         lease.cancel_event.set()
 
 
+# PANEL item 4 (agent-harness#1094): the per-seat instruction-digest seam. When the seats'
+# instructions differ (a lens section per seat), one authorization is derived per distinct
+# instruction set from the single factory-minted authorization -- same format, same lease --
+# and bound to the seat keys that share that set, so two seats cannot swap instructions.
+_SEAT_INSTRUCTION_BINDINGS: dict[int, tuple["weakref.ReferenceType[ReviewIsolationAuthorization]", frozenset[str]]] = {}
+
+
+def derive_seat_instruction_authorizations(
+    authorization: ReviewIsolationAuthorization,
+    instructions_by_seat: Mapping[str, str],
+) -> dict[str, ReviewIsolationAuthorization]:
+    """Map each seat key to the authorization bound to its own instructions.
+
+    A single instruction set equal to the one already bound keeps the original
+    authorization for every seat (no derivation). Otherwise every distinct set gets its
+    own authorization, sharing the original's lease and bound to its seat keys."""
+    if not isinstance(authorization, ReviewIsolationAuthorization) or authorization._seal is not _AUTHORIZATION_SEAL:
+        raise ValueError("missing or forged HARDEN review authorization")
+    lease = _lease_for(authorization)
+    groups: dict[str, list[str]] = {}
+    for seat_key, text in instructions_by_seat.items():
+        groups.setdefault(sha256(text.encode("utf-8", errors="strict")).hexdigest(), []).append(str(seat_key))
+    if len(groups) == 1 and next(iter(groups)) == authorization.instructions_sha256:
+        return {str(key): authorization for key in instructions_by_seat}
+    from dataclasses import replace as _replace
+
+    out: dict[str, ReviewIsolationAuthorization] = {}
+    for digest, keys in groups.items():
+        child = _replace(authorization, instructions_sha256=digest)
+        with _LEASES_LOCK:
+            _REVIEW_LEASES[id(child)] = (weakref.ref(child), lease)
+            _SEAT_INSTRUCTION_BINDINGS[id(child)] = (weakref.ref(child), frozenset(keys))
+        for key in keys:
+            out[key] = child
+    return out
+
+
+def check_seat_instruction_binding(authorization: ReviewIsolationAuthorization | None, seat_key: str | None) -> None:
+    """Refuse a seat using an authorization bound to other seats' instructions (an
+    unbound authorization -- the single-instruction-set case -- serves every seat)."""
+    with _LEASES_LOCK:
+        bound = _SEAT_INSTRUCTION_BINDINGS.get(id(authorization))
+    if bound is None or bound[0]() is not authorization:
+        return
+    if seat_key is None or str(seat_key) not in bound[1]:
+        raise ValueError("HARDEN review authorization is bound to another seat's instructions")
+
+
 def derive_review_leg_authorization(
     authorization: ReviewIsolationAuthorization | None,
     artifact: str,

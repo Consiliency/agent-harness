@@ -8477,6 +8477,32 @@ def _run_legible_c4_early_prover(
     return path
 
 
+def _panel_require_landing(repo, result, context, snapshot, tier, expected_head) -> None:
+    """PANEL: refuse the landing unless ``invoke_board`` admitted it and, after a re-gate
+    at a target head that changed ``[panel.*]`` or the profile, the rebuilt context still
+    admits it over the same board (no silent re-seating)."""
+    from .advisor_board import config as panel_config
+    from .panel_invoker import PresidentPolicyError, evaluate_landing, panel_landing_policy
+
+    decision = getattr(result, "landing_decision", None)
+    rebuilt = panel_config.regate_panel_context(
+        context, snapshot, repo_dir=repo, head_revision=expected_head, tier=tier.value, monitoring_policy="bounded",
+    )
+    if rebuilt is not None:
+        if rebuilt.composed.board != context.composed.board:
+            raise PresidentPolicyError(
+                "panel_regate_composition_changed", "the re-gated target composes a different board",
+            )
+        decision = evaluate_landing(
+            panel_landing_policy(tier, context=rebuilt), usable_legs=result.usable_legs,
+            president_ruling=getattr(result, "president", None), context=rebuilt,
+            user_digest_now=panel_config.current_user_digest(rebuilt),
+        )
+    if decision is None or not decision.admitted:
+        reasons = ", ".join(getattr(decision, "reasons", ()) or ("no landing decision",))
+        raise PresidentPolicyError("panel_landing_refused", f"the panel landing was refused: {reasons}")
+
+
 def _run_legible_panel(
     repo: Path,
     run_dir: Path,
@@ -8484,7 +8510,9 @@ def _run_legible_panel(
     bundle_path: Path,
     *,
     brief_path: Path | None = None,
+    panel_snapshot: object | None = None,
 ) -> Path:
+    from .advisor_board import config as panel_config
     from .advisor_board.backing import (
         prepare_review_isolation_authorization,
         reset_review_instruction_digest,
@@ -8496,10 +8524,10 @@ def _run_legible_panel(
         _govlean_authority_switched,
         _resolve_brief,
         invoke_board,
+        panel_landing_policy,
         president_blocks_landing,
         president_finding_rulings,
         president_forcing_decision,
-        review_policy_for_tier,
     )
     from .president_adapter import build_president_invoke
 
@@ -8533,8 +8561,24 @@ def _run_legible_panel(
     # there), so nothing is newly gated before the authority switch.
     landing_policy = None
     president_invoke = None
+    # PANEL (EC-PANEL-3/4): a post-switch landing snapshots the user side at run start,
+    # gates on the fetched target head, and reviews the context's composed board.
+    panel_context = None
+    board = CODE_REVIEW_BOARD
+    panel_tier = ReviewLandingTier.PRODUCTION_CODE
     if _govlean_authority_switched(repo):
-        landing_policy = review_policy_for_tier(ReviewLandingTier.PRODUCTION_CODE)
+        if panel_snapshot is None:
+            panel_snapshot = panel_config.snapshot_for_tier(panel_tier.value)
+        panel_context, panel_target = panel_config.gate_panel_context(
+            panel_snapshot, repo_dir=repo, head_revision=expected_head, tier=panel_tier.value,
+            monitoring_policy="bounded",
+        )
+        board = panel_context.composed.board
+        landing_policy = panel_landing_policy(panel_tier, context=panel_context)
+        invoke_kwargs.update({
+            "panel_context": panel_context, "review_policy": landing_policy,
+            "target_branch": panel_target.branch, "reviewed_head": expected_head,
+        })
         from .advisor_board.config import BoardConfigError, load_president_ladder
         from .panel_invoker import PRESIDENT_LADDER_INVALID, PresidentPolicyError
 
@@ -8545,7 +8589,7 @@ def _run_legible_panel(
         except BoardConfigError as exc:
             raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, str(exc)) from exc
         president_invoke = build_president_invoke(
-            CODE_REVIEW_BOARD, repo_dir=repo, stream_dir=stream_dir, ladder=president_ladder,
+            board, repo_dir=repo, stream_dir=stream_dir, ladder=president_ladder,
         )
         invoke_kwargs["landing_tier"] = ReviewLandingTier.PRODUCTION_CODE
         invoke_kwargs["president_invoke"] = president_invoke
@@ -8560,7 +8604,7 @@ def _run_legible_panel(
         instruction_token = set_review_instruction_digest(resolved_brief)
         try:
             invoke_kwargs["review_authorization"] = prepare_review_isolation_authorization(
-                CODE_REVIEW_BOARD,
+                board,
                 bundle_path.read_text(encoding="utf-8"),
                 mode="review",
                 canonical_repo_authority=repo,
@@ -8570,7 +8614,7 @@ def _run_legible_panel(
             reset_review_instruction_digest(instruction_token)
             raise
     try:
-        result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)
+        result = invoke_board(board, "", **invoke_kwargs)
     finally:
         if instruction_token is not None:
             reset_review_instruction_digest(instruction_token)
@@ -8580,10 +8624,16 @@ def _run_legible_panel(
     tree: str | None = None
     legs: list[dict[str, object]] = []
     verdicts: dict[str, str] = {}
-    for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):
+    if panel_context is not None:
+        _panel_require_landing(repo, result, panel_context, panel_snapshot, panel_tier, expected_head)
+    from collections import Counter
+
+    leg_names = Counter(str(outcome.leg) for outcome in result.legs)
+    for seat, outcome in zip(board.seats, result.legs, strict=True):
         lines = [line.strip() for line in outcome.text.splitlines() if line.strip()]
         verdict = lines[-1] if lines and lines[-1] in {"AGREE", "PARTIALLY AGREE", "DISAGREE"} else "EMPTY"
-        leg_path = run_dir / f"implementation-panel-{outcome.leg}.json"
+        leg_name = outcome.leg if leg_names[str(outcome.leg)] == 1 else f"{outcome.leg}.{seat.lens}"
+        leg_path = run_dir / f"implementation-panel-{leg_name}.json"
         leg_payload = {
             "leg": outcome.leg,
             "model": seat.model,
@@ -8623,7 +8673,7 @@ def _run_legible_panel(
                 "report_bytes": len(outcome.text.encode("utf-8")),
                 "broker": dict(broker_evidence),
             }
-            receipt_path = run_dir / f"implementation-panel-{outcome.leg}.harden-broker-run.json"
+            receipt_path = run_dir / f"implementation-panel-{leg_name}.harden-broker-run.json"
             receipt_path.write_text(
                 json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")) + "\n",
                 encoding="utf-8",
@@ -8715,6 +8765,8 @@ def _run_legible_panel(
         "legs": legs,
         "verdicts": verdicts,
     }
+    if getattr(result, "panel_labels", None) is not None:
+        panel_payload["panel_labels"] = result.panel_labels.to_dict()
     if brief_path is not None:
         panel_payload.update(
             {

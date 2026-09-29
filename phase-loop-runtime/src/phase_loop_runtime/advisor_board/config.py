@@ -1034,6 +1034,86 @@ def build_panel_context(
     })
     return context
 
+# --- gate-time helpers shared by the landing entries (runner, run-train, gate, CLI) -------
+
+
+@dataclass(frozen=True)
+class GateTarget:
+    """The target an entry gated against: ``origin``'s default branch, fetched at gate time."""
+
+    branch: str
+    head: str
+
+
+def fetch_gate_target(repo_dir: Path | str, *, remote: str = "origin") -> GateTarget:
+    """Fetch ``remote``'s default branch now and return its head (never a stale ref)."""
+    listed = _git_read(repo_dir, "ls-remote", "--symref", remote, "HEAD")
+    if listed.returncode != 0:
+        raise BoardConfigError(f"the target of {remote!r} cannot be read")
+    branch = None
+    for line in listed.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+            branch = line[len("ref: refs/heads/"):-len("\tHEAD")]
+    if not branch:
+        raise BoardConfigError(f"the default branch of {remote!r} cannot be read")
+    fetched = _git_read(repo_dir, "fetch", "--no-tags", "--quiet", remote,
+                        f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+    if fetched.returncode != 0:
+        raise BoardConfigError(f"the target {remote}/{branch} cannot be fetched")
+    head = _resolve_revision(repo_dir, f"refs/remotes/{remote}/{branch}")
+    return GateTarget(branch=branch, head=head)
+
+
+def gate_panel_context(
+    snapshot: PanelRunSnapshot,
+    *,
+    repo_dir: Path | str,
+    head_revision: str | None,
+    tier: str | None,
+    monitoring_policy: str,
+    task: str = "code-review",
+) -> tuple[PanelContext, GateTarget]:
+    """Build the gate's context: fetch the target head, read the repository profile at it,
+    and build through ``build_panel_context`` (looked up at call time)."""
+    target = fetch_gate_target(repo_dir)
+    profile = load_repository_profile(repo_dir, base_revision=target.head, tier=tier) if tier else None
+    context = build_panel_context(task, snapshot, repo_dir=repo_dir, base_revision=target.head,
+                                  head_revision=head_revision, monitoring_policy=monitoring_policy,
+                                  repository_profile=profile)
+    return context, target
+
+
+def regate_panel_context(
+    context: PanelContext,
+    snapshot: PanelRunSnapshot,
+    *,
+    repo_dir: Path | str,
+    head_revision: str | None,
+    tier: str | None,
+    monitoring_policy: str,
+    task: str = "code-review",
+) -> PanelContext | None:
+    """Re-read the target; when it changed ``[panel.*]`` or the profile's ``panel`` lists
+    since the gate, rebuild the context at the new head (``None`` when no re-gate is due)."""
+    target = fetch_gate_target(repo_dir)
+    if not panel_regate_required(repo_dir, gated_revision=str(context.gated_revision), target_head=target.head):
+        return None
+    rebuilt, _target = gate_panel_context(snapshot, repo_dir=repo_dir, head_revision=head_revision, tier=tier,
+                                          monitoring_policy=monitoring_policy, task=task)
+    return rebuilt
+
+
+def current_user_digest(context: PanelContext) -> str | None:
+    """A fresh read and hash of the user file the context's snapshot was taken from."""
+    facts = verify_panel_object(context) or {}
+    path = facts.get("user_path")
+    return read_user_file_digest(path) if path else None
+
+
+def snapshot_for_tier(tier: str | None) -> PanelRunSnapshot:
+    """The run-start snapshot with the user governance profile for ``tier``."""
+    return snapshot_panel_run(user_profile=load_user_profile(tier=tier) if tier else None)
+
 __all__ = [
     "BoardConfig",
     "BoardConfigError",
@@ -1057,4 +1137,9 @@ __all__ = [
     "build_panel_context",
     "load_repository_profile",
     "load_user_profile",
+    "GateTarget",
+    "fetch_gate_target",
+    "gate_panel_context",
+    "regate_panel_context",
+    "snapshot_for_tier",
 ]
