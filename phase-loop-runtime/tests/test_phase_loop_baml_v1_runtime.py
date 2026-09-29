@@ -2542,6 +2542,7 @@ def scenario_i9_resources() -> None:
     fds, threads, pidfds = _fd_count(), threading.active_count(), _pidfds()
     os_threads = len(os.listdir("/proc/self/task")) if LINUX else 0
     handles = _process_handle_count() if WINDOWS else 0
+    handle_types = _handle_types() if WINDOWS else None
     disposed: list[int] = []
     jobs: list[str] = []
     hang = _hostile("phase_loop_parse_closeout", _sleep(60))
@@ -2577,7 +2578,10 @@ def scenario_i9_resources() -> None:
     _parse()  # the permitted current worker and its long-lived threads
     assert _settled(REAP_BOUND + 1)
     ok = _wait(lambda: (gc.collect() or True) and _fd_count() <= fds + (16 if WINDOWS else 2) and threading.active_count() <= threads + 1, REAP_BOUND + 1)
-    assert ok, (fds, _fd_count(), threads, threading.active_count(), [t.name for t in threading.enumerate()])
+    assert ok, (
+        fds, _fd_count(), threads, threading.active_count(), [t.name for t in threading.enumerate()],
+        _handle_types() if WINDOWS else None, handle_types,
+    )
     # The owner is a raw thread (not in threading.enumerate); count OS threads too.
     if LINUX:
         assert _wait(lambda: len(os.listdir("/proc/self/task")) <= os_threads + 1, REAP_BOUND + 1), (
@@ -2630,6 +2634,30 @@ def _process_handle_count() -> int:
     count = wintypes.DWORD(0)
     assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count)), ctypes.get_last_error()
     return count.value
+
+
+def _handle_types() -> dict[str, int]:
+    """Diagnostic: this process's open handles by object type (Windows)."""
+    from ctypes import wintypes
+
+    kernel32 = _kernel32()
+    kernel32.GetHandleInformation.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtQueryObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG))
+    counts: collections.Counter = collections.Counter()
+    buf = ctypes.create_string_buffer(4096)
+    flags = wintypes.DWORD(0)
+    for value in range(4, 4 * 8192, 4):
+        if not kernel32.GetHandleInformation(value, ctypes.byref(flags)):
+            continue
+        returned = wintypes.ULONG(0)
+        if ntdll.NtQueryObject(value, 2, buf, len(buf), ctypes.byref(returned)) != 0:  # ObjectTypeInformation
+            counts["?"] += 1
+            continue
+        length = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ushort))[0]
+        address = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[1]
+        counts[ctypes.wstring_at(address, length // 2)] += 1
+    return dict(counts)
 
 
 def _job_exists(name: str) -> bool:
