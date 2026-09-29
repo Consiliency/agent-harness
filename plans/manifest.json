@@ -10056,7 +10056,7 @@
           "issue": "Consiliency/agent-harness#1164",
           "decision": "maintainer 2026-09-29 (relayed by the lead on agent-harness#1164): EXECFIND SL-2 may change exactly this node, replacing its free-text detail with the existing harness detail code and asserting that code in the reason",
           "frozen_by": "EXECFIND SL-0 advisory re-freeze (.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.json)",
-          "reason": "agent-harness#1102 made PanelLegResult.detail a closed vocabulary, so the node's detail=\"EgressUnavailable\" is rewritten to the unknown-failure template and its reason assertion cannot hold; the node was skipped until SL-2's symbols existed, so main never ran it. The edit changes the file's bytes, so the advisory receipt's verify reports 'frozen test content changed' for this path from this landing on; that receipt and its logs are not rewritten.",
+          "reason": "agent-harness#1102 made PanelLegResult.detail a closed vocabulary, so the node's detail=\"EgressUnavailable\" is rewritten to the unknown-failure template and its reason assertion cannot hold; the node was skipped until SL-2's symbols existed, so main never ran it. Under the plan's re-freeze rule this correction restarts the advisory re-freeze: the advisory receipt and its RED logs are re-recorded against the pre-implementation commit 061a84e99d4cd1d6bc53a029438c936203caa2f8 (main 3c61b270 plus only this node), which is merged into the landing so the receipt's base stays reachable. The original (non-advisory) receipt and logs are unchanged.",
           "files": [
             {
               "path": "phase-loop-runtime/tests/test_governed_review.py",
