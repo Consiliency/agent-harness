@@ -1751,7 +1751,7 @@ def _live_merge_pr(
     ``merge_guard.guarded_merge``. ``authority`` is the admitted, registered
     ``LandingDecision`` of this run's landing (with its ``panel_context`` and the
     ledger's ``pr_number``), merged as a ``GhPrMerge`` under the decision's checks; or a
-    ``NoLandingToken`` for a run that made no landing call, which performs today's
+    minted no-landing token for a run that made no landing call, which performs today's
     ``gh pr ready`` / ``gh pr merge`` primitive byte-for-byte. No authority refuses
     (``panel_merge_authority_missing``) before any read.
 
@@ -2462,7 +2462,7 @@ def _train_merge_authority(panel_landing: bool, review_panel: object,
 
     A post-switch train presents this process's admitted landing decision with its
     context and the ledger's PR number (``None`` when there is none, which refuses). A
-    pre-switch train made no landing call; it presents a fresh ``NoLandingToken`` and
+    pre-switch train made no landing call; it presents a freshly minted no-landing token and
     merges with today's primitive."""
     from . import merge_guard
 

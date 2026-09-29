@@ -12690,7 +12690,7 @@ def _redacted_stderr_excerpt(text: str, max_chars: int = 500) -> str:
 
 def _closeout_push(repo: Path, remote: str, refspec: str, run_mode: str) -> str | None:
     """The closeout push through ``merge_guard`` (PANEL, agent-harness#1078): today's
-    push under a ``NoLandingToken`` for a run that makes no panel landing (autonomous, or
+    push under a minted no-landing token for a run that makes no panel landing (autonomous, or
     a repository before the GOVLEAN authority switch). A post-switch governed closeout has
     no landing decision to present, so it is refused. Returns the refusal code, or
     ``None`` when the push ran (a rejected push still raises, as before)."""
