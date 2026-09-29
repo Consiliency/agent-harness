@@ -11194,6 +11194,19 @@ def _panel_run(call: dict) -> PanelResult:
     decision (with the evaluation read of the user file) ride on the result."""
     from .advisor_board import config as _panel_config
 
+    brief_ref = call.get("brief_ref")
+    if brief_ref is not None and not _brief_pinned(brief_ref) and (
+        call.get("landing_tier") is not None or call.get("review_policy") is not None
+        or call.get("president_invoke") is not None or call.get("native_president_fill") is not None
+    ):
+        # agent-harness#802 first: the landing brief is resolved and checked ONCE (an advisory
+        # contract refuses with AdvisoryLandingRefused, which no caller catching the existing
+        # types can swallow) before any PANEL refusal, and the whole run uses those bytes.
+        token = _pin_landing_brief(call.get("mode") or "review", brief_ref)
+        try:
+            return _panel_run(call)
+        finally:
+            _unpin_brief(token)
     landing_tier = call.get("landing_tier")
     context = call.get("panel_context")
     tier = _coerce_review_landing_tier(landing_tier) if landing_tier is not None else None
