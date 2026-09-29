@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "2b9bcf05eed11c706d3d5bbe6596236c4c8b9cd24992b2c0273adaaa057102e3",
+      "raw_receipt_sha256": "34920247f3a62d299f4a0307b3919fcf068dbbc8f260a7969f5c816b828bb785",
       "record_sha256": {
-        "broker": "0b169b6cbe0474308217431db1c7d6cad7fccd8cbe149b0bf3b9cd71b856e888",
-        "monitoring": "b98088453ec0601d39b865bfffe5f609dbf4fa4a746095b8b5509c5c13833f73",
-        "observer": "645e34bc2cfa604cce30b233a4e89a0c38ceebbf03d45ffd939fd5273915f26b",
-        "result": "cb9b8ef9a36a7791c0d62f6ff19f74d290525bffece435966d678860d5697688"
+        "broker": "3435ef14a9bd70617ff3939ba9b7e4012cee78a9c7f390847407a559c3e564af",
+        "monitoring": "2fc321a9fc29eaa27bb850565652aae14d3b6804488b41974f38482418a703d6",
+        "observer": "cc956e7e1e9c40cfc37484bf5f6c2b04530b12e054d982e9cd20dfb94c9849a4",
+        "result": "dac58535084bd612e67df578f622f957aa92f307de39e6bd1e2a24684b81e168"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "437fac9a4cdd386d1bbe36c4aad0d6d897952dbdf943f35a7aa7e7a916868cf2",
+      "raw_receipt_sha256": "49ff73bd54cbfde317c74f66a3c02df6530f4592ea62fd4d00253d82d86bfc32",
       "record_sha256": {
-        "broker": "64c5f34051919251a4c4b0f765f3674fcb38437dfeb2ca79727c48fb07365f9e",
-        "monitoring": "cdec32c1c02f2fa96dd1aa5c866ece314921facd9f4bb86be01f01212f7c2bd3",
-        "observer": "d61aafe03483544afa19b48fdcaecce664968d5cee5064a2103108ea614b38ea",
+        "broker": "3a9b51b1eb422a898dd9ceb08f6518a9343427727bf0bb87e86bc1ed490a6e88",
+        "monitoring": "e2781a29c390175cb006c61cd1bc4e38804dde3a3550d5e7e80c3b5629832996",
+        "observer": "f47a14a1ce2d55488d927c6ae90ce01bb9336f9b1dd5d70b4bc859808b32f1be",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "a1853aac84237807b968b725e4a72d578c62a718e607dd00ada9f6290323ad07",
+      "raw_receipt_sha256": "d5a551cf6af022e29e8e1df49f689f6e1c9c7c0c865ec87d05b6c228c4c46fa3",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "8082cd24af95ae5781f002882d3f73086a7858c438e1d012c11182b9938a729a",
-        "observer": "3a7baa1e1b48e67129e8d2102d35245e732186c210a7d25c0b098121a2d151aa",
+        "monitoring": "c2bbc056148b8b2056b761f01b9d68a5f462168692047b7a671db0e929865de9",
+        "observer": "381c2a07ba833d9127c251af21d00606ed3fe90a97df5ff491ecf81d5bb92a4a",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -317,8 +317,9 @@
     "injection.py": "5aa17f5a3a25e3ee4e46cd4a6decade3267fd1cfb816172e059bdc064b75f8a4",
     "install_status.py": "779a44d1f8a1540cbac34c55e80018c6620ff545eb0730a1957aca190d44f568",
     "lane_scheduler.py": "4b1dbf44c1d061f384e391310a20c289766f6f8150bf96c419db4b0b81de3943",
-    "launcher.py": "12b6a4a7229d101732fbe91b5b7a966ba5ce44b0ceb84603c0e4a5d62417ec9b",
+    "launcher.py": "a4cebfa84639c5767754400a323b94f9b2f450e4d8a74adc3e748279b28bfceb",
     "lease_store.py": "49bd83b910cba984a38abab030d516070fb24cc6f74a308ad6e0ccad40e32666",
+    "lease_supervisor.py": "8b4f2b27a36dd860463fc9cf3a2261c5734fb4aa7ee75f07518f214fe12f55b8",
     "legible_evidence.py": "a9b10ab744a08f9540043b141da586ba2d341a5267dd2378247c992452bc45ef",
     "maintenance.py": "86e167acce13b558cbaa3b764edd8de30263af3ac960df48afd41693b48b9801",
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
