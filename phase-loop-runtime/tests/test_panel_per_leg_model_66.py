@@ -19,7 +19,7 @@ def test_default_leg_models_exposed():
     # (claude-sonnet-5): pre-merge review runs on Opus 5.5, the implementer stays Sonnet.
     assert pi.DEFAULT_LEG_MODELS["claude"] == "claude-opus-5-5"
     assert pi.DEFAULT_LEG_MODELS["claude"] != pi.CLAUDE_IMPLEMENTER_MODEL
-    assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-6-astra"
+    assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-6.1-sol"
     assert pi.DEFAULT_LEG_MODELS["gemini"] == "gemini-3.8-flash-high"
     assert pi.DEFAULT_LEG_MODELS["grok"] == "grok-4.7"
 

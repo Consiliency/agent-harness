@@ -23,7 +23,9 @@ before that) -- not the implementer ``claude-sonnet-5``. The catch-all ``general
 ``solo`` boards follow the same default. The divergent-thinking boards (``brainstorm``,
 ``doc-edit``, ``legal-brainstorm``) deliberately KEEP Sonnet — a diverse voice / a
 low-stakes copyedit / an aggressive-but-cheap ideation seat — where it is the right
-tool.
+tool. The codex seat follows the same split: the review-class boards and ``general``
+seat GPT-6.1 Sol (``gpt-6.1-sol``), the codex review default "for now" (2026-09-29;
+``gpt-6-astra`` before that), and the divergent-thinking boards keep ``gpt-6-astra``.
 
 Every preset seat uses only REGISTERED, VALID ``(model, harness)`` pairs on the
 built-3 + ``opencode`` lanes (no ``pi`` / ``cursor`` / unregistered-model seats),
@@ -87,7 +89,7 @@ LEGAL_REVIEW_BOARD: Board = Board(
     name="legal-review",
     purpose="legal-review",
     seats=(
-        Seat(model="gpt-6-astra", effort="max", harness="codex", lens="opposing-counsel"),
+        Seat(model="gpt-6.1-sol", effort="max", harness="codex", lens="opposing-counsel"),
         Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="risk-liability"),
         Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="authority-verification"),
     ),
@@ -99,7 +101,7 @@ LEGAL_STRATEGY_REVIEW_BOARD: Board = Board(
     name="legal-strategy-review",
     purpose="legal-strategy-review",
     seats=(
-        Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team"),
+        Seat(model="gpt-6.1-sol", effort="max", harness="codex", lens="red-team"),
         Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternatives"),
         Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="downside-ethics"),
     ),
@@ -131,7 +133,7 @@ GENERAL_BOARD: Board = Board(
     name="general",
     purpose="general",
     seats=(
-        Seat(model="gpt-6-astra", effort="max", harness="codex", lens="adversarial"),
+        Seat(model="gpt-6.1-sol", effort="max", harness="codex", lens="adversarial"),
         Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative"),
         Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="completeness"),
     ),

@@ -219,7 +219,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-6-astra/adversarial, gemini-3.8-flash/alternative,
+  (three frontier vendors — gpt-6.1-sol/adversarial, gemini-3.8-flash/alternative,
   claude-opus-5-5/completeness — hand it any task + brief), and `solo` is the
   single-MEMBER form (one `claude-opus-5-5` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like

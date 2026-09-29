@@ -161,8 +161,32 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["gpt-6-sol"], "sol")
         inv = render_seat_invocation("codex", "gpt-6-sol", "max")
         self.assertEqual((inv.model, inv.effort_args), ("gpt-6-sol", ("-c", "model_reasoning_effort=xhigh")))
-        # registration only: the codex seat default is unchanged
-        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-astra")
+        # registration only: gpt-6-sol is not the codex seat default
+        self.assertNotEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-sol")
+
+    def test_gpt_6_1_sol_is_the_codex_review_seat_default(self) -> None:
+        # Maintainer, 2026-09-29, "for now": the codex review seat moves to gpt-6.1-sol.
+        # The planner/implementer model and the prior review default stay registered.
+        from phase_loop_runtime import profiles
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+        from phase_loop_runtime.advisor_board.backing import HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES
+        from phase_loop_runtime.advisor_board.harness_mapping import render_seat_invocation
+        from phase_loop_runtime.advisor_board.presets import CODE_REVIEW_BOARD
+        from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS, DEFAULT_REVIEW_SEAT_ALIASES
+
+        spec = DEFAULT_MODEL_REGISTRY.get("gpt-6.1-sol")
+        self.assertEqual((spec.default_lane, spec.effort_ceiling), ("codex", "max"))
+        self.assertEqual(spec.runnable_by, ("codex", "opencode"))
+        self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["gpt-6.1-sol"], "sol")
+        inv = render_seat_invocation("codex", "gpt-6.1-sol", "max")
+        self.assertEqual((inv.model, inv.effort_args), ("gpt-6.1-sol", ("-c", "model_reasoning_effort=xhigh")))
+        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6.1-sol")
+        self.assertEqual(HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"], "gpt-6.1-sol")
+        self.assertEqual([s.model for s in CODE_REVIEW_BOARD.seats if s.harness == "codex"], ["gpt-6.1-sol"])
+        for kept in ("gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"):
+            self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES[kept], "sol")
+            self.assertEqual(DEFAULT_MODEL_REGISTRY.get(kept).default_lane, "codex")
+        self.assertEqual(profiles.OPENAI_HEAVY_MODEL, "gpt-6-astra")
 
     def test_unknown_model_raises_with_known_list(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, UnknownModelError

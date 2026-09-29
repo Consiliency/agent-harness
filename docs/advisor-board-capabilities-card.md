@@ -74,6 +74,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 | Model            | Vendor family | Default lane | Runnable by       | Effort ceiling |
 | ---------------- | ------------- | ------------ | ----------------- | -------------- |
+| `gpt-6.1-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-6-sol`      | codex         | `codex`      | codex, opencode   | max            |
@@ -93,6 +94,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
 
 `gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
+
+`gpt-6.1-sol` is the codex review-seat default "for now" (2026-09-29), launch-tested on `codex` only; the `opencode` pair is registered by vendor family and not launch-verified. It answers to the `sol` alias. `gpt-6-astra`, the prior review default, stays registered and remains the codex planner/implementer default.
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
@@ -128,7 +131,7 @@ on any host other than Claude Code through the subscription TUI adapter. No cell
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
+| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6.1-sol`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -150,14 +153,14 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-opus-5-5 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
-| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-opus-5-5 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
+| `default`               | premerge-review       | gpt-6.1-sol · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-opus-5-5 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-opus-5-5 · max · claude · correctness ; gpt-6.1-sol · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
 | `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-6-astra · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-6-astra · medium · codex · structure |
-| `legal-review`          | legal-review          | gpt-6-astra · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-opus-5-5 · max · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternatives ; claude-opus-5-5 · max · claude · downside-ethics |
+| `legal-review`          | legal-review          | gpt-6.1-sol · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-opus-5-5 · max · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-6.1-sol · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternatives ; claude-opus-5-5 · max · claude · downside-ethics |
 | `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-6-astra · high · codex · conservative ; gemini-3.8-flash · high · gemini · creative |
-| `general`               | general               | gpt-6-astra · max · codex · adversarial ; gemini-3.8-flash · high · gemini · alternative ; claude-opus-5-5 · max · claude · completeness |
+| `general`               | general               | gpt-6.1-sol · max · codex · adversarial ; gemini-3.8-flash · high · gemini · alternative ; claude-opus-5-5 · max · claude · completeness |
 | `solo`                  | general               | claude-opus-5-5 · max · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
@@ -191,7 +194,7 @@ The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
 The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 3.8 Flash
-(`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
+(`Sol` is the GPT seat alias: `gpt-6.1-sol` by default, `gpt-6-astra` and `gpt-5.6-sol` accepted as explicit ids).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
 and fail the landing closed without a ruling; today no HARDEN-authorized president
@@ -375,7 +378,7 @@ a two-same-vendor board is not collapsed.
 
    - **One intentional result-shape enrichment:** `invoke_board` populates
      `PanelLegResult.seat_key` with a richer per-seat label (e.g.
-     `codex:gpt-6-astra:max`) instead of the bare leg (`codex`). `.leg` is preserved, so
+     `codex:gpt-6.1-sol:max`) instead of the bare leg (`codex`). `.leg` is preserved, so
      any caller keying on `.leg` / `.status` / `.usable` is unaffected; this only
      *adds* the ability to tell two same-vendor seats apart. This is the sole
      contract-sanctioned delta (ABDRESOLVE finding 4), asserted explicitly in the

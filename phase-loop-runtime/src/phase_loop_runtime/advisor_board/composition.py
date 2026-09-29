@@ -5,7 +5,7 @@ its MAX thinking and each carrying a DISTINCT review lens:
 
     grok    grok-4.7         max   lens=adversarial
     claude  claude-opus-5-5  max   lens=correctness
-    codex   gpt-6-astra      max   lens=red-team
+    codex   gpt-6.1-sol      max   lens=red-team
     gemini  Gemini 3.8 Flash high  lens=alternative-approach   (high == its ceiling)
 
 The load-bearing behavior is the **availability-aware fallback**: a panel must
@@ -93,7 +93,7 @@ _VENDOR_ORDER: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
 _VENDOR_SEAT: dict[str, dict[str, str]] = {
     "grok": {"model": "grok-4.7", "harness": "grok", "effort": "max", "lens": "adversarial"},
     "claude": {"model": "claude-opus-5-5", "harness": "claude", "effort": "max", "lens": "correctness"},
-    "codex": {"model": "gpt-6-astra", "harness": "codex", "effort": "max", "lens": "red-team"},
+    "codex": {"model": "gpt-6.1-sol", "harness": "codex", "effort": "max", "lens": "red-team"},
     "gemini": {"model": "gemini-3.8-flash", "harness": "gemini", "effort": "high", "lens": "alternative-approach"},
 }
 

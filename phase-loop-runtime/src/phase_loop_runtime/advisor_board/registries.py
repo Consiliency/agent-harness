@@ -254,7 +254,8 @@ class DefaultHarnessRegistry:
 # max; lower it only where there is concrete evidence a model caps out below max
 # (none of the built-3 do — codex's ``xhigh`` IS canonical ``max``).
 _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
-    ("gpt-6-astra", "codex", "max"),
+    ("gpt-6.1-sol", "codex", "max"),  # codex review-seat default (maintainer, 2026-09-29, "for now")
+    ("gpt-6-astra", "codex", "max"),  # executor/planner default; the prior review-seat default
     ("gpt-5.6-sol", "codex", "max"),  # explicit legacy seat (fleet default before 2026-09-04)
     ("gpt-6-sol", "codex", "max"),  # explicit seat (codex's own default model); not a board default
     ("claude-sonnet-5", "claude", "max"),
