@@ -298,7 +298,9 @@ def _class_fields(baml_text: str, class_name: str) -> list[tuple[str, str, bool]
         line = raw_line.strip()
         if not line or line.startswith("//"):
             continue
-        field_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*(?:\[\])?)(\?)?", line)
+        # D3 (agent-harness#1135): accept both the v1 ``name: type,`` form and the
+        # legacy ``name type`` form; anything else still fails loudly below.
+        field_match = re.fullmatch(r"([A-Za-z_]\w*)(?:\s*:\s*|\s+)([A-Za-z_]\w*(?:\[\])?)(\?)?\s*,?", line)
         if not field_match:
             raise BamlValidationError(f"unsupported BAML class field syntax in {class_name}: {line}")
         fields.append((field_match.group(1), field_match.group(2), bool(field_match.group(3))))
