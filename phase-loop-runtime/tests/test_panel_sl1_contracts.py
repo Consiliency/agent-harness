@@ -551,6 +551,8 @@ class _FakeGitHub:
         self.dequeue_fails = False
         self.open_prs_by_head: dict[str, dict] = {}
         self.before_push: Callable[[], None] | None = None
+        self.draft = False
+        self.ready_fails = False
 
     # -- helpers ------------------------------------------------------------------------
     def head(self) -> str:
@@ -613,7 +615,7 @@ class _FakeGitHub:
                 "id": "PR_node_1", "number": 1, "baseRefName": self.base_ref, "headRefOid": self.head(),
                 "headRefName": self.branch, "headRepository": {"name": "r", "owner": {"login": "o"}},
                 "headRepositoryOwner": {"login": "o"}, "url": "https://github.com/o/r/pull/1",
-                "state": self.state, "isDraft": False,
+                "state": self.state, "isDraft": self.draft,
                 "mergeCommit": {"oid": self.merge_commit} if self.merge_commit else None,
                 "autoMergeRequest": {"enabledAt": "t"} if self.auto_merge else None,
             }
@@ -645,7 +647,12 @@ class _FakeGitHub:
             if mode == "unreadable-merge":
                 self.merge_commit = None
             return self._done(1 if mode == "merge-then-error" else 0, "", "error" if mode == "merge-then-error" else "")
-        if rest[:2] in (["pr", "create"], ["pr", "comment"], ["pr", "edit"], ["pr", "ready"],
+        if rest[:2] == ["pr", "ready"]:
+            if self.ready_fails:
+                return self._done(1, "", "could not mark ready")
+            self.draft = False
+            return self._done(0, "")
+        if rest[:2] in (["pr", "create"], ["pr", "comment"], ["pr", "edit"],
                         ["issue", "create"], ["issue", "comment"]):
             return self._done(0, "https://github.com/o/r/pull/2\n")
         return self._done(1, "", f"fake gh: unhandled {joined}")
@@ -2790,3 +2797,24 @@ def test_sl1_the_ledger_pr_number_is_never_a_wrong_number(url, number):
     from phase_loop_runtime import train_runner as tr
 
     assert tr._pr_number_from_url(url) == number
+
+
+@pytest.mark.parametrize("ready_fails", [False, True])
+def test_sl1_ec1_a_decided_landing_readies_a_draft_pr_first(tmp_path, monkeypatch, ready_fails):
+    """The decision path's counterpart to test_train_merge's draft-readying nodes: a draft PR
+    is readied (`gh pr ready <number> --repo`) before the one merge; a ready that fails
+    refuses with panel_merge_ready_failed and issues no merge."""
+    land = _site(tmp_path, monkeypatch, "pr-merge")
+    land.gh.draft, land.gh.ready_fails = True, ready_fails
+    land.gh.calls.clear()
+    if ready_fails:
+        with pytest.raises(land.mg.MergeGuardRefusal) as refused:
+            land.merge()
+        assert refused.value.code == "panel_merge_ready_failed"
+        assert not [c for c in land.gh.calls if c[1:3] == ["pr", "merge"]]
+        return
+    assert land.merge()
+    order = [c[1:3] for c in land.gh.calls if c[1:3] in (["pr", "ready"], ["pr", "merge"])]
+    assert order == [["pr", "ready"], ["pr", "merge"]], order
+    (ready,) = [c for c in land.gh.calls if c[1:3] == ["pr", "ready"]]
+    assert ready == ["gh", "pr", "ready", "1", "--repo", _SLUG]
