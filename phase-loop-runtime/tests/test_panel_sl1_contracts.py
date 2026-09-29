@@ -451,7 +451,8 @@ def _authorized_board(s, tmp_path, harnesses):
     token = backing.set_review_instruction_digest(base)
     try:
         parent = backing.prepare_review_isolation_authorization(board, "artifact", mode="review",
-                                                                canonical_repo_authority=repo)
+                                                                canonical_repo_authority=repo,
+                                                                stage_review_tree=False)
     finally:
         backing.reset_review_instruction_digest(token)
     children = backing.derive_seat_instruction_authorizations(parent, instructions)
