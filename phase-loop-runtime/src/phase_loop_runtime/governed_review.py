@@ -320,6 +320,10 @@ def _pi_brief_pinned(brief_ref: str) -> bool:
     return _brief_pinned(brief_ref)
 
 
+# PANEL: the governed gate lands at ``plan`` (the train review, president follow-up F018).
+_PANEL_GATE_TIER = "plan"
+
+
 def governed_board_gate(
     *,
     artifact: str,
@@ -339,8 +343,19 @@ def governed_board_gate(
     emit_native_request: bool = False,
     native_fill_dir: "Path | str | None" = None,
     monitoring_policy: str = "bounded",
+    panel_snapshot: object | None = None,
+    reviewed_pr: int | None = None,
 ) -> "GateResult | dict[str, object]":
     """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
+
+    PANEL (v10 Phase 18, agent-harness#1078): on the default path (no injected
+    ``compose``/``invoke``) in a repository past the GOVLEAN authority switch, the gate is
+    a ``plan`` landing. It takes ``panel_snapshot`` (the run-start user-side snapshot; one
+    is taken here when ``None``), fetches the target, builds the gate-time context for the
+    change ``reviewed_sha``, reviews the context's composed board (``heartbeat_only``
+    included) under ``panel_landing_policy`` with a president, re-gates after the seats,
+    and holds (``promoted=False``) on any refusal. An injected ``compose`` or ``invoke``
+    keeps the tierless path below unchanged and builds no context.
 
     ``monitoring_policy="heartbeat_only"`` (agent-harness#906, ``run-train
     --monitoring-policy``) runs the review the way ``advisor-board --monitoring-policy
@@ -443,14 +458,35 @@ def governed_board_gate(
         )
     from . import panel_invoker as _pi
     from .advisor_board import backing as _backing
+    from .advisor_board import config as _panel_config
     from .advisor_board.composition import FLOOR_SEATS, compose_review_board
     from .advisor_board.fixtures import DEFAULT_BOARD
 
+    panel_context = panel_target = None
+    try:
+        panel_landing = compose is None and invoke is None and \
+            _pi._govlean_authority_switched(canonical_repo_authority)
+        if panel_landing:
+            if panel_snapshot is None:
+                panel_snapshot = _panel_config.snapshot_for_tier(_PANEL_GATE_TIER)
+            panel_context, panel_target = _panel_config.gate_panel_context(
+                panel_snapshot, repo_dir=canonical_repo_authority, head_revision=reviewed_sha,
+                tier=_PANEL_GATE_TIER, monitoring_policy=monitoring_policy,
+            )
+    except (_pi.PresidentPolicyError, OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
+        return _block_result(
+            "panel_landing_refused", getattr(exc, "code", "governed_board_panel_gate_refused"),
+            f"panel gate refused before any seat: {exc}; holding (non-human)",
+        )
     # heartbeat_only seats the frozen default board, as the advisor-board CLI does: an
     # unavailable vendor then fails its own seat instead of being silently backfilled.
-    compose_fn = compose if compose is not None else (
-        (lambda: DEFAULT_BOARD) if heartbeat_only else compose_review_board
-    )
+    # A panel landing seats the gate-time context's board under every policy.
+    if panel_context is not None:
+        compose_fn = lambda: panel_context.composed.board  # noqa: E731
+    else:
+        compose_fn = compose if compose is not None else (
+            (lambda: DEFAULT_BOARD) if heartbeat_only else compose_review_board
+        )
     try:
         _backing.prepare_review_composition_authorization()
         try:
@@ -465,7 +501,14 @@ def governed_board_gate(
         )
     seats = tuple(s for s in board.seats if getattr(s, "harness", None) not in authors)
     dropped = tuple(s for s in board.seats if getattr(s, "harness", None) in authors)
-    if len(seats) < FLOOR_SEATS:
+    if panel_context is not None and dropped:
+        # The landing reviews exactly the context's board; an author seat on it is refused,
+        # never silently dropped (the policy is the context's).
+        return _block_result(
+            "no_disjoint_reviewer", "governed_board_author_seat_in_panel",
+            f"the panel board seats the author vendor(s) {sorted(authors)}; holding (non-human)",
+        )
+    if panel_context is None and len(seats) < FLOOR_SEATS:
         composed = sorted({getattr(s, "harness", "?") for s in seats})
         excluded = sorted({getattr(s, "harness", "?") for s in dropped})
         return _block_result(
@@ -481,7 +524,7 @@ def governed_board_gate(
     if dropped:
         board = _replace(board, seats=seats)
     if heartbeat_only:
-        if board != DEFAULT_BOARD:
+        if panel_context is None and board != DEFAULT_BOARD:
             # Frozen composition, whatever produced it: an injected composer or author
             # exclusion that changes the seats is refused, never reviewed (agent-harness#1061 r1).
             return _block_result(
@@ -596,7 +639,38 @@ def governed_board_gate(
             invoke_kwargs["max_concurrency"] = max_concurrency
         if native_leg_fills:
             invoke_kwargs["native_leg_fills"] = tuple(native_leg_fills)
+        if panel_context is not None:
+            from .advisor_board.config import load_president_ladder
+            from .president_adapter import build_president_invoke
+
+            invoke_kwargs.update({
+                "landing_tier": _PANEL_GATE_TIER,
+                "panel_context": panel_context,
+                "review_policy": _pi.panel_landing_policy(_PANEL_GATE_TIER, context=panel_context),
+                "president_invoke": build_president_invoke(
+                    board, repo_dir=canonical_repo_authority, monitoring_policy=monitoring_policy,
+                    ladder=load_president_ladder(canonical_repo_authority),
+                ),
+                "target_branch": panel_target.branch,
+                "reviewed_head": reviewed_sha,
+            })
+            if reviewed_pr is not None:
+                invoke_kwargs["reviewed_pr"] = reviewed_pr
         panel = invoke_fn(board, staged_artifact, **invoke_kwargs)
+        if panel_context is not None:
+            decision = _pi.regated_landing_decision(
+                panel, panel_context, panel_snapshot, repo_dir=canonical_repo_authority,
+                head_revision=reviewed_sha, tier=_PANEL_GATE_TIER, monitoring_policy=monitoring_policy,
+            )
+            if not decision.admitted:
+                return _block_result(
+                    "panel_landing_refused", decision.reasons[0] if decision.reasons else "panel_landing_refused",
+                    f"the panel landing was refused: {', '.join(decision.reasons)}; holding (non-human)",
+                )
+    except _pi.PresidentPolicyError as exc:
+        return _block_result(
+            "panel_landing_refused", exc.code, f"the panel landing was refused: {exc}; holding (non-human)",
+        )
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         return _block_result(
             "review_isolation_unavailable",

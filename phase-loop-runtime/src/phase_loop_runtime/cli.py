@@ -2135,6 +2135,20 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     instruction_token: object | None = None
     canonical_repo_authority: Path | None = None
     artifact_text: str | None = None
+    # PANEL (v10 Phase 18, agent-harness#1078): an ordinary run (neither capture nor
+    # advisory) snapshots the user side here, at run start, and seats its gate-time
+    # context's board -- the code-review lanes, never the LENS_CYCLE backfill.
+    from .advisor_board import config as _panel_config
+
+    landing_tier_arg = getattr(args, "landing_tier", None)
+    panel_snapshot = panel_context = panel_target = panel_head = None
+    if capture is None and not advisory:
+        try:
+            panel_snapshot = (_panel_config.snapshot_for_tier(landing_tier_arg) if landing_tier_arg is not None
+                              else _panel_config.snapshot_panel_run())
+        except (OSError, ValueError) as exc:
+            print(f"advisor-board: panel configuration refused: {exc}", file=sys.stderr)
+            return 2
     if capture is None:
         # Composition performs vendor auth probes.  Bind its independent pre-effect
         # authority before composition, then mint the exact board authority below.
@@ -2166,7 +2180,25 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     # CLIs before the staged inputs and provider authorities exist.  Ordinary
     # non-capture invocation retains the auth-aware production composer.
     try:
-        board = DEFAULT_BOARD if capture is not None or monitoring_policy == "heartbeat_only" else compose_review_board()
+        if panel_snapshot is not None:
+            # The gate: the fetched target, the change (this checkout's HEAD) validated
+            # onto it for a landing, and the context's composed board under every policy.
+            if landing_tier_arg is not None:
+                panel_head = subprocess.check_output(
+                    ["git", "-C", str(canonical_repo_authority), "rev-parse", "--verify", "HEAD^{commit}"],
+                    text=True, stderr=subprocess.DEVNULL,
+                ).strip()
+            panel_context, panel_target = _panel_config.gate_panel_context(
+                panel_snapshot, repo_dir=canonical_repo_authority, head_revision=panel_head,
+                tier=landing_tier_arg, monitoring_policy=monitoring_policy,
+                local_fallback=landing_tier_arg is None,
+            )
+            board = panel_context.composed.board
+        else:
+            board = DEFAULT_BOARD if capture is not None or monitoring_policy == "heartbeat_only" else compose_review_board()
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"advisor-board: panel gate refused before any seat: {exc}", file=sys.stderr)
+        return 2
     finally:
         # A pre-composition authority is operation-local even when a caller has
         # replaced the composer with a hermetic callback.
@@ -2269,8 +2301,17 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     # PRESROUTE: a president-tier board binds the president seam to THIS driving process
     # (so the Fable rung defers natively under Claude Code) and a durable stream dir the
     # deferral and the --native-president resume share.
-    landing_tier_arg = getattr(args, "landing_tier", None)
     president_kwargs: dict[str, object] = {}
+    if panel_context is not None:
+        president_kwargs["panel_context"] = panel_context
+        if landing_tier_arg is not None:
+            from .panel_invoker import panel_landing_policy as _panel_landing_policy
+
+            president_kwargs.update({
+                "review_policy": _panel_landing_policy(landing_tier_arg, context=panel_context),
+                "target_branch": panel_target.branch or None,
+                "reviewed_head": panel_head,
+            })
     if landing_tier_arg is not None:
         from .panel_invoker import review_policy_for_tier as _policy_for_tier
         from .president_adapter import build_president_invoke as _build_president_invoke
@@ -2278,7 +2319,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         president_stream_dir = Path(
             getattr(args, "native_fill_dir", None) or artifact_path.parent
         ) / "native-fill" / "president"
-        president_kwargs = {"landing_tier": landing_tier_arg, "stream_dir": president_stream_dir}
+        president_kwargs.update({"landing_tier": landing_tier_arg, "stream_dir": president_stream_dir})
         if _policy_for_tier(landing_tier_arg).requires_president:
             from .advisor_board.config import BoardConfigError as _LadderConfigError
             from .advisor_board.config import load_president_ladder as _load_president_ladder
@@ -2359,6 +2400,23 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     # expected non-OK), the board is below its independence floor → exit nonzero.
     usable = usable_count >= FLOOR_SEATS
     exit_code = 0 if usable else 1
+    panel_landing = None
+    if panel_context is not None and landing_tier_arg is not None:
+        # A landing exits on its landing decision, after the re-gate (EC-PANEL-1/4); the
+        # JSON reports it, and authorizes no merge.
+        from .panel_invoker import regated_landing_decision
+
+        try:
+            panel_landing = regated_landing_decision(
+                result, panel_context, panel_snapshot, repo_dir=canonical_repo_authority,
+                head_revision=panel_head, tier=landing_tier_arg, monitoring_policy=monitoring_policy,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            print(f"advisor-board: panel re-gate failed: {exc}", file=sys.stderr)
+            return 2
+        exit_code = 0 if panel_landing.admitted else 1
+        if not panel_landing.admitted:
+            print(f"advisor-board: panel landing refused: {', '.join(panel_landing.reasons)}", file=sys.stderr)
     # PRESROUTE: a president-tier board that the president ruled BLOCKING is not a
     # usable landing; say so and exit nonzero.
     president_ruling = getattr(result, "president", None)
@@ -2401,7 +2459,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     if bool(getattr(args, "json", False)):
         payload = {
             "board": board.name,
-            "usable": usable,
+            "usable": usable if panel_landing is None else panel_landing.admitted,
             # Requested-vs-delivered so a Bash-invoking harness sees a dropped seat.
             "requested_seats": requested_seats,
             "delivered_seats": usable_count,
@@ -2432,6 +2490,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         }
         if advisory:
             payload.update(_advisory_labels(review_brief, composed_board=board.name))
+        if getattr(result, "panel_labels", None) is not None:
+            payload["panel_labels"] = result.panel_labels.to_dict()
+        if panel_landing is not None:
+            payload["panel_landing"] = {"admitted": panel_landing.admitted, "reasons": list(panel_landing.reasons),
+                                        "authorizes_merge": False}
         if capture is not None:
             bound_capture = getattr(result, "_agy_canary_capture", None)
             # A governed invocation may refuse before it has allocated and sealed

@@ -64,12 +64,13 @@ from .governed_premerge import (
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
 from .convergence.broker.credsep import REPO_REDIRECT_KEYS, resolve_broker_repo_identity
 from .convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
@@ -1507,6 +1508,12 @@ def _gh_host_from_repo_args(repo_args: Sequence[str]) -> Optional[str]:
     return None
 
 
+_QUEUE_MEMBERSHIP_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name)"
+    "{pullRequest(number:$number){isInMergeQueue}}}"
+)
+
+
 def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
     """The PR's terminal state + merge-QUEUE MEMBERSHIP (#265 CR round 1). A merge
     queue tracks membership SEPARATELY from PR ``state``: a PR KICKED from the queue
@@ -1517,7 +1524,9 @@ def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
     or ``None`` if the PR itself is unreadable. ``in_queue`` uses GraphQL
     ``isInMergeQueue`` (NOT exposed by ``gh pr view --json``); it is ``None`` when
     membership is UNREADABLE — callers treat None fail-closed (keep polling; a dequeue
-    is NOT confirmed on unreadable membership), never as 'not queued'."""
+    is NOT confirmed on unreadable membership), never as 'not queued'. PANEL
+    (agent-harness#1078): the read is always pinned with ``--hostname``, so a binding
+    with no explicit host leaves membership unreadable (``None``)."""
     repo_args, env_override = _gh_repo_binding(workspace)
     try:
         got = subprocess.run(
@@ -1533,13 +1542,15 @@ def _live_pr_queue_status(workspace: Path, branch: str) -> Optional[dict]:
     owner_repo = _repo_slug_owner_repo(repo_args)
     host = _gh_host_from_repo_args(repo_args)
     in_queue: Optional[bool] = None
-    if number is not None and owner_repo and "/" in owner_repo:
+    if number is not None and owner_repo and "/" in owner_repo and host:
         owner, name = owner_repo.split("/", 1)
         try:
+            # PANEL (agent-harness#1078): a constant document; nothing is interpolated
+            # into it, and the variables travel as -f/-F fields.
             q = subprocess.run(
-                ["gh", "api", "graphql", *(["--hostname", host] if host else []), "-f",
-                 f'query=query{{repository(owner:"{owner}",name:"{name}")'
-                 f'{{pullRequest(number:{int(number)}){{isInMergeQueue}}}}}}'],
+                ["gh", "api", "graphql", "--hostname", host,
+                 "-f", f"query={_QUEUE_MEMBERSHIP_QUERY}", "-f", f"owner={owner}", "-f", f"name={name}",
+                 "-F", f"number={int(number)}"],
                 cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
             )
             if q.returncode == 0:
@@ -1564,33 +1575,26 @@ def _dequeue_pr(workspace: Path, branch: str) -> bool:
     error (even on a zero exit), a still-live requeue — returns False → the caller's
     loud ``merge-queue-unreconciled`` halt, never a silent 'cancelled' on a still-live
     mutation (fail-OPEN was the CR blocker)."""
+    from . import merge_guard
+
     repo_args, env_override = _gh_repo_binding(workspace)
     host = _gh_host_from_repo_args(repo_args)
     try:
         got = subprocess.run(
-            ["gh", "pr", "view", branch, *repo_args, "--json", "id"],
+            ["gh", "pr", "view", branch, *repo_args, "--json", "number"],
             cwd=str(workspace), capture_output=True, text=True, timeout=15, env=env_override,
         )
         if got.returncode != 0:
             return False
-        pr_id = (json.loads(got.stdout or "{}") or {}).get("id")
-        if not pr_id:
+        number = (json.loads(got.stdout or "{}") or {}).get("number")
+        owner_repo = repo_args[1] if len(repo_args) >= 2 and repo_args[0] == "--repo" else None
+        if number is None or not owner_repo or not host:
             return False
-        # ATTEMPT both cancellations best-effort — the membership CONFIRM below is
-        # AUTHORITATIVE (round-2 grok nit: a mutation-body error must NOT short-circuit
-        # to False, e.g. `dequeuePullRequest` errors 'not queued' on an already-kicked
-        # PR that IS cleanly gone). Pin the GraphQL host (Blocker 2). Always try
-        # `--disable-auto` too even if the mutation errored — the queue ENTRY and the
-        # AUTO-MERGE request are separate; both must go.
-        subprocess.run(
-            ["gh", "api", "graphql", *(["--hostname", host] if host else []), "-f",
-             f'query=mutation{{ dequeuePullRequest(input: {{id: "{pr_id}"}}) {{ clientMutationId }} }}'],
-            cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
-        )
-        subprocess.run(
-            ["gh", "pr", "merge", branch, *repo_args, "--disable-auto"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=30, env=env_override,
-        )
+        # PANEL (agent-harness#1078): the dequeue mutation and `--disable-auto` live in
+        # `merge_guard.dequeue`, bound to the broker-validated host. Both are ATTEMPTED;
+        # the membership CONFIRM below stays AUTHORITATIVE (an already-kicked PR errors
+        # 'not queued' on the mutation yet IS cleanly gone).
+        merge_guard.dequeue(workspace, repo_slug=owner_repo, pr_number=int(number), host=host)
         # CONFIRM (authoritative): BOTH the queue entry AND auto-merge are gone AND the
         # PR is not (already) MERGED. Unreadable membership / a surviving entry or
         # auto-merge → False → the caller's loud `unreconciled` halt (never a fail-open
@@ -1737,8 +1741,19 @@ def _live_merge_pr(
     _clock: Optional[Callable[[], float]] = None,
     _sleep: Optional[Callable[[float], None]] = None,
     _dequeue_fn: Optional[Callable[[Path, str], bool]] = None,
+    authority: object = None,
+    panel_context: object = None,
+    pr_number: Optional[int] = None,
 ) -> str:
     """Merge the PR for ``branch`` via the GitHub CLI; return the merge commit SHA.
+
+    PANEL (v10 Phase 18, agent-harness#1078): every remote mutation here goes through
+    ``merge_guard.guarded_merge``. ``authority`` is the admitted, registered
+    ``LandingDecision`` of this run's landing (with its ``panel_context`` and the
+    ledger's ``pr_number``), merged as a ``GhPrMerge`` under the decision's checks; or a
+    ``NoLandingToken`` for a run that made no landing call, which performs today's
+    ``gh pr ready`` / ``gh pr merge`` primitive byte-for-byte. No authority refuses
+    (``panel_merge_authority_missing``) before any read.
 
     ``run_id`` (FAB, Consiliency/agent-harness#191, activation milestone
     piece 1; default ``None`` — byte-neutral): the TRUSTED FAB-scope marker
@@ -1837,6 +1852,12 @@ def _live_merge_pr(
 
     Stubbable seam: inject ``_merge_pr_fn`` into :func:`run_train`.
     """
+    from . import merge_guard
+
+    if authority is None:
+        raise merge_guard.MergeGuardRefusal(
+            "panel_merge_authority_missing", f"no merge authority for branch '{branch}' in '{workspace}'",
+        )
     repo_args, env_override = _gh_repo_binding(workspace)
 
     # Idempotent guard: if already merged (to the expected base — finding 3
@@ -1871,23 +1892,9 @@ def _live_merge_pr(
             f"before merge: {exc}"
         ) from exc
 
-    # Finding 2: draft PRs cannot be merged — ready it first; fail closed
-    # (no merge issued) if `gh pr ready` itself fails.
-    if pre_merge_data.get("isDraft"):
-        ready = subprocess.run(
-            ["gh", "pr", "ready", branch, *repo_args],
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=env_override,
-        )
-        if ready.returncode != 0:
-            raise RuntimeError(
-                f"gh pr ready failed for branch '{branch}' in '{workspace}': "
-                f"{ready.stderr.strip() or 'unknown error'}; refusing to merge "
-                f"a draft PR"
-            )
+    # Finding 2: draft PRs cannot be merged — `merge_guard` readies it immediately
+    # before the merge, and fails closed (no merge issued) if `gh pr ready` fails.
+    is_draft = bool(pre_merge_data.get("isDraft"))
 
     # TOCTOU guard (N7): the PR's CURRENT base must still match the base the
     # broker's owned-scope check validated at publish time. Fail closed on a
@@ -1979,21 +1986,31 @@ def _live_merge_pr(
     # DROPPED only when FAB-active (#265): `gh` REJECTS `--delete-branch` when the PR
     # is enqueued rather than merged directly, which would abort the enqueue; the
     # post-merge prune hook / repo auto-delete-head-branches handles cleanup then.
-    merge_cmd = ["gh", "pr", "merge", branch, *repo_args, "--merge"]
-    if not fab_active:
-        merge_cmd.append("--delete-branch")
-    if head_sha:
-        merge_cmd += ["--match-head-commit", head_sha]
+    from .panel_invoker import LandingDecision
 
-    subprocess.run(
-        merge_cmd,
-        cwd=str(workspace),
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env=env_override,
-    )
+    if isinstance(authority, LandingDecision):
+        # A panel landing: `merge_guard` re-checks the decision, the target's rules
+        # (a queue-protected target is refused up front), B0, the re-gate, the user
+        # file and the PR's live state, then merges the bound PR once. An enqueued
+        # merge is dequeued and refused; the queue is never followed on this path.
+        slug = resolve_broker_repo_identity(Path(workspace))
+        return merge_guard.guarded_merge(workspace, authority=authority, action=merge_guard.GhPrMerge(
+            repo_slug=slug, pr_number=int(pr_number) if pr_number is not None else -1,
+            head_sha=head_sha or "", target_branch=base, context=panel_context,
+        ))
+    try:
+        merge_guard.guarded_merge(workspace, authority=authority, action=merge_guard.LegacyPrMerge(
+            branch=branch, repo_args=tuple(repo_args), head_sha=head_sha, delete_branch=not fab_active,
+            cwd=str(workspace), env=env_override, ready_first=is_draft,
+        ))
+    except subprocess.CalledProcessError as exc:
+        if is_draft and tuple(exc.cmd[1:3]) == ("pr", "ready"):
+            raise RuntimeError(
+                f"gh pr ready failed for branch '{branch}' in '{workspace}': "
+                f"{(exc.stderr or '').strip() or 'unknown error'}; refusing to merge "
+                f"a draft PR"
+            ) from exc
+        raise
 
     # Post-merge resolution (agent-harness#250 CR recheck: precheck->merge
     # TOCTOU close). Do NOT trust a bare `mergeCommit.oid` read here: gh CLI
@@ -2349,6 +2366,9 @@ def _default_train_review(
     canonical_repo_authority: "Path | str | None" = None,
     native_leg_fills: "Sequence[object] | None" = None,
     monitoring_policy: str = "bounded",
+    panel_snapshot: object | None = None,
+    reviewed_sha: str | None = None,
+    reviewed_pr: int | None = None,
 ) -> "LoopResult":
     """Train-level governed review: one round on the authorized board, monitored under
     ``monitoring_policy`` (``bounded`` by default; ``heartbeat_only`` via run-train
@@ -2398,8 +2418,60 @@ def _default_train_review(
             governed_board_gate, canonical_repo_authority=canonical_repo_authority,
             # run-train --monitoring-policy; the default path stays byte-identical.
             **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
+            # PANEL (agent-harness#1078): the run-start snapshot and the change under review,
+            # forwarded only for a panel landing (post-switch), so the default is unchanged.
+            **{key: value for key, value in (
+                ("panel_snapshot", panel_snapshot), ("reviewed_sha", reviewed_sha), ("reviewed_pr", reviewed_pr),
+            ) if value is not None},
         ),
     )
+
+
+def _train_panel_snapshot(canonical_repo_authority: "Path | str | None") -> object | None:
+    """The run-start PANEL snapshot for a post-switch train review (``None`` pre-switch)."""
+    from . import panel_invoker as _pi
+    from .advisor_board import config as _panel_config
+
+    if canonical_repo_authority is None or not _pi._govlean_authority_switched(canonical_repo_authority):
+        return None
+    return _panel_config.snapshot_for_tier("plan")
+
+
+def _train_panel_review_binding(pending_nodes: Sequence[Any], completed_nodes: Mapping[str, Mapping[str, Any]]) -> dict:
+    """The change under review for the train's landing decision: the one pending node's
+    admitted head and PR. A train with several pending nodes binds none, so its decision
+    authorizes no merge (one decision binds one repository, head and PR)."""
+    if len(pending_nodes) != 1:
+        return {}
+    info = completed_nodes.get(pending_nodes[0].node_id, {})
+    binding: dict[str, object] = {}
+    head = info.get("admitted_head_sha") or info.get("head_sha")
+    if head:
+        binding["reviewed_sha"] = str(head)
+    match = re.search(r"/pull/(\d+)/?$", str(info.get("pr_url") or ""))
+    if match:
+        binding["reviewed_pr"] = int(match.group(1))
+    return binding
+
+
+def _train_merge_authority(panel_landing: bool, review_panel: object,
+                           node_info: Mapping[str, Any]) -> dict:
+    """The merge authority for one node on the default merge site.
+
+    A post-switch train presents this process's admitted landing decision with its
+    context and the ledger's PR number (``None`` when there is none, which refuses). A
+    pre-switch train made no landing call; it presents a fresh ``NoLandingToken`` and
+    merges with today's primitive."""
+    from . import merge_guard
+
+    if not panel_landing:
+        return {"authority": merge_guard.mint_no_landing_token()}
+    match = re.search(r"/pull/(\d+)/?$", str(node_info.get("pr_url") or ""))
+    return {
+        "authority": getattr(review_panel, "landing_decision", None),
+        "panel_context": getattr(review_panel, "panel_context", None),
+        "pr_number": int(match.group(1)) if match else None,
+    }
 
 
 def _default_emit_native_fill_request(
@@ -3589,11 +3661,20 @@ def _run_train_unfenced(
     # Resolve P4 seams (defaults to live; tests inject stubs).
     merge_pr_fn = _merge_pr_fn if _merge_pr_fn is not None else _live_merge_pr
     reverify_fn = _reverify_fn if _reverify_fn is not None else _live_reverify
+    _panel_snapshot = None
     if _train_review_fn is not None:
         train_review_fn = _train_review_fn
     else:
         import functools as _functools
 
+        # PANEL (agent-harness#1078): a post-switch train review is a ``plan`` landing;
+        # its user-side inputs are snapshotted once, here, before the review gate.
+        try:
+            _panel_snapshot = _train_panel_snapshot(
+                _train_canonical_repo_authority(topo_order, resolve_workspace))
+        except (RuntimeError, OSError, ValueError) as _panel_exc:
+            return {"status": "review_halted", "nodes": completed_nodes, "reason": "panel_landing_refused",
+                    "detail": str(_panel_exc), "terminal_blocker": _non_human_train_blocker(str(_panel_exc))}
         train_review_fn = _functools.partial(
             _default_train_review,
             canonical_repo_authority=_train_canonical_repo_authority(
@@ -3889,8 +3970,22 @@ def _run_train_unfenced(
         return emit_fn(bundle_text,
             canonical_repo_authority=_train_canonical_repo_authority(topo_order, resolve_workspace),
             native_fill_dir=ledger_path.parent)
+    _panel_labels_out = None
+    _review_panel_m = None
+    if _panel_snapshot is not None:
+        # A panel landing's authority is this process's own ``invoke_board`` decision; a
+        # recorded approval carries none, so the board runs again (plan item 7, resume).
+        already_approved = False
     if not already_approved:
-        review_result = train_review_fn(bundle_text, run_mode)
+        if _panel_snapshot is not None:
+            review_result = train_review_fn(
+                bundle_text, run_mode, panel_snapshot=_panel_snapshot,
+                **_train_panel_review_binding(pending_nodes, completed_nodes),
+            )
+            _review_panel_m = getattr(review_result, "panel", None)
+            _panel_labels_out = getattr(_review_panel_m, "panel_labels", None)
+        else:
+            review_result = train_review_fn(bundle_text, run_mode)
 
         if not review_result.mergeable:
             # Non-approval → NON-HUMAN terminal, ZERO merges.
@@ -4116,8 +4211,30 @@ def _run_train_unfenced(
                 # pointed at a test bare repo. A non-FAB node (no run_id) never
                 # gets this kwarg, so strict 4-arg merge stubs are unaffected.
                 _merge_kwargs_m["fab_fetch_origin"] = fab_fetch_origin
+            if _merge_pr_fn is None:
+                # PANEL (agent-harness#1078): the default merge site carries its merge
+                # authority; an injected `_merge_pr_fn` never receives one.
+                _merge_kwargs_m.update(_train_merge_authority(
+                    _panel_snapshot is not None, _review_panel_m, completed_nodes[_nid_m]))
             _merged_sha_m = merge_pr_fn(_ws_m, _pr_branch_m, **_merge_kwargs_m)
         except Exception as _merge_exc_m:
+            _guard_code_m = getattr(_merge_exc_m, "code", None)
+            if _guard_code_m is not None and type(_merge_exc_m).__name__ in (
+                    "MergeGuardRefusal", "MergeGuardEscalation"):
+                # A typed merge_guard outcome: recorded in the result and the ledger, and
+                # the train halts before the next node. An escalation is for a human.
+                _escalated_m = type(_merge_exc_m).__name__ == "MergeGuardEscalation"
+                _append_blocked_keeping_admission(ledger_path, _nid_m, branch=_pr_branch_m)
+                return {
+                    "status": "merge_halted",
+                    "node_id": _nid_m,
+                    "reason": _guard_code_m,
+                    "detail": str(_merge_exc_m),
+                    "terminal_blocker": {
+                        "human_required": _escalated_m, "blocker_class": "merge_guard",
+                        "blocker_summary": f"{_guard_code_m}: {_merge_exc_m}",
+                    },
+                }
             # The merge may have happened: keep the head pin so the next run's
             # already-merged recovery can prove it instead of republishing.
             _append_blocked_keeping_admission(ledger_path, _nid_m, branch=_pr_branch_m)
@@ -4160,7 +4277,7 @@ def _run_train_unfenced(
                 file=sys.stderr,
             )
 
-    return {
+    merged_result = {
         "status": "merged",
         "nodes": {
             _nid_out: {
@@ -4171,6 +4288,9 @@ def _run_train_unfenced(
             if _nid_out in completed_nodes  # exclude _train_review_ synthetic node
         },
     }
+    if _panel_labels_out is not None:
+        merged_result["panel_labels"] = _panel_labels_out.to_dict()
+    return merged_result
 
 
 def _heartbeat_review_refusal(policy: str, *, run_mode: str, native_route: bool) -> Optional[Dict]:

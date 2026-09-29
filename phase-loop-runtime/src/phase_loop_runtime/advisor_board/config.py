@@ -794,17 +794,26 @@ def _merged_file(repo_dir: Path | str, base: str, head: str) -> bytes | None:
         return contents[head]
     import tempfile
 
+    # The change's own edit (merge base -> head) applied onto the base's file: a scratch
+    # repository holds the base bytes, and an edit that does not apply cleanly conflicts.
+    patch = _git_read(repo_dir, "diff", "--no-ext-diff", "--no-textconv", "--binary", mb, head, "--",
+                      REPO_CONFIG_RELATIVE_PATH)
+    if patch.returncode != 0:
+        raise BoardConfigError(f"the change's {REPO_CONFIG_RELATIVE_PATH} cannot be read")
     with tempfile.TemporaryDirectory(prefix="panel-merge-") as td:
-        paths = {}
-        for name, rev in (("current", base), ("ancestor", mb), ("other", head)):
-            path = Path(td) / name
-            path.write_bytes(contents[rev] or b"")
-            paths[name] = path
-        merged = _git_read(repo_dir, "merge-file", "-p", str(paths["current"]), str(paths["ancestor"]),
-                           str(paths["other"]))
-        if merged.returncode != 0:
+        scratch = Path(td) / "tree"
+        if _git_read(td, "init", "-q", str(scratch)).returncode != 0:
+            raise BoardConfigError("a scratch tree for the three-way check cannot be created")
+        target = scratch / REPO_CONFIG_RELATIVE_PATH
+        if contents[base] is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents[base])
+        patch_path = Path(td) / "change.patch"
+        patch_path.write_bytes(patch.stdout)
+        applied = _git_read(scratch, "apply", str(patch_path))
+        if applied.returncode != 0:
             raise BoardConfigError(f"the change's {REPO_CONFIG_RELATIVE_PATH} does not apply cleanly onto {base!r}")
-        return merged.stdout
+        return target.read_bytes() if target.exists() else None
 
 
 def validate_panel_change(repo_dir: Path | str, *, base_revision: str, head_revision: str | None) -> None:
@@ -1072,10 +1081,21 @@ def gate_panel_context(
     tier: str | None,
     monitoring_policy: str,
     task: str = "code-review",
+    local_fallback: bool = False,
 ) -> tuple[PanelContext, GateTarget]:
     """Build the gate's context: fetch the target head, read the repository profile at it,
-    and build through ``build_panel_context`` (looked up at call time)."""
-    target = fetch_gate_target(repo_dir)
+    and build through ``build_panel_context`` (looked up at call time).
+
+    ``local_fallback`` is for a NON-landing run only (``head_revision`` is ``None``): when
+    the target cannot be fetched (no ``origin``), the tables are read at the checkout's
+    ``HEAD`` instead, and the source label carries that revision. A landing never falls
+    back."""
+    try:
+        target = fetch_gate_target(repo_dir)
+    except BoardConfigError:
+        if not local_fallback or head_revision is not None:
+            raise
+        target = GateTarget(branch="", head=_resolve_revision(repo_dir, "HEAD"))
     profile = load_repository_profile(repo_dir, base_revision=target.head, tier=tier) if tier else None
     context = build_panel_context(task, snapshot, repo_dir=repo_dir, base_revision=target.head,
                                   head_revision=head_revision, monitoring_policy=monitoring_policy,

@@ -1795,6 +1795,11 @@ class PanelResult:
         return getattr(self, "_landing_decision", None)
 
     @property
+    def panel_context(self):
+        """PANEL: the context the landing decision evaluated (the merge action binds it)."""
+        return getattr(self, "_panel_context", None)
+
+    @property
     def usable_legs(self) -> tuple[PanelLegResult, ...]:
         return tuple(leg for leg in self.legs if leg.usable)
 
@@ -11134,6 +11139,38 @@ def invoke_board(
 
 # agent-harness#802: the landing-brief pin re-enters the real invoker with the same arguments,
 # independent of any later rebinding of the public name.
+def regated_landing_decision(
+    result: "PanelResult", context, snapshot, *, repo_dir, head_revision: str | None,
+    tier: "ReviewLandingTier | str", monitoring_policy: str = "bounded", task: str = "code-review",
+) -> LandingDecision:
+    """The landing decision after the entry's re-gate (EC-PANEL-1, SL-1.4).
+
+    The target is re-read; when it changed ``[panel.*]`` or the profile's ``panel`` list
+    since the gate, the context is rebuilt at the new head and the landing re-evaluated on
+    it. A rebuilt context that composes a different board is never silently re-seated: the
+    decision carries ``panel_regate_composition_changed``. With no re-gate due, the
+    decision is ``invoke_board``'s own (or a refusal when there is none)."""
+    from .advisor_board import config as _panel_config
+
+    coerced = _coerce_review_landing_tier(tier)
+    decision = getattr(result, "landing_decision", None)
+    rebuilt = _panel_config.regate_panel_context(
+        context, snapshot, repo_dir=repo_dir, head_revision=head_revision, tier=coerced.value,
+        monitoring_policy=monitoring_policy, task=task,
+    )
+    if rebuilt is not None:
+        if rebuilt.composed.board != context.composed.board:
+            return LandingDecision(admitted=False, reasons=("panel_regate_composition_changed",), tier=coerced.value)
+        decision = evaluate_landing(
+            panel_landing_policy(coerced, context=rebuilt), usable_legs=result.usable_legs,
+            president_ruling=getattr(result, "president", None), context=rebuilt,
+            user_digest_now=_panel_config.current_user_digest(rebuilt),
+        )
+    if decision is None:
+        return LandingDecision(admitted=False, reasons=("panel_landing_decision_missing",), tier=coerced.value)
+    return decision
+
+
 def _panel_refusal(code: str, message: str) -> PresidentPolicyError:
     return PresidentPolicyError(code, message)
 
@@ -11218,6 +11255,7 @@ def _panel_run(call: dict) -> PanelResult:
         )
         _merge_guard.register_landing_decision(decision, context=context, tier=tier.value, bindings=bindings)
     object.__setattr__(result, "_landing_decision", decision)
+    object.__setattr__(result, "_panel_context", context)
     return result
 
 

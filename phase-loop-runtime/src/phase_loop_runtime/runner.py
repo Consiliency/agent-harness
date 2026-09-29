@@ -8481,26 +8481,19 @@ def _panel_require_landing(repo, result, context, snapshot, tier, expected_head)
     """PANEL: refuse the landing unless ``invoke_board`` admitted it and, after a re-gate
     at a target head that changed ``[panel.*]`` or the profile, the rebuilt context still
     admits it over the same board (no silent re-seating)."""
-    from .advisor_board import config as panel_config
-    from .panel_invoker import PresidentPolicyError, evaluate_landing, panel_landing_policy
+    from .panel_invoker import PresidentPolicyError, regated_landing_decision
 
-    decision = getattr(result, "landing_decision", None)
-    rebuilt = panel_config.regate_panel_context(
-        context, snapshot, repo_dir=repo, head_revision=expected_head, tier=tier.value, monitoring_policy="bounded",
+    decision = regated_landing_decision(
+        result, context, snapshot, repo_dir=repo, head_revision=expected_head, tier=tier,
     )
-    if rebuilt is not None:
-        if rebuilt.composed.board != context.composed.board:
+    if not decision.admitted:
+        if "panel_regate_composition_changed" in decision.reasons:
             raise PresidentPolicyError(
                 "panel_regate_composition_changed", "the re-gated target composes a different board",
             )
-        decision = evaluate_landing(
-            panel_landing_policy(tier, context=rebuilt), usable_legs=result.usable_legs,
-            president_ruling=getattr(result, "president", None), context=rebuilt,
-            user_digest_now=panel_config.current_user_digest(rebuilt),
+        raise PresidentPolicyError(
+            "panel_landing_refused", f"the panel landing was refused: {', '.join(decision.reasons)}",
         )
-    if decision is None or not decision.admitted:
-        reasons = ", ".join(getattr(decision, "reasons", ()) or ("no landing decision",))
-        raise PresidentPolicyError("panel_landing_refused", f"the panel landing was refused: {reasons}")
 
 
 def _run_legible_panel(
@@ -12437,10 +12430,20 @@ def _perform_phase_closeout_impl(
                     eligibility = _fab_pinned_push_eligibility(
                         repo, remote=str(remote), push_ref=str(push_ref), candidate_sha=fab_gated_sha
                     )
+                    refused = None
                     if eligibility.get("allowed"):
-                        _git(repo, "push", str(remote), f"{fab_gated_sha}:{push_ref}")
+                        refused = _closeout_push(repo, str(remote), f"{fab_gated_sha}:{push_ref}", run_mode)
+                    if eligibility.get("allowed") and refused is None:
                         metadata["closeout"].update(
                             {"closeout_action": "push", "closeout_push_ref": f"{remote} {push_ref}"}
+                        )
+                    elif refused is not None:
+                        metadata["closeout"].update(
+                            {
+                                "closeout_action": "push_refused",
+                                "closeout_push_ref": push_ref,
+                                "closeout_refusal_reason": refused,
+                            }
                         )
                     else:
                         metadata["closeout"].update(
@@ -12451,10 +12454,20 @@ def _perform_phase_closeout_impl(
                             }
                         )
             else:
-                # Non-FAB path — byte-for-byte unchanged: resolve fresh, push HEAD.
+                # Non-FAB path: resolve fresh, push HEAD (through merge_guard, agent-harness#1078).
                 decision = resolve_closeout_push_target(repo, collect_git_topology(repo))
+                refused = None
                 if decision.get("allowed"):
-                    _git(repo, "push", str(decision["remote"]), f"HEAD:{decision['push_ref']}")
+                    refused = _closeout_push(repo, str(decision["remote"]), f"HEAD:{decision['push_ref']}", run_mode)
+                if refused is not None:
+                    metadata["closeout"].update(
+                        {
+                            "closeout_action": "push_refused",
+                            "closeout_push_ref": decision.get("push_ref"),
+                            "closeout_refusal_reason": refused,
+                        }
+                    )
+                elif decision.get("allowed"):
                     metadata["closeout"].update(
                         {
                             "closeout_action": "push",
@@ -12673,6 +12686,26 @@ def _redacted_stderr_excerpt(text: str, max_chars: int = 500) -> str:
     if len(redacted) > max_chars:
         return redacted[: max_chars - 3] + "..."
     return redacted
+
+
+def _closeout_push(repo: Path, remote: str, refspec: str, run_mode: str) -> str | None:
+    """The closeout push through ``merge_guard`` (PANEL, agent-harness#1078): today's
+    push under a ``NoLandingToken`` for a run that makes no panel landing (autonomous, or
+    a repository before the GOVLEAN authority switch). A post-switch governed closeout has
+    no landing decision to present, so it is refused. Returns the refusal code, or
+    ``None`` when the push ran (a rejected push still raises, as before)."""
+    from . import merge_guard
+    from .panel_invoker import _govlean_authority_switched
+
+    authority = None
+    if run_mode != "governed" or not _govlean_authority_switched(repo):
+        authority = merge_guard.mint_no_landing_token()
+    try:
+        merge_guard.guarded_merge(repo, authority=authority,
+                                  action=merge_guard.LegacyPush(remote=remote, refspec=refspec, cwd=str(repo)))
+    except merge_guard.MergeGuardRefusal as exc:
+        return exc.code
+    return None
 
 
 def _git(repo: Path, *args: str) -> None:
