@@ -2818,3 +2818,17 @@ def test_sl1_ec1_a_decided_landing_readies_a_draft_pr_first(tmp_path, monkeypatc
     assert order == [["pr", "ready"], ["pr", "merge"]], order
     (ready,) = [c for c in land.gh.calls if c[1:3] == ["pr", "ready"]]
     assert ready == ["gh", "pr", "ready", "1", "--repo", _SLUG]
+
+
+def test_sl1_q2_a_declared_lens_that_is_not_a_plain_token_never_names_a_path(tmp_path, monkeypatch):
+    """Q2 (a): a declared lens name is free text; a record stem uses it only when it is a plain
+    token, and otherwise a digest of the seat key -- never a path separator or '..'."""
+    from phase_loop_runtime import runner
+
+    seats, legs = _record_fixture(("claude", "codex"), tmp_path=tmp_path, monkeypatch=monkeypatch)
+    hostile = [dataclasses.replace(seat, lens=name) for seat, name in
+               zip(seats, ("../escape", "a/b", "ok-lens", "..")[: len(seats)])]
+    names = runner._panel_leg_record_names(tuple(hostile), legs)
+    assert len(set(names.values())) == len(hostile)
+    for name in names.values():
+        assert "/" not in name and ".." not in name.split(".", 1)[-1] and not name.endswith("..")

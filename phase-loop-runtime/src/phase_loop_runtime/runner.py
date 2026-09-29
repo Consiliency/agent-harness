@@ -8515,11 +8515,20 @@ def _panel_leg_record_names(seats, legs) -> dict[str, str]:
     vendor that holds several (a fallback board). The lens is the seat's lane name, unique on
     a board, so a name never depends on a seat's position (lead ruling Q2, agent-harness#1078).
     """
+    import hashlib
     from collections import Counter
+
+    def _lens_part(seat) -> str:
+        # A declared lens name is free text; only a plain token names a file. Anything
+        # else is keyed by a digest of the seat key (still per seat, never positional).
+        lens = str(seat.lens)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", lens):
+            return lens
+        return "seat-" + hashlib.sha256(str(seat.seat_key).encode("utf-8")).hexdigest()[:16]
 
     per_leg = Counter(str(leg.leg) for leg in legs)
     return {
-        seat.seat_key: str(leg.leg) if per_leg[str(leg.leg)] == 1 else f"{leg.leg}.{seat.lens}"
+        seat.seat_key: str(leg.leg) if per_leg[str(leg.leg)] == 1 else f"{leg.leg}.{_lens_part(seat)}"
         for seat, leg in zip(seats, legs, strict=True)
     }
 
