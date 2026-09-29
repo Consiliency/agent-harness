@@ -1025,12 +1025,15 @@ def test_executor_gets_exactly_the_launching_threads_signal_mask(lease_fd, tmp_p
         assert time.monotonic() < deadline, "executor never reported its mask"
         time.sleep(0.02)
     observed = json.loads(marker.read_text())
-    expected = _bit(signal.SIGUSR1)
-    assert observed["mask"] == expected, hex(observed["mask"])
-    supervisor_mask = _sigblk(observed["ppid"])
-    assert supervisor_mask & (_bit(signal.SIGTERM) | _bit(signal.SIGINT)) == 0, hex(supervisor_mask)
-    assert supervisor_mask == expected, hex(supervisor_mask)
-    os.kill(observed["ppid"], signal.SIGTERM)
+    try:
+        expected = _bit(signal.SIGUSR1)
+        assert observed["mask"] == expected, hex(observed["mask"])
+        supervisor_mask = _sigblk(observed["ppid"])
+        assert supervisor_mask & (_bit(signal.SIGTERM) | _bit(signal.SIGINT)) == 0, hex(supervisor_mask)
+        assert supervisor_mask == expected, hex(supervisor_mask)
+    finally:
+        # Stop the executor even when an assertion fails, so it never outlives the test.
+        os.kill(observed["ppid"], signal.SIGTERM)
     thread.join(15)
     assert not thread.is_alive() and "error" not in outcome, outcome
     assert outcome["result"].returncode == 1  # the forwarded SIGTERM killed the executor
