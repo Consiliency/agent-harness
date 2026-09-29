@@ -137,8 +137,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                 for literal in (
                     "Claude Opus 5.5",
                     "claude-opus-5-5",
-                    "GPT-6.1 Sol",
-                    "gpt-6.1-sol",
+                    "GPT-6 Astra",
+                    "gpt-6-astra",
                     "Grok 4.7",
                     "grok-4.7",
                     "Gemini 3.8 Flash",

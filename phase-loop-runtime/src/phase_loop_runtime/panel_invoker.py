@@ -437,17 +437,16 @@ def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy
 
 DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     # The Anthropic seat keeps the policy NAME "fable" while its default MODEL is
-    # Opus 5.5 -- the same way the codex seat answers to "sol" below whichever GPT
-    # model is its default.
+    # Opus 5.5 -- the same way gpt-6-astra still answers to "sol" below.
     "claude-opus-5-5": "fable",  # model-id-source: frozen review policy default seat
     "claude-fable-5-1": "fable",  # model-id-source: explicit review seat (the prior default)
     "claude-fable-5": "fable",  # model-id-source: explicit legacy review seat
     # The codex seat alias stays "sol": alias names are review-policy seat identities
     # (`required_seats`, PRESIDENT_LADDER, the interim-ratification note), not model ids.
-    "gpt-6.1-sol": "sol",  # model-id-source: frozen review policy default seat
-    "gpt-6-astra": "sol",  # model-id-source: explicit review seat (the prior default)
+    "gpt-6-astra": "sol",  # model-id-source: frozen review policy default seat
     "gpt-5.6-sol": "sol",  # model-id-source: explicit legacy review seat
     "gpt-6-sol": "sol",  # model-id-source: explicit review seat
+    "gpt-6.1-sol": "sol",  # model-id-source: explicit review seat (board-config selected)
     "gemini-3.8-flash": "gemini",  # model-id-source: frozen review policy default seat
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
@@ -1136,7 +1135,7 @@ _LEG_CLI: dict[str, str] = {
 # review-path model is decoupled from the implementer model and can never silently
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
-    "codex": "gpt-6.1-sol",  # model-id-source: panel per-leg default (single source of truth)
+    "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "gemini-3.8-flash-high",  # model-id-source: panel per-leg default
     "claude": "claude-opus-5-5",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.7",  # model-id-source: panel per-leg default (single source of truth)

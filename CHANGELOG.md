@@ -6,25 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### The codex review seat defaults to `gpt-6.1-sol` (board default change)
+### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
-- Maintainer direction (2026-09-29, "for now"): `gpt-6.1-sol` is registered on the `codex`
-  lane at effort `max` and is the codex seat's default on the review boards. It answers to
-  the `sol` review-seat alias, so a governed policy requiring `sol` accepts it and the
-  president ladder's `sol` rung now lands on it with no ladder edit.
-- Moved: `panel_invoker.DEFAULT_LEG_MODELS["codex"]` (so `invoke_panel` and the derived
-  HARDEN broker route), the `code-review` board (`composition`), the `default` board
-  (`fixtures.DEFAULT_SEATS`), and the `legal-review`, `legal-strategy-review` and `general`
-  presets, the same boards that track the Claude review default.
-- Not moved: the planner, implementer and executor defaults (`profiles.py`, codex →
-  `gpt-6-astra`), the `brainstorm`, `doc-edit` and `legal-brainstorm` presets, and the
-  president ladder. `gpt-6-astra`, `gpt-6-sol` and `gpt-5.6-sol` stay registered and aliased
-  to `sol`.
-- Launch-tested on the `codex` lane only (codex-cli 0.159.0). The `opencode` pair is
-  registered by vendor family and is not launch-verified.
-- Release note: no agy route-core file (`gemini_heartbeat.py`, `agy_qualification.py`,
-  `agy_provenance.py`) changes, so this change needs no agy requalification of its own;
-  the next release cut requalifies as usual.
+- `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
+  `sol` review-seat alias, so a governed policy requiring `sol` accepts a board that seats it.
+  Launch-tested on the `codex` lane only (codex-cli 0.159.0); the `opencode` pair is
+  registered by vendor family and not launch-verified.
+- Registration only: no shipped default moves. `DEFAULT_LEG_MODELS["codex"]` and every preset
+  (including `code-review` and `default`) stay on `gpt-6-astra`; the planner, implementer and
+  executor defaults and the president ladder are unchanged. The default moves later through
+  the model roster (agent-harness#1171).
+- No config route selects it for the production review boards yet: `phase-loop advisor-board`,
+  the governed review gate and run-train compose `code-review` directly and do not read the
+  user board file (`load_boards` has no production caller).
+- No agy route-core file changes, so this needs no agy requalification of its own.
 
 ## [0.7.21] - 2026-09-29
 

@@ -27,7 +27,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # The default board's four seats — model-first, effort split out of the model
 # name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
-#   codex  gpt-6.1-sol           + effort max  -> ``-c model_reasoning_effort=xhigh``
+#   codex  gpt-6-astra           + effort max  -> ``-c model_reasoning_effort=xhigh``
 #   gemini gemini-3.8-flash   + effort high -> model ``gemini-3.8-flash-high``
 #   claude claude-opus-5-5   + effort max  -> ``--effort max``
 #   grok   grok-4.7           + effort max  -> ``--reasoning-effort xhigh``
@@ -36,10 +36,8 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # "for now" (2026-09-23; Fable ``claude-fable-5-1`` before that), not the implementer
 # model ``claude-sonnet-5``. It keeps the review-policy seat NAME ``fable``. This is
 # byte-pinned to ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` by the golden proof.
-# The codex seat runs GPT-6.1 Sol (``gpt-6.1-sol``), the codex review default "for now"
-# (2026-09-29; ``gpt-6-astra`` before that). It keeps the review-policy seat NAME ``sol``.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-6.1-sol", effort="max", harness="codex", lens="red-team",
+    Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
@@ -59,7 +57,7 @@ DEFAULT_BOARD: Board = Board(
 # Golden literals the default seats must reproduce (cross-checked in the
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
-    "codex": "gpt-6.1-sol",
+    "codex": "gpt-6-astra",
     "gemini": "gemini-3.8-flash-high",
     "claude": "claude-opus-5-5",
     "grok": "grok-4.7",
@@ -80,7 +78,7 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-5.6-sol", "codex"),  # legacy default id remains expressible
     ("gpt-6-sol", "codex"),  # explicit seat on user/ad-hoc boards (not a governed grok stand-in)
     ("gpt-6-sol", "opencode"),  # same family; matches the production registry's runnable_by
-    ("gpt-6.1-sol", "codex"),  # codex review-seat default (2026-09-29)
+    ("gpt-6.1-sol", "codex"),  # explicit seat, selected by board config (not a default)
     ("gpt-6.1-sol", "opencode"),  # same family; registered by vendor family, not launch-verified
     ("claude-sonnet-5", "claude"),
     ("claude-opus-5-5", "claude"),

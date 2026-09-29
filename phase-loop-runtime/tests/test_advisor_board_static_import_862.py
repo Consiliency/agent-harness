@@ -79,7 +79,7 @@ try:
         expected = [
             ("grok-4.7", "max", "grok", "adversarial"),
             ("claude-opus-5-5", "max", "claude", "correctness"),
-            ("gpt-6.1-sol", "max", "codex", "red-team"),
+            ("gpt-6-astra", "max", "codex", "red-team"),
             ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),
         ]
         seats = [dict(model=model, effort=effort, harness=harness, lens=lens,
