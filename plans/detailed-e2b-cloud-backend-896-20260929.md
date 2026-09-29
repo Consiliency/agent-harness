@@ -237,8 +237,8 @@ and the E2B codes live only in the fallback reason and evidence. The codes are:
     the SDK's `api_key=` argument.
   - It is never passed in `envs`, `metadata`, a file write, a command line, a log or evidence.
   - The backend never passes `logger=` to the SDK.
-  - Evidence records `project_label` and the SHA-256 of the key's first 8 bytes. It never
-    records the key itself.
+  - Evidence records `project_label` only. It records nothing derived from the key: no hash,
+    prefix or length. A prefix hash of an `e2b_<hex>` key has too little entropy to be safe.
 - **Environment scrubbing.**
   - The in-VM environment is built from an explicit allowlist, never from `os.environ`.
   - `E2B_API_KEY` is removed from the environment of every local provider child. This matches
@@ -377,12 +377,14 @@ that set. The null workload in 4a uses one test hostname.
 | E6 | Seat uids cannot drive envd (root) on 49983 | **Partly**: secured access token on the API (F6) | nftables drops `lo` → 49983 for both seat uids | refuse (`P6`) |
 | E7 | `seat-tool` (reviewed code) has no network at all | **Cannot** filter per uid | nftables drops all non-loopback output for `meta skuid seat-tool` | refuse (`P11`) |
 | E8 | TLS confidentiality toward the vendor | **Cannot**: the egress-proxy CA is in the guest trust store | none | **disclosed** CD2 residual, not a refusal |
+| E10 | An allowed SNI cannot reach a non-vendor IP (SNI spoofing) | **Not documented**: whether the proxy checks that the destination IP belongs to the allowed domain | none | measured by P13. If E2B passes it, R1 is **disclosed as widened** (exfiltration to any 443 host), not refused |
 | E9 | Per-port rules outside 80/443 | **Cannot** (not documented) | none needed: E1/E2 allow 443 only | not applicable |
 
 - **Where the rules live.** The in-guest rules are loaded by root at template start, and again
   before each leg by the root launcher. Neither seat uid can change them (P2 proves no root
   path).
-- **How rows are proven.** Every row is proven by application-level evidence (F3), for example
+- **How rows are proven.** P7–P11 and P13 run only **after** every in-guest nftables rule and the
+  `/etc/hosts` pin are loaded, so they prove the combination and not each part alone. Every row is proven by application-level evidence (F3), for example
   a TLS handshake to the vendor host succeeding and one to a public non-vendor host failing.
 - **No partial pass.** A leg whose rows do not all pass is refused. The adapter never weakens
   the policy to get a leg through.
@@ -406,12 +408,15 @@ Rows:
 - **P6** envd is unreachable from both seat uids: a request to `127.0.0.1:49983` gets no HTTP
   response.
 - **P7–P11** Egress rows E1, E2, E3, E4/E5 and E7.
+- **P13** From `seat-cli`, a TLS connection to a public **non-vendor** IP on 443, with SNI set to
+  an allowed vendor host, must not complete a handshake and exchange (row E10). The result is
+  recorded either way.
 - **P12** Capabilities: `CapBnd`/`CapEff` of each seat uid's process. Whether `setpriv
   --bounding-set=-all` works. For CD2 disclosure: whether a nested bwrap with retained
   `CAP_SETFCAP` works. That is codex's local route (agent-harness#999); it is measured even
   though codex is ineligible in v1.
 
-P1–P3, P6 and P7–P11 gate every leg. P4, P5 and P12 are **measured and disclosed** (CD2):
+P1–P3, P6 and P7–P11 gate every leg. P4, P5, P12 and P13 are **measured and disclosed** (CD2):
 their values go into evidence and the operator docs, and gate only what 4b makes depend on
 them.
 
@@ -657,9 +662,9 @@ Run the suite on a tree **left untouched** for its duration.
        `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, exactly the J3 mechanism.
      - **Gemini (D7):** writes the access-token-only copy into a **tmpfs** directory owned by
        `seat-cli`, mode 0500 for the directory and 0400 for the file, and points agy's config
-       path at it. The local D7 route is a file in a read-only config dir, so "never a file on
-       disk" is met by tmpfs only. It is a tmpfs file readable by `seat-cli` alone. **Stated
-       tension, for maintainer confirmation (open decision M1).**
+       path at it. This is the VM equivalent of the local D7 copy in a read-only config dir,
+       as the brief specifies: it is on tmpfs, never on the VM's disk, and readable by
+       `seat-cli` alone.
    - The credential is never carried in `envs`, because E2B documents those as "not private in
      the OS".
 3. **Tool execution under a separate uid.**
@@ -685,8 +690,9 @@ Run the suite on a tree **left untouched** for its duration.
 **Residual risk, disclosed and not claimed away.**
 - **R1 The agent-harness#1132 D3 residual applies unchanged.** The CLI process itself holds
   the token. A prompt-injected CLI can use its own in-process tools (Read, WebFetch) to exfiltrate
-  it to a **vendor** host (E1 allows those), for example into a message on another account. No
-  uid boundary separates the CLI from its own memory.
+  it to a **vendor** host (E1 allows those), for example into a message on another account. If
+  P13 shows SNI spoofing passes, this widens to any host on 443. No uid boundary separates the
+  CLI from its own memory.
 - **R2 The vendor sees everything.** The token transits E2B's API, envd (root) and the
   TLS-intercepting egress proxy (E8). This is accepted under CD2 as a CI-provider-equivalent
   vendor.
@@ -714,14 +720,13 @@ Run the suite on a tree **left untouched** for its duration.
   receipts share one sandbox id, and the spawn-seam counter reads 0.
 
 ## Open maintainer decisions
-- **M1 The Gemini D7 copy in the VM.** The recommendation is a tmpfs-only file readable solely
-  by `seat-cli`. This is the closest equivalent of the local read-only config dir, but it is a
-  file, not a pipe. The alternative is refusing Gemini in the cloud until agy accepts a
-  credential by fd.
 - **M2 E2B header injection versus the stdin channel.** The recommendation is to keep the
   stdin channel, which CD1 describes, and to record injection as a probed alternative only.
-- **M3 Default cap values.** 4a ships **no** default numbers; every cap must be set, or cloud is
-  refused. The alternative is conservative built-in defaults.
+
+Decided here as conventional defaults, not asked:
+- The Gemini D7 copy in the VM is a tmpfs file readable only by `seat-cli`, which maps the
+  brief's "D7 copy in a read-only config dir".
+- 4a ships **no** default cap numbers. Every cap must be set, or cloud is refused.
 
 ## Execution Policy
 

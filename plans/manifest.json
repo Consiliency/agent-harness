@@ -10687,9 +10687,7 @@
               "source": "Consiliency/agent-harness#1162"
             },
             "open_decisions": [
-              "M1",
-              "M2",
-              "M3"
+              "M2"
             ],
             "planning_artifact_only": true,
             "review_status": "pending"
