@@ -56,22 +56,40 @@ _CANNED = PanelResult(
 
 class AdvisorBoardCliTest(unittest.TestCase):
     def test_cli_composes_auth_aware_and_dispatches_board(self):
+        # PANEL SL-1 (agent-harness#1078, granted): the patch target moves from
+        # compose_review_board to compose_panel_board, reached through build_panel_context
+        # (the user file is a private XDG path so the host's own file cannot change it).
+        import os
+
+        real_panel_compose = comp_mod.compose_panel_board
+
+        def hermetic_panel(table, **_probes):
+            return real_panel_compose(table, is_available=lambda v: True, auth_ok=lambda v: True,
+                                      preflight=lambda v: True)
+
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
-            with unittest.mock.patch.object(
-                comp_mod, "compose_review_board", side_effect=_hermetic_board
+            with unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(td) / "xdg")}), \
+                    unittest.mock.patch.object(
+                comp_mod, "compose_panel_board", side_effect=hermetic_panel
             ) as compose_spy, unittest.mock.patch.object(
                 pi_mod, "invoke_board", return_value=_CANNED
             ) as invoke_spy:
                 rc = cli_main(["advisor-board", str(artifact)])
             self.assertEqual(rc, 0)
             # The board path is the entry — availability-aware composition, then dispatch.
-            # No-kwargs pin (Fable nit): the CLI must call compose_review_board with NO
-            # arguments so it relies on the auth-aware production default
-            # (auth_ok=default_board_auth_ok). Passing a predicate here would silently
-            # opt into the PATH-only test-affordance. This guards that default.
-            compose_spy.assert_called_once_with()
+            # No-kwargs pin (Fable nit), carried over: the CLI passes no predicate of its
+            # own; the builder hands the composer its default production probes
+            # (auth_ok reaches default_board_auth_ok). A caller predicate would silently
+            # opt into the test affordance. This guards that default.
+            compose_spy.assert_called_once()
+            _table, probe_kwargs = compose_spy.call_args
+            self.assertEqual(
+                {name: getattr(probe_kwargs.get(name), "__qualname__", None)
+                 for name in ("is_available", "auth_ok", "preflight")},
+                {name: f"_default_probes.<locals>.{name}" for name in ("is_available", "auth_ok", "preflight")},
+            )
             invoke_spy.assert_called_once()
             # The artifact is staged BY REFERENCE (absolute path) into the board.
             _pos, kwargs = invoke_spy.call_args
@@ -93,12 +111,17 @@ class AdvisorBoardCliTest(unittest.TestCase):
         a canonical Git authority rather than the temporary provider scratch dir.
         """
         harden_require("review-leg-isolation")
+        import os
+
         from phase_loop_runtime.advisor_board import backing as backing_mod
 
+        # PANEL SL-1 (agent-harness#1078, granted): the patch target moves from
+        # compose_review_board to compose_panel_board, reached through build_panel_context.
+        real_panel_compose = comp_mod.compose_panel_board
         events: list[str] = []
         precomposition_authority = object()
         final_authority = object()
-        composed = _hermetic_board()
+        composed_panels: list[object] = []
         canonical_repo = Path(
             subprocess.check_output(
                 ["git", "rev-parse", "--show-toplevel"], text=True
@@ -109,14 +132,17 @@ class AdvisorBoardCliTest(unittest.TestCase):
             events.append("precomposition_authorization")
             return precomposition_authority
 
-        def compose():
+        def compose(table, **_probes):
             self.assertIn("precomposition_authorization", events)
             self.assertNotIn("final_authorization", events)
             events.append("compose")
-            return composed
+            composed_panels.append(real_panel_compose(
+                table, is_available=lambda v: True, auth_ok=lambda v: True, preflight=lambda v: True,
+            ))
+            return composed_panels[-1]
 
         def prepare_final(board, artifact, *, mode, canonical_repo_authority):
-            self.assertIs(board, composed)
+            self.assertIs(board, composed_panels[-1].board)
             self.assertEqual(artifact, "review me\n")
             self.assertEqual(mode, "review")
             self.assertEqual(Path(canonical_repo_authority).resolve(), canonical_repo)
@@ -124,7 +150,7 @@ class AdvisorBoardCliTest(unittest.TestCase):
             return final_authority
 
         def invoke(board, _artifact, **kwargs):
-            self.assertIs(board, composed)
+            self.assertIs(board, composed_panels[-1].board)
             self.assertIn("precomposition_authorization", events)
             self.assertIn("final_authorization", events)
             self.assertIs(kwargs.get("review_authorization"), final_authority)
@@ -140,23 +166,34 @@ class AdvisorBoardCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
-            with unittest.mock.patch.object(
+            with unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(td) / "xdg")}), \
+                    unittest.mock.patch.object(
                 backing_mod,
                 "prepare_review_composition_authorization",
                 side_effect=prepare_composition,
             ), unittest.mock.patch.object(
                 backing_mod,
+                "revalidate_review_composition_authorization",
+                side_effect=lambda authorization: self.assertIs(authorization, precomposition_authority),
+            ), unittest.mock.patch.object(
+                backing_mod,
                 "prepare_review_isolation_authorization",
                 side_effect=prepare_final,
             ), unittest.mock.patch.object(
-                comp_mod, "compose_review_board", side_effect=compose
+                comp_mod, "compose_panel_board", side_effect=compose
             ) as compose_spy, unittest.mock.patch.object(
                 pi_mod, "invoke_board", side_effect=invoke
             ) as invoke_spy:
                 rc = cli_main(["advisor-board", str(artifact)])
 
         self.assertEqual(rc, 0)
-        compose_spy.assert_called_once_with()
+        compose_spy.assert_called_once()
+        _table, probe_kwargs = compose_spy.call_args
+        self.assertEqual(
+            {name: getattr(probe_kwargs.get(name), "__qualname__", None)
+             for name in ("is_available", "auth_ok", "preflight")},
+            {name: f"_default_probes.<locals>.{name}" for name in ("is_available", "auth_ok", "preflight")},
+        )
         invoke_spy.assert_called_once()
         self.assertLess(
             events.index("precomposition_authorization"), events.index("compose")
@@ -500,12 +537,23 @@ class AdvisorBoardCliTest(unittest.TestCase):
 
     def test_cli_empty_board_fails_closed(self):
         # No vendor both available and authed → empty board → nothing to compose.
+        # PANEL SL-1 (agent-harness#1078, granted): the patch target moves from
+        # compose_review_board to compose_panel_board, reached through build_panel_context;
+        # an all-unfilled board still exits 2 with no invoke_board call.
+        import os
+
+        real_panel_compose = comp_mod.compose_panel_board
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"
             artifact.write_text("x\n")
-            empty = _REAL_COMPOSE(is_available=lambda v: False)
-            with unittest.mock.patch.object(
-                comp_mod, "compose_review_board", return_value=empty
+
+            def empty(table, **_probes):
+                return real_panel_compose(table, is_available=lambda v: False, auth_ok=lambda v: True,
+                                          preflight=lambda v: True)
+
+            with unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(td) / "xdg")}), \
+                    unittest.mock.patch.object(
+                comp_mod, "compose_panel_board", side_effect=empty
             ), unittest.mock.patch.object(pi_mod, "invoke_board") as invoke_spy:
                 rc = cli_main(["advisor-board", str(artifact)])
             self.assertEqual(rc, 2)

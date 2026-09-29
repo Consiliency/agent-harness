@@ -1028,7 +1028,10 @@ def build_panel_context(
     composer = composition.compose_panel_board
     authorization = None
     if not injected:
-        authorization = composition.prepare_review_composition_authorization()
+        # As ``compose_review_board`` does: the caller's live pre-composition authority
+        # when it bound one, else a fresh one; validated before any probe runs.
+        authorization = composition._composition_authorization() or \
+            composition.prepare_review_composition_authorization()
     try:
         if authorization is not None:
             composition.revalidate_review_composition_authorization(authorization)
@@ -1089,21 +1092,20 @@ def gate_panel_context(
     tier: str | None,
     monitoring_policy: str,
     task: str = "code-review",
-    local_fallback: bool = False,
+    local_base: bool = False,
 ) -> tuple[PanelContext, GateTarget]:
     """Build the gate's context: fetch the target head, read the repository profile at it,
     and build through ``build_panel_context`` (looked up at call time).
 
-    ``local_fallback`` is for a NON-landing run only (``head_revision`` is ``None``): when
-    the target cannot be fetched (no ``origin``), the tables are read at the checkout's
-    ``HEAD`` instead, and the source label carries that revision. A landing never falls
-    back."""
-    try:
-        target = fetch_gate_target(repo_dir)
-    except BoardConfigError:
-        if not local_fallback or head_revision is not None:
-            raise
+    ``local_base`` is for a NON-landing run only (``head_revision`` is ``None``): nothing
+    is fetched, and the tables are read at the checkout's own ``HEAD``, which the source
+    label carries. A landing always fetches its target."""
+    if local_base:
+        if head_revision is not None:
+            raise BoardConfigError("a landing gates on its fetched target, never the local checkout")
         target = GateTarget(branch="", head=_resolve_revision(repo_dir, "HEAD"))
+    else:
+        target = fetch_gate_target(repo_dir)
     profile = load_repository_profile(repo_dir, base_revision=target.head, tier=tier) if tier else None
     context = build_panel_context(task, snapshot, repo_dir=repo_dir, base_revision=target.head,
                                   head_revision=head_revision, monitoring_policy=monitoring_policy,

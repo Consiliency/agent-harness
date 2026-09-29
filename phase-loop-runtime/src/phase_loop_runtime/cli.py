@@ -2191,7 +2191,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             panel_context, panel_target = _panel_config.gate_panel_context(
                 panel_snapshot, repo_dir=canonical_repo_authority, head_revision=panel_head,
                 tier=landing_tier_arg, monitoring_policy=monitoring_policy,
-                local_fallback=landing_tier_arg is None,
+                local_base=landing_tier_arg is None,
             )
             board = panel_context.composed.board
         else:
