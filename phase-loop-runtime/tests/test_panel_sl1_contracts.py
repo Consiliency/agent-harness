@@ -2196,7 +2196,7 @@ def test_sl1_ec1_gateway_tripwire_confines_the_authority_names(tmp_path):
 _GRANTED_ROOTS: list = []  # removed by each TemporaryDirectory's finalizer
 
 
-def _granted_context(tier, vendors, task, *, setenv, setattr_):
+def _granted_context(tier, vendors, task, *, setenv, setattr_, user_body=None):
     from phase_loop_runtime.advisor_board import composition, config
 
     real = composition.compose_panel_board
@@ -2210,6 +2210,10 @@ def _granted_context(tier, vendors, task, *, setenv, setattr_):
     _GRANTED_ROOTS.append(root)
     td = Path(root.name)
     setenv("XDG_CONFIG_HOME", str(td / "xdg"))
+    if user_body is not None:
+        user_file = td / "xdg" / "agent-harness" / "advisor-boards.toml"
+        user_file.parent.mkdir(parents=True)
+        user_file.write_text(user_body, encoding="utf-8")
     setattr_(composition, "compose_panel_board", forced)
     repo = td / "repo"
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -2227,7 +2231,7 @@ def _granted_context(tier, vendors, task, *, setenv, setattr_):
 
 @contextlib.contextmanager
 def granted_landing_context(tier: str = "production_code", *, vendors=lanes.BOARD_VENDORS,
-                            task: str = "code-review"):
+                            task: str = "code-review", user_body: str | None = None):
     """A production-built context for a granted HARDEN / PRESROUTE node: built by
     ``build_panel_context`` with every vendor available, so its composed board is the
     lane board, plus its ``panel_landing_policy`` as ``review_policy``. Availability is
@@ -2242,10 +2246,13 @@ def granted_landing_context(tier: str = "production_code", *, vendors=lanes.BOAR
         def setattr_(obj, name, value):
             stack.enter_context(mock.patch.object(obj, name, value))
 
-        yield _granted_context(tier, vendors, task, setenv=setenv, setattr_=setattr_)
+        yield _granted_context(tier, vendors, task, setenv=setenv, setattr_=setattr_, user_body=user_body)
 
 
 def granted_landing_context_mp(monkeypatch, tier: str = "production_code", *, vendors=lanes.BOARD_VENDORS,
-                               task: str = "code-review"):
-    """:func:`granted_landing_context` for a pytest node, undone by its ``monkeypatch``."""
-    return _granted_context(tier, vendors, task, setenv=monkeypatch.setenv, setattr_=monkeypatch.setattr)
+                               task: str = "code-review", user_body: str | None = None):
+    """:func:`granted_landing_context` for a pytest node, undone by its ``monkeypatch``.
+    ``user_body`` is an optional user ``advisor-boards.toml`` (for a node whose board
+    must lack a vendor, a table whose minimum lifts the named-seat rule)."""
+    return _granted_context(tier, vendors, task, setenv=monkeypatch.setenv, setattr_=monkeypatch.setattr,
+                            user_body=user_body)

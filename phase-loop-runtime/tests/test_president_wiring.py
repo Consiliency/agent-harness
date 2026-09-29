@@ -139,6 +139,11 @@ def _board() -> Board:
 
 
 def test_production_board_invokes_president_after_all_seats_and_before_return(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     order: list[str] = []
     real = panel_invoker.invoke_president
 
@@ -149,10 +154,11 @@ def test_production_board_invokes_president_after_all_seats_and_before_return(mo
     monkeypatch.setattr(panel_invoker, "invoke_president", spy)
     president = ScriptedPresident([deferring_president])
     result = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=president,
         on_leg_complete=lambda leg: order.append(f"leg:{leg.leg}"),
     )
@@ -171,7 +177,12 @@ def test_production_board_invokes_president_after_all_seats_and_before_return(mo
     )
 
 
-def test_president_tier_without_seam_is_refused_before_any_seat_runs():
+def test_president_tier_without_seam_is_refused_before_any_seat_runs(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     spawned: list[str] = []
 
     def spawn(leg: str, artifact: str) -> tuple[str, str]:
@@ -180,23 +191,30 @@ def test_president_tier_without_seam_is_refused_before_any_seat_runs():
 
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_sanctioned_board_control(
-            _board(),
+            panel_context.composed.board,
             "artifact",
             spawn=spawn,
             landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+            **panel_kwargs,
         )
     assert excinfo.value.code == "president_seam_missing"
     assert spawned == []
 
 
-def test_exhausted_ladder_refuses_every_leg_with_a_typed_reason():
+def test_exhausted_ladder_refuses_every_leg_with_a_typed_reason(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     unavailable = {"status": "unavailable", "code": "president_unavailable"}
     president = ScriptedPresident([unavailable] * len(PRESIDENT_LADDER))
     result = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=president,
     )
     assert result.president is None
@@ -208,15 +226,21 @@ def test_exhausted_ladder_refuses_every_leg_with_a_typed_reason():
     assert len(result.president_findings) == 4
 
 
-def test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent():
+def test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     president = ScriptedPresident(
         [{"status": "unavailable", "code": "president_unavailable"}, deferring_president]
     )
     result = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=president,
     )
     assert result.president is not None
@@ -225,10 +249,11 @@ def test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent()
 
     failing = ScriptedPresident([{"status": "failed", "code": "transport_broke"}])
     refused = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=failing,
     )
     assert refused.president is None
@@ -240,17 +265,23 @@ def test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent()
     assert len(refused.president_findings) == 4
 
 
-def test_degraded_president_deferring_validation_is_refused():
+def test_degraded_president_deferring_validation_is_refused(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     def degraded(model: str, prompt: str):
         ids = finding_ids_in_prompt(prompt)
         lines = [f"FINDING {fid}: DEFERRED — needs validation I cannot run" for fid in ids]
         return {"status": "degraded", "text": "\n".join(lines + ["FORCING DECISION: LAND"])}
 
     result = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=ScriptedPresident([degraded]),
     )
     assert result.president is None
@@ -268,7 +299,12 @@ def test_caller_contract_error_is_not_a_board_refusal():
     assert excinfo.value.code not in panel_invoker._PRESIDENT_REFUSAL_CODES
 
 
-def test_invalid_grammar_gets_one_reask_then_fails_closed():
+def test_invalid_grammar_gets_one_reask_then_fails_closed(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     top = PRESIDENT_LADDER[0]
     president = ScriptedPresident(
         [
@@ -277,10 +313,11 @@ def test_invalid_grammar_gets_one_reask_then_fails_closed():
         ]
     )
     result = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=president,
     )
     assert result.president is None
@@ -295,10 +332,11 @@ def test_invalid_grammar_gets_one_reask_then_fails_closed():
         [{"status": "ok", "text": "I think it is fine"}, deferring_president]
     )
     ok = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=recovered,
     )
     assert ok.president is not None and ok.president.format_reasks == 1
@@ -378,12 +416,18 @@ def test_ruling_parsers():
     assert not president_blocks_landing(_ruling("FINDING F001: DEFERRED — later\nFORCING DECISION: LAND"))
 
 
-def test_blocking_president_refuses_nothing_at_board_level_but_marks_the_ruling():
+def test_blocking_president_refuses_nothing_at_board_level_but_marks_the_ruling(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     result = invoke_sanctioned_board_control(
-        _board(),
+        panel_context.composed.board,
         "artifact",
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=blocking_president,
     )
     assert [leg.status for leg in result.legs] == ["OK"] * 4
@@ -695,7 +739,19 @@ def test_native_president_fill_refused_under_heartbeat_only(tmp_path):
 # and persisted, contents asserted); an independently changed brief OR findings is
 # refused and persists nothing. Sharing one durable context per scenario means a
 # correct implementation that reloads the outstanding request is not rejected.
-def test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control(tmp_path):
+def test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control(tmp_path, monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy. Codex is
+    # unavailable, so no seat is ``sol`` and the ladder descends to Fable; the user table's
+    # minimum is what lifts the named-seat rule (the old hand-built policy's role).
+    import test_panel_lanes as panel_lanes
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(
+        monkeypatch, "production_code", vendors=("grok", "claude", "gemini"),
+        user_body=panel_lanes.USER_BODY + panel_lanes._rotated_cr_table(minimum=3),
+    )
+
     def contract() -> None:
         import inspect
 
@@ -711,16 +767,9 @@ def test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control(tmp_p
         # ladder's ``sol`` rung is unseated and the president descends to Fable,
         # which defers natively under Claude Code. The fill is only valid for the
         # rung that actually deferred.
-        board = Board(
-            name="fable-president",
-            purpose="premerge-review",
-            seats=tuple(seat for seat in DEFAULT_SEATS if seat.harness != "codex"),
-        )
+        board = panel_context.composed.board
+        assert "codex" not in {seat.harness for seat in board.seats}
         env = {"CLAUDECODE": "1"}
-        # a policy matching this board's seats (codex/sol absent), president required.
-        policy = panel_invoker.ReviewLandingPolicy(
-            required_seats=("fable", "gemini", "grok"), requires_president=True
-        )
 
         def _dispatch(**extra):
             return invoke_sanctioned_board_control(
@@ -728,7 +777,7 @@ def test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control(tmp_p
                 "artifact",
                 spawn=_ok_spawn,
                 landing_tier=ReviewLandingTier.PRODUCTION_CODE,
-                review_policy=policy,
+                **panel_kwargs,
                 base_env=env,
                 **extra,
             )
@@ -799,15 +848,21 @@ def test_brief_binding_rejects_changed_brief_at_resume_and_accepts_control(tmp_p
 # EC-PRESROUTE-5 (``-k ruling_record``): PRODUCTION DISPATCH persists the ruling
 # to the review stream as ``president.ruling.json``. Driving the real board (not a
 # helper in isolation) means an implementation that never writes the file fails.
-def test_ruling_record_written_to_review_stream_with_identity(tmp_path):
+def test_ruling_record_written_to_review_stream_with_identity(tmp_path, monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     def contract() -> None:
         run_dir = tmp_path / "implementation-panel-stream"
         run_dir.mkdir(parents=True)
         result = invoke_sanctioned_board_control(
-            _board(),
+            panel_context.composed.board,
             "artifact",
             spawn=_ok_spawn,
             landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+            **panel_kwargs,
             president_invoke=ScriptedPresident([blocking_president]),
             stream_dir=run_dir,
         )
@@ -1214,6 +1269,11 @@ def test_native_fable_auto_wiring_keys_on_passed_env_not_process_env(monkeypatch
     # DISCLOSURE -- inert on base: today no auto-wiring exists, so the refusal holds
     # regardless of any environment; it becomes load-bearing once SL-2 adds the
     # native-fable auto-wire, which must consult the passed env only.
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     monkeypatch.setenv("CLAUDECODE", "1")
     spawned: list[str] = []
 
@@ -1223,10 +1283,11 @@ def test_native_fable_auto_wiring_keys_on_passed_env_not_process_env(monkeypatch
 
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_sanctioned_board_control(
-            _board(),
+            panel_context.composed.board,
             "artifact",
             spawn=spawn,
             landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+            **panel_kwargs,
         )
     assert excinfo.value.code == "president_seam_missing"
     assert spawned == []

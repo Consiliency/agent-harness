@@ -232,7 +232,16 @@ def _ok_spawn(leg: str, artifact: str) -> tuple[str, str]:
 # ``plan``/``production_code`` landing carrying ``requires_president=False`` is
 # refused by the runtime with a typed reason, not merely documented -- and the
 # guard is actually REACHED on a president-tier board landing, not a dead helper.
-def test_plan_or_production_requires_president_false_refused():
+def test_plan_or_production_requires_president_false_refused(monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): each president-tier landing carries a
+    # context from build_panel_context, its composed board, and its own landing policy with
+    # only ``requires_president`` overridden.
+    import dataclasses
+
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_contexts = {tier: granted_landing_context_mp(monkeypatch, tier) for tier in ("plan", "production_code")}
+
     def contract() -> None:
         panel = _panel()
         enforce = require_attr(panel, "enforce_requires_president")
@@ -258,30 +267,31 @@ def test_plan_or_production_requires_president_false_refused():
         #    and fails here -- reachability alone is not enough.
         from president_fakes import ScriptedPresident
 
-        def policy(requires_president: bool):
-            return panel.ReviewLandingPolicy(
-                required_seats=("fable", "sol", "gemini", "grok"),
-                requires_president=requires_president,
+        def policy(tier, requires_president: bool):
+            return dataclasses.replace(
+                panel_contexts[tier.value][1]["review_policy"], requires_president=requires_president,
             )
 
         for tier in president_tiers:
             with pytest.raises(panel.PresidentPolicyError) as excinfo:
                 invoke_sanctioned_board_control(
-                    _board(),
+                    panel_contexts[tier.value][0].composed.board,
                     "artifact",
                     spawn=_ok_spawn,
                     landing_tier=tier,
-                    review_policy=policy(False),
+                    panel_context=panel_contexts[tier.value][0],
+                    review_policy=policy(tier, False),
                     president_invoke=ScriptedPresident([deferring_president]),
                 )
             assert excinfo.value.code == "requires_president_override_refused"
         for tier in president_tiers:
             invoke_sanctioned_board_control(
-                _board(),
+                panel_contexts[tier.value][0].composed.board,
                 "artifact",
                 spawn=_ok_spawn,
                 landing_tier=tier,
-                review_policy=policy(True),
+                panel_context=panel_contexts[tier.value][0],
+                review_policy=policy(tier, True),
                 president_invoke=ScriptedPresident([deferring_president]),
             )
 

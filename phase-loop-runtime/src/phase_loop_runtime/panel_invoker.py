@@ -509,6 +509,13 @@ def _validate_review_board_policy(
     active = _ACTIVE_PANEL_RUN.get()
     if active is not None and active.get("context") is not None and active.get("tier") is not None:
         expected = panel_landing_policy(active["tier"], context=active["context"])
+        if policy != expected and expected.requires_president and not policy.requires_president:
+            # The expired requires_president=False override keeps its PRESROUTE reason
+            # (EC-PRESROUTE-4), still refused here, inside the one policy validation.
+            raise PresidentPolicyError(
+                "requires_president_override_refused",
+                "the supplied review policy drops the president the panel context's policy requires",
+            )
         if policy != expected:
             raise PresidentPolicyError(
                 "panel_landing_policy_mismatch",
