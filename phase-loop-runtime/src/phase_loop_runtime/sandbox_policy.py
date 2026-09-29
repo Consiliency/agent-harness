@@ -456,15 +456,15 @@ def effective_max_total_bytes(path: str | os.PathLike[str]) -> int:
 def effective_floor_bytes(path: str | os.PathLike[str]) -> int:
     """The free-space floor for staging at ``path``.
 
-    An explicit ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` is used verbatim -- the operator's
-    protection is never weakened. The DEFAULT is capped at a quarter of the filesystem, so
+    A configured floor (``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` other than the 2 GiB default) is
+    used verbatim -- the operator's protection is never weakened. The DEFAULT is capped at a quarter of the filesystem, so
     a small filesystem is not refused forever by a floor as large as itself; on a
     RAM-backed filesystem it is instead RAISED to a quarter, so staging keeps that much
     memory free.
     """
-    if os.environ.get("PHASE_LOOP_SANDBOX_FLOOR_BYTES", "").strip():
-        return floor_bytes()
-    floor = _DEFAULT_FLOOR_BYTES
+    floor = floor_bytes()
+    if floor != _DEFAULT_FLOOR_BYTES:
+        return floor  # configured: never scaled
     total = _fs_total_bytes(path)
     if total:
         quarter = int(total * _FLOOR_FRACTION)
