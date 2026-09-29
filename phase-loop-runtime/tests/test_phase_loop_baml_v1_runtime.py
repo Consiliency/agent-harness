@@ -2458,7 +2458,7 @@ def _pidfds() -> int:
 def scenario_i9_resources() -> None:
     """N = 50 mixed dispose cycles (kill, timeout, abandon, fault); every
     resource returns to baseline within the reap bound."""
-    deadline = _deadline()
+    _deadline()  # measure the cold start before the baseline
     _scenario_setup(abandon_grace_s=1.0)
     _parse()
     _settled(2)
@@ -2478,7 +2478,7 @@ def scenario_i9_resources() -> None:
             _wait(lambda: _gone(pid), 3)
             _parse()
         elif kind == "timeout":
-            _use(hang, deadline_s=deadline, retries=0)
+            _use(hang, deadline_s=max(1.5, 2 * _COLD[0]), retries=0)  # covers init; the op then hangs
             assert _raises(_parse).kind == "timeout"
         elif kind == "abandon":
             _use(hang, abandon_grace_s=1.0)
@@ -2529,7 +2529,9 @@ def scenario_i9_resources() -> None:
     ],
 )
 def test_client_invariant_scenario(name):
-    _isolated(name, timeout=600)
+    # I9 pays one worker cold start per dispose cycle: ~95 s on x86_64 glibc,
+    # but ~13 s per cold start on musl (verification step 6).
+    _isolated(name, timeout=2400 if name == "i9_resources" else 600)
 
 
 # ---------------------------------------------------------------------------
