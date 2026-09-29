@@ -61,6 +61,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **agy requalification at the release cut.** This change touches `phase_loop_runtime/**/*.py`
   (including the new worker), so the next release cut requalifies both agy images and records
   the `baml-bridge` and `protobuf` versions in the release notes.
+- **Full I1 interrupt sweep.** Pull requests run a fixed regression subset of the worker
+  client's interrupt sweep; the full sweep (~40 min per Python) runs weekly and on dispatch in
+  `baml-i1-sweep.yml`, and a green run on the release commit is required at the cut
+  (`docs/releases/baml-v1-release-checks.md`).
 - **Rollback:** revert to `baml-py>=0.222,<0.223` and cut a patch release.
 
 ### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140)

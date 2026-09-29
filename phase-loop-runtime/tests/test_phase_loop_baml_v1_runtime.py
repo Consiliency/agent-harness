@@ -1787,7 +1787,7 @@ def _prepare(variant: str) -> None:
 _VARIANT_CONFIG = {"cold": {}, "stalled_spawn": {}}
 
 
-def _sweep(variant: str, exc_name: str, stride: int = 1) -> dict:
+def _sweep(variant: str, exc_name: str, stride: int = 1, select=None) -> dict:
     if variant == "mid_op":
         _use(_hostile("phase_loop_parse_closeout", _sleep(0.15)))
     elif variant == "normal":
@@ -1805,7 +1805,10 @@ def _sweep(variant: str, exc_name: str, stride: int = 1) -> dict:
             _parse()
         points = list(dict.fromkeys(boundaries.trace))
         stats["boundaries"] = len(points)
-        for index, key in enumerate(points[::stride]):
+        chosen = points[::stride] if select is None else select(points)
+        if select is not None:
+            stats["selected"] = len(chosen)
+        for index, key in enumerate(chosen):
             run_started = time.monotonic()
             _prepare(variant)
             pid_before, log_before = _pid(), len(_log())
@@ -1822,6 +1825,7 @@ def _sweep(variant: str, exc_name: str, stride: int = 1) -> dict:
             try:
                 if not boundaries.fired:
                     assert raised is None, raised
+                    assert select is None, f"selected boundary not reached: {key}"
                     stats["not_reached"] += 1
                     continue
                 where = (key[0].co_name, key[0].co_filename.rsplit("/", 1)[-1], next((ln for (s, e, ln) in key[0].co_lines() if s <= key[1] < e), None))
@@ -1854,6 +1858,14 @@ def scenario_i1_sweep(variant: str, exc_name: str) -> None:
     _sweep(variant, exc_name)
 
 
+FULL_SWEEP_ENV = "PHASE_LOOP_BAML_FULL_SWEEP"
+
+
+@pytest.mark.skipif(
+    os.environ.get(FULL_SWEEP_ENV) != "1",
+    reason=f"the full I1 sweep (~40 min per Python) runs in .github/workflows/baml-i1-sweep.yml "
+    f"(weekly, dispatch, release cut) with {FULL_SWEEP_ENV}=1; PR CI runs test_i1_boundary_subset",
+)
 @pytest.mark.parametrize("exc_name", sorted(_EXCEPTIONS))
 @pytest.mark.parametrize("variant", ["normal", "mid_op", "cold", "stalled_spawn"])
 def test_i1_boundary_sweep(variant, exc_name):
@@ -1864,6 +1876,68 @@ def test_i1_boundary_sweep(variant, exc_name):
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=1500, cwd=str(TESTS.parent))
     assert proc.returncode == 0, proc.stderr[-4000:]
     assert "SWEEP" in proc.stdout
+
+
+def _line_of(fn, needle: str) -> int:
+    import inspect
+
+    source, first = inspect.getsourcelines(fn)
+    matches = [first + i for i, line in enumerate(source) if needle in line]
+    assert len(matches) == 1, (fn.__qualname__, needle, matches)
+    return matches[0]
+
+
+def _at_line(fn, needle: str):
+    """Select the first boundary executed on the line of ``fn`` containing ``needle``."""
+    code, line = fn.__code__, _line_of(fn, needle)
+
+    def pick(points):
+        for point in points:
+            if point[0] is code and next((ln for (s, e, ln) in code.co_lines() if s <= point[1] < e), None) == line:
+                return [point]
+        raise AssertionError(f"no boundary on {fn.__qualname__}:{line} ({needle!r})")
+
+    return pick
+
+
+# The fixed PR-CI subset of the I1 sweep.  Each entry is (variant, label, selector).
+# First, middle and last boundary of a warm call; the request hand-off; the
+# owner launch and its compare-and-set ticket (where an interrupt once wedged
+# threading's _active_limbo_lock via Thread.start, and where an interrupted launch
+# once stalled the next call); the first wait-loop boundary mid-op (disposal of an
+# owned generation) and during a stalled spawn (spawn retirement).  The other two
+# client bugs are regression-tested outside the sweep: the idle death charged to
+# the next call (test_worker_fault_scenario[idle_death_*]) and the per-restart
+# _DummyThread leak (test_client_invariant_scenario[i9_resources]).
+_SUBSET = [
+    ("normal", "first", lambda points: points[:1]),
+    ("normal", "middle", lambda points: [points[len(points) // 2]]),
+    ("normal", "last", lambda points: points[-1:]),
+    ("normal", "request-hand-off", lambda points: _at_line(m._Client.call, 'self.events.put(("request", req))')(points)),
+    ("cold", "owner-launch", lambda points: _at_line(m._Client._ensure_owner, "_thread.start_new_thread(")(points)),
+    ("cold", "launch-ticket", lambda points: _at_line(m._Client._ensure_owner, "owner_launches.setdefault(")(points)),
+    ("mid_op", "wait-mid-op", lambda points: _at_line(m._Client._wait, "req.heartbeat = time.monotonic()")(points)),
+    ("stalled_spawn", "wait-during-spawn", lambda points: _at_line(m._Client._wait, "req.heartbeat = time.monotonic()")(points)),
+]
+
+
+def scenario_i1_subset(exc_name: str) -> None:
+    for variant, label, select in _SUBSET:
+        _use(None)
+        stats = _sweep(variant, exc_name, select=select)
+        assert stats["runs"] == 1, (variant, label, dict(stats))
+        print("SUBSET", variant, label, flush=True)
+
+
+@pytest.mark.parametrize("exc_name", sorted(_EXCEPTIONS))
+def test_i1_boundary_subset(exc_name):
+    """I1(a) in PR CI: the fixed regression boundaries, each with the full I1 checks."""
+    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_subset(%r)" % (
+        str(TESTS), str(SRC), MODULE, exc_name,
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600, cwd=str(TESTS.parent))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert proc.stdout.count("SUBSET") == len(_SUBSET)
 
 
 def _except_body_lines() -> set[int]:
@@ -2467,7 +2541,9 @@ def scenario_i9_resources() -> None:
     gc.collect()
     fds, threads, pidfds = _fd_count(), threading.active_count(), _pidfds()
     os_threads = len(os.listdir("/proc/self/task")) if LINUX else 0
+    handles = _process_handle_count() if WINDOWS else 0
     disposed: list[int] = []
+    jobs: list[str] = []
     hang = _hostile("phase_loop_parse_closeout", _sleep(60))
     panic = _panic_files()
     for cycle in range(50):
@@ -2476,7 +2552,7 @@ def scenario_i9_resources() -> None:
             _use(None, abandon_grace_s=1.0)
             _parse()
             pid = _pid()
-            os.kill(pid, signal.SIGKILL)
+            _hard_kill(pid)
             _wait(lambda: _gone(pid), 3)
             _parse()
         elif kind == "timeout":
@@ -2495,11 +2571,12 @@ def scenario_i9_resources() -> None:
             assert _raises(_parse).kind == "fault"
         assert _settled(REAP_BOUND + 1)
         disposed.extend(e["pid"] for e in _log())
+        jobs.extend(e["job"] for e in _log() if "job" in e)
     assert len(disposed) >= 50, len(disposed)
     _use(None)
     _parse()  # the permitted current worker and its long-lived threads
     assert _settled(REAP_BOUND + 1)
-    ok = _wait(lambda: (gc.collect() or True) and _fd_count() <= fds + 2 and threading.active_count() <= threads + 1, REAP_BOUND + 1)
+    ok = _wait(lambda: (gc.collect() or True) and _fd_count() <= fds + (16 if WINDOWS else 2) and threading.active_count() <= threads + 1, REAP_BOUND + 1)
     assert ok, (fds, _fd_count(), threads, threading.active_count(), [t.name for t in threading.enumerate()])
     # The owner is a raw thread (not in threading.enumerate); count OS threads too.
     if LINUX:
@@ -2514,7 +2591,40 @@ def scenario_i9_resources() -> None:
             except ChildProcessError:
                 continue
             raise AssertionError(f"disposed worker {pid} was not reaped: {result}")
+    if WINDOWS:
+        import psutil
+
+        assert not [pid for pid in disposed if psutil.pid_exists(pid)], "a disposed worker is still running"
+        # Every disposed generation's Job Object is gone: with its last handle
+        # closed the named object no longer exists (named, so a reused numeric
+        # handle value cannot fake this; codex r15).
+        assert len(jobs) == len(disposed), (len(jobs), len(disposed))
+        assert _wait(lambda: not [name for name in jobs if _job_exists(name)], REAP_BOUND + 1), [
+            name for name in jobs if _job_exists(name)
+        ]
+        assert _wait(lambda: _process_handle_count() <= handles + 16, REAP_BOUND + 1), (handles, _process_handle_count())
     print("I9", len(disposed), "disposals", flush=True)
+
+
+def _hard_kill(pid: int) -> None:
+    os.kill(pid, signal.SIGKILL if POSIX else signal.SIGTERM)  # SIGTERM is TerminateProcess on Windows
+
+
+def _process_handle_count() -> int:
+    count = ctypes.c_ulong(0)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
+    return count.value
+
+
+def _job_exists(name: str) -> bool:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenJobObjectW.restype = ctypes.c_void_p
+    handle = kernel32.OpenJobObjectW(0x0004, False, name)  # JOB_OBJECT_QUERY
+    if handle:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return True
+    return False
 
 
 @pytest.mark.parametrize(
@@ -2532,7 +2642,7 @@ def scenario_i9_resources() -> None:
         pytest.param("i6_lock_trace", marks=needs_posix),
         pytest.param("i7_machinery_failures"),
         pytest.param("i7_no_discard"),
-        pytest.param("i9_resources", marks=needs_posix),
+        pytest.param("i9_resources"),
     ],
 )
 def test_client_invariant_scenario(name):

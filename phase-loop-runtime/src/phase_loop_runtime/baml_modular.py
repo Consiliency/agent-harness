@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import collections
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -792,6 +793,9 @@ def _worker_sys_path() -> list[str]:
     return [entry for entry in sys.path if isinstance(entry, str) and entry and os.path.isabs(entry)]
 
 
+_JOB_SEQUENCE = itertools.count(1)
+
+
 class _WindowsJob:
     """A KILL_ON_JOB_CLOSE Job Object holding exactly one worker (Windows only)."""
 
@@ -801,7 +805,10 @@ class _WindowsJob:
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._kernel32 = kernel32
-        self.name = f"phase-loop-baml-{os.getpid()}-{id(self)}"
+        # A per-generation name, never reused within a process: the I9 falsifier
+        # proves a disposed generation's Job is gone by opening it by name, which
+        # a reused numeric handle value could not prove (codex r15).
+        self.name = f"phase-loop-baml-{os.getpid()}-{next(_JOB_SEQUENCE)}"
         handle = kernel32.CreateJobObjectW(None, self.name)
         if not handle:
             raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
@@ -1309,7 +1316,10 @@ class _Client:
                 pass
 
     def _log(self, kind: str, gen: _Gen, *, phase: str, rc: int | None = None) -> None:
-        self.fault_log.append({"kind": kind, "phase": phase, "pid": gen.pid, "generation": gen.number, "rc": rc})
+        entry = {"kind": kind, "phase": phase, "pid": gen.pid, "generation": gen.number, "rc": rc}
+        if gen.job is not None:
+            entry["job"] = gen.job.name  # Windows: the generation's Job Object name
+        self.fault_log.append(entry)
         self.pending.append(f"BAML worker pid {gen.pid} disposed: {kind} ({phase}, rc={rc})")
 
     def _reap(self, now: float) -> None:
