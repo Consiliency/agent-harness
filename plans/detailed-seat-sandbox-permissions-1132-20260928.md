@@ -269,10 +269,12 @@ work continues.
 | P1 | `p1-claude-config-pty.json` | `bec8bd08b9ccb99c7d3e774396a27b37b04a615347e77fb43356d2fbf7cf7ad3` | pass |
 | P2 | — | — | not run: waits on the maintainer's seat token |
 | P4 | `p4-agy-d7-credential.json` | `121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035` | **stop**: `gemini_seat_token_scope_excess` |
+| P4 containment (maintainer ruling "prove then enable") | `p4-containment.json` | `fe71bb819a2e701e5e60685e79aa33602e9ab56c8d19b42d70a49b0d6b6cab45` | **stop**: `gemini_seat_egress_unconfined`; (a) holds, (b) fails |
 | P3 | — | — | not run: P3 runs only after P4 passes |
 
-**P5 changed the D8 launch order as measured. None of these is a P5 stop, because each
-restores a property the plan requires:**
+**Measured deviations from the plan's literal argv (accepted by the lead 2026-09-29; the
+board ratifies them).** P5 changed the D8 launch order as measured. None of these is a P5
+stop, because each restores a property the plan requires:
 - bwrap run as H-root keeps every capability. `--cap-drop ALL` therefore precedes the three
   `--cap-add`s, and the effective set before the drop is exactly SETUID, SETGID and SETPCAP.
 - With no DAC capability, H-root cannot `--chdir` into the seat's 0700 tree. The seat enters
@@ -291,7 +293,29 @@ exactly one modal. P1 also recorded:
 
 The P1 token was a dummy on the production fd channel, because P2 is pending.
 
-**P4 stopped.** agy completed a turn on the D7 copy, delivered as a read-only directory with
+**Gemini scope ruling ("prove then enable", maintainer, 2026-09-29).** Gemini gets its
+tools only if a live probe proves two things:
+- **(a)** the jailed copy holds only a short-lived access token;
+- **(b)** jail egress reaches only agy's inference hosts.
+
+The containment probe proved (a):
+- the staged copy's keys are `auth_method`, `token.access_token`, `token.expiry` and
+  `token.token_type`, with no refresh token, client secret or id token;
+- about 36 minutes of lifetime remained at staging;
+- the turn succeeds, the copy is unchanged afterwards, no token appears in any
+  seat-writable directory, and an expired copy fails.
+
+The probe failed (b):
+- agy's only inference host is `daily-cloudcode-pa.googleapis.com`;
+- `storage`, `cloudresourcemanager`, `compute` and `iam.googleapis.com` all return real
+  HTTP replies (400/404) from inside the jail;
+- `iam.googleapis.com` resolves to the same front-end addresses as the inference host;
+- the egress namespace filters by destination CIDR only.
+
+Gemini therefore stays sealed with `gemini_seat_egress_unconfined`. The scopes are not
+recorded as a contained residual. P3 was not run and L3 is not built.
+
+**The original P4 stop.** agy completed a turn on the D7 copy, delivered as a read-only directory with
 `installation_id` provided and only `cache/` writable. But the access token's scopes
 include `cloud-platform`, `cclog` and `experimentsandconfigs`, which go beyond inference.
 Gemini therefore stays sealed with `gemini_seat_token_scope_excess` until the maintainer

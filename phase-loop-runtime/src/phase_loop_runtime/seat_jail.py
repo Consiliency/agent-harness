@@ -166,6 +166,14 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "sealed route",
         "agy tool and subagent activity or workspace config cannot be controlled",
         "none until agy changes"),
+    "gemini_seat_egress_unconfined": (
+        "sealed route",
+        "jail egress cannot be limited to agy's inference hosts, so the token's cloud-platform "
+        "scope is not contained",
+        "host-level egress filtering for the seat; then re-run the P4 containment probe"),
+    "gemini_seat_token_refreshed_in_jail": (
+        "sealed route", "agy obtained or refreshed a token inside the jail",
+        "none until agy changes; re-run the P4 containment probe"),
     "gemini_seat_profile_unqualified": (
         "sealed route", "image not qualified for the tooled profile", "requalify"),
     "gemini_seat_token_expired": (
@@ -194,7 +202,8 @@ NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
 SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
     "seat_sandbox_not_staged",
     "gemini_seat_credential_unusable", "gemini_seat_token_scope_excess",
-    "gemini_seat_stream_split_unavailable",
+    "gemini_seat_stream_split_unavailable", "gemini_seat_egress_unconfined",
+    "gemini_seat_token_refreshed_in_jail",
     "seat_sandbox_unavailable_host", "seat_sandbox_unavailable_tiocsti",
     "seat_sandbox_unavailable_seat_uid",
     "claude_seat_token_missing", "gemini_seat_credential_missing",
@@ -440,12 +449,15 @@ JAILED_LEGS: frozenset[str] = frozenset({"claude"})
 """Legs with a jailed route in this runtime. Gemini joins only when P4 and P3 pass (L3);
 codex and grok follow under agent-harness#895."""
 
-# The recorded P4/P3 outcome for Gemini (J7 step 1). Live probe P4 STOPPED on 2026-09-29
-# (plans/evidence/seat-jail-1132/p4-agy-d7-credential.json): agy runs on the D7 copy, but
-# the access token's OAuth scopes include `cloud-platform`, `cclog` and
-# `experimentsandconfigs`, beyond inference. Gemini stays sealed with this code until the
-# maintainer rules on the measured scopes and P4 is re-run; P3 was not run.
-GEMINI_RECORDED_STOP: str | None = "gemini_seat_token_scope_excess"
+# The recorded P4/P3 outcome for Gemini (J7 step 1). P4 found scopes beyond inference
+# (`cloud-platform`, `cclog`, `experimentsandconfigs`; p4-agy-d7-credential.json). The
+# maintainer ruled "prove then enable": tools only if (a) the staged copy is access-token-only
+# and (b) jail egress reaches only agy's inference hosts. The containment probe
+# (p4-containment.json, 2026-09-29) proved (a) and failed (b): storage, cloudresourcemanager,
+# compute and iam.googleapis.com all answer from inside the jail, iam shares the inference
+# host's front-end addresses, and the egress namespace filters by address only. Gemini
+# stays sealed with this code; P3 was not run.
+GEMINI_RECORDED_STOP: str | None = "gemini_seat_egress_unconfined"
 
 
 @dataclass(frozen=True)

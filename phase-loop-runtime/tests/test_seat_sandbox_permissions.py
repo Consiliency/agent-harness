@@ -67,15 +67,19 @@ def test_j7_step1_recorded_gemini_stop_beats_qualification():
 
 
 def test_j7_gemini_stays_sealed_on_the_recorded_p4_stop():
-    """P4 stopped on the token's scopes; the recorded stop wins at step 1, and it is
-    witnessed by the pinned evidence record."""
-    assert seat_jail.GEMINI_RECORDED_STOP == "gemini_seat_token_scope_excess"
-    record = json.loads((Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-jail-1132"
-                         / "p4-agy-d7-credential.json").read_text())
+    """P4 found scopes beyond inference; the "prove then enable" containment probe proved
+    the access-token-only copy (a) and failed host-level egress (b). The recorded stop wins
+    at step 1, and it is witnessed by the pinned evidence records."""
+    evidence = Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-jail-1132"
+    assert seat_jail.GEMINI_RECORDED_STOP == "gemini_seat_egress_unconfined"
+    scope = json.loads((evidence / "p4-agy-d7-credential.json").read_text())
+    assert scope["gemini_route_code"] == "gemini_seat_token_scope_excess"
+    record = json.loads((evidence / "p4-containment.json").read_text())
+    assert record["a_holds"] is True and record["b_holds"] is False
     assert record["result"] == "stop" and record["gemini_route_code"] == seat_jail.GEMINI_RECORDED_STOP
     assert "gemini" not in seat_jail.JAILED_LEGS
     route = seat_jail.decide_seat_route("gemini", staged_tree_approved=True)
-    assert route == seat_jail.SeatRoute(False, "gemini_seat_token_scope_excess")
+    assert route == seat_jail.SeatRoute(False, "gemini_seat_egress_unconfined")
 
 
 def test_j7_without_a_stop_gemini_is_still_unqualified_until_l3():

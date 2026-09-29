@@ -2318,6 +2318,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
     "gemini_seat_token_scope_excess", "gemini_seat_stream_split_unavailable",
     "gemini_seat_profile_unqualified", "gemini_seat_token_expired", "gemini_seat_token_in_output",
+    "gemini_seat_egress_unconfined", "gemini_seat_token_refreshed_in_jail",
     "gemini_seat_subagent_or_unknown_event", "native_seat_unavailable_heartbeat_only",
     "seat_prompt_over_cap", "seat_identity_unverified",
     # board skips

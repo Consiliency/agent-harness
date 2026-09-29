@@ -478,9 +478,11 @@ changes: the seat keeps the sealed inline route and reports why in a typed notic
 **Status in this release: inert.** A jailed launch also needs a recorded EC-EXECFIND-2
 falsifier pass for the jail's profile digest (agent-harness#1071); until then a seat that
 would be jailed is refused with `seat_sandbox_refused:identity`. Gemini stays sealed with
-`gemini_seat_token_scope_excess`: live probe P4 found that the agy access token carries
-`cloud-platform` and other scopes beyond inference, and the seat stays sealed until the
-maintainer rules on them and P4 is re-run. Codex and grok are
+`gemini_seat_egress_unconfined`: the agy access token carries `cloud-platform` and other
+scopes beyond inference, and under the maintainer's "prove then enable" ruling the seat
+gets tools only once jail egress is limited to agy's inference hosts. Today other Google
+Cloud APIs answer from inside the jail, because the egress namespace filters by address
+and Google API hosts share front-end addresses. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then

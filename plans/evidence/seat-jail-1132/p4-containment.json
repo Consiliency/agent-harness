@@ -1,0 +1,161 @@
+{
+  "a_expired_copy_turn": "ERROR",
+  "a_holds": true,
+  "a_staged_copy": {
+    "keys": [
+      "auth_method",
+      "token",
+      "token.access_token",
+      "token.expiry",
+      "token.token_type"
+    ],
+    "remaining_lifetime_at_staging_s": 2179,
+    "secret_keys_present": [],
+    "token_value_is_nonempty_string": true
+  },
+  "a_turn": {
+    "files_in_seat_writable_dirs_mentioning_a_token": 0,
+    "response": "P4-OK\n",
+    "staged_copy_unchanged": true,
+    "status": "SUCCESS"
+  },
+  "b_egress_enforcement": {
+    "host_level": false,
+    "mechanism": "iptables in the per-leg network namespace (sandbox_egress.egress_rules)",
+    "note": "rules match destination CIDRs only; there is no SNI, HTTP or DNS host filter, and Google API hosts share front-end addresses, so an address rule cannot tell them apart",
+    "rules": [
+      "-I OUTPUT 1 -d 10.0.2.0/24 -j ACCEPT",
+      "-A OUTPUT -d 100.84.171.76 -p tcp --dport 8020 -j ACCEPT",
+      "-A OUTPUT -d 100.84.171.76 -p tcp --dport 3131 -j ACCEPT",
+      "-A OUTPUT -d 10.0.0.0/8 -j REJECT",
+      "-A OUTPUT -d 172.16.0.0/12 -j REJECT",
+      "-A OUTPUT -d 192.168.0.0/16 -j REJECT",
+      "-A OUTPUT -d 100.64.0.0/10 -j REJECT",
+      "-A OUTPUT -d 169.254.0.0/16 -j REJECT",
+      "-A OUTPUT -d 127.0.0.0/8 -j REJECT"
+    ]
+  },
+  "b_forbidden_host_probe": {
+    "cloudresourcemanager.googleapis.com": {
+      "curl_error": "",
+      "http_code": "404",
+      "real_reply": true,
+      "remote_ip": "142.251.16.95"
+    },
+    "compute.googleapis.com": {
+      "curl_error": "",
+      "http_code": "404",
+      "real_reply": true,
+      "remote_ip": "142.251.163.95"
+    },
+    "iam.googleapis.com": {
+      "curl_error": "",
+      "http_code": "404",
+      "real_reply": true,
+      "remote_ip": "172.217.112.4"
+    },
+    "storage.googleapis.com": {
+      "curl_error": "",
+      "http_code": "400",
+      "real_reply": true,
+      "remote_ip": "34.153.3.27"
+    }
+  },
+  "b_forbidden_ips_shared_with_inference_hosts": {
+    "cloudresourcemanager.googleapis.com": [],
+    "compute.googleapis.com": [],
+    "iam.googleapis.com": [
+      "172.217.112.4",
+      "172.217.113.4",
+      "172.217.114.4",
+      "172.217.115.4",
+      "172.217.116.4",
+      "172.217.117.4",
+      "172.217.118.4",
+      "172.217.119.4"
+    ],
+    "storage.googleapis.com": []
+  },
+  "b_holds": false,
+  "b_inference_host_probe": {
+    "daily-cloudcode-pa.googleapis.com": {
+      "curl_error": "",
+      "http_code": "404",
+      "real_reply": true,
+      "remote_ip": "172.217.116.4"
+    }
+  },
+  "b_inference_hosts_from_agy_logs": [
+    "daily-cloudcode-pa.googleapis.com"
+  ],
+  "b_ips_agy_connected_to": [
+    "142.251.163.132",
+    "172.217.112.4",
+    "172.217.113.4",
+    "172.217.114.4",
+    "172.217.115.4",
+    "172.217.116.4",
+    "172.217.117.4",
+    "172.217.118.4",
+    "172.217.119.4",
+    "34.54.84.110"
+  ],
+  "b_resolved_inside_jail": {
+    "cloudresourcemanager.googleapis.com": [
+      "142.251.111.95",
+      "142.251.16.95",
+      "142.251.163.95",
+      "142.251.167.95",
+      "142.251.179.95",
+      "172.253.115.95",
+      "172.253.122.95",
+      "172.253.63.95",
+      "173.194.45.95",
+      "192.178.155.95",
+      "192.179.24.95",
+      "64.233.180.95"
+    ],
+    "compute.googleapis.com": [
+      "142.251.163.95"
+    ],
+    "daily-cloudcode-pa.googleapis.com": [
+      "172.217.112.4",
+      "172.217.113.4",
+      "172.217.114.4",
+      "172.217.115.4",
+      "172.217.116.4",
+      "172.217.117.4",
+      "172.217.118.4",
+      "172.217.119.4"
+    ],
+    "iam.googleapis.com": [
+      "172.217.112.4",
+      "172.217.113.4",
+      "172.217.114.4",
+      "172.217.115.4",
+      "172.217.116.4",
+      "172.217.117.4",
+      "172.217.118.4",
+      "172.217.119.4"
+    ],
+    "storage.googleapis.com": [
+      "104.154.124.27",
+      "104.154.125.27",
+      "34.144.170.27",
+      "34.144.171.27",
+      "34.153.2.27",
+      "34.153.3.27",
+      "34.3.0.27",
+      "34.3.1.27"
+    ]
+  },
+  "gemini_route_code": "gemini_seat_egress_unconfined",
+  "issue": "agent-harness#1132",
+  "recorded_at": "2026-09-29T17:33:40+00:00",
+  "result": "stop",
+  "ruling": "maintainer 'prove then enable', 2026-09-29",
+  "schema": "seat_jail_probe_p4_containment.v1",
+  "stops": [
+    "gemini_seat_egress_unconfined: real replies from storage.googleapis.com, cloudresourcemanager.googleapis.com, compute.googleapis.com, iam.googleapis.com"
+  ]
+}

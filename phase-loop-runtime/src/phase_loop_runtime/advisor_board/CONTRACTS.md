@@ -857,9 +857,10 @@ are recorded on agent-harness#1132.
 - **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
   the public-entry authorization and before staging, in this order; the first failure wins
   and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
-  recorded Gemini P4/P3 stop -> its code (P4 recorded `gemini_seat_token_scope_excess` on
-  2026-09-29: the agy access token carries `cloud-platform`, beyond inference; P3 was not
-  run and the tooled profile is not built); (2) host capability -> `seat_sandbox_unavailable_host`,
+  recorded Gemini P4/P3 stop -> its code (today `gemini_seat_egress_unconfined`: the agy
+  token carries `cloud-platform`, and the "prove then enable" containment probe found jail
+  egress not limited to agy's inference hosts; P3 was not run and the tooled profile is not
+  built); (2) host capability -> `seat_sandbox_unavailable_host`,
   `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
   `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
   `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
