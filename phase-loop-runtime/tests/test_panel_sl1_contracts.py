@@ -2540,3 +2540,21 @@ def test_sl1_b_a_non_landing_advisor_board_run_fetches_nothing(tmp_path, monkeyp
     assert rc == 0, out.getvalue()
     assert fetched == [], "a non-landing run fetched its target"
     assert _git(repo, "for-each-ref") == refs_before, "a non-landing run wrote a ref"
+
+
+@pytest.mark.parametrize("run_mode,switched,pushed", [
+    ("governed", True, False), ("governed", False, True), ("autonomous", True, True),
+])
+def test_sl1_q7_the_closeout_push_is_a_token_push_only_where_no_landing_exists(tmp_path, run_mode, switched, pushed):
+    """Q7(2): the closeout push goes through merge_guard with a no-landing token when the run
+    is autonomous or the repository is before the switch; a post-switch governed closeout
+    has no decision to present and records the refusal (follow-up agent-harness#1151)."""
+    from phase_loop_runtime import runner
+
+    t = lanes._TargetRepo(tmp_path, "co", {"plans/manifest.json": lanes._GOVLEAN_SWITCH} if switched else {})
+    refused = runner._closeout_push(t.path, "origin", f"{t.change_head}:refs/heads/closeout", run_mode)
+    remote = _git(t.upstream, "ls-remote", str(t.origin), "refs/heads/closeout")
+    if pushed:
+        assert refused is None and remote.split()[0] == t.change_head
+    else:
+        assert refused == "panel_merge_authority_missing" and remote == ""
