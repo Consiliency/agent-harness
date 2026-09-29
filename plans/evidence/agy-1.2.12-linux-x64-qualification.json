@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "2b2e516d84571cd0368f13ef8ef09a6bf73a1028ed8b55fe7b2bf0ca50b68d67",
+      "raw_receipt_sha256": "2b9bcf05eed11c706d3d5bbe6596236c4c8b9cd24992b2c0273adaaa057102e3",
       "record_sha256": {
-        "broker": "e45139ccbb66b5d1b648bfc40ebc4a6578386d01c1a868a12a7bf6ed886184fe",
-        "monitoring": "b9702a2bae734b483a4ddde8c125a2b45ef0853a984e564067e58e15b9ae29e1",
-        "observer": "ff6c106bc25c22d8e3ab5c22fbd898da546d684164683efe7e09f9add6b8f467",
-        "result": "321c5887a90305d836f6cba7f285ae1de96da432353930eea6d6b3d68ed15ddb"
+        "broker": "0b169b6cbe0474308217431db1c7d6cad7fccd8cbe149b0bf3b9cd71b856e888",
+        "monitoring": "b98088453ec0601d39b865bfffe5f609dbf4fa4a746095b8b5509c5c13833f73",
+        "observer": "645e34bc2cfa604cce30b233a4e89a0c38ceebbf03d45ffd939fd5273915f26b",
+        "result": "cb9b8ef9a36a7791c0d62f6ff19f74d290525bffece435966d678860d5697688"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "f11cb4637086cff3862ebcc9042322b15c9c1f57b2077606f9da1a4a5b60ae73",
+      "raw_receipt_sha256": "437fac9a4cdd386d1bbe36c4aad0d6d897952dbdf943f35a7aa7e7a916868cf2",
       "record_sha256": {
-        "broker": "c3ab7c550eac78abaea8297839073bdb7023f0b1d1c68b4c9ecaefec721b0b98",
-        "monitoring": "8423be24422448a23aa112ff1801fe2fb4965573323082b74222f2c1314a38da",
-        "observer": "282b450e8b1e28fb374ccc28d580a468e8650d412c87cc37fd96044f33421e19",
+        "broker": "64c5f34051919251a4c4b0f765f3674fcb38437dfeb2ca79727c48fb07365f9e",
+        "monitoring": "cdec32c1c02f2fa96dd1aa5c866ece314921facd9f4bb86be01f01212f7c2bd3",
+        "observer": "d61aafe03483544afa19b48fdcaecce664968d5cee5064a2103108ea614b38ea",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "8e7c26df176847c58a54260c6b71508d77014d0feb60aa713bf416733017e5fd",
-      "raw_receipt_sha256": "19b3fa903e4abb2d056b139d15f5f9ce8402e84fc17b1f48049d2b62b3003463",
+      "raw_receipt_sha256": "a1853aac84237807b968b725e4a72d578c62a718e607dd00ada9f6290323ad07",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "53da200c4e7be62afacd16fc4b360232f40c6aa9007e0274996eae214267780a",
-        "observer": "dc03a5b8a9c5bfd512d3241d163626a8a894f276a2bd2948c19d7c46fc1a9ea3",
+        "monitoring": "8082cd24af95ae5781f002882d3f73086a7858c438e1d012c11182b9938a729a",
+        "observer": "3a7baa1e1b48e67129e8d2102d35245e732186c210a7d25c0b098121a2d151aa",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -196,7 +196,7 @@
   "route": "brokered_subscription_heartbeat_only",
   "schema": "agy_1212_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "2d0330ce429951df308dead3182a8da202b2ec6cd609dc7917925602ce1c95f3",
+    "__init__.py": "e1ea68ea8e0a8f0107d40b333cb8ad8d5c493a6db962a7f0f3969c90ce24fdbc",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "e9a503543374ccb83e41535c9fee012fe849b9397003d87aec9ff8fdb653bc73",
     "advisor_board/__init__.py": "7a746aa1ccf9cca9e6344c0d09a34c464cd1bd82044e469f56c2fa5b1b641ff8",
@@ -206,12 +206,12 @@
     "advisor_board/composition.py": "fcc668fbffabab140e2bc57305783bfbb8fec637b29d5164b4497ea1d80b2c3c",
     "advisor_board/config.py": "c94d4b1545823b14bd70a103bb7839162f2ba7a3c63f3dfd17c75e3193ad6e76",
     "advisor_board/events.py": "182be774f807c97905d95b7269551682bd1e8d1832050f09a5969bf47e0ff73e",
-    "advisor_board/fixtures.py": "692f3824b88c56a792b652b57c7f3fffd652a0ea5ed5c638680d0c1a8c669c31",
+    "advisor_board/fixtures.py": "bc6d3328cb492bfba18ab4b4deff196c73f88300da560f0adcadf254e811adb4",
     "advisor_board/harness_mapping.py": "2ca9d5566004a99fc27c9b3e3b202529f63f5da60d89bb13a4b91e8b43fd5c36",
     "advisor_board/matrix.py": "719fc2e9c758a69463c20daf8aa073f0964ddd8710f1d3143321f04e515b3267",
     "advisor_board/observability.py": "4ea04b4a5736697e8344fe2d65e46600dad65a9011d7674cc211fb3a36436c85",
     "advisor_board/presets.py": "586d742fb9f27e2bb4b8978c04fa004958e258cfdd2e81c02e3ddf0fdfca8bbd",
-    "advisor_board/registries.py": "8e5059bf8e04409f2d95b5f824b251d453d7cbf6458ddbc588a17802b0fcf260",
+    "advisor_board/registries.py": "cab74a971561292f875aa599f78aaf8e681f5b21e9543a9c170a121f88f9879e",
     "advisor_board/research.py": "a49a5ec1f4005b400479ddddd588f49b6363d129e11a5793cc3523b6cfbe62c6",
     "advisor_board/resolver.py": "d24bd471d44f1bf3c367c5648bd05fa7bd5282081015c33d98ebb762101863d8",
     "advisor_board/schema.py": "d1ae5f3123207a52e831fcdb8d5b92d66a2f6188b9c8c44f9e03a714e633ae78",
@@ -324,7 +324,7 @@
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "59b6efb213c53a69d65809e01d46e523a8079668c7e3da314d3310570254808d",
-    "panel_invoker.py": "f346cb7fc5044709120981ffa3b262d6bc48f36a07553f180ff8ef9689e8c879",
+    "panel_invoker.py": "aa684fd939b3ff83cae07aca3a770b6b42f137e8099e5fc72e5226a2584c7ea0",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
     "pipeline_adapter/__init__.py": "a7a88428e2b814b7621bbd5421e1c564491ab0ab41dea59d3011906f26df8a6a",
@@ -357,7 +357,7 @@
     "review_stage.py": "b49548413af2c51a7308488524fccb0772a1610a5cc23d8301b71cb9dd845c9c",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "05cd0a65b5a8d7bf5a4d6626b2d0ed930273fa52c02391e03dafca62cb9cf1cb",
+    "roadmap_assumptions.py": "e8c2390f713747dd18d0d95a9981bfb1d2b9c6fe2f015368c38caec359b44548",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
