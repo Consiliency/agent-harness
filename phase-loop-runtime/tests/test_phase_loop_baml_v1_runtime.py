@@ -2154,8 +2154,9 @@ def scenario_i3_owner_killed_with_waiters() -> None:
     for waiter in waiters:
         waiter.start()
     assert _wait(lambda: len(m._CLIENT.backlog) == 2, 5)
-    owner = _thread_named("phase-loop-baml-owner")
-    _async_raise(owner, SystemExit)
+    ident = m._CLIENT.owner_ident
+    if ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(ident), ctypes.py_object(SystemExit)) != 1:
+        raise AssertionError("could not kill the owner thread")
     for thread in (a, *waiters):
         thread.join(60)
     assert set(results) == {"a", "b", "c"}
@@ -2465,6 +2466,7 @@ def scenario_i9_resources() -> None:
     time.sleep(0.5)
     gc.collect()
     fds, threads, pidfds = _fd_count(), threading.active_count(), _pidfds()
+    os_threads = len(os.listdir("/proc/self/task")) if LINUX else 0
     disposed: list[int] = []
     hang = _hostile("phase_loop_parse_closeout", _sleep(60))
     panic = _panic_files()
@@ -2499,6 +2501,11 @@ def scenario_i9_resources() -> None:
     assert _settled(REAP_BOUND + 1)
     ok = _wait(lambda: (gc.collect() or True) and _fd_count() <= fds + 2 and threading.active_count() <= threads + 1, REAP_BOUND + 1)
     assert ok, (fds, _fd_count(), threads, threading.active_count(), [t.name for t in threading.enumerate()])
+    # The owner is a raw thread (not in threading.enumerate); count OS threads too.
+    if LINUX:
+        assert _wait(lambda: len(os.listdir("/proc/self/task")) <= os_threads + 1, REAP_BOUND + 1), (
+            os_threads, len(os.listdir("/proc/self/task"))
+        )
     assert _pidfds() == pidfds
     if POSIX:
         for pid in disposed:

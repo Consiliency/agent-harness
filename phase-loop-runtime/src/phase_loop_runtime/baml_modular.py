@@ -884,6 +884,7 @@ class _Client:
         self.owner_beat = 0.0
         self.owner_launches: dict[int, object] = {}
         self.owner_starts = 0
+        self.owner_ident: int | None = None
         self.recover = False
         self.backlog: collections.deque[_Request] = collections.deque()
         self.active: _Request | None = None
@@ -991,7 +992,9 @@ class _Client:
         self.owner_running = True
         clean = False
         try:
-            threading.current_thread().name = "phase-loop-baml-owner"
+            # get_ident() registers nothing: threading.current_thread() here would
+            # leave a _DummyThread in threading._active for every owner ever run.
+            self.owner_ident = threading.get_ident()
             if self.recover:
                 self._recover()
             self.recover = True
