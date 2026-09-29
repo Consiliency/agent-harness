@@ -9,9 +9,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Register `gpt-6-sol` as an explicit advisor-board seat
 
 - `gpt-6-sol` (Codex's own default model) is now a registered model on the `codex` lane at
-  effort `max`, answering to the `sol` review-seat alias. A board or user config can seat it
+  effort `max`, answering to the `sol` review-seat alias. A user or ad-hoc board can seat it
   explicitly, e.g. in place of an unavailable vendor; before this, `load_boards()` rejected
-  the whole config with `unknown model 'gpt-6-sol'`.
+  the whole config with `unknown model 'gpt-6-sol'`. It does NOT stand in for grok on a
+  governed review: it counts as a second `sol` seat, and a policy requiring `grok` still
+  rejects the board (`review_board_policy_mismatch`).
+- Launch-tested on the `codex` lane only; the `opencode` lane is registered by vendor family,
+  like `gpt-6-astra`, and not launch-verified.
 - Registration only: no default moves. The codex seat default stays `gpt-6-astra`, and
   `gpt-5.6-sol` stays registered.
 
