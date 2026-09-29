@@ -1996,8 +1996,12 @@ def _live_merge_pr(
         # The broker-validated `--repo` binding resolved above; `guarded_merge` refuses
         # a missing or mismatched one against the decision's own bindings.
         slug = repo_args[1] if len(repo_args) >= 2 and repo_args[0] == "--repo" else ""
+        if pr_number is None:
+            raise merge_guard.MergeGuardRefusal(
+                "panel_merge_pr_unknown", f"the ledger names no PR number for branch '{branch}'",
+            )
         return merge_guard.guarded_merge(workspace, authority=authority, action=merge_guard.GhPrMerge(
-            repo_slug=slug, pr_number=int(pr_number) if pr_number is not None else -1,
+            repo_slug=slug, pr_number=int(pr_number),
             head_sha=head_sha or "", target_branch=base, context=panel_context,
         ))
     try:
@@ -3930,6 +3934,11 @@ def _run_train_unfenced(
         and train_review_rec.review_packet_sha256 == packet.sha256
     )
 
+    if _panel_snapshot is not None:
+        # A panel landing's authority is this process's own ``invoke_board`` decision; a
+        # recorded approval carries none, so the board runs again (plan item 7, resume),
+        # and no cached approval is preflighted against the legacy composition.
+        already_approved = False
     if already_approved and native_leg_fills:
         # Cache reuse still validates all native request bindings against current
         # composition. This creates no isolation authorization or reviewer seat.
@@ -3974,10 +3983,6 @@ def _run_train_unfenced(
             native_fill_dir=ledger_path.parent)
     _panel_labels_out = None
     _review_panel_m = None
-    if _panel_snapshot is not None:
-        # A panel landing's authority is this process's own ``invoke_board`` decision; a
-        # recorded approval carries none, so the board runs again (plan item 7, resume).
-        already_approved = False
     if not already_approved:
         if _panel_snapshot is not None:
             review_result = train_review_fn(

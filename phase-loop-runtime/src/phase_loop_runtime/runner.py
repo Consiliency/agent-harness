@@ -12697,9 +12697,14 @@ def _closeout_push(repo: Path, remote: str, refspec: str, run_mode: str) -> str 
     from . import merge_guard
     from .panel_invoker import _govlean_authority_switched
 
+    from .panel_invoker import PresidentPolicyError
+
     authority = None
-    if run_mode != "governed" or not _govlean_authority_switched(repo):
-        authority = merge_guard.mint_no_landing_token()
+    try:
+        if run_mode != "governed" or not _govlean_authority_switched(repo):
+            authority = merge_guard.mint_no_landing_token()
+    except PresidentPolicyError as exc:
+        return exc.code  # the review authority state is unreadable: push nothing
     try:
         merge_guard.guarded_merge(repo, authority=authority,
                                   action=merge_guard.LegacyPush(remote=remote, refspec=refspec, cwd=str(repo)))
