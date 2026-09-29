@@ -391,7 +391,9 @@ def test_executor_env_cwd_descriptors_and_signals_match_the_popen_handoff(monkey
     launcher_ignored = mask(Path("/proc/self/status").read_text(), "SigIgn")
     restored = (1 << (signal.SIGPIPE - 1)) | (1 << (signal.SIGXFSZ - 1))
     assert mask(probe_status, "SigIgn") == launcher_ignored & ~restored
-    assert mask(probe_status, "SigBlk") == mask(Path("/proc/thread-self/status").read_text(), "SigBlk")
+    # No SigBlk check here: dash resets its mask to empty after forking its
+    # first external command, so the shell cannot report the mask it was exec'd
+    # with.  The executor mask is pinned by the Python-probe mask tests below.
 
 
 @pytest.mark.parametrize("case", ["absolute", "path-search", "not-executable"])
@@ -454,6 +456,20 @@ def _supervisor_with_prelude(monkeypatch, *prelude: str) -> None:
         return [*argv[:index], "-c", code, *argv[index + 1 :]]
 
     monkeypatch.setattr(launcher, "_lease_supervisor_command", command)
+
+
+def _checkpoint_pause(name: str, pause_file: Path, resume_file: Path, pid_expr: str = "os.getpid()") -> tuple[str, ...]:
+    """Prelude lines pausing the supervisor (or its child) at a named checkpoint."""
+    return (
+        "import time",
+        "def paused_checkpoint(name):",
+        f"    if name == {name!r}:",
+        f"        open({str(pause_file)!r}, 'w').write(str({pid_expr}))",
+        "        deadline = time.monotonic() + 60",
+        f"        while not os.path.exists({str(resume_file)!r}) and time.monotonic() < deadline:",
+        "            time.sleep(0.01)",
+        "module._checkpoint = paused_checkpoint",
+    )
 
 
 _FAILING_FORK = (
@@ -598,19 +614,10 @@ def test_supervisor_death_around_release_never_leaves_an_executor(monkeypatch, l
     # the already-installed forwarding (SIGTERM).  After release, SIGTERM must be
     # forwarded, so no executor-side process may outlive the launch either way.
     pause_file, resume_file = tmp_path / "supervisor-paused", tmp_path / "supervisor-resume"
-    wait_lines = (
-        f"        open({str(pause_file)!r}, 'w').write(str(os.getpid()))",
-        "        deadline = time.monotonic() + 60",
-        f"        while not os.path.exists({str(resume_file)!r}) and time.monotonic() < deadline:",
-        "            time.sleep(0.01)",
-    )
-    if pause == "before":
-        body = ("    if data == module._GO:", *wait_lines, "    return real_write(fd, data)")
-    else:
-        body = ("    written = real_write(fd, data)", "    if data == module._GO:", *wait_lines, "    return written")
-    _supervisor_with_prelude(
-        monkeypatch, "import time", "real_write = os.write", "def paused_write(fd, data):", *body, "os.write = paused_write"
-    )
+    # "forwarding-installed": handlers live, TERM/INT deliverable, GO not yet
+    # written.  "go-sent": GO written and the release span over.
+    checkpoint = "forwarding-installed" if pause == "before" else "go-sent"
+    _supervisor_with_prelude(monkeypatch, *_checkpoint_pause(checkpoint, pause_file, resume_file))
     token = probe_token
     ran = tmp_path / "executor-ran"
     # A loop, not a final ``sleep``: the shell must not exec away the token.
@@ -688,15 +695,6 @@ def test_failed_launches_do_not_leak_descriptors(monkeypatch, lease_fd, tmp_path
 
 
 
-def _pause_prelude(pause_file: Path, resume_file: Path, pid_expr: str = "os.getpid()") -> tuple[str, ...]:
-    return (
-        f"    open({str(pause_file)!r}, 'w').write(str({pid_expr}))",
-        "    deadline = time.monotonic() + 60",
-        f"    while not os.path.exists({str(resume_file)!r}) and time.monotonic() < deadline:",
-        "        time.sleep(0.01)",
-    )
-
-
 def _wait_for_pid(pause_file: Path, launched: _BackgroundLaunch) -> int:
     deadline = time.monotonic() + 15
     while not pause_file.exists() or not pause_file.read_text():
@@ -718,11 +716,7 @@ def test_executor_child_is_a_group_leader_before_it_is_released(monkeypatch, lea
     # killpg(executor_pid) is the only forwarding target, so the child must own
     # that group before release (and before any forwarding can happen).
     pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
-    _supervisor_with_prelude(
-        monkeypatch, "import time", "real_write = os.write", "def paused_write(fd, data):",
-        "  if data == module._GO:", *("  " + line for line in _pause_prelude(pause_file, resume_file)),
-        "  return real_write(fd, data)", "os.write = paused_write",
-    )
+    _supervisor_with_prelude(monkeypatch, *_checkpoint_pause("forwarding-installed", pause_file, resume_file))
     launched = _BackgroundLaunch(["/bin/true"], lease_fd, tmp_path)
     try:
         supervisor_pid = _wait_for_pid(pause_file, launched)
@@ -741,10 +735,7 @@ def test_supervisor_death_before_grouped_leaves_no_executor(monkeypatch, lease_f
     # supervisor waits for ``grouped``; the supervisor is killed, then the child
     # continues and must find the supervisor gone and never exec.
     pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
-    _supervisor_with_prelude(
-        monkeypatch, "import time", "real_setsid = os.setsid", "def paused_setsid():",
-        *_pause_prelude(pause_file, resume_file, "os.getppid()"), "    return real_setsid()", "os.setsid = paused_setsid",
-    )
+    _supervisor_with_prelude(monkeypatch, *_checkpoint_pause("child-grouping", pause_file, resume_file, "os.getppid()"))
     token = probe_token
     ran = tmp_path / "executor-ran"
     launched = _BackgroundLaunch(["/bin/sh", "-c", 'touch "$0"; while :; do sleep 1; done', str(ran), token], lease_fd, tmp_path)
@@ -807,12 +798,8 @@ def test_termination_before_release_withholds_go_even_when_the_child_ignores_sig
     # forwarded signal cannot stop it; only withholding GO keeps it from exec.
     pause_file, resume_file = tmp_path / "paused", tmp_path / "resume"
     _supervisor_with_prelude(
-        monkeypatch, "import signal, time", "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
-        "real_sigmask = signal.pthread_sigmask", "def paused_sigmask(how, mask):",
-        # Pause at the release span (TERM blocked), not at the startup mask read.
-        "  if how == signal.SIG_BLOCK and signal.SIGTERM in set(mask):",
-        *("  " + line for line in _pause_prelude(pause_file, resume_file)),
-        "  return real_sigmask(how, mask)", "signal.pthread_sigmask = paused_sigmask",
+        monkeypatch, "import signal", "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+        *_checkpoint_pause("forwarding-installed", pause_file, resume_file),
     )
     token = probe_token
     ran = tmp_path / "executor-ran"
@@ -993,11 +980,24 @@ def _bit(signum: int) -> int:
     return 1 << (int(signum) - 1)
 
 
-def test_executor_gets_exactly_the_launching_threads_signal_mask(lease_fd, tmp_path):
-    # The launcher calls Popen from a thread with SIGUSR1 blocked: the executor
-    # must be exec'd with exactly that mask (as a preexec child of that thread
-    # was), and the supervisor must forward with TERM/INT unblocked.
-    marker = tmp_path / "marker.json"
+@pytest.mark.parametrize(
+    "blocked",
+    [{signal.SIGUSR1}, {signal.SIGTERM, signal.SIGINT}],
+    ids=["SIGUSR1", "SIGTERM+SIGINT"],
+)
+def test_executor_gets_exactly_the_launching_threads_signal_mask(monkeypatch, lease_fd, tmp_path, blocked):
+    # The launcher calls Popen from a thread with ``blocked`` added to its mask:
+    # the executor must be exec'd with exactly that thread's mask (as a preexec
+    # child of that thread was), while the supervisor forwards with TERM/INT/ALRM
+    # unblocked for itself even if the thread blocked them.
+    marker, supervising = tmp_path / "marker.json", tmp_path / "supervising"
+    _supervisor_with_prelude(
+        monkeypatch,
+        "def marking_checkpoint(name):",
+        "    if name == 'supervising':",
+        f"        open({str(supervising)!r}, 'w').write(str(os.getpid()))",
+        "module._checkpoint = marking_checkpoint",
+    )
     command = _python(
         """
         import json, os, sys, time
@@ -1011,7 +1011,8 @@ def test_executor_gets_exactly_the_launching_threads_signal_mask(lease_fd, tmp_p
     outcome = {}
 
     def run():
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+        outcome["thread_mask"] = sum(_bit(signum) for signum in signal.pthread_sigmask(signal.SIG_BLOCK, []))
         try:
             outcome["result"] = _launch_supervised(command, lease_fd, tmp_path)
         except BaseException as exc:
@@ -1020,23 +1021,28 @@ def test_executor_gets_exactly_the_launching_threads_signal_mask(lease_fd, tmp_p
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     deadline = time.monotonic() + 15
-    while not marker.exists() or not marker.read_text():
+    # The supervisor's mask is read only once it is past every transient span
+    # (the release span restores its mask before "supervising").
+    while not (marker.exists() and marker.read_text() and supervising.exists() and supervising.read_text()):
         assert "error" not in outcome, outcome.get("error")
-        assert time.monotonic() < deadline, "executor never reported its mask"
+        assert time.monotonic() < deadline, "executor or supervisor never reported"
         time.sleep(0.02)
     observed = json.loads(marker.read_text())
     try:
-        expected = _bit(signal.SIGUSR1)
-        assert observed["mask"] == expected, hex(observed["mask"])
+        expected = outcome["thread_mask"]
+        assert expected & sum(_bit(signum) for signum in blocked) == sum(_bit(signum) for signum in blocked)
+        assert observed["mask"] == expected, (hex(observed["mask"]), hex(expected))
         supervisor_mask = _sigblk(observed["ppid"])
-        assert supervisor_mask & (_bit(signal.SIGTERM) | _bit(signal.SIGINT)) == 0, hex(supervisor_mask)
-        assert supervisor_mask == expected, hex(supervisor_mask)
+        forwarding = _bit(signal.SIGTERM) | _bit(signal.SIGINT) | _bit(signal.SIGALRM)
+        assert supervisor_mask == expected & ~forwarding, (hex(supervisor_mask), hex(expected))
     finally:
         # Stop the executor even when an assertion fails, so it never outlives the test.
         os.kill(observed["ppid"], signal.SIGTERM)
     thread.join(15)
     assert not thread.is_alive() and "error" not in outcome, outcome
-    assert outcome["result"].returncode == 1  # the forwarded SIGTERM killed the executor
+    # SIGTERM kills the executor; if the executor blocks it, the 1 s SIGKILL
+    # escalation does.  Either way a signal death maps to 1.
+    assert outcome["result"].returncode == 1
 
 
 def test_supervisor_blocking_never_leaks_into_the_executor(monkeypatch, lease_fd, tmp_path):

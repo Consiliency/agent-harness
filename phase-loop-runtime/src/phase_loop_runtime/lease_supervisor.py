@@ -207,6 +207,16 @@ def _initial_environment() -> dict[bytes, bytes]:
 
 
 _GO = b"go"
+
+
+def _checkpoint(name: str) -> None:
+    """Named point in the startup sequence; a no-op.
+
+    Tests replace it, from a prelude run in the supervisor process, to pause
+    at an exact point ("child-grouping", "forwarding-installed",
+    "go-sent", "supervising") instead of guessing from the Nth call of some
+    syscall.
+    """
 _GROUPED = b"grouped"
 
 
@@ -270,6 +280,7 @@ def _exec_executor(
 
     try:
         try:
+            _checkpoint("child-grouping")
             os.setsid()
         except BaseException as exc:
             _report(status_fd, _setup_reason(exc))
@@ -293,12 +304,16 @@ def _exec_executor(
             return
         if os.read(go_fd, len(_GO)) != _GO:
             return  # the supervisor died before supervision was ready: never exec
-        _report(status_fd, "released")
         try:
             if handoff_mask is not None:
                 # Exactly the mask the launcher handed us: nothing the supervisor
-                # blocks on its own behalf may leak into the executor.
+                # blocks or unblocks on its own behalf may reach the executor.
                 signal.pthread_sigmask(signal.SIG_SETMASK, handoff_mask)
+        except BaseException as exc:
+            _report(status_fd, _setup_reason(exc))
+            return
+        _report(status_fd, "released")
+        try:
             os.execvpe(command[0], command, environment)
         except OSError as exc:
             _report(status_fd, f"exec:{exc.errno or 0}")
@@ -314,6 +329,9 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
     # The mask the launcher handed us, recorded before the supervisor blocks
     # anything for itself; the executor is exec'd with exactly this mask.
     handoff_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    # Forwarding must work even when the launching thread blocked TERM/INT:
+    # the supervisor unblocks them (and ALRM, the escalation) for itself only.
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM, signal.SIGINT, signal.SIGALRM})
     held_status_fd: int | None = None
     try:
         held_status_fd = status_fd if _handed_through(status_fd) else None
@@ -373,6 +391,7 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
     # held signal is forwarded to the (already existing) group on unblock.
     signal.signal(signal.SIGTERM, terminate_executor)
     signal.signal(signal.SIGINT, terminate_executor)
+    _checkpoint("forwarding-installed")
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
     try:
         _close_descriptors_except((lease_fd, go_write))
@@ -384,7 +403,9 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         os.close(go_write)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    _checkpoint("go-sent")
     _close_supervisor_descriptors(lease_fd)
+    _checkpoint("supervising")
     executor = _ForkedExecutor(executor_pid)
     returncode = _reap(executor)
     # Forwarding off before the leader is reaped: after that its pid and group
