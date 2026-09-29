@@ -905,4 +905,3 @@ are recorded on agent-harness#1132.
   the path. `phase-loop seat-sandbox reap PATH` accepts only a recorded path under the
   stage root, opened `O_NOFOLLOW|O_DIRECTORY` component by component, and owned by a
   subordinate uid.
-
