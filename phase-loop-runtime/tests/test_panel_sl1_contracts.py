@@ -2517,7 +2517,8 @@ def test_sl1_q4_only_a_single_pending_node_train_binds_its_change(tmp_path):
     assert tr._train_panel_review_binding(two, info) == {}
 
 
-def test_sl1_q4_a_refused_train_merge_halts_before_the_next_node(tmp_path, synthetic_train_packet):
+@pytest.mark.usefixtures("synthetic_train_packet")
+def test_sl1_q4_a_refused_train_merge_halts_before_the_next_node(tmp_path):
     """Q4 / item 7: a typed merge_guard refusal is recorded in run-train's result and ledger
     and the train halts; nothing merges unbound."""
     from test_train_review_authorization import _ledger, _run_review
@@ -2769,3 +2770,23 @@ class FabDecisionLanding:
 
     def merge_kwargs(self) -> dict:
         return {"authority": self.decision, "panel_context": self.ctx, "pr_number": self.pr_number}
+
+
+@pytest.mark.parametrize("url,number", [
+    ("https://github.com/o/r/pull/7", 7),
+    ("https://github.com/o/r/pull/7/", 7),
+    ("https://gh/a/1", 1),
+    ("https://github.com/o/r/pull/7?notification_referrer_id=12", None),
+    ("https://github.com/o/r/pull/7#issuecomment-123", None),
+    ("https://github.com/o/r/pull/7/files", None),
+    ("https://github.com/o/r/issues/7", None),
+    ("https://github.com/o/r/pull/7x", None),
+    ("", None),
+    (None, None),
+])
+def test_sl1_the_ledger_pr_number_is_never_a_wrong_number(url, number):
+    """Lead ruling: the ledger PR number is the pr_url's trailing number, and a trailing
+    slash or query string can never produce a wrong one (an unparseable URL refuses)."""
+    from phase_loop_runtime import train_runner as tr
+
+    assert tr._pr_number_from_url(url) == number

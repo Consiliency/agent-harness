@@ -117,6 +117,9 @@ class PanelInvokerTest(unittest.TestCase):
             return ("ok", "AGREE")
 
         with TemporaryDirectory() as td, granted_landing_context("production_code") as (ctx, panel_kwargs):
+            # Fixture precondition: the context seats the default board's vendors.
+            self.assertEqual(sorted(seat.harness for seat in ctx.composed.board.seats),
+                             sorted(seat.harness for seat in DEFAULT_BOARD.seats))
             bundle = Path(td) / "bundle.md"
             bundle.write_text("FROM_BOARD_REF", encoding="utf-8")
             ref = Path(td) / "private.txt"

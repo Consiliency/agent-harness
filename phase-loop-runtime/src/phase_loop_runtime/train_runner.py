@@ -64,7 +64,6 @@ from .governed_premerge import (
 
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -2427,6 +2426,21 @@ def _default_train_review(
     )
 
 
+def _pr_number_from_url(url: object) -> Optional[int]:
+    """The PR number a ledger ``pr_url`` names: its last path segment, when that is all
+    digits and the URL carries no query or fragment (never an issue URL). ``None`` for
+    anything else -- a missing number refuses the landing merge; it is never guessed."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(str(url or ""))
+    if parsed.query or parsed.fragment or not parsed.path:
+        return None
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) < 2 or not segments[-1].isdigit() or segments[-2] == "issues":
+        return None
+    return int(segments[-1])
+
+
 def _train_panel_snapshot(canonical_repo_authority: "Path | str | None") -> object | None:
     """The run-start PANEL snapshot for a post-switch train review (``None`` pre-switch)."""
     from . import panel_invoker as _pi
@@ -2448,9 +2462,9 @@ def _train_panel_review_binding(pending_nodes: Sequence[Any], completed_nodes: M
     head = info.get("admitted_head_sha") or info.get("head_sha")
     if head:
         binding["reviewed_sha"] = str(head)
-    match = re.search(r"/(\d+)/?$", str(info.get("pr_url") or ""))
-    if match:
-        binding["reviewed_pr"] = int(match.group(1))
+    number = _pr_number_from_url(info.get("pr_url"))
+    if number is not None:
+        binding["reviewed_pr"] = number
     return binding
 
 
@@ -2468,11 +2482,10 @@ def _train_merge_authority(panel_landing: bool, review_panel: object,
         # Every P4 merge is governed; ``guarded_merge`` accepts the token only in a node
         # repository before the switch (option C, agent-harness#1078).
         return {"authority": merge_guard.mint_no_landing_token(run_mode="governed")}
-    match = re.search(r"/(\d+)/?$", str(node_info.get("pr_url") or ""))
     return {
         "authority": getattr(review_panel, "landing_decision", None),
         "panel_context": getattr(review_panel, "panel_context", None),
-        "pr_number": int(match.group(1)) if match else None,
+        "pr_number": _pr_number_from_url(node_info.get("pr_url")),
     }
 
 
