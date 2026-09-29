@@ -148,6 +148,22 @@ def _common_dir(repo_dir: str | Path) -> str | None:
     return _git_out(repo_dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 
 
+def _common_dir_direct(repo_dir: str | Path) -> str | None:
+    """``--git-common-dir`` read with ``Popen`` directly: a local, read-only lookup that a
+    caller's command seam need not answer."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", str(repo_dir), "-c", "core.hooksPath=/dev/null", "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env,
+        )
+        out, _ = proc.communicate(timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.strip() if proc.returncode == 0 and out.strip() else None
+
+
 def _origin_url(repo_dir: str | Path) -> str | None:
     return _git_out(repo_dir, "remote", "get-url", "origin")
 
@@ -404,15 +420,19 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
                 raise MergeGuardRefusal(
                     "panel_merge_authority_missing", "a governed merge past the authority switch needs a landing decision",
                 )
-        common = _common_dir(repo_dir) or str(repo_dir.resolve())
-        if common in _LANDING_CALLS:
+        # Read only when a landing call was made at all in this process, and read directly
+        # (a local rev-parse outside the command seam), so the token path adds no command
+        # to today's primitive as its caller observes it.
+        common = (_common_dir_direct(repo_dir) or str(repo_dir.resolve())) if _LANDING_CALLS else None
+        if common is not None and common in _LANDING_CALLS:
             raise MergeGuardRefusal("panel_merge_authority_missing", "a landing call was made for this repository")
         token._used = True
         if isinstance(action, LegacyPrMerge):
             if action.ready_first:
-                ready = _spawn(["gh", "pr", "ready", action.branch, *action.repo_args], cwd=action.cwd, env=action.env)
+                ready_argv = ["gh", "pr", "ready", action.branch, *action.repo_args]
+                ready = _spawn(ready_argv, cwd=action.cwd, env=action.env)
                 if ready.returncode != 0:
-                    raise subprocess.CalledProcessError(ready.returncode, ready.args, ready.stdout, ready.stderr)
+                    raise subprocess.CalledProcessError(ready.returncode, ready_argv, ready.stdout, ready.stderr)
             argv = ["gh", "pr", "merge", action.branch, *action.repo_args, "--merge"]
             if action.delete_branch:
                 argv.append("--delete-branch")
@@ -425,10 +445,11 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
         if isinstance(action, LegacyPush):
             # Today's push inherits the caller's environment (a host may authenticate
             # through it); only the hook suppression is added.
-            done = _spawn(["git", "-C", action.cwd, "-c", "core.hooksPath=/dev/null", "push", "--no-verify",
-                           action.remote, action.refspec], env=dict(os.environ))
+            push_argv = ["git", "-C", action.cwd, "-c", "core.hooksPath=/dev/null", "push", "--no-verify",
+                         action.remote, action.refspec]
+            done = _spawn(push_argv, env=dict(os.environ))
             if done.returncode != 0:
-                raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
+                raise subprocess.CalledProcessError(done.returncode, push_argv, done.stdout, done.stderr)
             return action.refspec
         raise MergeGuardRefusal("panel_merge_action_unknown", f"unknown no-landing action {type(action).__name__}")
 

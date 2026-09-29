@@ -2291,7 +2291,11 @@ class TestLiveMergePrBaseRetargetGuard:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="pr-base-retargeted"):
-                _live_merge_pr(ws, "feat/train-a", base="main")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -2328,7 +2332,11 @@ class TestLiveMergePrBaseRetargetGuard:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-realmerge-123"
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
@@ -2371,7 +2379,11 @@ class TestLiveMergePrBaseRetargetGuard:
             )
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-already-merged"
         gh_calls = [c for c in calls if c[0] == "gh"]
@@ -2404,7 +2416,11 @@ class TestLiveMergePrBaseRetargetGuard:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="pr-merged-wrong-base"):
-                _live_merge_pr(ws, "feat/train-a", base="main")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -2445,7 +2461,11 @@ class TestLiveMergePrBaseRetargetGuard:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
-                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -2474,7 +2494,11 @@ class TestLiveMergePrBaseRetargetGuard:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-already-merged"
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
@@ -2520,7 +2544,11 @@ class TestLiveMergePrNoYesFlag:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            _live_merge_pr(ws, "feat/train-a", base="main")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert len(merge_cmds) == 1
         merge_cmd = merge_cmds[0]
@@ -2567,7 +2595,11 @@ class TestLiveMergePrDraftReadied:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-realmerge-123"
         ready_idx = next(i for i, c in enumerate(calls) if _gh_subcommand(c) == "ready")
@@ -2598,7 +2630,11 @@ class TestLiveMergePrDraftReadied:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            _live_merge_pr(ws, "feat/train-a", base="main")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         ready_calls = [c for c in calls if _gh_subcommand(c) == "ready"]
         assert ready_calls == [], "a non-draft PR must not trigger gh pr ready"
@@ -2621,7 +2657,11 @@ class TestLiveMergePrDraftReadied:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="gh pr ready failed"):
-                _live_merge_pr(ws, "feat/train-a", base="main")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -2667,7 +2707,11 @@ class TestLiveMergePrHeadPinned:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-realmerge-123"
         assert len(merge_cmds) == 1
@@ -2706,7 +2750,11 @@ class TestLiveMergePrHeadPinned:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            _live_merge_pr(ws, "feat/train-a", base="main")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            _live_merge_pr(ws, "feat/train-a", base="main", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert "--match-head-commit" not in merge_cmds[0]
 
@@ -2747,7 +2795,11 @@ class TestLiveMergePrHeadPinned:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(Exception) as exc_info:
-                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-stale-admitted-head")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-stale-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         import subprocess as _subprocess
         assert isinstance(exc_info.value, _subprocess.CalledProcessError), (
@@ -2784,7 +2836,11 @@ class TestLiveMergePrHeadPinned:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="pr-head-advanced"):
-                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -2866,7 +2922,11 @@ class TestLiveMergePrPostMergeToctou:
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
             with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
-                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+                
+                _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         # The externally-merged head's SHA must never have been treated as a
         # recorded success anywhere the caller could observe.
@@ -2913,7 +2973,11 @@ class TestLiveMergePrPostMergeToctou:
             raise AssertionError(f"unexpected gh call reached fake_run: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted-head", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-realmerge-good"
 
@@ -3091,7 +3155,11 @@ class TestGhCallsRepoIdentityBound:
             raise AssertionError(f"unexpected gh call: {cmd!r}")
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake_run):
-            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted")
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+            
+            sha = _live_merge_pr(ws, "feat/train-a", base="main", head_sha="sha-admitted", authority=_merge_guard.mint_no_landing_token(run_mode="governed"))
 
         assert sha == "sha-realmerge"
         assert len(gh_calls) == 5, f"expected 5 gh calls, got {len(gh_calls)}: {gh_calls!r}"
