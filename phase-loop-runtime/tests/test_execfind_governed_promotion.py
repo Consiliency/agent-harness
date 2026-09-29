@@ -3,6 +3,8 @@
 from dataclasses import asdict
 import subprocess
 
+import pytest
+
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
 from phase_loop_runtime.advisor_board.schema import Board
 from phase_loop_runtime.governed_premerge import run_governed_premerge_loop
@@ -329,3 +331,47 @@ def test_seat_claimed_outcome_is_not_a_receipt(tmp_path, monkeypatch):
     assert any(f.code == "finding_prose" and f.seat_key == panel.legs[0].seat_key
                for f in gate.findings)
     assert runs == []
+
+
+@pytest.mark.parametrize("failure", [
+    ValueError("missing, forged, or mismatched falsifier authorization"),
+    ValueError("invalid falsifier wall-clock bound"),
+])
+def test_runner_contract_refusal_retains_unresolved_receipt(tmp_path, monkeypatch, failure):
+    # run_finding_falsifier raises for a refused authorization or bound and returns an
+    # error record for everything else; the gate must hold on both and close the lease.
+    from phase_loop_runtime.advisor_board import backing
+
+    repo, head = _source_repo(tmp_path)
+    board = Board(name="execfind-refusal", purpose="code-review", seats=DEFAULT_SEATS)
+    report = _falsifier_text(_golden()["attachment"]["falsifiers"][0])
+    panel = PanelResult(tuple(
+        PanelLegResult(
+            seat.harness, "OK", report if index == 0 else "AGREE",
+            seat_key=f"{seat.harness}:{seat.model}:{seat.effort}:{seat.lens}",
+        )
+        for index, seat in enumerate(board.seats)
+    ))
+    minted = []
+    prepare = backing.prepare_falsifier_isolation_authorization
+
+    def mint(**kwargs):
+        minted.append(prepare(**kwargs))
+        return minted[-1]
+
+    def refuse(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(backing, "prepare_falsifier_isolation_authorization", mint)
+    monkeypatch.setattr(governed_review, "run_finding_falsifier", refuse)
+    gate = governed_board_gate(
+        artifact="Review the exact committed head.",
+        author_executor="train-coordinator", run_mode="governed",
+        reviewed_sha=head, canonical_repo_authority=repo,
+        compose=lambda: board,
+        invoke=lambda _board, _artifact, **_kwargs: panel,
+    )
+    assert not gate.promoted
+    assert any(f.code == "finding_receipt" and "record_digest=unresolved" in f.reason
+               for f in gate.findings)
+    assert minted and all(backing._falsifier_authorization_lease(item).closed for item in minted)
