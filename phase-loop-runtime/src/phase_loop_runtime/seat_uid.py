@@ -312,8 +312,14 @@ def retention_dir() -> Path:
 
 
 def stage_root() -> Path:
-    """Where panel scratch directories are created: the parent of every retained path."""
-    return Path(tempfile.gettempdir()).resolve()
+    """Where panel scratch directories are created: the parent of every retained path.
+
+    Follows `sandbox_policy.staging_root()` where the runtime has it (agent-harness#1147),
+    else the temp dir `_default_spawn` stages under."""
+    from . import sandbox_policy
+
+    staging_root = getattr(sandbox_policy, "staging_root", None)
+    return Path(staging_root() if staging_root is not None else tempfile.gettempdir()).resolve()
 
 
 def record_retention(retained_path: Path, *, directory: Path | None = None) -> Path:

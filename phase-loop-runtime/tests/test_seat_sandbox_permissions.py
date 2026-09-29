@@ -66,11 +66,13 @@ def test_j7_step1_recorded_gemini_stop_beats_qualification():
     assert route.code == "gemini_seat_stream_split_unavailable"
 
 
-def test_j7_step1_gemini_stays_sealed_until_p4_and_p3_pass():
-    """P4 has not run; the production default keeps Gemini sealed, never tooled."""
-    route = seat_jail.decide_seat_route("gemini", staged_tree_approved=True)
-    assert route == seat_jail.SeatRoute(False, "gemini_seat_credential_unusable")
+def test_j7_gemini_stays_sealed_until_p4_and_p3_pass():
+    """No probe stop is recorded (none has run), and no tooled profile ships: on a fully
+    capable host with a credential the seat is still sealed, at step 4."""
+    assert seat_jail.GEMINI_RECORDED_STOP is None
     assert "gemini" not in seat_jail.JAILED_LEGS
+    route = _decide("gemini", stop=None, qualified=True)
+    assert route == seat_jail.SeatRoute(False, "gemini_seat_profile_unqualified")
 
 
 @pytest.mark.parametrize("code", ["seat_sandbox_unavailable_host",

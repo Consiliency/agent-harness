@@ -156,10 +156,11 @@ def test_jailed_route_without_an_execfind_pass_is_refused_with_zero_launches(mon
     assert spawned.seat_notices == ("seat_sandbox_refused:identity",)
 
 
-def test_gemini_seat_stays_sealed_with_its_recorded_stop(monkeypatch, tmp_path):
+def test_gemini_seat_stays_sealed_with_one_notice(monkeypatch, tmp_path):
     route, notices, refusal = pi._seat_route_for_spawn(
         "gemini", types.SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True)
-    assert not route.jailed and notices == ["gemini_seat_credential_unusable"] and refusal is None
+    assert not route.jailed and len(notices) == 1 and refusal is None
+    assert notices[0] in seat_jail.SEALED_FALLBACK_CODES
 
 
 # --------------------------------------------------------------------------------------

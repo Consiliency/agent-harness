@@ -17,7 +17,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A production brokered Claude or Gemini leg now decides its route once (J7) and carries a
   typed notice when it stays on the sealed inline route (`seat_sandbox_not_staged`,
   `seat_sandbox_unavailable_{host,tiocsti,seat_uid}`, `claude_seat_token_missing`,
-  `gemini_seat_credential_unusable`, ...). Codex and grok given a tree carry
+  `gemini_seat_profile_unqualified`, ...). Codex and grok given a tree carry
   `seat_filesystem_unconfined`. Notices appear in the `advisor-board` JSON payload
   (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
   closed detail vocabulary (F030).

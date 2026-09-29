@@ -241,7 +241,7 @@ def test_j14_probe_coverage_real_tools_run_under_the_filter(argv):
 # J1-J3 live: the production jail argv, with an operator-uid user namespace.
 # --------------------------------------------------------------------------------------
 
-SENTINEL_TOKEN = b"sk-ant-oat01-SENTINEL-1132-token-" + b"x" * 24
+SENTINEL_TOKEN = b"SEAT-JAIL-SENTINEL-1132-" + b"x" * 24
 
 
 def _review_dir(tmp_path: Path) -> Path:

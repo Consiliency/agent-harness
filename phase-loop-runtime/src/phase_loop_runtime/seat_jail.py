@@ -440,11 +440,11 @@ JAILED_LEGS: frozenset[str] = frozenset({"claude"})
 """Legs with a jailed route in this runtime. Gemini joins only when P4 and P3 pass (L3);
 codex and grok follow under agent-harness#895."""
 
-# The recorded P4/P3 outcome for Gemini (J7 step 1). Until the probes run and pass, the
-# Gemini seat stays sealed with the code its gate names. P4 has not run, so the seat stays
-# sealed as `gemini_seat_credential_unusable` -- the code whose "none until agy changes"
-# fix is honest about a probe nobody has been able to run yet.
-GEMINI_RECORDED_STOP: str | None = "gemini_seat_credential_unusable"
+# The recorded P4/P3 outcome for Gemini (J7 step 1): one of the three stop codes once a
+# probe has actually recorded a stop, else None. No probe has run yet, so nothing is
+# recorded; the Gemini seat stays sealed through steps 2-4 instead -- at the latest with
+# `gemini_seat_profile_unqualified`, because no tooled profile ships until L3.
+GEMINI_RECORDED_STOP: str | None = None
 
 
 @dataclass(frozen=True)

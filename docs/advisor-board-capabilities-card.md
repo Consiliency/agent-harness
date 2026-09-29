@@ -478,7 +478,8 @@ changes: the seat keeps the sealed inline route and reports why in a typed notic
 **Status in this release: inert.** A jailed launch also needs a recorded EC-EXECFIND-2
 falsifier pass for the jail's profile digest (agent-harness#1071); until then a seat that
 would be jailed is refused with `seat_sandbox_refused:identity`. Gemini stays sealed
-(`gemini_seat_credential_unusable`) until live probes P4 and P3 pass. Codex and grok are
+(typically `seat_sandbox_unavailable_seat_uid` or `gemini_seat_profile_unqualified`) until
+live probes P4 and P3 pass and the tooled profile ships. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then

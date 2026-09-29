@@ -857,8 +857,8 @@ are recorded on agent-harness#1132.
 - **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
   the public-entry authorization and before staging, in this order; the first failure wins
   and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
-  recorded Gemini P4/P3 stop -> its code (today `gemini_seat_credential_unusable`: P4 has
-  not run, so Gemini stays sealed); (2) host capability -> `seat_sandbox_unavailable_host`,
+  recorded Gemini P4/P3 stop -> its code (none is recorded: the probes have not run, and
+  Gemini stays sealed at step 2, 3 or 4 -- no tooled profile ships until L3); (2) host capability -> `seat_sandbox_unavailable_host`,
   `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
   `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
   `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
