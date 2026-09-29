@@ -84,7 +84,7 @@ def open_prs(runner, repo: Path) -> list[dict]:
     false and together hold exactly ``totalCount`` nodes. No fixed limit anywhere."""
     owner, name = REPO_SLUG.split("/")
     listed = _run(runner, ["gh", "api", "graphql", "--paginate", "-f", f"query={_OPEN_PRS_QUERY}",
-                           "-F", f"owner={owner}", "-F", f"repo={name}"], cwd=repo)
+                           "-f", f"owner={owner}", "-f", f"repo={name}"], cwd=repo)
     decoder, text, pages = json.JSONDecoder(), (listed.stdout or "").strip(), []
     try:
         while text:
@@ -404,7 +404,7 @@ def main(*, repo=None, dry_run=False, runner=subprocess.run, host=None, transpor
             out(json.dumps({"agy_watch": "already_pinned", "version": asset.version}))
             return 0
         base = route_core_digest(tree)
-        login = _run(runner, ["gh", "api", "user", "-q", ".login"], cwd=repo).stdout.strip()
+        login = _run(runner, ["gh", "api", "user", "-X", "GET", "-q", ".login"], cwd=repo).stdout.strip()
         try:
             prs = own_version_prs(open_prs(runner, repo), login, asset.version)
         except IncompleteListing as exc:

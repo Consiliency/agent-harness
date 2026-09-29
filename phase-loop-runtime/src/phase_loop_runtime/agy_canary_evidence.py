@@ -7545,7 +7545,7 @@ def _reconcile_release_lineage(
     workflow_definition = _github_run(
         "api", "--hostname", "github.com", "-H",
         "Accept: application/vnd.github+json",
-        "repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml",
+        "repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml", "-X", "GET",
     )
     try:
         workflow_value = json.loads(workflow_definition.stdout)
@@ -7561,6 +7561,7 @@ def _reconcile_release_lineage(
         "api", "--hostname", "github.com", "--paginate", "-H",
         "Accept: application/vnd.github+json",
         f"repos/Consiliency/agent-harness/actions/workflows/{workflow_id}/runs?event=push&head_sha={release_commit}&per_page=100",
+        "-X", "GET",
     )
     try:
         pages = [json.loads(line) for line in workflow.stdout.splitlines() if line]

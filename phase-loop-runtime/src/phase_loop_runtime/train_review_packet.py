@@ -260,7 +260,7 @@ def _pr_identity(url):
 
 
 def read_check_run(workspace, repo, check_id):
-    proc = subprocess.run(["gh", "api", f"repos/{repo}/check-runs/{check_id}"], cwd=workspace,
+    proc = subprocess.run(["gh", "api", f"repos/{repo}/check-runs/{check_id}", "-X", "GET"], cwd=workspace,
                           env=_env(), capture_output=True)
     if proc.returncode:
         _fail("check_run_unavailable", str(check_id))

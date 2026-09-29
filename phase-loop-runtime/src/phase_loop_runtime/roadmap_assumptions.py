@@ -398,7 +398,7 @@ def _observe_github_pr(subject: Mapping[str, Any]) -> dict:
 
 def _observe_github_comment(subject: Mapping[str, Any], expected: Mapping[str, Any]) -> dict:
     data = _gh_json(
-        "api", f"repos/{subject['repository']}/issues/comments/{subject['comment_id']}",
+        "api", f"repos/{subject['repository']}/issues/comments/{subject['comment_id']}", "-X", "GET",
     )
     body = data.get("body", "")
     author = (data.get("user") or {}).get("login")
@@ -409,7 +409,7 @@ def _observe_github_comment(subject: Mapping[str, Any], expected: Mapping[str, A
 
 
 def _remote_default_branch(repository: str) -> str:
-    data = _gh_json("api", f"repos/{repository}")
+    data = _gh_json("api", f"repos/{repository}", "-X", "GET")
     branch = data.get("default_branch")
     if not branch:
         raise RoadmapAssumptionError("gh_bad_response", f"{repository} has no default_branch")
@@ -422,17 +422,17 @@ def _remote_is_ancestor_of_default_branch(repository: str, sha: str) -> bool:
     ``status`` is ``"behind"``/``"identical"`` exactly when ``head`` is reachable
     from ``base``)."""
     default_branch = _remote_default_branch(repository)
-    data = _gh_json("api", f"repos/{repository}/compare/{default_branch}...{sha}")
+    data = _gh_json("api", f"repos/{repository}/compare/{default_branch}...{sha}", "-X", "GET")
     return data.get("status") in ("behind", "identical")
 
 
 def _observe_github_ref(subject: Mapping[str, Any]) -> dict:
-    data = _gh_json("api", f"repos/{subject['repository']}/git/refs/tags/{subject['tag']}")
+    data = _gh_json("api", f"repos/{subject['repository']}/git/refs/tags/{subject['tag']}", "-X", "GET")
     tag_object = data.get("object", {})
     peeled_sha = tag_object.get("sha")
     if tag_object.get("type") == "tag" and peeled_sha:
         # An annotated tag object; peel it to the commit it targets.
-        tag_data = _gh_json("api", f"repos/{subject['repository']}/git/tags/{peeled_sha}")
+        tag_data = _gh_json("api", f"repos/{subject['repository']}/git/tags/{peeled_sha}", "-X", "GET")
         peeled_sha = tag_data.get("object", {}).get("sha", peeled_sha)
     if not peeled_sha:
         raise RoadmapAssumptionError("gh_bad_response", f"cannot resolve tag {subject['tag']!r}")
@@ -443,7 +443,7 @@ def _observe_github_ref(subject: Mapping[str, Any]) -> dict:
 def _observe_remote_json_field(subject: Mapping[str, Any]) -> dict:
     import base64
 
-    data = _gh_json("api", f"repos/{subject['repository']}/contents/{subject['path']}")
+    data = _gh_json("api", f"repos/{subject['repository']}/contents/{subject['path']}", "-X", "GET")
     content = data.get("content", "")
     raw = base64.b64decode(content)
     parsed = json.loads(raw.decode("utf-8"))
@@ -487,7 +487,7 @@ def _observe_repo_digest(subject: Mapping[str, Any]) -> dict:
     if git_sha and source_owner:
         try:
             data = _gh_json(
-                "api", f"repos/{source_owner}/contents/schemas/{basename}?ref={git_sha}",
+                "api", f"repos/{source_owner}/contents/schemas/{basename}?ref={git_sha}", "-X", "GET",
             )
             import base64
 
