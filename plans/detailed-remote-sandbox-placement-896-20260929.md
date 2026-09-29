@@ -3,531 +3,540 @@ type: detailed
 status: planned
 owner_skill: claude-plan-detailed
 input_base_commit: 3c61b270
-related_issues: [agent-harness#896, agent-harness#848, agent-harness#891, agent-harness#895, agent-harness#1132, agent-harness#1147, agent-harness#1161, agent-harness#1071, agent-harness#999, agent-harness#1102, agent-harness#1109, agent-harness#1140]
+related_issues: [agent-harness#896, agent-harness#848, agent-harness#891, agent-harness#895, agent-harness#1132, agent-harness#1147, agent-harness#1161, agent-harness#1071, agent-harness#999, agent-harness#1102]
 automation:
-  suite_command: "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python -m pytest -q phase-loop-runtime/tests/test_remote_sandbox_location.py phase-loop-runtime/tests/test_remote_sandbox_transport.py phase-loop-runtime/tests/test_remote_sandbox_agent.py phase-loop-runtime/tests/test_remote_sandbox_lease.py phase-loop-runtime/tests/test_remote_sandbox_bounds.py phase-loop-runtime/tests/test_remote_sandbox_evidence.py phase-loop-runtime/tests/test_sandbox_policy.py phase-loop-runtime/tests/test_sandbox_retention.py phase-loop-runtime/tests/test_review_leg_sandbox.py"
+  suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_sandbox_placement.py tests/test_sandbox_egress.py tests/test_sandbox_policy.py tests/test_sandbox_retention.py tests/test_seat_host_uid_1098.py tests/test_review_monitor_policy.py tests/test_harden_evidence_producer.py tests/test_review_stage_board_findings.py tests/test_sandbox_preamble.py"
   verification_status: not_run
   human_required: true
 ---
 
-# Detailed plan: remote placement of review-seat sandboxes over authenticated HTTPS (agent-harness#896)
-
-Status: first revision for board and president review. This is a planning artifact only: no
-source file changes. Six design decisions (RD1–RD6) are open and belong to the maintainer; the
-plan names options and a recommendation for each and rules none of them.
+# Detailed plan: a vendor-neutral sandbox placement seam with honest placement evidence, local backend first (agent-harness#896, plan 1 of 4)
 
 ## Task
 
-agent-harness#896: a configured remote sandbox root is probed and measured, then the sandbox
-is staged and run locally anyway. Close that gap as a **general product feature**. Any operator
-can point the runtime at a larger Linux host they control. The runtime then stages the
-exact reviewed snapshot there, runs the seat there under confinement at least equal to the
-local agent-harness#1132 jail, bounds its CPU, RAM, PIDs and disk, and cleans it up. The
-local runtime keeps the outcome authority. If the remote is unavailable, the round falls back
-to local with a recorded reason, or fails closed if the operator asked for that.
+agent-harness#896: the runtime resolves a remote sandbox root, then stages and runs the sandbox
+locally anyway. The maintainer's scope has three placement backends behind one interface:
+- **local:** today's behaviour;
+- **self-hosted remote:** an operator-chosen Linux host over authenticated HTTPS, with no SSH
+  requirement;
+- **cloud:** E2B first, with Modal, Daytona and others as adapters only.
 
-Motivation, for context only: hosts with little RAM and a tmpfs `/tmp` get OOM-killed by
-seat processes (agent-harness#1147). Nothing below names a fleet host, path or address. Our
-own deployment (grants, endpoint, tokens) is a separate, later, maintainer-gated step.
+All three must meet these binding rules:
+- a general product, with no fleet names in product code;
+- confinement parity with the agent-harness#1132 jail;
+- a falsifier for each consumer prerequisite on agent-harness#896;
+- honest `sandbox_root_applied` / `sandbox_staged_at`;
+- a recorded local fallback, with a fail-closed option;
+- the E2B SDK only as an optional extra.
 
-## Inputs observed at `input_base_commit`
+**Bounded-plan threshold: this work must be split.** The whole design touches well over 8
+source files and at least 5 distinct changes: the seam, the evidence, an HTTPS agent with
+auth, leases and cgroups, a cloud adapter, and the egress configuration. This document is
+**plan 1**, and covers only:
+1. the vendor-neutral placement interface;
+2. honest placement evidence built from receipts;
+3. today's local path refactored behind the interface, with no behaviour change.
 
-These are inputs, not outputs.
+It also adds the recorded-fallback and fail-closed handling for backends that are configured
+but not yet implemented. The follow-on plans are listed under "Follow-on plans" with their
+scope, dependencies and open decisions.
 
-- **Selection without placement.** `sandbox_policy.select_sandbox_root` returns a
-  `SandboxRootChoice`. `panel_invoker._default_spawn` passes it only to
-  `_record_sandbox_facts`, and stages with `review_stage.stage_review_tree(resolved_repo_dir,
-  review_dir)` under a local `mkdtemp(prefix="pl-panel-")`. `ensure_staging_space` measures
-  that local directory.
-- **Evidence today.** `_record_sandbox_facts` computes
-  `applied = root_choice.host is None and root_choice.path == staged_at.parent`. A remote root
-  can therefore never be `applied`, and an unapplied choice carries
-  `sandbox_root_unapplied_reason` naming agent-harness#896. The facts live in the
-  `_SANDBOX_ROUND_FACTS` contextvar, and the function returns a reset token the caller must
-  use.
-- **SSH in product code.** `parse_location` reads `host:path` as remote.
-  `_probe_root` and `_free_bytes_at` then spawn `ssh -o BatchMode=yes`. The
-  consumer's host contract denies SSH, so this path always fails there.
-- **Fleet address in product code.** `sandbox_policy._INFERENCE_ALLOW` hard-codes one private
-  address on ports 8020 and 3131, and `EgressPolicy.allow` defaults to it. The consumer comment
-  on agent-harness#896 names this; its supported route is HTTPS 443.
-- **Two staging paths.** `review_stage.stage_review_tree` (board seats: shallow clone at
-  HEAD overlaid with the working tree) and `launcher._stage_review_tree` (executor review
-  legs: gitignore-aware copy without `.git`). The seat stage is bound by the authorization's
-  `staged_tree_sha256` and re-checked by `advisor_board.backing._revalidate_staged_tree`.
-- **Egress.** `sandbox_egress.isolated_network` holds a user+net namespace with
-  `slirp4netns` and in-namespace `iptables`. `SEAT_RETAINABLE_CAPS = {"setfcap"}`, applied by
-  `retain_bounding_caps`, is the only bounding-set exception (the agent-harness#999
-  invariant, for the sandboxed codex seat's nested bwrap).
-- **HARDEN broker.** `advisor_board/backing.py` runs the parent-side broker under
-  `bwrap --unshare-all --clearenv` with the staged dir bound read-only. It requires Linux and
-  `/usr/bin/bwrap`, and fails closed otherwise.
-- **Executors.** `launcher.launch` execs `lease_supervisor.py` (agent-harness#1140, merged as
-  agent-harness#1142). The supervisor is a subreaper that holds the lease until the executor
-  tree is gone.
-- **Retention.** `sandbox_retention` provides `mark_as_sandbox`, `discover` and `reap`
-  (TTL, size ceiling, archive before reap).
-- **Closed vocabulary.** `panel_invoker._HARNESS_DETAIL_CODES` (agent-harness#1102).
-- **Pending, not on main.** Draft agent-harness#1161 (fixes agent-harness#1147) adds
-  `sandbox_policy.staging_root()` (a disk-backed local staging root), relative caps, and
-  `fill_child_tmp_env`. It deliberately does not reuse `PHASE_LOOP_SANDBOX_ROOT` for local
-  placement, because this issue's evidence semantics hang on it.
-- **Decided, not implemented.** The agent-harness#1132 plan
-  (`plans/detailed-seat-sandbox-permissions-1132-20260928.md`) defines the seat jail, J1–J15,
-  and D1–D8 (D8: a leased subordinate uid via `newuidmap`/`newgidmap`). Its implementation
-  waits on agent-harness#1071. Under its D1, Claude and Gemini are jailed; codex and grok stay
-  on their current routes with `seat_filesystem_unconfined` until agent-harness#895.
-  *Planner's observation, not stated there:* the J14 filter denies `CLONE_NEWUSER`, which
-  codex's own nested bwrap needs, so codex cannot simply enter that jail.
+## Research summary
 
-## Architecture: where the split is
+**The placement steps in `panel_invoker._default_spawn`.** A recon pass mapped them, with
+line numbers read at `input_base_commit`:
+- scratch GC runs first (`_gc_stale_panel_scratch`, PI:8436);
+- `mkdtemp("pl-panel-").resolve()` (PI:8446). The `.resolve()` is load-bearing, because it
+  is the preimage of `provider_cwd_sha256` (PI:4495);
+- `select_sandbox_root(fallback=review_dir)` (PI:8484). Its result is recorded and never used;
+- `ensure_staging_space(review_dir)` (PI:8500);
+- `stage_review_tree` (PI:8503), with the staged path tracked across the rename (PI:8508–8510);
+- `mark_as_sandbox` (PI:8516);
+- `_revalidate_staged_tree` (PI:8527), then `revalidate_review_isolation_authorization`
+  (PI:8537);
+- **only then** the egress namespace (PI:8542–8568);
+- `_record_sandbox_facts(..., staged_at=...)` (PI:8573–8588), whose reset token goes on the
+  egress `ExitStack`;
+- cleanup in `finally` (PI:8866–8879): close egress, `remove_review_stage`, then `rmtree(base)`.
 
-One paragraph carries the design. **The local runtime keeps every decision; the remote agent
-only executes.**
+`_record_sandbox_facts` (PI:3506) computes
+`applied = host is None and path == staged_at.parent`. The facts reach the leg record in only
+one place: they are merged into the brokered evidence dict (`**_sandbox_evidence()`, around
+PI:8693).
 
-- **Local runtime keeps:** the public-entry authorization and its revalidation, bundle and
-  brief rendering, round-level root selection, verdict parsing, the output token scan,
-  every leg record and all evidence, and the retention *policy*.
-- **Remote agent does:** receive the snapshot, verify its digest, build the jail, run the
-  provider, and return the output bytes together with an attestation.
+**Tests that pin the field names and the `applied` rule:**
+- `tests/test_sandbox_egress.py`, around lines 139–676. It includes `sandbox_root_host == "ai"`
+  as a fixture value, and a source-grep that the launch site calls `_record_sandbox_facts(` and
+  `_SANDBOX_ROUND_FACTS.reset`, around lines 605–606;
+- `tests/test_seat_host_uid_1098.py`, `tests/test_review_monitor_policy.py` and
+  `tests/test_gemini_heartbeat_bootstrap.py`.
 
-The remote agent is a new entry point, `phase-loop sandbox-agent serve`, in the **same wheel**.
-It runs the same post-authorization leg-execution function the local path runs. This plan
-factors that function out of `_default_spawn` as a named seam, taking a serializable leg
-spec. Parity is therefore "the same code, a version handshake, and an attestation", not a
-second implementation. The client refuses an agent whose runtime version differs from its own,
-or whose jail profile digest has no recorded EC-EXECFIND-2 falsifier pass. The digest is
-never compared with the client's own: a macOS or Windows client has no jail, and the J14
-filter is built per host architecture.
+**Coupling that constrains the refactor:**
+- `phase-loop-runtime/scripts/verify_harden_evidence.py` `verify_broker`, around line 2334,
+  checks broker evidence against a **closed** key set that has no `sandbox_*` keys.
+- `verify_broker_argv_paths`, around lines 327–352, requires the argv cwd to hash to
+  `provider_cwd_sha256`, and the out dir to be a direct child of the cwd.
+- `launcher._stage_review_tree` (`launcher.py:3166`) is a separate implementation and is out of
+  scope here.
+- `sandbox_policy.parse_location` treats `host:path` as remote, and `_probe_root` /
+  `_free_bytes_at` spawn `ssh`.
 
-- **Client side** stays OS-neutral, stdlib only (`http.client`, `ssl`). A macOS or Windows
-  operator can use a remote Linux root. That is the co-location argument of agent-harness#891,
-  now carried over HTTPS instead of SSH.
-- **Agent side** is Linux-only and fails closed, exactly like the HARDEN broker.
-
-**A request can never widen anything on the server.** This is a design rule, not a decision:
-- The effective egress allowlist is the server's configured policy intersected with the
-  client's request.
-- Retainable capabilities are the server's `SEAT_RETAINABLE_CAPS`, whatever the request says.
-- Resource limits are the server's maxima, clamped, never raised by a request.
-- The server rejects unknown request fields.
-
-## Invariants (each has a named falsifier in "Tests")
-
-- **R1 Placement is real.** For a leg recorded as remote, the remote agent staged the snapshot
-  and ran the provider, and the local spawn seam launched **zero** provider processes for
-  that leg. For a leg recorded as local, no remote session exists for it.
-- **R2 Exact snapshot.** The unit transferred is the staged review tree whose
-  `review_tree_manifest_sha256` equals the authorization's `staged_tree_sha256`. It is not a bare
-  commit SHA: the stage overlays the working tree. The client streams the tree built by
-  the same selection logic as `stage_review_tree`. The agent recomputes the digest with the
-  same function before any launch, and refuses on mismatch with
-  `sandbox_remote_refused:snapshot_digest`. The client never stages a second, unbound copy.
-- **R3 Confinement parity, per route.** A remote seat is at least as confined as the same
-  leg's route run locally. For every route, these hold:
-  - the egress namespace and policy, applied in the **remote** host's namespace;
-  - no credential channel beyond the local route's declared set;
-  - the agent-harness#1161 child-temp fill applied on the remote host.
-
-  Per route:
-  - **Jailed legs** (Claude, and Gemini if agent-harness#1132 L3 is in scope) get the
-    agent-harness#1132 jail: J1–J4 and J10–J15, the subordinate uid, `CapBnd = 0`, and J3's
-    credential channels.
-  - **Codex and grok**, only if RD3 (ii) is chosen, keep their **current** route: `CapBnd`
-    exactly `SEAT_RETAINABLE_CAPS` (`setfcap`) for codex, and empty for grok, and nothing
-    wider. They also run under the principal's subordinate uid on the remote, which is
-    strictly more confined than their local route under the operator's uid. They are **not**
-    jailed, and their records keep `seat_filesystem_unconfined`.
-
-  How the remote proves it is under "Attestation".
-- **R4 Outcome authority stays local.** Remote output is **never** a receipt-class artifact
-  by itself.
-  - The local runtime ingests the returned bytes under J10-equivalent rules: regular bytes,
-    a size cap, and the token scan. Only then does it build the leg record.
-  - Remote-supplied facts are stored under `remote_attestation`, and no gate, verifier or
-    closeout reads that field as satisfying a condition.
-  - `verify_harden_evidence.py` keeps reporting EC-HARDEN-5 as UNMET on remote tooled
-    records, as it does locally.
-- **R5 Transport.** The only product transport is HTTPS with certificate verification:
-  - A remote root is a URL: `PHASE_LOOP_SANDBOX_ROOT=https://<host>[:port]/<prefix>`.
-  - `http://` is refused, except to a loopback address under an explicit test-only flag.
-  - There is no option to disable verification. A custom CA bundle and an optional pinned
-    server certificate fingerprint are the only knobs.
-  - When a URL root is configured, the client never spawns `ssh`.
-- **R6 Per-principal isolation.** Every request is authenticated to one principal (RD2).
-  - One principal cannot list, read, cancel, reap or connect to another principal's
-    sandboxes: the response is 403 or 404, with no existence oracle.
-  - Seats of different principals, and concurrent seats of one principal, hold distinct
-    subordinate uids.
-  - Each principal's workspace is a private directory, mode 0700.
-- **R7 Bounds.** Every remote seat runs in its own cgroup v2 scope, with `memory.max`,
-  `memory.swap.max`, `pids.max` and `cpu.max` from the server's maxima, and a disk bound
-  (RD5).
-  - Exceeding a bound kills or refuses **that seat only**, and the leg ends with a typed code.
-  - The agent and other seats survive.
-- **R8 Lifecycle.** A remote seat lives only while its owner holds a lease.
-  - **Heartbeat.** The client renews every `lease_ttl/3`. With no renewal for `lease_ttl`, the
-    agent kills the seat's cgroup (`cgroup.kill`).
-  - **Cancel.** An explicit DELETE kills the seat within the grace period.
-  - **Journal.** The agent writes every lease to an on-disk journal, fsynced before the
-    seat launches. On start it kills and reaps every scope and sandbox whose lease is not
-    live. That covers an agent crash, an agent restart and a host reboot.
-  - **Local owner.** On the local side the lease is held by the leg's own process, so local
-    owner loss (SIGKILL, OOM, reboot) stops the heartbeat by construction.
-- **R9 Remote retention.** The agent enforces its own free-space floor and total cap on its
-  own filesystem, using `sandbox_retention` locally on that host.
-  - Below the floor it refuses staging with `sandbox_remote_refused:below_floor`. That is
-    before launch, so it falls back.
-  - It reaps oldest-first over the cap, archiving `work/` before reaping.
-  - The client never reaps remotely and never measures remote space itself.
-- **R10 Honest evidence.** `sandbox_root_applied` and `sandbox_staged_at` state where the
-  sandbox **ran** (see "Honest evidence"). The current record-only behaviour never regresses
-  into naming a host that was not used.
-- **R11 Recorded fallback, optional fail-closed.** See "Fallback". There is never a silent
-  fallback, and never a relaunch after a remote provider launch.
-- **R12 General product.** No product file names a fleet host, address, path, port or
-  marker. A static test enforces it; see "Tests".
-
-## Attestation: how the remote proves R3
-
-The agent returns an attestation, collected **inside** the jail it just built, before the
-provider launches. It runs the agent-harness#1132 J6/J15 identity probe through the exact jail
-prefix and records:
-
-- the uid and gid, and that they fall in the principal's partition;
-- `CapPrm/CapEff/CapInh/CapAmb`, `CapBnd`, `NoNewPrivs`, and `Seccomp` with the filter digest;
-- the in-jail `mountinfo` digest against J1, and the declared fd set;
-- the `sandbox_egress.enforcement_report` for the remote namespace;
-- the cgroup limit values read from inside the scope;
-- the jail profile digest, the runtime version and the wheel `RECORD` digest.
-
-The attestation is bound to a fresh client nonce and to the R2 snapshot digest.
-
-**What the local runtime checks.** It refuses the leg, before trusting any output, unless
-all of these hold:
-- the version and wheel digest equal its own;
-- the jail profile digest has a recorded EC-EXECFIND-2 falsifier pass (the obligation the
-  agent-harness#1132 plan records);
-- every field equals the expected value for the leg's route;
-- the nonce and digest match.
-
-**What this does not prove, stated plainly.** An attestation is the remote agent's *claim*
-about a kernel the local runtime cannot observe. The trust root is the remote host's
-operator and the authenticated channel (RD2), with the signing under RD4 if chosen.
-That is why R4 holds: an attestation gates whether the leg may proceed, and is never a
-receipt. The new residual adds to the agent-harness#1132 D3 residual under agent-harness#361,
-and does not replace it:
-- **Remote root.** Root on the remote host can read the seat credential, the snapshot and
-  the output.
-- **Agent compromise.** A compromised agent can lie in the attestation.
-
-## Consumer prerequisites and their falsifiers
-
-The agent-harness#896 consumer comment lists six prerequisites. Each maps to invariants and a
-falsifier. Every falsifier has a control-green receipt and a named mutation that turns it red,
-following the agent-harness#1132 convention.
-
-| Prerequisite | Invariants | Falsifier (test) | Named mutation that must turn it red |
-|---|---|---|---|
-| Actual remote staging and execution receipts | R1, R2, R10 | A leg with a URL root yields a staging receipt (sandbox id, digest) and an execution receipt, and the local spawn seam counts zero provider launches. A pre-launch remote failure yields a local record with the fallback reason and no remote claim. | Record `applied=True` from the selection alone. Launch locally after a remote staging receipt. |
-| Per-user auth and workspace | R6 | Principal A's credential gets 403/404 on B's sandbox for list, get, cancel, attach and reap. Two concurrent seats (same or different principal) show distinct attested uids. Workspace dirs are 0700 and owned per principal. | Drop the principal filter in the lookup. Lease the same uid twice. |
-| CPU, RAM, PID and disk bounds | R7 | A fork bomb stops at `pids.max`. An allocator is OOM-killed in its scope while the agent and a sibling seat survive. A CPU spinner is throttled (`cpu.stat` `nr_throttled > 0`). A writer hits the disk bound. Each leg ends with its typed code. | Launch without the scope. Omit `pids.max`. Raise a limit from the request. |
-| Exact authenticated transport | R5 | `http://` is refused. A wrong CA is refused. A fingerprint mismatch is refused. An unauthenticated request gets 401. With a URL root, the `subprocess` seam records no `ssh`. The live qualification record carries the peer address, port and TLS version actually used. | Set `check_hostname=False` or `CERT_NONE`. Fall through to the SSH probe. |
-| Cancellation, owner loss and restart cleanup | R8 | DELETE kills within the grace period. SIGKILL of the client process leads to the scope being gone within `lease_ttl` plus grace. Killing the agent mid-seat and restarting it leaves no scope and no unjournaled directory. A lease journal entry is fsynced before launch. | The startup reaper skips journal entries. The heartbeat is renewed by a thread that outlives the leg. |
-| Remote retention and free-space enforcement | R9 | Below the agent's floor, staging is refused with a typed code, and that becomes a local fallback with a reason. Over the cap, the oldest sandbox is reaped and its `work/` archived first. | Remove the floor check. Reap before archiving. |
-
-The live half of each row, on a real target, is the qualification lane (L6). That lane uses
-general tooling; this plan claims no numbers.
-
-## Honest evidence
-
-`_record_sandbox_facts` is extended, keeping its contextvar reset-token discipline:
-
-- **New field `sandbox_placement`:** `local` or `remote`, per leg.
-- **New fields `sandbox_remote_origin` and `sandbox_remote_sandbox_id`:** the URL
-  origin only (never a credential or query), and the agent's id for the sandbox.
-- **`sandbox_staged_at`:** for remote, `<origin>#<sandbox_id>:<agent-reported path>`. For
-  local, it is unchanged.
-- **`sandbox_root_applied`:**
-  - For remote, it is true **iff** all of these hold: a staging receipt and an execution
-    receipt are present for this leg, both carry the R2 digest, the attestation passed,
-    and the local provider-spawn count is zero.
-  - For local, it keeps today's rule.
-- **`remote_attestation`:** stored beside the facts as a claim (R4).
-- **`sandbox_root_unapplied_reason`:** stays whenever a root was selected and not used. Its
-  text names the actual reason, not a fixed pointer to agent-harness#896.
-
-**The legacy `host:path` form** keeps today's honest behaviour, record-only with
-`applied=False`, until RD6 is ruled. It now also emits a typed notice
-(`sandbox_remote_location_unsupported`), so the operator sees it and nothing is silent.
-
-## Fallback
-
-- **Selection.** Selection stays per round, as `select_sandbox_root`'s docstring requires. The
-  URL probe is an authenticated `GET /v1/health`, bounded by the existing off-thread
-  deadline. It returns the agent's version, profile digest and free space.
-- **Default: local fallback, recorded.** If the probe fails or the agent refuses, the round
-  goes local with `sandbox_root_fell_back=True`, a reason, and a typed notice
-  `sandbox_remote_unavailable:<cause>`.
-- **Local staging lands on agent-harness#1161's disk-backed `staging_root()`**, never on the
-  RAM-backed temp dir. Without that, a fallback would bring back the tmpfs OOM that motivates
-  this issue.
-- **Per-leg, before launch.** A remote failure before the provider launches (a staging
-  refusal, a digest mismatch, a failed attestation) sends **that leg** local, with its own
-  reason.
-- **After launch: no fallback.** A remote failure after the provider launched ends the leg
-  with a code (`sandbox_remote_lost`, `sandbox_remote_bound_exceeded:<which>`,
-  `sandbox_remote_owner_lost`). It never relaunches, locally or remotely. This matches
-  agent-harness#1132 J7 step 6, and it avoids using a credential twice for one leg.
-- **Fail closed.** `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1` refuses the leg with the same code
-  instead of falling back.
-- **Vocabulary.** All new codes join `_HARNESS_DETAIL_CODES`, and each has a delivery test.
-
-## Dependency order
-
-| Lane | Content | Can land before agent-harness#1132? |
-|---|---|---|
-| L0 | Falsifiers first, skip-guarded on their implementing symbols, with RED receipts. The R12 static test. | Yes |
-| L1 | Remove the fleet address: `_INFERENCE_ALLOW` becomes `PHASE_LOOP_SANDBOX_EGRESS_ALLOW` (`host:port`, comma-separated, default empty). The fleet value moves to deployment config, a later maintainer-gated step. The URL location form and the RD6 notice. | Yes. It does not depend on agent-harness#1161 either. |
-| L2 | Agent skeleton: `sandbox-agent serve`, TLS config, auth (RD2), version and profile handshake, `/v1/health`, principal workspaces, and the client library `remote_sandbox.py`. | Yes |
-| L3 | Snapshot transfer and R2 verification; leases, heartbeat, journal, cancel and startup reaper (R8); cgroup scopes and bounds (R7, RD5); remote retention (R9). Proven with a **null workload**: a fixed, packaged probe program, not a provider, run under the same egress namespace and scope. | Yes |
-| L4 | Evidence fields, fallback, fail-closed and notices. Local fallback onto `staging_root()`. | After agent-harness#1161 merges, for `staging_root()`. |
-| L5 | Remote **jailed seat** launch through the factored leg-execution seam: the jail, the attestation and the credential channel (RD4). | **No.** It needs the shipped agent-harness#1132 jail, its profile digest and that digest's recorded EC-EXECFIND-2 pass. So it waits on agent-harness#1132, which waits on agent-harness#1071. It also needs the provider CLIs installed on the target at their qualified pins, with the agent-harness#1132 probes replayed there. |
-| L6 | Qualification tooling: `phase-loop sandbox-remote qualify <url>` measures completion, cancellation, caller disconnect, agent restart, concurrent-principal isolation, latency and capacity, and writes a pinned record. The null-workload half runs after L3; the seat half after L5. | Partly |
-
-What this means plainly:
-- L0–L4 give a working, qualified remote *execution substrate* before agent-harness#1132.
-- End-to-end remote seat execution cannot be claimed or qualified before agent-harness#1132
-  lands.
-- Codex and grok remote placement depends on RD3.
-
-## Open maintainer decisions
-
-These are prefixed RD so they do not collide with agent-harness#1132's D1–D8. None is ruled
-here. The recommendation is the planner's, for the maintainer to accept or reject.
-
-**RD1 Server process model on the remote host.**
-- (a) **One agent per user**, as that user's systemd user service (lingering) on loopback or a
-  Unix socket, behind the host's existing HTTPS reverse proxy.
-  - OS-level separation between principals, with no multi-tenant code in the agent.
-  - Each user's own subuid range serves their seats.
-  - Cost: needs a remote account per user, and per-user routes at the proxy.
-- (b) **One multi-tenant daemon** under a dedicated service account, with its subuid range
-  partitioned per principal.
-  - Simplest to operate, and it matches the consumer's "dedicated executor identity" wording.
-  - Cost: an agent bug crosses tenants, and R6 rests on agent code instead of the OS.
-- (c) **A socket-activated worker per request** (systemd `Accept=yes`) under a dedicated
-  account.
-  - No long-lived state.
-  - Cost: leases, heartbeats and the reaper need a separate timer and a shared journal, which
-    reintroduces the state it avoids.
-- (d) **A container runtime** (agent-harness#891).
-  - Portable.
-  - Cost: it is still deferred for the reasons recorded there, and it would be a second
-    isolation mechanism beside bwrap.
-
-*Recommendation: (a).* The per-user OS identity makes R6 a kernel property rather than an
-application one. Option (b) can be added later behind the same protocol.
-
-**RD2 Authentication.**
-- (a) **A per-principal bearer token**, issued on the remote by `sandbox-agent token issue`.
-  - The agent stores only its hash. The client stores it 0600 and sends it only over verified
-    TLS.
-  - Works through any HTTPS proxy.
-  - Cost: a bearer secret, so revocation and rotation are manual.
-- (b) **mTLS client certificates.**
-  - Strong, and nothing reusable crosses the wire.
-  - Cost: most proxies terminate TLS and must forward the client identity, which is fragile to
-    configure, and it adds certificate lifecycle work.
-- (c) **An identity header from the fronting proxy** (OIDC or network identity), trusted only
-  from loopback.
-  - No secret in the runtime.
-  - Cost: it is deployment-specific, and the agent's security then depends on proxy
-    configuration it cannot check.
-- (d) **SSH-key request signing** (`ssh-keygen -Y sign` over a nonce and the request digest),
-  with no SSH transport.
-  - Reuses existing keys, with replay-safe nonces.
-  - Cost: key distribution to the agent, and new signing code.
-
-*Recommendation: (a) for v1, with an optional pinned server fingerprint.* It is the smallest
-thing that satisfies R5 and R6. Option (d) is a natural later hardening.
-
-**RD3 v1 scope: workloads and legs.**
-- **Workloads:**
-  - (a) board seats only;
-  - (b) seats plus read-only executor review legs (`launcher._stage_review_tree`);
-  - (c) seats plus writing executors under `launcher.launch`, which return a patch.
-    Option (c) needs a write-back and conflict model and remote executor credentials, and it
-    interacts with the agent-harness#1140 lease supervisor.
-- **Legs:**
-  - (i) jailed legs only: Claude, and Gemini if agent-harness#1132 L3 is in scope. Parity is by
-    construction.
-  - (ii) Also codex and grok, on their **current** routes, under the principal's subordinate
-    uid on the remote, with `CapBnd` exactly `SEAT_RETAINABLE_CAPS` for codex and empty for
-    grok. This is strictly more confined than their local route, which runs as the operator.
-    But it is **not** the agent-harness#1132 jail, and it inherits the
-    `seat_filesystem_unconfined` label.
-
-*Recommendation: workloads (a) with legs (ii).* Leaving codex and grok local leaves whatever
-memory they use on the small host, and running them remote under a dedicated uid improves
-their confinement rather than weakening it. Which seats dominate memory is measured in L6,
-not assumed here. The
-protocol carries a `workload` kind, so executors can follow in a separate plan.
-
-**RD4 Seat credential delivery to the remote.**
-- (a) **Forwarded per leg** over the authenticated channel into the J3 token pipe on the
-  remote, and never written to remote disk by the agent.
-  - The credential stays owned locally.
-  - Cost: remote root can read it in transit through the agent.
-- (b) **Remote-resident per-principal credential**, provisioned once by the user on the
-  remote and stored 0600.
-  - Nothing sensitive in each request.
-  - Cost: a second copy to rotate and revoke, and it persists on a shared host.
-- (c) **Inference stays local and only execution goes remote** (the agent-harness#848
-  SBXEXEC split).
-  - No credential leaves the local host, which also meets EC-HARDEN-5's credential clause.
-  - Cost: SBXEXEC is proposal-only and a much larger body of work.
-
-  *Signing sub-question:* whether the agent also signs the attestation with a key pinned by
-  the client, so an archived record can be verified offline. Otherwise the record rests on the
-  TLS channel alone.
-
-*Recommendation: (a) now, with a signed attestation; (c) stays the long-term design under
-agent-harness#848.*
-
-**RD5 Disk bound mechanism.** A tmpfs with `size=` is RAM-backed, which defeats the purpose,
-and unprivileged loop mounts are not possible.
-- (a) **Filesystem project quotas** (XFS or ext4 `prjquota`) per sandbox.
-  - A hard bound that returns ENOSPC.
-  - Cost: root setup once per host, and the filesystem must support it.
-- (b) **An agent watchdog** that measures `du` per sandbox on an interval and kills the scope
-  over the bound.
-  - No root.
-  - Cost: overshoot is bounded only by write rate times the interval.
-- (c) **An admin-provisioned filesystem per principal.**
-  - A hard bound per principal, not per seat.
-  - Cost: host setup, and the per-seat bound is still soft.
-
-*Recommendation: (a) where available, with (b) as the recorded, typed degraded mode.* The
-attestation reports which one applied, and the fail-closed flag refuses (b) if set.
-
-**RD6 The legacy `host:path` (SSH) form.**
-- (a) Keep it record-only, with the typed notice.
-- (b) Implement an optional SSH adapter later, beside HTTPS.
-- (c) Reject it as a configuration error.
-
-*Recommendation: (a) in this plan and (b) as a separate follow-up only if someone asks.* SSH
-must never be required.
-
-**Host prerequisites, whatever is ruled.** These run as root on the remote host, by its
-operator, never by the runtime or a lane:
-- `uidmap` and a subuid/subgid range (the agent-harness#1132 D8 prerequisite);
-- cgroup v2 delegation for the agent's user (`Delegate=yes`);
-- the HTTPS proxy route and certificate;
-- quotas, if RD5 (a) is chosen;
-- the provider CLIs themselves, which are not in the wheel. agy must be at the qualified pin
-  (agent-harness#1130 route-core), and the agent-harness#1132 probes (P1–P5) are replayed on
-  that host before L5 claims it. The health handshake reports each CLI's version and image
-  digest, and a mismatch with the qualified pin refuses that leg before launch.
+**E2B facts**, from current docs read 2026-09-29, apply to plan 4 and are cited there.
 
 ## Changes
 
-| File | Action |
-|---|---|
-| `phase_loop_runtime/sandbox_policy.py` | Parse the `https://` location. Replace `_INFERENCE_ALLOW` with `PHASE_LOOP_SANDBOX_EGRESS_ALLOW` (default empty). Add `remote_required()`. Add the authenticated health probe beside `_probe_root`. The SSH branches become the RD6 disposition. |
-| `phase_loop_runtime/remote_sandbox.py` (new) | Client: TLS context (no insecure mode), auth header, the health probe, snapshot upload, lease heartbeat thread tied to the leg, attach and stream, cancel, attestation verification, and the typed error mapping. |
-| `phase_loop_runtime/sandbox_agent.py` (new) | Server: routes (`/v1/health`, `/v1/sandboxes`, `/v1/sandboxes/{id}` with stage, launch, stream, heartbeat and DELETE), principal resolution (RD2), workspace, lease journal and startup reaper, cgroup scope and limits, per-principal uid partition, the retention loop, and the attestation. Linux only; fails closed. |
-| `phase_loop_runtime/panel_invoker.py` | Named sites only: `_default_spawn` (placement branch, per-leg fallback, the zero-local-spawn counter), `_record_sandbox_facts` (the new fields and `applied` rule), `_HARNESS_DETAIL_CODES` (new codes), and the factored post-authorization leg-execution seam that both the local path and the agent call. |
-| `phase_loop_runtime/review_stage.py` | A streaming snapshot writer that shares the selection logic and digest with `stage_review_tree`. |
-| `phase_loop_runtime/sandbox_egress.py` | Consume the configured allowlist; the remote agent applies it intersected with its own policy. |
-| `phase_loop_runtime/cli.py` | `sandbox-agent serve`, `sandbox-agent token issue/revoke` (if RD2 (a)), and `sandbox-remote qualify <url>`. |
-| `scripts/verify_harden_evidence.py` | Report remote records; `remote_attestation` never satisfies a check (R4). |
-| `advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `docs/phase-loop/convergence-runtime.md`, `CHANGELOG.md` | The remote contract, the knobs, the residual, and the host prerequisites. |
-| `tests/test_remote_sandbox_*.py` (new) | The falsifiers below. |
+### `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py` (create)
+- `PlacementRequest` — add — a frozen dataclass: the resolved repo, the authorization's
+  `staged_tree_sha256`, the leg name, and the round id. It carries no vendor or transport
+  fields, so no backend's API shape reaches the core types.
+- `PlacementReceipt` — add — a frozen dataclass:
+  - `kind` (`staged` | `executed`), `backend` (a registered name), `sandbox_ref` (an opaque
+    string the backend chooses) and `snapshot_sha256`;
+  - `attested_by` (`runtime` | `backend`), which is `runtime` only when this process performed
+    the step itself;
+  - `details`, a closed, backend-declared mapping for things like an image identity.
+- `PlacedSandbox` — add — the backend name, the location string (for evidence only), the
+  local tree path or `None`, the receipts, and the `enforced` capability declaration (below).
+- `PlacementBackend` (a `Protocol`) — add — `name`, `available(timeout_s) -> Availability`,
+  `place(request, review_dir) -> PlacedSandbox`, `release(placed)`, and
+  `capabilities() -> frozenset[str]`.
+  - The capability vocabulary is closed: `filesystem_confined`, `network_filtered`,
+    `uid_isolated`, `bounding_set_empty`, `resource_bounded`, `credential_free`.
+  - Each backend declares only what it enforces, so a later cloud adapter cannot over-claim by
+    omission.
+- `LocalBackend` — add — wraps **exactly** today's calls, in today's order: `ensure_staging_space`,
+  `stage_review_tree`, the rename with the path tracked across it, and `mark_as_sandbox`.
+  - `release` performs today's `remove_review_stage`.
+  - It emits one `staged` receipt, `attested_by="runtime"`.
+  - It does not move revalidation, egress or launch. Those stay in `_default_spawn` in their
+    current order.
+- `register_backend(scheme, factory)` / `resolve_backend(location)` — add — a registry keyed by
+  location scheme. It holds only local in this plan. `https://` and cloud schemes resolve to
+  **unregistered**, and later plans register them.
+- `PlacementUnavailable(code, reason)` — add — the typed pre-launch failure every backend
+  raises. It is the only path to a fallback.
 
-**Rebase notes.**
-- `panel_invoker.py` is also touched by agent-harness#1161, #1071 and #1132; re-check
-  `_default_spawn` and `_record_sandbox_facts` at rebase.
-- A change to `panel_invoker.py` or `sandbox_policy.py` drifts the agy pin set, so the next
-  release cut requalifies agy.
+### `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py` (modify)
+- `SandboxLocation` / `parse_location` — modify:
+  - add a `scheme` field: `local`, `hostpath` (the legacy `host:path` form), or a URL scheme
+    such as `https`, `e2b` or `modal`;
+  - bare paths and Windows drive letters parse exactly as today;
+  - `SandboxLocation.__str__` renders a URL location without any userinfo or query, so a
+    credential can never reach evidence.
+- `select_sandbox_root` — modify — a location whose scheme has **no registered backend** is not
+  probed: no `ssh` and no network call. It falls back to local, with reason
+  `"<scheme> placement backend not available in this runtime"` and a `RuntimeWarning`. The
+  legacy `hostpath` probe and floor behaviour stay as they are today; follow-on plan 2 decides
+  its disposition (RD6).
+- `remote_required()` — add — reads `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` in the same style
+  as `sandbox_enabled()`. When it is true and the selection fell back, placement raises
+  `PlacementUnavailable` instead of staging locally.
 
-## Tests and falsifiers
+### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (modify)
+- `_default_spawn` — modify:
+  - PI:8484–8516 become `resolve_backend(...)` then `backend.place(...)`. For local, this is a
+    byte-for-byte equivalent call sequence.
+  - `staged_tree_path` comes from `placed.local_tree`.
+  - The `finally` calls `backend.release(placed)` in place of the direct `remove_review_stage`.
+  - The mkdtemp and resolve, both revalidations, the egress acquisition, launch and
+    `rmtree(base)` are unchanged, in the same order.
+  - `PlacementUnavailable` under `remote_required()` refuses the leg before any provider effect.
+- `_record_sandbox_facts` — modify — its signature takes the `PlacedSandbox`:
+  - keeps every existing field, and `sandbox_root_host` keeps its current meaning;
+  - adds `sandbox_placement_backend`, `sandbox_placement_receipts` (kinds and `attested_by`
+    only, plus the `snapshot_sha256`) and `sandbox_placement_enforced` (the declared
+    capabilities);
+  - `sandbox_root_applied` becomes: a `staged` receipt from the **selected** backend exists
+    **and** (local backend ⇒ today's `path == staged_at.parent` rule). For local this gives the
+    same truth table as today. It can never be true for a backend that produced no receipt;
+  - `sandbox_root_unapplied_reason` carries the fallback reason from `select_sandbox_root`
+    instead of the fixed agent-harness#896 sentence, whenever one exists;
+  - the contextvar reset-token discipline is unchanged.
+- `_HARNESS_DETAIL_CODES` — modify — add exactly one fixed code,
+  `"sandbox_placement_required_unavailable"`, raised as the exception message when
+  `remote_required()` refuses. It flows through `_exception_failure`'s exact-equality branch
+  (around PI:2508).
 
-Each test is a live test on the shipped module, with a control-green and a mutation-red
-receipt. The agent tests run the real agent on loopback, with a test-only CA and the
-loopback flag. Tests that need cgroup delegation or `newuidmap` skip, with a stated reason, on
-a host without them, and the L6 live record covers them.
+  **Frozen-vocabulary note.** The `detail` vocabulary is closed by the agent-harness#1102
+  decision recorded at PI:2115–2130 ("`PanelLegResult.detail` is built ONLY from our own closed
+  vocabulary … a HARNESS CODE — a fixed string this runtime itself emits
+  (`_HARNESS_DETAIL_CODES`)"). This plan adds one member by the mechanism that comment defines.
+  It adds no template, no parametrized code and no new category.
 
-- `test_remote_sandbox_location.py`:
-  - URL parsing; `http://` refused; the loopback test flag honoured only for loopback.
-  - The `host:path` notice.
-  - **R12 static test.** No product file under `phase_loop_runtime/` contains a private or
-    CGNAT **host** address literal. Network addresses written as CIDRs (`10.0.0.0/8`,
-    `100.64.0.0/10` and the like) and addresses inside `SLIRP_UPLINK_CIDR` (the slirp DNS
-    `10.0.2.3`) are exempt. At `input_base_commit` the only code hits are the two
-    `_INFERENCE_ALLOW` rows, so the control goes green once L1 lands. Mutation: reintroduce
-    `_INFERENCE_ALLOW`.
-- `test_remote_sandbox_transport.py`:
-  - The R5 row of the prerequisite table.
-  - The `ssh` spawn counter stays at zero.
-  - Credential-leak checks: the token never appears in argv, logs or evidence (J3-style
-    scan).
-- `test_remote_sandbox_agent.py`:
-  - The R2 digest refusal.
-  - The R6 cross-principal matrix.
-  - Unknown fields rejected; a request cannot widen the egress allowlist or `CapBnd`.
-    Mutation: honour a request's cap list.
-- `test_remote_sandbox_lease.py`: R8 (cancel, client SIGKILL, agent restart, journal
-  fsync-before-launch).
-- `test_remote_sandbox_bounds.py`: R7, per RD5.
-- `test_remote_sandbox_evidence.py`:
-  - R1, R4, R10, R11.
-  - The `applied` truth table: every combination of receipt present or absent, digest match,
-    attestation pass and local-spawn count.
-  - Pre-launch fallback records local.
-  - A post-launch loss never relaunches.
-  - Fail-closed refuses.
-  - `remote_attestation` alone never satisfies `verify_harden_evidence.py`.
-- The existing suites `test_sandbox_policy.py`, `test_sandbox_retention.py` and
-  `test_review_leg_sandbox.py`:
-  - They stay green.
-  - The goldens for an unconfigured root are byte-identical: with no remote configured, no
-    probe runs and the record is unchanged.
+### `phase-loop-runtime/scripts/verify_harden_evidence.py` (modify)
+- `verify_broker` closed key set — modify, **conditionally**. The implementer first builds a
+  sandboxed brokered record with today's code and runs the verifier on it.
+  - If today's `sandbox_*` keys already reach `verify_broker`, add the three new keys beside
+    them, and add a check that `sandbox_root_applied` is true only with a `staged` receipt.
+  - If they never reach it, leave the verifier untouched and record that finding in the PR
+    body.
 
-## Acceptance
+  The recon could not settle which case holds (the facts are merged into `broker.evidence`,
+  around PI:8693), so this plan does not assume either.
 
-- [ ] Every falsifier above has control-green and mutation-red receipts against the shipped
-  module, recorded in its lane and again at the final head. `automation.suite_command`
-  passes at the PR head on a host with cgroup delegation and `uidmap`.
-- [ ] Every agent-harness#896 acceptance item is met, with "host" read as the agent's host:
-  - the root stages remotely or refuses, with no silent local staging;
-  - the floor is checked on the filesystem that holds the sandbox;
-  - egress is applied in the remote namespace;
-  - reaping runs on the remote;
-  - `applied` is true only for real placement.
-- [ ] Each of the six consumer prerequisites has its falsifier, and an L6 live record against
-  a real, general-purpose target. The record is produced by the product's qualify command,
-  with no fleet specifics in the product.
-- [ ] L5 lands only after agent-harness#1132, with the attestation checked against a jail profile
-  digest that has a recorded EC-EXECFIND-2 pass.
-- [ ] The remote residual is recorded in agent-harness#361, beside the agent-harness#1132 D3
-  residual.
-- [ ] RD1–RD6 are ruled by the maintainer before L2 (RD1, RD2), L3 (RD5) and L5 (RD3, RD4)
-  start. RD6 is ruled before L1 merges.
-- [ ] The plan and the implementation each pass a four-vendor board and a president.
+### `phase-loop-runtime/tests/test_sandbox_placement.py` (create)
+- The falsifiers listed under "Verification", each with a named mutation.
 
-## Non-goals
+### `phase-loop-runtime/tests/test_sandbox_egress.py` (modify)
+- The source-grep, around lines 605–606 — modify — to accept the launch site's new
+  `_record_sandbox_facts(` call shape. The existing assertions on `root_applied`, `staged_at`,
+  `sandbox_root_host` and the unapplied reason are kept. The reason text is asserted by prefix
+  only where it now carries the selection reason.
 
-- Our fleet's deployment: endpoint, proxy route, tokens, the host prerequisites, and the
-  consumer's network grant. That is a separate maintainer-gated step, after a release.
-- Writing executors (RD3 (c)) and the SBXEXEC split (RD4 (c)); both need their own plans.
-- The president seat. Container runtimes (agent-harness#891). Widening
-  `SEAT_RETAINABLE_CAPS`, which is a security decision outside this plan.
-- macOS or Windows *agents*. Clients on those platforms are in scope.
-- Resuming an idle remote sandbox across a new lease. It can follow the resume design in
-  `.consiliency/plans/detailed-panel-sandbox-capability-20260918-0800.md` once R8 exists.
+## Documentation impact
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify — document
+  the placement seam and the three new evidence fields. State that `sandbox_root_applied` is
+  receipt-derived, and that a backend's receipts with `attested_by="backend"` are claims and
+  never receipt-class on their own.
+- `docs/phase-loop/convergence-runtime.md` — modify:
+  - `PHASE_LOOP_SANDBOX_ROOT` accepts URL-scheme locations that fall back with a recorded reason
+    until their backend exists;
+  - `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` fails closed.
+- `CHANGELOG.md` — modify — the placement seam, the new evidence fields and the fail-closed knob.
+  A `panel_invoker.py` / `sandbox_policy.py` change drifts the agy pin set, so the next release
+  cut requalifies agy; note that.
+
+## Dependencies & order
+1. **Rebase over agent-harness#1161 first**, if it has merged. It changes the local staging
+   root (`staging_root()`), and `LocalBackend` must wrap whatever `_default_spawn` stages into
+   at rebase time. If #1161 has not merged, land this first; #1161 then rebases onto
+   `LocalBackend.place` as a one-site change.
+2. `sandbox_placement.py` types and the `LocalBackend` wrapper come before `_default_spawn`
+   consumes them.
+3. The `sandbox_policy` scheme parse and `remote_required()` come before the `_default_spawn`
+   fallback branch.
+4. The verifier investigation comes before the evidence-field change is finalized.
+5. Tests are written first with skip-guards on the new symbols, and each gets a RED receipt.
+
+This plan does **not** depend on agent-harness#1132 or agent-harness#1071. It touches none of
+their named `panel_invoker.py` sites except `_default_spawn` and `_record_sandbox_facts`;
+re-check both at rebase.
+
+## Verification
+
+```sh
+cd phase-loop-runtime
+PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' \
+  tests/test_sandbox_placement.py tests/test_sandbox_egress.py tests/test_sandbox_policy.py \
+  tests/test_sandbox_retention.py tests/test_seat_host_uid_1098.py \
+  tests/test_review_monitor_policy.py tests/test_harden_evidence_producer.py \
+  tests/test_review_stage_board_findings.py tests/test_sandbox_preamble.py \
+  tests/test_panel_invoker_timeout_argv.py tests/test_panel_tui_workspace_trust_223.py
+```
+
+Falsifiers in `tests/test_sandbox_placement.py`. Each has a control-green receipt and a
+named mutation that must turn it red:
+
+- **Local equivalence.**
+  - Record the call order of `ensure_staging_space`, `stage_review_tree`, rename,
+    `mark_as_sandbox`, `_revalidate_staged_tree`, `revalidate_review_isolation_authorization`,
+    `isolated_network` and `remove_review_stage` with and without the seam.
+  - The sequences are identical, and so are the provider argv and `provider_cwd_sha256`.
+  - Mutation: call `mark_as_sandbox` before the rename.
+- **An unregistered scheme never probes.**
+  - With `PHASE_LOOP_SANDBOX_ROOT=https://example.invalid/x` or `e2b://tpl`, a `subprocess` spy
+    records no `ssh`, and a socket spy records no connect.
+  - The leg stages locally with `sandbox_root_fell_back=True`, a reason naming the scheme, and
+    `sandbox_root_applied=True` for the local receipt.
+  - Mutation: route unknown schemes to `_probe_root`.
+- **Receipt-derived `applied`.** A fake registered backend that returns a `PlacedSandbox`
+  with no `staged` receipt yields `sandbox_root_applied=False` and an unapplied reason.
+  Mutation: derive `applied` from the selection.
+- **Fail closed.** `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1` with an unregistered scheme ends
+  the leg with detail `sandbox_placement_required_unavailable`, with zero provider spawns
+  (spawn-seam counter) and no local stage directory. Mutation: ignore `remote_required()`.
+- **No credential in evidence.** `https://user:tok@host/p?k=v` is recorded as
+  `https://host/p` in every sandbox field. Mutation: `str(location)` with userinfo.
+- **Vocabulary.** The new code is a member of `_HARNESS_DETAIL_CODES`, and
+  `_finalize_leg_detail` passes it through unchanged.
+
+Edge cases:
+- A Windows drive-letter root still parses as local.
+- A `hostpath` root keeps today's probe and `applied=False` record, byte-identical.
+- With nothing configured, no probe runs, and the goldens and argv tests above stay green.
+
+Run the suite on a tree **left untouched** for its duration.
+
+## Acceptance criteria
+- [ ] With no `PHASE_LOOP_SANDBOX_ROOT`, the local-equivalence falsifier shows an identical
+  placement call order, provider argv and `provider_cwd_sha256` before and after the seam.
+  Every test file named in `automation.suite_command` passes.
+- [ ] With `PHASE_LOOP_SANDBOX_ROOT=https://example.invalid/x`, the leg record shows the
+  following, and the `ssh` and socket spies record zero calls:
+  - `sandbox_placement_backend="local"`;
+  - `sandbox_root_fell_back=True`, with a reason naming `https`;
+  - a `staged` receipt with `attested_by="runtime"`.
+- [ ] A fake backend that returns no `staged` receipt yields `sandbox_root_applied=False`.
+  Mutating `applied` to derive from the selection turns
+  `test_sandbox_placement.py::test_applied_requires_staged_receipt` red.
+- [ ] With `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1` and an unregistered scheme, the leg ends
+  with detail `sandbox_placement_required_unavailable` and the spawn-seam counter reads 0.
+
+## Follow-on plans
+
+Each is its own bounded detailed plan, written after the one before it lands. They are listed
+here so the seam above is designed against them. They are not planned in detail here.
+
+### Plan 2: egress allowlist without fleet addresses (small, independent)
+- **Scope.** `sandbox_policy._INFERENCE_ALLOW` hard-codes one private address on ports 8020 and
+  3131, which the consumer comment names. Replace it with `PHASE_LOOP_SANDBOX_EGRESS_ALLOW`
+  (`host:port`, comma-separated, default empty). Add a static test: no private or CGNAT
+  **host** address literal appears in product code. CIDR network constants and the slirp range
+  are exempt.
+- **Dependencies.** None; it can land before or after plan 1. Our fleet's value is set in
+  deployment config later, as a maintainer-gated step.
+
+### Plan 3: self-hosted remote backend over authenticated HTTPS
+- **Scope.**
+  - The agent: `phase-loop sandbox-agent serve`, in the same wheel and Linux-only. It fails
+    closed. It is registered for `https://`.
+  - The client: stdlib TLS with no insecure mode, and no `ssh` spawned.
+  - A version and profile handshake.
+  - Snapshot streaming. The agent recomputes `review_tree_manifest_sha256`, which must equal the
+    authorization's `staged_tree_sha256`.
+  - Per-principal workspaces, and a subordinate uid per seat.
+  - A cgroup v2 scope per seat: `memory.max`, `pids.max`, `cpu.max`, and a disk bound (RD5).
+  - A heartbeat lease with an fsynced journal, cancel, and a startup reaper for owner loss,
+    agent restart and reboot.
+  - The agent's own retention, floor and cap.
+  - An attestation run inside the jail: the J6/J15 probe, the egress `enforcement_report`,
+    cgroup values, and a nonce bound to the snapshot. It gates the leg but is never
+    receipt-class.
+  - The local runtime ingests output bytes under J10-equivalent checks and the token scan.
+  - A qualification command, `sandbox-remote qualify <url>`.
+- **Parity, per route.** Jailed legs (Claude, and Gemini if agent-harness#1132 L3 is in scope)
+  get the full agent-harness#1132 jail. Codex and grok, only if RD3 (ii) is chosen, keep their
+  current route: `CapBnd` exactly `SEAT_RETAINABLE_CAPS` (`setfcap`) for codex, and empty for
+  grok. They run under a remote subordinate uid and keep `seat_filesystem_unconfined`.
+- **Consumer prerequisites and their falsifiers:**
+
+  | Prerequisite | Falsifier |
+  |---|---|
+  | Receipts | Staging and execution receipts are present, with zero local provider spawns. |
+  | Per-user auth and workspace | Cross-principal list, get, cancel and reap are refused 403/404; concurrent seats have distinct uids. |
+  | Bounds | A fork bomb stops at `pids.max`; an OOM kill stays inside the scope; the CPU is throttled; the disk bound is hit. |
+  | Transport | `http://` is refused, a bad CA is refused, the `ssh` spawn count is 0, and the peer port is recorded. |
+  | Cleanup | Cancel; client SIGKILL (the scope is gone within the TTL plus grace); agent restart (reaped from the journal). |
+  | Retention | Below the floor, a typed refusal becomes a local fallback; over the cap, the oldest sandbox is reaped after `work/` is archived. |
+
+- **Dependencies.**
+  - It needs plan 1.
+  - The substrate, qualified with a null workload, can land before agent-harness#1132.
+  - Remote **jailed-seat** launch waits on agent-harness#1132, which waits on agent-harness#1071.
+    It also needs the provider CLIs at their qualified pins on the target, with the #1132 probes
+    replayed there.
+  - Remote fallback lands on agent-harness#1161's disk-backed `staging_root()`.
+- **Open decisions:** RD1–RD6 below.
+
+### Plan 4: E2B cloud backend (first cloud adapter)
+- **Scope.**
+  - An `E2BBackend`, registered for the `e2b` scheme, in a lazily imported module.
+  - The SDK is an optional extra, `phase-loop-runtime[e2b]`, following the existing `visual`
+    extra pattern in `phase-loop-runtime/pyproject.toml`. The core install never imports `e2b`.
+    The package is `e2b` on PyPI, version 2.51.0 on 2026-09-18, with 12 dependencies including
+    httpx and protobuf ([pypi](https://pypi.org/project/e2b/),
+    [pyproject](https://raw.githubusercontent.com/e2b-dev/E2B/main/packages/python-sdk/pyproject.toml)).
+    Without the extra, the scheme is unregistered and plan 1's fallback applies.
+- **Adapter rule.** Nothing E2B-specific enters `sandbox_placement.py`: no template, build,
+  `allow_out` or timeout type. The E2B identity goes only into `PlacementReceipt.details`, under
+  keys the adapter declares. A Modal or Daytona adapter is another `PlacementBackend`.
+
+**Templates and image pinning.**
+- The seat image is an E2B template built with the SDK `Template()` builder. The CLI
+  `template init` is an alternative ([quickstart](https://docs.e2b.dev/template/quickstart)).
+- `Template.build(...)` returns `BuildInfo(name, template_id, build_id)`
+  ([build](https://docs.e2b.dev/template/build.md)).
+- Tags can be moved, so the adapter pins `Sandbox.create("<name>:<build_id>")` and never a tag
+  ([tags](https://docs.e2b.dev/template/tags.md)).
+- E2B documents no content digest. The template therefore carries a runtime-written manifest
+  with the hash of every toolchain binary and the CLI versions, built from the same pins as
+  local seats. The in-VM attestation hashes it.
+- Only `E2B_TEMPLATE_ID` is visible inside the VM
+  ([env vars](https://docs.e2b.dev/sandbox/environment-variables.md)), and `SandboxInfo` has no
+  `build_id`. So the receipt records the **requested** build id as `attested_by="runtime"`, and
+  the manifest hash as `attested_by="backend"`, labelled as a claim.
+
+**Snapshot upload with no credentials.**
+- The adapter uploads the staged tree with `files.write_files` (a batch write)
+  ([upload](https://docs.e2b.dev/filesystem/upload.md)).
+- It never uses `sandbox.git.clone`, which could put credentials into the sandbox through
+  `dangerouslyStoreCredentials` ([git](https://docs.e2b.dev/sandbox/git-integration.md)).
+- The in-VM attestation recomputes the tree digest. A mismatch refuses the leg before launch.
+- E2B documents no size limit, so plan 4 measures one.
+
+**Egress: what E2B can and cannot enforce against our `sandbox_egress` policy.** E2B filters
+at an egress proxy outside the VM, through `network={"allow_out", "deny_out"}` with IPs, CIDRs
+and domains. `allow_internet_access=False` is equivalent to `deny_out=["0.0.0.0/0"]`
+([internet access](https://docs.e2b.dev/sandbox/internet-access),
+[network](https://docs.e2b.dev/network/internet-access.md)).
+
+| Our guarantee | E2B | Behaviour |
+|---|---|---|
+| Deny RFC 1918, CGNAT, link-local and metadata | **Can**, by listing those CIDRs in `deny_out`. The docs do not state the default, so it is proven per sandbox, not assumed. | The pre-launch in-VM connect probe to each range must fail. If any connect succeeds, the leg is refused before launch. |
+| Allow the public internet | **Can** (the default). | Probed: one public name resolves and a public host answers. |
+| `host:port` allowlist into a private network | **Cannot**. Domain rules apply only on ports 80/443, there is no per-port rule, and "allow beats deny", so an allow entry would reopen a denied range. The operator's private network is unreachable from the cloud anyway. | A leg whose policy needs a non-empty private allowlist is refused cloud placement with a typed code, and falls back or fails closed per plan 1. |
+| Loopback services unreachable | **Not applicable** in the same way. The VM's loopback holds only E2B's in-VM daemon, and none of the operator's services. | Recorded as a difference; nothing to enforce. |
+| UDP/QUIC and DNS | **Partly.** QUIC is not domain-filtered, and domain rules auto-allow `8.8.8.8` for DNS. | The adapter uses CIDR rules only, never domain rules. The residual is recorded. |
+| Enforcement authority | E2B's proxy, which the runtime cannot observe. | The in-VM probe result is `attested_by="backend"`, never receipt-class. |
+
+**Confinement parity with the agent-harness#1132 jail.** Each sandbox is a Firecracker
+microVM with its own kernel
+([security](https://docs.e2b.dev/faq/security-and-compliance.md)). What it gives instead of
+each jail item:
+
+| Jail item | What E2B gives | Parity |
+|---|---|---|
+| Operator filesystem unreachable (J1/J2) | The VM holds none of the operator's files. | **Stronger** |
+| No sibling access (J4) | One sandbox per seat, each its own VM. | **Stronger** |
+| Subordinate uid (J15, D8) | The default user is `user` ([user](https://docs.e2b.dev/template/user-and-workdir.md)). Passwordless sudo is reported by third parties, not by E2B's docs. Inside the VM, a uid is not the boundary. | **Not equivalent.** The template can remove sudo and run the seat under a dedicated uid; the attestation proves it. |
+| `CapBnd = 0` (J6, agent-harness#999) | Achievable inside the VM with `setpriv --bounding-set=-all`, if the template ships util-linux. | Achievable; probed per sandbox |
+| Codex keeps `CAP_SETFCAP` for its nested bwrap | Depends on unprivileged user namespaces in the guest kernel (6.1 LTS, [how it works](https://docs.e2b.dev/template/how-it-works.md)). Not documented. | **Unknown.** Measured in plan 4; if absent, codex is refused cloud placement. |
+| Seccomp J14 | Only if bwrap runs inside the guest. Not documented. | **Unknown**; measured |
+| No credentials in the sandbox | The E2B API key is not among the documented in-VM variables. Seat CLIs need subscription credentials. | See CD1 |
+| Code confidentiality | The tree, the output and any credential are visible to a third party (E2B). | **New residual.** See CD2 |
+| Exact snapshot, local outcome authority | The same as plan 3. | Equal |
+
+**Limits, cost and cleanup.**
+
+| Plan tier | vCPU | RAM | Disk | Max lifetime |
+|---|---|---|---|---|
+| Hobby | 8 | 8 GiB | 10 GiB | 1 h |
+| Pro | 8+ | 8+ GiB | 20+ GiB | 24 h |
+
+- The defaults are 2 vCPU / 512 MiB and a 5-minute timeout, with kill on timeout. Billing is
+  per second while a sandbox runs ([billing](https://docs.e2b.dev/billing.md),
+  [lifetime](https://docs.e2b.dev/faq/sandbox-lifetime.md)).
+- Paused sandboxes are kept until killed ([persistence](https://docs.e2b.dev/sandbox/persistence.md)).
+- **How the adapter avoids leaking paid sandboxes:**
+  - It **never** uses `on_timeout="pause"` or auto-pause.
+  - It creates each sandbox with `timeout = lease_ttl` and extends it with `set_timeout` as the
+    heartbeat. When the owner dies, E2B's own timer kills the VM whether or not the client is
+    alive.
+  - It tags every sandbox with metadata: owner id, round id, leg and runtime version
+    ([metadata](https://docs.e2b.dev/sandbox/metadata.md)).
+  - It runs a reaper at startup and periodically. The reaper uses
+    `Sandbox.list(metadata={"phase_loop_owner": …})`
+    ([list](https://docs.e2b.dev/sandbox/list.md)) and kills every sandbox with no live local
+    lease.
+  - It calls `kill()` in the backend's `release`.
+- **Falsifiers.**
+  - With a fake SDK: SIGKILL of the client leaves `list()` empty after `lease_ttl` plus grace.
+    Mutations: create with a 24-hour timeout; `on_timeout="pause"`; the reaper skips the
+    metadata filter.
+  - Live, in the plan 4 qualification: the same, against a real project, with billed seconds
+    recorded.
+- **Cost caps** are a maintainer decision (CD3). E2B's own concurrency limits are 20 on Hobby,
+  and from 100 on Pro.
+
+**The E2B API key.**
+- It is read only from the local runtime's environment (`E2B_API_KEY`) or a 0600 config file,
+  and passed only to the SDK constructor.
+- A falsifier scans every `commands.run` env, every uploaded byte, the evidence and the leg
+  logs for the key.
+- Keys are scoped to one project, with no per-key restriction documented
+  ([projects](https://docs.e2b.dev/projects.md)). So the operator docs recommend a dedicated
+  E2B project for harness sandboxes, which also bounds the blast radius and the plan limits.
+- Evidence records the project name and never the key.
+- Secured envd access (the `X-Access-Token`) stays on, the SDK v2 default
+  ([secured access](https://docs.e2b.dev/sandbox/secured-access.md)).
+- Public port exposure is not used. If it ever is, it uses `allow_public_traffic=False`
+  ([restrict public access](https://docs.e2b.dev/network/restrict-public-access.md)).
+
+**Evidence.**
+- Receipts:
+  - `staged`, with the sandbox id returned by `create`;
+  - `executed`, from the command handle;
+  - the requested `name:build_id`, the reported `E2B_TEMPLATE_ID`, the template-manifest hash
+    and the in-VM egress probe result.
+- `sandbox_root_applied` is true only when the `staged` and `executed` receipts share one
+  sandbox id and the spawn-seam counter reads 0.
+- Everything E2B reports is `attested_by="backend"`, and remote output is never receipt-class
+  by itself. The local runtime ingests the bytes under J10-equivalent checks.
+
+**Seat CLIs in E2B.** claude, codex and agy all need subscription credentials, which conflicts
+with "no credentials in the sandbox". The options are CD1 below. E2B also documents secret
+injection at its egress proxy ([network](https://docs.e2b.dev/network/internet-access.md)),
+which keeps a secret out of the VM but not away from the vendor.
+
+**Dependencies.**
+- It needs plan 1.
+- It needs plan 3's attestation checker, output ingestion and lease model, which are reused and
+  not rebuilt. Plan 3's substrate lanes must land first.
+- Any seat workload inside E2B also waits on agent-harness#1132, and on CD1.
+
+## Open maintainer decisions (not ruled here)
+
+RD numbers belong to plan 3 and CD numbers to plan 4; plan 1 needs none. Each recommendation
+is the planner's.
+
+- **RD1 Remote server process model.**
+  - **(a) Recommended:** one agent per user, as a systemd user service behind the host's HTTPS
+    proxy. Separation between principals is then enforced by the OS.
+  - (b) One multi-tenant daemon under a dedicated account, with its subuid range partitioned.
+    Simplest to run, but separation rests on agent code.
+  - (c) A socket-activated worker per request. The leases and the journal need separate
+    state.
+  - (d) A container runtime, agent-harness#891, which is still deferred.
+- **RD2 Remote authentication.**
+  - **(a) Recommended:** a per-principal bearer token, with the server storing only its hash,
+    and an optional server-certificate pin.
+  - (b) mTLS. Proxies make it fragile.
+  - (c) A proxy identity header. Deployment-specific.
+  - (d) SSH-key request signing, without an SSH transport.
+- **RD3 v1 scope.**
+  - Workloads:
+    - **(a) Recommended:** board seats only.
+    - (b) plus read-only executor legs.
+    - (c) plus writing executors.
+  - Legs:
+    - (i) jailed legs only.
+    - **(ii) Recommended:** also codex and grok, on their current route under a remote
+      subordinate uid.
+- **RD4 How the seat credential reaches a self-hosted remote.**
+  - **(a) Recommended:** forwarded per leg into the J3 token pipe, never persisted, plus a
+    signed attestation.
+  - (b) A remote-resident credential.
+  - (c) Inference local and execution remote: the SBXEXEC design, agent-harness#848.
+- **RD5 Disk bound.**
+  - **(a) Recommended:** project quotas, with a watchdog as the typed degraded mode.
+  - (b) A watchdog only.
+  - (c) A filesystem per principal.
+- **RD6 The legacy `host:path` SSH form.**
+  - **(a) Recommended:** record-only, with a typed notice.
+  - (b) An optional SSH adapter later.
+  - (c) A configuration error.
+- **CD1 Seat CLI credentials in the cloud.**
+  - **(a) Recommended for v1:** cloud runs only **credential-free** workloads. That means reviewed
+    code execution: the agent-harness#848 executor role, such as a seat's test and falsifier
+    runs. Seat CLIs stay local or on a self-hosted remote.
+  - (b) The CLI runs locally and only tool execution goes to E2B, through a harness-owned tool
+    bridge. This is SBXEXEC, a larger design.
+  - (c) A brokered credential proxy: the VM gets a short-lived, revocable capability, and a proxy
+    the runtime controls injects the real credential. The proxy must be reachable from the cloud,
+    and the subscription CLIs must support routing through it; neither is established.
+  - (d) The credential is forwarded into the VM, or injected by E2B's egress proxy. The credential
+    then leaves our custody to a third party. This contradicts "no credentials in the sandbox"
+    for (d)-forwarded.
+- **CD2 Acceptable confinement gaps in the cloud.** Code confidentiality toward the vendor, the
+  in-VM uid not being a boundary, codex's `CAP_SETFCAP` nested sandbox where the guest cannot
+  support it, and seccomp J14.
+  - **(a) Recommended:** refuse cloud placement for any leg whose gap is not closed by
+    measurement, and require a per-repository opt-in acknowledging vendor visibility.
+  - (b) Accept the recorded gaps globally.
+  - (c) Cloud only for public repositories.
+- **CD3 Cost caps.**
+  - **(a) Recommended:** per-run caps on concurrent cloud sandboxes and total sandbox-seconds,
+    plus a per-day ceiling in the operator config. Exceeding a cap refuses before create, with a
+    recorded reason, then falls back or fails closed.
+  - (b) Rely on E2B's plan limits only.
+  - (c) Per-run caps only.
+- **CD4 Cloud opt-in granularity.**
+  - **(a) Recommended:** off by default, enabled per run by configuration, with a per-seat
+    allowlist of eligible legs.
+  - (b) Per board preset.
+  - (c) Per seat only.
 
 ## Execution Policy
 
-- execute: effort=high, reason=a new network-facing service on the security boundary of an
-  attested launch surface
+- execute: effort=high, reason=refactor of the attested launch site and its evidence record; a
+  behaviour-preserving seam whose falsifiers must prove byte-identical local placement
