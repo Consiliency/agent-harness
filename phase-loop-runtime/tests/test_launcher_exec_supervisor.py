@@ -1003,7 +1003,7 @@ def test_executor_gets_exactly_the_launching_threads_signal_mask(monkeypatch, le
         import json, os, sys, time
         from pathlib import Path
         blk = next(l for l in Path("/proc/self/status").read_text().splitlines() if l.startswith("SigBlk:"))
-        Path(sys.argv[1]).write_text(json.dumps({"mask": int(blk.split()[1], 16), "ppid": os.getppid()}))
+        Path(sys.argv[1]).write_text(json.dumps({"mask": int(blk.split()[1], 16), "pid": os.getpid(), "ppid": os.getppid()}))
         time.sleep(30)
         """,
         str(marker),
@@ -1036,9 +1036,13 @@ def test_executor_gets_exactly_the_launching_threads_signal_mask(monkeypatch, le
         forwarding = _bit(signal.SIGTERM) | _bit(signal.SIGINT) | _bit(signal.SIGALRM)
         assert supervisor_mask == expected & ~forwarding, (hex(supervisor_mask), hex(expected))
     finally:
-        # Stop the executor even when an assertion fails, so it never outlives the test.
+        # Stop the executor even when an assertion fails (or forwarding is
+        # broken), so it never outlives the test.
         os.kill(observed["ppid"], signal.SIGTERM)
-    thread.join(15)
+        thread.join(15)
+        if thread.is_alive():
+            os.kill(observed["pid"], signal.SIGKILL)
+            thread.join(15)
     assert not thread.is_alive() and "error" not in outcome, outcome
     # SIGTERM kills the executor; if the executor blocks it, the 1 s SIGKILL
     # escalation does.  Either way a signal death maps to 1.
