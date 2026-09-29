@@ -344,7 +344,10 @@ def test_executor_env_cwd_descriptors_and_signals_match_the_popen_handoff(monkey
         # of a redirected descriptor (fd 10) open after its first redirection.
         'echo FDS-BEGIN; ls /proc/$$/fd; echo FDS-END; '
         'cat /proc/$$/environ > "$1.environ"; readlink /proc/$$/cwd > "$1.cwd"; '
-        'grep -E "^(SigIgn|SigBlk):" /proc/$$/status > "$1.sig"; cut -d" " -f1,5,6 /proc/$$/stat > "$1.stat"; '
+        # Builtins only: a forked grep would read the shell's mask while dash
+        # blocks every signal to wait for it (the CI red of 2026-09-29).
+        'while read -r line; do case "$line" in SigIgn:*|SigBlk:*) echo "$line";; esac; done < /proc/$$/status > "$1.sig"; '
+        'cut -d" " -f1,5,6 /proc/$$/stat > "$1.stat"; '
         'echo $PPID > "$1.ppid"; while [ ! -e "$1.release" ]; do sleep 0.02; done'
     )
     # No LANG/LC_*: an interpreter in the handoff would coerce LC_CTYPE (PEP 538).
@@ -806,7 +809,9 @@ def test_termination_before_release_withholds_go_even_when_the_child_ignores_sig
     _supervisor_with_prelude(
         monkeypatch, "import signal, time", "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
         "real_sigmask = signal.pthread_sigmask", "def paused_sigmask(how, mask):",
-        "  if how == signal.SIG_BLOCK:", *("  " + line for line in _pause_prelude(pause_file, resume_file)),
+        # Pause at the release span (TERM blocked), not at the startup mask read.
+        "  if how == signal.SIG_BLOCK and signal.SIGTERM in set(mask):",
+        *("  " + line for line in _pause_prelude(pause_file, resume_file)),
         "  return real_sigmask(how, mask)", "signal.pthread_sigmask = paused_sigmask",
     )
     token = probe_token
@@ -974,3 +979,85 @@ def test_forwarding_is_off_before_the_executor_leader_is_reaped(monkeypatch, lea
     state = json.loads(record.read_text())
     assert state["SIGTERM"] == state["SIGINT"] == state["SIGALRM"] == "SIG_IGN", state
     assert state["timer"] == [0.0, 0.0], state
+
+
+
+def _sigblk(pid: int | str) -> int:
+    for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+        if line.startswith("SigBlk:"):
+            return int(line.split()[1], 16)
+    raise AssertionError("no SigBlk")
+
+
+def _bit(signum: int) -> int:
+    return 1 << (int(signum) - 1)
+
+
+def test_executor_gets_exactly_the_launching_threads_signal_mask(lease_fd, tmp_path):
+    # The launcher calls Popen from a thread with SIGUSR1 blocked: the executor
+    # must be exec'd with exactly that mask (as a preexec child of that thread
+    # was), and the supervisor must forward with TERM/INT unblocked.
+    marker = tmp_path / "marker.json"
+    command = _python(
+        """
+        import json, os, sys, time
+        from pathlib import Path
+        blk = next(l for l in Path("/proc/self/status").read_text().splitlines() if l.startswith("SigBlk:"))
+        Path(sys.argv[1]).write_text(json.dumps({"mask": int(blk.split()[1], 16), "ppid": os.getppid()}))
+        time.sleep(30)
+        """,
+        str(marker),
+    )
+    outcome = {}
+
+    def run():
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        try:
+            outcome["result"] = _launch_supervised(command, lease_fd, tmp_path)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while not marker.exists() or not marker.read_text():
+        assert "error" not in outcome, outcome.get("error")
+        assert time.monotonic() < deadline, "executor never reported its mask"
+        time.sleep(0.02)
+    observed = json.loads(marker.read_text())
+    expected = _bit(signal.SIGUSR1)
+    assert observed["mask"] == expected, hex(observed["mask"])
+    supervisor_mask = _sigblk(observed["ppid"])
+    assert supervisor_mask & (_bit(signal.SIGTERM) | _bit(signal.SIGINT)) == 0, hex(supervisor_mask)
+    assert supervisor_mask == expected, hex(supervisor_mask)
+    os.kill(observed["ppid"], signal.SIGTERM)
+    thread.join(15)
+    assert not thread.is_alive() and "error" not in outcome, outcome
+    assert outcome["result"].returncode == 1  # the forwarded SIGTERM killed the executor
+
+
+def test_supervisor_blocking_never_leaks_into_the_executor(monkeypatch, lease_fd, tmp_path):
+    # Whatever the supervisor blocks for itself before the fork must not reach
+    # the executor: it is exec'd with exactly the handoff mask.
+    marker = tmp_path / "marker.json"
+    _supervisor_with_prelude(
+        monkeypatch,
+        "import signal",
+        "real_initial_environment = module._initial_environment",
+        "def blocking_initial_environment():",
+        "    environment = real_initial_environment()",
+        "    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR2})",
+        "    return environment",
+        "module._initial_environment = blocking_initial_environment",
+    )
+    command = _python(
+        """
+        import json, sys
+        from pathlib import Path
+        blk = next(l for l in Path("/proc/self/status").read_text().splitlines() if l.startswith("SigBlk:"))
+        Path(sys.argv[1]).write_text(json.dumps({"mask": int(blk.split()[1], 16)}))
+        """,
+        str(marker),
+    )
+    assert _launch_supervised(command, lease_fd, tmp_path).returncode == 0
+    assert json.loads(marker.read_text())["mask"] == _sigblk("thread-self"), "supervisor-side blocking leaked into the executor"

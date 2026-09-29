@@ -264,6 +264,7 @@ def _exec_executor(
     grouped_fd: int,
     environment: dict[bytes, bytes],
     inherited_sigchld: object = signal.SIG_DFL,
+    handoff_mask: set[int] | None = None,
 ) -> None:
     """Forked-executor half: become a subreaping session leader, wait for go, then exec."""
 
@@ -294,6 +295,10 @@ def _exec_executor(
             return  # the supervisor died before supervision was ready: never exec
         _report(status_fd, "released")
         try:
+            if handoff_mask is not None:
+                # Exactly the mask the launcher handed us: nothing the supervisor
+                # blocks on its own behalf may leak into the executor.
+                signal.pthread_sigmask(signal.SIG_SETMASK, handoff_mask)
             os.execvpe(command[0], command, environment)
         except OSError as exc:
             _report(status_fd, f"exec:{exc.errno or 0}")
@@ -306,6 +311,9 @@ def _exec_executor(
 def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
     """Fork the executor, then retain the lease until its whole tree is gone."""
 
+    # The mask the launcher handed us, recorded before the supervisor blocks
+    # anything for itself; the executor is exec'd with exactly this mask.
+    handoff_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
     held_status_fd: int | None = None
     try:
         held_status_fd = status_fd if _handed_through(status_fd) else None
@@ -331,7 +339,7 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         # supervisor is already gone, and the GO read sees EOF.
         os.close(go_write)
         os.close(grouped_read)
-        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment, inherited_sigchld)
+        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment, inherited_sigchld, handoff_mask)
 
     os.close(go_read)
     os.close(grouped_write)
