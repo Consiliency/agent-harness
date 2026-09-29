@@ -637,12 +637,21 @@ _MEMBERSHIP_QUERY = (
 _DEQUEUE_MUTATION = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}"
 
 
-def dequeue(workspace: str | Path, *, repo_slug: str, pr_number: int, host: str) -> bool:
-    """Remove a PR from the merge queue and cancel auto-merge; True when both are
-    confirmed gone. It issues only ``dequeuePullRequest``, ``gh pr merge --disable-auto``
-    and read-only confirmation reads, each bound to the broker-validated host."""
-    number = str(int(pr_number))
-    view = _spawn(["gh", "pr", "view", number, "--repo", repo_slug, "--json", "id"], cwd=workspace)
+def dequeue(workspace: str | Path, *, repo_slug: str, host: str, pr_number: int | None = None,
+            selector: str | None = None, confirm: bool = True) -> bool:
+    """Remove a PR from the merge queue and cancel auto-merge. It issues only
+    ``dequeuePullRequest`` and ``gh pr merge --disable-auto``, plus read-only reads, each
+    bound to the broker-validated host and repository. The PR is ``pr_number``, or the
+    caller's head-branch ``selector`` (``gh``'s own branch-to-PR resolution, as
+    ``train_runner`` has always used). With ``confirm`` (a number is then required) it
+    returns True only when membership and auto-merge are both confirmed gone; a caller that
+    confirms by its own read passes ``confirm=False`` and gets True once both were attempted."""
+    if (pr_number is None) == (selector is None):
+        raise MergeGuardRefusal("panel_merge_grammar", "dequeue needs exactly one of a PR number or a selector")
+    target = str(int(pr_number)) if pr_number is not None else str(selector)
+    if target.startswith("-") or "://" in target:
+        raise MergeGuardRefusal("panel_merge_grammar", f"dequeue selector {target!r} is not a number or a branch")
+    view = _spawn(["gh", "pr", "view", target, "--repo", repo_slug, "--json", "id"], cwd=workspace)
     try:
         node_id = json.loads(view.stdout).get("id") if view.returncode == 0 else None
     except (ValueError, AttributeError):
@@ -650,9 +659,13 @@ def dequeue(workspace: str | Path, *, repo_slug: str, pr_number: int, host: str)
     if node_id:
         _spawn(["gh", "api", "graphql", "--hostname", host, "-f", f"query={_DEQUEUE_MUTATION}", "-f",
                 f"id={node_id}"], cwd=workspace)
-    _spawn(["gh", "pr", "merge", number, "--repo", repo_slug, "--disable-auto"], cwd=workspace)
-    queued = _in_merge_queue(repo_slug, host, int(number))
-    state = _spawn(["gh", "pr", "view", number, "--repo", repo_slug, "--json", "autoMergeRequest"], cwd=workspace)
+    _spawn(["gh", "pr", "merge", target, "--repo", repo_slug, "--disable-auto"], cwd=workspace)
+    if not confirm:
+        return True
+    if pr_number is None:
+        raise MergeGuardRefusal("panel_merge_grammar", "a confirmed dequeue needs the PR number")
+    queued = _in_merge_queue(repo_slug, host, int(pr_number))
+    state = _spawn(["gh", "pr", "view", target, "--repo", repo_slug, "--json", "autoMergeRequest"], cwd=workspace)
     try:
         auto = json.loads(state.stdout).get("autoMergeRequest") if state.returncode == 0 else "unreadable"
     except (ValueError, AttributeError):

@@ -1580,21 +1580,15 @@ def _dequeue_pr(workspace: Path, branch: str) -> bool:
     repo_args, env_override = _gh_repo_binding(workspace)
     host = _gh_host_from_repo_args(repo_args)
     try:
-        got = subprocess.run(
-            ["gh", "pr", "view", branch, *repo_args, "--json", "number"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=15, env=env_override,
-        )
-        if got.returncode != 0:
-            return False
-        number = (json.loads(got.stdout or "{}") or {}).get("number")
         owner_repo = repo_args[1] if len(repo_args) >= 2 and repo_args[0] == "--repo" else None
-        if number is None or not owner_repo or not host:
+        if not owner_repo or not host:
             return False
         # PANEL (agent-harness#1078): the dequeue mutation and `--disable-auto` live in
-        # `merge_guard.dequeue`, bound to the broker-validated host. Both are ATTEMPTED;
-        # the membership CONFIRM below stays AUTHORITATIVE (an already-kicked PR errors
-        # 'not queued' on the mutation yet IS cleanly gone).
-        merge_guard.dequeue(workspace, repo_slug=owner_repo, pr_number=int(number), host=host)
+        # `merge_guard.dequeue`, bound to the broker-validated host and repository and
+        # selecting the PR by its head branch as before. Both are ATTEMPTED; the membership
+        # CONFIRM below stays AUTHORITATIVE (an already-kicked PR errors 'not queued' on the
+        # mutation yet IS cleanly gone).
+        merge_guard.dequeue(workspace, repo_slug=owner_repo, host=host, selector=branch, confirm=False)
         # CONFIRM (authoritative): BOTH the queue entry AND auto-merge are gone AND the
         # PR is not (already) MERGED. Unreadable membership / a surviving entry or
         # auto-merge → False → the caller's loud `unreconciled` halt (never a fail-open

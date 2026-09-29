@@ -479,8 +479,13 @@ class TestLiveMergePrFabPromotion:
         with patch("phase_loop_runtime.fab_canonical.equivalent", side_effect=_boom):
             fake = _make_gh_fake(base_ref="main", head=head)
             with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 sha = _live_merge_pr(
-                    repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc"
+                    repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         assert sha == "sha-realmerge"
 
@@ -508,9 +513,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_gh_fake(base_ref="main", head=head, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="fab-promotion-reassertion-unresolvable"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head,
                     run_id="run-never-persisted", fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -545,9 +555,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_gh_fake(base_ref="main", head=head, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="fab-promotion-reassertion-unresolvable"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head,
                     run_id=run_id, fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], (
@@ -562,8 +577,13 @@ class TestLiveMergePrFabPromotion:
 
         fake = _make_gh_fake(base_ref="main", head=head)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id="run-p3", fab_fetch_origin="fetchsrc"
+                repo, "feat/pr1", base="main", head_sha=head, run_id="run-p3", fab_fetch_origin="fetchsrc",
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-realmerge"
 
@@ -588,9 +608,14 @@ class TestLiveMergePrFabPromotion:
             # gate; content drift surfaces as a review_gate_block with the
             # content_drift equivalence reason.
             with pytest.raises(RuntimeError, match=r"fab-promotion-reassertion-failed.*content_drift.*design §4\.4"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=drifted_head,
                     run_id="run-p4", fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], "gh pr merge must never be invoked when the FAB re-assertion refuses"
@@ -609,9 +634,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_gh_fake(base_ref="main", head=None, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="fab-promotion-reassertion-unresolvable"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=None,
                     run_id="run-p5", fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls == [], "gh pr merge must never be invoked when live identity is unresolvable"
@@ -633,9 +663,14 @@ class TestLiveMergePrFabPromotion:
         with patch("phase_loop_runtime.fab_canonical.equivalent", side_effect=_boom):
             fake = _make_gh_fake(base_ref="main", head=drifted_head)
             with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 sha = _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=drifted_head,
                     run_id="run-p6", fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         assert sha == "sha-realmerge"
 
@@ -653,9 +688,14 @@ class TestLiveMergePrFabPromotion:
         calls: list = []
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=1, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq", fab_fetch_origin="fetchsrc",
-                _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline
+                _clock=lambda: 0.0, _sleep=lambda _s: None,  # no real time; never hits the deadline,
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-queuemerge"
         assert [c for c in calls if _gh_subcommand(c) == "merge"], "the merge (enqueue) must be issued — prohibition removed"
@@ -674,9 +714,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merged_head="sha-rebased-by-queue")
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="pr-merged-wrong-head"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-rebase",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_fab_queue_closed_without_merge_blocks(self, tmp_path: Path, monkeypatch):
@@ -689,9 +734,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, closes=True)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="merge-queue-dequeued"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-closed",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_fab_queue_kicked_open_early_blocks_no_hang(self, tmp_path: Path, monkeypatch):
@@ -707,9 +757,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, kicked=True)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="merge-queue-removed"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-kick",
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_fab_queue_merge_between_nonatomic_reads_is_recorded(self, tmp_path: Path, monkeypatch):
@@ -726,9 +781,14 @@ class TestLiveMergePrFabPromotion:
         # membership reads (stale-OPEN + in_queue False).
         fake = _make_queue_gh_fake(base_ref="main", head=head, race_merge_at=2)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race2",
                 fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-queuemerge", "a merge racing the non-atomic reads must be RECORDED, not false-removed"
 
@@ -748,9 +808,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=True, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError):  # times out → dequeue ladder; we assert the host binding
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-host",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         graphql_calls = [c for c in calls if c[:2] == ["gh", "api"] and "graphql" in " ".join(c)]
         assert graphql_calls, "the queue path must issue GraphQL calls"
@@ -772,9 +837,14 @@ class TestLiveMergePrFabPromotion:
         # Poll 1: not yet in queue (window). Poll 2+: in queue. Merges after poll 2.
         fake = _make_queue_gh_fake(base_ref="main", head=head, enqueue_after=1, merges_after=2)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-window",
                 fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-queuemerge", "the not-yet-enqueued window must NOT early-block; it merges once queued"
 
@@ -791,9 +861,14 @@ class TestLiveMergePrFabPromotion:
                                    auto_merge=True, dequeue_ok=True, disable_auto_ok=False)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-auto",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_fab_queue_unreadable_membership_does_not_early_break(self, tmp_path: Path, monkeypatch):
@@ -807,9 +882,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, membership_unreadable=True)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-unreadable",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_fab_queue_merge_during_dequeue_is_recorded_not_halted(self, tmp_path: Path, monkeypatch):
@@ -822,9 +902,14 @@ class TestLiveMergePrFabPromotion:
         _base, head = _reviewed_pr(repo, "run-mq-race")
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, merge_during_dequeue=True)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
                 fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-queuemerge"
 
@@ -838,10 +923,15 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=True)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="merge-queue-timeout-dequeued"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-to",
                     fab_fetch_origin="fetchsrc", queue_poll_timeout_s=1800.0,
                     _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_fab_queue_timeout_but_already_merged_records_not_blocks(self, tmp_path: Path, monkeypatch):
@@ -855,9 +945,14 @@ class TestLiveMergePrFabPromotion:
         # merges_after=1 → after the first state poll, the timeout re-read observes MERGED.
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=1)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
                 repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-race",
                 fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-queuemerge"
 
@@ -872,9 +967,14 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, dequeue_ok=False)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="merge-queue-unreconciled"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id="run-mq-unrec",
                     fab_fetch_origin="fetchsrc", _clock=_clock_seq([0.0, 10_000.0]), _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_flag_off_resume_with_stale_run_id_is_byte_neutral(self, tmp_path: Path, monkeypatch):
@@ -893,10 +993,15 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999, calls=calls)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="could not determine merge commit SHA"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head,
                     run_id="run-stale",  # STALE persisted run_id restored on a flag-off resume
                     fab_fetch_origin="fetchsrc", _clock=lambda: 0.0, _sleep=lambda _s: None,
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
         merge_calls = [c for c in calls if _gh_subcommand(c) == "merge"]
         assert merge_calls and "--delete-branch" in merge_calls[0], (
@@ -918,8 +1023,13 @@ class TestLiveMergePrFabPromotion:
         fake = _make_queue_gh_fake(base_ref="main", head=head, merges_after=999)
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
             with pytest.raises(RuntimeError, match="could not determine merge commit SHA"):
+                # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+                # no-landing token (option C) and runs today's primitive byte-for-byte.
+                from phase_loop_runtime import merge_guard as _merge_guard
+
                 _live_merge_pr(
                     repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc",
+                    authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
                 )
 
     def test_repo_slug_owner_repo_extraction(self):
@@ -946,8 +1056,13 @@ class TestLiveMergePrFabPromotion:
             return base_fake(cmd, **kwargs)
 
         with patch("phase_loop_runtime.train_runner.subprocess.run", side_effect=fake):
+            # PANEL SL-1 (agent-harness#1078, granted): a pre-switch governed merge presents a
+            # no-landing token (option C) and runs today's primitive byte-for-byte.
+            from phase_loop_runtime import merge_guard as _merge_guard
+
             sha = _live_merge_pr(
-                repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc"
+                repo, "feat/pr1", base="main", head_sha=head, run_id=None, fab_fetch_origin="fetchsrc",
+                authority=_merge_guard.mint_no_landing_token(run_mode="governed"),
             )
         assert sha == "sha-realmerge"
 
