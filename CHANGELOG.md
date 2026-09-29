@@ -6,7 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Register `claude-sonnet-5-5` as an explicit advisor-board seat
+### Register `claude-sonnet-5-5` as an explicit advisor-board seat (agent-harness#1178)
 
 - `claude-sonnet-5-5` (Claude Sonnet 5.5) is a registered model on the `claude` lane at effort
   `max`, answering to the `fable` review-seat alias, so a governed policy requiring `fable`
