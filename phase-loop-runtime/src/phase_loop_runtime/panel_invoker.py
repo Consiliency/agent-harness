@@ -9208,10 +9208,11 @@ def _default_spawn_via_provider(
         extra["agy_capture"] = agy_capture
         extra["seat_key"] = seat_key
         extra["provider_authority"] = provider_authority
-    elif seat_key is not None:
-        extra["seat_key"] = seat_key
         extra["capture_stage"] = capture_stage
         extra["capture_scratch"] = capture_scratch
+    elif seat_key is not None:
+        # PANEL: the seat's identity reaches its launch (the per-seat instruction binding).
+        extra["seat_key"] = seat_key
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
         extra["quiescence_latch"] = quiescence_latch
