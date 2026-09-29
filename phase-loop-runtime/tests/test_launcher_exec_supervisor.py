@@ -654,12 +654,14 @@ def _open_fds() -> set[str]:
     return set(os.listdir("/proc/self/fd"))
 
 
-@pytest.mark.parametrize("failure", ["popen-raises", "exec-fails", "setup-fails", "silent-death"])
+@pytest.mark.parametrize("failure", ["success", "popen-raises", "exec-fails", "setup-fails", "silent-death"])
 def test_failed_launches_do_not_leak_descriptors(monkeypatch, lease_fd, tmp_path, failure):
-    # Every failure path closes both ends of the status pipe (the go-pipe lives
-    # only in the supervisor and its child, which are gone).  Count across N.
+    # Every path, successful or failing, closes both ends of the status pipe (the
+    # go/grouped pipes live only in the supervisor and its child).  Count across N.
     command, kwargs, expected = ["/bin/true"], {}, subprocess.SubprocessError
-    if failure == "popen-raises":
+    if failure == "success":
+        expected = None
+    elif failure == "popen-raises":
         kwargs, expected = {"cwd": tmp_path / "no-such-cwd"}, FileNotFoundError
     elif failure == "exec-fails":
         command, expected = [str(tmp_path / "no-such-executor")], FileNotFoundError
@@ -667,12 +669,17 @@ def test_failed_launches_do_not_leak_descriptors(monkeypatch, lease_fd, tmp_path
         _supervisor_with_prelude(monkeypatch, *_FAILING_FORK)
     else:
         _supervisor_with_prelude(monkeypatch, "os._exit(3)")
-    with pytest.raises(expected):
-        _launch_supervised(command, lease_fd, tmp_path / "warm-up", **kwargs)
+    def launch_once(root):
+        if expected is None:
+            assert _launch_supervised(command, lease_fd, root, **kwargs).returncode == 0
+        else:
+            with pytest.raises(expected):
+                _launch_supervised(command, lease_fd, root, **kwargs)
+
+    launch_once(tmp_path / "warm-up")
     before = _open_fds()
     for index in range(20):
-        with pytest.raises(expected):
-            _launch_supervised(command, lease_fd, tmp_path / f"run-{index}", **kwargs)
+        launch_once(tmp_path / f"run-{index}")
     leaked = _open_fds() - before
     assert not leaked, {fd: os.readlink(f"/proc/self/fd/{fd}") for fd in leaked if os.path.exists(f"/proc/self/fd/{fd}")}
 

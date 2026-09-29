@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import ctypes
 import errno
-import fcntl
 import os
 import signal
 import sys
@@ -215,6 +214,8 @@ def _above_stdio(fd: int) -> int:
     """Move a close-on-exec descriptor to 3 or above."""
     if fd > 2:
         return fd
+    import fcntl  # POSIX-only, and ``launcher`` imports this module on every platform
+
     moved = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
     os.close(fd)
     return moved
@@ -275,7 +276,7 @@ def _exec_executor(
         try:
             os.write(grouped_fd, _GROUPED)
         except OSError:
-            return  # the supervisor is gone: never exec
+            return  # EPIPE: the supervisor is gone (the child holds no read end): never exec
         try:
             LeaseSupervisor.enable_subreaper()
             for signum in _STARTUP_IGNORED_SIGNALS:
@@ -325,6 +326,11 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         _report(held_status_fd, _setup_reason(exc))
         os._exit(255)
     if executor_pid == 0:
+        # Drop the supervisor's ends at once: with no other reader left, the
+        # ``grouped`` write fails (EPIPE, SIGPIPE being ignored here) if the
+        # supervisor is already gone, and the GO read sees EOF.
+        os.close(go_write)
+        os.close(grouped_read)
         _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment, inherited_sigchld)
 
     os.close(go_read)

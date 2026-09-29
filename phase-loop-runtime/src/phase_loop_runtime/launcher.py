@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -445,6 +444,8 @@ def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd:
 
 def _supervisor_status_pipe() -> tuple[int, int]:
     """A status pipe whose ends sit above stdio, so Popen's stdio setup cannot clobber them."""
+    import fcntl  # POSIX-only; this module must import on Windows (panel_invoker)
+
     ends = list(os.pipe())
     try:
         for index, fd in enumerate(ends):
