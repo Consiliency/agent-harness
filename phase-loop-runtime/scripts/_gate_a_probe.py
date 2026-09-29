@@ -49,6 +49,31 @@ def main() -> None:
     if not (Path(baml_dir) / "emit_phase_closeout.baml").is_file():
         fail(f"baml_src missing emit_phase_closeout.baml at {baml_dir}")
 
+    # --- BAML v1 runtime: a real parse through the worker (agent-harness#1135) --
+    import importlib.metadata
+
+    bridge_version = importlib.metadata.version("baml-bridge")
+    if bridge_version != "0.20.1":
+        fail(f"baml-bridge is {bridge_version}, expected 0.20.1")
+    from phase_loop_runtime.baml_modular import parse_baml_response
+
+    parsed = parse_baml_response(
+        "EmitPhaseCloseout",
+        json.dumps(
+            {
+                "terminal_status": "complete",
+                "verification_status": "passed",
+                "dirty_paths": [],
+                "produced_if_gates": ["G"],
+                "required_human_inputs": [],
+            }
+        ),
+    )
+    if parsed.payload.get("terminal_status") != "complete":
+        fail(f"BAML worker parse returned {parsed.payload!r}")
+    if "baml_bridge" in sys.modules:
+        fail("baml_bridge was imported into the probe process; it must only load in the worker")
+
     # --- skill source roots: no dotfiles walk without config ----------------
     from phase_loop_runtime import skill_inventory
 
