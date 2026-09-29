@@ -145,7 +145,14 @@ MUTATIONS: list[dict[str, object]] = [
 
 
 def _run(nodes: list[str]) -> dict[str, object]:
-    env = {**os.environ, "PYTHONPATH": str(RUNTIME / "src")}
+    # A fresh bytecode cache per run: a same-length mutation written in the same second
+    # as the original keeps its (mtime, size) and CPython would reuse the stale .pyc,
+    # running the UNMUTATED module and reporting a false "survived" (or a false control).
+    import tempfile
+
+    cache = tempfile.mkdtemp(prefix="seat-jail-mutation-pyc-")
+    env = {**os.environ, "PYTHONPATH": str(RUNTIME / "src"), "PYTHONPYCACHEPREFIX": cache,
+           "PYTHONDONTWRITEBYTECODE": "1"}
     done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                            "-o", "addopts=", *nodes], cwd=RUNTIME, env=env,
                           capture_output=True, text=True, timeout=900)
