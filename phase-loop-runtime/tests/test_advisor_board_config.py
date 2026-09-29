@@ -166,6 +166,26 @@ purpose = "code-review"
                          [("gpt-6-sol", "adversarial"), ("gpt-6-astra", "red-team")])
 
 
+    def test_gpt_6_sol_cannot_fill_a_governed_grok_seat(self) -> None:
+        # It answers to the `sol` alias: a governed policy requiring grok rejects a
+        # board that seats gpt-6-sol in grok's place (two sol seats, no grok).
+        from phase_loop_runtime import panel_invoker as invoker
+        from phase_loop_runtime.advisor_board.schema import Board, Seat
+
+        seats = (
+            Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="correctness"),
+            Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team"),
+            Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative-approach"),
+            Seat(model="gpt-6-sol", effort="max", harness="codex", lens="adversarial"),
+        )
+        policy = invoker.review_policy_for_tier("production_code")
+        with self.assertRaises(invoker.PresidentPolicyError) as ctx:
+            invoker._validate_review_board_policy(
+                Board(name="code-review", purpose="code-review", seats=seats), policy, None
+            )
+        self.assertIn("review_board_policy_mismatch", str(ctx.exception.args))
+
+
 class ConfigLoadTests(unittest.TestCase):
     def test_user_board_layers_over_presets(self) -> None:
         body = """
