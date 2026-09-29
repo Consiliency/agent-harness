@@ -430,6 +430,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         "phase-loop-runtime/src/phase_loop_runtime/runner.py",
         "phase-loop-runtime/src/phase_loop_runtime/worker_pool.py",
         "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+        "phase-loop-runtime/src/phase_loop_runtime/lease_supervisor.py",
     )
     sched_test_paths = (
         "phase-loop-runtime/tests/test_phase_worktree_executor.py",
@@ -583,6 +584,18 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
 
                 def direct_child_only(supervisor, *args, **kwargs):
                     return supervisor.reap_direct_child(*args, **kwargs)
+                # agent-harness#1140: the supervisor is an exec'd program, so a patch in
+                # this process cannot reach it; the reaping mutation runs the same
+                # supervisor file with its reaper replaced instead.
+                supervisor_script = str(launcher._LEASE_SUPERVISOR_SCRIPT)
+                reap_direct_child_only = "; ".join((
+                    "import importlib.util, sys",
+                    f"spec = importlib.util.spec_from_file_location('lease_supervisor', {supervisor_script!r})",
+                    "module = importlib.util.module_from_spec(spec)",
+                    "spec.loader.exec_module(module)",
+                    "module.LeaseSupervisor.reap_descendants = lambda supervisor, *args, **kwargs: supervisor.reap_direct_child(*args, **kwargs)",
+                    "module.main(sys.argv[1:])",
+                ))
                 def observe_pool(*args, **kwargs):
                     global job_lease_identity
                     chain.append("PhaseWorkerJob")
@@ -602,23 +615,27 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     chain.append("launch")
                     return real_launch(*args, **kwargs)
                 def observe_popen(*args, **kwargs):
-                    global production_spawn, mutation_applied
+                    global production_spawn, mutation_applied, reaping_mutation_applied
                     command = args[0] if args else kwargs.get("args", ())
                     if isinstance(command, (list, tuple)) and str(helper) in command:
                         chain.append("Popen")
+                        supervised = supervisor_script in command
                         production_spawn = {
                             "pass_fds": tuple(kwargs.get("pass_fds", ())),
                             "session": kwargs.get("start_new_session") is True,
-                            "subreaper": kwargs.get("preexec_fn") is not None,
+                            "subreaper": supervised and kwargs.get("preexec_fn") is None,
                         }
                         if lease_fd in production_spawn["pass_fds"]:
                             if mutation == "pass_fds":
                                 kwargs["pass_fds"] = ()
                                 mutation_applied = True
                             elif mutation == "subreaper_session":
-                                kwargs["start_new_session"] = False
-                                kwargs["preexec_fn"] = None
+                                kwargs["start_new_session"] = False; args = (list(command[command.index("--") + 1:]),); kwargs["pass_fds"] = (lease_fd,)
                                 mutation_applied = True
+                            elif mutation == "process_tree_reaping" and supervised:
+                                script_index = command.index(supervisor_script)
+                                args = ([*command[:script_index], "-c", reap_direct_child_only, *command[script_index + 1:]],)
+                                reaping_mutation_applied = True
                         env = dict(kwargs.get("env") or os.environ)
                         env.update({"SCHED_TEST_LEASE_FD": str(lease_fd), "SCHED_TEST_LEASE_IDENTITY": f"{lease_identity[0]}:{lease_identity[1]}", "SCHED_TEST_COORDINATOR_SID": str(os.getsid(0))})
                         kwargs["env"] = env
@@ -640,7 +657,6 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     for item in patches: stack.enter_context(item)
                     if mutation == "process_tree_reaping" and original_reaper is not None:
                         stack.enter_context(patch.object(supervisor_type, "reap_descendants", direct_child_only))
-                        reaping_mutation_applied = True
                     thread = threading.Thread(target=run_chain); thread.start()
                     deadline = time.monotonic() + 20
                     while not marker.exists() and not errors:
@@ -736,8 +752,8 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
     source_sha256 = hashlib.sha256(b"".join((root / path).read_bytes() for path in source_paths)).hexdigest()
     mutation_sources = {
         "pass_fds": ("phase_loop_runtime.launcher.subprocess.Popen", "observe_popen", b'kwargs["pass_fds"] = ()'),
-        "subreaper_session": ("phase_loop_runtime.launcher.subprocess.Popen", "observe_popen", b'kwargs["start_new_session"] = False; kwargs["preexec_fn"] = None'),
-        "process_tree_reaping": ("phase_loop_runtime.launcher.LeaseSupervisor.reap_descendants", "direct_child_only", b"return supervisor.reap_direct_child(*args, **kwargs)"),
+        "subreaper_session": ("phase_loop_runtime.launcher.subprocess.Popen", "observe_popen", b'kwargs["start_new_session"] = False; args = (list(command[command.index("--") + 1:]),); kwargs["pass_fds"] = (lease_fd,)'),
+        "process_tree_reaping": ("phase_loop_runtime.lease_supervisor.LeaseSupervisor.reap_descendants", "reap_direct_child_only", b"module.LeaseSupervisor.reap_descendants = lambda supervisor, *args, **kwargs: supervisor.reap_direct_child(*args, **kwargs)"),
     }
     named_dependency, callable_identity, injected_source = mutation_sources[mutation]
     observation_keys = ("lease_inherited", "grandchild_lease_fds", "session_isolated", "subreaper_enabled", "executor_exited")

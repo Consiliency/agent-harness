@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Lease-supervised launches exec a supervisor program instead of running Python in `preexec_fn` (agent-harness#1140)
+
+- The lease supervisor no longer runs as Python between fork and exec in a child of the
+  (possibly threaded) launcher, which Python documents as unsafe. `launch` now starts
+  `python -I -S phase_loop_runtime/lease_supervisor.py --lease-fd N --exec-status-fd W -- argv`
+  with only `start_new_session`, `close_fds` and `pass_fds`; no executor launch path passes a
+  `preexec_fn`, and `-S` keeps site hooks from starting threads in the supervisor.
+- Supervision is unchanged: executor `setsid`, subreaper on supervisor and executor,
+  SIGTERM/SIGINT forwarded to the executor group with SIGKILL after 1 s, descendant reaping,
+  out-of-range results mapped to 1, only the lease descriptor held. The executor gets the exact
+  env block (read from `/proc/self/environ`, since interpreter startup can coerce `LC_CTYPE`),
+  cwd, descriptors and signal dispositions (including an inherited `SIGCHLD`) it got before.
+- The executor never runs unsupervised. It becomes a group leader, then waits for the
+  supervisor's go signal, which comes only after forwarding is live; if the supervisor dies
+  first, the executor never runs. Forwarding uses only `killpg`, and the executor leader is
+  kept unreaped (a zombie) while forwarding is possible, so a reused pid or group is never
+  signalled.
+- Failures keep their old shape: an exec failure raises the same `OSError` from `launch`, and
+  any other failure before exec (or a supervisor that dies before releasing the executor)
+  raises `SubprocessError("Exception occurred in preexec_fn.")`, never an executor exit code.
+- `launcher.py` changed and `lease_supervisor.py` is new, so the full agy pin set drifts: the
+  next release cut requalifies agy.
+
 ### Register `gpt-6-sol` as an explicit advisor-board seat
 
 - `gpt-6-sol` (Codex's own default model) is now a registered model on the `codex` lane at
