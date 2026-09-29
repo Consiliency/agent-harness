@@ -76,6 +76,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | ---------------- | ------------- | ------------ | ----------------- | -------------- |
 | `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6-sol`      | codex         | `codex`      | codex, opencode   | max            |
 | `claude-sonnet-5`| claude        | `claude`     | claude            | max            |
 | `claude-opus-4-8`| claude        | `claude`     | claude            | max            |
 | `claude-opus-5`  | claude        | `claude`     | claude            | max            |
@@ -90,6 +91,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `grok-4.7`       | grok          | `grok`       | grok              | max            |
 | `grok-4.6`       | grok          | `grok`       | grok              | max            |
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
+
+`gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →

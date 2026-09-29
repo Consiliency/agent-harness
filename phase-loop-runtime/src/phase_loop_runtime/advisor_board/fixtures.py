@@ -76,6 +76,8 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-6-astra", "codex"),
     ("gpt-6-astra", "opencode"),
     ("gpt-5.6-sol", "codex"),  # legacy default id remains expressible
+    ("gpt-6-sol", "codex"),  # explicit seat on user/ad-hoc boards (not a governed grok stand-in)
+    ("gpt-6-sol", "opencode"),  # same family; matches the production registry's runnable_by
     ("claude-sonnet-5", "claude"),
     ("claude-opus-5-5", "claude"),
     ("claude-fable-5-1", "claude"),

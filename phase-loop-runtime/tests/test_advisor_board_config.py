@@ -140,6 +140,53 @@ purpose = "code-review"
         self.assertEqual(board.seats[0].model, "gpt-5.6-sol")
 
 
+class GptSixSolSeatTests(unittest.TestCase):
+    def test_gpt_6_sol_loads_as_an_explicit_seat_in_a_user_board(self) -> None:
+        # Before registration the whole file was rejected with "unknown model 'gpt-6-sol'".
+        # A user/ad-hoc board only: on a governed review it counts as a second `sol`
+        # seat and cannot fill a required `grok` seat.
+        body = """
+[[boards]]
+name = "code-review"
+purpose = "code-review"
+  [[boards.seats]]
+  model = "gpt-6-sol"
+  effort = "max"
+  harness = "codex"
+  lens = "adversarial"
+  [[boards.seats]]
+  model = "gpt-6-astra"
+  effort = "max"
+  harness = "codex"
+  lens = "red-team"
+"""
+        with TemporaryDirectory() as tmp:
+            board = load_boards(_write(tmp, body), matrix=_MATRIX).get("code-review")
+        self.assertEqual([(s.model, s.lens) for s in board.seats],
+                         [("gpt-6-sol", "adversarial"), ("gpt-6-astra", "red-team")])
+
+
+    def test_gpt_6_sol_cannot_fill_a_governed_grok_seat(self) -> None:
+        # It answers to the `sol` alias: a governed policy requiring grok rejects a
+        # board that seats gpt-6-sol in grok's place (two sol seats, no grok).
+        from phase_loop_runtime import panel_invoker as invoker
+        from phase_loop_runtime.advisor_board.schema import Board, Seat
+
+        seats = (
+            Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="correctness"),
+            Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team"),
+            Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative-approach"),
+            Seat(model="gpt-6-sol", effort="max", harness="codex", lens="adversarial"),
+        )
+        policy = invoker.review_policy_for_tier("production_code")
+        with self.assertRaises(invoker.PresidentPolicyError) as ctx:
+            invoker._validate_review_board_policy(
+                Board(name="code-review", purpose="code-review", seats=seats), policy, None
+            )
+        self.assertEqual(ctx.exception.code, "review_board_policy_mismatch")
+        self.assertIn("'sol': 2", str(ctx.exception))
+
+
 class ConfigLoadTests(unittest.TestCase):
     def test_user_board_layers_over_presets(self) -> None:
         body = """
