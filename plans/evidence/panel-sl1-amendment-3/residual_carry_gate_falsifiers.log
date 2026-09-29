@@ -1,0 +1,39 @@
+# SL-1 residual from 0e7f9efb (4 sites); run in the amendment tree on top of a88ad62c
+OK   exit=1 want=1  absent
+OK   exit=1 want=1  true
+OK   exit=1 want=1  codex r2 probe: wrong issue, unratified
+OK   exit=1 want=1  wrong issue
+OK   exit=1 want=1  unratified (false)
+OK   exit=1 want=1  ratified truthy string
+OK   exit=1 want=1  malformed: string
+OK   exit=1 want=1  malformed: missing ratified_by
+OK   exit=1 want=1  malformed: empty ratified_by
+OK   exit=1 want=1  malformed: bad date
+OK   exit=1 want=1  malformed: missing evidence
+OK   exit=1 want=1  malformed: non-github evidence
+OK   exit=1 want=1  malformed: extra key
+OK   exit=0 want=0  valid record
+OK   exit=0 want=0  empty residual, no carry
+15/15 cases as expected
+# the committed manifest, unmodified:
+PANEL-RESIDUAL-SL1B has 4 open site(s) and no valid carry:
+  - panel_residual_carry is absent
+exit=1
+# mutation: gate reverted to the r1 truthy check (`problems = [] if row.get("panel_residual_carry") else ["absent"]`)
+OK   exit=1 want=1  absent
+FAIL exit=0 want=1  true
+FAIL exit=0 want=1  codex r2 probe: wrong issue, unratified
+FAIL exit=0 want=1  wrong issue
+FAIL exit=0 want=1  unratified (false)
+FAIL exit=0 want=1  ratified truthy string
+FAIL exit=0 want=1  malformed: string
+FAIL exit=0 want=1  malformed: missing ratified_by
+FAIL exit=0 want=1  malformed: empty ratified_by
+FAIL exit=0 want=1  malformed: bad date
+FAIL exit=0 want=1  malformed: missing evidence
+FAIL exit=0 want=1  malformed: non-github evidence
+FAIL exit=0 want=1  malformed: extra key
+OK   exit=0 want=0  valid record
+OK   exit=0 want=0  empty residual, no carry
+3/15 cases as expected
+falsifier-suite exit=1 (1 = mutation caught)

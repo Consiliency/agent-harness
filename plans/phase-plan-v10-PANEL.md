@@ -410,7 +410,14 @@ Task detail (files and seams only; the behaviour is EC-PANEL-1..5 and IF-0-PANEL
       - the merge-surface inventory gate's credsep and agy_watch dispositions.
 
       `credsep.py` stays SL-1-owned, with no SL-1 edit permitted.
-    - **Closeout gate.** SL-3.3 fails while `PANEL-RESIDUAL-SL1B` is non-empty, unless the PANEL manifest row carries a maintainer-ratified `panel_residual_carry` record that names agent-harness#1168. In that case SL-3.2 documents the residual as open.
+    - **Closeout gate.** SL-3.3 fails while `PANEL-RESIDUAL-SL1B` is non-empty, unless the v10-PANEL manifest row carries a valid `panel_residual_carry` record. In that case SL-3.2 documents the residual as open. A valid record is an object with exactly these keys:
+      - `issue`: `"agent-harness#1168"`;
+      - `ratified`: JSON `true`;
+      - `ratified_by`: a non-empty string naming the maintainer;
+      - `date`: `YYYY-MM-DD`;
+      - `evidence`: a `https://github.com/Consiliency/agent-harness/...` URL of the maintainer's ratifying comment or decision.
+
+      Anything else (absent, merely truthy, malformed, unratified, or naming another issue) fails. The check is `plans/evidence/panel-sl1-amendment-3/residual_carry_gate.py`. Its falsifiers are `residual_carry_gate_falsifiers.py`, with output in `residual_carry_gate_falsifiers.log`: 15 cases against the real four-site residual and an empty one, plus a mutation back to the truthy check that they catch.
   - **S2, measured and not adopted (maintainer: option A).** Gating `panel_context_required` on the GOVLEAN switch turns 4 frozen PANEL nodes red: `test_ec4_a_president_tier_landing_without_a_context_is_refused[plan|production_code]` and `test_ec4_a_supplied_policy_without_a_context_is_refused[plan|production_code]`. Three variants were run at 7b1924b3; the patches and per-node outcomes are in `s2-probe-*.patch` and `s2-probe-raw.txt`:
     - keyed on `repo_dir`, with a second switch read: `harden_tdd_guard` fails with "checked the authority switch more than once";
     - keyed on `repo_dir`, with the one read reused: the sanctioned control's scratch `repo_dir` is unswitched, so the nodes are not refused;
@@ -625,7 +632,7 @@ SL-2.2's `render_lens_section` renders the fixed heading `Review lens (subordina
 |---|---|---|---|---|---|
 | SL-3.1 | docs | — | `.claude/docs-catalog.json` | — | `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`; if absent, record "docs-catalog rescan helper unavailable; manual catalog audit" |
 | SL-3.2 | docs | SL-3.1 | the two docs, `entry_doc_check.py`, `test_entry_doc_check.py`, `.github/entry-doc-suppressions.json`, `.github/workflows/test.yml`, `CHANGELOG.md` | `ec7_*` | `PHASE_LOOP_TDD_EXPECT_PANEL=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_doc_contract.py phase-loop-runtime/tests/test_entry_doc_check.py` |
-| SL-3.3 | verify | SL-3.2 | — | — | `git diff --exit-code origin/main -- specs/phase-plans-v10.md && PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -c "import json, sys, test_panel_sl1_contracts as t; row = next(p for p in json.load(open('plans/manifest.json'))['plans'] if p.get('slug') == 'v10-PANEL'); sys.exit(1 if t._TW_RESIDUAL_SL1B and not row.get('panel_residual_carry') else 0)"` (PANEL-RESIDUAL-SL1B, amendment #3) |
+| SL-3.3 | verify | SL-3.2 | — | — | `git diff --exit-code origin/main -- specs/phase-plans-v10.md && PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 plans/evidence/panel-sl1-amendment-3/residual_carry_gate.py` (PANEL-RESIDUAL-SL1B, amendment #3) |
 
 SL-3.2 documents lane tables, lens declarations, the fallback, the minimum and its precedence, and the labels (EC-PANEL-7). It also covers:
 - the `[president]` pointer for a single-vendor user;
