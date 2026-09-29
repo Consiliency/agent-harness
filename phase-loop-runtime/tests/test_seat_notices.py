@@ -80,6 +80,8 @@ def test_cli_text_shaped_like_a_code_yields_no_notice():
         pass
 
     pi.attach_seat_notices(leg, [_Sly("seat_sandbox_refused:identity"), "not_a_code"])
+    # The attach layer alone (the renderer's own exact-type check is a second layer).
+    assert getattr(leg, "_seat_notice_codes") == ()
     assert leg.seat_notices == ()
 
 

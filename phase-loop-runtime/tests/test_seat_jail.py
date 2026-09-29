@@ -349,7 +349,15 @@ def test_j2_mutation_dropping_remount_ro_lets_root_writes_land(tmp_path):
 @requires_userns
 def test_j3_environment_is_exactly_the_declared_set(tmp_path):
     jail = _jail(tmp_path)
-    done = _run_in(jail, "env -0")
+    # The parent carries a variable the jail must NOT inherit, so dropping `--clearenv`
+    # is observable (a parent env of only PATH would be masked by the jail's own PATH).
+    try:
+        done = subprocess.run([*_test_owner(jail), "/usr/bin/env", "-0"], capture_output=True,
+                              text=True, timeout=60, pass_fds=jail.pass_fds,
+                              env={"PATH": "/usr/bin:/bin", "PL_PARENT_ONLY": "1",
+                                   "CLAUDE_CODE_OAUTH_TOKEN": SENTINEL_TOKEN.decode()})
+    finally:
+        seat_jail.close_jail_fds(jail)
     seen = dict(item.split("=", 1) for item in done.stdout.split("\0") if item)
     seen.pop("PWD", None)  # set by the shell, not the jail
     assert seen == dict(jail.env)
