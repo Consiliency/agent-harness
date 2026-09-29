@@ -1,0 +1,43 @@
+{
+  "_doc": "agent-harness#1135 caller table: every direct src/ call of a BAML-reaching function, keyed to the plan's caller-table row. test_phase_loop_baml_v1_callers.py fails on any unlisted call site, so the table cannot silently go stale. Keys are file::enclosing-function::callee.",
+  "rows": {
+    "closeout-parse": "runner._parse_native_closeout_status -> discovery.parse_closeout_payload_doc: BamlWorkerError maps to a not-evaluated unretryable_external_outage blocker; never contract_bug.",
+    "tier3": "evidence_audit.run_tier3_runner_audit -> evaluate_suspected_fake_evidence: BamlWorkerError blocks the closeout as 'Tier 3 NOT run' (unretryable_external_outage); never uncertain, never skipped.",
+    "tier3-cli": "evidence_audit.run_evidence_audit (the forensic evidence-audit CLI with --enable-tier3): BamlWorkerError propagates typed; no verdict is written.",
+    "launch-serial": "run_loop._prepare_phase_launch -> build_prompt (serial): propagates; nothing launched.",
+    "launch-wave": "run_loop._prepare_phase_launch -> build_prompt inside the concurrent wave: propagates before run_phase_worker_pool; the finally reclaims only unlaunched worktrees.",
+    "delegated": "run_loop._finalize_phase_launch -> launch_delegated_child: pre-launch BamlWorkerError / BamlValidationError route into the branch's blocked flow; the parent result is always persisted.",
+    "delegated-child": "launch_delegated_child's own build_prompt (pre-launch, handled by the delegated row) and its child's _parsed_child_automation (post-launch, recorded on the child).",
+    "lane": "launch_harness_lane_work_unit -> build_prompt: propagates; spawns nothing.",
+    "finalize": "_parsed_child_automation callers: the closeout-parse row handles every BamlWorkerError inside _parse_native_closeout_status; nothing propagates.",
+    "prompt-chain": "prompt helpers that only forward to the rows above (build_prompt -> build_prompt_bundle -> injection._render_baml_closeout_instruction -> build_baml_request); no handler of their own (#22).",
+    "discovery-chain": "discovery helpers that only forward to the closeout-parse row.",
+    "evidence-chain": "evaluate_suspected_fake_evidence's own calls: BamlWorkerError is re-raised before its content-error handler.",
+    "class-name": "parse_baml_response with a CLASS name: the regex-only branch; never reaches the worker."
+  },
+  "sites": {
+    "adoption_bundle.py::generate_adoption_bundle::parse_baml_response": "class-name",
+    "adoption_bundle.py::_load_committed_bundle::parse_baml_response": "class-name",
+    "runtime_projection.py::build_runtime_projection::parse_baml_response": "class-name",
+    "discovery.py::parse_closeout_payload::parse_closeout_payload_doc": "discovery-chain",
+    "discovery.py::parse_closeout_payload_doc::parse_baml_response": "discovery-chain",
+    "evidence_audit.py::run_tier3_runner_audit::evaluate_suspected_fake_evidence": "tier3",
+    "evidence_audit.py::evaluate_suspected_fake_evidence::build_baml_request": "evidence-chain",
+    "evidence_audit.py::evaluate_suspected_fake_evidence::parse_baml_response": "evidence-chain",
+    "evidence_audit.py::run_evidence_audit::evaluate_suspected_fake_evidence": "tier3-cli",
+    "injection.py::build_lane_prompt_bundle::build_prompt_bundle": "prompt-chain",
+    "injection.py::_render_baml_closeout_instruction::build_baml_request": "prompt-chain",
+    "prompts.py::build_prompt::build_lane_prompt_bundle": "prompt-chain",
+    "prompts.py::build_prompt::build_prompt_bundle": "prompt-chain",
+    "runner.py::run_loop._prepare_phase_launch::build_prompt": "launch-serial",
+    "runner.py::run_loop._finalize_phase_launch::_parsed_child_automation": "finalize",
+    "runner.py::run_loop._finalize_phase_launch::launch_delegated_child": "delegated",
+    "runner.py::launch_delegated_child::build_prompt": "delegated-child",
+    "runner.py::launch_delegated_child::_parsed_child_automation": "delegated-child",
+    "runner.py::_trusted_concurrent_worker_closeout::_parsed_child_automation": "finalize",
+    "runner.py::launch_harness_lane_work_unit::build_prompt": "lane",
+    "runner.py::_parse_native_closeout_status::parse_closeout_payload_doc": "closeout-parse",
+    "runner.py::_trusted_failed_launch_closeout::_parsed_child_automation": "finalize",
+    "runner.py::_launch_contract_blocker::_parsed_child_automation": "finalize"
+  }
+}

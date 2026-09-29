@@ -1,0 +1,2497 @@
+"""BAML v1 worker runtime: parity, register pins, worker faults and the client
+invariants I1-I9 (agent-harness#1135).
+
+Everything here drives the REAL ``_baml_worker.py`` subprocess and the real
+v1 runtime; nothing on the BAML side is stubbed.  Two narrow exceptions, each
+named where it is used:
+
+- framing, blocked-write and hung-init cases launch a scripted peer
+  (``tests/fixtures/baml_worker_peers.py``) through the client's own spawn
+  seam ``baml_modular._spawn_popen``, because a real worker cannot be made to
+  emit a malformed frame;
+- the I1 cold-start and stalled-spawn sweeps use the ``echo`` peer, so that a
+  few hundred injection runs do not each pay the ~0.8 s v1 cold start.  The
+  sweep exercises the client's lifecycle, which is identical for either peer.
+
+Fault, signal, fork and owner-death cases each run in a fresh interpreter
+(``_isolated``) that must exit 0, so a scenario can never poison the pytest
+process.  Assertions use ``type(e)``, ``.kind`` and ``.rc`` only, never message
+text (register #19).
+"""
+from __future__ import annotations
+
+import ast
+import collections
+import ctypes
+import gc
+import hashlib
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from phase_loop_runtime import baml_modular as m
+from phase_loop_runtime.baml_modular import BamlValidationError, BamlWorkerError
+
+TESTS = Path(__file__).resolve().parent
+SRC = TESTS.parent / "src"
+PKG = SRC / "phase_loop_runtime"
+PEERS = TESTS / "fixtures" / "baml_worker_peers.py"
+BASELINE = TESTS / "data" / "baml_v0_baseline"
+PROMPT_GOLDENS = TESTS / "data" / "baml_closeout_prompt_goldens.json"
+MODULE = Path(__file__).stem
+
+POSIX = os.name == "posix"
+LINUX = sys.platform.startswith("linux")
+MACOS = sys.platform == "darwin"
+WINDOWS = os.name == "nt"
+PY312 = sys.version_info >= (3, 12)
+
+OK_PAYLOAD = {
+    "terminal_status": "complete",
+    "verification_status": "passed",
+    "dirty_paths": [],
+    "produced_if_gates": ["G"],
+    "required_human_inputs": [],
+}
+OK = json.dumps(OK_PAYLOAD)
+EVIDENCE = {
+    "tier2_signal_summary": "signal",
+    "sample_artifact_content": "sample",
+    "expected_artifact_characteristics": "expected",
+}
+CLOSEOUT = {"phase_alias": "P1", "plan_produces": ["IF-0-P1-1"], "plan_owned_files": ["a.py"], "closeout_commit_sha": "abc123"}
+ENV_SENTINELS = {
+    "OPENAI_API_KEY": "ENVSENTINEL-openai-api-key",
+    "OPENAI_BASE_URL": "https://envsentinel-openai-base-url.invalid/v1",
+    "ANTHROPIC_API_KEY": "ENVSENTINEL-anthropic-api-key",
+    "BAML_LOG": "ENVSENTINEL-baml-log",
+    "BAML_TRACE": "ENVSENTINEL-baml-trace",
+    "BAML_HOME": "/envsentinel-baml-home",
+    "BOUNDARY_API_KEY": "ENVSENTINEL-boundary-api-key",
+    "BOUNDARY_PROJECT_ID": "ENVSENTINEL-boundary-project-id",
+    "HOME": "/envsentinel-home",
+    "HTTPS_PROXY": "http://envsentinel-https-proxy.invalid:1",
+}
+REAP_BOUND = m._REAP_BOUND_S
+_REAL_RAW = m._read_raw_baml_files
+_REAL_SPAWN = m._spawn_popen
+
+needs_posix = pytest.mark.skipif(not POSIX, reason="POSIX-only: fork, signals and process groups")
+needs_linux = pytest.mark.skipif(not LINUX, reason="Linux-only: PR_SET_PDEATHSIG and /proc")
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _baseline(name: str) -> dict:
+    return json.loads((BASELINE / name).read_text(encoding="utf-8"))
+
+
+def _pid() -> int | None:
+    gen = m._CLIENT.gen
+    return gen.pid if gen is not None else None
+
+
+def _gone(pid: int) -> bool:
+    """True when ``pid`` has exited (a zombie counts as gone)."""
+    if LINUX:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            return True
+        return state in ("Z", "X")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def _wait(cond, timeout: float, interval: float = 0.02) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if cond():
+            return True
+        if time.monotonic() >= deadline:
+            return bool(cond())
+        time.sleep(interval)
+
+
+def _log() -> list[dict]:
+    return m.worker_fault_log()
+
+
+def _bridge_with(fn: str, prefix: str) -> str:
+    """The real bridge with ``prefix`` statements inserted at the top of ``fn``."""
+    text = _REAL_RAW()["phase_loop_bridge.baml"]
+    start = text.index(f"function {fn}(")
+    brace = text.index("-> map<string, string> {", start) + len("-> map<string, string> {")
+    return text[:brace] + "\n    " + prefix + text[brace:]
+
+
+def _sleep(seconds: float) -> str:
+    return f"baml.sys.sleep(baml.time.Duration.from_milliseconds({int(seconds * 1000)}));"
+
+
+def _files(**overrides: str) -> dict[str, str]:
+    files = dict(_REAL_RAW())
+    for name, text in overrides.items():
+        files[name if name.endswith(".baml") else name + ".baml"] = text
+    return files
+
+
+def _hostile(fn: str, prefix: str) -> dict[str, str]:
+    return _files(phase_loop_bridge=_bridge_with(fn, prefix))
+
+
+SPAWN_HOOK = 'let hook = spawn with baml.spawn.options(detach = true) { throw baml.errors.Io { message: "boom" } };'
+PANIC_PARSE = (
+    "function phase_loop_parse_closeout(raw: string) -> map<string, string> {\n"
+    "    let xs = [1];\n    let y = xs[5];\n    { \"ok\": \"x\" }\n}\n"
+)
+
+
+def _panic_files() -> dict[str, str]:
+    text = _REAL_RAW()["phase_loop_bridge.baml"]
+    start = text.index("function phase_loop_parse_closeout(")
+    end = text.index("function phase_loop_closeout_request(")
+    return _files(phase_loop_bridge=text[:start] + PANIC_PARSE + "\n" + text[end:])
+
+
+def _use(files: dict[str, str] | None = None, **config) -> None:
+    m._read_raw_baml_files = (lambda files=files: dict(files)) if files is not None else _REAL_RAW
+    m._reset_worker_for_tests(test_mode=True, **config)
+
+
+def _peer_spawn(mode: str, *, first_only: bool = False, record: list | None = None):
+    """A ``_spawn_popen`` replacement that launches a scripted peer."""
+    used = {"n": 0}
+
+    def spawn(argv, **kwargs):
+        used["n"] += 1
+        if first_only and used["n"] > 1:
+            proc = _REAL_SPAWN(argv, **kwargs)
+        else:
+            proc = _REAL_SPAWN([argv[0], "-I", "-S", str(PEERS), mode, *argv[4:]], **kwargs)
+        if record is not None:
+            record.append(proc.pid)
+        return proc
+
+    return spawn
+
+
+def _parse() -> dict:
+    return m.parse_baml_response("EmitPhaseCloseout", OK).payload
+
+
+def _raises(fn, *args, **kwargs) -> BaseException:
+    try:
+        fn(*args, **kwargs)
+    except BaseException as exc:  # noqa: BLE001 - the caller asserts the exact type
+        return exc
+    raise AssertionError("expected an exception")
+
+
+def _busy_pid(timeout: float = 10.0) -> int:
+    assert _wait(lambda: m._CLIENT.gen is not None and m._CLIENT.gen.state == "busy", timeout), "worker never became busy"
+    return m._CLIENT.gen.pid
+
+
+class _Killer:
+    """Kills busy workers mid-call: the first one only, or every one."""
+
+    def __init__(self, *, every: bool = False, delay: float = 0.5) -> None:
+        self.every = every
+        self.delay = delay
+        self.killed: list[int] = []
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        while not self.stop.is_set():
+            gen = m._CLIENT.gen
+            if gen is not None and gen.state == "busy" and gen.pid not in self.killed:
+                time.sleep(self.delay)
+                if gen.state == "busy":
+                    os.kill(gen.pid, signal.SIGKILL)
+                    self.killed.append(gen.pid)
+                    if not self.every:
+                        return
+            time.sleep(0.01)
+
+    def close(self) -> None:
+        self.stop.set()
+        self.thread.join(5)
+
+
+def _async_raise(thread: threading.Thread, exc_type: type) -> None:
+    ident = ctypes.c_ulong(thread.ident)
+    if ctypes.pythonapi.PyThreadState_SetAsyncExc(ident, ctypes.py_object(exc_type)) != 1:
+        raise AssertionError("could not deliver an async exception")
+
+
+def _thread_named(name: str) -> threading.Thread | None:
+    return next((t for t in threading.enumerate() if t.name == name and t.is_alive()), None)
+
+
+class _DeliverySpy:
+    """Counts deliveries per request at the reply seam (I2)."""
+
+    def __init__(self) -> None:
+        self.requests: list = []
+        self.counts: collections.Counter = collections.Counter()
+        self.outcomes: dict = {}
+        self._deliver = m._deliver
+        self._init = m._Request.__init__
+        spy = self
+
+        def init(req, *args, **kwargs):
+            spy._init(req, *args, **kwargs)
+            spy.requests.append(req)
+
+        def deliver(req, outcome):
+            spy.counts[id(req)] += 1
+            spy.outcomes[id(req)] = outcome
+            assert spy.counts[id(req)] == 1, "a request was answered twice"
+            spy._deliver(req, outcome)
+
+        m._Request.__init__ = init
+        m._deliver = deliver
+
+    def close(self) -> None:
+        m._Request.__init__ = self._init
+        m._deliver = self._deliver
+
+    def assert_each_once(self, timeout: float = 10.0) -> None:
+        assert _wait(lambda: all(self.counts[id(r)] == 1 for r in self.requests), timeout), [
+            self.counts[id(r)] for r in self.requests
+        ]
+
+
+def _isolated(name: str, *, timeout: float = 180.0, env: dict | None = None) -> str:
+    """Run ``scenario_<name>`` from this module in a fresh interpreter; it must exit 0."""
+    code = (
+        "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(); "
+        "sys.stdout.flush(); import os; os._exit(0)" % (str(TESTS), str(SRC), MODULE, name)
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, **(env or {})},
+        cwd=str(TESTS.parent),
+    )
+    assert proc.returncode == 0, f"scenario_{name} exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    return proc.stdout
+
+
+def _scenario_setup(files=None, **config) -> _DeliverySpy:
+    _use(files, **config)
+    return _DeliverySpy()
+
+
+@pytest.fixture
+def client():
+    """In-process tests: a fresh test-mode client, restored afterwards."""
+    spy = _scenario_setup()
+    try:
+        yield spy
+        spy.assert_each_once()
+    finally:
+        spy.close()
+        m._spawn_popen = _REAL_SPAWN
+        _use(None)
+        m._reset_worker_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# parity against the Step 0 goldens (register #1-#3, #12, #20, #21, #23)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_corpus_matches_v0_on_one_worker(client):
+    corpus = _baseline("parse_corpus.json")["corpus"]
+    assert len(corpus) >= 95
+    _parse()
+    pid, log = _pid(), _log()
+    for key, entry in corpus.items():
+        expected = entry["v0"]
+        try:
+            actual = m.parse_baml_response("EmitPhaseCloseout", entry["input"]).payload
+        except BaseException as exc:  # noqa: BLE001
+            assert type(exc) is BamlValidationError, (key, type(exc))
+            actual = "BamlValidationError"
+        if key == "pix_2p70":
+            # #12: v0 clamped an int > i64; v1 yields null.  Flagged, accepted.
+            assert expected["visual_evidence_non_black_pixels"] == 2**63 - 1
+            assert actual["visual_evidence_non_black_pixels"] is None
+            assert {k: v for k, v in actual.items() if k != "visual_evidence_non_black_pixels"} == {
+                k: v for k, v in expected.items() if k != "visual_evidence_non_black_pixels"
+            }
+            continue
+        assert actual == expected, key
+    assert _pid() == pid, "an input surfaced as a worker fault"
+    assert _log() == log
+
+
+def test_function_names_outside_the_bridge_table_match_v0(client):
+    names = _baseline("parse_corpus.json")["names"]
+    for key, entry in names.items():
+        exc = _raises(m.parse_baml_response, entry["function"], entry["input"])
+        assert type(exc) is BamlValidationError and entry["v0"] == "BamlValidationError", key
+    requests = _baseline("closeout_requests_v0.json")["requests"]
+    for fn in ("NoSuchFunction", "DotfilesAdoptionManifest"):
+        assert requests[f"name:{fn}"]["v0"] == "BamlValidationError"
+        exc = _raises(m.build_baml_request, fn, {})
+        assert type(exc) is BamlValidationError, fn
+
+
+def _request_view(req) -> dict:
+    messages = req.body.get("messages") or []
+    return {
+        "url": req.url,
+        "method": req.method,
+        "headers": req.headers,
+        "body": req.body,
+        "message_roles": [msg.get("role") for msg in messages],
+        "message_content_types": [type(msg.get("content")).__name__ for msg in messages],
+        "prompt": req.prompt,
+        "prompt_sha256": hashlib.sha256(req.prompt.encode("utf-8")).hexdigest(),
+    }
+
+
+def test_evidence_request_equals_v0_on_every_field(client):
+    for key, entry in _baseline("evidence_requests.json")["requests"].items():
+        request = m.build_baml_request("EvaluateSuspectedFakeEvidence", entry["payload"])
+        assert request.id is None  # #20
+        assert _request_view(request) == entry["v0"], key
+
+
+def test_closeout_request_envelope_equals_v0(client):
+    requests = _baseline("closeout_requests_v0.json")["requests"]
+    for key in ("empty", "two_gates_sha", "two_gates_nosha", "sentinels", "sha_empty"):
+        v0 = requests[key]["v0"]
+        view = _request_view(m.build_baml_request("EmitPhaseCloseout", requests[key]["payload"]))
+        for field in ("url", "method", "headers", "message_roles", "message_content_types"):
+            assert view[field] == v0[field], (key, field)
+        assert sorted(view["body"]) == sorted(v0["body"])
+        assert view["body"]["model"] == v0["body"]["model"]
+        # The prompt differs by D1 only; its bytes are pinned by the refresh goldens.
+        assert view["prompt"] != v0["prompt"]
+
+
+def test_closeout_prompt_goldens_d1_d1a(client):
+    goldens = json.loads(PROMPT_GOLDENS.read_text(encoding="utf-8"))
+    requests = _baseline("closeout_requests_v0.json")["requests"]
+    schema = m.export_function_schema("EmitPhaseCloseout")
+    schema_sha = hashlib.sha256(json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    marker = "\n\nPhase-loop closeout JSON schema description:\n"
+    for key, golden in goldens["prompts"].items():
+        request = m.build_baml_request("EmitPhaseCloseout", requests[key]["payload"])
+        assert hashlib.sha256(request.prompt.encode("utf-8")).hexdigest() == golden["sha256"], key
+        assert request.prompt == golden["prompt"], key
+        assert request.prompt.count(marker) == 1
+        assert f"schema_sha256: {schema_sha}" in request.prompt
+        # D1a: the description tail is byte-identical to v0's.
+        v0_prompt = requests[key]["v0"]["prompt"]
+        assert request.prompt[request.prompt.index(marker):] == v0_prompt[v0_prompt.index(marker):]
+        (message,) = request.body["messages"]
+        assert message["role"] == "user"
+        assert message["content"] == request.prompt
+        assert not request.prompt.startswith("[")
+    literals = m._baml_prompt_context_constants()
+    prompt = m.build_baml_request("EmitPhaseCloseout", CLOSEOUT).prompt
+    contract = prompt[: prompt.index(marker)]
+    for values in literals.values():
+        for literal in values:
+            assert literal in contract, literal  # #5: enums stay in the contract prose
+
+
+def test_schema_dump_equals_step_0(client):
+    golden = _baseline("schema_dump.json")["schema"]
+    text = "\n".join(m._read_baml_files().values())
+    classes = sorted(set(re.findall(r"\bclass\s+([A-Za-z_]\w*)\s*\{", text)))
+    functions = sorted(set(re.findall(r"\bfunction\s+([A-Z]\w*)\s*\(", text)))
+    assert {c: [list(f) for f in m._class_fields(text, c)] for c in classes} == golden["class_fields"]
+    assert {n: m.export_function_schema(n) for n in [*classes, *functions]} == golden["export_function_schema"]
+    assert {k: list(v) for k, v in sorted(m._enum_literal_map().items())} == golden["enum_literal_map"]
+
+
+def test_payload_filtering_requirements_and_normalization(client):
+    base = m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+    # #7: an extra key is filtered to the signature.
+    assert m.build_baml_request("EvaluateSuspectedFakeEvidence", {**EVIDENCE, "extra": "x"}) == base
+    # #8: a missing key is a plain error before the worker is called.
+    pid, log = _pid(), _log()
+    exc = _raises(m.build_baml_request, "EvaluateSuspectedFakeEvidence", {"tier2_signal_summary": "a"})
+    assert type(exc) is BamlValidationError
+    assert (_pid(), _log()) == (pid, log)
+    # #9: closeout_commit_sha "" is v0's "none".
+    empty_sha = m.build_baml_request("EmitPhaseCloseout", {**CLOSEOUT, "closeout_commit_sha": ""})
+    no_sha = m.build_baml_request("EmitPhaseCloseout", {**CLOSEOUT, "closeout_commit_sha": None})
+    assert empty_sha == no_sha
+    assert "Closeout commit SHA: none" in no_sha.prompt
+    # #10: a backslash in a list value renders (v0 raised re.error).
+    assert _baseline("closeout_requests_v0.json")["requests"]["backslash"]["v0"] == "re.error"
+    backslash = m.build_baml_request("EmitPhaseCloseout", {**CLOSEOUT, "plan_produces": ["C:\\new\\s"]})
+    assert "- C:\\new\\s" in backslash.prompt
+    # #11: template syntax inside caller values stays literal.
+    templated = m.build_baml_request(
+        "EmitPhaseCloseout", {**CLOSEOUT, "phase_alias": "P${X}{{ y }}", "plan_owned_files": ["{% if %}"]}
+    )
+    assert "P${X}{{ y }}" in templated.prompt and "- {% if %}" in templated.prompt
+
+
+def test_snapshot_is_per_process_until_reset(client):
+    """#29: the regex readers read the snapshot taken at first use."""
+    before = m.export_function_schema("EmitPhaseCloseout")
+    edited = _files(emit_phase_closeout=_REAL_RAW()["emit_phase_closeout.baml"].replace(
+        "    next_action: string?,", "    next_action: string?,\n    extra_field: string?,"
+    ))
+    m._read_raw_baml_files = lambda: dict(edited)
+    assert m.export_function_schema("EmitPhaseCloseout") == before
+    m._reset_worker_for_tests(test_mode=True)
+    assert "extra_field" in m.export_function_schema("EmitPhaseCloseout")["properties"]
+
+
+def test_d3_field_syntax_stays_strict():
+    text = 'class Strict {\n    status: "a" | "b",\n}\n'
+    assert type(_raises(m._class_fields, text, "Strict")) is BamlValidationError
+    assert m._class_fields("class Both {\n    a: string,\n    b int?\n}\n", "Both") == [("a", "string", False), ("b", "int", True)]
+
+
+def test_adoption_bundle_excludes_the_bridge(tmp_path):
+    """#26: schema refs are the 8 schema files; editing the bridge changes nothing."""
+    from phase_loop_runtime import adoption_bundle
+
+    root = tmp_path / adoption_bundle.BAML_SCHEMA_ROOT
+    root.mkdir(parents=True)
+    for path in (PKG / "baml_src").glob("*.baml"):
+        (root / path.name).write_bytes(path.read_bytes())
+    refs = adoption_bundle._schema_refs(tmp_path)
+    assert len(refs) == 8
+    assert all(not ref["source_path"].endswith("phase_loop_bridge.baml") for ref in refs)
+    (root / "phase_loop_bridge.baml").write_text("// edited\n", encoding="utf-8")
+    assert adoption_bundle._schema_refs(tmp_path) == refs
+    assert adoption_bundle._stale_schema_refs(refs, adoption_bundle._schema_refs(tmp_path)) == []
+
+
+def test_environment_inside_the_worker_is_the_allowlist(client):
+    """#15: sentinels in the parent never reach the worker or a request."""
+    with mock.patch.dict(os.environ, ENV_SENTINELS):
+        os.environ["LC_CTYPE"] = "C.UTF-8"
+        m._reset_worker_for_tests(test_mode=True)
+        outcome, info = m._worker_call("env", {})
+        evidence = [
+            m.build_baml_request("EvaluateSuspectedFakeEvidence", entry["payload"])
+            for entry in _baseline("evidence_requests.json")["requests"].values()
+        ]
+        closeout = m.build_baml_request("EmitPhaseCloseout", CLOSEOUT)
+        allowlist = set(m._worker_env())
+    assert outcome == "ok"
+    assert set(info["env"]) <= allowlist, set(info["env"]) - allowlist
+    assert "LC_CTYPE" not in info["env"] and "__PYVENV_LAUNCHER__" not in info["env"]
+    assert Path(info["cwd"]).resolve() == PKG.resolve()
+    golden = [entry["v0"] for entry in _baseline("evidence_requests.json")["requests"].values()]
+    assert [_request_view(r) for r in evidence] == golden
+    blob = json.dumps([_request_view(r) for r in [*evidence, closeout]])
+    for value in ENV_SENTINELS.values():
+        assert value not in blob
+    err = m._CLIENT.gen.err_file
+    err.seek(0)
+    assert err.read() == b"", "worker wrote to stdout/stderr"
+
+
+def test_worker_env_keys_are_a_subset_of_the_allowlist():
+    with mock.patch.dict(os.environ, {**ENV_SENTINELS, "LD_LIBRARY_PATH": "/x", "TMPDIR": "/tmp"}):
+        keys = set(m._worker_env())
+    allowed = {"PATH", *m._WORKER_ENV_KEYS, *m._WORKER_LOADER_KEYS.get(sys.platform, ())}
+    assert keys <= allowed
+    assert not keys & set(ENV_SENTINELS)
+
+
+def test_second_call_reuses_the_worker_quickly(client):
+    """#16: ~0.8 s once per process, then milliseconds on the same pid."""
+    _parse()
+    pid = _pid()
+    started = time.perf_counter()
+    _parse()
+    assert time.perf_counter() - started < 0.25
+    assert _pid() == pid
+
+
+def test_parent_never_imports_baml_bridge(client):
+    _parse()
+    m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+    assert "baml_bridge" not in sys.modules
+
+
+def test_serialization_errors_are_plain_and_send_nothing(client):
+    _parse()
+    pid, log = _pid(), _log()
+    for exc in (
+        _raises(m.parse_baml_response, "EmitPhaseCloseout", '{"x": "\ud83d"}'),
+        _raises(m._worker_call, "parse_closeout", {"raw": object()}),
+        _raises(m.build_baml_request, "EvaluateSuspectedFakeEvidence", {**EVIDENCE, "sample_artifact_content": "\udfff"}),
+    ):
+        assert type(exc) is BamlValidationError
+    assert (_pid(), _log()) == (pid, log)
+
+
+def test_worker_protocol_rejects_ops_before_init_and_a_second_init():
+    files = m._read_baml_files()
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-S", str(PKG / "_baml_worker.py"), str(os.getpid()), "PATH"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env={"PATH": os.path.dirname(sys.executable)},
+        cwd=str(PKG),
+    )
+    try:
+        def send(obj):
+            proc.stdin.write((json.dumps(obj) + "\n").encode())
+            proc.stdin.flush()
+            return json.loads(proc.stdout.readline())
+
+        early = send({"id": 1, "op": "parse_closeout", "args": {"raw": OK}})
+        assert set(early) == {"id", "fingerprint", "fault"} and early["id"] == 1
+        init = {"id": 2, "op": "init", "files": files, "sys_path": m._worker_sys_path()}
+        ready = send(init)
+        assert set(ready) == {"id", "fingerprint", "ok"} and ready["id"] == 2
+        assert ready["fingerprint"] == m._CLIENT.files()[1] or ready["fingerprint"] == __import__(
+            "phase_loop_runtime._baml_worker", fromlist=["fingerprint"]
+        ).fingerprint(files)
+        again = send({**init, "id": 3})
+        assert set(again) == {"id", "fingerprint", "fault"} and again["id"] == 3
+        env_without_test_mode = send({"id": 4, "op": "env", "args": {}})
+        assert "fault" in env_without_test_mode
+        good = send({"id": 5, "op": "parse_closeout", "args": {"raw": OK}})
+        assert set(good) == {"id", "fingerprint", "ok"}
+        proc.stdin.close()
+        assert proc.wait(10) == 0  # stdin EOF is the graceful exit
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# tripwires
+# ---------------------------------------------------------------------------
+
+
+def _strip_baml_code(text: str) -> str:
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r"`[^`]*`", "``", text, flags=re.S)
+    text = re.sub(r'#"(.*?)"#', '""', text, flags=re.S)
+    return re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
+
+
+def test_no_spawn_statement_in_packaged_sources():
+    for path in (PKG / "baml_src").glob("*.baml"):
+        assert not re.search(r"\bspawn\b", _strip_baml_code(path.read_text(encoding="utf-8"))), path.name
+    assert re.search(r"\bspawn\b", _strip_baml_code(SPAWN_HOOK))  # the scan can see a real one
+
+
+def test_rendered_sources_have_no_template_syntax():
+    for name, text in m._read_baml_files().items():
+        assert "{{" not in text and "{%" not in text, name
+    broken = {"x.baml": "class X {\n    a: string,\n}\n// {{ unknown_thing }}\n"}
+    with mock.patch.object(m, "_read_raw_baml_files", return_value=broken):
+        assert type(_raises(m._read_baml_files)) is BamlValidationError
+
+
+def _src_files() -> list[Path]:
+    return sorted(PKG.rglob("*.py"))
+
+
+def test_no_v0_console_scripts_or_package_remain():
+    """#18: ``baml``/``baml-cli`` console scripts and baml_py are gone."""
+    for path in _src_files():
+        text = path.read_text(encoding="utf-8")
+        assert "baml_py" not in text, path
+        assert not re.search(r"""["']baml(-cli)?["']\s*,""", text), path
+
+
+def _exception_text_assertions(path: Path) -> list[int]:
+    lines = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Call):
+            name = _dotted(node.func)
+            if name.endswith(("assertRaisesRegex", "assertRaisesRegexp")):
+                lines.append(node.lineno)
+            if name.endswith("raises") and any(kw.arg == "match" for kw in node.keywords):
+                lines.append(node.lineno)
+        if isinstance(node, ast.Assert):
+            for sub in ast.walk(node.test):
+                if isinstance(sub, ast.Call) and _dotted(sub.func) == "str" and sub.args and isinstance(sub.args[0], ast.Name) and sub.args[0].id in ("exc", "e", "err", "error"):
+                    lines.append(node.lineno)
+    return lines
+
+
+def test_the_v1_suites_assert_no_exception_text():
+    """#19: exception text is not contractual; tests use type, .kind and .rc."""
+    for path in TESTS.glob("test_phase_loop_baml_v1_*.py"):
+        assert _exception_text_assertions(path) == [], path.name
+
+
+def test_importing_the_worker_module_has_no_side_effects():
+    code = textwrap.dedent(
+        """
+        import os, sys, threading
+        before = (os.fstat(1).st_ino, os.fstat(2).st_ino, threading.active_count())
+        sys.path.insert(0, %r)
+        import phase_loop_runtime._baml_worker
+        after = (os.fstat(1).st_ino, os.fstat(2).st_ino, threading.active_count())
+        assert before == after, (before, after)
+        assert "baml_bridge" not in sys.modules
+        """
+        % str(SRC)
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)
+
+
+_FORK_ALLOWLIST = {
+    # agent-harness#1140 (D7): the supervisor is an exec'd PROGRAM; its fork runs
+    # in that single-threaded process, never between fork and exec of ours.
+    ("lease_supervisor.py", "os.fork"),
+}
+
+
+def _dotted(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_dotted(node.value)}.{node.attr}"
+    return ""
+
+
+def test_fork_invariant_tripwire():
+    """D7 / #28 / #30: no Python runs between fork and exec anywhere in src/."""
+    found = set()
+    for path in _src_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in node.names] + ([node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+                if any(n and n.split(".")[0] == "multiprocessing" for n in names):
+                    found.add((path.name, "multiprocessing"))
+                if any(n == "ProcessPoolExecutor" for n in names):
+                    found.add((path.name, "ProcessPoolExecutor"))
+            if isinstance(node, ast.Call):
+                name = _dotted(node.func)
+                if name in ("os.fork", "os.forkpty", "pty.fork") or name.endswith("set_start_method") or name.endswith("ProcessPoolExecutor"):
+                    found.add((path.name, name))
+                for kw in node.keywords:
+                    if kw.arg == "preexec_fn" and not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                        found.add((path.name, "preexec_fn"))
+    assert found <= _FORK_ALLOWLIST, sorted(found - _FORK_ALLOWLIST)
+
+
+def _module_tree() -> ast.Module:
+    return ast.parse((PKG / "baml_modular.py").read_text(encoding="utf-8"))
+
+
+def test_client_defines_no_finalizer_handler_or_lock():
+    """I6 finalizer and handler lint: nothing in the client can reach a daemon-held lock.
+
+    The client creates no lock at all, which makes the call-graph question moot;
+    this lint pins that, plus the absence of every asynchronous entry point."""
+    tree = _module_tree()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert node.name != "__del__"
+        if isinstance(node, ast.Call):
+            name = _dotted(node.func)
+            assert name not in (
+                "weakref.finalize", "signal.signal", "threading.excepthook", "sys.excepthook",
+                "threading.Lock", "threading.RLock", "threading.Condition", "threading.Semaphore",
+                "threading.BoundedSemaphore", "threading.Event", "threading.Barrier", "_thread.allocate_lock",
+            ), name
+            assert not name.endswith("addHandler"), name
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                assert _dotted(target) not in ("threading.excepthook", "sys.excepthook")
+
+
+def _function_defs() -> dict[str, ast.FunctionDef]:
+    defs = {}
+    for node in ast.walk(_module_tree()):
+        if isinstance(node, ast.FunctionDef):
+            defs.setdefault(node.name, node)
+    return defs
+
+
+def _reachable(roots: list[str]) -> set[str]:
+    defs = _function_defs()
+    seen, todo = set(), list(roots)
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in defs:
+            continue
+        seen.add(name)
+        for node in ast.walk(defs[name]):
+            if isinstance(node, ast.Call):
+                called = _dotted(node.func).split(".")[-1]
+                if called in defs:
+                    todo.append(called)
+    return seen
+
+
+def test_daemon_thread_bodies_never_log_import_or_lock():
+    """Thread-body hygiene lint (not a deadlock claim; D7 removed that hazard)."""
+    bodies = ["_own", "_spawner_loop", "_reader_loop", "_writer_loop"]
+    defs = _function_defs()
+    for body in bodies:
+        tops = [n for n in defs[body].body if not isinstance(n, ast.Expr)]
+        assert any(
+            isinstance(n, ast.Try) and any(_dotted(h.type) == "BaseException" for h in n.handlers if h.type is not None)
+            for n in ast.walk(defs[body])
+        ), body
+        assert tops
+    for name in _reachable(bodies):
+        for node in ast.walk(defs[name]):
+            assert not isinstance(node, (ast.Import, ast.ImportFrom)) or name in ("_spawn_worker", "files"), (name, "import")
+            if isinstance(node, ast.Call):
+                called = _dotted(node.func)
+                assert not called.startswith(("_LOG.", "logging.")), (name, called)
+                assert "Lock" not in called and ".acquire" not in called, (name, called)
+
+
+# ---------------------------------------------------------------------------
+# worker faults (each in a fresh interpreter)
+# ---------------------------------------------------------------------------
+
+
+def scenario_idle_death_sigkill():
+    spy = _scenario_setup(retries=0)
+    first = _parse()
+    pid = _pid()
+    before = len(_log())
+    os.kill(pid, signal.SIGKILL)
+    assert _wait(lambda: _gone(pid), 3)
+    assert _parse() == first
+    assert _pid() != pid
+    assert _wait(lambda: len(_log()) == before + 1, 3)
+    entry = _log()[-1]
+    assert (entry["kind"], entry["phase"], entry["pid"], entry["rc"]) == ("died", "idle", pid, -signal.SIGKILL)
+    spy.assert_each_once()
+
+
+def scenario_idle_death_sigterm():
+    spy = _scenario_setup(retries=0)
+    first = _parse()
+    pid = _pid()
+    before = len(_log())
+    os.kill(pid, signal.SIGTERM)
+    assert _wait(lambda: _gone(pid), 3)
+    assert _parse() == first and _pid() != pid
+    assert len(_log()) == before + 1 and _log()[-1]["pid"] == pid
+    spy.assert_each_once()
+
+
+def scenario_idle_death_spawn_hook():
+    """The hostile bridge's detached failing spawn fires the runtime's
+    os._exit(1) after the call: an idle death, recovered on the next call."""
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", SPAWN_HOOK), retries=0)
+    try:
+        assert _parse() == m.parse_baml_response("EmitPhaseCloseout", OK).payload
+    except BamlWorkerError as exc:
+        assert exc.kind == "died"
+    pid = m._CLIENT.fault_log[-1]["pid"] if _log() else _pid()
+    assert _wait(lambda: any(e["pid"] == pid and e["rc"] == 1 for e in _log()), 5), _log()
+    request = m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+    assert request.body["model"] == "phase-loop-evidence-audit"
+    assert _pid() != pid
+    assert [e["rc"] for e in _log()] == [1], _log()
+    spy.assert_each_once()
+
+
+def scenario_spawn_hook_default_budget():
+    started: list[int] = []
+
+    def spawn(argv, **kwargs):
+        proc = _REAL_SPAWN(argv, **kwargs)
+        started.append(proc.pid)
+        return proc
+
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", SPAWN_HOOK))
+    m._spawn_popen = spawn
+    for _ in range(3):
+        try:
+            _parse()
+        except BamlWorkerError as exc:
+            assert exc.kind == "died"
+        time.sleep(1.0)
+    assert _wait(lambda: all(_gone(p) for p in started[:-1]), 5)
+    dead = {p for p in started if _gone(p)}
+    assert _wait(lambda: {e["pid"] for e in _log()} == dead, 5), (_log(), dead)
+    assert len(_log()) == len(dead)
+    spy.assert_each_once()
+
+
+def scenario_inflight_kill_retries_zero():
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), retries=0)
+    killer = _Killer()
+    try:
+        exc = _raises(_parse)
+    finally:
+        killer.close()
+    assert type(exc) is BamlWorkerError and exc.kind == "died" and exc.rc == -signal.SIGKILL
+    assert len(_log()) == 1 and _log()[0]["pid"] == killer.killed[0]
+    spy.assert_each_once()
+
+
+def scenario_inflight_kill_within_budget():
+    healthy = _parse_with(None)
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(1.5)))
+    killer = _Killer()
+    try:
+        assert _parse() == healthy
+    finally:
+        killer.close()
+    assert len(killer.killed) == 1
+    assert [e["pid"] for e in _log()] == killer.killed
+    spy.assert_each_once()
+
+
+def _parse_with(files) -> dict:
+    _use(files)
+    try:
+        return _parse()
+    finally:
+        m._reset_worker_for_tests(test_mode=True)
+
+
+def scenario_retry_budget_exhaustion():
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)))
+    killer = _Killer(every=True, delay=0.3)
+    try:
+        exc = _raises(_parse)
+    finally:
+        killer.close()
+    assert type(exc) is BamlWorkerError and exc.kind == "died"
+    assert len(killer.killed) == 3
+    assert [e["pid"] for e in _log()] == killer.killed
+    spy.assert_each_once()
+
+
+_OPS = {
+    "parse_closeout": ("phase_loop_parse_closeout", lambda: m.parse_baml_response("EmitPhaseCloseout", OK).payload),
+    "closeout_request": ("phase_loop_closeout_request", lambda: _request_view(m.build_baml_request("EmitPhaseCloseout", CLOSEOUT))),
+    "evidence_request": (
+        "phase_loop_evidence_request",
+        lambda: _request_view(m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)),
+    ),
+}
+
+
+def _recovery_parity(op: str) -> None:
+    bridge_fn, call = _OPS[op]
+    _use(None)
+    healthy = call()
+    spy = _scenario_setup(_hostile(bridge_fn, _sleep(1.5)))
+    sent: list[tuple[bytes, str, int]] = []
+    real_send = m._Client._send_op
+
+    def send_spy(self, gen, req):
+        sent.append((req.body, req.fp, gen.pid))
+        real_send(self, gen, req)
+
+    m._Client._send_op = send_spy
+    killer = _Killer()
+    try:
+        assert call() == healthy
+    finally:
+        killer.close()
+        m._Client._send_op = real_send
+    assert len(sent) == 2 and sent[0][2] != sent[1][2]
+    assert sent[0][:2] == sent[1][:2], "retry body bytes or source snapshot differ"
+    spy.assert_each_once()
+
+
+def scenario_recovery_parity_parse_closeout():
+    _recovery_parity("parse_closeout")
+
+
+def scenario_recovery_parity_closeout_request():
+    _recovery_parity("closeout_request")
+
+
+def scenario_recovery_parity_evidence_request():
+    _recovery_parity("evidence_request")
+
+
+def scenario_timeout_disposes_the_worker():
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), retries=0, deadline_s=1.5)
+    started = time.monotonic()
+    exc = _raises(_parse)
+    assert time.monotonic() - started < 1.5 + 1.0
+    assert type(exc) is BamlWorkerError and exc.kind == "timeout"
+    pid = _log()[-1]["pid"]
+    assert _wait(lambda: _gone(pid), REAP_BOUND)
+    spy.assert_each_once()
+
+
+def scenario_blocked_write():
+    """A peer that never reads stdin; the frame is larger than the pipe buffer."""
+    spy = _scenario_setup(retries=0, deadline_s=1.5)
+    m._spawn_popen = _peer_spawn("stall_after_init")
+    started = time.monotonic()
+    exc = _raises(m.parse_baml_response, "EmitPhaseCloseout", "x" * (2 * 1024 * 1024))
+    assert time.monotonic() - started < 1.5 + 1.0
+    assert type(exc) is BamlWorkerError and exc.kind == "timeout"
+    entry = _log()[-1]
+    assert _wait(lambda: _gone(entry["pid"]), REAP_BOUND)
+    # Both helpers exit, and each closed the fd it owned.
+    assert _wait(lambda: not any(t.name.endswith(f"-{entry['pid']}") for t in threading.enumerate()), REAP_BOUND)
+    m._spawn_popen = _REAL_SPAWN
+    assert _parse()["terminal_status"] == "complete" and _pid() != entry["pid"]
+    spy.assert_each_once()
+
+
+def scenario_stalled_spawn():
+    spy = _scenario_setup(retries=0, deadline_s=1.0)
+    returned: list[tuple[float, int]] = []
+
+    def slow(argv, **kwargs):
+        if not returned:
+            time.sleep(3.0)
+        proc = _REAL_SPAWN(argv, **kwargs)
+        returned.append((time.monotonic(), proc.pid))
+        return proc
+
+    m._spawn_popen = slow
+    started = time.monotonic()
+    exc = _raises(_parse)
+    assert type(exc) is BamlWorkerError and exc.kind == "spawn"
+    assert time.monotonic() - started < 2.0
+    assert _wait(lambda: returned, 5)
+    back_at, late_pid = returned[0]
+    assert _wait(lambda: _gone(late_pid), REAP_BOUND)
+    assert time.monotonic() - back_at <= REAP_BOUND + 0.3
+    assert m._CLIENT.gen is None or m._CLIENT.gen.pid != late_pid, "the late process entered the slot"
+    assert _wait(lambda: [e["kind"] for e in _log()] == ["spawn_late"], 2), _log()
+    assert _parse()["terminal_status"] == "complete"
+    assert _pid() not in (None, late_pid)
+    spy.assert_each_once()
+
+
+def scenario_dead_spawner_is_recreated():
+    spy = _scenario_setup()
+    _parse()
+    spawner = _thread_named("phase-loop-baml-spawner")
+    _async_raise(spawner, SystemExit)
+    m._CLIENT.spawns.put(object())  # wake it so the async exception lands
+    assert _wait(lambda: not spawner.is_alive(), 5)
+    assert _parse()["terminal_status"] == "complete"
+    assert _thread_named("phase-loop-baml-spawner") is not spawner
+    spy.assert_each_once()
+
+
+def scenario_missing_interpreter_is_a_spawn_error():
+    spy = _scenario_setup(retries=0)
+    with mock.patch.object(m, "_worker_interpreter", return_value="/nonexistent/phase-loop/python3"):
+        exc = _raises(_parse)
+    assert type(exc) is BamlWorkerError and exc.kind == "spawn"
+    spy.assert_each_once()
+
+
+_FRAMING = {
+    "unterminated_eof": "framing",
+    "non_json": "framing",
+    "json_array": "framing",
+    "wrong_id": "desync",
+    "wrong_fingerprint": "fingerprint",
+    "extra_key": "framing",
+    "non_json_ok": "framing",
+    "over_cap": "framing",
+}
+
+
+def scenario_framing_faults():
+    for mode, kind in _FRAMING.items():
+        spy = _scenario_setup(retries=0)
+        pids: list[int] = []
+        m._spawn_popen = _peer_spawn(mode, record=pids)
+        exc = _raises(_parse)
+        assert type(exc) is BamlWorkerError and exc.kind == kind, (mode, type(exc), getattr(exc, "kind", None))
+        assert _wait(lambda: _gone(pids[0]), REAP_BOUND), mode
+        assert [e["pid"] for e in _log()] == pids, mode
+        spy.assert_each_once()
+        spy.close()
+        m._spawn_popen = _REAL_SPAWN
+
+
+def scenario_broken_source_is_an_init_fault():
+    spy = _scenario_setup(_files(bad="class Bad {\n    x: strin,\n}\n"), retries=0)
+    for call in (_parse, lambda: m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)):
+        exc = _raises(call)
+        assert type(exc) is BamlWorkerError and exc.kind == "init_fault"
+    assert [e["kind"] for e in _log()] == ["init_fault", "init_fault"]
+    spy.assert_each_once()
+
+
+def scenario_in_baml_panic_is_contained():
+    """#13: a panic comes back as a fault; the worker is discarded and killed."""
+    spy = _scenario_setup(_panic_files())
+    exc = _raises(_parse)
+    assert type(exc) is BamlWorkerError and exc.kind == "fault"
+    pid = _log()[-1]["pid"]
+    assert _wait(lambda: _gone(pid), REAP_BOUND)
+    request = m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+    assert request.id is None and _pid() != pid
+    spy.assert_each_once()
+
+
+def _fit(make_args, limit: int) -> int:
+    """The largest n whose serialized request body stays under ``limit`` bytes."""
+    lo, hi = 0, limit
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(json.dumps(make_args(mid), ensure_ascii=True, sort_keys=True, allow_nan=False)) < limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def scenario_frame_cap_derivation():
+    """#27: an in-cap request can never produce an over-cap response.
+
+    Each op, each character shape, the parse error branch (the input echoed
+    back) and nested inputs (closeout list values made of the shape), each at a
+    serialized request just under the 4 MiB cap."""
+    spy = _scenario_setup()
+    sizes: list[int] = []
+    real_frame = m._Client._on_frame
+
+    def frame_spy(self, gen, line):
+        sizes.append(len(line))
+        real_frame(self, gen, line)
+
+    m._Client._on_frame = frame_spy
+    shapes = {"backslash": "\\", "quote": '"', "astral": "\U0001f600", "control": "\x01", "bmp": "\u4e2d", "ascii": "a"}
+    limit = m._REQUEST_CAP - 64
+
+    def nested(char, n):
+        return json.dumps({**OK_PAYLOAD, "terminal_status": "executed", "dirty_paths": [char * n], "produced_if_gates": []})
+
+    cases = {
+        "parse_error_branch": lambda char: (lambda n: {"raw": char * n}),
+        "parse_nested": lambda char: (lambda n: {"raw": nested(char, n)}),
+        "closeout_request": lambda char: (lambda n: m._bridge_args("EmitPhaseCloseout", (), {**CLOSEOUT, "plan_owned_files": [char * n]})),
+        "evidence_request": lambda char: (lambda n: {**EVIDENCE, "sample_artifact_content": char * n}),
+    }
+    ops = {"parse_error_branch": "parse_closeout", "parse_nested": "parse_closeout",
+           "closeout_request": "closeout_request", "evidence_request": "evidence_request"}
+    try:
+        for case, factory in cases.items():
+            for shape, char in shapes.items():
+                make = factory(char)
+                args = make(_fit(make, limit))
+                assert len(m._serialize_args(args)) >= limit - 64, (case, shape)
+                before = len(sizes)
+                m._worker_call(ops[case], args)
+                assert len(sizes) > before
+                assert sizes[-1] < m._RESPONSE_CAP, (case, shape, sizes[-1])
+        pid, log = _pid(), _log()
+        exc = _raises(m.parse_baml_response, "EmitPhaseCloseout", "a" * (m._REQUEST_CAP + 1))
+        assert type(exc) is BamlValidationError
+        assert (_pid(), _log()) == (pid, log)
+    finally:
+        m._Client._on_frame = real_frame
+    print("max response frame", max(sizes), "of cap", m._RESPONSE_CAP)
+    spy.assert_each_once()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("idle_death_sigkill", marks=needs_posix),
+        pytest.param("idle_death_sigterm", marks=needs_posix),
+        "idle_death_spawn_hook",
+        "spawn_hook_default_budget",
+        pytest.param("inflight_kill_retries_zero", marks=needs_posix),
+        pytest.param("inflight_kill_within_budget", marks=needs_posix),
+        pytest.param("retry_budget_exhaustion", marks=needs_posix),
+        pytest.param("recovery_parity_parse_closeout", marks=needs_posix),
+        pytest.param("recovery_parity_closeout_request", marks=needs_posix),
+        pytest.param("recovery_parity_evidence_request", marks=needs_posix),
+        "timeout_disposes_the_worker",
+        "blocked_write",
+        "stalled_spawn",
+        pytest.param("dead_spawner_is_recreated", marks=needs_linux),
+        "missing_interpreter_is_a_spawn_error",
+        "framing_faults",
+        "broken_source_is_an_init_fault",
+        "in_baml_panic_is_contained",
+        "frame_cap_derivation",
+    ],
+)
+def test_worker_fault_scenario(name):
+    _isolated(name)
+
+
+# ---------------------------------------------------------------------------
+# owner death, signals and concurrency (platform table; I3, I5)
+# ---------------------------------------------------------------------------
+
+
+def _scenario_proc(name: str, *args: str, new_session: bool = False) -> subprocess.Popen:
+    code = (
+        "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(*sys.argv[1:])"
+        % (str(TESTS), str(SRC), MODULE, name)
+    )
+    return subprocess.Popen(
+        [sys.executable, "-c", code, *args],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=new_session,
+        cwd=str(TESTS.parent),
+    )
+
+
+def _read_tagged(proc: subprocess.Popen, tag: str, timeout: float = 30.0) -> list[str]:
+    result: dict = {}
+
+    def read():
+        for line in proc.stdout:
+            if line.startswith(tag + " "):
+                result["fields"] = line.split()[1:]
+                return
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    assert "fields" in result, f"scenario never printed {tag}; stderr={proc.stderr.read() if proc.poll() is not None else '(running)'}"
+    return result["fields"]
+
+
+def _announce_busy() -> None:
+    def watch():
+        pid = _busy_pid(30)
+        print("BUSY", pid, flush=True)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def scenario_owner_hung(no_pdeathsig: str = "0") -> None:
+    _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), no_pdeathsig=no_pdeathsig == "1")
+    _announce_busy()
+    _parse()
+
+
+@needs_posix
+@pytest.mark.parametrize(
+    "mechanism",
+    [pytest.param("pdeathsig", marks=needs_linux), "watchdog"],
+)
+def test_owner_death_kills_a_worker_hung_in_a_native_op(mechanism):
+    """Owner death per platform: the worker is inside a 30 s BAML sleep."""
+    owner = _scenario_proc("owner_hung", "1" if mechanism == "watchdog" else "0")
+    try:
+        (worker,) = _read_tagged(owner, "BUSY")
+        worker = int(worker)
+        owner.kill()
+        owner.wait(10)
+        assert _wait(lambda: _gone(worker), 3.0), f"worker {worker} outlived its owner ({mechanism})"
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.communicate(timeout=10)
+
+
+def scenario_pool_thread_exit() -> None:
+    spy = _scenario_setup()
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("pid", (_parse(), _pid())[1]))
+    thread.start()
+    thread.join(30)
+    pid = box["pid"]
+    time.sleep(1.0)
+    assert not _gone(pid), "the worker died with the short-lived calling thread"
+    assert _parse()["terminal_status"] == "complete" and _pid() == pid
+    spy.assert_each_once()
+
+
+def scenario_killpg_leaves_worker() -> None:
+    signal.signal(signal.SIGINT, lambda *_: print("SIGINT", flush=True))
+    spy = _scenario_setup()
+    _parse()
+    pid = _pid()
+    print("READY", pid, flush=True)
+    assert sys.stdin.readline().strip() == "go"
+    assert not _gone(pid)
+    _parse()
+    assert _pid() == pid
+    spy.assert_each_once()
+    print("DONE", flush=True)
+
+
+@needs_posix
+def test_killpg_sigint_to_the_runner_group_leaves_the_worker():
+    owner = _scenario_proc("killpg_leaves_worker", new_session=True)
+    try:
+        _read_tagged(owner, "READY")
+        os.killpg(owner.pid, signal.SIGINT)
+        time.sleep(0.5)
+        owner.stdin.write("go\n")
+        owner.stdin.flush()
+        out, err = owner.communicate(timeout=30)
+        assert owner.returncode == 0, err
+        assert "DONE" in out
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+            owner.communicate(timeout=10)
+
+
+def scenario_sigint_mid_wait() -> None:
+    _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)))
+    _announce_busy()
+    try:
+        _parse()
+    except KeyboardInterrupt as exc:
+        assert type(exc) is KeyboardInterrupt
+        pid = _log()[-1]["pid"] if _wait(lambda: _log(), REAP_BOUND) else None
+        assert pid is not None and _wait(lambda: _gone(pid), REAP_BOUND)
+        print("INTERRUPTED", flush=True)
+        return
+    raise AssertionError("the call returned")
+
+
+@needs_posix
+def test_sigint_mid_wait_is_an_unmapped_keyboard_interrupt():
+    owner = _scenario_proc("sigint_mid_wait")
+    try:
+        _read_tagged(owner, "BUSY")
+        os.kill(owner.pid, signal.SIGINT)
+        out, err = owner.communicate(timeout=30)
+        assert owner.returncode == 0, err
+        assert "INTERRUPTED" in out
+        assert "BamlValidationError" not in err and "BamlWorkerError" not in err
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+            owner.communicate(timeout=10)
+
+
+def scenario_cold_start_concurrency() -> None:
+    spy = _scenario_setup()
+    spawned: list[int] = []
+
+    def spawn(argv, **kwargs):
+        proc = _REAL_SPAWN(argv, **kwargs)
+        spawned.append(proc.pid)
+        return proc
+
+    m._spawn_popen = spawn
+    barrier = threading.Barrier(8)
+    results: list = []
+
+    def call():
+        barrier.wait()
+        results.append((_parse(), _pid()))
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert len(results) == 8
+    assert all(result == results[0][0] for result, _ in results)
+    assert len(spawned) == 1 and {pid for _, pid in results} == set(spawned)
+    assert m._CLIENT.owner_starts == 1
+    spy.assert_each_once()
+
+
+# ---------------------------------------------------------------------------
+# fork (#30, I5) and the executor launch path after agent-harness#1140 (D7)
+# ---------------------------------------------------------------------------
+
+
+def _install_child_spies(record_path: str) -> None:
+    """Record every os.read/os.write/os.kill/os.killpg in this (forked) process."""
+    real_open, real_write = os.open, os.write
+    fd = real_open(record_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    for name in ("read", "write", "kill", "killpg"):
+        real = getattr(os, name)
+
+        def spy(*args, _real=real, _name=name):
+            if not (_name == "write" and args and args[0] == fd):
+                real_write(fd, f"{_name}\n".encode())
+            return _real(*args)
+
+        setattr(os, name, spy)
+
+
+def scenario_fork_after_use(record_path: str) -> None:
+    spy = _scenario_setup()
+    _parse()
+    pid = _pid()
+    child = os.fork()
+    if child == 0:
+        try:
+            _install_child_spies(record_path)
+            started = time.monotonic()
+            exc = _raises(_parse)
+            ok = type(exc) is BamlWorkerError and exc.kind == "forked" and time.monotonic() - started < 1.0
+            ok = ok and type(_raises(m.build_baml_request, "EvaluateSuspectedFakeEvidence", EVIDENCE)) is BamlWorkerError
+            # The regex-only surface keeps working in a fork child, as in v0.
+            ok = ok and "terminal_status" in m.export_function_schema("EmitPhaseCloseout")["properties"]
+        except BaseException:  # noqa: BLE001
+            os._exit(4)
+        sys.exit(0 if ok else 3)  # a NORMAL exit: atexit, finalizers, thread teardown
+    assert _parse() and _pid() == pid  # served during the child's life
+    started = time.monotonic()
+    _, status = os.waitpid(child, 0)
+    exited_in = time.monotonic() - started
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert exited_in < 1.0, exited_in
+    assert Path(record_path).read_text() == "", "the fork child touched an fd or signalled"
+    assert _parse() and _pid() == pid and not _gone(pid)
+    spy.assert_each_once()
+
+
+def scenario_fork_while_mid_call() -> None:
+    _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(2)))
+    box = {}
+    worker = threading.Thread(target=lambda: box.setdefault("result", _parse()))
+    worker.start()
+    pid = _busy_pid()
+    child = os.fork()
+    if child == 0:
+        started = time.monotonic()
+        exc = _raises(_parse)
+        os._exit(0 if type(exc) is BamlWorkerError and exc.kind == "forked" and time.monotonic() - started < 1.0 else 3)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    worker.join(30)
+    assert box["result"]["terminal_status"] == "complete" and _pid() == pid
+
+
+def scenario_exit_with_fork_child(mode: str = "normal", no_pdeathsig: str = "0") -> None:
+    _scenario_setup(no_pdeathsig=no_pdeathsig == "1")
+    _parse()
+    child = os.fork()
+    if child == 0:
+        time.sleep(30)  # holds every inherited fd, including the worker's stdin
+        os._exit(0)
+    print("WORKER", _pid(), child, flush=True)
+    if mode == "wait":
+        time.sleep(3600)
+    sys.exit(0)
+
+
+@needs_posix
+@pytest.mark.parametrize(
+    "mode,no_pdeathsig,bound",
+    [
+        ("normal", "0", 5.0 + 1.0),
+        pytest.param("kill", "0", 3.0, marks=needs_linux),
+        ("kill", "1", 3.0),
+    ],
+    ids=["graceful-exit", "sigkill-pdeathsig", "sigkill-watchdog"],
+)
+def test_worker_is_gone_after_owner_exit_with_a_non_exec_fork_child(mode, no_pdeathsig, bound):
+    owner = _scenario_proc("exit_with_fork_child", "wait" if mode == "kill" else "normal", no_pdeathsig)
+    child = None
+    try:
+        worker, child = (int(x) for x in _read_tagged(owner, "WORKER"))
+        started = time.monotonic()
+        if mode == "kill":
+            owner.kill()
+        owner.wait(15)
+        assert _wait(lambda: _gone(worker), bound), f"worker outlived its owner by more than {bound}s"
+        assert time.monotonic() - started <= bound + 0.5
+    finally:
+        # The fork child holds the owner's stdio pipes: kill it before draining them.
+        if child:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if owner.poll() is None:
+            owner.kill()
+        owner.communicate(timeout=10)
+
+
+@needs_posix
+def test_fork_after_use_is_typed_and_touches_nothing(tmp_path):
+    code = (
+        "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_fork_after_use(%r)"
+        % (str(TESTS), str(SRC), MODULE, str(tmp_path / "child-calls"))
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(TESTS.parent))
+    assert proc.returncode == 0, proc.stderr
+
+
+@needs_posix
+def test_fork_while_another_thread_is_mid_call():
+    _isolated("fork_while_mid_call")
+
+
+def scenario_atexit_with_backlog() -> None:
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(3)))
+    outcomes: dict = {}
+
+    def call(name):
+        outcomes[name] = _raises(_parse)
+
+    first = threading.Thread(target=call, args=("active",))
+    first.start()
+    pid = _busy_pid()
+    second = threading.Thread(target=call, args=("queued",))
+    second.start()
+    assert _wait(lambda: len(m._CLIENT.backlog) == 1, 5)
+    starts: list = []
+    real_start = threading.Thread.start
+    threading.Thread.start = lambda self: (starts.append(self.name), real_start(self))[1]
+    try:
+        started = time.monotonic()
+        m._atexit_shutdown()
+        assert time.monotonic() - started < 5.0
+    finally:
+        threading.Thread.start = real_start
+    assert starts == [], starts
+    first.join(10)
+    second.join(10)
+    for name in ("active", "queued"):
+        exc = outcomes[name]
+        assert type(exc) is BamlWorkerError and exc.kind == "shutdown", (name, exc)
+    assert _wait(lambda: _gone(pid), 1.0)
+    later = _raises(_parse)
+    assert type(later) is BamlWorkerError and later.kind == "shutdown"
+    spy.assert_each_once()
+
+
+def test_atexit_serves_the_backlog_shutdown_and_starts_no_thread():
+    _isolated("atexit_with_backlog")
+
+
+def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
+    import fcntl
+
+    from phase_loop_runtime.launcher import launch
+
+    tmp_path = Path(tmp)
+
+    class _Lease:
+        generation = "baml-v1-launch-path"
+
+        def __init__(self, fd):
+            self._fd = fd
+
+        def fileno(self):
+            return self._fd
+
+    lease = os.open(tmp_path / "lease.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    script = 'for f in /proc/$$/fd/* /proc/$PPID/fd/*; do readlink "$f"; done > "$1"'
+
+    def run_executor(name):
+        out = tmp_path / name
+        started = time.monotonic()
+        result = launch(
+            ["/bin/sh", "-c", script, "sh", str(out)],
+            lease_authority=_Lease(lease),
+            log_path=tmp_path / f"{name}.log",
+            heartbeat_interval_seconds=30,
+        )
+        assert result.returncode == 0
+        assert time.monotonic() - started < 15
+        return set(out.read_text().split())
+
+    # (a) a live, serving worker
+    spy = _scenario_setup()
+    _parse()
+    gen = m._CLIENT.gen
+    pid = gen.pid
+    inodes = {os.readlink(f"/proc/self/fd/{fd}") for fd in (gen.read_fd, gen.write_fd)}
+    assert all(i.startswith("pipe:") for i in inodes)
+    seen = run_executor("live")
+    assert not inodes & seen, "a BAML pipe leaked into the supervisor or the executor"
+    assert _parse() and _pid() == pid
+    spy.assert_each_once()
+    spy.close()
+
+    # (b) a stalled BAML spawn
+    spy = _scenario_setup(retries=0, deadline_s=1.0)
+    returned: list = []
+
+    def slow(argv, **kwargs):
+        if not returned:
+            time.sleep(3.0)
+        proc = _REAL_SPAWN(argv, **kwargs)
+        returned.append(proc.pid)
+        return proc
+
+    m._spawn_popen = slow
+    box = {}
+    stalled = threading.Thread(target=lambda: box.setdefault("exc", _raises(_parse)))
+    stalled.start()
+    time.sleep(0.2)
+    run_executor("stalled")
+    stalled.join(10)
+    assert type(box["exc"]) is BamlWorkerError and box["exc"].kind == "spawn"
+    assert _wait(lambda: returned and _gone(returned[0]), 5)
+    assert _parse() and _pid() not in (None, returned[0])
+    spy.assert_each_once()
+
+
+@needs_linux
+def test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn(tmp_path):
+    code = (
+        "import sys; sys.path[:0] = [%r, %r]; import %s as t; "
+        "t.scenario_launch_path_with_live_worker_and_stalled_spawn(%r)" % (str(TESTS), str(SRC), MODULE, str(tmp_path))
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180, cwd=str(TESTS.parent))
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("name", ["pool_thread_exit", "cold_start_concurrency"])
+def test_lifecycle_scenario(name):
+    if name == "pool_thread_exit" and not LINUX:
+        pytest.skip("PDEATHSIG follows the spawning thread only on Linux")
+    _isolated(name)
+
+
+# ---------------------------------------------------------------------------
+# I1: interrupts
+# ---------------------------------------------------------------------------
+
+
+class InjectedAbort(BaseException):
+    """A custom BaseException the client has never heard of."""
+
+
+_EXCEPTIONS = {
+    "KeyboardInterrupt": lambda n: KeyboardInterrupt(f"injected-{n}"),
+    "SystemExit": lambda n: SystemExit(73),
+    "InjectedAbort": lambda n: InjectedAbort(f"injected-{n}"),
+}
+
+
+class _Boundaries:
+    """Every instruction boundary the calling thread executes during a call.
+
+    sys.monitoring INSTRUCTION events on 3.12+, sys.settrace opcode events on
+    3.10/3.11.  Frames of this test module (the harness) are excluded; every
+    other frame on the calling thread counts: client helpers and the stdlib
+    callees they reach."""
+
+    TOOL = 4
+
+    def __init__(self) -> None:
+        self.main = threading.get_ident()
+        self.trace: list = []
+        self.target = None
+        self.exc: BaseException | None = None
+        self.fired = False
+        self.second = None  # (predicate(code, offset), exception)
+        self.second_fired = False
+        self.active = False
+        self._installed = False
+
+    def hit(self, code, offset) -> None:
+        if not self.active or threading.get_ident() != self.main or code.co_filename == __file__:
+            return
+        key = (code, offset)
+        if self.target is None:
+            self.trace.append(key)
+            return
+        if not self.fired:
+            if key == self.target:
+                self.fired = True
+                raise self.exc
+            return
+        if self.second is not None and not self.second_fired and self.second[0](code, offset):
+            self.second_fired = True
+            raise self.second[1]
+
+    def __enter__(self):
+        self.active = True
+        if PY312:
+            mon = sys.monitoring
+            if not self._installed:
+                mon.use_tool_id(self.TOOL, "baml-i1-sweep")
+                mon.register_callback(self.TOOL, mon.events.INSTRUCTION, self.hit)
+                self._installed = True
+            mon.set_events(self.TOOL, mon.events.INSTRUCTION)
+        else:
+            def local(frame, event, arg):
+                if event == "opcode":
+                    self.hit(frame.f_code, frame.f_lasti)
+                return local
+
+            def tracer(frame, event, arg):
+                frame.f_trace_opcodes = True
+                return local
+
+            sys.settrace(tracer)
+        return self
+
+    def __exit__(self, *exc):
+        self.active = False
+        if PY312:
+            sys.monitoring.set_events(self.TOOL, 0)
+        else:
+            sys.settrace(None)
+        return False
+
+    def close(self) -> None:
+        if PY312 and self._installed:
+            sys.monitoring.register_callback(self.TOOL, sys.monitoring.events.INSTRUCTION, None)
+            sys.monitoring.free_tool_id(self.TOOL)
+            self._installed = False
+
+
+class _AbandonSpy:
+    """Records what each abandoned request still owned, and every notice sent."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple] = []
+        self.notices: list = []
+        self._abandon = m._Client._abandon
+        self._send = m._send_abandon
+        spy = self
+
+        def abandon(client, req):
+            gen = req.gen if req.gen is not None and req.gen.state in ("init", "busy", "dying") else None
+            spy.records.append((req, gen.pid if gen is not None else None, req.spawn, req.done))
+            spy._abandon(client, req)
+
+        def send(client, req):
+            spy.notices.append(req)
+            spy._send(client, req)
+
+        m._Client._abandon = abandon
+        m._send_abandon = send
+
+    def close(self) -> None:
+        m._Client._abandon = self._abandon
+        m._send_abandon = self._send
+
+
+def _settled(timeout: float) -> bool:
+    client = m._CLIENT
+    return _wait(lambda: client.active is None and not client.backlog and not client.dying, timeout)
+
+
+def _check_cleanup(spy: _AbandonSpy, log_before: int, pid_before: int | None, injected_at: float, bound: float) -> None:
+    assert _settled(bound + 1.0)
+    owned = [pid for (_req, pid, _spawn, done) in spy.records if pid is not None and not done]
+    new = _log()[log_before:]
+    disposed = [e["pid"] for e in new if e["kind"] == "abandoned"]
+    assert sorted(disposed) == sorted(owned), (new, spy.records)
+    for pid in owned:
+        assert _wait(lambda: _gone(pid), max(0.0, injected_at + bound - time.monotonic()) + 0.05), pid
+    if not owned and pid_before is not None and not any(e["pid"] == pid_before for e in new):
+        assert not _gone(pid_before), ("a generation not owned by the request was disturbed", pid_before, new, spy.records)
+
+
+def _prepare(variant: str) -> None:
+    if variant in ("normal", "mid_op"):
+        if _pid() is None:
+            _parse()
+        return
+    _use(None, **_VARIANT_CONFIG.get(variant, {}))
+    m._spawn_popen = _peer_spawn("echo")
+    if variant == "stalled_spawn":
+        fast = m._spawn_popen
+
+        def stalled(argv, **kwargs):
+            time.sleep(0.3)
+            return fast(argv, **kwargs)
+
+        m._spawn_popen = stalled
+
+
+_VARIANT_CONFIG = {"cold": {}, "stalled_spawn": {}}
+
+
+def _sweep(variant: str, exc_name: str, stride: int = 1) -> dict:
+    if variant == "mid_op":
+        _use(_hostile("phase_loop_parse_closeout", _sleep(0.15)))
+    elif variant == "normal":
+        _use(None)
+    make_exc = _EXCEPTIONS[exc_name]
+    boundaries = _Boundaries()
+    stats = collections.Counter()
+    try:
+        _prepare(variant)
+        with boundaries:
+            _parse()
+        points = list(dict.fromkeys(boundaries.trace))
+        stats["boundaries"] = len(points)
+        for index, key in enumerate(points[::stride]):
+            _prepare(variant)
+            pid_before, log_before = _pid(), len(_log())
+            spy = _AbandonSpy()
+            injected = make_exc(index)
+            boundaries.target, boundaries.exc, boundaries.fired = key, injected, False
+            raised = None
+            try:
+                with boundaries:
+                    _parse()
+            except BaseException as exc:  # noqa: BLE001
+                raised = exc
+            injected_at = time.monotonic()
+            try:
+                if not boundaries.fired:
+                    assert raised is None, raised
+                    stats["not_reached"] += 1
+                    continue
+                where = (key[0].co_name, key[0].co_filename.rsplit("/", 1)[-1], next((ln for (s, e, ln) in key[0].co_lines() if s <= key[1] < e), None))
+                assert raised is injected, (where, raised)
+                if PY312:
+                    lost = not any(r in spy.notices for (r, *_rest) in spy.records) and bool(spy.records)
+                    stats["d2" if lost else "d1"] += 1
+                bound = REAP_BOUND if not spy.records or spy.notices else m._CLIENT.abandon_grace_s + REAP_BOUND
+                try:
+                    _check_cleanup(spy, log_before, pid_before, injected_at, bound)
+                except AssertionError as failure:
+                    raise AssertionError((where, failure.args)) from None
+                stats["disposals"] += sum(1 for e in _log()[log_before:] if e["kind"] == "abandoned")
+            finally:
+                spy.close()
+            assert _parse()["terminal_status"] == "complete"  # the next call succeeds
+            stats["runs"] += 1
+    finally:
+        boundaries.close()
+        m._spawn_popen = _REAL_SPAWN
+    assert stats["runs"] > 0
+    print("SWEEP", variant, exc_name, dict(stats), flush=True)
+    return stats
+
+
+def scenario_i1_sweep(variant: str, exc_name: str) -> None:
+    _use(None)
+    _sweep(variant, exc_name)
+
+
+@pytest.mark.parametrize("exc_name", sorted(_EXCEPTIONS))
+@pytest.mark.parametrize("variant", ["normal", "mid_op", "cold", "stalled_spawn"])
+def test_i1_boundary_sweep(variant, exc_name):
+    """I1(a): inject at every instruction boundary of the calling-thread path."""
+    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_sweep(%r, %r)" % (
+        str(TESTS), str(SRC), MODULE, variant, exc_name,
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=1500, cwd=str(TESTS.parent))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert "SWEEP" in proc.stdout
+
+
+def _except_body_lines() -> set[int]:
+    source, first = __import__("inspect").getsourcelines(m._Client.call)
+    tree = ast.parse(textwrap.dedent("".join(source)))
+    lines = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                for stmt in handler.body:
+                    for sub in ast.walk(stmt):
+                        if hasattr(sub, "lineno"):
+                            lines.add(sub.lineno + first - 1)
+    return lines
+
+
+def scenario_i1_double_injection(mode: str) -> None:
+    """I1(b): a second exception lands inside the client's own exception path."""
+    _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), abandon_grace_s=1.0)
+    first, second = KeyboardInterrupt("first"), InjectedAbort("second")
+    spy = _AbandonSpy()
+    where = {}
+    if mode == "monitoring":
+        lines = _except_body_lines()
+        call_code = m._Client.call.__code__
+
+        def in_except(code, offset):
+            if code is not call_code:
+                return False
+            line = next((ln for (s, e, ln) in code.co_lines() if s <= offset < e), None)
+            if line in lines:
+                where["line"] = line
+                return True
+            return False
+
+        boundaries = _Boundaries()
+        boundaries.target = ("__first_wait__",)
+        wait_code = m._Client._wait.__code__
+
+        def hit(code, offset, _orig=boundaries.hit):
+            if not boundaries.fired and code is wait_code and m._CLIENT.gen is not None and m._CLIENT.gen.state == "busy":
+                boundaries.target = (code, offset)
+            return _orig(code, offset)
+
+        boundaries.hit = hit
+        boundaries.exc, boundaries.second = first, (in_except, second)
+    else:
+        real_send = m._send_abandon
+
+        def seam(client, req):
+            where["seam"] = True
+            raise second  # the notice is lost
+
+        m._send_abandon = seam
+    raised = None
+    try:
+        if mode == "monitoring":
+            with boundaries:
+                _parse()
+        else:
+            killer = threading.Thread(target=lambda: (_busy_pid(), signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)))
+            killer.start()
+            _parse()
+    except BaseException as exc:  # noqa: BLE001
+        raised = exc
+    injected_at = time.monotonic()
+    if mode == "monitoring":
+        boundaries.close()
+        assert boundaries.fired and boundaries.second_fired, where
+        assert raised is second and raised.__context__ is first
+    else:
+        m._send_abandon = real_send
+        assert where.get("seam") and raised is second and type(raised.__context__) is KeyboardInterrupt
+    assert "line" in where or "seam" in where
+    # The notice was lost: the backstop, not the notice, disposes of the worker.
+    assert spy.notices == []
+    bound = m._CLIENT.abandon_grace_s + REAP_BOUND
+    assert _wait(lambda: any(e["kind"] == "abandoned" for e in _log()), bound + 0.5), _log()
+    pid = [e for e in _log() if e["kind"] == "abandoned"][0]["pid"]
+    assert _wait(lambda: _gone(pid), max(0.0, injected_at + bound - time.monotonic()) + 0.2)
+    spy.close()
+    m._read_raw_baml_files = _REAL_RAW
+    m._reset_worker_for_tests(test_mode=True)
+    assert _parse()["terminal_status"] == "complete"
+    print("DOUBLE", mode, where, flush=True)
+
+
+@needs_posix
+@pytest.mark.parametrize("mode", [pytest.param("monitoring", marks=pytest.mark.skipif(not PY312, reason="sys.monitoring is 3.12+")), "seam"])
+def test_i1_double_injection(mode):
+    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_double_injection(%r)" % (
+        str(TESTS), str(SRC), MODULE, mode,
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(TESTS.parent))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+
+
+def scenario_i1_real_signals() -> None:
+    """I1(c): SIGINT delivered by pthread_kill, gated on the owner's phase."""
+    main = threading.main_thread().ident
+    for phase in ("published", "mid_op", "reply_delivered"):
+        _use(_hostile("phase_loop_parse_closeout", _sleep(0.3)))
+        _parse()
+        pid_before, log_before = _pid(), len(_log())
+        spy = _AbandonSpy()
+        armed = {"on": True}
+        real_handle, real_deliver = m._Client._handle, m._deliver
+
+        def fire():
+            if armed["on"]:
+                armed["on"] = False
+                signal.pthread_kill(main, signal.SIGINT)
+
+        if phase == "published":
+            def handle(client, event):
+                real_handle(client, event)
+                if event[0] == "request":
+                    fire()
+            m._Client._handle = handle
+        elif phase == "reply_delivered":
+            def deliver(req, outcome):
+                real_deliver(req, outcome)
+                fire()
+            m._deliver = deliver
+        else:
+            threading.Thread(target=lambda: (_busy_pid(), fire()), daemon=True).start()
+        raised = None
+        try:
+            try:
+                _parse()
+                time.sleep(0.5)  # a signal that lands after the return is raised here
+            finally:
+                m._Client._handle, m._deliver = real_handle, real_deliver
+        except KeyboardInterrupt as exc:
+            raised = exc
+        injected_at = time.monotonic()
+        assert raised is not None and type(raised) is KeyboardInterrupt, phase
+        _check_cleanup(spy, log_before, pid_before, injected_at, REAP_BOUND)
+        spy.close()
+        assert _parse()["terminal_status"] == "complete"
+        print("SIGNAL", phase, len(spy.records), flush=True)
+
+
+def scenario_i1_never_calls_again(variant: str) -> None:
+    """I1(d): the caller catches the interrupt and never calls BAML again."""
+    _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), abandon_grace_s=1.0)
+    spy = _AbandonSpy()
+    main = threading.main_thread().ident
+    if variant == "d2":
+        def lost(client, req):
+            spy.notices.append(None)
+            raise InjectedAbort("second")  # a second exception suppresses the notice
+        m._send_abandon = lost
+    threading.Thread(target=lambda: (_busy_pid(), signal.pthread_kill(main, signal.SIGINT)), daemon=True).start()
+    try:
+        _parse()
+    except (KeyboardInterrupt, InjectedAbort):
+        pass
+    injected_at = time.monotonic()
+    delivered = [r for r in spy.notices if r is not None]
+    if variant == "d1":
+        assert len(delivered) == 1
+        bound = REAP_BOUND
+    else:
+        assert delivered == []
+        bound = m._CLIENT.abandon_grace_s + REAP_BOUND
+    assert _wait(lambda: any(e["kind"] == "abandoned" for e in _log()), bound)
+    pid = [e for e in _log() if e["kind"] == "abandoned"][0]["pid"]
+    assert _wait(lambda: _gone(pid), max(0.0, injected_at + bound - time.monotonic()) + 0.2)
+    assert time.monotonic() - injected_at <= bound + 0.3
+    spy.close()
+
+
+@needs_posix
+@pytest.mark.parametrize("name,arg", [("i1_real_signals", None), ("i1_never_calls_again", "d1"), ("i1_never_calls_again", "d2")])
+def test_i1_signals_and_abandonment(name, arg):
+    args = "" if arg is None else repr(arg)
+    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(%s)" % (str(TESTS), str(SRC), MODULE, name, args)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180, cwd=str(TESTS.parent))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+
+
+# ---------------------------------------------------------------------------
+# I2: ownership
+# ---------------------------------------------------------------------------
+
+
+def scenario_i2_stalled_caller_after_reply() -> None:
+    """A's reply is delivered; A's caller stalls past every grace while B runs."""
+    spy = _scenario_setup(abandon_grace_s=0.5)
+    _parse()
+    pid = _pid()
+    real_wait = m._Client._wait
+    b_done = threading.Event()
+
+    def wait(client, req):
+        if threading.current_thread().name == "A":
+            while not req.done:
+                req.heartbeat = time.monotonic()
+                time.sleep(0.01)
+            b_done.wait(10)  # stalled well past abandon_grace_s after delivery
+            time.sleep(1.0)
+        return real_wait(client, req)
+
+    m._Client._wait = wait
+    box = {}
+    a = threading.Thread(target=lambda: box.setdefault("a", _parse()), name="A")
+    a.start()
+    assert _wait(lambda: spy.requests and spy.requests[0].done, 5)
+    box["b"] = _parse()
+    assert _pid() == pid
+    b_done.set()
+    a.join(15)
+    m._Client._wait = real_wait
+    assert box["a"] == box["b"]
+    assert _log() == [] and _pid() == pid
+    spy.assert_each_once()
+
+
+def scenario_i2_concurrent_abandonment() -> None:
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(0.4)), abandon_grace_s=1.0)
+    aspy = _AbandonSpy()
+    results: dict = {}
+
+    def call(name):
+        try:
+            results[name] = _parse()
+        except InjectedAbort as exc:
+            results[name] = exc
+
+    threads = {f"t{i}": threading.Thread(target=call, args=(f"t{i}",), name=f"t{i}") for i in range(6)}
+    for thread in threads.values():
+        thread.start()
+    time.sleep(0.3)
+    for name in ("t1", "t4"):
+        _async_raise(threads[name], InjectedAbort)
+    for thread in threads.values():
+        thread.join(60)
+    for name, value in results.items():
+        if isinstance(value, BaseException):
+            assert type(value) is InjectedAbort, name
+        else:
+            assert value["terminal_status"] == "complete", name
+    assert _settled(5)
+    owned = sorted(pid for (_r, pid, _s, done) in aspy.records if pid is not None and not done)
+    assert sorted(e["pid"] for e in _log() if e["kind"] == "abandoned") == owned
+    assert all(e["kind"] == "abandoned" for e in _log()), _log()
+    aspy.close()
+    spy.assert_each_once()
+
+
+def scenario_i2_stale_frame() -> None:
+    spy = _scenario_setup(retries=0)
+    _parse()
+    old = m._CLIENT.gen
+    os.kill(old.pid, signal.SIGKILL)
+    assert _wait(lambda: _gone(old.pid), 3)
+    _parse()
+    log = _log()
+    new_pid = _pid()
+    stale = json.dumps({"id": m._CLIENT.next_frame_id + 1, "fingerprint": old.fp, "ok": "{}"}).encode()
+    m._CLIENT.events.put(("frame", old, stale))
+    m._CLIENT.events.put(("eof", old, False))
+    assert _parse()["terminal_status"] == "complete"
+    assert _pid() == new_pid and _log() == log
+    spy.assert_each_once()
+
+
+# ---------------------------------------------------------------------------
+# I3: a single owner
+# ---------------------------------------------------------------------------
+
+
+def scenario_i3_owner_killed_with_waiters() -> None:
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(3)))
+    results: dict = {}
+
+    def call(name):
+        try:
+            results[name] = _parse()
+        except BamlWorkerError as exc:
+            results[name] = exc
+
+    a = threading.Thread(target=call, args=("a",))
+    a.start()
+    pid = _busy_pid()
+    waiters = [threading.Thread(target=call, args=(name,)) for name in ("b", "c")]
+    for waiter in waiters:
+        waiter.start()
+    assert _wait(lambda: len(m._CLIENT.backlog) == 2, 5)
+    owner = _thread_named("phase-loop-baml-owner")
+    _async_raise(owner, SystemExit)
+    for thread in (a, *waiters):
+        thread.join(60)
+    assert set(results) == {"a", "b", "c"}
+    for name, value in results.items():
+        assert (isinstance(value, dict) and value["terminal_status"] == "complete") or (
+            type(value) is BamlWorkerError
+        ), name
+    assert not isinstance(results["b"], BaseException) and not isinstance(results["c"], BaseException)
+    assert _wait(lambda: _gone(pid), REAP_BOUND)
+    assert m._CLIENT.owner_starts == 2
+    spy.assert_each_once()
+
+
+# ---------------------------------------------------------------------------
+# I4: deadlines, retries and budgets
+# ---------------------------------------------------------------------------
+
+
+def scenario_i4_busy() -> None:
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(4)), queue_budget_s=1.0, deadline_s=20)
+    spawned: list[int] = []
+    sent: list[bytes] = []
+    real_send = m._Client._send_op
+    m._Client._send_op = lambda self, gen, req: (sent.append(req.body), real_send(self, gen, req))[1]
+    _parse_ok = threading.Thread(target=_parse)
+    _parse_ok.start()
+    pid = _busy_pid()
+    m._spawn_popen = lambda argv, **kw: (spawned.append(1), _REAL_SPAWN(argv, **kw))[1]
+    log = _log()
+    outcomes: dict = {}
+
+    def call(name, raw):
+        started = time.monotonic()
+        outcomes[name] = (_raises(m.parse_baml_response, "EmitPhaseCloseout", raw), time.monotonic() - started)
+
+    ahead = threading.Thread(target=call, args=("ahead", OK + " "))
+    victim = threading.Thread(target=call, args=("victim", OK + "  "))
+    ahead.start()
+    victim.start()
+    ahead.join(10)
+    victim.join(10)
+    exc, waited = outcomes["victim"]
+    assert type(exc) is BamlWorkerError and exc.kind == "busy"
+    assert 1.0 <= waited <= 2.0, waited
+    assert spawned == [] and all(b != m._serialize_args({"raw": OK + "  "}) for b in sent)
+    assert _pid() == pid and _log() == log
+    _parse_ok.join(30)
+    m._Client._send_op = real_send
+    spy.assert_each_once()
+
+
+def scenario_i4_backlog_success() -> None:
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(2)), deadline_s=3.0, retries=0)
+    first = threading.Thread(target=_parse)
+    first.start()
+    _busy_pid()
+    started = time.monotonic()
+    assert _parse()["terminal_status"] == "complete"
+    assert time.monotonic() - started < 2.0 + 3.0 + 1.0
+    first.join(10)
+    assert _log() == []
+    spy.assert_each_once()
+
+
+def scenario_i4_publish_before_expiry() -> None:
+    """Published, then the deadline fires during init: that worker is disposed
+    of and the retry runs on a fresh pid."""
+    spy = _scenario_setup(retries=1, deadline_s=1.0)
+    pids: list[int] = []
+    m._spawn_popen = _peer_spawn("hang_init", first_only=True, record=pids)
+    assert _parse()["terminal_status"] == "complete"
+    assert len(pids) == 2 and _pid() == pids[1]
+    assert [(e["kind"], e["phase"], e["pid"]) for e in _log()] == [("timeout", "init", pids[0])], (_log(), pids)
+    assert _wait(lambda: _gone(pids[0]), REAP_BOUND)
+    spy.assert_each_once()
+
+
+def scenario_i4_post_handoff_expiries() -> None:
+    # blocked write, then a fresh real worker answers (a content error for "x"*2MiB)
+    spy = _scenario_setup(retries=1, deadline_s=1.5)
+    pids: list[int] = []
+    m._spawn_popen = _peer_spawn("stall_after_init", first_only=True, record=pids)
+    exc = _raises(m.parse_baml_response, "EmitPhaseCloseout", "x" * (2 * 1024 * 1024))
+    assert type(exc) is BamlValidationError
+    assert [(e["kind"], e["pid"]) for e in _log()] == [("timeout", pids[0])] and _pid() == pids[1]
+    spy.assert_each_once()
+    spy.close()
+    # a hung op: each expiry disposes of its worker; each attempt runs on a fresh pid
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)), retries=1, deadline_s=1.0)
+    exc = _raises(_parse)
+    assert type(exc) is BamlWorkerError and exc.kind == "timeout"
+    entries = _log()
+    assert [e["kind"] for e in entries] == ["timeout", "timeout"] and entries[0]["pid"] != entries[1]["pid"]
+    assert _wait(lambda: all(_gone(e["pid"]) for e in entries), REAP_BOUND)
+    spy.assert_each_once()
+
+
+def scenario_i4_abandon_service() -> None:
+    # during a hung op
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)))
+    box = {}
+    caller = threading.Thread(target=lambda: box.setdefault("exc", _raises(_parse)))
+    caller.start()
+    pid = _busy_pid()
+    injected = time.monotonic()
+    _async_raise(caller, InjectedAbort)
+    assert _wait(lambda: _gone(pid), 1.0), "abandonment during a hung op was not serviced within 1 s"
+    assert time.monotonic() - injected <= 1.05
+    caller.join(5)
+    assert type(box["exc"]) is InjectedAbort
+    spy.assert_each_once()
+    spy.close()
+    # during a stalled spawn
+    spy = _scenario_setup()
+    returned: list = []
+
+    def slow(argv, **kwargs):
+        time.sleep(3.0)
+        proc = _REAL_SPAWN(argv, **kwargs)
+        returned.append((time.monotonic(), proc.pid))
+        return proc
+
+    m._spawn_popen = slow
+    box = {}
+    caller = threading.Thread(target=lambda: box.setdefault("exc", _raises(_parse)))
+    caller.start()
+    assert _wait(lambda: m._CLIENT.spawn is not None, 5)
+    spawn = m._CLIENT.spawn
+    injected = time.monotonic()
+    _async_raise(caller, InjectedAbort)
+    assert _wait(lambda: spawn.retired and m._CLIENT.spawn is None, 1.0), "the stalled spawn was not retired within 1 s"
+    assert _wait(lambda: returned, 5)
+    back_at, late = returned[0]
+    assert _wait(lambda: _gone(late), REAP_BOUND)
+    assert time.monotonic() - back_at <= REAP_BOUND + 0.3
+    assert [e["kind"] for e in _log()] == ["spawn_late"]
+    caller.join(5)
+    spy.assert_each_once()
+
+
+# ---------------------------------------------------------------------------
+# I6: calling-thread hygiene (lock-tracing spy)
+# ---------------------------------------------------------------------------
+
+
+def scenario_i6_lock_trace() -> None:
+    _scenario_setup()
+    acquisitions: list[tuple[str, int]] = []
+    lock_types = (type(threading.Lock()), type(threading.RLock()))
+
+    def profile(frame, event, arg):
+        if event == "c_call" and getattr(arg, "__name__", "") in ("acquire", "__enter__", "acquire_lock"):
+            owner = getattr(arg, "__self__", None)
+            if isinstance(owner, lock_types):
+                acquisitions.append((threading.current_thread().name, id(owner)))
+
+    threading.setprofile(profile)
+    sys.setprofile(profile)
+    try:
+        for _ in range(5):
+            _parse()
+        os.kill(_pid(), signal.SIGKILL)
+        time.sleep(0.2)
+        for _ in range(5):
+            m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+        m._reset_worker_for_tests(test_mode=True)
+        _parse()
+    finally:
+        sys.setprofile(None)
+        threading.setprofile(None)
+    main = threading.main_thread().name
+    caller = {lock for name, lock in acquisitions if name == main}
+    daemon = {lock for name, lock in acquisitions if name.startswith("phase-loop-baml-")}
+    shared = caller & daemon
+    # The only locks the calling thread and a client thread both touch are the
+    # per-thread bootstrap handshakes of threading.Thread.start (held for a
+    # notify, never across I/O, Popen, kill, reap, sleep or a wait).
+    bootstrap = {id(t._started._cond._lock) for t in threading.enumerate() if hasattr(t, "_started")}
+    assert shared <= bootstrap or not shared, (len(shared), len(caller), len(daemon))
+    print("LOCKS caller", len(caller), "daemon", len(daemon), "shared", len(shared), flush=True)
+
+
+# ---------------------------------------------------------------------------
+# I7: error typing
+# ---------------------------------------------------------------------------
+
+
+def scenario_i7_machinery_failures() -> None:
+    spy = _scenario_setup(retries=0)
+    real_start = threading.Thread.start
+
+    def failing(self):
+        raise RuntimeError("can't start new thread")
+
+    threading.Thread.start = failing
+    try:
+        exc = _raises(_parse)
+    finally:
+        threading.Thread.start = real_start
+    assert type(exc) is BamlWorkerError and exc.kind == "spawn"
+    # the spawner's own thread start fails once the owner is up
+    _use(None, retries=0)
+
+    def failing_spawner(self):
+        if self.name == "phase-loop-baml-spawner":
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    threading.Thread.start = failing_spawner
+    try:
+        exc = _raises(_parse)
+    finally:
+        threading.Thread.start = real_start
+    assert type(exc) is BamlWorkerError and exc.kind == "spawn"
+    _use(None, retries=0)
+    real_pipe = os.pipe
+
+    def emfile():
+        raise OSError(24, "Too many open files")
+
+    os.pipe = emfile
+    try:
+        exc = _raises(_parse)
+    finally:
+        os.pipe = real_pipe
+    assert type(exc) is BamlWorkerError and exc.kind == "spawn"
+    assert _parse()["terminal_status"] == "complete"
+    spy.close()
+
+
+def scenario_i7_no_discard() -> None:
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(3)), queue_budget_s=0.5, deadline_s=20)
+    spawned: list = []
+    first = threading.Thread(target=_parse)
+    first.start()
+    pid = _busy_pid()
+    log = _log()
+    m._spawn_popen = lambda argv, **kw: (spawned.append(1), _REAL_SPAWN(argv, **kw))[1]
+    busy = _raises(_parse)
+    assert type(busy) is BamlWorkerError and busy.kind == "busy"
+    assert (_pid(), _log(), spawned) == (pid, log, [])
+    first.join(30)
+    m._CLIENT.closing = True
+    shutdown = _raises(_parse)
+    m._CLIENT.closing = False
+    assert type(shutdown) is BamlWorkerError and shutdown.kind == "shutdown"
+    assert (_pid(), _log(), spawned) == (pid, log, []) and not _gone(pid)
+    if POSIX:
+        child = os.fork()
+        if child == 0:
+            exc = _raises(_parse)
+            os._exit(0 if type(exc) is BamlWorkerError and exc.kind == "forked" else 3)
+        _, status = os.waitpid(child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert (_pid(), _log(), spawned) == (pid, log, []) and not _gone(pid)
+    spy.assert_each_once()
+
+
+# ---------------------------------------------------------------------------
+# I9: resources
+# ---------------------------------------------------------------------------
+
+
+def _fd_count() -> int:
+    if LINUX:
+        return len(os.listdir("/proc/self/fd"))
+    import psutil
+
+    proc = psutil.Process()
+    return proc.num_handles() if WINDOWS else proc.num_fds()
+
+
+def _pidfds() -> int:
+    if not LINUX:
+        return 0
+    count = 0
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            count += "pidfd" in os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            pass
+    return count
+
+
+def scenario_i9_resources() -> None:
+    """N = 50 mixed dispose cycles (kill, timeout, abandon, fault); every
+    resource returns to baseline within the reap bound."""
+    _scenario_setup(abandon_grace_s=1.0)
+    _parse()
+    _settled(2)
+    time.sleep(0.5)
+    gc.collect()
+    fds, threads, pidfds = _fd_count(), threading.active_count(), _pidfds()
+    disposed: list[int] = []
+    hang = _hostile("phase_loop_parse_closeout", _sleep(30))
+    panic = _panic_files()
+    for cycle in range(50):
+        kind = ("kill", "timeout", "abandon", "fault")[cycle % 4]
+        if kind == "kill":
+            _use(None, abandon_grace_s=1.0)
+            _parse()
+            pid = _pid()
+            os.kill(pid, signal.SIGKILL)
+            _wait(lambda: _gone(pid), 3)
+            _parse()
+        elif kind == "timeout":
+            _use(hang, deadline_s=0.5, retries=0)
+            assert _raises(_parse).kind == "timeout"
+        elif kind == "abandon":
+            _use(hang, abandon_grace_s=1.0)
+            box = {}
+            caller = threading.Thread(target=lambda: box.setdefault("e", _raises(_parse)))
+            caller.start()
+            _busy_pid()
+            _async_raise(caller, InjectedAbort)
+            caller.join(10)
+        else:
+            _use(panic)
+            assert _raises(_parse).kind == "fault"
+        assert _settled(REAP_BOUND + 1)
+        disposed.extend(e["pid"] for e in _log())
+    assert len(disposed) >= 50, len(disposed)
+    _use(None)
+    _parse()  # the permitted current worker and its long-lived threads
+    assert _settled(REAP_BOUND + 1)
+    ok = _wait(lambda: (gc.collect() or True) and _fd_count() <= fds + 2 and threading.active_count() <= threads + 1, REAP_BOUND + 1)
+    assert ok, (fds, _fd_count(), threads, threading.active_count(), [t.name for t in threading.enumerate()])
+    assert _pidfds() == pidfds
+    if POSIX:
+        for pid in disposed:
+            try:
+                result = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                continue
+            raise AssertionError(f"disposed worker {pid} was not reaped: {result}")
+    print("I9", len(disposed), "disposals", flush=True)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("i2_stalled_caller_after_reply"),
+        pytest.param("i2_concurrent_abandonment"),
+        pytest.param("i2_stale_frame", marks=needs_posix),
+        pytest.param("i3_owner_killed_with_waiters"),
+        pytest.param("i4_busy"),
+        pytest.param("i4_backlog_success"),
+        pytest.param("i4_publish_before_expiry"),
+        pytest.param("i4_post_handoff_expiries"),
+        pytest.param("i4_abandon_service"),
+        pytest.param("i6_lock_trace", marks=needs_posix),
+        pytest.param("i7_machinery_failures"),
+        pytest.param("i7_no_discard"),
+        pytest.param("i9_resources", marks=needs_posix),
+    ],
+)
+def test_client_invariant_scenario(name):
+    _isolated(name, timeout=600)
+
+
+# ---------------------------------------------------------------------------
+# Windows and macOS owner death (run in the pre-merge dispatch)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Windows-only: Job Object owner death")
+def test_windows_job_object_kills_a_hung_worker_when_the_owner_dies():
+    owner = _scenario_proc("owner_hung_windows")
+    try:
+        worker, in_job, image = _read_tagged(owner, "BUSY")
+        assert in_job == "1", "the worker is not in the owner's Job Object"
+        assert Path(image).resolve() == Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+        subprocess.run(["taskkill", "/F", "/PID", str(owner.pid)], check=False, capture_output=True)
+        owner.wait(10)
+        import psutil
+
+        assert _wait(lambda: not psutil.pid_exists(int(worker)), 3.0)
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.communicate(timeout=10)
+
+
+def scenario_owner_hung_windows() -> None:
+    import psutil
+
+    _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(30)))
+
+    def watch():
+        pid = _busy_pid(30)
+        gen = m._CLIENT.gen
+        in_job = ctypes.c_int(0)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.IsProcessInJob(ctypes.c_void_p(int(gen.proc._handle)), ctypes.c_void_p(gen.job.handle), ctypes.byref(in_job))
+        print("BUSY", pid, 1 if in_job.value else 0, psutil.Process(pid).exe(), flush=True)
+
+    threading.Thread(target=watch, daemon=True).start()
+    _parse()
+
+
+@pytest.mark.skipif(not MACOS, reason="macOS-only: getppid watchdog is the owner-death mechanism")
+def test_macos_watchdog_kills_a_hung_worker_when_the_owner_dies():
+    test_owner_death_kills_a_worker_hung_in_a_native_op("watchdog")
