@@ -2471,7 +2471,9 @@ def _train_merge_authority(panel_landing: bool, review_panel: object,
     from . import merge_guard
 
     if not panel_landing:
-        return {"authority": merge_guard.mint_no_landing_token()}
+        # Every P4 merge is governed; ``guarded_merge`` accepts the token only in a node
+        # repository before the switch (option C, agent-harness#1078).
+        return {"authority": merge_guard.mint_no_landing_token(run_mode="governed")}
     match = re.search(r"/pull/(\d+)/?$", str(node_info.get("pr_url") or ""))
     return {
         "authority": getattr(review_panel, "landing_decision", None),

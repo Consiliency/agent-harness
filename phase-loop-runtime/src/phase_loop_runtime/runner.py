@@ -12695,16 +12695,11 @@ def _closeout_push(repo: Path, remote: str, refspec: str, run_mode: str) -> str 
     no landing decision to present, so it is refused. Returns the refusal code, or
     ``None`` when the push ran (a rejected push still raises, as before)."""
     from . import merge_guard
-    from .panel_invoker import _govlean_authority_switched
 
-    from .panel_invoker import PresidentPolicyError
-
-    authority = None
-    try:
-        if run_mode != "governed" or not _govlean_authority_switched(repo):
-            authority = merge_guard.mint_no_landing_token()
-    except PresidentPolicyError as exc:
-        return exc.code  # the review authority state is unreadable: push nothing
+    # Option C (agent-harness#1078): the token carries this entry's run mode;
+    # ``guarded_merge`` itself reads the repository's authority state and refuses a governed
+    # token past the switch (or on an unreadable state). No landing decision exists here.
+    authority = merge_guard.mint_no_landing_token(run_mode=run_mode)
     try:
         merge_guard.guarded_merge(repo, authority=authority,
                                   action=merge_guard.LegacyPush(remote=remote, refspec=refspec, cwd=str(repo)))

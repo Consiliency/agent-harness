@@ -906,20 +906,72 @@ def test_sl1_ec1_every_merge_site_refuses_before_any_attempt(tmp_path, monkeypat
         assert refusal.code == "panel_merge_authority_missing", refusal.code
 
 
-NO_LANDING_CASES = ["governed-run-mode", "unreadable-run-mode", "after-a-landing-call"]
+NO_LANDING_CASES = ["governed-in-a-switched-repo", "unreadable-authority-state", "unreadable-run-mode",
+                    "after-a-landing-call"]
+_SWITCH_MANIFEST = lanes._GOVLEAN_SWITCH
+
+
+def _write_authority_state(land: _Landing, text: str) -> None:
+    manifest = land.t.path / "plans" / "manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(text, encoding="utf-8")
 
 
 @pytest.mark.parametrize("case", NO_LANDING_CASES)
 @pytest.mark.parametrize("site", SITES)
 def test_sl1_ec1_a_no_landing_token_is_refused_on_a_landing_path(tmp_path, monkeypatch, site, case):
+    """Option C (maintainer, agent-harness#1078): a no-landing token carries its entry's run
+    mode; a governed token is refused past the repository's own authority switch, and an
+    unreadable authority state fails closed as switched."""
     land = _site(tmp_path, monkeypatch, site, land=(case == "after-a-landing-call"))
     mg = land.mg
-    if case == "governed-run-mode":
-        monkeypatch.setenv("PHASE_LOOP_RUN_MODE", "governed")
+    mode = "autonomous"
+    if case == "governed-in-a-switched-repo":
+        _write_authority_state(land, _SWITCH_MANIFEST)
+        mode = "governed"
+    elif case == "unreadable-authority-state":
+        _write_authority_state(land, "{not json")
+        mode = "governed"
     elif case == "unreadable-run-mode":
-        monkeypatch.setenv("PHASE_LOOP_RUN_MODE", "governd")
-    token = mg.mint_no_landing_token()
+        mode = "governd"
+    token = mg.mint_no_landing_token(run_mode=mode)
     refusal = _refused_before_any_attempt(land, lambda: land.merge(authority=token), before_guarded_io=True)
+    assert refusal.code == "panel_merge_authority_missing"
+
+
+def test_sl1_ec1_a_pre_switch_governed_merge_runs_todays_primitive(tmp_path, monkeypatch):
+    """Option C: in a repository before the switch, a governed no-landing token performs
+    today's primitive byte-for-byte (pre-switch governed merges are not PANEL landings)."""
+    land = _site(tmp_path, monkeypatch, "pr-merge", land=False)
+    mg = land.mg
+    token = mg.mint_no_landing_token(run_mode="governed")
+    mg.guarded_merge(land.t.path, authority=token,
+                     action=mg.LegacyPrMerge(branch="change", repo_args=("--repo", _SLUG),
+                                             head_sha=land.t.change_head, delete_branch=True,
+                                             cwd=str(land.t.path), env=None))
+    assert [c for c in land.gh.calls if c[1:3] == ["pr", "merge"]] == [
+        ["gh", "pr", "merge", "change", "--repo", _SLUG, "--merge", "--delete-branch",
+         "--match-head-commit", land.t.change_head]]
+    assert land.gh.guarded_io() == [], "the no-landing path read branch rules or fetched"
+
+
+@pytest.mark.parametrize("env_mode", ["governed", "autonomous", "governd"])
+def test_sl1_ec1_an_environment_variable_cannot_flip_the_token_outcome(tmp_path, monkeypatch, env_mode):
+    """Option C: the outcome is the token's own run mode against the repository's own
+    authority state; PHASE_LOOP_RUN_MODE flips it in neither direction."""
+    monkeypatch.setenv("PHASE_LOOP_RUN_MODE", env_mode)
+    land = _site(tmp_path, monkeypatch, "pr-merge", land=False)
+    monkeypatch.setenv("PHASE_LOOP_RUN_MODE", env_mode)
+    mg = land.mg
+    # Allowed stays allowed: an autonomous token in a switched repository.
+    _write_authority_state(land, _SWITCH_MANIFEST)
+    mg.guarded_merge(land.t.path, authority=mg.mint_no_landing_token(run_mode="autonomous"),
+                     action=mg.LegacyPrMerge(branch="change", repo_args=("--repo", _SLUG),
+                                             head_sha=land.t.change_head, delete_branch=True,
+                                             cwd=str(land.t.path), env=None))
+    # Refused stays refused: a governed token in the same switched repository.
+    refusal = _refused_before_any_attempt(
+        land, lambda: land.merge(authority=mg.mint_no_landing_token(run_mode="governed")), before_guarded_io=True)
     assert refusal.code == "panel_merge_authority_missing"
 
 
@@ -935,7 +987,7 @@ def test_sl1_ec1_the_no_landing_path_keeps_todays_argv_byte_for_byte(tmp_path, m
     ``train_runner._live_merge_pr`` argv exactly, and the push argv is today's closeout push."""
     land = _site(tmp_path, monkeypatch, "pr-merge", land=False)
     mg = land.mg
-    token = mg.mint_no_landing_token()
+    token = mg.mint_no_landing_token(run_mode="autonomous")
     land.mg.guarded_merge(land.t.path, authority=token,
                           action=mg.LegacyPrMerge(branch="change", repo_args=("--repo", _SLUG),
                                                   head_sha=land.t.change_head, delete_branch=True,
@@ -943,7 +995,7 @@ def test_sl1_ec1_the_no_landing_path_keeps_todays_argv_byte_for_byte(tmp_path, m
     merges = [c for c in land.gh.calls if c[1:3] == ["pr", "merge"]]
     assert merges == [["gh", "pr", "merge", "change", "--repo", _SLUG, "--merge", "--delete-branch",
                        "--match-head-commit", land.t.change_head]]
-    token2 = mg.mint_no_landing_token()
+    token2 = mg.mint_no_landing_token(run_mode="autonomous")
     land.gh.calls.clear()
     _git(land.t.path, "checkout", "-q", "change")
     mg.guarded_merge(land.t.path, authority=token2,

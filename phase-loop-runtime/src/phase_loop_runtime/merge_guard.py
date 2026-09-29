@@ -255,16 +255,22 @@ def register_landing_decision(decision: object, *, context: object, tier: str,
 
 
 class NoLandingToken:
-    """Authority for today's autonomous primitive, minted only by :func:`mint_no_landing_token`."""
+    """Authority for today's primitive on a path that makes no panel landing, minted only
+    by :func:`mint_no_landing_token`. It carries the minting entry's own run mode."""
 
-    __slots__ = ("_used",)
+    __slots__ = ("_used", "run_mode")
 
-    def __init__(self) -> None:
+    def __init__(self, run_mode: str) -> None:
         self._used = False
+        self.run_mode = run_mode
 
 
-def mint_no_landing_token() -> NoLandingToken:
-    token = NoLandingToken()
+def mint_no_landing_token(*, run_mode: str) -> NoLandingToken:
+    """Mint a token for the entry's ``run_mode`` (the entry's own argument, never an
+    environment variable). ``guarded_merge`` accepts it for an ``autonomous`` run, and
+    for a ``governed`` run only in a repository before the GOVLEAN authority switch
+    (maintainer decision on agent-harness#1078, option C)."""
+    token = NoLandingToken(str(run_mode))
     _MINTED[id(token)] = token
     return token
 
@@ -330,9 +336,25 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
         """Today's primitive, byte-for-byte, only for an autonomous run with no landing call."""
         if _MINTED.get(id(token)) is not token or getattr(token, "_used", True):
             raise MergeGuardRefusal("panel_merge_authority_missing", "the no-landing token is not a minted one")
-        mode = os.environ.get("PHASE_LOOP_RUN_MODE")
-        if mode not in (None, "", "autonomous"):
-            raise MergeGuardRefusal("panel_merge_authority_missing", f"run mode {mode!r} is not autonomous")
+        mode = getattr(token, "run_mode", None)
+        if mode not in ("autonomous", "governed"):
+            raise MergeGuardRefusal("panel_merge_authority_missing", f"run mode {mode!r} is unreadable")
+        if mode == "governed":
+            # Option C (agent-harness#1078): a governed merge is not a PANEL landing only in a
+            # repository before the switch, read from that repository's own authority state.
+            # An unreadable state fails closed, as switched.
+            from .panel_invoker import _govlean_authority_switched
+
+            try:
+                switched = _govlean_authority_switched(repo_dir)
+            except Exception as exc:
+                raise MergeGuardRefusal(
+                    "panel_merge_authority_missing", f"the repository's authority state is unreadable: {exc}",
+                ) from exc
+            if switched:
+                raise MergeGuardRefusal(
+                    "panel_merge_authority_missing", "a governed merge past the authority switch needs a landing decision",
+                )
         common = _common_dir(repo_dir) or str(repo_dir.resolve())
         if common in _LANDING_CALLS:
             raise MergeGuardRefusal("panel_merge_authority_missing", "a landing call was made for this repository")
