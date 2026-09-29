@@ -4478,6 +4478,33 @@
           ],
           "landed": null,
           "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:HARDEN: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        },
+        {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:HARDEN",
+          "entry": "authorization_supplement",
+          "issue": "Consiliency/agent-harness#1078",
+          "decision": "maintainer 2026-09-29 (agent-harness#1078, amendment #3): these further nodes join the pending HARDEN authorization; PANEL SL-1 may change exactly them as plans/phase-plan-v10-PANEL.md states",
+          "reason": "measured by the CLI-less full-suite node-list diff (plans/evidence/panel-sl1-amendment-3/): advisor-board now composes the code-review lanes through build_panel_context, and these nodes patch compose_review_board",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py",
+              "base_blob": "050f1ac97baac9d502c18c5516a2f23c1230d54f",
+              "nodes": [
+                "AdvisorBoardCliTest::test_cli_below_floor_board_exits_nonzero",
+                "AdvisorBoardCliTest::test_cli_human_output_includes_verdict_text",
+                "AdvisorBoardCliTest::test_cli_json_emits_independence_and_legs"
+              ]
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_panel_native_fill_183.py",
+              "base_blob": "a1b8573022681e27a6b2278cd07012244ab75eb0",
+              "nodes": [
+                "AdvisorBoardLoudShortfall::test_colliding_seat_keys_do_not_hide_a_failed_twin",
+                "AdvisorBoardLoudShortfall::test_json_reports_shortfall_and_fill_request",
+                "AdvisorBoardLoudShortfall::test_text_shortfall_names_the_requested_seat_model"
+              ]
+            }
+          ]
         }
       ]
     },
@@ -5336,6 +5363,27 @@
           ],
           "landed": null,
           "landed_note": "appended as exactly one separate landed entry after PANEL SL-1 merges, naming authorization_id agent-harness#1078:PANEL-SL1:PRESROUTE: each file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. The owning phase's check accepts it only as a chain link: every landed entry pairs with exactly one authorization for its path and vice versa; the old blob equals both the blob already accepted for the path and the blob at the merge's first parent; the merge descends from the predecessor link's merge; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        },
+        {
+          "authorization_id": "agent-harness#1078:PANEL-SL1:PRESROUTE",
+          "entry": "authorization_supplement",
+          "issue": "Consiliency/agent-harness#1078",
+          "decision": "maintainer 2026-09-29 (agent-harness#1078, amendment #3): these further nodes join the pending PRESROUTE authorization; PANEL SL-1 may change exactly them as plans/phase-plan-v10-PANEL.md states",
+          "reason": "measured by the CLI-less full-suite node-list diff (plans/evidence/panel-sl1-amendment-3/): the runner's production_code landing gates on origin's fetched default branch, and these fixtures have no origin",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_president_wiring.py",
+              "base_blob": "1263876260cf2f6c09a2fc5c64c1b712794c1cdd",
+              "nodes": [
+                "test_runner_blocking_ruling_fails_landing_and_persists_ruling",
+                "test_runner_board_records_are_published_atomically",
+                "test_runner_declares_the_tier_and_a_live_seam",
+                "test_runner_missing_ruling_fails_landing",
+                "test_runner_president_refusal_names_the_reason",
+                "test_runner_rerun_in_the_same_run_dir_invalidates_the_prior_landing"
+              ]
+            }
+          ]
         }
       ]
     },
@@ -10567,6 +10615,12 @@
           "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1154"
+        },
+        {
+          "plan_sha256": "57f1552ee68eac8e368c679dd1c541dfcdb288e5c79f9772b04a39b4654cdac1",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": null,

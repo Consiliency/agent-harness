@@ -1,0 +1,20 @@
+{
+ "base": "71fcad86",
+ "base_junit_sha256": "cf59115562b6133cf1289daedf6ef8d495137ad4e8dcaa8e06c652c422e56f0f",
+ "base_summary": "103 failed, 8126 passed, 545 skipped",
+ "command": "PATH=<scratch bin: git 2.55 only>:/usr/sbin:/usr/bin:/sbin:/bin PYTHONPATH=src:tests PHASE_LOOP_DESELECT_QUARANTINE=1 python -m pytest -m 'not dotfiles_integration' -n 6..8 --dist loadfile --max-worker-restart=0 -p no:cacheprovider -q -rf --deselect=<chronology node> --ignore tests/test_legible_roadmap_contract.py --ignore tests/test_legible_evidence.py --junitxml=<out> (run in phase-loop-runtime/, python 3.10 venv)",
+ "comparison": "collected node lists from JUnit (classname::name), not counts",
+ "head": "7b1924b3",
+ "head_junit_sha256": "178beb780394a418a694c06e89902448fbd0063954bfe9494d71bf84b4cb5778",
+ "head_summary": "161 failed, 8675 passed, 207 skipped",
+ "nodes_gone": 0,
+ "nodes_new_in_head": 269,
+ "red_only_in_base": 2,
+ "red_only_in_base_nodes": [
+  "tests.test_agy_canary_evidence::test_probe_rejects_each_missing_aliased_unpaired_or_wrong_capability_class",
+  "tests.test_agy_canary_evidence::test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix"
+ ],
+ "red_only_in_head": 60,
+ "schema": "panel_sl1_amendment3_measurement.v1",
+ "vendor_clis_on_path": []
+}

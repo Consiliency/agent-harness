@@ -1,0 +1,5 @@
+S2 probe (2026-09-29), gating panel_context_required on the GOVLEAN switch:
+- keyed on repo_dir: 4 frozen PANEL nodes red (test_ec4_a_president_tier_landing_without_a_context_is_refused[plan|production_code], test_ec4_a_supplied_policy_without_a_context_is_refused[plan|production_code]) -- DID NOT RAISE / review_board_policy_mismatch: the sanctioned control's repo_dir is a private scratch (unswitched), and the frozen nodes require the refusal there.
+- keyed on canonical_repo_authority (else repo_dir): same 4 frozen nodes red -- harden_tdd_guard: "sanctioned control checked policy against a repository other than" its scratch (and "checked the authority switch more than once" when read twice).
+- probe of B6 calls (test_presroute_hardening): repo_dir=/tmp/harden-review-scratch-*, canonical=the switched agent-harness checkout -- identical shape to the frozen nodes, so no key separates them.
+Reverted; production keeps the strict refusal.
