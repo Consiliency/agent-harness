@@ -839,3 +839,57 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   verified pushed oid in its own `watch_push` entry, and reads both the record and the
   created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
   agree. It refuses when it cannot prove its open-PR listing complete.
+
+## PANEL — Lane tables, vendor fallback, landing minimum, labels, merge guard · `config.py`, `composition.py`, `presets.py`, `panel_invoker.py`, `merge_guard.py` (IF-0-PANEL-1, Consiliency/agent-harness#1078)
+
+Behaviour is EC-PANEL-1..5 in `specs/phase-plans-v10.md` Phase 18; the plan is
+`plans/phase-plan-v10-PANEL.md`. This section names the seams, not the criteria.
+
+- **Tables and sources.** `resolve_panel_table(task, *, user_path, repo_dir, base_revision)`
+  resolves built-in < user (`$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`) <
+  repository (`.agent-harness/advisor-boards.toml` read with `git show` at the fetched
+  target head, never the change under review). An invalid repository table at the base is
+  replaced by the built-in one and labelled `repository table invalid at base, replaced`.
+  `validate_panel_change` refuses (`BoardConfigError`) a change whose edited `[panel.*]`
+  table is invalid once three-way merged onto the target head.
+- **Snapshot and context.** `snapshot_panel_run` is taken once at run start (user side
+  only). `build_panel_context` runs at the gate, composes through `compose_panel_board`
+  under the monitoring policy's probes, and is the only source of contexts; a context and
+  its snapshot are registered by identity plus a content digest. `gate_panel_context`
+  fetches origin's default branch for a landing; a non-landing `advisor-board` run reads
+  its tables at the checkout's `HEAD` and fetches nothing.
+- **Landing.** `panel_landing_policy(tier, *, context)` is the only accepted policy under a
+  context: `invoke_board` refuses any other supplied policy inside
+  `_validate_review_board_policy` (a dropped required president keeps
+  `requires_president_override_refused`). `evaluate_landing` gates on distinct usable
+  vendors when the user or repository table sets `min_distinct_vendors`, otherwise on
+  today's named seats, with a floor of two usable seats at `plan` / `production_code`.
+  `panel_context_required` / `panel_review_policy_required` / `panel_context_unverified` /
+  `panel_probes_injected` / `panel_delivery_replaced` / `panel_user_file_changed` refuse
+  before any seat. After the seats, `regated_landing_decision` rebuilds the context at a
+  target head that changed `[panel.*]` or the profile `panel` list and re-evaluates the
+  seats already run; a different board refuses `panel_regate_composition_changed`.
+- **Entries.** `runner._run_legible_panel` (production_code), `governed_review.governed_board_gate`
+  (plan, on the default path past the GOVLEAN switch with a declared change or a run-start
+  snapshot), run-train (plan; its review is the governed gate) and `advisor-board
+  --landing-tier`. A pre-switch repository and an injected `compose` / `invoke` stay
+  tierless and context-free. The labels (`PanelLabels`) ride on `PanelResult.panel_labels`,
+  `GateResult.panel`, run-train's result `panel_labels`, `implementation-panel.json` and the
+  `advisor-board` JSON. The `advisor-board` landing JSON authorizes no merge.
+- **Lens hook.** `_seat_instructions(base, lens)` appends `lens_frame.render_lens_section`
+  when that module exists (label `prompt`), else leaves the brief unchanged
+  (`metadata-only`). Every brokered / TUI seat prompt passes `deliver_seat_prompt(seat_key,
+  route, prompt, send)` immediately before its transport; each seat is bound to an
+  authorization for its own instructions (`backing.derive_seat_instruction_authorizations`).
+- **Merge guard.** Every runtime remote mutation lives in one named function of
+  `merge_guard.py`: `guarded_merge` (landings: `GhPrMerge`, `GitPush`, and the
+  single-site `GitMergePush` for the agent-harness#347 transition — parents exactly
+  [B0, reviewed head], tree equal to a clean `git merge-tree --write-tree`), `publish_nontarget`,
+  `publish_new_branch` and `dequeue`. Authority is `invoke_board`'s registered, bound
+  `LandingDecision`, or a `NoLandingToken` carrying its entry's run mode: accepted for an
+  autonomous run, and for a governed run only in a repository before the switch (read from
+  that repository; unreadable fails closed). Queue-protected targets are refused up front;
+  an enqueued merge is dequeued and refused. Every `git` call runs with
+  `-c core.hooksPath=/dev/null`; every push passes `--no-verify`. A multi-node governed
+  train binds no single change, so its merges refuse (agent-harness#1150). A post-switch
+  governed phase closeout has no decision and records `push_refused` (agent-harness#1151).

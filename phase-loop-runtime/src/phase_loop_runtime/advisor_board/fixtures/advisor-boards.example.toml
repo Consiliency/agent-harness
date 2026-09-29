@@ -63,3 +63,22 @@ allow_api_key_fallback = false
   effort = "max"
   harness = "claude"
   lens = "adversarial"     # optional review lens/persona
+
+# Optional (PANEL, agent-harness#1078): per-task lane tables. Each lane is one seat: its
+# lens, and the vendors that may fill it, in order. A lane whose first vendor is down is
+# filled by the next available one (labelled a fallback lane); a lane with none is left
+# unfilled. `min_distinct_vendors` (optional) replaces the named-seat rule with a minimum of
+# distinct usable vendors at a plan / production_code landing. The same table in the
+# repository's `.agent-harness/advisor-boards.toml` is read at the fetched target head,
+# never the change under review; a change that edits it is validated as applied onto
+# that head. Declared lenses may not reuse a built-in lens name.
+# [panel.code-review]
+# min_distinct_vendors = 3
+# lanes = [
+#   { lens = "adversarial", vendors = ["grok", "claude", "codex", "gemini"] },
+#   { lens = "correctness", vendors = ["claude", "codex", "gemini", "grok"] },
+#   { lens = "red-team", vendors = ["codex", "gemini", "grok", "claude"] },
+#   { lens = "alternative-approach", vendors = ["gemini", "grok", "claude", "codex"] },
+# ]
+# [panel.code-review.lenses]
+# "migration-safety" = "Check that the change is safe to roll forward and back."
