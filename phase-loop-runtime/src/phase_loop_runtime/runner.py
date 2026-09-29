@@ -8271,11 +8271,21 @@ def _run_legible_pr_transition(
             "Consiliency/agent-harness main advanced after review and before mutation"
         )
     if snapshot.get("isDraft") is True:
-        subprocess.run(
-            ["gh", "pr", "ready", "347", "--repo", "Consiliency/agent-harness"],
-            cwd=repo,
-            check=True,
-        )
+        # PANEL (agent-harness#1078): readying is a remote mutation through merge_guard's
+        # non-target seam, which refuses a PR with auto-merge, queue membership or a
+        # queue-protected base.
+        from . import merge_guard
+
+        try:
+            readied = merge_guard.publish_nontarget(
+                repo, "gh", ["pr", "ready", "347", "--repo", merge_guard.repo_slug(repo)],
+            )
+        except merge_guard.MergeGuardRefusal as exc:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                f"Consiliency/agent-harness#347 could not be marked ready [{exc.code}]: {exc}"
+            ) from exc
+        if readied.returncode != 0:
+            raise subprocess.CalledProcessError(readied.returncode, readied.args, readied.stdout, readied.stderr)
     expected_ready_snapshot = dict(snapshot)
     expected_ready_snapshot["isDraft"] = False
     _legible_candidate_remote(repo, expected_head)
@@ -8335,19 +8345,34 @@ def _run_legible_pr_transition(
         json.dumps(intent_payload, indent=2, sort_keys=True) + "\n",
     )
     fsync_run_store_durable(repo, run_id)
+    # PANEL (agent-harness#1078, maintainer ruling Q7): the merge object is published only
+    # through merge_guard, under the exact-head board's admitted decision, as a GitMergePush:
+    # parents exactly [B0, the reviewed head], tree the clean merge of the two, leased at B0.
+    from . import merge_guard
+
+    decision, landing_context = _LEGIBLE_PANEL_LANDINGS.pop(str(run_dir.resolve()), (None, None))
     try:
-        publish = subprocess.run(
-            ["git", "-C", str(repo), "push", "origin", f"{server_merge}:refs/heads/main"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        if decision is None:
+            # No panel landing was made (a repository before the authority switch): today's
+            # push under a governed no-landing token, which merge_guard accepts only there.
+            merge_guard.guarded_merge(
+                repo, authority=merge_guard.mint_no_landing_token(run_mode="governed"),
+                action=merge_guard.LegacyPush(remote="origin", refspec=f"{server_merge}:refs/heads/main",
+                                              cwd=str(repo)),
+            )
+        else:
+            merge_guard.guarded_merge(repo, authority=decision, action=merge_guard.GitMergePush(
+                remote=_legible_git(repo, "remote", "get-url", "origin"), target_branch="main",
+                commit=server_merge, context=landing_context,
+            ))
     except subprocess.CalledProcessError as exc:
-        publish = exc
-    if publish.returncode != 0:
         raise legible_evidence.LegibleProcessBootstrapError(
             "atomic Consiliency/agent-harness#347 merge publish was rejected"
-        )
+        ) from exc
+    except (merge_guard.MergeGuardRefusal, merge_guard.MergeGuardEscalation) as exc:
+        raise legible_evidence.LegibleProcessBootstrapError(
+            f"atomic Consiliency/agent-harness#347 merge publish was rejected [{exc.code}]"
+        ) from exc
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"], check=True)
     if (
         _legible_git(repo, "rev-parse", "origin/main") != server_merge
@@ -8475,6 +8500,11 @@ def _run_legible_c4_early_prover(
     path = run_dir / "c4-early-prover.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+# PANEL (agent-harness#1078): run directory -> (landing decision, context) of the
+# exact-head board ``_run_legible_panel`` admitted; ``_run_legible_pr_transition`` consumes it.
+_LEGIBLE_PANEL_LANDINGS: dict[str, tuple[object, object]] = {}
 
 
 def _panel_require_landing(repo, result, context, snapshot, tier, expected_head) -> None:
@@ -8619,6 +8649,8 @@ def _run_legible_panel(
     verdicts: dict[str, str] = {}
     if panel_context is not None:
         _panel_require_landing(repo, result, panel_context, panel_snapshot, panel_tier, expected_head)
+        # The admitted decision and its context, for this run directory's merge site only.
+        _LEGIBLE_PANEL_LANDINGS[str(Path(run_dir).resolve())] = (result.landing_decision, panel_context)
     from collections import Counter
 
     leg_names = Counter(str(outcome.leg) for outcome in result.legs)

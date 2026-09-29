@@ -906,6 +906,71 @@ def test_sl1_ec1_every_merge_site_refuses_before_any_attempt(tmp_path, monkeypat
         assert refusal.code == "panel_merge_authority_missing", refusal.code
 
 
+MERGE_PUSH_CASES = ["clean", "evil-merge", "swapped-parents", "non-b0-first-parent", "stale-lease"]
+
+
+def _merge_object(repo: Path, tree: str, *parents: str) -> str:
+    argv = ["commit-tree", tree]
+    for parent in parents:
+        argv += ["-p", parent]
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *argv],
+                          input="merge\n", capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _evil_tree(repo: Path, clean_tree: str, tmp: Path) -> str:
+    index = tmp / "evil.index"
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, "GIT_INDEX_FILE": str(index)}
+    run = lambda *a, **k: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True,  # noqa: E731
+                                         check=True, env=env, **k).stdout.strip()
+    run("read-tree", clean_tree)
+    blob = run("hash-object", "-w", "--stdin", input="content in neither parent\n")
+    run("update-index", "--add", "--cacheinfo", f"100644,{blob},evil.txt")
+    return run("write-tree")
+
+
+@pytest.mark.parametrize("case", MERGE_PUSH_CASES)
+def test_sl1_ec1_the_legible_merge_push_is_exactly_the_clean_merge_of_b0_and_the_head(tmp_path, monkeypatch, case):
+    """Maintainer ruling Q7(1) (agent-harness#1078): GitMergePush publishes only a commit
+    whose parents are exactly [B0, the bound reviewed head] and whose tree equals a clean
+    ``git merge-tree --write-tree`` of the two, leased at B0; anything else refuses with
+    ``panel_merge_binding_mismatch`` (the stale lease: the leased push is rejected)."""
+    land = _site(tmp_path, monkeypatch, "push")
+    mg, repo = land.mg, land.t.path
+    b0, head = land.b0, land.t.change_head
+    clean = _git(repo, "merge-tree", "--write-tree", b0, head).splitlines()[0]
+    if case == "evil-merge":
+        commit = _merge_object(repo, _evil_tree(repo, clean, tmp_path), b0, head)
+    elif case == "swapped-parents":
+        commit = _merge_object(repo, clean, head, b0)
+    elif case == "non-b0-first-parent":
+        side = _merge_object(repo, _git(repo, "rev-parse", f"{b0}^{{tree}}"), b0)
+        commit = _merge_object(repo, clean, side, head)
+    else:
+        commit = _merge_object(repo, clean, b0, head)
+    if case == "stale-lease":
+        def advance():
+            _git(land.t.upstream, "commit", "-q", "--allow-empty", "-m", "target moves")
+            _git(land.t.upstream, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+        land.gh.before_push = advance
+    action = mg.GitMergePush(remote=str(land.t.origin), target_branch="main", commit=commit, context=land.ctx)
+    if case == "clean":
+        assert land.merge(action=action) == commit
+        assert _git(land.t.upstream, "ls-remote", str(land.t.origin), "refs/heads/main").split()[0] == commit
+        return
+    land.gh.calls.clear()
+    with pytest.raises(mg.MergeGuardRefusal) as excinfo:
+        land.merge(action=action)
+    pushed = [c for c in land.gh.calls if "push" in c]
+    if case == "stale-lease":
+        assert excinfo.value.code == "panel_merge_rejected"
+        assert pushed and any(a == f"--force-with-lease=refs/heads/main:{b0}" for a in pushed[-1])
+    else:
+        assert excinfo.value.code == "panel_merge_binding_mismatch"
+        assert pushed == [], "a malformed merge object reached the push"
+    assert _git(land.t.upstream, "ls-remote", str(land.t.origin), "refs/heads/main").split()[0] != commit
+
+
 NO_LANDING_CASES = ["governed-in-a-switched-repo", "unreadable-authority-state", "unreadable-run-mode",
                     "after-a-landing-call"]
 _SWITCH_MANIFEST = lanes._GOVLEAN_SWITCH

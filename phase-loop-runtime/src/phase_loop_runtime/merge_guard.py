@@ -89,6 +89,12 @@ def _repo_slug(repo_dir: str | Path) -> str:
     return resolve_broker_repo_identity(Path(repo_dir))
 
 
+def repo_slug(repo_dir: str | Path) -> str:
+    """The broker-validated ``host/owner/repo`` of ``repo_dir``'s ``origin`` (the ``--repo``
+    every merge_guard GitHub operation must name)."""
+    return _repo_slug(repo_dir)
+
+
 def _slug_parts(slug: str) -> tuple[str, str, str]:
     parts = slug.split("/")
     if len(parts) == 3:
@@ -300,6 +306,19 @@ class GitPush:
 
 
 @dataclass(frozen=True)
+class GitMergePush:
+    """A push landing of a local merge commit whose parents are exactly [B0, the bound
+    reviewed head] and whose tree is the clean ``git merge-tree --write-tree`` of the two,
+    leased at B0. Scoped to ``runner._run_legible_pr_transition`` (maintainer ruling Q7,
+    agent-harness#1078): an item-7 extension for that single site."""
+
+    remote: str
+    target_branch: str
+    commit: str
+    context: object = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
 class LegacyPrMerge:
     """Today's ``train_runner._live_merge_pr`` primitive, for the autonomous path only."""
 
@@ -425,6 +444,26 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
             raise MergeGuardRefusal("panel_merge_enqueued", "the merge came back enqueued; dequeued and refused")
         raise MergeGuardRefusal("panel_merge_not_merged", "GitHub rejected the merge; the PR is still open")
 
+    def _merge_push(repo_dir: Path, bindings: MergeBindings, b0: str, commit_ref: str) -> str:
+        commit = _git_out(repo_dir, "rev-parse", "--verify", f"{commit_ref}^{{commit}}")
+        listed = _git_out(repo_dir, "rev-list", "--parents", "-n", "1", commit) if commit else None
+        parents = (listed or "").split()[1:]
+        if commit is None or parents != [b0, bindings.reviewed_head]:
+            raise MergeGuardRefusal("panel_merge_binding_mismatch",
+                                    "the merge commit's parents are not exactly [B0, the reviewed head]")
+        tree = _git_out(repo_dir, "rev-parse", "--verify", f"{commit}^{{tree}}")
+        clean = _git(repo_dir, "merge-tree", "--write-tree", b0, bindings.reviewed_head)
+        clean_tree = (clean.stdout or "").splitlines()[0].strip() if clean.returncode == 0 and clean.stdout else None
+        if tree is None or clean_tree is None or tree != clean_tree:
+            raise MergeGuardRefusal("panel_merge_binding_mismatch",
+                                    "the merge commit's tree is not the clean merge of B0 and the reviewed head")
+        target = f"refs/heads/{bindings.target_branch}"
+        done = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), "push", "--no-verify", "--porcelain",
+                       f"--force-with-lease={target}:{b0}", bindings.origin_url, f"{commit}:{target}"])
+        if done.returncode != 0:
+            raise MergeGuardRefusal("panel_merge_rejected", "the leased merge push was rejected")
+        return commit
+
     def _push(repo_dir: Path, bindings: MergeBindings, b0: str) -> str:
         commit = bindings.reviewed_head
         if _git(repo_dir, "merge-base", "--is-ancestor", b0, commit).returncode != 0:
@@ -457,6 +496,9 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
         elif isinstance(action, GitPush):
             if bindings.pr is not None or action.remote != bindings.origin_url or action.commit != bindings.reviewed_head:
                 raise MergeGuardRefusal("panel_merge_binding_mismatch", "remote or head substitution")
+        elif isinstance(action, GitMergePush):
+            if bindings.pr is not None or action.remote != bindings.origin_url:
+                raise MergeGuardRefusal("panel_merge_binding_mismatch", "remote substitution")
         else:
             raise MergeGuardRefusal("panel_merge_action_unknown", f"unknown landing action {type(action).__name__}")
         _refuse_config_redirects(repo_dir)
@@ -487,6 +529,8 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
             raise MergeGuardRefusal("panel_merge_user_file_changed", "the user board file changed")
         if isinstance(action, GhPrMerge):
             return _merge_pr(repo_dir, bindings, b0)
+        if isinstance(action, GitMergePush):
+            return _merge_push(repo_dir, bindings, b0, action.commit)
         return _push(repo_dir, bindings, b0)
     repo_dir = Path(repo_dir)
     if isinstance(authority, NoLandingToken):
