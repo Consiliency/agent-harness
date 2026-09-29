@@ -1070,7 +1070,7 @@ def test_sl1_ec1_the_no_landing_path_keeps_todays_argv_byte_for_byte(tmp_path, m
     # Today's remote and refspec exactly; the hook suppression every merge_guard git call
     # carries (plan item 7) is the one addition.
     assert pushes and pushes[0][-4:] == ["push", "--no-verify", "origin", f"{land.t.change_head}:refs/heads/closeout"]
-    assert pushes[0][1:3] == ["-c", "core.hooksPath=/dev/null"]
+    assert pushes[0][1:5] == ["-C", str(land.t.path), "-c", "core.hooksPath=/dev/null"]
 
 
 POST_ATTEMPT = ["enqueued", "enqueue-visible-late", "dequeue-failed", "lease-rejected", "match-head-rejected",
@@ -1312,7 +1312,7 @@ def test_sl1_ec1_relayed_text_is_neutralized():
 def test_sl1_ec1_publish_new_branch_is_create_only_and_keeps_the_remote_name_rule(tmp_path, monkeypatch):
     p = _Publisher(tmp_path, monkeypatch)
     _git(p.t.path, "remote", "set-url", "origin", str(p.t.origin))
-    p.mg.publish_new_branch(p.t.path, name="agy-watch/1.0-x", sha=p.sha)
+    assert p.mg.publish_new_branch(p.t.path, name="agy-watch/1.0-x", sha=p.sha) == "created"
     pushes = [c for c in p.gh.calls if "push" in c and os.path.basename(c[0]) == "git"]
     real = [c for c in pushes if "--dry-run" not in c]
     assert len(real) == 1 and "--dry-run" in " ".join(" ".join(c) for c in pushes)
@@ -1321,17 +1321,16 @@ def test_sl1_ec1_publish_new_branch_is_create_only_and_keeps_the_remote_name_rul
     assert f"{p.sha}:refs/heads/agy-watch/1.0-x" in argv
     for flag in ("--no-verify", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "--"):
         assert flag in argv
-    # The same name again: create-only refuses.
-    with pytest.raises(p.mg.MergeGuardRefusal):
-        p.mg.publish_new_branch(p.t.path, name="agy-watch/1.0-x", sha=p.sha)
+    # The same name again: create-only refuses, with agent-harness#1130's typed outcome.
+    assert p.mg.publish_new_branch(p.t.path, name="agy-watch/1.0-x", sha=p.sha) == "refused_branch_exists"
 
 
 def test_sl1_ec1_publish_new_branch_refuses_more_than_one_push_destination(tmp_path, monkeypatch):
     p = _Publisher(tmp_path, monkeypatch)
     _git(p.t.path, "remote", "set-url", "--add", "--push", "origin", str(p.t.origin))
     _git(p.t.path, "remote", "set-url", "--add", "--push", "origin", str(p.t.origin) + "x")
-    with pytest.raises(p.mg.MergeGuardRefusal):
-        p.mg.publish_new_branch(p.t.path, name="agy-watch/2.0-y", sha=p.sha)
+    assert p.mg.publish_new_branch(p.t.path, name="agy-watch/2.0-y", sha=p.sha) == \
+        "refused_push_destination_ambiguous"
     assert not [c for c in p.gh.calls if "push" in c and "--dry-run" not in c]
 
 

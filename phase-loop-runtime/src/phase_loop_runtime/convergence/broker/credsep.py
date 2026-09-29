@@ -472,7 +472,14 @@ class GitHubBrokerAdapter:
         # push can only ever publish the validated commit, never whatever the ref points to
         # by the time this runs.
         self._revalidate_generation_before_effect()
-        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
+        # PANEL (agent-harness#1078): the push is merge_guard.publish_nontarget's, through this
+        # adapter's own `run`: it refuses a protected or merge-bound destination before any push.
+        from ...merge_guard import MergeGuardRefusal, neutralize_fragment, publish_nontarget
+        try:
+            pushed = publish_nontarget(self.repo_path, "git", ["push", "--no-verify", origin_url, f"{request.head_sha}:{ref}"],
+                                       declared_target=request.branch, run=self.run)
+        except MergeGuardRefusal as exc:
+            return self._scope_rejected(request, f"merge-guard-refused:{exc.code}")
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
         # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
         # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
@@ -483,10 +490,16 @@ class GitHubBrokerAdapter:
         # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
         # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
         # diff this adapter scope-checked (vs request.base).
-        title = self._output("log", "-1", "--format=%s") or request.branch
-        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
+        # PANEL (agent-harness#1078): the commit subject is relayed text, so it is neutralized; the
+        # creation is merge_guard.publish_nontarget's (--head <owner>:<branch>, never a push).
+        title = neutralize_fragment(self._output("log", "-1", "--format=%s") or request.branch)
+        args = ["pr", "create", "--repo", origin_repo, "--head", f"{origin_repo.split('/')[-2]}:{request.branch}",
+                "--base", request.base, "--title", title, "--body", request.pr_body or title]
         if request.draft: args.append("--draft")
-        created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
+        try:
+            created = publish_nontarget(self.repo_path, "gh", args, run=self.run)
+        except MergeGuardRefusal as exc:
+            return self._ambiguous(request, f"pr-create-refused:{exc.code}")
         # An exact branch may already have an open PR (for example after a prior
         # process pushed and created it but died before recording terminal evidence).
         # `gh pr create` reports that condition as a non-zero exit. Reconcile only

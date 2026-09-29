@@ -27,6 +27,8 @@ import json
 import os
 import re
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -63,9 +65,34 @@ class MergeGuardEscalation(RuntimeError):
 # --- the process seam ---------------------------------------------------------------------
 
 
+# A publishing caller's own run callable (agent-harness#1078 amendment #3): while a
+# ``publish_nontarget`` / ``publish_new_branch`` call runs with ``run=``, every command --
+# the guard's own lookups included -- goes through it. The checks stay here.
+_CALLER_RUN: ContextVar[Any] = ContextVar("merge_guard_caller_run", default=None)
+
+
+@contextmanager
+def _caller_run(run):
+    token = _CALLER_RUN.set(run)
+    try:
+        yield
+    finally:
+        _CALLER_RUN.reset(token)
+
+
 def _spawn(argv: Sequence[str], *, cwd: str | Path | None = None, env: Mapping[str, str] | None = None,
            input: str | None = None) -> subprocess.CompletedProcess:
     """Run one command. Every command this module issues goes through here."""
+    caller = _CALLER_RUN.get()
+    if caller is not None:
+        kwargs: dict[str, Any] = {"capture_output": True, "text": True, "check": False}
+        if cwd is not None:
+            kwargs["cwd"] = str(cwd)
+        if env is not None:
+            kwargs["env"] = dict(env)
+        if input is not None:
+            kwargs["input"] = input
+        return caller(list(argv), **kwargs)
     base = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k not in ("GH_REPO", "GH_HOST")}
     if env is not None:
         base = dict(env)
@@ -74,7 +101,7 @@ def _spawn(argv: Sequence[str], *, cwd: str | Path | None = None, env: Mapping[s
 
 
 def _git(repo_dir: str | Path, *args: str) -> subprocess.CompletedProcess:
-    return _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), *args])
+    return _spawn(["git", "-C", str(repo_dir), "-c", "core.hooksPath=/dev/null", *args])
 
 
 def _git_out(repo_dir: str | Path, *args: str) -> str | None:
@@ -86,6 +113,9 @@ def _repo_slug(repo_dir: str | Path) -> str:
     """The host-qualified ``host/owner/repo`` of ``origin`` (raises for a non-GitHub origin)."""
     from .convergence.broker.credsep import resolve_broker_repo_identity
 
+    caller = _CALLER_RUN.get()
+    if caller is not None:
+        return resolve_broker_repo_identity(Path(repo_dir), run=caller)
     return resolve_broker_repo_identity(Path(repo_dir))
 
 
@@ -395,7 +425,7 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
         if isinstance(action, LegacyPush):
             # Today's push inherits the caller's environment (a host may authenticate
             # through it); only the hook suppression is added.
-            done = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", action.cwd, "push", "--no-verify",
+            done = _spawn(["git", "-C", action.cwd, "-c", "core.hooksPath=/dev/null", "push", "--no-verify",
                            action.remote, action.refspec], env=dict(os.environ))
             if done.returncode != 0:
                 raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
@@ -458,7 +488,7 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
             raise MergeGuardRefusal("panel_merge_binding_mismatch",
                                     "the merge commit's tree is not the clean merge of B0 and the reviewed head")
         target = f"refs/heads/{bindings.target_branch}"
-        done = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), "push", "--no-verify", "--porcelain",
+        done = _spawn(["git", "-C", str(repo_dir), "-c", "core.hooksPath=/dev/null", "push", "--no-verify", "--porcelain",
                        f"--force-with-lease={target}:{b0}", bindings.origin_url, f"{commit}:{target}"])
         if done.returncode != 0:
             raise MergeGuardRefusal("panel_merge_rejected", "the leased merge push was rejected")
@@ -469,7 +499,7 @@ def guarded_merge(repo_dir: str | Path, *, authority: object, action: object) ->
         if _git(repo_dir, "merge-base", "--is-ancestor", b0, commit).returncode != 0:
             raise MergeGuardRefusal("panel_merge_not_fast_forward", "the commit does not descend from the target head")
         target = f"refs/heads/{bindings.target_branch}"
-        done = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), "push", "--no-verify", "--porcelain",
+        done = _spawn(["git", "-C", str(repo_dir), "-c", "core.hooksPath=/dev/null", "push", "--no-verify", "--porcelain",
                        f"--force-with-lease={target}:{b0}", bindings.origin_url, f"{commit}:{target}"])
         if done.returncode != 0:
             raise MergeGuardRefusal("panel_merge_rejected", "the leased push was rejected")
@@ -677,7 +707,7 @@ def _flag_values(args: Sequence[str], start: int, allowed: frozenset[str], where
 
 
 def publish_nontarget(repo_dir: str | Path, tool: str, args: Sequence[str], *,
-                      declared_target: str | None = None) -> subprocess.CompletedProcess:
+                      declared_target: str | None = None, run=None) -> subprocess.CompletedProcess:
     """Push to, or operate on, a non-target branch -- checked against a closed grammar
     before anything runs. It resolves protected destinations and merge-bound PRs itself."""
 
@@ -703,8 +733,11 @@ def publish_nontarget(repo_dir: str | Path, tool: str, args: Sequence[str], *,
             raise MergeGuardRefusal("panel_merge_protected", f"{name!r} is protected")
         _refuse_merge_bound_prs(repo_dir, slug, name)
         extra = [f for f in flags if f != "--no-verify"]
-        return _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), "push", "--no-verify", *extra,
+        return _spawn(["git", "-C", str(repo_dir), "-c", "core.hooksPath=/dev/null", "push", "--no-verify", *extra,
                        remote, refspec])
+    if run is not None:
+        with _caller_run(run):
+            return publish_nontarget(repo_dir, tool, args, declared_target=declared_target)
     repo_dir = Path(repo_dir)
     args = [str(a) for a in args]
     slug = _repo_slug(repo_dir)
@@ -759,37 +792,79 @@ def publish_nontarget(repo_dir: str | Path, tool: str, args: Sequence[str], *,
 
 
 def publish_new_branch(repo_dir: str | Path, *, name: str, sha: str, title: str | None = None,
-                       body: str | None = None, base: str = "main") -> str:
-    """Create ``refs/heads/<name>`` at exactly one destination, create-only, and optionally
-    open a draft PR from it. The push goes to the remote NAME ``origin`` gated on count
-    checks (never a URL string compare), as agent-harness#1130 r7 requires."""
+                       body: str | None = None, base: str = "main", repo_slug: str | None = None,
+                       push: bool = True, run=None) -> str:
+    """Create ``refs/heads/<name>`` at exactly one destination, create-only; or, with
+    ``push=False`` and a ``title``, open the draft PR for a branch this function created.
+
+    The push (agent-harness#1130 r7): ``origin`` must list exactly one push destination,
+    and the push goes to the remote NAME ``origin`` (never a printed URL); a ``--dry-run``
+    pre-flight must print exactly one ``To`` block, and the real push exactly one ``To``
+    block and one row for exactly ``refs/heads/<name>``. The lease's empty expected value
+    means "must not exist"; creation is read from ``--porcelain`` flag ``*``. Returns
+    ``"created"`` or the typed refusal (``refused_push_destination_ambiguous``,
+    ``push_unavailable``, ``refused_branch_exists``, ``refused_ref_conflict``,
+    ``refused_push_remote_rejected``, ``refused_push_failed``). The draft PR is created only
+    for a branch published at exactly ``sha`` (read live with ``ls-remote``), with
+    ``--head <owner>:<name>``; it returns ``gh pr create``'s output."""
+    if run is not None:
+        with _caller_run(run):
+            return publish_new_branch(repo_dir, name=name, sha=sha, title=title, body=body, base=base,
+                                      repo_slug=repo_slug, push=push)
     repo_dir = Path(repo_dir)
     if not _HEX.match(sha) or not name or name.startswith("-"):
         raise MergeGuardRefusal("panel_merge_grammar", "publish_new_branch needs an exact SHA and a branch name")
-    listed = _git(repo_dir, "remote", "get-url", "--push", "--all", "origin")
-    if listed.returncode != 0 or len((listed.stdout or "").splitlines()) != 1:
-        raise MergeGuardRefusal("panel_merge_push_destinations", "origin must list exactly one push destination")
     ref = f"refs/heads/{name}"
-    dry = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), "push", "--dry-run", "--porcelain",
-                  "--no-verify", "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
-                  "--", "origin", f"{sha}:{ref}"])
-    if dry.returncode != 0 or sum(1 for line in (dry.stdout or "").splitlines() if line.startswith("To ")) != 1:
-        raise MergeGuardRefusal("panel_merge_push_destinations", "the dry run did not name exactly one destination")
-    done = _spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo_dir), "push", "--porcelain",
-                   "--no-verify", "--no-follow-tags", "--recurse-submodules=no", f"--force-with-lease={ref}:",
-                   "--", "origin", f"{sha}:{ref}"])
-    rows = [line for line in (done.stdout or "").splitlines() if "\t" in line]
-    if done.returncode != 0 or len(rows) != 1 or not rows[0].startswith("*") or f"{ref}" not in rows[0]:
-        raise MergeGuardRefusal("panel_merge_not_created", f"{ref} was not created")
-    if title is not None:
-        slug = _repo_slug(repo_dir)
-        owner = _slug_parts(slug)[1]
+    if not push:
+        if title is None:
+            raise MergeGuardRefusal("panel_merge_grammar", "publish_new_branch without a push opens a PR")
+        slug = repo_slug or _repo_slug(repo_dir)
+        owner = slug.split("/")[-2] if slug.count("/") >= 1 else ""
+        listed = _git(repo_dir, "ls-remote", "origin", ref)
+        published = (listed.stdout or "").split()[:1] if listed.returncode == 0 else []
+        if not owner or published != [sha]:
+            raise MergeGuardRefusal("panel_merge_unpublished", f"{ref} is not published at {sha}")
         created = _spawn(["gh", "pr", "create", "--draft", "--repo", slug, "--base", base, "--head",
                           f"{owner}:{name}", "--title", title, "--body", body or ""], cwd=repo_dir)
         if created.returncode != 0:
             raise MergeGuardRefusal("panel_merge_pr_create_failed", "the draft PR could not be created")
-        return (created.stdout or "").strip()
-    return ref
+        return created.stdout or ""
+    listed = _git(repo_dir, "remote", "get-url", "--push", "--all", "origin")
+    lines = (listed.stdout or "").splitlines() if listed.returncode == 0 else []
+    if len(lines) != 1 or not lines[0].strip():
+        return "refused_push_destination_ambiguous"  # zero or several push destinations: push nothing
+
+    def _argv(dry_run: bool) -> list[str]:
+        return ["git", "-C", str(repo_dir), "-c", "core.hooksPath=/dev/null", "push",
+                *(["--dry-run"] if dry_run else []), "--porcelain", "--no-verify", "--no-follow-tags",
+                "--recurse-submodules=no", f"--force-with-lease={ref}:", "--", "origin", f"{sha}:{ref}"]
+
+    def _to_blocks(result) -> int:
+        return sum(1 for line in (result.stdout or "").splitlines() if line.startswith("To "))
+
+    preflight = _spawn(_argv(True))
+    blocks = _to_blocks(preflight)
+    if blocks == 0:
+        return "push_unavailable"  # auth, network or a hook failure before any status
+    if blocks != 1:
+        return "refused_push_destination_ambiguous"
+    result = _spawn(_argv(False))
+    rows = [row for row in (line.split("\t") for line in (result.stdout or "").splitlines() if "\t" in line)
+            if len(row) >= 2]
+    if _to_blocks(result) != 1 or len(rows) != 1 or rows[0][1] != f"{sha}:{ref}":
+        return "push_unavailable"  # no single row for exactly our ref at a single destination
+    flag, summary = rows[0][0].strip(), (rows[0][2] if len(rows[0]) > 2 else "")
+    if flag == "*" and getattr(result, "returncode", 1) == 0:
+        return "created"
+    if flag == "=":
+        return "refused_branch_exists"  # already there, even at our own commit: never adopted
+    if flag == "!" and "stale info" in summary:
+        return "refused_branch_exists"
+    if flag == "!" and "refname conflict" in summary:
+        return "refused_ref_conflict"
+    if flag == "!" and "remote rejected" in summary:
+        return "refused_push_remote_rejected"  # hook, ruleset, protection
+    return "refused_push_failed"
 
 
 # --- runtime-authored text -----------------------------------------------------------------
