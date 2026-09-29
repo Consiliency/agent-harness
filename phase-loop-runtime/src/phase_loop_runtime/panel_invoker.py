@@ -441,6 +441,7 @@ DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "claude-opus-5-5": "fable",  # model-id-source: frozen review policy default seat
     "claude-fable-5-1": "fable",  # model-id-source: explicit review seat (the prior default)
     "claude-fable-5": "fable",  # model-id-source: explicit legacy review seat
+    "claude-sonnet-5-5": "fable",  # model-id-source: explicit review seat (board-config selected)
     # The codex seat alias stays "sol": alias names are review-policy seat identities
     # (`required_seats`, PRESIDENT_LADDER, the interim-ratification note), not model ids.
     "gpt-6-astra": "sol",  # model-id-source: frozen review policy default seat
