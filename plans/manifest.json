@@ -10654,6 +10654,12 @@
           "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "b8d9f0d428c142866a0d9956bdbfa96324d0506211d4bc71140b83bd4d166fbd",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1078"
         }
       ],
       "reflection_ref": null,
