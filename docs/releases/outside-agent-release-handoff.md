@@ -67,7 +67,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     route change. Each series ran from its member's official release archive,
     digest-checked against the committed record (1.2.11 asset
     `c91c62c5e6fa954f5a7e1d7b9ad417d749db4aa60a4ba0b3d604dec1b645d190`, 1.2.12 asset
-    `26c7c4c661d6c9beda734fcf305031056a6ea46e697c4533e8151179724e2950`));
+    `26c7c4c661d6c9beda734fcf305031056a6ea46e697c4533e8151179724e2950`);
   - the v10 roadmap's EXECFIND seat clauses scoped to the sealed route (agent-harness#1134,
     agent-harness#1132; roadmap and reseal only);
   - the per-seat jail plan (agent-harness#1133, agent-harness#1132), the BAML v1 migration
