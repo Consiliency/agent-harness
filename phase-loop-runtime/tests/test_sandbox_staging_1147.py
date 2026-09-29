@@ -6,10 +6,11 @@ trigger. These tests pin the four properties the fix exists for, each at the lev
 it lives or dies (the production `_default_spawn` / `_gc_stale_panel_scratch`, not only the
 helpers), so each goes red on the code before the fix for the reason it claims:
 
-* a tmpfs temp dir is not where a round stages;
+* a tmpfs temp dir is not where a round stages; the platform's per-user cache dir is;
 * the retention ceiling scales down on a small filesystem;
 * an explicit staging override is honoured;
-* on a team host the per-user workspace is chosen.
+* a spawned agent CLI's own scratch (``TMPDIR``, ``CLAUDE_CODE_TMPDIR``) is moved off a
+  RAM-backed temp dir, and never over a value the caller set.
 """
 
 from __future__ import annotations
@@ -37,10 +38,6 @@ def _fake_ram_mounts(monkeypatch, *ram_dirs: Path) -> None:
         return "tmpfs" if any(real == r or real.startswith(r + os.sep) for r in roots) else "ext4"
 
     monkeypatch.setattr(sandbox_policy, "_mount_fstype", _fstype, raising=False)
-
-
-def _no_team_host(monkeypatch, tmp_path):
-    monkeypatch.setattr(sandbox_policy, "_TEAM_HOST_MARKER", tmp_path / "no-marker", raising=False)
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -99,7 +96,6 @@ class TestStagingRoot:
         monkeypatch.setattr(tempfile, "tempdir", str(fake_tmp))
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
         monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
-        _no_team_host(monkeypatch, tmp_path)
         _fake_ram_mounts(monkeypatch, fake_tmp)
 
         seen = _run_a_sandboxed_leg(tmp_path, monkeypatch)
@@ -112,8 +108,10 @@ class TestStagingRoot:
         chosen = tmp_path / "chosen"
         monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(chosen))
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-        _no_team_host(monkeypatch, tmp_path)
         _fake_ram_mounts(monkeypatch, chosen)
+        # The fake makes this host's real disk look like RAM, whose raised floor it may not
+        # meet; placement is what is under test here, not the floor.
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_FLOOR_BYTES", "1")
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -123,32 +121,37 @@ class TestStagingRoot:
         assert Path(os.path.realpath(seen["base"])).parent == Path(os.path.realpath(chosen))
         assert any("RAM-backed" in str(w.message) for w in caught), "honoured silently"
 
-    def test_the_team_host_workspace_is_chosen_when_the_marker_exists(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("platform, expected", [
+        ("linux", Path(".cache")),
+        ("darwin", Path("Library") / "Caches"),
+        ("win32", Path("AppData") / "Local"),
+    ])
+    def test_the_platform_user_cache_dir_is_chosen(self, tmp_path, monkeypatch, platform, expected):
         home = tmp_path / "home"
-        (home / "workspace").mkdir(parents=True)
-        marker = tmp_path / "team-host"
-        marker.write_text("", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-        monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
-        monkeypatch.setattr(sandbox_policy, "_TEAM_HOST_MARKER", marker, raising=False)
-        _fake_ram_mounts(monkeypatch)
-
-        seen = _run_a_sandboxed_leg(tmp_path, monkeypatch)
-
-        assert "base" in seen, f"the leg never staged: {seen.get('result')!r}"
-        assert _inside(seen["base"], home / "workspace" / "phase-loop" / "sandboxes")
-
-    def test_without_the_marker_the_user_cache_is_chosen(self, tmp_path, monkeypatch):
-        home = tmp_path / "home"
-        (home / "workspace").mkdir(parents=True)
+        home.mkdir()
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
-        _no_team_host(monkeypatch, tmp_path)
+        monkeypatch.setattr(sandbox_policy.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(sandbox_policy.sys, "platform", platform)
         _fake_ram_mounts(monkeypatch)
 
-        assert sandbox_policy.staging_root() == home / ".cache" / "phase-loop" / "sandboxes"
+        assert sandbox_policy.staging_root() == home / expected / "phase-loop" / "sandboxes"
+
+    def test_localappdata_wins_on_windows(self, tmp_path, monkeypatch):
+        local = tmp_path / "Local"
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
+        monkeypatch.setattr(sandbox_policy.sys, "platform", "win32")
+        assert sandbox_policy.staging_root() == local / "phase-loop" / "sandboxes"
+
+    def test_only_linux_mount_tables_count_as_ram(self, tmp_path, monkeypatch):
+        _fake_ram_mounts(monkeypatch, tmp_path)
+        assert sandbox_policy.is_ram_backed(tmp_path)
+        for platform in ("darwin", "win32"):
+            monkeypatch.setattr(sandbox_policy.sys, "platform", platform)
+            assert not sandbox_policy.is_ram_backed(tmp_path)
 
     def test_a_tmpfs_cache_is_skipped_too(self, tmp_path, monkeypatch):
         """Not a path-name rule: whichever candidate is RAM-backed is passed over."""
@@ -158,28 +161,38 @@ class TestStagingRoot:
         monkeypatch.setattr(tempfile, "tempdir", str(disk_tmp))
         monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
-        _no_team_host(monkeypatch, tmp_path)
         _fake_ram_mounts(monkeypatch, cache)
 
         assert sandbox_policy.staging_root() == disk_tmp
 
-    def test_a_sandbox_is_refused_when_only_ram_is_left(self, tmp_path, monkeypatch):
-        """Every candidate RAM-backed: small scratch may land in the temp dir, but the
-        sandbox is refused, and the refusal says why rather than blaming free space."""
+    def test_when_only_ram_is_left_the_least_bad_is_used_clamped_and_never_crashes(
+        self, tmp_path, monkeypatch,
+    ):
+        """Every candidate RAM-backed: the round still runs, one warning says why, and
+        retention there is clamped to a tenth of the filesystem with a quarter kept free."""
         fake_tmp = tmp_path / "tmp"
         fake_tmp.mkdir()
         monkeypatch.setattr(tempfile, "tempdir", str(fake_tmp))
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES", raising=False)
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_FLOOR_BYTES", "1")  # see the override test
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-        _no_team_host(monkeypatch, tmp_path)
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", set())
         _fake_ram_mounts(monkeypatch, tmp_path)
 
-        seen = _run_a_sandboxed_leg(tmp_path, monkeypatch)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            seen = _run_a_sandboxed_leg(tmp_path, monkeypatch)
+            root = sandbox_policy.staging_root()
 
-        assert "base" not in seen, "a sandbox was staged into RAM"
-        assert seen["result"][2] == "env_failure: staging filesystem is RAM-backed"
-        with pytest.raises(sandbox_policy.SandboxSpaceError, match="RAM-backed"):
-            sandbox_policy.ensure_disk_backed(tmp_path)
+        assert "base" in seen, f"the round failed instead of degrading: {seen.get('result')!r}"
+        assert _inside(seen["base"], root)
+        ram = [w for w in caught if "RAM-backed or unwritable" in str(w.message)]
+        assert len(ram) == 1, [str(w.message) for w in caught]
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_FLOOR_BYTES")
+        monkeypatch.setattr(sandbox_policy, "_fs_total_bytes", lambda p: 15 * GiB)
+        assert sandbox_policy.effective_max_total_bytes(root) == int(15 * GiB * 0.10)
+        assert sandbox_policy.effective_floor_bytes(root) == int(15 * GiB * 0.25)
 
 
 class TestMountinfo:
@@ -275,6 +288,88 @@ class TestRelativeCaps:
 
     def test_cap_and_floor_always_fit_together(self):
         assert sandbox_policy._MAX_TOTAL_FRACTION + sandbox_policy._FLOOR_FRACTION <= 0.5
+        assert sandbox_policy._RAM_MAX_TOTAL_FRACTION + sandbox_policy._FLOOR_FRACTION <= 0.5
+
+
+def _slash_tmp_is_ram(monkeypatch):
+    """Only the system default `/tmp` is a tmpfs; everything else (tmp_path included) is disk."""
+    monkeypatch.setattr(
+        sandbox_policy, "_mount_fstype",
+        lambda p: "tmpfs" if os.path.realpath(p) == "/tmp" else "ext4", raising=False,
+    )
+
+
+def _child_envs(base):
+    """Every production choke point that builds a spawned CLI's environment."""
+    from phase_loop_runtime import harness_env_signatures, panel_invoker
+
+    return {
+        "leg": panel_invoker._subscription_env(dict(base)),
+        "brokered": panel_invoker._broker_subscription_env(dict(base)),
+        "executor": harness_env_signatures.child_executor_env(dict(base)),
+    }
+
+
+class TestChildCliScratch:
+    """Claude Code writes its scratch to $CLAUDE_CODE_TMPDIR, else /tmp/claude-<uid>: on
+    dev0 that was 6 GB of a 15 GB RAM `/tmp`, and it is what the OOM killer reaped."""
+
+    def test_filled_when_the_temp_dir_is_ram_backed(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        _slash_tmp_is_ram(monkeypatch)
+        base = {"HOME": str(tmp_path), "PATH": "/usr/bin", "XDG_CACHE_HOME": str(cache)}
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+
+        for route, env in _child_envs(base).items():
+            for name in ("TMPDIR", "CLAUDE_CODE_TMPDIR"):
+                assert env.get(name) == str(cache / "phase-loop" / "tmp"), (route, name, env)
+        assert (cache / "phase-loop" / "tmp").is_dir()
+
+    def test_left_alone_on_disk(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "ext4", raising=False)
+        base = {"HOME": str(tmp_path), "PATH": "/usr/bin"}
+        for route, env in _child_envs(base).items():
+            assert "TMPDIR" not in env and "CLAUDE_CODE_TMPDIR" not in env, (route, env)
+
+    def test_a_value_the_caller_set_is_never_overridden(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        _slash_tmp_is_ram(monkeypatch)
+        from phase_loop_runtime import harness_env_signatures, panel_invoker
+
+        both = {"TMPDIR": "/tmp", "CLAUDE_CODE_TMPDIR": "/tmp/mine", "PATH": "/usr/bin"}
+        for env in (panel_invoker._subscription_env(dict(both)),
+                    harness_env_signatures.child_executor_env(dict(both))):
+            assert env["TMPDIR"] == "/tmp" and env["CLAUDE_CODE_TMPDIR"] == "/tmp/mine"
+        only_tmpdir = {"TMPDIR": "/tmp", "PATH": "/usr/bin"}
+        env = panel_invoker._subscription_env(only_tmpdir)
+        assert env["TMPDIR"] == "/tmp", "the caller's TMPDIR was replaced"
+        assert env["CLAUDE_CODE_TMPDIR"] == str(tmp_path / "cache" / "phase-loop" / "tmp")
+
+    def test_the_brokered_allowlist_adds_only_the_runtime_dir(self, tmp_path, monkeypatch):
+        """The sealed route's allowlist is not widened to ambient values: a caller's TMPDIR
+        and CLAUDE_CODE_TMPDIR are still dropped, and what comes back is only the
+        runtime's own per-user dir -- and only when the child's temp dir is RAM."""
+        from phase_loop_runtime import panel_invoker
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        base = {"PATH": "/usr/bin", "HOME": str(tmp_path), "TMPDIR": "/ambient/tmp",
+                "CLAUDE_CODE_TMPDIR": "/ambient/claude", "SOME_TOKEN": "x"}
+
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "ext4", raising=False)
+        on_disk = panel_invoker._broker_subscription_env(dict(base))
+        assert set(on_disk) == {"PATH", "HOME"}, on_disk
+
+        _slash_tmp_is_ram(monkeypatch)
+        on_ram = panel_invoker._broker_subscription_env(dict(base))
+        assert set(on_ram) == {"PATH", "HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR"}, on_ram
+        assert on_ram["TMPDIR"] == on_ram["CLAUDE_CODE_TMPDIR"] == str(cache / "phase-loop" / "tmp")
+
+    def test_no_disk_backed_dir_leaves_the_env_alone(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs")
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", {"tmp"})
+        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        assert env == {"PATH": "/usr/bin"}
 
 
 class TestReapBeforeRefusing:

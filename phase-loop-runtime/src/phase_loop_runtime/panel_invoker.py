@@ -2345,8 +2345,7 @@ _PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
     "timeout", "auth_failure", "usage_limit", "tool_denied: headless tool permission auto-denied",
     "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
     "env_failure: sandbox command could not be built",
-    "env_failure: staging filesystem below its free-space floor",
-    "env_failure: staging filesystem is RAM-backed", _UNKNOWN_DETAIL,
+    "env_failure: staging filesystem below its free-space floor", _UNKNOWN_DETAIL,
 })
 _FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.ASCII) for p in (
     *(re.escape(t) for t in sorted(_PARAMETER_FREE_FAILURES)),
@@ -2511,9 +2510,6 @@ def _exception_failure(exc: BaseException) -> object:
         # nothing is parsed out of the message and no template is matched, so it cannot
         # carry foreign text. Anything else is an unknown failure.
         return message
-    if isinstance(exc, _sandbox_policy.SandboxRamBackedError):
-        # Not a full disk: the stage would have been held in memory (agent-harness#1147).
-        return "env_failure: staging filesystem is RAM-backed"
     if isinstance(exc, _sandbox_policy.SandboxSpaceError):
         # A full disk is an operator-actionable environment failure (board round 8 of
         # agent-harness#908); its message names paths, so it gets our own template.
@@ -4398,7 +4394,12 @@ def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[
     allowed = {
         "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
     }
-    return {key: value for key, value in env.items() if key in allowed}
+    # The ambient TMPDIR stays filtered out. What may be added back is only the runtime's
+    # OWN disk-backed per-user dir, and only when the child's temp dir is RAM-backed
+    # (agent-harness#1147) -- a path this runtime created, never a caller-supplied value.
+    return _sandbox_policy.fill_child_tmp_env(
+        {key: value for key, value in env.items() if key in allowed}
+    )
 
 
 def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None, stream_dir=None):
@@ -4723,8 +4724,14 @@ def _broker_claude_tui_command(
 
 
 def _subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Child env restricted to local subscription authentication."""
-    return scrub_subscription_env(os.environ if base_env is None else base_env)
+    """Child env restricted to local subscription authentication.
+
+    A CLI's own scratch is moved off a RAM-backed temp dir (agent-harness#1147); a
+    ``TMPDIR`` / ``CLAUDE_CODE_TMPDIR`` the caller set is kept as is.
+    """
+    return _sandbox_policy.fill_child_tmp_env(
+        scrub_subscription_env(os.environ if base_env is None else base_env)
+    )
 
 
 # #64: cheap per-leg auth preflight. A logged-out CLI fails obliquely (codex
@@ -8507,11 +8514,9 @@ def _default_spawn(
             # the authorization approved one; `revalidate_...` below refuses both an
             # unattested tree and one whose bytes do not match the approved digest.
             if getattr(review_authorization, "staged_tree_sha256", None) is not None:
-                # The floor is sized to the filesystem the clone lands on, and a
-                # sandbox is never staged into RAM unless the operator chose that place.
+                # The floor is sized to the filesystem the clone lands on.
                 staging_floor = _sandbox_policy.effective_floor_bytes(review_dir)
                 if base is not None:
-                    _sandbox_policy.ensure_disk_backed(base.parent)
                     # Retained sandboxes are reclaimable: reap them oldest-first (never a
                     # live round's) before the floor below refuses this one.
                     _sandbox_retention.reap_until_free(
