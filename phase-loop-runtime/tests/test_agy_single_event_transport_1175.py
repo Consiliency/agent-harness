@@ -89,6 +89,23 @@ def test_the_one_event_parser_accepts_exactly_one_result():
     assert rc != 0 and text == "" and "incomplete ingestion" in detail
 
 
+@pytest.mark.parametrize("mutation,reason", [
+    ("final", "no successful terminal response"), ("truncation", "truncation"),
+    ("json", "malformed JSON"), ("empty", "conversation"),
+])
+def test_the_one_event_parser_keeps_every_other_rejection(mutation, reason):
+    protocol = panel._broker_gemini_stream_protocol(_sealed_prompt())
+    row = _result("No blocking findings.\nAGREE")
+    if mutation == "final":
+        # the provider's own interruption shape, seen on claw 2026-09-29 with a complete-looking body
+        row["result"].update(status="ERROR", error="The stream was interrupted.")
+    if mutation == "truncation":
+        row["result"]["response"] = "<truncated 123 bytes>"
+    raw = {"json": '{"event":', "empty": ""}.get(mutation, json.dumps(row))
+    rc, text, detail, _ = panel._broker_gemini_stream_result(raw, protocol)
+    assert rc != 0 and text == "" and reason in detail
+
+
 # A captured agy 1.2.13 stream (2026-09-29, claw), redacted: conversation id, review text
 # and the per-run scratch path replaced; the tool list trimmed. Every tool call was refused
 # by the deny profile, and the model still produced a verdict.
