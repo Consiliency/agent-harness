@@ -141,9 +141,10 @@ purpose = "code-review"
 
 
 class GptSixSolSeatTests(unittest.TestCase):
-    def test_gpt_6_sol_can_take_the_grok_seat_in_a_user_code_review_board(self) -> None:
-        # e.g. while a grok subscription is unavailable: before registration the whole
-        # file was rejected with "unknown model 'gpt-6-sol'".
+    def test_gpt_6_sol_loads_as_an_explicit_seat_in_a_user_board(self) -> None:
+        # Before registration the whole file was rejected with "unknown model 'gpt-6-sol'".
+        # A user/ad-hoc board only: on a governed review it counts as a second `sol`
+        # seat and cannot fill a required `grok` seat.
         body = """
 [[boards]]
 name = "code-review"
