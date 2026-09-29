@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import warnings
@@ -195,29 +196,105 @@ class TestStagingRoot:
         assert sandbox_policy.effective_floor_bytes(root) == int(15 * GiB * 0.25)
 
 
+def _dev(path) -> str:
+    st = os.stat(path)
+    return f"{os.major(st.st_dev)}:{os.minor(st.st_dev)}"
+
+
 class TestMountinfo:
-    def test_the_fstype_comes_from_the_longest_mountpoint_and_the_last_overmount(
-        self, tmp_path, monkeypatch,
-    ):
-        target = tmp_path / "a b" / "deep"
-        target.mkdir(parents=True)
-        mount = str(tmp_path / "a b").replace(" ", "\\040")
+    """The mount serving a path is found by DEVICE. Both layouts below leave a hidden disk
+    entry that a longest-prefix or last-line rule picks instead of the visible tmpfs."""
+
+    def _write(self, tmp_path, monkeypatch, lines):
         info = tmp_path / "mountinfo"
-        info.write_text(
-            "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
-            f"2 1 0:1 / {mount} rw - ext4 /dev/sdb rw\n"
-            f"3 1 0:2 / {mount} rw shared:1 - tmpfs tmpfs rw\n",
-            encoding="utf-8",
-        )
+        info.write_text("".join(lines), encoding="utf-8")
         monkeypatch.setattr(sandbox_policy, "_MOUNTINFO", info)
-        assert sandbox_policy._mount_fstype(target) == "tmpfs"
-        assert sandbox_policy._mount_fstype(tmp_path) == "ext4"
-        assert sandbox_policy.is_ram_backed(target / "not-yet-created")
+
+    def test_a_tmpfs_over_a_dir_with_a_hidden_disk_submount(self, tmp_path, monkeypatch):
+        top = tmp_path / "a b"
+        (top / "sub").mkdir(parents=True)
+        here = _dev(top / "sub")  # the device really serving the path: our "tmpfs"
+        esc = str(top).replace(" ", "\\040")
+        self._write(tmp_path, monkeypatch, [
+            "1 0 999:1 / / rw - ext4 /dev/sda1 rw\n",
+            f"2 1 999:2 / {esc} rw - ext4 /dev/sdb rw\n",
+            f"3 2 999:3 / {esc}/sub rw - ext4 /dev/sdc rw\n",   # hidden by line 4
+            f"4 2 {here} / {esc} rw - tmpfs tmpfs rw\n",
+        ])
+        assert sandbox_policy._mount_fstype(top / "sub") == "tmpfs"
+        assert sandbox_policy.is_ram_backed(top / "sub" / "not-yet-created")
+
+    def test_an_older_tmpfs_moved_over_a_newer_bind(self, tmp_path, monkeypatch):
+        where = tmp_path / "m"
+        where.mkdir()
+        here = _dev(where)
+        self._write(tmp_path, monkeypatch, [
+            "1 0 999:1 / / rw - ext4 /dev/sda1 rw\n",
+            f"5 1 {here} / {where} rw - tmpfs tmpfs rw\n",       # older id, moved on top
+            f"9 1 999:1 /data {where} rw - ext4 /dev/sda1 rw\n",  # newer bind, underneath
+        ])
+        assert sandbox_policy._mount_fstype(where) == "tmpfs"
+
+    def test_no_device_match_falls_back_to_the_visible_path(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, [
+            "1 0 999:1 / / rw - ext4 /dev/sda1 rw\n",
+            f"2 1 999:2 / {tmp_path} rw - btrfs /dev/sdb rw\n",
+        ])
+        assert sandbox_policy._mount_fstype(tmp_path) == "btrfs"
 
     def test_no_mount_table_is_unknown_not_tmpfs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sandbox_policy, "_MOUNTINFO", tmp_path / "absent")
         assert sandbox_policy._mount_fstype(tmp_path) is None
         assert sandbox_policy.is_ram_backed(tmp_path) is False
+
+
+_REAL_LAYOUT = r"""
+set -e
+root="$1"; disk="$root/disk"; mkdir -p "$disk/one" "$disk/two" "$root/a" "$root/t" "$root/m"
+# Layout 1: a disk bind at a/, a disk submount at a/sub, then a tmpfs over a/.
+mount --bind "$disk/one" "$root/a"; mkdir -p "$root/a/sub"
+mount --bind "$disk/two" "$root/a/sub"; mount -t tmpfs none "$root/a"; mkdir -p "$root/a/sub"
+# Layout 2: an older tmpfs at t/ moved over a newer disk bind at m/.
+mount -t tmpfs none "$root/t"; mount --bind "$disk/two" "$root/m"; mount --move "$root/t" "$root/m"
+exec python3 -c 'import sys; from phase_loop_runtime import sandbox_policy as p
+print(p._mount_fstype(sys.argv[1] + "/a/sub"), p._mount_fstype(sys.argv[1] + "/m"))' "$root"
+"""
+
+
+def test_real_overmount_layouts_in_a_mount_namespace(tmp_path):
+    """The two layouts the board reproduced, built for real, not as ordered fixtures."""
+    import shutil as _shutil
+
+    if _shutil.which("unshare") is None or not sys.platform.startswith("linux"):
+        pytest.skip("needs unshare(1) on Linux")
+    if subprocess.run(["unshare", "-rm", "true"], capture_output=True).returncode != 0:
+        pytest.skip("unprivileged user+mount namespaces are unavailable here")
+    if sandbox_policy.is_ram_backed(tmp_path):
+        pytest.skip("tmp_path is itself tmpfs, so the 'disk' side would be RAM too")
+    src = Path(sandbox_policy.__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["unshare", "-rm", "sh", "-c", _REAL_LAYOUT, "sh", str(tmp_path)],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(src)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["tmpfs", "tmpfs"], result.stdout
+
+
+class TestCapacityProbe:
+    def test_the_relative_cap_applies_without_statvfs(self, tmp_path, monkeypatch):
+        """Windows has no os.statvfs; the capacity probe must not depend on it. There,
+        shutil.disk_usage is served by the OS's own call -- stood in for by the value this
+        host measured before os.statvfs is removed."""
+        import shutil as _shutil
+
+        measured = _shutil.disk_usage(tmp_path)
+        total = measured.total
+        monkeypatch.delattr(os, "statvfs", raising=False)
+        monkeypatch.setattr(_shutil, "disk_usage", lambda p: measured)
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES", raising=False)
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "ext4", raising=False)
+        assert sandbox_policy._fs_total_bytes(tmp_path) == total
+        assert sandbox_policy.effective_max_total_bytes(tmp_path) == min(40 * GiB, int(total * 0.25))
 
 
 def _marked(root: Path, name: str, *, age_s: float, owner_pid: int | None = None) -> Path:
@@ -286,9 +363,84 @@ class TestRelativeCaps:
         monkeypatch.setattr(sandbox_policy, "_fs_total_bytes", lambda p: 4 * GiB)
         assert sandbox_policy.effective_floor_bytes(tmp_path) == 3 * GiB
 
-    def test_cap_and_floor_always_fit_together(self):
-        assert sandbox_policy._MAX_TOTAL_FRACTION + sandbox_policy._FLOOR_FRACTION <= 0.5
-        assert sandbox_policy._RAM_MAX_TOTAL_FRACTION + sandbox_policy._FLOOR_FRACTION <= 0.5
+    @pytest.mark.parametrize("total, ram", [
+        (1 * GiB, True), (15 * GiB, True), (64 * GiB, True),
+        (1 * GiB, False), (4 * GiB, False), (91 * GiB, False), (1000 * GiB, False),
+    ])
+    def test_the_effective_limits_always_fit_the_filesystem(self, tmp_path, monkeypatch, total, ram):
+        """The EFFECTIVE cap and floor, not the fractions: together they never claim more
+        than half the filesystem, and the floor never demands more than exists."""
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_FLOOR_BYTES", raising=False)
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES", raising=False)
+        monkeypatch.setattr(sandbox_policy, "_fs_total_bytes", lambda p: total)
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs" if ram else "ext4")
+        cap = sandbox_policy.effective_max_total_bytes(tmp_path)
+        floor = sandbox_policy.effective_floor_bytes(tmp_path)
+        assert 0 < floor < total and 0 < cap
+        assert cap + floor <= total // 2, (cap, floor, total)
+
+    def test_a_floor_configured_at_exactly_the_default_is_not_scaled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_FLOOR_BYTES", str(2 * GiB))
+        monkeypatch.setattr(sandbox_policy, "_fs_total_bytes", lambda p: 4 * GiB)
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "ext4", raising=False)
+        assert sandbox_policy.effective_floor_bytes(tmp_path) == 2 * GiB
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs", raising=False)
+        assert sandbox_policy.effective_floor_bytes(tmp_path) == 2 * GiB
+
+    def test_a_live_round_outlives_the_ttl(self, tmp_path):
+        live = _marked(tmp_path, "pl-panel-long", age_s=48 * 3600, owner_pid=os.getpid())
+        cold = _marked(tmp_path, "pl-panel-dead", age_s=48 * 3600)
+        sandbox_retention.reap(tmp_path, ttl_s=24 * 3600)
+        assert live.exists(), "the TTL reaped a round whose owner is still running"
+        assert not cold.exists()
+
+
+class TestMarkerPublication:
+    def test_a_half_written_marker_is_never_visible_to_a_concurrent_reap(self, tmp_path, monkeypatch):
+        """The legal interleaving the board exercised: a reap runs after the marker file is
+        created and before its owner line lands. Whatever the writer uses -- open(),
+        Path.write_text or os.open -- the reap is run at that point."""
+        import builtins
+        import pathlib
+
+        box = tmp_path / "pl-panel-live"
+        (box / "work").mkdir(parents=True)
+
+        def _reap_now():
+            sandbox_retention.reap_until_free(
+                tmp_path, floor_bytes=1, free_bytes=lambda p: 0,
+            )
+
+        real_open, real_write_text, real_os_open = builtins.open, pathlib.Path.write_text, os.open
+
+        def _open(file, mode="r", *a, **k):
+            handle = real_open(file, mode, *a, **k)
+            if "w" in mode and Path(file).parent == box:
+                _reap_now()
+            return handle
+
+        def _write_text(self, data, *a, **k):
+            if self.parent == box:
+                real_open(self, "w").close()
+                _reap_now()
+            return real_write_text(self, data, *a, **k)
+
+        def _os_open(path, flags, *a, **k):
+            fd = real_os_open(path, flags, *a, **k)
+            if flags & os.O_CREAT and Path(path).parent == box:
+                _reap_now()
+            return fd
+
+        monkeypatch.setattr(sandbox_retention, "open", _open, raising=False)
+        monkeypatch.setattr(pathlib.Path, "write_text", _write_text)
+        monkeypatch.setattr(sandbox_retention.os, "open", _os_open)
+
+        try:
+            sandbox_retention.mark_as_sandbox(box, owner_pid=os.getpid())
+        except OSError:
+            pass  # the old code's write lands in a directory the reap already removed
+        assert box.exists(), "a concurrent reap deleted a live round through a half-written marker"
+        assert sandbox_retention._owner_alive(box)
 
 
 def _slash_tmp_is_ram(monkeypatch):
@@ -365,11 +517,121 @@ class TestChildCliScratch:
         assert set(on_ram) == {"PATH", "HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR"}, on_ram
         assert on_ram["TMPDIR"] == on_ram["CLAUDE_CODE_TMPDIR"] == str(cache / "phase-loop" / "tmp")
 
-    def test_no_disk_backed_dir_leaves_the_env_alone(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs")
-        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", {"tmp"})
-        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+    def test_no_disk_backed_dir_leaves_the_env_alone_and_says_so_once(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs", raising=False)
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", set(), raising=False)
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", raising=False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+            sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
         assert env == {"PATH": "/usr/bin"}
+        assert len([w for w in caught if "DEGRADED" in str(w.message)]) == 1
+
+    def test_claude_scratch_is_judged_on_its_own_when_tmpdir_is_on_disk(self, tmp_path, monkeypatch):
+        """A caller's disk TMPDIR does not move Claude's `/tmp/claude-<uid>` fallback."""
+        from phase_loop_runtime import panel_invoker
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        disk_tmp = tmp_path / "disk-tmp"
+        disk_tmp.mkdir()
+        env = panel_invoker._subscription_env({"TMPDIR": str(disk_tmp), "PATH": "/usr/bin"})
+        assert env["TMPDIR"] == str(disk_tmp)
+        assert env.get("CLAUDE_CODE_TMPDIR") == str(cache / "phase-loop" / "tmp")
+
+    def test_an_advisory_seats_explicit_env_is_filled_at_the_exec_boundary(self, tmp_path, monkeypatch):
+        """Board seats hand `_exec_leg` their own `resolve_seat_env` dict; intercept the
+        leg at its auth preflight and look at the env it would launch with."""
+        from phase_loop_runtime import panel_invoker
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        seen = {}
+
+        def _auth(leg, env):
+            seen.update(env)
+            return False, "auth_failure"
+
+        monkeypatch.setattr(panel_invoker, "_leg_auth_ok", _auth)
+        review = tmp_path / "review"
+        review.mkdir()
+        (review / "review-bundle.md").write_text("x", encoding="utf-8")
+        panel_invoker._exec_leg(
+            "gemini", review, tmp_path / "out", 60, "x", "advisory", None, None,
+            {"PATH": "/usr/bin", "HOME": str(tmp_path)},
+        )
+        assert seen.get("TMPDIR") == seen.get("CLAUDE_CODE_TMPDIR") == str(cache / "phase-loop" / "tmp")
+
+    def test_child_scratch_is_private_never_an_ambient_shared_dir(self, tmp_path, monkeypatch):
+        """With the cache unusable the fallback is a 0700 per-user dir, not the temp dir."""
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        shared.chmod(0o1777)
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("", encoding="utf-8")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(blocker))
+        monkeypatch.setattr(tempfile, "tempdir", str(shared))
+        _slash_tmp_is_ram(monkeypatch)
+        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        target = Path(env["TMPDIR"])
+        assert target != shared and target.is_relative_to(shared)
+        assert target.stat().st_mode & 0o777 == 0o700
+
+        # Pre-existing and loosened (or planted by someone else as a link): tightened or
+        # refused, never handed to a child as found.
+        target.chmod(0o777)
+        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        assert Path(env["TMPDIR"]).stat().st_mode & 0o777 == 0o700
+        target.rmdir()
+        target.symlink_to(shared)
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", {"child scratch"})
+        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        assert "TMPDIR" not in env, "a symlinked scratch dir was handed to a child"
+
+    def test_child_scratch_is_not_moved_onto_a_full_disk(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", {"child scratch"})
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", raising=False)
+        _slash_tmp_is_ram(monkeypatch)
+        monkeypatch.setattr(sandbox_policy, "_free_bytes", lambda p: 0)
+        assert sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
+class TestRefuseRam:
+    def test_fail_closed_refuses_a_round_instead_of_staging_into_ram(self, tmp_path, monkeypatch):
+        fake_tmp = tmp_path / "tmp"
+        fake_tmp.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(fake_tmp))
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
+        _fake_ram_mounts(monkeypatch, tmp_path)
+
+        seen = _run_a_sandboxed_leg(tmp_path, monkeypatch)
+
+        assert "base" not in seen
+        assert seen["result"][:2] == ("DEGRADED", "")
+        assert seen["result"][2] == "env_failure: no disk-backed scratch and RAM fallback refused"
+
+    def test_fail_closed_refuses_child_scratch_in_ram(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs", raising=False)
+        with pytest.raises(sandbox_policy.SandboxRamBackedError):
+            sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+
+    def test_default_is_the_degraded_fallback_not_a_refusal(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", raising=False)
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", {"sandboxes"})
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        _fake_ram_mounts(monkeypatch, tmp_path)
+        location = sandbox_policy.resolve_staging()
+        assert location.degraded and _inside(location.path, tmp_path)
 
 
 class TestReapBeforeRefusing:

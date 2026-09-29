@@ -8,36 +8,43 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Sandbox staging and agent-CLI scratch stay off RAM; retention is sized to its filesystem (agent-harness#1147)
 
-- Review scratch (`pl-panel-*`) and the sandbox clone inside it are no longer created in the
-  system temp dir unconditionally. The staging root is `PHASE_LOOP_SANDBOX_STAGING_DIR` if
-  set. Otherwise it is `phase-loop/sandboxes` in the platform's per-user cache dir:
-  `$XDG_CACHE_HOME` or `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%`
-  on Windows. Failing that, it is the temp dir, used only when that is not RAM-backed.
-  RAM-backed means a Linux tmpfs or ramfs, by the fstype in `/proc/self/mountinfo`. The
-  macOS and Windows temp dirs count as disk. If every candidate is RAM-backed or
-  unwritable, the least-bad one is used with one warning and hard-clamped retention, and
-  the round is never crashed.
-- **Spawned agent CLIs** (board legs, brokered legs, the president and executors):
-  - When a child's temp dir is RAM-backed, its `TMPDIR` and `CLAUDE_CODE_TMPDIR` now point
-    at `phase-loop/tmp` in the same cache dir. Claude Code's `/tmp/claude-<uid>` alone
-    reached 6 GB of a 15 GB RAM `/tmp`.
-  - Only variables the caller has not set are filled, and nothing changes when the temp
-    dir is on disk. Set either variable yourself to opt out.
-  - The brokered route's env allowlist still drops the ambient values; only the runtime's
-    own directory is added back.
-- The retention ceiling is now `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging
-  filesystem)`, or 10% on a RAM-backed one. A fixed 40 GiB could never trigger on a 15 GiB
-  tmpfs. The default 2 GiB floor is capped at 25% of a small filesystem and raised to 25% on
-  a RAM-backed one. An explicit `PHASE_LOOP_SANDBOX_FLOOR_BYTES` is used verbatim.
-- Before a round is refused for space, retained sandboxes are reaped oldest-first. The
-  footprint and free-space reaps never remove a sandbox whose owning process is still
-  running, so one board no longer deletes a concurrent board's tree.
-- The crash-residual sweep covers both the new staging root and the old temp-dir root, so
-  sandboxes left in `/tmp` by earlier releases are still reclaimed by the TTL.
-- A round's scratch dir is removed with the mode-restoring helper, so a read-only directory
-  a panelist left in `work/` no longer leaks the whole dir.
-- `panel_invoker.py`, `sandbox_policy.py`, `sandbox_retention.py` and
-  `harness_env_signatures.py` changed, so the agy pin set drifts: the next release cut
+- **Invariant.** Sandbox staging and spawned-CLI scratch are never RAM-backed while a
+  disk-backed location is usable. Otherwise they run in a typed degraded mode: one warning
+  and hard-clamped retention, and the round is never crashed. Set
+  `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` to refuse instead.
+  - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
+    in `/proc/self/mountinfo`, so overmounts and moved mounts are judged correctly. macOS
+    and Windows temp dirs count as disk.
+  - **Named exception:** the agy qualification jails keep their tmpfs `/tmp`, because it is
+    frozen evidence (follow-up agent-harness#1179).
+- **Staging root.** Review scratch (`pl-panel-*`) and its sandbox clone go to
+  `PHASE_LOOP_SANDBOX_STAGING_DIR` if set. Otherwise they go to `phase-loop/sandboxes` in the
+  per-user cache dir (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`, `%LOCALAPPDATA%`),
+  and then to the temp dir, but only if it is not RAM-backed.
+- **Spawned agent CLIs** (board legs, advisory seats, brokered legs, the president,
+  executors):
+  - Each unset `TMPDIR` / `CLAUDE_CODE_TMPDIR` whose own default destination is RAM-backed
+    now points at a private (0700) disk-backed per-user dir with room. Claude Code's
+    `/tmp/claude-<uid>` alone reached 6 GB of a 15 GB RAM `/tmp`.
+  - Values you set are never overridden; set either variable to opt out. The brokered
+    route's allowlist still drops ambient values.
+- **Caps and floor.**
+  - Filesystem size comes from `shutil.disk_usage`, so it now works on Windows.
+  - The retention ceiling is `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging
+    filesystem)`, or 10% on a RAM-backed one.
+  - The default 2 GiB floor is capped at 25% of a small filesystem, and is 25% of a
+    RAM-backed one.
+  - A configured `PHASE_LOOP_SANDBOX_FLOOR_BYTES` is used verbatim, even when it equals the
+    default.
+- **Reaping.** Before a round is refused for space, retained sandboxes are reaped
+  oldest-first. The TTL, footprint and free-space reaps never remove a sandbox whose owning
+  process is still running, and the owner marker is published atomically.
+- **Leftovers.** The crash-residual sweep covers both the new staging root and the old
+  temp-dir root, so sandboxes left in `/tmp` by earlier releases are still reclaimed. A
+  round's scratch dir is removed with the mode-restoring helper, so a read-only directory
+  left by a panelist no longer leaks it.
+- **agy requalification.** `panel_invoker.py`, `sandbox_policy.py`, `sandbox_retention.py`
+  and `harness_env_signatures.py` changed, so the agy pin set drifts: the next release cut
   requalifies agy.
 
 ## [0.7.21] - 2026-09-29

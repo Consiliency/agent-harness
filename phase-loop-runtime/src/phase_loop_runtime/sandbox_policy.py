@@ -10,36 +10,43 @@ Every knob here is env-overridable and defaults to a working local setup. With n
 configured there is no probe and no fallback decision, only a free-space check.
 
 **Where the stage lands, and how much of it is kept, is sized to the filesystem it is on**
-(agent-harness#1147). On a host whose ``/tmp`` is a tmpfs, staging there spends RAM, and a
-fixed 40 GiB retention cap on a 15 GiB tmpfs can never trigger. So :func:`staging_root`
-never picks a RAM-backed filesystem by default, and :func:`effective_max_total_bytes` /
-:func:`effective_floor_bytes` scale to the size of the filesystem the stage is actually on.
+(agent-harness#1147). The invariant: sandbox staging and spawned-CLI scratch are never
+RAM-backed while a disk-backed candidate is usable; otherwise they run in a typed DEGRADED
+mode (:class:`ScratchLocation`, one warning, hard-clamped retention), or are refused under
+``PHASE_LOOP_SANDBOX_REFUSE_RAM=1``. Caps and floors scale to the filesystem, which protects
+a small disk as well as a tmpfs. "RAM-backed" is a Linux tmpfs/ramfs, identified by the
+device serving the path in the mount table; macOS and Windows temp dirs count as disk.
+
+One named exception: the agy QUALIFICATION jails in ``agy_canary_evidence`` keep their tmpfs
+``/tmp`` because it is frozen qualification evidence (follow-up agent-harness#1179). They run
+only to qualify agy, never for review seats or executors.
 
 Environment overrides (all optional):
 
 * ``PHASE_LOOP_SANDBOX_STAGING_DIR`` -- the local directory each round's ``pl-panel-*``
-  scratch is created in. Honoured as given, even on a tmpfs (with a warning); the relative
-  cap still bounds it. ``TMPDIR`` is deliberately NOT this override: systems commonly point
-  it at a tmpfs.
+  scratch is created in. Honoured as given, even on a tmpfs (degraded, with a warning).
+  ``TMPDIR`` is deliberately NOT this override: systems commonly point it at a tmpfs.
+* ``PHASE_LOOP_SANDBOX_REFUSE_RAM=1`` -- fail closed: refuse instead of the degraded fallback.
 * ``PHASE_LOOP_SANDBOX_ROOT`` -- the *selected* root (``host:path`` allowed), recorded in the
   evidence as ``sandbox_root_*``; placement does not consume it yet (agent-harness#896).
 * ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` -- free-space floor. When set it is used verbatim; the
-  default (2 GiB) is lowered to a quarter of a filesystem smaller than 8 GiB, and raised to a
-  quarter of a RAM-backed one.
+  default (2 GiB) is lowered to a quarter of a filesystem smaller than 8 GiB, and is a quarter
+  of a RAM-backed one.
 * ``PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES`` -- retention ceiling (default 40 GiB), always
   further limited to a quarter of the staging filesystem (a tenth if it is RAM-backed).
+* ``PHASE_LOOP_SANDBOX_TTL_S`` (default 24 h), ``PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S``,
+  ``PHASE_LOOP_SANDBOX_ARCHIVE_DEST``, ``PHASE_LOOP_SANDBOX_DISABLE``.
 
 Without an override the stage goes to the platform's per-user cache dir (``$XDG_CACHE_HOME``
 or ``~/.cache`` on Linux, ``~/Library/Caches`` on macOS, ``%LOCALAPPDATA%`` on Windows) under
-``phase-loop/sandboxes``, then to the system temp dir if that is not RAM-backed. "RAM-backed"
-is a Linux tmpfs/ramfs by mount-table fstype; macOS and Windows temp dirs count as disk.
+``phase-loop/sandboxes``, then to the system temp dir if that is not RAM-backed.
 
-Spawned agent CLIs (board legs, the president, executors) get ``TMPDIR`` and
-``CLAUDE_CODE_TMPDIR`` pointed at ``phase-loop/tmp`` in the same cache dir when -- and only
-when -- their own temp dir is RAM-backed and the variable is not already set
-(:func:`fill_child_tmp_env`).
-* ``PHASE_LOOP_SANDBOX_TTL_S`` (default 24 h), ``PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S``,
-  ``PHASE_LOOP_SANDBOX_ARCHIVE_DEST``, ``PHASE_LOOP_SANDBOX_DISABLE``.
+Spawned agent CLIs (board legs, advisory seats, the president, executors) get ``TMPDIR`` and
+``CLAUDE_CODE_TMPDIR`` pointed at a private (0700) disk-backed per-user dir with room --
+``phase-loop/tmp`` in the cache dir -- for each variable that is unset and whose own default
+destination is RAM-backed (:func:`fill_child_tmp_env`). Setting a variable yourself opts
+out, except on the brokered route, whose allowlist drops ambient values: there only the
+runtime's own dir can appear.
 
 Two failure modes drive the shape of :func:`select_sandbox_root`:
 
@@ -57,6 +64,7 @@ from ipaddress import ip_address
 import os
 from pathlib import Path
 import re
+from typing import Mapping
 import shutil
 import subprocess
 import sys
@@ -82,6 +90,10 @@ __all__ = [
     "legacy_staging_root",
     "is_ram_backed",
     "fill_child_tmp_env",
+    "resolve_staging",
+    "ScratchLocation",
+    "SandboxRamBackedError",
+    "refuse_ram",
     "effective_max_total_bytes",
     "effective_floor_bytes",
 ]
@@ -279,40 +291,67 @@ def _unescape_mountinfo(field: str) -> str:
 
 
 def _mount_fstype(path: str | os.PathLike[str]) -> str | None:
-    """The fstype of the mount that holds ``path``; ``None`` when it cannot be read.
+    """The fstype of the mount that actually holds ``path``; ``None`` when it cannot be read.
 
     Read from ``/proc/self/mountinfo``, never guessed from the path: ``/tmp`` is a disk
-    directory on most hosts and a tmpfs on some, and a per-user cache can be either. The
-    mount is the one whose mountpoint is the longest prefix of the resolved path; among
-    equal mountpoints the LAST line wins, because a later mount hides an earlier one.
+    directory on most hosts and a tmpfs on some, and a per-user cache can be either.
+
+    The mount is identified by DEVICE, not by path: the resolved path's ``st_dev`` is
+    matched against each entry's ``major:minor``. Path order alone gets overmounts wrong
+    -- a tmpfs mounted over a directory that has a disk submount under it, or an older
+    tmpfs moved on top of a newer bind mount, both leave a hidden disk entry that a
+    longest-prefix or last-line rule picks instead of the tmpfs actually serving the path.
+    Among entries on that device the visible one is the longest mountpoint containing the
+    path (last line on a tie). Only if no entry carries the device (a filesystem whose
+    ``st_dev`` is synthetic, e.g. a btrfs subvolume) does the path rule decide alone.
     No ``/proc`` (macOS, Windows) is unknown, and unknown is not tmpfs.
     """
     try:
         text = _MOUNTINFO.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    target = os.path.realpath(_existing_ancestor(path))
-    best: str | None = None
-    best_len = -1
+    anchor = _existing_ancestor(path)
+    target = os.path.realpath(anchor)
+    try:
+        st_dev = os.stat(target).st_dev
+        device = f"{os.major(st_dev)}:{os.minor(st_dev)}"
+    except (AttributeError, OSError):
+        device = None
+    entries: list[tuple[str, str, str]] = []  # (device, mountpoint, fstype), file order
     for line in text.splitlines():
         left, sep, right = line.partition(" - ")
         fields = left.split()
         if not sep or len(fields) < 5 or not right.split():
             continue
-        mountpoint = _unescape_mountinfo(fields[4])
-        inside = target == mountpoint or target.startswith(mountpoint.rstrip("/") + "/")
-        if inside and len(mountpoint) >= best_len:
-            best, best_len = right.split()[0], len(mountpoint)
-    return best
+        entries.append((fields[2], _unescape_mountinfo(fields[4]), right.split()[0]))
+
+    def _inside(mountpoint: str) -> bool:
+        return target == mountpoint or target.startswith(mountpoint.rstrip("/") + "/")
+
+    def _visible(candidates: list[tuple[str, str, str]]) -> str | None:
+        best: str | None = None
+        best_len = -1
+        for _dev, mountpoint, fstype in candidates:
+            if _inside(mountpoint) and len(mountpoint) >= best_len:
+                best, best_len = fstype, len(mountpoint)
+        return best
+
+    on_device = [e for e in entries if device is not None and e[0] == device]
+    if on_device:
+        return _visible(on_device) or on_device[-1][2]
+    return _visible(entries)
 
 
 def _fs_total_bytes(path: str | os.PathLike[str]) -> int | None:
-    """Total size of the filesystem holding ``path``; ``None`` when it cannot be measured."""
+    """Total size of the filesystem holding ``path``; ``None`` when it cannot be measured.
+
+    ``shutil.disk_usage`` is portable (``os.statvfs`` does not exist on Windows, where the
+    relative caps would then silently never apply).
+    """
     try:
-        st = os.statvfs(_existing_ancestor(path))
-    except (AttributeError, OSError):
+        return shutil.disk_usage(_existing_ancestor(path)).total
+    except OSError:
         return None
-    return st.f_blocks * st.f_frsize
 
 
 def is_ram_backed(path: str | os.PathLike[str]) -> bool:
@@ -357,33 +396,71 @@ def _usable(path: Path) -> bool:
     return os.access(path, os.W_OK | os.X_OK)
 
 
-_RAM_FALLBACK_WARNED: set[str] = set()
+def _private(path: Path) -> bool:
+    """Create ``path`` as a directory only this account can use, or refuse it.
 
-
-def _resolve_disk_dir(leaf: str) -> tuple[Path, bool]:
-    """``(directory, disk_backed)`` for per-user scratch named ``leaf``.
-
-    The per-user cache dir first, then the system temp dir, each only when it is writable
-    and not RAM-backed. If neither qualifies, the least-bad one is returned -- the first
-    writable candidate, else the temp dir -- with ``disk_backed=False`` so callers clamp
-    their caps, and one warning per process. It never raises.
+    Used for the child-scratch dir: it is handed to spawned CLIs, so it must be ours and
+    0700 -- never a shared, world-writable temp dir.
     """
-    cache = _user_cache_dir()
-    candidates = [cache / "phase-loop" / leaf] if cache is not None else []
-    candidates.append(legacy_staging_root())
-    for candidate in candidates:
-        if not is_ram_backed(candidate) and _usable(candidate):
-            return candidate, True
-    fallback = next((c for c in candidates if _usable(c)), legacy_staging_root())
+    if not _usable(path):
+        return False
+    try:
+        st = path.lstat()
+        if path.is_symlink() or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+            return False
+        if hasattr(os, "getuid") and st.st_mode & 0o077:
+            path.chmod(0o700)
+    except OSError:
+        return False
+    return True
+
+
+class SandboxRamBackedError(SandboxSpaceError):
+    """``PHASE_LOOP_SANDBOX_REFUSE_RAM`` is set and no disk-backed location is usable."""
+
+
+@dataclass(frozen=True)
+class ScratchLocation:
+    """Where per-user scratch goes, and whether that is the DEGRADED (RAM or unwritable)
+    fallback. ``degraded`` is the typed form of the invariant's one exception: a
+    RAM-backed location is used only when no disk-backed candidate is usable."""
+
+    path: Path
+    degraded: bool
+    reason: str = ""
+
+
+_RAM_FALLBACK_WARNED: set[str] = set()
+_REFUSE_RAM_ENV = "PHASE_LOOP_SANDBOX_REFUSE_RAM"
+
+
+def refuse_ram() -> bool:
+    """Opt-in fail-closed: refuse rather than fall back to a RAM-backed location."""
+    return os.environ.get(_REFUSE_RAM_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def _degraded(leaf: str, fallback: Path, reason: str) -> ScratchLocation:
+    if refuse_ram():
+        raise SandboxRamBackedError(
+            f"no disk-backed location for phase-loop {leaf} ({reason}) and "
+            f"{_REFUSE_RAM_ENV} is set; refusing rather than using RAM"
+        )
     if leaf not in _RAM_FALLBACK_WARNED:
         _RAM_FALLBACK_WARNED.add(leaf)
         warnings.warn(
-            f"no writable disk-backed directory for phase-loop {leaf}; using {fallback}, "
-            "which is RAM-backed or unwritable, with hard-clamped retention. Set "
-            f"{_STAGING_DIR_ENV} to a disk-backed directory.",
-            RuntimeWarning, stacklevel=3,
+            f"no writable disk-backed directory for phase-loop {leaf}; using {fallback} "
+            f"({reason}) in DEGRADED mode with hard-clamped retention. Set "
+            f"{_STAGING_DIR_ENV} to a disk-backed directory, or {_REFUSE_RAM_ENV}=1 to refuse.",
+            RuntimeWarning, stacklevel=4,
         )
-    return fallback, False
+    return ScratchLocation(fallback, True, reason)
+
+
+def _staging_candidates() -> list[Path]:
+    cache = _user_cache_dir()
+    candidates = [cache / "phase-loop" / "sandboxes"] if cache is not None else []
+    candidates.append(legacy_staging_root())
+    return candidates
 
 
 def legacy_staging_root() -> Path:
@@ -391,14 +468,16 @@ def legacy_staging_root() -> Path:
     return Path(tempfile.gettempdir())
 
 
-def staging_root() -> Path:
-    """The local directory a round's ``pl-panel-*`` scratch (and its sandbox) is made in.
+def resolve_staging() -> ScratchLocation:
+    """The directory a round's ``pl-panel-*`` scratch (and its sandbox) is made in.
 
-    ``PHASE_LOOP_SANDBOX_STAGING_DIR`` if set (honoured as given, with a warning if it is
-    RAM-backed); else the per-user cache dir's ``phase-loop/sandboxes``; else the system temp
-    dir when it is not RAM-backed; else the least-bad of those (see ``_resolve_disk_dir``).
-    Retention on a RAM-backed root is clamped hard by :func:`effective_max_total_bytes` and
-    :func:`effective_floor_bytes`.
+    Invariant: never RAM-backed while a disk-backed candidate is usable. Order:
+    ``PHASE_LOOP_SANDBOX_STAGING_DIR`` if set (honoured as given; flagged degraded if it
+    is RAM-backed); else the per-user cache dir's ``phase-loop/sandboxes``; else the
+    system temp dir when it is not RAM-backed. With neither usable the result is the
+    typed DEGRADED fallback -- the first writable candidate, else the temp dir -- with one
+    warning and hard-clamped retention, or a :class:`SandboxRamBackedError` under
+    ``PHASE_LOOP_SANDBOX_REFUSE_RAM=1``.
     """
     override = os.environ.get(_STAGING_DIR_ENV, "").strip()
     if override:
@@ -408,37 +487,91 @@ def staging_root() -> Path:
         except OSError:
             pass  # surfaces where the scratch dir is made, with the path in the error
         if is_ram_backed(path):
+            if refuse_ram():
+                raise SandboxRamBackedError(
+                    f"{_STAGING_DIR_ENV}={override} is RAM-backed and {_REFUSE_RAM_ENV} is set"
+                )
             warnings.warn(
                 f"{_STAGING_DIR_ENV}={override} is RAM-backed; honouring the explicit choice, "
                 "with hard-clamped retention",
-                RuntimeWarning, stacklevel=2,
+                RuntimeWarning, stacklevel=3,
             )
-        return path
-    return _resolve_disk_dir("sandboxes")[0]
+            return ScratchLocation(path, True, "explicit override is RAM-backed")
+        return ScratchLocation(path, False)
+    candidates = _staging_candidates()
+    for candidate in candidates:
+        if not is_ram_backed(candidate) and _usable(candidate):
+            return ScratchLocation(candidate, False)
+    fallback = next((c for c in candidates if _usable(c)), legacy_staging_root())
+    return _degraded("sandboxes", fallback, "every candidate is RAM-backed or unwritable")
+
+
+def staging_root() -> Path:
+    """:func:`resolve_staging`'s directory."""
+    return resolve_staging().path
+
+
+def _child_tmp_dir() -> ScratchLocation:
+    """A private (0700, ours) disk-backed dir for spawned CLIs' own scratch, with room.
+
+    Candidates: the per-user cache dir's ``phase-loop/tmp``, then a per-user
+    ``phase-loop-<uid>`` dir under the system temp dir. Each must be disk-backed, private,
+    and above its free-space floor -- relocating multi-gigabyte CLI scratch onto a full
+    small disk would trade one exhausted filesystem for another.
+    """
+    cache = _user_cache_dir()
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    candidates = [cache / "phase-loop" / "tmp"] if cache is not None else []
+    candidates.append(legacy_staging_root() / f"phase-loop-{uid}" / "tmp")
+    for candidate in candidates:
+        if is_ram_backed(candidate) or not _private(candidate):
+            continue
+        try:
+            if _free_bytes(candidate) < effective_floor_bytes(candidate):
+                continue
+        except OSError:
+            continue
+        return ScratchLocation(candidate, False)
+    return ScratchLocation(legacy_staging_root(), True, "no private disk-backed dir with room")
+
+
+def _child_default_tmp(name: str, env: Mapping[str, str]) -> list[str]:
+    """Where a child CLI would put its scratch for ``name`` if ``name`` stays unset."""
+    system = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    if name == "TMPDIR":
+        return [system]
+    # CLAUDE_CODE_TMPDIR unset: Claude Code falls back to the temp dir, which may be the
+    # child's TMPDIR or /tmp itself (`/tmp/claude-<uid>`) -- judge by both.
+    return [p for p in (env.get("TMPDIR"), system) if p]
 
 
 def fill_child_tmp_env(env: dict[str, str]) -> dict[str, str]:
-    """Point a spawned agent CLI's own scratch at disk when its temp dir is RAM-backed.
+    """Point a spawned agent CLI's own scratch at disk when it would otherwise land in RAM.
 
     Agent CLIs write large scratch of their own: Claude Code uses ``$CLAUDE_CODE_TMPDIR``,
-    falling back to ``/tmp/claude-<uid>``, and on a host whose ``/tmp`` is a tmpfs that is
-    RAM (agent-harness#1147). When the child's effective temp dir (``TMPDIR`` in ``env``,
-    else the system default) is RAM-backed, ``TMPDIR`` and ``CLAUDE_CODE_TMPDIR`` are set to
-    a disk-backed per-user dir -- only the ones ``env`` does not already set, so an
-    explicit value is never overridden. On disk, or with no disk-backed dir, ``env`` is
-    returned unchanged. Mutates and returns ``env``; never raises.
+    falling back to ``/tmp/claude-<uid>`` (agent-harness#1147). Each of ``TMPDIR`` and
+    ``CLAUDE_CODE_TMPDIR`` that ``env`` does NOT already set is judged against its own
+    default destination; if that is RAM-backed, it is set to a private disk-backed
+    per-user dir. A value the caller set is never overridden. When no private disk-backed
+    dir with room exists the env is left alone in the typed degraded mode (one warning),
+    or ``PHASE_LOOP_SANDBOX_REFUSE_RAM=1`` raises :class:`SandboxRamBackedError`.
+    Mutates and returns ``env``.
     """
     try:
-        effective = env.get("TMPDIR") or ("/tmp" if os.name == "posix" else tempfile.gettempdir())
-        if not is_ram_backed(effective):
+        needed = [
+            name for name in _CHILD_TMP_ENV_VARS
+            if name not in env and any(is_ram_backed(p) for p in _child_default_tmp(name, env))
+        ]
+        if not needed:
             return env
-        target, disk_backed = _resolve_disk_dir("tmp")
-        if not disk_backed:
-            return env
-        for name in _CHILD_TMP_ENV_VARS:
-            env.setdefault(name, str(target))
+        location = _child_tmp_dir()
     except Exception:
-        pass
+        return env
+    if location.degraded:
+        _degraded("child scratch", location.path, location.reason)  # warns or refuses
+        return env
+    for name in needed:
+        env[name] = str(location.path)
     return env
 
 
@@ -453,22 +586,33 @@ def effective_max_total_bytes(path: str | os.PathLike[str]) -> int:
     return cap
 
 
+def _floor_configured() -> bool:
+    """Was a floor CONFIGURED? Decided by the setting's presence, never by its value: a
+    floor explicitly set to exactly the default must still be used verbatim."""
+    value = os.environ.get("PHASE_LOOP_SANDBOX_FLOOR_BYTES", "").strip()
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
+
+
 def effective_floor_bytes(path: str | os.PathLike[str]) -> int:
     """The free-space floor for staging at ``path``.
 
-    A configured floor (``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` other than the 2 GiB default) is
-    used verbatim -- the operator's protection is never weakened. The DEFAULT is capped at a quarter of the filesystem, so
-    a small filesystem is not refused forever by a floor as large as itself; on a
-    RAM-backed filesystem it is instead RAISED to a quarter, so staging keeps that much
-    memory free.
+    A configured floor is used verbatim -- the operator's protection is never weakened.
+    So is a non-default value from the ``floor_bytes()`` seam. The DEFAULT scales with the
+    filesystem: on disk it is capped at a quarter, so a small filesystem is not refused
+    forever by a floor as large as itself; on a RAM-backed filesystem it is a quarter of
+    it, so staging always leaves that much memory free and never demands more than exists.
     """
     floor = floor_bytes()
-    if floor != _DEFAULT_FLOOR_BYTES:
-        return floor  # configured: never scaled
+    if _floor_configured() or floor != _DEFAULT_FLOOR_BYTES:
+        return floor
     total = _fs_total_bytes(path)
     if total:
         quarter = int(total * _FLOOR_FRACTION)
-        floor = max(floor, quarter) if is_ram_backed(path) else min(floor, quarter)
+        floor = quarter if is_ram_backed(path) else min(floor, quarter)
     return floor
 
 

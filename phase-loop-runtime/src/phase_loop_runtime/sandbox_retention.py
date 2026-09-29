@@ -72,7 +72,7 @@ def _looks_like_a_sandbox(path: Path) -> bool:
 def mark_as_sandbox(path: Path, *, owner_pid: int | None = None) -> None:
     """Claim a directory as reapable. Only the creator of a sandbox may call this.
 
-    ``owner_pid`` names the process using it. The footprint and free-space reaps skip a
+    ``owner_pid`` names the process using it. The TTL, footprint and free-space reaps skip a
     sandbox whose owner is still running: every directory under the staging root is
     either a leak or a round in flight, and reaping oldest-first would otherwise delete a
     CONCURRENT board's tree mid-review (agent-harness#1147).
@@ -82,9 +82,19 @@ def mark_as_sandbox(path: Path, *, owner_pid: int | None = None) -> None:
     owner = ""
     if owner_pid is not None:
         owner = f"pid={owner_pid} start={_process_start(owner_pid) or ''}\n"
-    (path / SANDBOX_MARKER).write_text(
-        "created by phase-loop review staging; safe to reap\n" + owner, encoding="utf-8"
-    )
+    body = ("created by phase-loop review staging; safe to reap\n" + owner).encode("utf-8")
+    # Published ATOMICALLY: written under another name, synced, then renamed into place.
+    # The marker is what makes a directory reapable, so a marker that exists before its
+    # owner line is written is a window in which a live round looks ownerless -- and a
+    # concurrent free-space reap deleted one in exactly that window.
+    staging = path / f"{SANDBOX_MARKER}.{os.getpid()}.tmp"
+    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, body)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(staging, path / SANDBOX_MARKER)
 
 
 def _process_start(pid: int) -> str | None:
@@ -202,7 +212,8 @@ def reap(
     entries = discover(root)
     survivors = []
     for entry in entries:
-        if entry.mtime < cutoff:
+        # A cold sandbox whose owner still runs is a long round, not a leftover.
+        if entry.mtime < cutoff and not _owner_alive(entry.path):
             if not _retire(entry):
                 survivors.append(entry)
         else:

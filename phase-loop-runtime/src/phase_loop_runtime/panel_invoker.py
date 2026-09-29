@@ -2345,7 +2345,8 @@ _PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
     "timeout", "auth_failure", "usage_limit", "tool_denied: headless tool permission auto-denied",
     "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
     "env_failure: sandbox command could not be built",
-    "env_failure: staging filesystem below its free-space floor", _UNKNOWN_DETAIL,
+    "env_failure: staging filesystem below its free-space floor",
+    "env_failure: no disk-backed scratch and RAM fallback refused", _UNKNOWN_DETAIL,
 })
 _FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.ASCII) for p in (
     *(re.escape(t) for t in sorted(_PARAMETER_FREE_FAILURES)),
@@ -2510,6 +2511,9 @@ def _exception_failure(exc: BaseException) -> object:
         # nothing is parsed out of the message and no template is matched, so it cannot
         # carry foreign text. Anything else is an unknown failure.
         return message
+    if isinstance(exc, _sandbox_policy.SandboxRamBackedError):
+        # PHASE_LOOP_SANDBOX_REFUSE_RAM, not a full disk (agent-harness#1147).
+        return "env_failure: no disk-backed scratch and RAM fallback refused"
     if isinstance(exc, _sandbox_policy.SandboxSpaceError):
         # A full disk is an operator-actionable environment failure (board round 8 of
         # agent-harness#908); its message names paths, so it gets our own template.
@@ -7710,6 +7714,11 @@ def _exec_leg(
     env = _broker_subscription_env(env) if brokered else (
         _subscription_env() if env is None else dict(env)
     )
+    if not brokered and agy_capture is None:
+        # A caller-built env (an advisory seat's `resolve_seat_env`) gets the same CLI
+        # scratch relocation as the default one (agent-harness#1147); values it set win.
+        # The capture route is excluded: it runs in its own jail with its own frozen env.
+        env = _sandbox_policy.fill_child_tmp_env(env)
     if brokered and (agy_capture is not None or research_seat is not None):
         return 1, "", _HarnessCode("brokered route rejects capture and research transports")
     if agy_capture is not None:
@@ -8464,6 +8473,16 @@ def _default_spawn(
         and not _has_injected_review_execution_seam(leg=leg)
     ):
         return "UNAVAILABLE", "missing HARDEN review authorization"
+    if capture_stage is None:
+        # On a disk-backed per-user root, never RAM while a disk candidate exists
+        # (agent-harness#1147). Only the opt-in PHASE_LOOP_SANDBOX_REFUSE_RAM refuses, and
+        # that refusal is an operational failure of this leg, not an exception out of it.
+        try:
+            staging_dir = _sandbox_policy.staging_root()
+        except _sandbox_policy.SandboxRamBackedError as exc:
+            if review_monitor is not None:
+                return _BrokeredSpawnResult("DEGRADED", "", _exception_failure(exc), evidence=None)
+            return "DEGRADED", "", _exception_failure(exc)
     try:
         # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
         _gc_stale_panel_scratch()
@@ -8476,9 +8495,8 @@ def _default_spawn(
         )
         # Resolved so the provider argv path slots are byte-identical to the
         # attested ``provider_cwd_sha256`` preimage the verifier recomputes.
-        # On a disk-backed per-user root, never a tmpfs by default (agent-harness#1147).
         base = Path(tempfile.mkdtemp(
-            prefix="pl-panel-", dir=_sandbox_policy.staging_root(),
+            prefix="pl-panel-", dir=staging_dir,
         )).resolve() if capture_stage is None else None
         review_dir = capture_stage if capture_stage is not None else base / "review"
         out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"

@@ -340,35 +340,49 @@ the caller passes a PATH and the runtime reads it.
   and a GC failure can NEVER affect the run (fully swallowed). It sweeps both the
   current staging root and the system temp dir, where releases before
   agent-harness#1147 staged.
-- **Staging root and retention (agent-harness#1147, `sandbox_policy`).** Each round's
-  `pl-panel-*` scratch, and the sandbox clone inside it, is created under
-  `staging_root()`. That is `PHASE_LOOP_SANDBOX_STAGING_DIR` when set. Otherwise it is
-  `phase-loop/sandboxes` in the platform's per-user cache dir: `$XDG_CACHE_HOME` or
-  `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows. Failing
-  that, it is the system temp dir, used only when it is not RAM-backed. RAM-backed means a
-  Linux tmpfs or ramfs, by the fstype in `/proc/self/mountinfo`. The macOS and Windows
-  temp dirs count as disk. If every candidate is RAM-backed or unwritable, the least-bad
-  one is used, with one warning and hard-clamped retention; a round is never crashed over
-  it. `TMPDIR` is not the override.
-  - Retention ceiling: `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES (40 GiB), 25% of the
-    staging filesystem)`, or 10% on a RAM-backed one.
-  - Floor: the default floor (2 GiB) is capped at 25% of the filesystem, and raised to 25%
-    on a RAM-backed one. An explicit `PHASE_LOOP_SANDBOX_FLOOR_BYTES` is used verbatim.
-  - Before a round is refused for space, retained sandboxes are reaped oldest-first until
-    the floor is met. The footprint and free-space reaps skip a sandbox whose owning
-    process is still running.
-  - Other knobs: `PHASE_LOOP_SANDBOX_ROOT` (the selected root, recorded in the evidence),
-    `PHASE_LOOP_SANDBOX_TTL_S` (24 h), `PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S`,
+- **Staging root and retention (agent-harness#1147, `sandbox_policy`).**
+  - **Invariant.** Sandbox staging and spawned-CLI scratch are never RAM-backed while a
+    disk-backed candidate is usable. Otherwise they run in a typed DEGRADED mode
+    (`ScratchLocation.degraded`): one warning and hard-clamped retention, and the round is
+    never crashed. `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` refuses instead (leg detail
+    `env_failure: no disk-backed scratch and RAM fallback refused`).
+  - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
+    (`st_dev` matched against `/proc/self/mountinfo`), so overmounts and moved mounts are
+    judged correctly. macOS and Windows temp dirs count as disk.
+  - **Named exception:** the agy qualification jails in `agy_canary_evidence` keep a
+    tmpfs `/tmp`, because it is frozen qualification evidence. They run only for
+    qualification, never for seats or executors (follow-up agent-harness#1179).
+  - **Staging root.** Each round's `pl-panel-*` scratch, and the sandbox clone inside it,
+    is created under `staging_root()`. That is `PHASE_LOOP_SANDBOX_STAGING_DIR` when set;
+    otherwise `phase-loop/sandboxes` in the platform's per-user cache dir (`$XDG_CACHE_HOME`
+    or `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows); else
+    the system temp dir when it is not RAM-backed. `TMPDIR` is not the override.
+  - **Capacity.** Filesystem size comes from `shutil.disk_usage`, which works on every
+    platform.
+    - Retention ceiling: `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES (40 GiB), 25% of the
+      filesystem)`, or 10% on a RAM-backed one.
+    - Default floor: 2 GiB capped at 25% of the filesystem, or 25% of a RAM-backed one.
+    - A floor that is configured (by the setting's presence) is used verbatim.
+  - **Reaping.** Before a round is refused for space, retained sandboxes are reaped
+    oldest-first. The TTL, footprint and free-space reaps all skip a sandbox whose owning
+    process is still running. The owner marker is published atomically (temp file, fsync,
+    rename).
+  - **Other knobs:** `PHASE_LOOP_SANDBOX_ROOT` (the selected root, recorded in the
+    evidence), `PHASE_LOOP_SANDBOX_TTL_S` (24 h), `PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S`,
     `PHASE_LOOP_SANDBOX_ARCHIVE_DEST`, `PHASE_LOOP_SANDBOX_DISABLE`.
 - **Spawned CLI scratch (agent-harness#1147, `fill_child_tmp_env`).** Agent CLIs write
-  large scratch of their own; Claude Code uses `$CLAUDE_CODE_TMPDIR`, else
-  `/tmp/claude-<uid>`. When a spawned child's effective temp dir (its `TMPDIR`, else
-  `/tmp`) is RAM-backed, `TMPDIR` and `CLAUDE_CODE_TMPDIR` are set to `phase-loop/tmp` in
-  the per-user cache dir. This applies to board legs (`_subscription_env`), brokered legs
-  and the president (`_broker_subscription_env`), and executors (`child_executor_env`).
-  Only a variable the caller has not set is filled, and nothing changes on disk. The
-  brokered allowlist still drops the ambient values; only the runtime's own dir is added
-  back. To opt out, set `TMPDIR` / `CLAUDE_CODE_TMPDIR` yourself.
+  large scratch of their own; Claude Code uses `$CLAUDE_CODE_TMPDIR`, else the temp dir
+  (`/tmp/claude-<uid>`).
+  - **What is filled.** Each of `TMPDIR` and `CLAUDE_CODE_TMPDIR` that the child env does
+    not already set is judged against its own default destination. If that destination is
+    RAM-backed, the variable is set to a private (0700, ours) disk-backed per-user dir that
+    is above its free-space floor: `phase-loop/tmp` in the cache dir, else
+    `phase-loop-<uid>/tmp` under the temp dir.
+  - **Where it applies.** Board legs and advisory seats with a caller-built env
+    (`_subscription_env`, and the `_exec_leg` explicit-env route), brokered legs and the
+    president (`_broker_subscription_env`), and executors (`child_executor_env`).
+  - **Overrides.** A value the caller set is never overridden. The brokered allowlist
+    still drops ambient values, so there only the runtime's own dir can appear.
 - **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical
   per-leg argv / env / timeout. `tests/test_advisor_board_golden.py` (Proof A hits
   `_exec_leg`; Proof B injects `spawn=`) is untouched;
