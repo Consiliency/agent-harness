@@ -2610,19 +2610,33 @@ def _hard_kill(pid: int) -> None:
     os.kill(pid, signal.SIGKILL if POSIX else signal.SIGTERM)  # SIGTERM is TerminateProcess on Windows
 
 
-def _process_handle_count() -> int:
-    count = ctypes.c_ulong(0)
+def _kernel32():
+    from ctypes import wintypes
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessHandleCount.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetProcessHandleCount.restype = wintypes.BOOL
+    kernel32.OpenJobObjectW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel32.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return kernel32
+
+
+def _process_handle_count() -> int:
+    from ctypes import wintypes
+
+    kernel32 = _kernel32()
+    count = wintypes.DWORD(0)
+    assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count)), ctypes.get_last_error()
     return count.value
 
 
 def _job_exists(name: str) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenJobObjectW.restype = ctypes.c_void_p
+    kernel32 = _kernel32()
     handle = kernel32.OpenJobObjectW(0x0004, False, name)  # JOB_OBJECT_QUERY
     if handle:
-        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        kernel32.CloseHandle(handle)
         return True
     return False
 
