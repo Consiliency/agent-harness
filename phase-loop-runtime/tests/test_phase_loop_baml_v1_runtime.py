@@ -213,7 +213,15 @@ def _raises(fn, *args, **kwargs) -> BaseException:
     raise AssertionError("expected an exception")
 
 
-def _busy_pid(timeout: float = 10.0) -> int:
+def _cold_slack() -> float:
+    """Extra time for waits that include a worker cold start (~0.8 s on x86_64
+    glibc, ~13 s on musl).  Measured by ``_deadline()``, which every scenario
+    setup runs first."""
+    return 3 * _COLD[0] if _COLD else 30.0
+
+
+def _busy_pid(timeout: float | None = None) -> int:
+    timeout = 10.0 + _cold_slack() if timeout is None else timeout
     assert _wait(lambda: m._CLIENT.gen is not None and m._CLIENT.gen.state == "busy", timeout), "worker never became busy"
     return m._CLIENT.gen.pid
 
@@ -326,6 +334,7 @@ def _isolated(name: str, *, timeout: float = 180.0, env: dict | None = None) -> 
 
 
 def _scenario_setup(files=None, **config) -> _DeliverySpy:
+    _deadline()  # measures this host's cold start once per process (see _cold_slack)
     _use(files, **config)
     return _DeliverySpy()
 
@@ -1200,7 +1209,7 @@ def _scenario_proc(name: str, *args: str, new_session: bool = False) -> subproce
     )
 
 
-def _read_tagged(proc: subprocess.Popen, tag: str, timeout: float = 30.0) -> list[str]:
+def _read_tagged(proc: subprocess.Popen, tag: str, timeout: float = 120.0) -> list[str]:
     result: dict = {}
 
     def read():
@@ -1218,7 +1227,7 @@ def _read_tagged(proc: subprocess.Popen, tag: str, timeout: float = 30.0) -> lis
 
 def _announce_busy() -> None:
     def watch():
-        pid = _busy_pid(30)
+        pid = _busy_pid()
         print("BUSY", pid, flush=True)
 
     threading.Thread(target=watch, daemon=True).start()
@@ -1582,7 +1591,7 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
     stalled.start()
     time.sleep(0.2)
     run_executor("stalled")
-    stalled.join(10)
+    stalled.join(deadline + 10)
     assert type(box["exc"]) is BamlWorkerError and box["exc"].kind == "spawn"
     assert _wait(lambda: returned and _gone(returned[0]), deadline + 5)
     assert _parse() and _pid() not in (None, returned[0])
@@ -2063,7 +2072,7 @@ def scenario_i2_stalled_caller_after_reply() -> None:
     box = {}
     a = threading.Thread(target=lambda: box.setdefault("a", _parse()), name="A")
     a.start()
-    assert _wait(lambda: spy.requests and spy.requests[0].done, 5)
+    assert _wait(lambda: spy.requests and spy.requests[0].done, 5 + _cold_slack())
     box["b"] = _parse()
     assert _pid() == pid
     b_done.set()

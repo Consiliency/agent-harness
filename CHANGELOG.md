@@ -50,9 +50,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   gains a blocking `baml-sources` job (sha-verified `baml-cli 0.20.1`, fmt round-trip, `check` on
   raw and rendered sources); C-8 of the 2026-09-01 codebase review is covered by the D3 field
   regex, the schema-dump test and that fmt round-trip.
-- **Platforms.** Verified: x86_64 glibc (py3.10, py3.12). Pre-merge dispatch pending for
-  `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel` and `windows-latest`; not in any matrix and
-  unverified: musl-aarch64 and win-arm64.
+- **Platforms.** Verified: x86_64 glibc (py3.10, py3.12) and, in the pre-merge dispatch,
+  `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel` and `windows-latest` (stdlib venv and uv venv;
+  the Job Object owner-death test passes there). **musl is much slower to start:** on
+  `python:3.10-alpine` (x86_64) `initialize_runtime` takes about 13 s, not 0.8 s, so the first
+  BAML call in each process pays that; later calls are ~5 ms. Not in any matrix and unverified:
+  musl-aarch64 and win-arm64.
 - **Pin-bump checklist** for any future `baml-bridge` change: re-run the `baml describe` builtin
   `spawn` audit, the release-notes review and Step 0-style parity against the v0 goldens.
 - **agy requalification at the release cut.** This change touches `phase_loop_runtime/**/*.py`
