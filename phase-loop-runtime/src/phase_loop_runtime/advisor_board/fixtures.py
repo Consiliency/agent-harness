@@ -76,6 +76,7 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-6-astra", "codex"),
     ("gpt-6-astra", "opencode"),
     ("gpt-5.6-sol", "codex"),  # legacy default id remains expressible
+    ("gpt-6-sol", "codex"),  # explicit seat (e.g. standing in for an unavailable vendor)
     ("claude-sonnet-5", "claude"),
     ("claude-opus-5-5", "claude"),
     ("claude-fable-5-1", "claude"),

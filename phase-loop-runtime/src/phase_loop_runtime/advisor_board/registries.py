@@ -256,6 +256,7 @@ class DefaultHarnessRegistry:
 _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     ("gpt-6-astra", "codex", "max"),
     ("gpt-5.6-sol", "codex", "max"),  # explicit legacy seat (fleet default before 2026-09-04)
+    ("gpt-6-sol", "codex", "max"),  # explicit seat (codex's own default model); not a board default
     ("claude-sonnet-5", "claude", "max"),
     ("claude-opus-4-8", "claude", "max"),
     # design-model-tier-taxonomy.md: claude-opus-5 is the new Claude heavy model.

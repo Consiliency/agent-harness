@@ -76,6 +76,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | ---------------- | ------------- | ------------ | ----------------- | -------------- |
 | `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6-sol`      | codex         | `codex`      | codex, opencode   | max            |
 | `claude-sonnet-5`| claude        | `claude`     | claude            | max            |
 | `claude-opus-4-8`| claude        | `claude`     | claude            | max            |
 | `claude-opus-5`  | claude        | `claude`     | claude            | max            |

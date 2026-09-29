@@ -150,6 +150,20 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("grok-4.5").default_lane, "grok")
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("claude-fable-5").default_lane, "claude")
 
+    def test_gpt_6_sol_is_an_explicit_codex_seat_not_a_default(self) -> None:
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+        from phase_loop_runtime.advisor_board.harness_mapping import render_seat_invocation
+        from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS, DEFAULT_REVIEW_SEAT_ALIASES
+
+        spec = DEFAULT_MODEL_REGISTRY.get("gpt-6-sol")
+        self.assertEqual(spec.default_lane, "codex")
+        self.assertEqual(spec.effort_ceiling, "max")
+        self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["gpt-6-sol"], "sol")
+        inv = render_seat_invocation("codex", "gpt-6-sol", "max")
+        self.assertEqual((inv.model, inv.effort_args), ("gpt-6-sol", ("-c", "model_reasoning_effort=xhigh")))
+        # registration only: the codex seat default is unchanged
+        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-astra")
+
     def test_unknown_model_raises_with_known_list(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, UnknownModelError
 

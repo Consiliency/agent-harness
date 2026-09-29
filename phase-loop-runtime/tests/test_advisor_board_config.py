@@ -140,6 +140,31 @@ purpose = "code-review"
         self.assertEqual(board.seats[0].model, "gpt-5.6-sol")
 
 
+class GptSixSolSeatTests(unittest.TestCase):
+    def test_gpt_6_sol_can_take_the_grok_seat_in_a_user_code_review_board(self) -> None:
+        # e.g. while a grok subscription is unavailable: before registration the whole
+        # file was rejected with "unknown model 'gpt-6-sol'".
+        body = """
+[[boards]]
+name = "code-review"
+purpose = "code-review"
+  [[boards.seats]]
+  model = "gpt-6-sol"
+  effort = "max"
+  harness = "codex"
+  lens = "adversarial"
+  [[boards.seats]]
+  model = "gpt-6-astra"
+  effort = "max"
+  harness = "codex"
+  lens = "red-team"
+"""
+        with TemporaryDirectory() as tmp:
+            board = load_boards(_write(tmp, body), matrix=_MATRIX).get("code-review")
+        self.assertEqual([(s.model, s.lens) for s in board.seats],
+                         [("gpt-6-sol", "adversarial"), ("gpt-6-astra", "red-team")])
+
+
 class ConfigLoadTests(unittest.TestCase):
     def test_user_board_layers_over_presets(self) -> None:
         body = """
