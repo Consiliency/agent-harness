@@ -349,8 +349,9 @@ def governed_board_gate(
     """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
 
     PANEL (v10 Phase 18, agent-harness#1078): on the default path (no injected
-    ``compose``/``invoke``), for a declared change under review (``reviewed_sha``), in a
-    repository past the GOVLEAN authority switch, the gate is a ``plan`` landing. It takes ``panel_snapshot`` (the run-start user-side snapshot; one
+    ``compose``/``invoke``), for a declared change under review (``reviewed_sha``) or a
+    caller's run-start ``panel_snapshot``, in a repository past the GOVLEAN authority
+    switch, the gate is a ``plan`` landing. It takes ``panel_snapshot`` (the run-start user-side snapshot; one
     is taken here when ``None``), fetches the target, builds the gate-time context for the
     change ``reviewed_sha``, reviews the context's composed board (``heartbeat_only``
     included) under ``panel_landing_policy`` with a president, re-gates after the seats,
@@ -464,9 +465,11 @@ def governed_board_gate(
 
     panel_context = panel_target = None
     try:
-        # A landing is the default path, past the switch, with a declared change under
-        # review; a call that names no ``reviewed_sha`` (an emit arm, a probe) stays tierless.
-        panel_landing = compose is None and invoke is None and reviewed_sha is not None and \
+        # A landing is the default path, past the switch, for a declared change under
+        # review or a caller's run-start snapshot (run-train passes one for every review);
+        # a call with neither (an emit arm, an observation probe) stays tierless.
+        panel_landing = compose is None and invoke is None and \
+            (reviewed_sha is not None or panel_snapshot is not None) and \
             _pi._govlean_authority_switched(canonical_repo_authority)
         if panel_landing:
             if panel_snapshot is None:
