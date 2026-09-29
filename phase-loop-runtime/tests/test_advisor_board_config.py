@@ -183,7 +183,8 @@ purpose = "code-review"
             invoker._validate_review_board_policy(
                 Board(name="code-review", purpose="code-review", seats=seats), policy, None
             )
-        self.assertIn("review_board_policy_mismatch", str(ctx.exception.args))
+        self.assertEqual(ctx.exception.code, "review_board_policy_mismatch")
+        self.assertIn("'sol': 2", str(ctx.exception))
 
 
 class ConfigLoadTests(unittest.TestCase):
