@@ -112,6 +112,13 @@ def _gone(pid: int) -> bool:
         except (OSError, IndexError):
             return True
         return state in ("Z", "X")
+    if WINDOWS:
+        import psutil  # os.kill(pid, 0) would send CTRL_C_EVENT on Windows
+
+        try:
+            return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
