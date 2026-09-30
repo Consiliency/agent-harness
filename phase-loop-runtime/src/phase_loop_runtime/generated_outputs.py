@@ -16,9 +16,10 @@ and a directory name is something any process can create. Instead:
   ``from`` equal to its skill directory, and that skill one the harness ships.
 * A build output is accepted only when (1) a TRACKED declaration committed at
   ``HEAD`` covers the path with a bounded glob, (2) a recorded producer run shows
-  the declared command exited 0, and (3) the file's current content digest equals
-  the digest captured when that run finished. A file the producer did not leave
-  behind, or one edited afterwards, stays ``unknown_ignored``.
+  the declared command exited 0 and created or rewrote the file, and (3) the file's
+  current content digest equals the digest captured when that run finished. A file
+  the run did not write (including one planted before it), or one edited
+  afterwards, stays ``unknown_ignored``.
 
 Threat model: this catches accidental and unaccounted outputs, which is what the
 audit is for. It is not a defence against a local actor with write access to the
@@ -221,21 +222,75 @@ def _iter_files(repo: Path, root_rel: str):
             yield f"{rel_dir}/{name}"
 
 
-def snapshot(repo: Path, producers: Sequence[Producer]) -> dict[str, dict[str, str]]:
-    files: dict[str, dict[str, str]] = {}
+def _declared_entries(repo: Path, producers: Sequence[Producer]):
+    """Yield ``(relpath, producer)`` once per worktree entry a producer's globs cover."""
+
+    seen: set[str] = set()
     for producer in producers:
         for glob in producer.outputs:
             for rel in _iter_files(repo, _literal_root(glob)):
-                if rel in files or not glob_matches(glob, rel):
+                if rel in seen or not glob_matches(glob, rel):
                     continue
-                digest = digest_path(repo / rel)
-                if digest is None:
-                    continue
-                files[rel] = {"producer": producer.name, "digest": digest}
-                if len(files) > _MAX_SNAPSHOT_FILES:
+                seen.add(rel)
+                if len(seen) > _MAX_SNAPSHOT_FILES:
                     raise DeclarationError(
                         f"declared outputs exceed {_MAX_SNAPSHOT_FILES} files; narrow the globs"
                     )
+                yield rel, producer
+
+
+def capture_pre_run_state(repo: Path) -> dict[str, int] | None:
+    """The status-change time of every declared-output entry BEFORE a run.
+
+    ``st_ctime_ns`` rather than mtime: a process can set mtime back with utime, but
+    any write moves ctime to "now". None when there is no committed declaration.
+    """
+
+    declaration = load_declaration(repo)
+    if declaration is None:
+        return None
+    state: dict[str, int] = {}
+    for rel, _producer in _declared_entries(repo, declaration.producers):
+        try:
+            state[rel] = os.lstat(repo / rel).st_ctime_ns
+        except OSError:
+            continue
+    return state
+
+
+def snapshot(
+    repo: Path,
+    producers: Sequence[Producer],
+    pre_run: Mapping[str, int],
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Attribute to a producer only what the run actually left behind.
+
+    An entry counts when the run created or rewrote it (absent before, or its ctime
+    moved). A file that was already sitting under a declared glob before the run and
+    was not touched is NOT attributed, so pre-placed junk cannot ride along. The one
+    exception keeps incremental tools working: an untouched file that a previous
+    record for the SAME declaration already attributed to the same producer, still at
+    the recorded digest, is carried forward.
+    """
+
+    prior_files = previous.get("files", {}) if isinstance(previous, Mapping) else {}
+    files: dict[str, dict[str, str]] = {}
+    for rel, producer in _declared_entries(repo, producers):
+        digest = digest_path(repo / rel)
+        if digest is None:
+            continue
+        try:
+            ctime = os.lstat(repo / rel).st_ctime_ns
+        except OSError:
+            continue
+        touched = rel not in pre_run or pre_run[rel] != ctime
+        if not touched:
+            prior = prior_files.get(rel)
+            if not (isinstance(prior, Mapping) and prior.get("producer") == producer.name
+                    and prior.get("digest") == digest):
+                continue
+        files[rel] = {"producer": producer.name, "digest": digest}
     return files
 
 
@@ -244,10 +299,11 @@ def write_record(
     declaration: Declaration,
     ran: Sequence[tuple[Producer, int]],
     *,
+    pre_run: Mapping[str, int],
     source: str,
     run_id: str | None,
 ) -> dict[str, Any]:
-    """Snapshot the outputs of every producer that exited 0, then persist.
+    """Snapshot what the producers that exited 0 left behind, then persist.
 
     The snapshot is taken ONCE, after the whole run: a verification run is the
     unit of evidence, so a later declared producer legitimately rewriting an
@@ -258,6 +314,9 @@ def write_record(
     from .runtime_paths import ensure_phase_loop_excluded
 
     succeeded = [producer for producer, exit_code in ran if exit_code == 0]
+    previous = load_record(repo)
+    if previous is not None and previous.get("declaration_sha256") != declaration.sha256:
+        previous = None
     record = {
         "schema": RECORD_SCHEMA,
         "declaration_sha256": declaration.sha256,
@@ -267,7 +326,7 @@ def write_record(
         "producers": [
             {"name": p.name, "command": list(p.command), "exit_code": code} for p, code in ran
         ],
-        "files": snapshot(repo, succeeded),
+        "files": snapshot(repo, succeeded, pre_run, previous),
     }
     path = repo / RECORD_RELPATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -290,7 +349,9 @@ def load_record(repo: Path) -> dict[str, Any] | None:
     return data
 
 
-def record_verification_outputs(repo: Path, result: Any) -> dict[str, Any] | None:
+def record_verification_outputs(
+    repo: Path, result: Any, pre_run: Mapping[str, int] | None
+) -> dict[str, Any] | None:
     """Runner hook: attribute a finished verification run's declared outputs.
 
     A declared producer "ran" when its argv EXACTLY equals a verification command
@@ -298,7 +359,8 @@ def record_verification_outputs(repo: Path, result: Any) -> dict[str, Any] | Non
     """
 
     declaration = load_declaration(repo)
-    if declaration is None:
+    if declaration is None or pre_run is None:
+        # No pre-run state means nothing can show what THIS run touched.
         return None
     stages: list[tuple[tuple[str, ...], int]] = [
         (tuple(stage.argv), int(stage.exit_code)) for stage in (result.commands or [])
@@ -313,7 +375,9 @@ def record_verification_outputs(repo: Path, result: Any) -> dict[str, Any] | Non
             ran.append((producer, next((code for code in codes if code != 0), 0)))
     if not ran:
         return None
-    return write_record(repo, declaration, ran, source="runner-verification", run_id=result.run_id)
+    return write_record(
+        repo, declaration, ran, pre_run=pre_run, source="runner-verification", run_id=result.run_id
+    )
 
 
 def run_declared_producers(repo: Path, timeout_s: float | None = None) -> dict[str, Any]:
@@ -322,6 +386,7 @@ def run_declared_producers(repo: Path, timeout_s: float | None = None) -> dict[s
     declaration = load_declaration(repo)
     if declaration is None:
         raise DeclarationError(f"no {DECLARATION_PATH} committed at HEAD")
+    pre_run = capture_pre_run_state(repo) or {}
     ran: list[tuple[Producer, int]] = []
     for producer in declaration.producers:
         print(f"closeout-audit: running producer {producer.name}: {shlex.join(producer.command)}", flush=True)
@@ -334,7 +399,7 @@ def run_declared_producers(repo: Path, timeout_s: float | None = None) -> dict[s
             print(f"closeout-audit: producer {producer.name} failed: {type(exc).__name__}", flush=True)
             code = 127
         ran.append((producer, int(code)))
-    return write_record(repo, declaration, ran, source="closeout-audit", run_id=None)
+    return write_record(repo, declaration, ran, pre_run=pre_run, source="closeout-audit", run_id=None)
 
 
 # --- verification of one ignored file ---------------------------------------
@@ -355,9 +420,12 @@ def verify_declared_output(
         return False, f"producer record predates the committed declaration; {hint}"
     entry = record["files"].get(relpath)
     if not isinstance(entry, dict) or entry.get("producer") not in covering:
-        return False, "declared output the recorded producer run did not leave behind"
+        return False, (
+            "declared output the recorded producer run did not create or rewrite; "
+            "remove it, or re-record if a producer should have written it"
+        )
     if digest_path(repo / relpath) != entry.get("digest"):
-        return False, "declared output changed after the recorded producer run"
+        return False, f"declared output changed after the recorded producer run; {hint}"
     return True, f"declared output of producer {entry['producer']}"
 
 

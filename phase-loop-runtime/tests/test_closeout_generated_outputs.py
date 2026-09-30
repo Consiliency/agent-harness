@@ -212,7 +212,33 @@ class StillFailClosedTest(unittest.TestCase):
             (fx.repo / "dist" / "stray.js").write_text("not produced\n")
             result = self._unknown(fx)
             self.assertEqual(result[UNKNOWN_IGNORED], ["dist/stray.js"])
-            self.assertIn("did not leave behind", result["unknown_reasons"]["dist/stray.js"])
+            self.assertIn("did not create or rewrite", result["unknown_reasons"]["dist/stray.js"])
+
+    def test_a_file_placed_under_a_declared_glob_BEFORE_the_run_blocks(self):
+        """A declaration is not a licence for whatever already sits in `dist/`: only
+        what the run itself created or rewrote is attributed to the producer."""
+
+        with tempfile.TemporaryDirectory() as td:
+            fx = NodeBamlPhaseFixture(Path(td))
+            (fx.repo / "dist").mkdir()
+            (fx.repo / "dist" / "planted.js").write_text("placed before the producer ran\n")
+            self.assertTrue(fx.verify().get("ok"))
+            result = self._unknown(fx)
+            self.assertEqual(result[UNKNOWN_IGNORED], ["dist/planted.js"])
+
+    def test_an_untouched_output_carries_forward_from_the_previous_record(self):
+        """Incremental producers skip unchanged outputs; an output the previous record
+        (same declaration) attributed, still at its digest, stays attributed."""
+
+        with tempfile.TemporaryDirectory() as td:
+            fx = self._verified(td)
+            incremental = BUILD.replace("(root / 'dist' / 'index.js.map').write_text('{}\\n')\n", "")
+            self.assertNotIn("index.js.map", incremental)
+            (fx.repo / "scripts" / "build.py").write_text(incremental)
+            self.assertTrue(fx.verify().get("ok"))
+            result = audit_ignored_outputs(fx.repo)
+            self.assertFalse(result["blocks"], result)
+            self.assertIn("dist/index.js.map", result[DECLARED_OUTPUT])
 
     def test_a_generated_file_edited_after_the_producer_ran_blocks(self):
         with tempfile.TemporaryDirectory() as td:
@@ -221,6 +247,9 @@ class StillFailClosedTest(unittest.TestCase):
             result = self._unknown(fx)
             self.assertEqual(result[UNKNOWN_IGNORED], ["baml_sdk/index.js"])
             self.assertIn("changed after", result["unknown_reasons"]["baml_sdk/index.js"])
+            # Actionable: re-recording re-runs the producer, which regenerates the file
+            # rather than laundering the edit.
+            self.assertIn("--record-outputs", result["unknown_reasons"]["baml_sdk/index.js"])
 
     def test_an_undeclared_ignored_directory_blocks(self):
         with tempfile.TemporaryDirectory() as td:

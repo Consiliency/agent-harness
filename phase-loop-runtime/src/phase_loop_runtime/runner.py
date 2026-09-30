@@ -9464,6 +9464,12 @@ def _run_execute_verification_impl(
         if manifests and install_argv is None
         else ({"triggered": True, "manifests": manifests, "install_argv": install_argv} if manifests else None)
     )
+    # agent-harness#1139: what the declared output paths looked like BEFORE this run, so
+    # the record attributes only what the run itself wrote (never pre-placed files).
+    try:
+        generated_outputs_pre_run = generated_outputs.capture_pre_run_state(repo)
+    except Exception:  # noqa: BLE001 - no pre-run state means no record, i.e. outputs stay blocking
+        generated_outputs_pre_run = None
     result = run_verification(
         repo,
         run_dir,
@@ -9481,7 +9487,7 @@ def _run_execute_verification_impl(
     # here must never change the verification outcome, and it writes nothing into
     # run_dir or verification.json.
     try:
-        generated_outputs.record_verification_outputs(repo, result)
+        generated_outputs.record_verification_outputs(repo, result, generated_outputs_pre_run)
     except Exception:  # noqa: BLE001 - missing evidence leaves the outputs unknown, i.e. blocking
         pass
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME

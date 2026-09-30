@@ -49,10 +49,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `.dev-skills/handoffs/`.
 - New `declared_output` bucket. A project commits `.phase-loop-generated-outputs.json`,
   which names each producer command and bounded output globs. A declared file passes only
-  when a recorded producer run, by the runner's verification or by the new
-  `phase-loop-closeout-audit --record-outputs`, left it behind with the same content
-  digest. Undeclared, hand-placed or later-edited files still block, and an invalid
-  declaration exits 2. See `docs/phase-loop/closeout-generated-outputs.md`.
+  when a recorded producer run created or rewrote it and it still has the recorded content
+  digest. The run is recorded by the new `phase-loop-closeout-audit --record-outputs`, or
+  by the runner's verification when it runs a declared producer command. Undeclared,
+  pre-placed, hand-placed and later-edited files still block, and an invalid declaration
+  exits 2. See `docs/phase-loop/closeout-generated-outputs.md`.
 
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 

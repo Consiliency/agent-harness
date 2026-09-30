@@ -81,27 +81,48 @@ acceptable.
 ## Evidence: the producer record
 
 A declaration alone accepts nothing. A declared file counts only when a recorded
-producer run left it behind with the **same content digest** it has now. The record is
-written to `.phase-loop/generated-outputs/record.json`, which is runner state:
+producer run **created or rewrote** it and it still has the **same content digest**. The
+record is written to `.phase-loop/generated-outputs/record.json`, which is runner state.
 
-- **Runner-driven phases.** When the runner's verification runs a command that equals a
-  declared producer's `command`, it digests every file under that producer's globs at the
-  end of the run and records them. A producer that exits non-zero records no files, so
-  its outputs stay unknown.
-- **Skill-driven phases, or any manual run.** Run
+- **At closeout (the in-phase path).** An executor that has run its verification runs
   `phase-loop-closeout-audit --repo . --record-outputs`. This runs every declared producer
-  in declaration order, records their outputs, and then audits.
+  in declaration order, records what they wrote, and then audits. Use this whenever the
+  audit reports `declared output with no producer record`. That includes the executor
+  child of a runner-driven phase, because the child audits before the runner's own
+  verification runs.
+- **The runner's verification (a second source).** When the runner's post-launch
+  verification runs a command that equals a declared producer's `command`, it records
+  the same evidence. A later audit then passes without re-running the producers, for
+  example an operator's audit, a repair turn, or a relaunch.
 
-The snapshot is taken once, after the whole run. A later producer that rewrites an
-earlier producer's output, for example two producers writing into `.cache/`, therefore
-does not cause a mismatch.
+What counts as written by the run:
 
-A declared file still stays `unknown_ignored`, with a reason printed beside it, when:
+- An entry counts when it did not exist before the run, or when its status-change time
+  (`ctime`) moved during the run. A file already sitting under a declared glob that the
+  run did not touch is **not** attributed. A declaration is not a licence for whatever is
+  already in `dist/`.
+- **Incremental tools** skip unchanged outputs. An untouched file still counts if the
+  previous record, for the same committed declaration, attributed it to the same
+  producer at the same digest.
+- A producer that exits non-zero records nothing, so its outputs stay unknown.
+- The snapshot is taken once, after the whole run. A later producer that rewrites an
+  earlier producer's output, for example two producers writing into `.cache/`, is
+  therefore not a mismatch.
 
-- the recorded run did not produce it (it was hand-placed);
+A declared file stays `unknown_ignored`, with a reason printed beside it, when:
+
+- the recorded run did not create or rewrite it (it was hand-placed);
 - it changed after the run;
 - no record exists;
 - the record was made against a different committed declaration.
+
+Re-recording is always safe, because it re-runs the producer: an edited generated file
+is regenerated, not laundered.
+
+**Caches.** Digest pinning suits generated SDKs and `dist/`. A tool cache that changes on
+every run (a test runner's `.cache/`) matches only until the next run that writes it, so
+declare it only if the executor re-records at closeout. Otherwise leave it undeclared, or
+move it out of the worktree.
 
 ### Threat model
 
