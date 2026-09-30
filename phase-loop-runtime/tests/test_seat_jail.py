@@ -378,9 +378,28 @@ def test_j3_mutation_dropping_clearenv_leaks_the_parent_environment(tmp_path):
 
 @requires_userns
 def test_j3_descriptors_are_exactly_the_declared_set(tmp_path):
+    """Through the production closer: whatever this bwrap leaves open, the seat holds only
+    0-2 and the token fd (a hosted CI bwrap left its data/seccomp descriptors open)."""
     jail = _jail(tmp_path)
-    done = _run_in(jail, 'ls /proc/$$/fd | sort -n | tr "\\n" " "')
+    owner = [*_test_owner(jail), *seat_jail.seat_fd_closer(str(jail.token_fd))]
+    done = _run_in(jail, 'ls /proc/$$/fd | sort -n | tr "\\n" " "', owner=owner)
     assert done.stdout.split() == [str(fd) for fd in sorted({0, 1, 2, jail.token_fd})]
+
+
+@requires_userns
+def test_j3_the_closer_closes_a_leaked_descriptor(tmp_path):
+    jail = _jail(tmp_path)
+    leak_r, leak_w = os.pipe()
+    try:
+        owner = [*_test_owner(jail), *seat_jail.seat_fd_closer(str(jail.token_fd))]
+        done = subprocess.run([*owner, "/bin/sh", "-c", "ls /proc/$$/fd"], capture_output=True,
+                              text=True, pass_fds=(*jail.pass_fds, leak_r))
+    finally:
+        os.close(leak_r)
+        os.close(leak_w)
+        seat_jail.close_jail_fds(jail)
+    assert str(leak_r) not in done.stdout.split()
+    assert sorted(done.stdout.split(), key=int) == [str(fd) for fd in sorted({0, 1, 2, jail.token_fd})]
 
 
 @requires_userns

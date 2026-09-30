@@ -3541,6 +3541,7 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
         *jail.process_owner,
         *_seat_jail.setpriv_drop(seat_id),
         *_seat_jail.seat_cwd(),
+        *_seat_jail.seat_fd_closer("" if jail.token_fd is None else str(jail.token_fd)),
     ]
 
 

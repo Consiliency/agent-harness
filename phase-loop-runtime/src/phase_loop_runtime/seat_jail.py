@@ -964,7 +964,8 @@ _PLACEHOLDERS = {"tree": "<tree>", "home": "<home>", "out": "<out>", "provider":
 
 def _profile_digest_of(leg: str, owner: Sequence[str], filter_sha256: str, arch: str) -> str:
     document = {"profile_id": PROFILE_ID, "leg": leg, "arch": arch, "owner": list(owner),
-                "drop": [*setpriv_drop("<seat-id>"), *seat_cwd()], "filter_sha256": filter_sha256}
+                "drop": [*setpriv_drop("<seat-id>"), *seat_cwd(), *seat_fd_closer("<token-fd>")],
+                "filter_sha256": filter_sha256}
     return hashlib.sha256(json.dumps(document, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -1239,6 +1240,27 @@ def setpriv_drop(seat_id: int) -> list[str]:
 def seat_cwd() -> list[str]:
     """The seat enters its tree AFTER the drop, as the tree's owner (P5)."""
     return ["/usr/bin/env", f"--chdir={SEAT_TREE}", "--"]
+
+
+# J3 descriptors: some bwrap versions leave their own and the data/seccomp descriptors open
+# in the sandboxed process (measured on a hosted CI runner). The last step before the
+# provider therefore closes every descriptor except 0-2 and the declared token fd, as the
+# seat, and execs the provider. It runs /usr/bin/python3 in isolated mode with no site.
+_FD_CLOSER = (
+    "import os,sys\n"
+    "keep={0,1,2}|{int(x) for x in sys.argv[1].split(',') if x}\n"
+    "for name in os.listdir('/proc/self/fd'):\n"
+    " fd=int(name)\n"
+    " if fd not in keep:\n"
+    "  try: os.close(fd)\n"
+    "  except OSError: pass\n"
+    "os.execv(sys.argv[2],sys.argv[2:])\n"
+)
+
+
+def seat_fd_closer(keep: "str") -> list[str]:
+    """``keep``: the declared extra descriptors, comma-separated (the token fd, or empty)."""
+    return ["/usr/bin/python3", "-I", "-S", "-c", _FD_CLOSER, keep]
 
 
 def close_jail_fds(jail: SeatJail) -> None:

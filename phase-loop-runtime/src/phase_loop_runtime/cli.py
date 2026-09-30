@@ -2464,9 +2464,16 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 capture.close()
                 return 2
             payload["agy_canary_capture"] = expected_capture
+            # The private capture board has its own closed schema, which predates seat
+            # notices (agent-harness#1132); it is written without them, byte-for-byte as before.
+            capture_payload = {key: value for key, value in payload.items() if key != "notices"}
+            capture_payload["legs"] = [
+                {key: value for key, value in leg.items() if key != "notices"}
+                for leg in payload["legs"]
+            ]
             try:
                 private = write_private_board(
-                    capture=capture, basename=private_board_name, payload=payload
+                    capture=capture, basename=private_board_name, payload=capture_payload
                 )
             except AgyCanaryEvidenceError as exc:
                 print(f"advisor-board: private capture sink failed: {exc}", file=sys.stderr)

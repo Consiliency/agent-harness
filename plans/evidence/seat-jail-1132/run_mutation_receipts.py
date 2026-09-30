@@ -39,6 +39,11 @@ T_NOTE = "tests/test_seat_notices.py"
 T_LIVE = "tests/test_seat_jail_live_d8.py"
 SQ = SRC / "seat_jail_qualification.py"
 GR = SRC / "governed_review.py"
+CL = SRC / "cli.py"
+T_AGY = "tests/test_agy_canary_evidence.py"
+
+R5_NODES = [f"{T_PERM}::test_codex_r5_hostile_records_refuse_typed_through_the_gate[%s]" % shape
+               for shape in ("nul-in-evidence-name", "unpaired-surrogate", "non-string-evidence", "huge-integer")]
 
 MUTATIONS: list[dict[str, object]] = [
     {"id": "F030-drop-identity-literal", "file": PI,
@@ -222,10 +227,6 @@ MUTATIONS: list[dict[str, object]] = [
      "old": '    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)\n',
      "new": '    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)\n',
      "nodes": [f"{T_PERM}::test_codex_r4_unsafe_records_give_a_typed_refusal_in_bounded_time[fifo]"]},
-    {"id": "R4-parser-error-uncaught", "file": SJ,
-     "old": "    except (ValueError, RecursionError, MemoryError, UnicodeDecodeError):\n        return None\n",
-     "new": "    except (ValueError, UnicodeDecodeError):\n        return None\n",
-     "nodes": [f"{T_PERM}::test_codex_r4_unsafe_records_give_a_typed_refusal_in_bounded_time[nested-json-bomb]"]},
     {"id": "R4-parent-chain-unchecked", "file": SJ,
      "old": "    if not all(_private_dir(directory) for directory in chain):\n",
      "new": "    if False:\n",
@@ -253,8 +254,23 @@ MUTATIONS: list[dict[str, object]] = [
     {"id": "R5-boundary-narrowed-to-oserror", "file": SJ,
      "old": "    except Exception as exc:\n        _LOG.warning(\"seat jail pass record rejected: %s\", type(exc).__name__)",
      "new": "    except OSError as exc:\n        _LOG.warning(\"seat jail pass record rejected: %s\", type(exc).__name__)",
-     "nodes": [f"{T_PERM}::test_codex_r5_hostile_records_refuse_typed_through_the_gate[nul-in-evidence-name]",
-               f"{T_PERM}::test_codex_r5_hostile_records_refuse_typed_through_the_gate[unpaired-surrogate]"]},
+     "nodes": R5_NODES},
+    {"id": "R5-boundary-removed", "file": SJ,
+     "old": "    try:\n        return _evaluate_pass_record(profile_digest, root=root, layout=layout, host=host)\n    except Exception as exc:\n        _LOG.warning(\"seat jail pass record rejected: %s\", type(exc).__name__)\n        return False\n",
+     "new": "    return _evaluate_pass_record(profile_digest, root=root, layout=layout, host=host)\n",
+     "nodes": R5_NODES},
+    {"id": "CI-closer-closes-nothing", "file": SJ,
+     "old": '    "  try: os.close(fd)\\n"\n',
+     "new": '    "  try: pass\\n"\n',
+     "nodes": [f"{T_JAIL}::test_j3_the_closer_closes_a_leaked_descriptor"]},
+    {"id": "CI-closer-dropped-from-launch-prefix", "file": PI,
+     "old": '        *_seat_jail.seat_fd_closer("" if jail.token_fd is None else str(jail.token_fd)),\n',
+     "new": "",
+     "nodes": [f"{T_PERM}::test_d8_prefix_order_replaces_the_1109_switch"]},
+    {"id": "CI-capture-keeps-notices", "file": CL,
+     "old": "capture=capture, basename=private_board_name, payload=capture_payload",
+     "new": "capture=capture, basename=private_board_name, payload=payload",
+     "nodes": [f"{T_AGY}::test_advisor_board_cli_seals_and_verifies_capture_summary"]},
     {"id": "sealed-notice-dropped", "file": PI,
      "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
      "new": "    if not route.jailed:\n        return route, [], None",

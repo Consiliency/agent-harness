@@ -496,7 +496,8 @@ def test_d8_prefix_order_replaces_the_1109_switch(tmp_path):
     # An independent literal, never derived from the module under test.
     assert prefix[drop:] == ["/usr/bin/setpriv", "--reuid", "3", "--regid", "3", "--clear-groups",
                              "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all",
-                             "--no-new-privs", "--", "/usr/bin/env", "--chdir=/seat/tree", "--"]
+                             "--no-new-privs", "--", "/usr/bin/env", "--chdir=/seat/tree", "--",
+                             *seat_jail.seat_fd_closer(str(jail.token_fd))]
     # P5: bwrap as H-root keeps every capability unless emptied first.
     assert prefix.index("--cap-drop") < prefix.index("--cap-add")
     assert prefix[prefix.index("--cap-drop") + 1] == "ALL" and "--chdir" not in prefix
