@@ -20,7 +20,10 @@ stamping a same-vendor self-review as a pass.
 from __future__ import annotations
 
 import json
+import re
+from hashlib import sha256
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Callable, Iterable, Mapping, Sequence
 
 from .advisor_board.schema import vendor_family, vendor_of_harness
@@ -28,6 +31,7 @@ from .closeout_validators import ReviewFinding
 from pathlib import Path
 
 from .panel_invoker import PanelResult, available_panel_legs, invoke_panel, terminal_verdict
+from .falsifier import FALSIFIER_OUTCOMES, FalsifierRunResult, run_finding_falsifier
 
 
 RUN_MODES: tuple[str, ...] = ("autonomous", "governed")
@@ -117,7 +121,43 @@ class GateResult:
     panel: PanelResult | None = None
 
 
-def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) -> tuple[ReviewFinding, ...]:
+@dataclass(frozen=True)
+class FalsifierRunBinding:
+    seat_key: str
+    finding_id: str
+    reviewed_sha: str
+    result: FalsifierRunResult
+    record_digest: str
+
+
+def _foreign_falsifier_hold(
+    panel: PanelResult, *, reviewed_sha: str | None, falsifier_policy: str,
+) -> "GateResult | None":
+    """agent-harness#1134 (EC-EXECFIND-2): hold a panel whose legs arrived already
+    carrying a falsifier attachment. Only ``governed_board_gate`` parses and runs
+    attachments, so an outcome or receipt never comes from a seat, jailed or not.
+    Every leg's findings are kept, reduced from copies without the attachment, so
+    the refused attachment is never read as a receipt and no dissent is dropped."""
+    foreign = tuple(leg.seat_key or leg.leg for leg in panel.legs
+                    if leg.finding_falsifiers is not None)
+    if not foreign:
+        return None
+    stripped = PanelResult(tuple(replace(leg) for leg in panel.legs))
+    return _block_result(
+        "foreign_falsifier_attachment", "governed_foreign_falsifier_attachment",
+        f"seat {foreign[0]} arrived with a falsifier attachment the gate did not parse; "
+        "holding (non-human)",
+        extra_findings=_findings_from_panel(
+            stripped, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+        ),
+    )
+
+
+def _findings_from_panel(
+    panel: PanelResult, reviewed_sha: str | None = None, *,
+    falsifier_runs: Mapping[tuple[str, str], FalsifierRunBinding] | None = None,
+    falsifier_policy: str = "optional",
+) -> tuple[ReviewFinding, ...]:
     """Fail-closed translation of panel leg outputs into findings. A leg that is
     not usable (empty/timeout/degraded/unavailable) becomes a `warn` finding so
     the reduced confidence is recorded; a usable leg whose verdict signals a
@@ -129,6 +169,57 @@ def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) ->
     generic ``reason`` alone is not enough for a non-human repair. #88: every finding
     is bound to ``reviewed_sha`` (the exact reviewed commit) when known."""
     findings: list[ReviewFinding] = []
+    if falsifier_policy not in ("optional", "required"):
+        raise ValueError("invalid falsifier policy")
+
+    def receipt_reason(leg, item) -> str:
+        unresolved = f"finding {item.finding_id} record_digest=unresolved"
+        key = (leg.seat_key or leg.leg, item.finding_id)
+        binding = (falsifier_runs or {}).get(key)
+        if not isinstance(binding, FalsifierRunBinding) or reviewed_sha is None:
+            return unresolved
+        result = binding.result
+        if not isinstance(result, FalsifierRunResult) or not isinstance(result.record, dict):
+            return unresolved
+        record = result.record
+        fields = {
+            "schema", "authorization_identity", "seat_key", "reviewed_sha",
+            "finding_id", "nodeid", "outcome", "red_output_digest", "diff_digest",
+            "wall_clock_bound_s", "output_cap_bytes",
+        }
+        expected_diff = sha256(item.diff.encode("utf-8")).hexdigest()
+        if (set(record) != fields or record.get("schema") != "finding_falsifier.v1"
+                or record.get("authorization_identity") != "public_board_falsifier.v1"
+                or binding.seat_key != key[0] or record.get("seat_key") != key[0]
+                or binding.finding_id != item.finding_id
+                or record.get("finding_id") != item.finding_id
+                or binding.reviewed_sha != reviewed_sha
+                or record.get("reviewed_sha") != reviewed_sha
+                or record.get("nodeid") != item.expected_nodeid
+                or result.nodeid != record.get("nodeid")
+                or record.get("diff_digest") != expected_diff
+                or result.diff_digest != expected_diff
+                or record.get("outcome") not in FALSIFIER_OUTCOMES
+                or result.outcome != record.get("outcome")
+                or result.red_output_digest != record.get("red_output_digest")):
+            return unresolved
+        red_digest = record.get("red_output_digest")
+        if record["outcome"] == "red_on_head":
+            if not isinstance(red_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", red_digest):
+                return unresolved
+        elif red_digest is not None:
+            return unresolved
+        try:
+            digest = sha256(json.dumps(
+                record, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+        except (TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
+            return unresolved
+        if binding.record_digest != digest:
+            return unresolved
+        return (f"finding {item.finding_id} observed_outcome={record['outcome']} "
+                f"record_digest={digest}; president ruling required")
+
     for leg in panel.legs:
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
@@ -161,6 +252,31 @@ def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) ->
                     severity="warn",
                     reviewed_sha=reviewed_sha,
                 ))
+            continue
+        # EXECFIND per-finding branch (EC-EXECFIND-3): a leg with an attached falsifier
+        # or a blocking verdict naming FINDING ids decomposes per finding; the
+        # whole-leg branches below are reached only when it does not.
+        attachment = leg.finding_falsifiers
+        attached = {item.finding_id: item for item in attachment.falsifiers} if attachment else {}
+        ids = tuple(dict.fromkeys(re.findall(r"(?m)^FINDING ([A-Za-z0-9_]+):", leg.text)))
+        if (_leg_blocks(leg.text) or attached) and (ids or attached):
+            seat = leg.seat_key or leg.leg
+            for finding_id in dict.fromkeys((*ids, *attached)):
+                item = attached.get(finding_id)
+                if item is not None:
+                    findings.append(ReviewFinding(
+                        code="finding_receipt", reason=f"seat {seat} {receipt_reason(leg, item)}",
+                        severity="block", blocker_class="review_gate_block",
+                        body=leg.text, reviewed_sha=reviewed_sha,
+                    ))
+                else:
+                    findings.append(ReviewFinding(
+                        code="finding_prose",
+                        reason=f"seat {seat} finding {finding_id} has no executable receipt",
+                        severity="block" if falsifier_policy == "required" else "warn",
+                        blocker_class="review_gate_block" if falsifier_policy == "required" else None,
+                        body=leg.text, reviewed_sha=reviewed_sha,
+                    ))
             continue
         if _leg_blocks(leg.text):
             findings.append(ReviewFinding(
@@ -286,8 +402,23 @@ def governed_planning_gate(
     return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha, artifact=artifact)
 
 
-def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None, artifact: str | None = None) -> GateResult:
-    findings = _findings_from_panel(panel, reviewed_sha=reviewed_sha)
+def _gate_result_from_panel(
+    panel: PanelResult, *, reviewed_sha: str | None, artifact: str | None = None,
+    falsifier_runs: Mapping[tuple[str, str], FalsifierRunBinding] | None = None,
+    falsifier_policy: str = "optional",
+) -> GateResult:
+    if falsifier_runs is None:
+        # Only governed_board_gate runs attachments and passes its results; any other
+        # caller (the planning gate, a direct reduction) holds an attached leg.
+        held = _foreign_falsifier_hold(
+            panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+        )
+        if held is not None:
+            return held
+    findings = _findings_from_panel(
+        panel, reviewed_sha=reviewed_sha, falsifier_runs=falsifier_runs,
+        falsifier_policy=falsifier_policy,
+    )
     # agent-harness#1076 D1: only a leg that counts toward landing is a review.
     from .agy_qualification import counts_toward_landing, landing_findings
     findings += landing_findings(panel.legs, artifact=artifact, reviewed_sha=reviewed_sha)
@@ -302,11 +433,17 @@ def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None, art
             extra_findings=findings,
         )
     has_block = any(f.severity == "block" for f in findings)
+    unresolved_prose_dissent = not has_block and any(
+        leg.usable and _leg_blocks(leg.text) for leg in panel.legs
+    )
+    if unresolved_prose_dissent:
+        has_block = True
     return GateResult(
         ran=True,
         promoted=not has_block,
         findings=findings,
         degraded=False,
+        reason="unresolved_prose_dissent" if unresolved_prose_dissent else None,
         panel=panel,
     )
 
@@ -345,6 +482,7 @@ def governed_board_gate(
     monitoring_policy: str = "bounded",
     panel_snapshot: object | None = None,
     reviewed_pr: int | None = None,
+    falsifier_policy: str = "optional",
 ) -> "GateResult | dict[str, object]":
     """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
 
@@ -404,6 +542,11 @@ def governed_board_gate(
 
     if run_mode != "governed":
         return GateResult(ran=False, promoted=True)
+    if falsifier_policy not in ("optional", "required"):
+        return _block_result(
+            "invalid_falsifier_policy", "governed_invalid_falsifier_policy",
+            f"unsupported falsifier policy {falsifier_policy!r}; holding (non-human)",
+        )
     if author_vendors is not None:
         authors = frozenset(v for v in author_vendors if v)
     else:
@@ -687,7 +830,81 @@ def governed_board_gate(
             _backing.reset_review_instruction_digest(token)
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
-    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha, artifact=staged_artifact)
+    held = _foreign_falsifier_hold(
+        panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+    )
+    if held is not None:
+        return held
+    attachments = []
+    invalid: list[tuple[str, ValueError]] = []
+    for leg in panel.legs:
+        if not leg.usable:
+            continue
+        try:
+            attachment = _pi.parse_finding_falsifiers(leg.text)
+        except ValueError as exc:
+            invalid.append((leg.seat_key or leg.leg, exc))
+            continue
+        if attachment.falsifiers:
+            _pi.attach_finding_falsifiers(leg, attachment)
+            attachments.append((leg, attachment))
+    if invalid:
+        seat_key, exc = invalid[0]
+        return _block_result(
+            "invalid_falsifier", "governed_invalid_falsifier",
+            f"seat {seat_key} supplied an invalid falsifier: {exc}; holding (non-human)",
+            extra_findings=_findings_from_panel(
+                panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+            ),
+        )
+    per_seat_exceeded = tuple(leg.seat_key or leg.leg for leg, attachment in attachments
+                              if len(attachment.falsifiers) > 4)
+    if (per_seat_exceeded
+            or sum(len(attachment.falsifiers) for _, attachment in attachments) > 12):
+        involved_seats = per_seat_exceeded or tuple(leg.seat_key or leg.leg
+                                                    for leg, _ in attachments)
+        return _block_result(
+            "falsifier_count_exceeded", "governed_falsifier_count_exceeded",
+            f"falsifier count exceeds four per seat or twelve per board "
+            f"(seats: {', '.join(involved_seats)}); holding (non-human)",
+            extra_findings=_findings_from_panel(
+                panel, reviewed_sha=reviewed_sha, falsifier_policy=falsifier_policy,
+            ),
+        )
+    falsifier_runs: dict[tuple[str, str], FalsifierRunBinding] = {}
+    if reviewed_sha is not None:
+        for leg, attachment in attachments:
+            for item in attachment.falsifiers:
+                authorization = None
+                try:
+                    authorization = _backing.prepare_falsifier_isolation_authorization(
+                        repo=Path(canonical_repo_authority), reviewed_sha=reviewed_sha,
+                    )
+                    result = run_finding_falsifier(
+                        falsifier=item, seat_key=leg.seat_key or leg.leg,
+                        authorization=authorization, repo=Path(canonical_repo_authority),
+                        wall_clock_s=30.0, output_cap_bytes=65536,
+                    )
+                    digest = sha256(json.dumps(
+                        result.record, sort_keys=True, separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest()
+                    key = (leg.seat_key or leg.leg, item.finding_id)
+                    falsifier_runs[key] = FalsifierRunBinding(
+                        seat_key=key[0], finding_id=key[1], reviewed_sha=reviewed_sha,
+                        result=result, record_digest=digest,
+                    )
+                except (OSError, ValueError, TypeError, RecursionError,
+                        RuntimeError, subprocess.SubprocessError):
+                    # An unrecorded or failed operation stays an unresolved receipt.
+                    pass
+                finally:
+                    if authorization is not None:
+                        _backing.close_falsifier_isolation_authorization(authorization)
+    return _gate_result_from_panel(
+        panel, reviewed_sha=reviewed_sha, artifact=staged_artifact,
+        falsifier_runs=falsifier_runs, falsifier_policy=falsifier_policy,
+    )
 
 
 # agent-harness#802: the landing-brief pin re-enters the real gate with the same arguments.

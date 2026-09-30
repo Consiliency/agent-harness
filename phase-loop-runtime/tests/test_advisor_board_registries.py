@@ -150,6 +150,71 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("grok-4.5").default_lane, "grok")
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("claude-fable-5").default_lane, "claude")
 
+    def test_gpt_6_sol_is_an_explicit_codex_seat_not_a_default(self) -> None:
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+        from phase_loop_runtime.advisor_board.harness_mapping import render_seat_invocation
+        from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS, DEFAULT_REVIEW_SEAT_ALIASES
+
+        spec = DEFAULT_MODEL_REGISTRY.get("gpt-6-sol")
+        self.assertEqual(spec.default_lane, "codex")
+        self.assertEqual(spec.effort_ceiling, "max")
+        self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["gpt-6-sol"], "sol")
+        inv = render_seat_invocation("codex", "gpt-6-sol", "max")
+        self.assertEqual((inv.model, inv.effort_args), ("gpt-6-sol", ("-c", "model_reasoning_effort=xhigh")))
+        # registration only: the codex seat default is unchanged
+        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-astra")
+
+    def test_gpt_6_1_sol_is_an_explicit_codex_seat_not_a_default(self) -> None:
+        # Registration only (agent-harness#1172): a board config may seat gpt-6.1-sol;
+        # every shipped default stays gpt-6-astra until the model roster moves it.
+        from phase_loop_runtime import profiles
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+        from phase_loop_runtime.advisor_board.backing import HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES
+        from phase_loop_runtime.advisor_board.harness_mapping import render_seat_invocation
+        from phase_loop_runtime.advisor_board.presets import PRESETS
+        from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS, DEFAULT_REVIEW_SEAT_ALIASES
+
+        spec = DEFAULT_MODEL_REGISTRY.get("gpt-6.1-sol")
+        self.assertEqual((spec.default_lane, spec.effort_ceiling), ("codex", "max"))
+        self.assertEqual(spec.runnable_by, ("codex", "opencode"))
+        self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["gpt-6.1-sol"], "sol")
+        inv = render_seat_invocation("codex", "gpt-6.1-sol", "max")
+        self.assertEqual((inv.model, inv.effort_args), ("gpt-6.1-sol", ("-c", "model_reasoning_effort=xhigh")))
+        self.assertEqual(DEFAULT_LEG_MODELS["codex"], "gpt-6-astra")
+        self.assertEqual(HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"], "gpt-6-astra")
+        self.assertNotIn("gpt-6.1-sol", {s.model for board in PRESETS.values() for s in board.seats})
+        self.assertEqual(profiles.OPENAI_HEAVY_MODEL, "gpt-6-astra")
+
+    def test_claude_sonnet_5_5_is_an_explicit_claude_seat_not_a_default(self) -> None:
+        # Registration only: a board config may seat claude-sonnet-5-5; every shipped
+        # default and tier constant is unchanged (claude-sonnet-5 stays the regular tier).
+        from phase_loop_runtime import capability_registry
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+        from phase_loop_runtime.advisor_board.backing import HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES
+        from phase_loop_runtime.advisor_board.harness_mapping import render_seat_invocation
+        from phase_loop_runtime.advisor_board.presets import PRESETS
+        from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS, DEFAULT_REVIEW_SEAT_ALIASES
+
+        spec = DEFAULT_MODEL_REGISTRY.get("claude-sonnet-5-5")
+        self.assertEqual((spec.default_lane, spec.effort_ceiling), ("claude", "max"))
+        self.assertEqual(spec.runnable_by, ("claude",))
+        self.assertEqual(DEFAULT_REVIEW_SEAT_ALIASES["claude-sonnet-5-5"], "fable")
+        inv = render_seat_invocation("claude", "claude-sonnet-5-5", "max")
+        self.assertEqual((inv.model, inv.effort_args), ("claude-sonnet-5-5", ("--effort", "max")))
+        self.assertEqual(DEFAULT_LEG_MODELS["claude"], "claude-opus-5-5")
+        self.assertEqual(HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"], "claude-opus-5-5")
+        self.assertNotIn("claude-sonnet-5-5", {s.model for board in PRESETS.values() for s in board.seats})
+        self.assertEqual(capability_registry.CLAUDE_REGULAR_MODEL, "claude-sonnet-5")
+        self.assertNotIn(
+            "claude-sonnet-5-5",
+            {
+                capability_registry.CLAUDE_ULTRA_MODEL,
+                capability_registry.CLAUDE_HEAVY_MODEL,
+                capability_registry.CLAUDE_REGULAR_MODEL,
+                capability_registry.CLAUDE_LITE_MODEL,
+            },
+        )
+
     def test_unknown_model_raises_with_known_list(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, UnknownModelError
 

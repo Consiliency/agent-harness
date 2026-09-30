@@ -260,6 +260,13 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     not refused. A landed entry names exactly one merge. SL-5's falsifiers cover both.
     PANEL SL-1 is the first such repair
     (agent-harness#1078).
+    SL-5 also consumes `authorization_supplement` entries exactly as
+    `plans/phase-plan-v10-PANEL.md` defines them under "Authorization supplements
+    (amendment #3)". The derived check is not yet implemented (agent-harness#742), so these
+    are obligations on it rather than tests today. SL-5's falsifiers must show each is
+    refused: a supplement added after its id is spent; a supplement for an id with no
+    authorization on the row; a conflicting `base_blob`; and a landed entry that misses a
+    path in the id's union.
     Any other drift in a frozen path is refused. Five earlier edits have no record, and
     SL-5 disposes of them under agent-harness#742: agent-harness#1102 r7 and r8,
     agent-harness#1096, agent-harness#1020, and commit `94709c18`.

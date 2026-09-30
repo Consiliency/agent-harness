@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import json
 import os
@@ -10,13 +9,13 @@ import shlex
 import shutil
 import string
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable, Mapping
@@ -49,6 +48,8 @@ from .models import (
     PermissionPolicy,
     PromptBundle,
 )
+from . import lease_supervisor as _lease_supervisor
+from .lease_supervisor import LeaseSupervisor  # noqa: F401 -- re-exported; the exec'd supervisor's reaper
 from .observability import heartbeat_path_for_log, run_heartbeat_summary, write_run_heartbeat
 
 
@@ -415,134 +416,104 @@ class LaunchResult:
         return {key: value for key, value in data.items() if value not in (None, [])}
 
 
-class LeaseSupervisor:
-    """POSIX supervisor retaining a lease until its executor tree is gone."""
-
-    _DESCENDANT_REAP_GRACE_SECONDS = 5.0
-    _DESCENDANT_KILL_GRACE_SECONDS = 1.0
-
-    @staticmethod
-    def enable_subreaper() -> None:
-        ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
-
-    def reap_direct_child(self, process: subprocess.Popen) -> None:
-        process.wait()
-
-    @staticmethod
-    def _adopted_descendants() -> tuple[int, ...]:
-        """List the subreaper's live descendant tree without using a process group."""
-
-        parent_by_pid: dict[int, int] = {}
-        for stat_path in Path("/proc").glob("[0-9]*/stat"):
-            try:
-                pid = int(stat_path.parts[-2])
-                fields = stat_path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-                parent_by_pid[pid] = int(fields[1])
-            except (IndexError, OSError, ValueError):
-                continue
-        descendants: set[int] = set()
-        parents = {os.getpid()}
-        while parents:
-            children = {pid for pid, parent in parent_by_pid.items() if parent in parents}
-            children.difference_update(descendants)
-            descendants.update(children)
-            parents = children
-        return tuple(sorted(descendants))
-
-    def _signal_adopted_descendants(self, signum: int) -> None:
-        for pid in self._adopted_descendants():
-            try:
-                os.killpg(os.getpgid(pid), signum)
-            except ProcessLookupError:
-                continue
-
-    def reap_descendants(self, process: subprocess.Popen) -> int:
-        returncode = process.wait()
-        # The executor is a session leader, but descendants can call ``setsid``
-        # and leave that group. The subreaper adopts every surviving descendant,
-        # so explicit child reaping establishes complete-tree emptiness and /proc
-        # provides the signal targets for session-detached descendants at the
-        # grace limit.
-        reap_deadline = time.monotonic() + self._DESCENDANT_REAP_GRACE_SECONDS
-        kill_deadline: float | None = None
-        sent_sigkill = False
-        while True:
-            descendants = self._adopted_descendants()
-            if not descendants:
-                break
-            for pid in descendants:
-                try:
-                    os.waitpid(pid, os.WNOHANG)
-                except ChildProcessError:
-                    continue
-            now = time.monotonic()
-            if kill_deadline is None and now >= reap_deadline:
-                self._signal_adopted_descendants(signal.SIGTERM)
-                kill_deadline = now + self._DESCENDANT_KILL_GRACE_SECONDS
-            elif kill_deadline is not None and not sent_sigkill and now >= kill_deadline:
-                self._signal_adopted_descendants(signal.SIGKILL)
-                sent_sigkill = True
-            time.sleep(0.01)
-        return returncode
+_LEASE_SUPERVISOR_SCRIPT = Path(_lease_supervisor.__file__).resolve()
 
 
-class _ForkedExecutor:
-    """Small Popen-compatible wait surface for the forked executor child."""
+def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd: int) -> list[str]:
+    """Wrap ``command`` in the exec'd lease supervisor (agent-harness#1140).
 
-    def __init__(self, pid: int) -> None:
-        self.pid = pid
-        self.process_group_id = pid
-        self.returncode: int | None = None
+    The supervisor is a separate program, not a ``preexec_fn``: Python must not
+    run in a child forked from this possibly threaded process before ``exec``.
+    It is started by path with ``-I`` so neither the launcher's ``PYTHONPATH``
+    nor an installed copy of this package can substitute another supervisor,
+    and with ``-S`` so no site hook can start a thread before its own fork.
+    """
+    return [
+        sys.executable,
+        "-I",
+        "-S",
+        str(_LEASE_SUPERVISOR_SCRIPT),
+        "--lease-fd",
+        str(lease_fd),
+        "--exec-status-fd",
+        str(exec_status_fd),
+        "--",
+        *command,
+    ]
 
-    def wait(self) -> int:
-        if self.returncode is None:
-            _, status = os.waitpid(self.pid, 0)
-            self.returncode = os.waitstatus_to_exitcode(status)
-        return self.returncode
 
+def _supervisor_status_pipe() -> tuple[int, int]:
+    """A status pipe whose ends sit above stdio, so Popen's stdio setup cannot clobber them."""
+    import fcntl  # POSIX-only; this module must import on Windows (panel_invoker)
 
-def _close_supervisor_descriptors(lease_fd: int) -> None:
-    max_fd = int(os.sysconf("SC_OPEN_MAX"))
-    os.closerange(0, lease_fd)
-    os.closerange(lease_fd + 1, max_fd)
-
-
-def _supervise_forked_executor(lease_fd: int) -> None:
-    """Turn the Popen child into a subreaping supervisor for its executor fork."""
-    if not os.get_inheritable(lease_fd):
-        os.close(lease_fd)
-    LeaseSupervisor.enable_subreaper()
-    executor_pid = os.fork()
-    if executor_pid == 0:
-        os.setsid()
-        LeaseSupervisor.enable_subreaper()
-        return
-
-    _close_supervisor_descriptors(lease_fd)
-
-    def terminate_executor(_signum, _frame) -> None:
-        try:
-            os.killpg(executor_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
-        def force_kill(_alarm_signum, _alarm_frame) -> None:
-            try:
-                os.killpg(executor_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-        signal.signal(signal.SIGALRM, force_kill)
-        signal.setitimer(signal.ITIMER_REAL, 1)
-
-    signal.signal(signal.SIGTERM, terminate_executor)
-    signal.signal(signal.SIGINT, terminate_executor)
+    ends = list(os.pipe())
     try:
-        executor = _ForkedExecutor(executor_pid)
-        returncode = LeaseSupervisor().reap_descendants(executor)
+        for index, fd in enumerate(ends):
+            if fd <= 2:
+                ends[index] = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+                os.close(fd)
     except BaseException:
-        returncode = 1
-    os._exit(returncode if isinstance(returncode, int) and 0 <= returncode <= 255 else 1)
+        for fd in ends:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+    return ends[0], ends[1]
+
+
+def _read_supervisor_status(process: subprocess.Popen, status_fd: int, command: list[str]) -> bool:
+    """Read the supervisor's status records; raise as a direct ``Popen`` would.
+
+    Returns whether the executor was released to ``exec`` (the ``released``
+    record); without it the executor never ran.  An
+    ``exec:<errno>`` record raises the executor's ``OSError``; a
+    ``setup:<reason>`` record raises the ``SubprocessError`` a failing
+    ``preexec_fn`` used to.  See ``lease_supervisor`` for the protocol.
+    """
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = os.read(status_fd, 256)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(status_fd)
+    records = b"".join(chunks).decode("ascii", "replace").splitlines()
+    exec_failures = [record for record in records if record.startswith("exec:")]
+    setup_failures = [record for record in records if record.startswith("setup:")]
+    if not exec_failures and not setup_failures:
+        if "released" in records:
+            return True
+        # No record: the executor was never released.  With the status pipe
+        # handed through, EOF then means the supervisor is gone or going, so
+        # settle it now rather than feed stdin to a dead process; if it is still
+        # running (the pipe never reached it), the caller checks at exit.
+        try:
+            returncode = process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return False
+        if returncode == 0:
+            return False
+        setup_failures = ["setup:unreported"]
+    for stream in (process.stdin, process.stdout):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    process.wait()
+    if exec_failures and not setup_failures:
+        errno_num = int(exec_failures[0].partition(":")[2] or 0)
+        raise OSError(errno_num, os.strerror(errno_num), command[0])
+    # Same type and message as a failing preexec_fn; the supervisor's reason
+    # (e.g. ``setup:EAGAIN``) rides along as the cause.
+    if setup_failures == ["setup:unreported"]:
+        raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
+    raise subprocess.SubprocessError("Exception occurred in preexec_fn.") from RuntimeError(
+        f"lease supervisor {', '.join(setup_failures or exec_failures)}"
+    )
 
 
 @dataclass(frozen=True)
@@ -2765,13 +2736,29 @@ def launch(
                 "cwd": str(cwd) if cwd else None,
                 "env": child_env,
             }
+            popen_command = command
+            exec_status_read: int | None = None
+            exec_status_write: int | None = None
             if _supervisor_lease_fd is not None:
-                popen_kwargs.update(
-                    close_fds=True,
-                    pass_fds=(_supervisor_lease_fd,),
-                    preexec_fn=partial(_supervise_forked_executor, _supervisor_lease_fd),
-                )
-            process = subprocess.Popen(command, **popen_kwargs)
+                exec_status_read, exec_status_write = _supervisor_status_pipe()
+            try:
+                if exec_status_write is not None:
+                    popen_command = _lease_supervisor_command(command, _supervisor_lease_fd, exec_status_write)
+                    popen_kwargs.update(
+                        close_fds=True,
+                        pass_fds=(_supervisor_lease_fd, exec_status_write),
+                    )
+                process = subprocess.Popen(popen_command, **popen_kwargs)
+            except BaseException:
+                if exec_status_read is not None:
+                    os.close(exec_status_read)
+                raise
+            finally:
+                if exec_status_write is not None:
+                    os.close(exec_status_write)
+            executor_released = True
+            if exec_status_read is not None:
+                executor_released = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
             if stdin_text is not None and process.stdin is not None:
@@ -2873,6 +2860,11 @@ def launch(
                 process.stdout.close()
             except OSError:
                 pass
+            if not executor_released and returncode != 0 and not (timed_out or interrupted or stalled):
+                # The supervisor died before releasing the executor, so the
+                # executor never ran (see lease_supervisor's handshake); that is a
+                # failed launch, never an executor exit status.
+                raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
         heartbeat_summary = None
         if heartbeat_path is not None:
             heartbeat_summary = run_heartbeat_summary(

@@ -76,7 +76,10 @@ actionable message, before any subprocess is spawned. Source of truth:
 | ---------------- | ------------- | ------------ | ----------------- | -------------- |
 | `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6-sol`      | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6.1-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `claude-sonnet-5`| claude        | `claude`     | claude            | max            |
+| `claude-sonnet-5-5`| claude      | `claude`     | claude            | max            |
 | `claude-opus-4-8`| claude        | `claude`     | claude            | max            |
 | `claude-opus-5`  | claude        | `claude`     | claude            | max            |
 | `claude-haiku-4-5-20251001`| claude | `claude`     | claude            | max            |
@@ -90,6 +93,12 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `grok-4.7`       | grok          | `grok`       | grok              | max            |
 | `grok-4.6`       | grok          | `grok`       | grok              | max            |
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
+
+`gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
+
+`gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No shipped default names it. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
+
+`claude-sonnet-5-5` (Claude Sonnet 5.5) is likewise an explicit seat, not a default. It is registered only: it answers to the `fable` alias, the Anthropic seat, so a governed policy requiring `fable` accepts a board that seats it. It does not answer to `gemini`, so seating it where the gemini seat would sit does not satisfy a policy that requires `gemini`. It runs only on the `claude` lane. It is not a TUI-policy model (that is the `claude-fable-*` and `claude-opus-*` prefixes), so it is routed like `claude-sonnet-5`. No shipped default, preset or tier constant names it, and `claude-sonnet-5` stays the regular tier. As with `gpt-6.1-sol`, there is no user-config route to it in the production review entry points yet (agent-harness#1171).
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →

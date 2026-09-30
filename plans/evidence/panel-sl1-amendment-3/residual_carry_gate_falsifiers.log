@@ -1,0 +1,116 @@
+# r3 falsifiers. Gate imports nothing from the repo; the SL-1 cross-check imports SL-1 0e7f9efb test_panel_sl1_contracts
+OK   exit=1 want=1  absent
+OK   exit=1 want=1  true
+OK   exit=1 want=1  codex r2 probe: wrong issue, unratified
+OK   exit=1 want=1  wrong issue
+OK   exit=1 want=1  unratified (false)
+OK   exit=1 want=1  ratified truthy string
+OK   exit=1 want=1  malformed: string
+OK   exit=1 want=1  malformed: missing ratified_by
+OK   exit=1 want=1  malformed: empty ratified_by
+OK   exit=1 want=1  malformed: bad date
+OK   exit=1 want=1  malformed: missing evidence
+OK   exit=1 want=1  malformed: non-github evidence
+OK   exit=1 want=1  malformed: extra key
+OK   exit=0 want=0  valid record
+OK   exit=0 want=0  empty residual, no carry
+OK   exit=1 want=1  codex r3 repro: URL with trailing newline
+OK   exit=1 want=1  codex r3 repro: URL escaping the repo
+OK   exit=1 want=1  evidence comment_id as string
+OK   exit=1 want=1  evidence comment_id as float
+OK   exit=1 want=1  evidence comment_id as bool
+OK   exit=1 want=1  evidence comment_id negative
+OK   exit=1 want=1  evidence comment_id zero
+OK   exit=1 want=1  evidence issue as string
+OK   exit=1 want=1  evidence issue another number
+OK   exit=1 want=1  evidence other kind
+OK   exit=1 want=1  evidence extra key
+OK   exit=1 want=1  evidence missing comment_id
+OK   exit=1 want=1  ratified_by with newline
+OK   exit=1 want=1  date that is not a real day
+OK   exit=1 want=1  carry sites missing
+OK   exit=1 want=1  carry sites superset of residual
+OK   exit=1 want=1  carry sites subset of residual
+OK   exit=1 want=1  carry sites differ by one
+OK   exit=1 want=1  residual grew past the carry
+OK   exit=1 want=1  residual shrank below the carry
+OK   exit=1 want=1  carry sites duplicate a site
+OK   exit=1 want=1  carry site with extra field
+OK   exit=1 want=1  carry sites as triples
+OK   exit=0 want=0  matching carry, sites reordered
+OK   exit=1 want=1  residual file absent (this branch)
+OK   exit=1 want=1  residual file absent, valid carry
+OK   exit=1 want=1  residual file wrong schema
+OK   exit=1 want=1  residual file extra key
+OK   exit=1 want=1  residual file duplicate site
+OK   exit=1 want=1  residual file not JSON
+45/45 cases as expected
+cross-check: ruled sites == SL-1 _TW_RESIDUAL_SL1B: True
+suite exit=0
+# the gate on this branch as committed (no residual file; SL-1 writes it):
+PANEL-RESIDUAL-SL1B: fail
+  - residual file phase-loop-runtime/tests/data/panel_residual_sl1b.json is absent (SL-1 writes it; SL-1b empties it, never deletes it)
+exit=1
+
+# mutation: equality binding removed (sites never compared)
+FAIL exit=0 want=1  carry sites superset of residual
+FAIL exit=0 want=1  carry sites subset of residual
+FAIL exit=0 want=1  carry sites differ by one
+FAIL exit=0 want=1  residual grew past the carry
+FAIL exit=0 want=1  residual shrank below the carry
+40/45 cases as expected
+
+
+# mutation: binding weakened to 'carry covers residual' (superset accepted)
+FAIL exit=0 want=1  carry sites superset of residual
+FAIL exit=0 want=1  residual shrank below the carry
+43/45 cases as expected
+
+
+# mutation: binding weakened to 'carry within residual' (subset accepted)
+FAIL exit=0 want=1  carry sites subset of residual
+FAIL exit=0 want=1  residual grew past the carry
+43/45 cases as expected
+
+
+# mutation: exact int check relaxed to isinstance (bool accepted)
+FAIL exit=0 want=1  evidence comment_id as bool
+44/45 cases as expected
+
+
+# mutation: r1 truthy check
+FAIL exit=0 want=1  wrong issue
+FAIL exit=0 want=1  unratified (false)
+FAIL exit=0 want=1  ratified truthy string
+FAIL exit=0 want=1  malformed: missing ratified_by
+FAIL exit=0 want=1  malformed: empty ratified_by
+FAIL exit=0 want=1  malformed: bad date
+FAIL exit=0 want=1  malformed: extra key
+FAIL exit=0 want=1  evidence comment_id as string
+FAIL exit=0 want=1  evidence comment_id as float
+FAIL exit=0 want=1  evidence comment_id as bool
+FAIL exit=0 want=1  evidence comment_id negative
+FAIL exit=0 want=1  evidence comment_id zero
+FAIL exit=0 want=1  evidence issue as string
+FAIL exit=0 want=1  evidence issue another number
+FAIL exit=0 want=1  evidence other kind
+FAIL exit=0 want=1  evidence extra key
+FAIL exit=0 want=1  ratified_by with newline
+FAIL exit=0 want=1  date that is not a real day
+FAIL exit=0 want=1  carry sites missing
+FAIL exit=0 want=1  carry sites superset of residual
+FAIL exit=0 want=1  carry sites subset of residual
+FAIL exit=0 want=1  carry sites differ by one
+FAIL exit=0 want=1  residual grew past the carry
+FAIL exit=0 want=1  residual shrank below the carry
+FAIL exit=0 want=1  carry sites duplicate a site
+FAIL exit=0 want=1  carry site with extra field
+FAIL exit=0 want=1  carry sites as triples
+18/45 cases as expected
+
+
+# mutation: absent residual file treated as empty
+FAIL exit=0 want=1  residual file absent (this branch)
+FAIL exit=0 want=1  residual file absent, valid carry
+43/45 cases as expected
+
