@@ -263,6 +263,9 @@ def test_codex_r4_a_seat_owned_record_is_no_pass(tmp_path, monkeypatch):
 @pytest.mark.parametrize("parent", ["symlink", "group-writable"])
 def test_codex_r4_an_unsafe_parent_directory_is_no_pass(tmp_path, monkeypatch, parent):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # A shared group: the operator's primary group also lists another member. (Hermetic:
+    # the real account database would decide differently on different hosts.)
+    _fake_accounts(monkeypatch, os.stat(tmp_path).st_gid, members=("op", "someone-else"))
     digest = seat_jail.jail_profile_digest("claude")
     (tmp_path / "state").mkdir(mode=0o700)
     real = tmp_path / "elsewhere"
@@ -713,6 +716,12 @@ def test_hang_investigation_sealed_claude_tui_session_is_golden_to_main(monkeypa
 # record shapes must yield the typed refusal through the real route gate, never an error.
 # --------------------------------------------------------------------------------------
 
+# The typed reason for each shape: an exception is caught by the boundary and named by class.
+R5_REASONS = {"nul-in-evidence-name": "error:ValueError",
+              "unpaired-surrogate": "error:UnicodeEncodeError",
+              "non-string-evidence": "evidence_mismatch", "huge-integer": "evidence_mismatch"}
+
+
 @pytest.mark.parametrize("shape", ["nul-in-evidence-name", "unpaired-surrogate",
                                    "non-string-evidence", "huge-integer"])
 def test_codex_r5_hostile_records_refuse_typed_through_the_gate(tmp_path, monkeypatch, shape):
@@ -737,6 +746,112 @@ def test_codex_r5_hostile_records_refuse_typed_through_the_gate(tmp_path, monkey
         raw = json.dumps(record).replace(json.dumps(record["evidence_sha256"]), "9" * 4000)
     record_path.write_text(raw if raw is not None else json.dumps(record))
     record_path.chmod(0o600)
+    assert seat_jail.pass_record_verdict(digest) == (False, R5_REASONS[shape])
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True))
     assert refusal == "seat_sandbox_refused:jail_unqualified" and notices == []
+
+
+def test_codex_r5_the_exception_class_reaches_the_launch_refusal_and_the_log(
+        tmp_path, monkeypatch, caplog):
+    """The route detail stays a closed code (F030); the class is in the launch refusal's
+    message and in the log, as the verdict's typed reason."""
+    def boom(*args, **kwargs):
+        raise LookupError("unexpected")
+
+    monkeypatch.setattr(seat_jail, "_evaluate_pass_record", boom)
+    digest = seat_jail.jail_profile_digest("claude")
+    assert seat_jail.pass_record_verdict(digest) == (False, "error:LookupError")
+    with caplog.at_level("WARNING"):
+        refusal = panel_invoker._pass_refusal(digest)
+    assert refusal == ("seat_sandbox_refused:jail_unqualified", "error:LookupError")
+    assert "LookupError" in caplog.text
+
+
+# --------------------------------------------------------------------------------------
+# The pass store under a umask-002 host (user-private groups): a group-writable directory
+# is accepted ONLY when its group is the operator's user-private group.
+# --------------------------------------------------------------------------------------
+
+def _fake_accounts(monkeypatch, gid, *, primary=None, group_name="op", members=(),
+                   other_primary=False, database=True):
+    """Inject the account database: the operator ``op`` (this euid) and the group ``gid``."""
+    from types import SimpleNamespace
+
+    me = SimpleNamespace(pw_name="op", pw_uid=os.geteuid(),
+                         pw_gid=gid if primary is None else primary)
+    group = SimpleNamespace(gr_name=group_name, gr_mem=list(members))
+
+    def getgrgid(wanted):
+        if wanted != gid:
+            raise KeyError(wanted)
+        return group
+
+    accounts = [me]
+    if other_primary:
+        accounts.append(SimpleNamespace(pw_name="other", pw_uid=os.geteuid() + 1, pw_gid=gid))
+    monkeypatch.setattr(seat_jail, "_account_db",
+                        (lambda: (me, getgrgid, lambda: accounts)) if database else (lambda: None))
+
+
+def _umask002_store(tmp_path, monkeypatch, *, mode=0o775) -> str:
+    """The layout a umask-002 host creates: every directory in the chain is ``mode``."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    digest = seat_jail.jail_profile_digest("claude")
+    _write_pass(seat_jail.jail_pass_dir(), digest)
+    for directory in (tmp_path / "state", tmp_path / "state" / "phase-loop",
+                      seat_jail.jail_pass_dir()):
+        directory.chmod(mode)
+    return digest
+
+
+def test_upg_a_group_writable_chain_in_the_operators_private_group_qualifies(
+        tmp_path, monkeypatch):
+    digest = _umask002_store(tmp_path, monkeypatch)
+    _fake_accounts(monkeypatch, os.stat(tmp_path / "state").st_gid, members=("op",))
+    assert seat_jail.pass_record_verdict(digest, layout=LAYOUT, host=HOST) == (True, "pass")
+
+
+@pytest.mark.parametrize("shape", ["not-the-primary-gid", "group-named-otherwise",
+                                   "group-has-another-member", "another-accounts-primary",
+                                   "no-account-database", "other-writable"])
+def test_upg_every_other_group_writable_chain_refuses_with_the_chmod_notice(
+        tmp_path, monkeypatch, shape):
+    digest = _umask002_store(tmp_path, monkeypatch,
+                             mode=0o777 if shape == "other-writable" else 0o775)
+    gid = os.stat(tmp_path / "state").st_gid
+    _fake_accounts(monkeypatch, gid,
+                   primary=gid + 1 if shape == "not-the-primary-gid" else None,
+                   group_name="staff" if shape == "group-named-otherwise" else "op",
+                   members=("op", "someone-else") if shape == "group-has-another-member" else (),
+                   other_primary=shape == "another-accounts-primary",
+                   database=shape != "no-account-database")
+    passed, reason = seat_jail.pass_record_verdict(digest, layout=LAYOUT, host=HOST)
+    problem = "other_writable" if shape == "other-writable" else "group_writable"
+    assert not passed and reason == f"store_unsafe:{problem}:{tmp_path / 'state'}"
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True),
+        pass_recorded=None)
+    assert refusal == "seat_sandbox_refused:pass_store_unsafe" and notices == []
+    fix = seat_jail.NOTICES["seat_sandbox_refused:pass_store_unsafe"][2]
+    assert "chmod go-w" in fix and "user-private group" in fix
+
+
+def test_upg_the_recorder_accepts_the_private_group_and_refuses_a_shared_one(
+        tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o775)
+    state.chmod(0o775)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    gid = os.stat(state).st_gid
+    evidence = {"profile_digest": "0" * 64, "host_identity": "h", "falsifier_layout": "l",
+                "result": "pass"}
+    _fake_accounts(monkeypatch, gid, members=("op", "someone-else"))
+    with pytest.raises(q.QualificationError, match="user-private group"):
+        q._record_pass(evidence)
+    _fake_accounts(monkeypatch, gid)
+    q._record_pass(evidence)
+    assert state.stat().st_mode & 0o777 == 0o775                 # never re-permissioned
+    assert (seat_jail.jail_pass_dir() / f"{'0' * 64}.json").is_file()

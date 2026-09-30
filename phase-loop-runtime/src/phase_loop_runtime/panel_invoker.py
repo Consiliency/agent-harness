@@ -2442,7 +2442,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_sandbox_unavailable_tiocsti", "seat_sandbox_not_staged",
     "seat_sandbox_refused:jail_build", "seat_sandbox_refused:namespace",
     "seat_sandbox_refused:identity", "seat_sandbox_refused:jail_unqualified",
-    "seat_sandbox_refused:preseed",
+    "seat_sandbox_refused:pass_store_unsafe", "seat_sandbox_refused:preseed",
     "seat_sandbox_refused:token_file_unsafe", "seat_sandbox_refused:gemini_credential_unsafe",
     "seat_sandbox_refused:stage_not_private", "seat_sandbox_refused:stage_changed",
     "seat_sandbox_refused:output_unsafe", "seat_sandbox_retained_after_teardown",
@@ -3625,9 +3625,28 @@ def _require_qualified_jail(jail: "_seat_jail.SeatJail",
     The route gate admitted a digest earlier; if the host layout (or anything else) changed
     in between, the built jail's digest differs and has no pass -- refused, never launched."""
     _require_canonical_jail(jail)
-    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(_seat_jail.actual_profile_digest(jail)):
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_unqualified"),
-                                            "built jail has no recorded pass on this host")
+    refusal = _pass_refusal(_seat_jail.actual_profile_digest(jail), pass_recorded)
+    if refusal is not None:
+        code, reason = refusal
+        raise _seat_jail.SeatSandboxRefused(
+            code, f"built jail has no usable recorded pass on this host ({reason})")
+
+
+def _pass_refusal(digest: str, pass_recorded: "Callable[[str], bool] | None" = None,
+                  ) -> "tuple[str, str] | None":
+    """The EC-EXECFIND-2 gate for one jail digest: None when a pass is recorded, else
+    ``(refusal code, typed reason)``. An unsafe pass store has its own code, whose notice
+    names the chmod; every other failure (including any error) is ``jail_unqualified``.
+    The reason (e.g. ``error:<ExceptionClass>``) is logged; it is never a detail code."""
+    if pass_recorded is not None:
+        passed, reason = bool(pass_recorded(digest)), "injected"
+    else:
+        passed, reason = _seat_jail.pass_record_verdict(digest)
+    if passed:
+        return None
+    sub = "pass_store_unsafe" if reason.startswith("store_unsafe:") else "jail_unqualified"
+    logging.getLogger(__name__).warning("seat jail refused (%s): %s", sub, reason)
+    return _seat_jail.refused(sub), reason
 
 
 def _require_jailed_seat_identity(prefix: "Sequence[str]", jail: "_seat_jail.SeatJail",
@@ -9036,9 +9055,9 @@ def _seat_route_for_spawn(
         return None, [], None
     if not route.jailed:
         return route, [str(route.code)], None
-    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(
-            _seat_jail.jail_profile_digest(leg)):
-        return route, [], _seat_jail.refused("jail_unqualified")
+    refusal = _pass_refusal(_seat_jail.jail_profile_digest(leg), pass_recorded)
+    if refusal is not None:
+        return route, [], refusal[0]
     return route, [], None
 
 

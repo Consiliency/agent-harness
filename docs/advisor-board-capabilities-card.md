@@ -490,7 +490,17 @@ which runs EC-EXECFIND-2's jail falsifiers against a real falsifier run and reco
 A pass record binds this host, the falsifier-run layout and the
 run's evidence, which is re-hashed on every check. A copied, stale or hand-written record
 does not qualify another host or another run. The operator's own account can still forge
-one, and that is accepted, because the operator is trusted. The store defends against the
+one, and that is accepted, because the operator is trusted.
+
+**The pass store's directories must be private to you.** This applies to
+`$XDG_STATE_HOME` (usually `~/.local/state`), its `phase-loop` directory and
+`phase-loop/seat-jail-passes`. Each must be a directory you own, must not be a link, and
+must not be writable by others. A group-writable directory is accepted only when its group
+is your own user-private group. That is the usual umask-002 layout, where your primary
+group is named after you and has no other members, and no other account uses it as its
+primary group. Anything else is refused with `seat_sandbox_refused:pass_store_unsafe`. Its
+notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
+qualification nor the gate ever changes these permissions for you. The store defends against the
 seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
 `gemini_seat_egress_unconfined`: the agy access token carries `cloud-platform` and other
 scopes beyond inference, and under the maintainer's "prove then enable" ruling the seat

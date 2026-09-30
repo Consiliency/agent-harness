@@ -445,7 +445,9 @@ def test_recording_never_repermissions_an_existing_state_directory(tmp_path, mon
     state.mkdir(mode=0o775)
     state.chmod(0o775)
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    with pytest.raises(q.QualificationError, match="not group- or other-writable"):
+    # Hermetic: the account database says this group is shared (not a user-private group).
+    monkeypatch.setattr(seat_jail, "_account_db", lambda: None)
+    with pytest.raises(q.QualificationError, match="not other-writable"):
         q._record_pass({"profile_digest": "0" * 64, "host_identity": "h",
                         "falsifier_layout": "l", "result": "pass"})
     assert state.stat().st_mode & 0o777 == 0o775

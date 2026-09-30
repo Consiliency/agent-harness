@@ -880,9 +880,25 @@ are recorded on agent-harness#1132.
       pass;
     - the run's evidence file, which the gate re-hashes and which must name the same values.
 
-    The record, the evidence and every directory up to the state home must be regular and
-    operator-owned, not group- or other-writable, and not links. They are read non-blocking
-    with size caps, and any failure is the typed refusal.
+    The record and the evidence must be regular, operator-owned files that are not group- or
+    other-writable and are not links. They are read non-blocking with size caps.
+  - **The directory chain:** every directory up to the state home must be operator-owned,
+    must not be a link, and must not be other-writable. It may be group-writable only when
+    its group is the operator's user-private group, which is the umask-002 default. That
+    means all of the following hold:
+    - it is the operator's primary gid;
+    - the group is named after the operator;
+    - it lists no other member;
+    - no other account has it as its primary group.
+
+    Any other chain is refused with `seat_sandbox_refused:pass_store_unsafe`, whose notice
+    names the chmod. The recorder applies the same rule and never re-permissions an
+    existing directory.
+  - **One fail-closed boundary:** the whole evaluation is inside a single
+    `except Exception`. Any error is the typed refusal `jail_unqualified`, and no provider
+    is launched. The route detail stays the closed code. The verdict's typed reason
+    (`no_record`, `binding_mismatch`, `evidence_mismatch`, `store_unsafe:...` or
+    `error:<ExceptionClass>`) is logged, and is carried in the launch refusal's message.
   - **Checked at launch:** qualification is re-checked against the jail actually built.
   - **Threat model:** the operator's own account can forge a record, and is trusted to. The
     store defends against the seat uid, stale records, other hosts and accidental reuse.

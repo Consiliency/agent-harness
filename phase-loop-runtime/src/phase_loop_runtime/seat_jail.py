@@ -122,6 +122,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run the per-host EC-EXECFIND-2 jail qualification, which records the pass at "
         "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json; or remove the seat token "
         "to use the sealed route"),
+    "seat_sandbox_refused:pass_store_unsafe": (
+        "leg refused",
+        "the pass store or one of its parent directories is a link, not yours, "
+        "other-writable, or group-writable by a group that is not your user-private group",
+        "chmod go-w (or 0700) $XDG_STATE_HOME, $XDG_STATE_HOME/phase-loop and "
+        "$XDG_STATE_HOME/phase-loop/seat-jail-passes; a group-writable directory is accepted "
+        "only when its group is your own user-private group"),
     "seat_sandbox_refused:preseed": (
         "leg refused", "seat-home not writable", "check disk"),
     "seat_sandbox_refused:token_file_unsafe": (
@@ -1319,15 +1326,56 @@ def host_identity(path: Path = _MACHINE_ID) -> str | None:
     return hashlib.sha256(raw).hexdigest() if raw else None
 
 
-def _private_dir(path: Path) -> bool:
-    """A directory the operator alone controls: not a link, owned by the euid, and not
-    group- or other-writable."""
+def _account_db():
+    """``(operator passwd entry, grp.getgrgid, pwd.getpwall)``, or None without an account
+    database (then no group-writable directory is ever accepted)."""
+    try:
+        import grp
+        import pwd
+    except ImportError:
+        return None
+    return pwd.getpwuid(os.geteuid()), grp.getgrgid, pwd.getpwall
+
+
+def _operator_private_group(gid: int) -> bool:
+    """Is ``gid`` the operator's user-private group (the umask-002 layout)? All of: it is the
+    operator's primary gid, the group is named after the operator, it lists no other member,
+    and no other account has it as its primary group. Then group-writable grants nobody else."""
+    db = _account_db()
+    if db is None:
+        return False
+    me, getgrgid, getpwall = db
+    if gid != me.pw_gid:
+        return False
+    try:
+        group = getgrgid(gid)
+    except KeyError:
+        return False
+    if group.gr_name != me.pw_name or any(m != me.pw_name for m in group.gr_mem):
+        return False
+    return not any(acct.pw_gid == gid and acct.pw_uid != me.pw_uid for acct in getpwall())
+
+
+def pass_store_dir_problem(path: Path) -> str | None:
+    """Why ``path`` is not a directory the operator alone controls, or None when it is.
+
+    ``"missing"`` when it does not exist; otherwise ``"not_owned"`` (not a directory owned by
+    the euid -- a link is refused here), ``"other_writable"``, or ``"group_writable"`` unless
+    the group is the operator's user-private group (:func:`_operator_private_group`)."""
     try:
         info = os.lstat(path)
+    except FileNotFoundError:
+        return "missing"
     except OSError:
-        return False
-    return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
-            and not stat.S_IMODE(info.st_mode) & 0o022)
+        return "not_owned"
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        return "not_owned"
+    mode = stat.S_IMODE(info.st_mode)
+    if mode & 0o002:
+        return "other_writable"
+    if mode & 0o020 and not _operator_private_group(info.st_gid):
+        return "group_writable"
+    return None
 
 
 def _read_private_file(directory: Path, name: str, cap: int) -> bytes | None:
@@ -1374,8 +1422,8 @@ def _parse_json(data: bytes | None) -> object:
 def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
                            layout: str | None = None, host: str | None = None) -> bool:
     """Is there a qualification of exactly this jail on THIS host from the EC-EXECFIND-2
-    falsifier run? Every rejection is a plain ``False`` -- the route then refuses with
-    ``seat_sandbox_refused:jail_unqualified`` -- and nothing here blocks or raises.
+    falsifier run? Every rejection is a plain ``False`` and nothing here blocks or raises;
+    :func:`pass_record_verdict` gives the typed reason the route refuses with.
 
     The record ``<jail_pass_dir()>/<digest>.json`` must bind all of:
     - the jail's profile digest;
@@ -1387,7 +1435,10 @@ def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
       which itself names the same digest, host, layout and a pass. The gate re-hashes it.
 
     The pass directory and its parents up to the state home must be real directories the
-    operator alone controls. Threat model: the operator's own account can forge a record,
+    operator alone controls (:func:`pass_store_dir_problem`): owned by the operator, never
+    other-writable, and group-writable only when the group is the operator's user-private
+    group (the umask-002 default). Otherwise the route refuses with
+    ``seat_sandbox_refused:pass_store_unsafe``, whose notice names the chmod. Threat model: the operator's own account can forge a record,
     and is trusted to; the store defends against the seat uid (which cannot reach this
     directory, and whose files are refused by owner), stale records, other hosts, and
     accidental reuse.
@@ -1395,39 +1446,54 @@ def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
     # ONE fail-closed boundary around the WHOLE evaluation -- path building, opening,
     # reading, parsing, binding checks and evidence re-hashing. Any Exception is "no pass"
     # (the route then refuses with `seat_sandbox_refused:jail_unqualified` and launches
-    # nothing); its class is logged. A new failure shape therefore can never escape as an
+    # nothing); its class is logged and is the verdict's reason, `error:<class>`. A new failure shape therefore can never escape as an
     # uncaught error. BaseException (KeyboardInterrupt, SystemExit) is not swallowed.
+    return pass_record_verdict(profile_digest, root=root, layout=layout, host=host)[0]
+
+
+def pass_record_verdict(profile_digest: str, *, root: Path | None = None,
+                        layout: str | None = None, host: str | None = None) -> tuple[bool, str]:
+    """``(passed, reason)``. ``reason`` is ``"pass"``, one of ``no_record``,
+    ``binding_mismatch``, ``evidence_mismatch``, ``store_unsafe:<problem>:<directory>``, or
+    ``error:<ExceptionClass>`` -- see :func:`execfind_pass_recorded` for what must bind."""
+    # ONE fail-closed boundary around the WHOLE evaluation (see execfind_pass_recorded).
     try:
         return _evaluate_pass_record(profile_digest, root=root, layout=layout, host=host)
     except Exception as exc:
         _LOG.warning("seat jail pass record rejected: %s", type(exc).__name__)
-        return False
+        return False, f"error:{type(exc).__name__}"
 
 
 def _evaluate_pass_record(profile_digest: str, *, root: Path | None, layout: str | None,
-                          host: str | None) -> bool:
+                          host: str | None) -> tuple[bool, str]:
     if layout is None:
         layout = falsifier_layout_identity()
     host = host if host is not None else host_identity()
     if not layout or not host or not re.fullmatch(r"[0-9a-f]{64}", profile_digest or ""):
-        return False
+        return False, "binding_mismatch"
     base = root if root is not None else jail_pass_dir()
     chain = [base] if root is not None else [state_home(), state_home() / "phase-loop", base]
-    if not all(_private_dir(directory) for directory in chain):
-        return False
+    for directory in chain:
+        problem = pass_store_dir_problem(directory)
+        if problem == "missing":
+            return False, "no_record"
+        if problem is not None:
+            return False, f"store_unsafe:{problem}:{directory}"
     record = _parse_json(_read_private_file(base, f"{profile_digest}.json", _PASS_RECORD_CAP))
     if not isinstance(record, dict):
-        return False
+        return False, "no_record"
     bound = {"schema": PASS_RECORD_SCHEMA, "profile_digest": profile_digest, "result": "pass",
              "host_identity": host, "falsifier_layout": layout}
     if any(record.get(key) != value for key, value in bound.items()):
-        return False
+        return False, "binding_mismatch"
     evidence_name, evidence_sha = record.get("evidence"), record.get("evidence_sha256")
     if not isinstance(evidence_name, str) or not isinstance(evidence_sha, str):
-        return False
+        return False, "evidence_mismatch"
     evidence_bytes = _read_private_file(base, evidence_name, _PASS_EVIDENCE_CAP)
     if evidence_bytes is None or hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha:
-        return False
+        return False, "evidence_mismatch"
     evidence = _parse_json(evidence_bytes)
-    return isinstance(evidence, dict) and all(
-        evidence.get(key) == value for key, value in bound.items() if key != "schema")
+    if isinstance(evidence, dict) and all(
+            evidence.get(key) == value for key, value in bound.items() if key != "schema"):
+        return True, "pass"
+    return False, "evidence_mismatch"

@@ -27,7 +27,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the digest,
   the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence file, and
   re-checked against the built jail at launch) before any
-  effect. `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail falsifiers
+  effect. The whole record check is one fail-closed boundary: any error is
+  `jail_unqualified`, and the typed reason, including the exception class, is logged. A pass
+  store whose directories are not private to the operator is refused with
+  `seat_sandbox_refused:pass_store_unsafe`. Group-writable is accepted only for the
+  operator's user-private group, the umask-002 default. `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail falsifiers
   (`seat_jail_qualification`) against a real EXECFIND falsifier run and records this host's
   pass; typed seat notices also reach the governed path as `seat_notice` findings (L4b).
   Hosts also need the one-time root
