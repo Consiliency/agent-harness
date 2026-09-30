@@ -768,6 +768,17 @@ def test_cli_preserves_requested_membership_and_policy_after_capability_admissio
     artifact = tmp_path / "input.md"
     artifact.write_text("synthetic CLI wiring control")
     monkeypatch.setattr(composition, "compose_review_board", lambda: pytest.fail("availability backfill"))
+    # PANEL SL-1 (agent-harness#1078, amendment #3 B7, granted): the CLI composes through
+    # build_panel_context -> compose_panel_board. The forced composer returns this node's
+    # own four-vendor seat set (DEFAULT_BOARD's seats, their built-in lenses; no live probe)
+    # under a private XDG_CONFIG_HOME; the membership pin below is unchanged.
+    from phase_loop_runtime.advisor_board.presets import BUILTIN_LENS_TEXT, ResolvedLens
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(composition, "compose_panel_board", lambda table, **_probes: composition.ComposedPanel(
+        board=DEFAULT_BOARD,
+        seat_lenses={seat.seat_key: ResolvedLens(name=seat.lens, text=BUILTIN_LENS_TEXT[seat.lens], kind="built-in")
+                     for seat in DEFAULT_BOARD.seats},
+        fallback_lanes=(), unfilled_lanes=()))
     observed = []
     def capture(board, text, **kwargs):
         observed.append(board)

@@ -16,8 +16,7 @@ import pytest
 from harden_tdd_guard import invoke_sanctioned_board_control
 from phase_loop_runtime import panel_invoker, president_adapter
 from phase_loop_runtime.advisor_board import backing
-from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, DEFAULT_SEATS
-from phase_loop_runtime.advisor_board.schema import Board
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.panel_invoker import PresidentPolicyError, ReviewLandingTier
 
 
@@ -25,17 +24,22 @@ def _ok_spawn(leg: str, artifact: str) -> tuple[str, str]:
     return "OK", f"{leg} found: the {leg} concern\nAGREE"
 
 
-def _fable_president_board() -> Board:
-    return Board(
-        name="fable-president",
-        purpose="premerge-review",
-        seats=tuple(seat for seat in DEFAULT_SEATS if seat.harness != "codex"),
+def _fable_president_context(monkeypatch):
+    """PANEL SL-1 (agent-harness#1078, amendment #3 grant): a production_code landing
+    carries a context from build_panel_context, its composed board and its landing
+    policy. Codex is unavailable, so no seat is ``sol`` and the ladder descends to Fable;
+    the user table's minimum lifts the named-seat rule (the old hand-built policy's
+    role). Returns ``(board, landing_kwargs)``."""
+    import test_panel_lanes as panel_lanes
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(
+        monkeypatch, "production_code", vendors=("grok", "claude", "gemini"),
+        user_body=panel_lanes.USER_BODY + panel_lanes._rotated_cr_table(minimum=3),
     )
-
-
-_POLICY = panel_invoker.ReviewLandingPolicy(
-    required_seats=("fable", "gemini", "grok"), requires_president=True
-)
+    board = panel_context.composed.board
+    assert "codex" not in {seat.harness for seat in board.seats}
+    return board, panel_kwargs
 
 
 # codex BLOCKING 1: every launch uses the revalidated authorization's route; a seat the
@@ -72,30 +76,33 @@ def test_a_rung_without_an_authorized_route_never_launches(tmp_path, rung):
 
 # codex BLOCKING 2: the native defer -> resume is DURABLE; without a stream there is no
 # pending request to check a resume against and nowhere to write the ruling.
-def test_a_native_deferral_without_a_stream_dir_is_refused():
+def test_a_native_deferral_without_a_stream_dir_is_refused(monkeypatch):
+    board, landing = _fable_president_context(monkeypatch)
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_sanctioned_board_control(
-            _fable_president_board(), "artifact", spawn=_ok_spawn,
-            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            board, "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
             base_env={"CLAUDECODE": "1"},
         )
     assert excinfo.value.code == panel_invoker.PRESIDENT_NATIVE_FILL_STREAM_REQUIRED
 
 
-def test_a_native_fill_without_a_stream_dir_is_refused_and_persists_nothing():
+def test_a_native_fill_without_a_stream_dir_is_refused_and_persists_nothing(monkeypatch):
+    board, landing = _fable_president_context(monkeypatch)
     fill = {"rung": "fable", "brief_digest": "b" * 64, "findings_digest": "f" * 64,
             "text": "FINDING F001: DEFERRED — x\nFORCING DECISION: LAND"}
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_sanctioned_board_control(
-            _fable_president_board(), "artifact", spawn=_ok_spawn,
-            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            board, "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
             base_env={"CLAUDECODE": "1"}, native_president_fill=fill,
         )
     assert excinfo.value.code == panel_invoker.PRESIDENT_NATIVE_FILL_STREAM_REQUIRED
 
 
 @pytest.mark.parametrize("pending", [None, "{not json", "[]"])
-def test_a_fill_without_a_valid_persisted_pending_request_is_refused(tmp_path, pending):
+def test_a_fill_without_a_valid_persisted_pending_request_is_refused(tmp_path, monkeypatch, pending):
+    board, landing = _fable_president_context(monkeypatch)
     stream = tmp_path / "stream"
     stream.mkdir()
     if pending is not None:
@@ -103,8 +110,8 @@ def test_a_fill_without_a_valid_persisted_pending_request_is_refused(tmp_path, p
 
     def dispatch(**extra):
         return invoke_sanctioned_board_control(
-            _fable_president_board(), "artifact", spawn=_ok_spawn,
-            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            board, "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
             base_env={"CLAUDECODE": "1"}, stream_dir=stream, **extra,
         )
 
@@ -112,8 +119,8 @@ def test_a_fill_without_a_valid_persisted_pending_request_is_refused(tmp_path, p
     # would match the current request -- only the persisted pending is missing/bad.
     probe = tmp_path / "probe"
     request = invoke_sanctioned_board_control(
-        _fable_president_board(), "artifact", spawn=_ok_spawn,
-        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+        board, "artifact", spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
         base_env={"CLAUDECODE": "1"}, stream_dir=probe,
     ).needs_native_president
     fill = {"rung": request["rung"], "brief_digest": request["brief_digest"],
@@ -129,7 +136,8 @@ def test_a_fill_without_a_valid_persisted_pending_request_is_refused(tmp_path, p
 
 
 # native seat r1 BLOCKING 2: a resume must not require the seats to reproduce their text.
-def test_a_native_resume_succeeds_when_seats_would_word_things_differently(tmp_path):
+def test_a_native_resume_succeeds_when_seats_would_word_things_differently(tmp_path, monkeypatch):
+    board, landing = _fable_president_context(monkeypatch)
     calls: list[str] = []
 
     def drifting_spawn(leg: str, artifact: str) -> tuple[str, str]:
@@ -140,8 +148,8 @@ def test_a_native_resume_succeeds_when_seats_would_word_things_differently(tmp_p
 
     def dispatch(**extra):
         return invoke_sanctioned_board_control(
-            _fable_president_board(), "artifact", spawn=drifting_spawn,
-            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            board, "artifact", spawn=drifting_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
             base_env={"CLAUDECODE": "1"}, stream_dir=stream, **extra,
         )
 
@@ -191,19 +199,20 @@ def test_a_str_subclass_with_a_lying_eq_is_refused_before_use():
 
 
 @pytest.mark.parametrize("fill", [["not", "a", "mapping"], "text"])
-def test_a_malformed_fill_is_a_typed_refusal(tmp_path, fill):
+def test_a_malformed_fill_is_a_typed_refusal(tmp_path, monkeypatch, fill):
+    board, landing = _fable_president_context(monkeypatch)
     from phase_loop_runtime.president_operation import PRESIDENT_FILL_DIGEST_MISMATCH
 
     stream = tmp_path / "stream"
     invoke_sanctioned_board_control(
-        _fable_president_board(), "artifact", spawn=_ok_spawn,
-        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+        board, "artifact", spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
         base_env={"CLAUDECODE": "1"}, stream_dir=stream,
     )
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_sanctioned_board_control(
-            _fable_president_board(), "artifact", spawn=_ok_spawn,
-            landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+            board, "artifact", spawn=_ok_spawn,
+            landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
             base_env={"CLAUDECODE": "1"}, stream_dir=stream, native_president_fill=fill,
         )
     assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
@@ -211,11 +220,12 @@ def test_a_malformed_fill_is_a_typed_refusal(tmp_path, fill):
 
 
 # native seat r2 BLOCKING: a resume is bound to the run it resumes.
-def _defer(tmp_path, artifact="artifact", board=None):
+def _defer(tmp_path, context, artifact="artifact"):
+    board, landing = context
     stream = tmp_path / "stream"
     deferred = invoke_sanctioned_board_control(
-        board or _fable_president_board(), artifact, spawn=_ok_spawn,
-        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=_POLICY,
+        board, artifact, spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
         base_env={"CLAUDECODE": "1"}, stream_dir=stream,
     )
     pending = deferred.needs_native_president
@@ -227,10 +237,11 @@ def _defer(tmp_path, artifact="artifact", board=None):
     return stream, fill
 
 
-def _resume(stream, fill, artifact="artifact", board=None, policy=_POLICY):
+def _resume(stream, fill, context, artifact="artifact"):
+    board, landing = context
     return invoke_sanctioned_board_control(
-        board or _fable_president_board(), artifact, spawn=_ok_spawn,
-        landing_tier=ReviewLandingTier.PRODUCTION_CODE, review_policy=policy,
+        board, artifact, spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE, **landing,
         base_env={"CLAUDECODE": "1"}, stream_dir=stream, native_president_fill=fill,
     )
 
@@ -243,23 +254,32 @@ def _refused(fn):
     assert excinfo.value.code == PRESIDENT_FILL_DIGEST_MISMATCH
 
 
-def test_a_resume_on_a_different_artifact_is_refused(tmp_path):
-    stream, fill = _defer(tmp_path, artifact="HEAD-A bundle")
-    _refused(lambda: _resume(stream, fill, artifact="HEAD-B bundle"))
+def test_a_resume_on_a_different_artifact_is_refused(tmp_path, monkeypatch):
+    context = _fable_president_context(monkeypatch)
+    stream, fill = _defer(tmp_path, context, artifact="HEAD-A bundle")
+    _refused(lambda: _resume(stream, fill, context, artifact="HEAD-B bundle"))
     assert not (stream / "president.ruling.json").exists()
-    assert _resume(stream, fill, artifact="HEAD-A bundle").president is not None
+    assert _resume(stream, fill, context, artifact="HEAD-A bundle").president is not None
 
 
-def test_a_pending_request_from_a_different_board_is_refused(tmp_path):
-    two_seat = Board(
-        name="two", purpose="premerge-review",
-        seats=tuple(s for s in DEFAULT_SEATS if s.harness in {"claude", "grok"}),
+def test_a_pending_request_from_a_different_board_is_refused(tmp_path, monkeypatch):
+    # PANEL SL-1 (granted): the deferring board is a second production-built context with
+    # only claude and grok available; the resume uses the Fable-president context.
+    import test_panel_lanes as panel_lanes
+    from phase_loop_runtime.advisor_board import composition
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    unforced = composition.compose_panel_board
+    two_context, two_landing = granted_landing_context_mp(
+        monkeypatch, "production_code", vendors=("claude", "grok"),
+        user_body=panel_lanes.USER_BODY + panel_lanes._rotated_cr_table(minimum=2),
     )
-    policy_two = panel_invoker.ReviewLandingPolicy(required_seats=("fable", "grok"), requires_president=True)
+    two_seat = two_context.composed.board
+    assert {seat.harness for seat in two_seat.seats} == {"claude", "grok"}
     stream = tmp_path / "stream"
     deferred = invoke_sanctioned_board_control(
         two_seat, "artifact", spawn=_ok_spawn, landing_tier=ReviewLandingTier.PRODUCTION_CODE,
-        review_policy=policy_two, base_env={"CLAUDECODE": "1"}, stream_dir=stream,
+        **two_landing, base_env={"CLAUDECODE": "1"}, stream_dir=stream,
     )
     pending = deferred.needs_native_president
     text = "\n".join(
@@ -267,12 +287,18 @@ def test_a_pending_request_from_a_different_board_is_refused(tmp_path):
     ) + "\nFORCING DECISION: LAND"
     fill = {"rung": pending["rung"], "brief_digest": pending["brief_digest"],
             "findings_digest": pending["findings_digest"], "text": text}
-    _refused(lambda: _resume(stream, fill))
+    # A granted context forces availability by wrapping the current composer; restore
+    # the unforced one so the Fable-president context sees its own vendors.
+    monkeypatch.setattr(composition, "compose_panel_board", unforced)
+    context = _fable_president_context(monkeypatch)
+    assert context[0].seats != two_seat.seats
+    _refused(lambda: _resume(stream, fill, context))
 
 
 @pytest.mark.parametrize("mutation", ["truncate_legs", "rung_to_sol", "rung_bogus"])
-def test_a_pending_request_that_does_not_fit_this_board_is_refused(tmp_path, mutation):
-    stream, fill = _defer(tmp_path)
+def test_a_pending_request_that_does_not_fit_this_board_is_refused(tmp_path, mutation, monkeypatch):
+    context = _fable_president_context(monkeypatch)
+    stream, fill = _defer(tmp_path, context)
     path = stream / panel_invoker.PRESIDENT_PENDING_FILENAME
     pending = json.loads(path.read_text())
     if mutation == "truncate_legs":
@@ -282,21 +308,23 @@ def test_a_pending_request_that_does_not_fit_this_board_is_refused(tmp_path, mut
     else:
         pending["rung"] = fill["rung"] = "nobody"
     path.write_text(json.dumps(pending))
-    _refused(lambda: _resume(stream, fill))
+    _refused(lambda: _resume(stream, fill, context))
     assert not (stream / "president.ruling.json").exists()
 
 
-def test_a_pending_request_answers_exactly_once(tmp_path):
-    stream, fill = _defer(tmp_path)
-    assert _resume(stream, fill).president is not None
-    _refused(lambda: _resume(stream, fill))
+def test_a_pending_request_answers_exactly_once(tmp_path, monkeypatch):
+    context = _fable_president_context(monkeypatch)
+    stream, fill = _defer(tmp_path, context)
+    assert _resume(stream, fill, context).president is not None
+    _refused(lambda: _resume(stream, fill, context))
 
 
 # codex r2 B2 / grok r2: the WHOLE pending record is self-consistent, including edits that
 # finding extraction cannot see (a verdict line) and the prompt the native session ruled on.
 @pytest.mark.parametrize("mutation", ["verdict_line", "prompt", "schema"])
-def test_a_self_inconsistent_pending_record_is_refused(tmp_path, mutation):
-    stream, fill = _defer(tmp_path)
+def test_a_self_inconsistent_pending_record_is_refused(tmp_path, mutation, monkeypatch):
+    context = _fable_president_context(monkeypatch)
+    stream, fill = _defer(tmp_path, context)
     path = stream / panel_invoker.PRESIDENT_PENDING_FILENAME
     pending = json.loads(path.read_text())
     if mutation == "verdict_line":
@@ -308,7 +336,7 @@ def test_a_self_inconsistent_pending_record_is_refused(tmp_path, mutation):
     else:
         pending["schema"] = "president.pending.v0"
     path.write_text(json.dumps(pending))
-    _refused(lambda: _resume(stream, fill))
+    _refused(lambda: _resume(stream, fill, context))
     assert not (stream / "president.ruling.json").exists()
 
 

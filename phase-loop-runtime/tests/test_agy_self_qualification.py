@@ -1498,7 +1498,13 @@ class _Runner:
             elif c[:2] == ["gh", "api"]:
                 args = c[2:]
                 opts = {a.split("=", 1)[0] if a.startswith("--") else a[:2] for a in args if a.startswith("-")}
-                if opts & {"-X", "--method", "--input"} \
+                # PANEL SL-1 (agent-harness#1078, amendment #3 B3, granted): the watch's reads
+                # carry the default-deny read shape -- a literal ``-X GET`` on ``gh api user``
+                # and ``-f owner=`` / ``-f repo=`` on the open-PR listing. Exactly that user
+                # read is accepted; every other method flag is still rejected.
+                if args == ["user", "-X", "GET", "-q", ".login"]:
+                    pass
+                elif opts & {"-X", "--method", "--input"} \
                         or any(a.startswith("query=@") or a.startswith("@") for a in args):
                     bad.append(c)
                 elif args[:1] == ["user"]:
@@ -1506,7 +1512,7 @@ class _Runner:
                     if opts & {"-f", "-F", "--field", "--raw-field"} or args[1:] not in ([], ["-q", ".login"]):
                         bad.append(c)
                 elif args != ["graphql", "--paginate", "-f", f"query={agy_watch._OPEN_PRS_QUERY}",
-                              "-F", "owner=Consiliency", "-F", "repo=agent-harness"]:
+                              "-f", "owner=Consiliency", "-f", "repo=agent-harness"]:
                     bad.append(c)
             elif c[:3] == ["gh", "pr", "view"]:
                 if "--json" not in c or c[c.index("--json") + 1] != "headRefOid":
@@ -2736,6 +2742,22 @@ def test_pre_push_hooks_never_run(tmp_path):
 def test_the_allowlist_oracle_rejects_disguised_api_writes(argv):
     """codex r7: the oracle parses --opt=value and -Xvalue forms and rejects fields on
     non-graphql gh api calls."""
+    runner = _Runner()
+    runner.calls.append(argv)
+    assert runner.outside_allowlist() == [argv]
+
+
+@pytest.mark.parametrize("argv", [
+    ["gh", "api", "user", "-X", "PATCH", "-q", ".login"],
+    ["gh", "api", "user", "-X", "GET", "-q", ".login", "-f", "name=x"],
+    ["gh", "api", "user", "-X", "GET", "-X", "PATCH", "-q", ".login"],
+    ["gh", "api", "repos/Consiliency/agent-harness/pulls/1", "-X", "GET"],
+    ["gh", "api", "graphql", "-X", "POST", "-f", "query=mutation { closePullRequest }"],
+])
+def test_the_watch_oracle_still_rejects_a_mutating_gh_api_call(argv):
+    """PANEL SL-1 (agent-harness#1078, amendment #3 B3): the oracle now accepts the watch's
+    literal ``-X GET`` user read; any other method, an extra field, another endpoint, or a
+    mutation is still outside the allowlist."""
     runner = _Runner()
     runner.calls.append(argv)
     assert runner.outside_allowlist() == [argv]

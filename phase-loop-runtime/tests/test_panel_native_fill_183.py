@@ -181,6 +181,23 @@ def _hermetic_board(*_a, **_k):
     return _REAL_COMPOSE(is_available=lambda v: v in {"codex", "gemini", "claude", "grok"})
 
 
+def _panel_lanes_composed(td):
+    """PANEL SL-1 (agent-harness#1078, amendment #3 B7): the CLI composes through
+    build_panel_context -> compose_panel_board. Force that composer to this class's own
+    four-vendor seat set (auth pass-through, no live probe) under a private
+    XDG_CONFIG_HOME, so the host's user file cannot change the board."""
+    real_panel_compose = comp_mod.compose_panel_board
+
+    def hermetic_panel(table, **_probes):
+        return real_panel_compose(table, is_available=lambda v: v in {"codex", "gemini", "claude", "grok"},
+                                  auth_ok=lambda v: True, preflight=lambda v: True)
+
+    stack = contextlib.ExitStack()
+    stack.enter_context(unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(Path(td) / "xdg")}))
+    stack.enter_context(unittest.mock.patch.object(comp_mod, "compose_panel_board", side_effect=hermetic_panel))
+    return stack
+
+
 class AdvisorBoardLoudShortfall(unittest.TestCase):
     """`advisor-board --json` reports requested-vs-delivered + the natively-fillable
     seats, rather than treating a 3-usable result as the requested 4-seat board."""
@@ -213,7 +230,9 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
             with (
-                unittest.mock.patch.object(comp_mod, "compose_review_board", side_effect=_hermetic_board),
+                # PANEL SL-1 (agent-harness#1078, amendment #3 B7, granted): the patch target
+                # moves to compose_panel_board via build_panel_context (private XDG).
+                _panel_lanes_composed(td),
                 unittest.mock.patch.object(pi, "invoke_board", return_value=self._canned_result()),
             ):
                 buf = io.StringIO()
@@ -246,7 +265,9 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
             with (
-                unittest.mock.patch.object(comp_mod, "compose_review_board", side_effect=_hermetic_board),
+                # PANEL SL-1 (agent-harness#1078, amendment #3 B7, granted): the patch target
+                # moves to compose_panel_board via build_panel_context (private XDG).
+                _panel_lanes_composed(td),
                 unittest.mock.patch.object(pi, "invoke_board", return_value=self._canned_result()),
             ):
                 err = io.StringIO()
@@ -275,7 +296,9 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
             with (
-                unittest.mock.patch.object(comp_mod, "compose_review_board", side_effect=_hermetic_board),
+                # PANEL SL-1 (agent-harness#1078, amendment #3 B7, granted): the patch target
+                # moves to compose_panel_board via build_panel_context (private XDG).
+                _panel_lanes_composed(td),
                 unittest.mock.patch.object(pi, "invoke_board", return_value=collided),
             ):
                 buf = io.StringIO()

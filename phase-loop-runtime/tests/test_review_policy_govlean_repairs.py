@@ -79,34 +79,62 @@ def test_review_tier_rejects_unknown_values() -> None:
     assert excinfo.value.code == "review_landing_tier_unknown"
 
 
-def test_post_switch_board_requires_a_tier_and_rejects_understrength_board(tmp_path: Path) -> None:
+def test_post_switch_board_requires_a_tier_and_rejects_understrength_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _post_switch_repo(tmp_path)
 
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_board(_weak_board(), "artifact", repo_dir=tmp_path, spawn=_ok_spawn)
     assert excinfo.value.code == "review_landing_tier_required"
 
+    # PANEL SL-1 (agent-harness#1078, amendment #3 disposition): the understrength
+    # stimulus is a production-built context with only codex available and no user
+    # table, so it gets the named-seat policy and a four-codex board. That landing,
+    # with its own board and policy, is still refused before any seat launches.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(
+        monkeypatch, "production_code", vendors=("codex",)
+    )
+    assert {seat.harness for seat in panel_context.composed.board.seats} == {"codex"}
+    launched: list[str] = []
+
+    def recording_spawn(leg: str, artifact: str) -> tuple[str, str]:
+        launched.append(leg)
+        return _ok_spawn(leg, artifact)
+
     with pytest.raises(PresidentPolicyError) as excinfo:
         invoke_board(
-            _weak_board(),
+            panel_context.composed.board,
             "artifact",
             repo_dir=tmp_path,
-            spawn=_ok_spawn,
+            spawn=recording_spawn,
             landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+            **panel_kwargs,
         )
     assert excinfo.value.code == "review_board_policy_mismatch"
+    assert launched == []
 
 
-def test_post_switch_full_production_board_reaches_the_real_invocation_path(tmp_path: Path) -> None:
+def test_post_switch_full_production_board_reaches_the_real_invocation_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _post_switch_repo(tmp_path)
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     # An execution-capable review path needs an explicit sanctioned authorization
     # control (EC-HARDEN-5); the assertion below is unchanged.
     result = invoke_sanctioned_board_control(
-        _full_board(),
+        panel_context.composed.board,
         "artifact",
         repo_dir=tmp_path,
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        **panel_kwargs,
         president_invoke=deferring_president,
     )
     assert [leg.status for leg in result.legs] == ["OK", "OK", "OK", "OK"]

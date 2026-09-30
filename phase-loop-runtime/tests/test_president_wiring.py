@@ -1020,6 +1020,21 @@ def _switch_govlean_authority(repo: Path) -> None:
         encoding="utf-8",
     )
 
+def _add_gate_origin(tmp_path: Path, repo: Path) -> None:
+    # PANEL SL-1 (agent-harness#1078, plan amendment #3, granted): the runner's
+    # production_code landing fetches its target at gate time, so the switched fixture
+    # gains an ``origin`` whose default branch is the gated base (the ec3e
+    # ``_TargetRepo`` shape). The pre-switch fixture is unchanged.
+    import subprocess
+
+    origin = tmp_path / "repo.origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True,
+                   capture_output=True)
+
+
 def _runner_fixture(tmp_path: Path, *, switched: bool = True):
     # The runner declares the production-code tier (and the president seam)
     # only once the target repo has crossed the GOVLEAN authority switch --
@@ -1027,6 +1042,7 @@ def _runner_fixture(tmp_path: Path, *, switched: bool = True):
     repo = make_repo(tmp_path)
     if switched:
         _switch_govlean_authority(repo)
+        _add_gate_origin(tmp_path, repo)
     run_dir = repo / ".phase-loop" / "runs" / "panel"
     run_dir.mkdir(parents=True)
     bundle = run_dir / "bundle.md"

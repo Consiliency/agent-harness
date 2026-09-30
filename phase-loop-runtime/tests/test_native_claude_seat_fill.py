@@ -384,7 +384,7 @@ class TestIngestion:
         guard.require(n, legs[0] is runtime and runtime.text == "Runtime.\nDISAGREE", "the runtime leg was replaced")
 
     @activated
-    def test_president_rules_on_the_bound_fill_on_both_deferral_paths(self, tmp_path):
+    def test_president_rules_on_the_bound_fill_on_both_deferral_paths(self, tmp_path, monkeypatch):
         """Matrix path: the fleet-default four-vendor board under PRODUCTION_CODE (the tier that
         requires a president and all four vendors) with the claude seat filled — the president
         must be shown the FILLED board: the prompt it receives carries the fill's own text
@@ -396,7 +396,12 @@ class TestIngestion:
         guard.require(n, NativeLegFill is not None, "NativeLegFill is absent")
         artifact = tmp_path / "bundle.md"
         artifact.write_text("review me\n")
-        four = _four_vendor_board()
+        # PANEL SL-1 (agent-harness#1078, granted): the production_code landing carries a
+        # context from build_panel_context, its composed four-vendor board and its policy.
+        from test_panel_sl1_contracts import granted_landing_context_mp
+
+        panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
+        four = panel_context.composed.board
         claude_seat = next(seat for seat in four.seats if str(seat.harness).lower() == "claude")
         seen: list = []
 
@@ -409,7 +414,8 @@ class TestIngestion:
         try:
             res = invoke_sanctioned_review_transport(
                 four, "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
-                landing_tier=ReviewLandingTier.PRODUCTION_CODE, president_invoke=president, native_leg_fills=[fill],
+                landing_tier=ReviewLandingTier.PRODUCTION_CODE, **panel_kwargs, president_invoke=president,
+                native_leg_fills=[fill],
             )
         except TypeError as exc:
             err = exc
@@ -621,7 +627,19 @@ class TestProtocol:
     def test_cli_emit_arm_writes_the_request_and_run_train_accepts_the_flags(self, tmp_path, monkeypatch, capsys):
         from phase_loop_runtime import cli as cli_mod
         n = "test_cli_emit_arm_writes_the_request_and_run_train_accepts_the_flags"
-        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
+        # PANEL SL-1 (agent-harness#1078, granted): the patch target moves from
+        # compose_review_board to compose_panel_board, reached through build_panel_context
+        # with a private XDG_CONFIG_HOME; the forced composer seats only this node's own
+        # vendors (the _mixed_board set).
+        real_panel_compose = comp_mod.compose_panel_board
+        own_vendors = {str(seat.harness) for seat in _mixed_board().seats}
+
+        def forced_panel(table, **_probes):
+            return real_panel_compose(table, is_available=lambda v: v in own_vendors,
+                                      auth_ok=lambda v: True, preflight=lambda v: True)
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(comp_mod, "compose_panel_board", forced_panel)
         monkeypatch.setenv("CLAUDECODE", "1")
         artifact = tmp_path / "bundle.md"
         artifact.write_text("review me\n")

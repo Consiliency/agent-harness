@@ -23,6 +23,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from hashlib import sha256
 from pathlib import Path
@@ -42,6 +43,7 @@ from phase_loop_runtime.advisor_board.advisory_contract import (
 from phase_loop_runtime.panel_invoker import PanelLegResult, PanelResult
 
 _REAL_COMPOSE = comp_mod.compose_review_board
+_REAL_PANEL_COMPOSE = comp_mod.compose_panel_board
 _REAL_PREPARE_COMPOSITION = backing_mod.prepare_review_composition_authorization
 _REAL_INVOKE_BOARD = pi.invoke_board
 _REAL_PREPARE_ISOLATION = backing_mod.prepare_review_isolation_authorization
@@ -65,6 +67,7 @@ _linux_only = pytest.mark.skipif(platform.system() != "Linux", reason="HARDEN re
 
 
 _BOARD_CACHE: list = []
+_XDG_ROOTS: list = []
 
 
 def _hermetic_board():
@@ -92,6 +95,7 @@ class _Run:
         self.prepare_calls: list[dict] = []
         self.invoke_calls: list[dict] = []
         self.git_env_seen: list[tuple[str, frozenset]] = []
+        self.panel_compose_calls: list[dict] = []
         self.board = _hermetic_board()
 
         def seen(seam: str) -> None:
@@ -101,6 +105,15 @@ class _Run:
             seen("compose")
             self.compose_calls.append((args, kwargs))
             return self.board
+
+        def compose_panel(table, **probes):
+            # PANEL SL-1 (agent-harness#1078, amendment #3 grant): a default (code-review)
+            # run composes its lanes through build_panel_context -> compose_panel_board. The
+            # forced composer seats every vendor, as the node's own full board did.
+            seen("compose")
+            self.panel_compose_calls.append(probes)
+            return _REAL_PANEL_COMPOSE(table, is_available=lambda vendor: vendor in _VENDORS,
+                                       auth_ok=lambda vendor: True, preflight=lambda vendor: True)
 
         def prepare_composition():
             seen("prepare_composition")
@@ -136,6 +149,11 @@ class _Run:
             return _CANNED
 
         monkeypatch.setattr(comp_mod, "compose_review_board", compose)
+        monkeypatch.setattr(comp_mod, "compose_panel_board", compose_panel)
+        # A private user-table path, so the host's own advisor-boards.toml cannot change it.
+        xdg = tempfile.TemporaryDirectory(prefix="advisory-802-xdg-")
+        _XDG_ROOTS.append(xdg)
+        monkeypatch.setenv("XDG_CONFIG_HOME", xdg.name)
         monkeypatch.setattr(backing_mod, "prepare_review_composition_authorization", prepare_composition)
         monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", prepare)
         monkeypatch.setattr(pi, "invoke_board", invoke)
@@ -200,7 +218,13 @@ def test_default_run_is_unchanged_by_the_advisory_seam(monkeypatch, bundle):
     rc, out, _err = run(["advisor-board", str(bundle), "--json"])
 
     assert rc == 0
-    assert run.compose_calls == [((), {})]  # the no-kwargs auth-aware production composer
+    # PANEL SL-1 (granted): the no-kwargs pin carries over to the lane composer. The CLI
+    # passes no predicate of its own; the builder hands compose_panel_board its default
+    # production probes (auth_ok reaches default_board_auth_ok).
+    [probes] = run.panel_compose_calls
+    assert {name: getattr(probes.get(name), "__qualname__", None)
+            for name in ("is_available", "auth_ok", "preflight")} == {
+        name: f"_default_probes.<locals>.{name}" for name in ("is_available", "auth_ok", "preflight")}
     [prepared] = run.prepare_calls
     assert set(prepared) == {"artifact", "mode", "canonical_repo_authority"}  # no stage_review_tree
     assert Path(prepared["canonical_repo_authority"]) == _repo_root()
@@ -751,10 +775,15 @@ class _SwapAfterCheck:
 
 
 def test_invoke_board_runs_on_the_brief_it_checked_not_a_replaced_file(tmp_path, monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a plan landing carries a context from
+    # build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "plan")
     brief = Path(_brief(tmp_path, _REVIEW_BRIEF))
     swap = _SwapAfterCheck(monkeypatch, brief, ADVISORY_CONTRACT)
     _outcome(lambda: _REAL_INVOKE_BOARD(
-        _hermetic_board(), _BUNDLE, brief_ref=str(brief), landing_tier="plan",
+        panel_context.composed.board, _BUNDLE, brief_ref=str(brief), landing_tier="plan", **panel_kwargs,
         president_invoke=lambda _m, _p: {}, spawn=lambda *_a, **_k: ("OK", "AGREE"), base_env={},
     ))
     assert brief.read_text(encoding="utf-8") == ADVISORY_CONTRACT  # the file WAS replaced

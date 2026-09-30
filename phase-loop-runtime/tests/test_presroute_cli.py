@@ -34,6 +34,30 @@ def _stub_mint(monkeypatch, tmp_path=None) -> None:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 
+def _landing_target(tmp_path: Path, monkeypatch) -> None:
+    """PANEL SL-1 (agent-harness#1078, plan amendment #3, granted): a landing-tier run
+    fetches its target at gate time and composes the code-review lanes through
+    ``build_panel_context``. The run happens in a fixture repository whose ``origin`` has
+    a commit, and the forced composer is ``compose_panel_board``, seating the node's own
+    full board (all four vendors available)."""
+    import subprocess
+
+    from phase_loop_runtime.advisor_board import composition
+
+    real = composition.compose_panel_board
+    monkeypatch.setattr(composition, "compose_panel_board", lambda table, **_k: real(
+        table, is_available=lambda v: True, auth_ok=lambda v: True, preflight=lambda v: True))
+    repo = tmp_path / "repo"
+    origin = tmp_path / "origin.git"
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run([*git, "push", "-q", "origin", "HEAD:refs/heads/main"], check=True, capture_output=True)
+    monkeypatch.chdir(repo)
+
+
 def test_native_president_without_a_landing_tier_is_refused(tmp_path, monkeypatch, capsys):
     _stub_mint(monkeypatch, tmp_path)
     called: list[object] = []
@@ -48,6 +72,7 @@ def test_native_president_without_a_landing_tier_is_refused(tmp_path, monkeypatc
 
 def test_production_tier_binds_a_president_seam_to_the_driving_env(tmp_path, monkeypatch, capsys):
     _stub_mint(monkeypatch, tmp_path)
+    _landing_target(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
     seen: dict[str, object] = {}
 
@@ -82,6 +107,7 @@ def test_production_tier_binds_a_president_seam_to_the_driving_env(tmp_path, mon
 
 def test_native_president_fill_is_passed_through_for_resume(tmp_path, monkeypatch):
     _stub_mint(monkeypatch, tmp_path)
+    _landing_target(tmp_path, monkeypatch)
     seen: dict[str, object] = {}
 
     def fake_invoke_board(board, artifact, **kwargs):

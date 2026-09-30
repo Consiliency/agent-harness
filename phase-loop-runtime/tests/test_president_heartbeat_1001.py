@@ -197,7 +197,12 @@ def test_the_president_leg_capability_is_single_use_and_policy_bound(tmp_path):
         )
 
 
-def test_invoke_board_binds_its_operation_cancel_to_the_president_seam(tmp_path):
+def test_invoke_board_binds_its_operation_cancel_to_the_president_seam(tmp_path, monkeypatch):
+    # PANEL SL-1 (agent-harness#1078, granted): a production_code landing carries a
+    # context from build_panel_context, its composed board and its landing policy.
+    from test_panel_sl1_contracts import granted_landing_context_mp
+
+    panel_context, panel_kwargs = granted_landing_context_mp(monkeypatch, "production_code")
     # The board's cancellation reaches the president's heartbeat monitor.
     seen: dict[str, object] = {}
     real = president_adapter.build_president_invoke
@@ -210,7 +215,8 @@ def test_invoke_board_binds_its_operation_cancel_to_the_president_seam(tmp_path)
     with patch.object(president_adapter, "build_president_invoke", capture):
         with pytest.raises(RuntimeError, match="stop after wiring"):
             panel_invoker.invoke_board(
-                DEFAULT_BOARD, "artifact", landing_tier="production_code",
+                panel_context.composed.board, "artifact", landing_tier="production_code",
+                **panel_kwargs,
                 base_env={"CLAUDECODE": "1"}, repo_dir=str(tmp_path), cancel_event=cancel,
             )
     assert seen.get("cancel_event") is cancel

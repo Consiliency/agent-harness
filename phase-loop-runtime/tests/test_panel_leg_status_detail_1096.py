@@ -189,10 +189,11 @@ def test_claude_tui_ok_leaves_the_sink_empty(monkeypatch, tmp_path):
 
 
 def test_board_stderr_summary_names_why_a_seat_failed(tmp_path):
+    import os
+
     from phase_loop_runtime.advisor_board import composition as comp_mod
     from phase_loop_runtime.cli import main as cli_main
 
-    real_compose = comp_mod.compose_review_board
     detail = pi._HarnessCode("usage_limit (resets 13:42, Oct 1 2026)")
     result = pi.PanelResult(legs=(
         pi.PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:a"),
@@ -202,11 +203,17 @@ def test_board_stderr_summary_names_why_a_seat_failed(tmp_path):
     ))
     artifact = tmp_path / "bundle.md"
     artifact.write_text("review me\n")
+    # PANEL SL-1 (agent-harness#1078, amendment #3 B7, granted): the patch target moves from
+    # compose_review_board to compose_panel_board, reached through build_panel_context; the
+    # forced composer seats all four vendors, under a private XDG_CONFIG_HOME.
+    real_panel_compose = comp_mod.compose_panel_board
     with (
+        unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}),
         unittest.mock.patch.object(
-            comp_mod, "compose_review_board",
-            side_effect=lambda *a, **k: real_compose(
-                is_available=lambda v: v in {"codex", "gemini", "claude", "grok"}
+            comp_mod, "compose_panel_board",
+            side_effect=lambda table, **_probes: real_panel_compose(
+                table, is_available=lambda v: v in {"codex", "gemini", "claude", "grok"},
+                auth_ok=lambda v: True, preflight=lambda v: True,
             ),
         ),
         unittest.mock.patch.object(pi, "invoke_board", return_value=result),
