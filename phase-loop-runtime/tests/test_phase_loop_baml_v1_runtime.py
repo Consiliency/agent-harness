@@ -2747,7 +2747,10 @@ def test_owner_recovery_finishes_terminal_transitions(boundary):
             while gen.proc.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert gen.proc.poll() is not None, "recovery trusted disposed=True before the worker was killed"
-            assert all(not t.is_alive() for t in gen.threads)
+            # (As filed, this checked the helpers at the instant the worker exited;
+            # they stop on its EOF a moment later, so it raced on a slow macOS
+            # runner.  Same bound, now waited for.)
+            assert _wait(lambda: all(not t.is_alive() for t in gen.threads), max(0.0, deadline - time.monotonic()))
     finally:
         for gen in list(client.generations):
             original_kill(client, gen)
