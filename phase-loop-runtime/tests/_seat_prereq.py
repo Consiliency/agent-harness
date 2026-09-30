@@ -23,9 +23,6 @@ SEAT_TOKEN_PREREQUISITE = (
     "no Claude seat token: run `claude setup-token` and store it owner-only at "
     "$XDG_STATE_HOME/phase-loop/seat-credentials/claude (P2 is maintainer-run)"
 )
-EXECFIND_1071 = (
-    "EC-EXECFIND-2 jail-falsifier recording waits on agent-harness#1071's falsifier-run layout"
-)
 USERNS_UNAVAILABLE = "unprivileged bwrap user namespaces unavailable on this host"
 
 

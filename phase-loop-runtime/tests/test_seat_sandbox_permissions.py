@@ -21,7 +21,6 @@ import pytest
 from phase_loop_runtime import panel_invoker, sandbox_egress, seat_jail, seat_uid
 
 from ._seat_prereq import (
-    EXECFIND_1071,
     require_seat_uid,
 )
 
@@ -206,12 +205,14 @@ def test_a_complete_bound_record_qualifies_exactly_its_digest(tmp_path):
     assert _qualified(tmp_path, "0" * 64) is False
 
 
-def test_no_record_qualifies_before_the_execfind_runner_exists(tmp_path):
-    """Until the falsifier-run layout is known (agent-harness#1163/#1164), nothing qualifies."""
+def test_a_record_from_another_falsifier_layout_is_no_pass(tmp_path):
+    """The default layout is the live EXECFIND identity: a record bound to any other layout
+    (an older runner, or none) does not qualify."""
     digest = seat_jail.jail_profile_digest("claude")
-    _write_pass(tmp_path, digest)
-    assert seat_jail.EXECFIND_FALSIFIER_LAYOUT is None
+    _write_pass(tmp_path, digest)  # bound to the test layout, not the live one
     assert seat_jail.execfind_pass_recorded(digest, root=tmp_path, host=HOST) is False
+    _write_pass(tmp_path, digest, layout=seat_jail.falsifier_layout_identity())
+    assert seat_jail.execfind_pass_recorded(digest, root=tmp_path, host=HOST) is True
 
 
 def test_codex_r4_a_hand_written_pass_without_evidence_is_no_pass(tmp_path):
@@ -393,9 +394,14 @@ def test_expected_mounts_do_not_follow_an_extra_bind(tmp_path):
         seat_jail.close_jail_fds(jail)
 
 
-@pytest.mark.skip(reason=EXECFIND_1071)
-def test_execfind2_jail_falsifiers_recorded_against_the_shipped_digest():
-    """Acceptance: EC-EXECFIND-2's jail falsifiers pass against this digest (L4b era)."""
+def test_the_falsifier_layout_identity_follows_execfind_staging(monkeypatch):
+    """EC-EXECFIND-2: any change to EXECFIND's staging invalidates recorded passes."""
+    from phase_loop_runtime import review_stage
+
+    before = seat_jail.falsifier_layout_identity()
+    monkeypatch.setattr(review_stage, "_FALSIFIER_SYSTEM_ROOTS",
+                        (*review_stage._FALSIFIER_SYSTEM_ROOTS, Path("/opt")))
+    assert seat_jail.falsifier_layout_identity() != before
 
 
 # --------------------------------------------------------------------------------------

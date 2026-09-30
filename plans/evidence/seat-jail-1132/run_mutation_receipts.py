@@ -37,6 +37,8 @@ T_JAIL = "tests/test_seat_jail.py"
 T_PERM = "tests/test_seat_sandbox_permissions.py"
 T_NOTE = "tests/test_seat_notices.py"
 T_LIVE = "tests/test_seat_jail_live_d8.py"
+SQ = SRC / "seat_jail_qualification.py"
+GR = SRC / "governed_review.py"
 
 MUTATIONS: list[dict[str, object]] = [
     {"id": "F030-drop-identity-literal", "file": PI,
@@ -236,6 +238,18 @@ MUTATIONS: list[dict[str, object]] = [
      "old": "        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()\n                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > cap):",
      "new": "        if (not stat.S_ISREG(info.st_mode)\n                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > cap):",
      "nodes": [f"{T_LIVE}::test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass"]},
+    {"id": "Q-mount-check-disabled", "file": SQ,
+     "old": "                          if (m[1], m[2]) in protected_ids | protected_file_ids | ancestors]",
+     "new": "                          if False]",
+     "nodes": [f"{T_LIVE}::test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run"]},
+    {"id": "Q-layout-ignores-system-roots", "file": SJ,
+     "old": "    parts += [repr(review_stage._FALSIFIER_SYSTEM_ROOTS), repr(review_stage._FALSIFIER_PYTHON_FLAGS),",
+     "new": "    parts += [repr(review_stage._FALSIFIER_PYTHON_FLAGS),",
+     "nodes": [f"{T_PERM}::test_the_falsifier_layout_identity_follows_execfind_staging"]},
+    {"id": "L4b-governed-notices-dropped", "file": GR,
+     "old": "        for notice in getattr(leg, \"seat_notices\", ()):\n",
+     "new": "        for notice in ():\n",
+     "nodes": [f"{T_NOTE}::test_governed_surface_renders_every_notice"]},
     {"id": "sealed-notice-dropped", "file": PI,
      "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
      "new": "    if not route.jailed:\n        return route, [], None",

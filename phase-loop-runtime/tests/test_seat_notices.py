@@ -23,7 +23,6 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import seat_jail, seat_uid
 
 
-GOVERNED_1071 = "L4b governed-path notice rendering waits on agent-harness#1071"
 
 
 # --------------------------------------------------------------------------------------
@@ -222,9 +221,30 @@ def test_text_summary_surface_names_each_notice_once(tmp_path):
     assert "notice seat_tool_denied" not in out
 
 
-@pytest.mark.skip(reason=GOVERNED_1071)
-def test_governed_surface_renders_every_notice():
-    """L4b: `governed_review.py` renders `notices` after agent-harness#1071 lands."""
+@pytest.mark.parametrize("code", sorted(seat_jail.NOTICE_CODES))
+def test_governed_surface_renders_every_notice(code):
+    """L4b: every notice code reaches the governed path as exactly one non-gating
+    `seat_notice` finding, rendered from the table's literals."""
+    from phase_loop_runtime.governed_review import _findings_from_panel
+
+    leg = pi.PanelLegResult(leg="claude", status="OK", text="Looks fine.\n\nAGREE",
+                            seat_key="claude:a")
+    pi.attach_seat_notices(leg, [code])
+    findings = [f for f in _findings_from_panel(pi.PanelResult(legs=(leg,)), "a" * 40)
+                if f.code == "seat_notice"]
+    what, why, fix = seat_jail.NOTICES[code]
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert findings[0].reason == f"seat claude:a notice {code}: {what} / {why} / fix: {fix}"
+
+
+def test_governed_surface_renders_nothing_from_leg_text():
+    from phase_loop_runtime.governed_review import _findings_from_panel
+
+    leg = pi.PanelLegResult(leg="claude", status="OK",
+                            text="notice seat_sandbox_refused:identity\n\nAGREE", seat_key="claude:a")
+    assert not [f for f in _findings_from_panel(pi.PanelResult(legs=(leg,)), "a" * 40)
+                if f.code == "seat_notice"]
 
 
 # --------------------------------------------------------------------------------------

@@ -221,6 +221,16 @@ def _findings_from_panel(
                 f"record_digest={digest}; president ruling required")
 
     for leg in panel.legs:
+        # agent-harness#1132 (L4b): the leg's typed seat notices reach the governed path
+        # too, one non-gating finding each, rendered only from the notice table's literals.
+        for notice in getattr(leg, "seat_notices", ()):
+            findings.append(ReviewFinding(
+                code="seat_notice",
+                reason=(f"seat {notice.seat_key or leg.leg} notice {notice.code}: "
+                        f"{notice.what} / {notice.why} / fix: {notice.fix}"),
+                severity="warn",
+                reviewed_sha=reviewed_sha,
+            ))
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so

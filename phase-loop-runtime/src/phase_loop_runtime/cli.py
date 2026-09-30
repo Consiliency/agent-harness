@@ -1042,10 +1042,12 @@ def build_parser() -> argparse.ArgumentParser:
     # teardown retained. Only a path recorded by a retention notice is accepted.
     seat_sandbox_sub = subparsers.add_parser(
         "seat-sandbox",
-        help="Jailed review-seat maintenance: `reap PATH` removes a retained seat directory.",
+        help=("Jailed review-seat maintenance: `qualify` runs the EC-EXECFIND-2 jail "
+              "falsifiers on this host and records its pass; `reap PATH` removes a retained "
+              "seat directory."),
     )
-    seat_sandbox_sub.add_argument("seat_sandbox_action", choices=("reap",))
-    seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH")
+    seat_sandbox_sub.add_argument("seat_sandbox_action", choices=("qualify", "reap"))
+    seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH", nargs="?")
     # train-status: non-mutating inspection of the cross-repo train ledger (#45).
     # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
     train_status_sub = subparsers.add_parser(
@@ -2529,6 +2531,18 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
 
 def _seat_sandbox_command(args: argparse.Namespace) -> int:
     from . import seat_uid
+
+    if args.seat_sandbox_action == "qualify":
+        from . import seat_jail_qualification
+
+        try:
+            return seat_jail_qualification.main([])
+        except seat_jail_qualification.QualificationError as exc:
+            print(f"seat-sandbox qualify: cannot run: {exc}", file=sys.stderr)
+            return 1
+    if not args.seat_sandbox_path:
+        print("seat-sandbox reap: PATH is required", file=sys.stderr)
+        return 2
 
     try:
         seat_uid.reap(str(args.seat_sandbox_path))

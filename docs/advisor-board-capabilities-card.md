@@ -485,7 +485,9 @@ agent-harness#1071's falsifier-run layout. The digest binds this host's layout, 
 does not carry over from another host, and an OS upgrade that changes `/lib*` or the `/etc`
 subset needs a new pass. Until a pass is recorded, a seat that would be jailed is refused
 with `seat_sandbox_refused:jail_unqualified`, whose notice names that per-host
-qualification as the fix. A pass record binds this host, the falsifier-run layout and the
+qualification as the fix. Run the qualification with `phase-loop seat-sandbox qualify`,
+which runs EC-EXECFIND-2's jail falsifiers against a real falsifier run and records the pass.
+A pass record binds this host, the falsifier-run layout and the
 run's evidence, which is re-hashed on every check. A copied, stale or hand-written record
 does not qualify another host or another run. The operator's own account can still forge
 one, and that is accepted, because the operator is trusted. The store defends against the

@@ -27,7 +27,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the digest,
   the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence file, and
   re-checked against the built jail at launch) before any
-  effect; recording the pass waits on agent-harness#1071. Hosts also need the one-time root
+  effect. `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail falsifiers
+  (`seat_jail_qualification`) against a real EXECFIND falsifier run and records this host's
+  pass; typed seat notices also reach the governed path as `seat_notice` findings (L4b).
+  Hosts also need the one-time root
   prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
   runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined`: live probe
   P4 measured `cloud-platform`, `cclog` and `experimentsandconfigs` on the agy access token;

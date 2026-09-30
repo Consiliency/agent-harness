@@ -875,8 +875,9 @@ are recorded on agent-harness#1132.
     binds all of:
     - the digest;
     - this host (sha256 of `/etc/machine-id`);
-    - the EC-EXECFIND-2 falsifier-run layout (none is recognised until the EXECFIND runner
-      lands, so nothing qualifies today);
+    - the EC-EXECFIND-2 falsifier-run layout: `seat_jail.falsifier_layout_identity()`, a
+      digest of the EXECFIND staging and run code, so a change to either invalidates every
+      pass;
     - the run's evidence file, which the gate re-hashes and which must name the same values.
 
     The record, the evidence and every directory up to the state home must be regular and
@@ -888,8 +889,19 @@ are recorded on agent-harness#1132.
   - **Why per host:** the digest binds the host's layout (maintainer decision, option A).
     A shipped host-independent policy digest plus a first-use self-check is
     agent-harness#1186.
-  - **Today:** recording a pass uses agent-harness#1071's layout, so the jailed route is
-    inert in this release.
+  - **Recording a pass:** `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail
+    falsifiers (`seat_jail_qualification`) against a real falsifier run, using the EXECFIND
+    staging, the dependency snapshot and the bounded bwrap runner:
+    - the run holds a nonce sentinel in every protected directory, a sentinel process, and
+      TCP, UDP, pathname Unix and abstract Unix listeners;
+    - concurrently, a probe program running as the seat in the production jail tries to
+      create entries, change sentinels, signal and connect, through the host paths and
+      through anything it resolves by device and inode;
+    - the parent judges the result: sentinels intact, no events, single-link protected
+      files, no seat mount or descriptor resolving to a protected object or an ancestor, and
+      the run `green_on_head`.
+
+    Only a pass is recorded.
   - **`seat_sandbox_refused:identity`** remains the code for a jail that is not the
     qualified profile at launch, or a failed identity probe.
 - **Jail profile (`seat_jail_v1`).** bwrap, no `--unshare-user` and no `--unshare-net`:
@@ -926,8 +938,8 @@ are recorded on agent-harness#1132.
   `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361, D3) on every such record.
 - **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the
-  `advisor-board` payload (`notices`, `legs[].notices`) and text summary. The governed-path
-  surface is lane L4b, after agent-harness#1071.
+  `advisor-board` payload (`notices`, `legs[].notices`) and text summary, and on the
+  governed path as one non-gating `seat_notice` finding per notice (L4b).
 - **Retention.** A failed in-namespace teardown keeps the seat directories under the leg's
   operator-owned 0700 scratch dir, adds `seat_sandbox_retained_after_teardown`, and records
   the path. `phase-loop seat-sandbox reap PATH` accepts only a recorded path under the

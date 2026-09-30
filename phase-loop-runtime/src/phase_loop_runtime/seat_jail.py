@@ -1259,11 +1259,26 @@ def jail_pass_dir() -> Path:
     return state_home() / "phase-loop" / "seat-jail-passes"
 
 
-# The identity of the EC-EXECFIND-2 falsifier-run layout a pass must come from. It is set
-# when the EXECFIND runner lands (agent-harness#1163/#1164). Until then NO record can
-# qualify a jail, whatever it says: the jailed route stays refused with
-# `seat_sandbox_refused:jail_unqualified`.
-EXECFIND_FALSIFIER_LAYOUT: str | None = None
+def falsifier_layout_identity() -> str:
+    """The identity of the EC-EXECFIND-2 falsifier-run layout (agent-harness#1163/#1164): a
+    digest of the code that stages, isolates and runs a falsifier -- the staging, the
+    dependency snapshot, the bounded bwrap run, the interpreter scope and the system mounts.
+    A change to any of it changes the identity, so every recorded jail pass is invalidated
+    until the jail falsifiers are re-run against the new layout (EC-EXECFIND-2)."""
+    import inspect
+
+    from . import falsifier, review_stage
+
+    parts = [inspect.getsource(obj) for obj in (
+        falsifier.run_finding_falsifier, review_stage.stage_review_tree,
+        review_stage.run_bounded_falsifier_node, review_stage._run_bounded_falsifier_node,
+        review_stage._snapshot_falsifier_dependencies, review_stage._falsifier_interpreter_scope,
+        review_stage._require_single_link_files,
+    )]
+    parts += [repr(review_stage._FALSIFIER_SYSTEM_ROOTS), repr(review_stage._FALSIFIER_PYTHON_FLAGS),
+              repr(sorted(review_stage._FALSIFIER_PYTHON_ENV.items()))]
+    digest = hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+    return f"execfind-falsifier-layout.v1:{digest}"
 
 PASS_RECORD_SCHEMA = "seat_jail_pass.v1"
 _PASS_RECORD_CAP = 64 * 1024
@@ -1342,8 +1357,8 @@ def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
     - the jail's profile digest;
     - this host (sha256 of ``/etc/machine-id``), so a copied record does not qualify
       another host;
-    - the falsifier-run layout (:data:`EXECFIND_FALSIFIER_LAYOUT`), so no record qualifies
-      before the EXECFIND runner exists;
+    - the falsifier-run layout (:func:`falsifier_layout_identity`), so a change to EXECFIND's
+      staging or run invalidates every pass;
     - the run's evidence: a file in the same directory whose sha256 the record names, and
       which itself names the same digest, host, layout and a pass. The gate re-hashes it.
 
@@ -1353,7 +1368,11 @@ def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
     directory, and whose files are refused by owner), stale records, other hosts, and
     accidental reuse.
     """
-    layout = layout if layout is not None else EXECFIND_FALSIFIER_LAYOUT
+    if layout is None:
+        try:
+            layout = falsifier_layout_identity()
+        except (OSError, TypeError, AttributeError, ImportError):
+            return False
     host = host if host is not None else host_identity()
     if not layout or not host or not re.fullmatch(r"[0-9a-f]{64}", profile_digest or ""):
         return False

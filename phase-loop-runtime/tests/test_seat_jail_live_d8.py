@@ -401,3 +401,38 @@ def test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass(tmp_path):
     assert done.returncode == 0, done.stderr
     assert os.stat(store / f"{digest}.json").st_uid == seat_uid.subordinate_host_uid(3)
     assert seat_jail.execfind_pass_recorded(digest, root=store, layout=LAYOUT, host=HOST) is False
+
+
+# --------------------------------------------------------------------------------------
+# EC-EXECFIND-2 jail falsifiers (seat_jail_qualification), live, with a real falsifier run.
+# --------------------------------------------------------------------------------------
+
+def test_execfind2_jail_falsifiers_pass_on_the_production_jail(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    evidence = q.qualify(record=True)
+    assert evidence["result"] == "pass", evidence.get("checks")
+    assert evidence["run_outcome"] == "green_on_head"
+    assert seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
+
+
+def _leak_host_tmp(jail):
+    owner = list(jail.process_owner)
+    at = owner.index("--remount-ro")
+    owner[at:at] = ["--bind", tempfile.gettempdir(), "/seat/leak"]
+    object.__setattr__(jail, "process_owner", tuple(owner))
+
+
+def test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run(tmp_path, monkeypatch):
+    """Mutation: the jail binds the host temp dir (where the falsifier run's staged tree and
+    dependency root live). The qualification FAILS: a seat mount resolves to an ancestor of
+    the protected set. (The probe still cannot traverse the operator's 0700 stage or write
+    into it -- the seat uid is not the operator -- which is a separate, DAC, layer.)"""
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    evidence = q.qualify(record=True, _mutate_jail=_leak_host_tmp)
+    assert evidence["result"] == "fail"
+    assert not evidence["checks"]["no_seat_mount_resolves_to_protected_object_or_ancestor"]
+    assert not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
