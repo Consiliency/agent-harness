@@ -10923,6 +10923,31 @@
       "task_summary": "Model roster + job-slot tiers, plan 1 of 5 (Part A shipped roster, Part B call-time overrides) (agent-harness#1171)",
       "type": "detailed",
       "updated_at": "2026-09-30T00:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-09-30T00:00:00Z",
+      "file": ".consiliency/plans/detailed-model-roster-vendor-seats-20260930.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-30T00:00:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "model-roster-vendor-seats",
+      "status": "committed",
+      "task_summary": "Vendor-named seats, fable eligibility floor, model-honest native fill; plan 2a of 5, 2b scoped (agent-harness#1171)",
+      "type": "detailed",
+      "updated_at": "2026-09-30T00:00:00Z"
     }
   ],
   "schema_version": 1
