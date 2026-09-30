@@ -2434,6 +2434,10 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                     # ABDNATIVE (#183): a deferred claude seat carries the
                     # typed native-fill request the harness must run; None otherwise.
                     "needs_native_agent": _native_agent_request_json(leg),
+                    # agent-harness#1176: a heartbeat_only seat's monitoring record (progress
+                    # notice, provider terminal state); absent under the bounded policy.
+                    **({"review_monitoring": dict(leg.review_monitoring)}
+                       if leg.review_monitoring is not None else {}),
                 }
                 for leg in result.legs
             ],
@@ -2492,6 +2496,19 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     # The statuses/verdicts are ADVISORY evidence — the operator reconciles them; a
     # non-OK leg (DEGRADED/UNAVAILABLE/…) is a gap to fill, not a passed review.
     print("advisor-board: verdicts are advisory — reconcile the legs; check each leg status.")
+    # agent-harness#1176: a heartbeat_only seat that went without genuine progress past its
+    # notice window says so in the board summary, whatever its final status.
+    for leg in result.legs:
+        monitoring = leg.review_monitoring or {}
+        count = monitoring.get("progress_notice_count")
+        if isinstance(count, int) and count > 0:
+            window = monitoring.get("stall_notice_s")
+            window_s = f"{int(window)}s" if isinstance(window, (int, float)) else "its window"
+            print(
+                f"advisor-board:   [seat_progress_stalled] {leg.seat_key} — no genuine progress "
+                f"for {window_s} ({count} notice(s)); final status {leg.status}",
+                file=sys.stderr,
+            )
     # #183: surface the requested-vs-delivered shortfall LOUDLY (stderr) so a
     # floor-satisfying board is never mistaken for the full requested board, and
     # name the seats a native harness can fill itself.

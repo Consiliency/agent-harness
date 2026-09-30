@@ -262,9 +262,10 @@ class _ReviewOperationCancelled(RuntimeError):
 
 # agent-harness#1176: how long a heartbeat_only seat may go without GENUINE progress before its
 # record carries a ``seat_progress_stalled`` notice. A notice only: silence never ends the seat
-# (ah#892). A max-effort Claude turn is progress-silent for its whole thinking phase (about ten
-# minutes per attempt in the measured journals), so the default leaves ample margin above that.
-_REVIEW_STALL_NOTICE_S = 1800.0
+# (ah#892). A max-effort Claude turn is progress-silent for its whole thinking phase: 10 to 20
+# minutes per attempt in the measured journals, and one healthy seat that completed had a
+# 27-minute silent gap. The default leaves a wide margin above that.
+_REVIEW_STALL_NOTICE_S = 3600.0
 _REVIEW_STALL_NOTICE_ENV = "PHASE_LOOP_REVIEW_STALL_NOTICE_S"
 
 
@@ -303,6 +304,8 @@ class _ReviewMonitor:
         self.record.update(last_genuine_progress_age_s=age,
                            observation_state="progress_observed" if age is not None and age <= _LEG_LIVENESS_READ_INTERVAL_S else "progress_unobserved",
                            terminal_reason=terminal)
+        # A terminal observation leaves the notice fields as they were: a seat that stalled and
+        # then completed keeps ``progress_notice_count`` as history.
         if terminal is None:
             # Never-observed progress counts from the seat's start: a review that exists but
             # was never observed must surface too (agent-harness#1176).
@@ -5275,33 +5278,76 @@ _CLAUDE_GAVE_UP_OTHER = "claude_seat_provider_api_error"
 _CLAUDE_PROVIDER_GAVE_UP_CODES = frozenset({*_CLAUDE_GAVE_UP_BY_ERROR.values(), _CLAUDE_GAVE_UP_OTHER})
 
 
-def _claude_transcript_provider_gave_up(path: Path) -> str | None:
-    """The typed give-up code when ``path`` proves Claude Code stopped the current turn on an
-    API error, else None.
+def _claude_api_error_record(payload: dict, message: dict) -> bool:
+    # A boolean in every measured journal; a string "true" is accepted too, so a format drift
+    # cannot silently bring back the wait-forever hang (agent-harness#1176 r1).
+    def _set(value: object) -> bool:
+        return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+    return message.get("role") == "assistant" and (
+        _set(payload.get("isApiErrorMessage")) or _set(message.get("isApiErrorMessage")))
 
-    Terminal only when, after the last genuine request (a user record that is not ``isMeta`` and
-    carries no tool_result), the LAST user/assistant record is an ``isApiErrorMessage``
-    assistant record: a later user record (the CLI's own resume prompt included) or assistant
-    record means the CLI went on. A last line that does not parse yet is a writer mid-append,
-    so the answer waits for the next read. A ``max_tokens`` stop alone is never terminal: the
-    CLI continues it (agent-harness#1077).
+
+def _claude_transcript_state(path: Path) -> tuple[int, str | None]:
+    """One read of an exact Claude transcript: ``(record_versions, gave_up)``.
+
+    Claude Code re-journals records: a replay repeats an earlier record under its uuid, often
+    with changed ``parentUuid``/``promptId``/``usage``, and metadata records (``last-prompt``,
+    ``ai-title``, ``mode``...) are rewritten after every turn. Neither is provider progress,
+    and neither moves a record in the turn (agent-harness#1176 r1). So records are ordered by
+    IDENTITY: an assistant record by its uuid, a user record by its uuid and what it says (a
+    changed request under a reused uuid is a new request, as in
+    ``_final_assistant_text_from_jsonl``). Each identity keeps the position where it first
+    appeared and takes its latest version's state.
+
+    ``record_versions`` counts the distinct user/assistant record versions. It grows only when
+    the provider writes something new, so a caller can use it as genuine progress.
+
+    ``gave_up`` is the typed code when Claude Code stopped the current turn on an API error,
+    else None. It is set only when all of these hold:
+      * after the last genuine request (a user record that is not ``isMeta`` and carries no
+        tool_result), the last record in identity order is an ``isApiErrorMessage``
+        assistant record;
+      * no completed answer (a non-error assistant record stopped with ``end_turn`` or
+        ``stop_sequence``) exists after that request. A give-up never outranks a review;
+      * the file's last line parses. A writer that is mid-append means waiting for the next
+        read.
+    A ``max_tokens`` stop alone is never terminal, because the CLI continues it
+    (agent-harness#1077).
     """
     try:
         lines = [line for line in path.read_text(encoding="utf-8", errors="replace").split("\n")
                  if line.strip()]
     except OSError:
-        return None
-    records: list[tuple[dict, dict]] = []
+        return 0, None
+    order: list[object] = []
+    latest: dict[object, tuple[dict, dict]] = {}
+    versions: set[str] = set()
+    complete = True
     for index, line in enumerate(lines):
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
-            if index == len(lines) - 1:
-                return None
+            complete = complete and index != len(lines) - 1
             continue
         message = payload.get("message") if isinstance(payload, dict) else None
-        if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
-            records.append((payload, message))
+        if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+            continue
+        uid = payload.get("uuid") if isinstance(payload.get("uuid"), str) and payload.get("uuid") else None
+        said = json.dumps([message.get("id"), message.get("role"), message.get("content")], sort_keys=True,
+                          default=str)
+        versions.add(json.dumps([uid, said, message.get("stop_reason"),
+                                 _claude_api_error_record(payload, message)], default=str))
+        if uid is None:
+            identity: object = ("uuid-less", index)
+        elif message.get("role") == "user":
+            identity = ("user", uid, said)
+        else:
+            identity = ("assistant", uid)
+        if identity not in latest:
+            order.append(identity)
+        latest[identity] = (payload, message)
+    if not complete:
+        return len(versions), None
 
     def _genuine_request(payload: dict, message: dict) -> bool:
         content = message.get("content")
@@ -5309,14 +5355,24 @@ def _claude_transcript_provider_gave_up(path: Path) -> str | None:
                 and not (isinstance(content, list) and any(
                     isinstance(item, dict) and item.get("type") == "tool_result" for item in content)))
 
-    if not any(_genuine_request(payload, message) for payload, message in records):
-        return None
-    payload, message = records[-1]
-    if message.get("role") != "assistant" or not (
-            payload.get("isApiErrorMessage") is True or message.get("isApiErrorMessage") is True):
-        return None
+    live = [latest[identity] for identity in order]
+    requests = [i for i, (payload, message) in enumerate(live) if _genuine_request(payload, message)]
+    turn = live[requests[-1] + 1:] if requests else []
+    if not turn or any(
+            message.get("role") == "assistant" and not _claude_api_error_record(payload, message)
+            and message.get("stop_reason") in ("end_turn", "stop_sequence")
+            for payload, message in turn):
+        return len(versions), None
+    payload, message = turn[-1]
+    if not _claude_api_error_record(payload, message):
+        return len(versions), None
     error = payload.get("error")
-    return _CLAUDE_GAVE_UP_BY_ERROR.get(error if isinstance(error, str) else "", _CLAUDE_GAVE_UP_OTHER)
+    return len(versions), _CLAUDE_GAVE_UP_BY_ERROR.get(
+        error if isinstance(error, str) else "", _CLAUDE_GAVE_UP_OTHER)
+
+
+def _claude_transcript_provider_gave_up(path: Path) -> str | None:
+    return _claude_transcript_state(path)[1]
 
 
 def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
@@ -6492,11 +6548,8 @@ def _run_claude_tui_session(
         return _latest_claude_transcript_text(str(cwd), since=start_wall)
 
     def _transcript_activity() -> int:
-        if broker_transcript_path is not None:
-            try:
-                return broker_transcript_path.stat().st_size
-            except OSError:
-                return 0
+        # The unbrokered cwd scan; the exact brokered transcript is read by
+        # ``_claude_transcript_state`` below.
         return _latest_claude_transcript_activity(str(cwd), since=start_wall)
 
     def _broker_final() -> str:
@@ -6759,7 +6812,14 @@ def _run_claude_tui_session(
             if now >= next_transcript_check:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
                 transcript_text = _transcript_text()
-                transcript_activity = _transcript_activity()
+                # agent-harness#1176 r1: on the exact brokered transcript, progress is a NEW
+                # record version, never a re-journaled record or rewritten metadata, and the
+                # same single read yields the provider's typed give-up. The unbrokered cwd
+                # scan keeps byte growth: it may see a neighbouring session.
+                if broker_transcript_path is not None:
+                    transcript_activity, gave_up = _claude_transcript_state(broker_transcript_path)
+                else:
+                    transcript_activity, gave_up = _transcript_activity(), None
                 # #188: the session transcript growing (tool calls, streamed
                 # messages) is genuine progress even before a file verdict lands.
                 # Track raw JSONL growth separately because a tool-only turn can add
@@ -6784,11 +6844,10 @@ def _run_claude_tui_session(
                     return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
                 # agent-harness#1176: the provider journaled that it gave up on this turn and
                 # now idles; nothing more can arrive, so end the leg now with the typed reason
-                # instead of waiting (forever, under heartbeat_only). The exact brokered
-                # transcript only: the unbrokered cwd scan may see a neighbouring session.
-                gave_up = (_claude_transcript_provider_gave_up(broker_transcript_path)
-                           if broker_transcript_path is not None else None)
-                if gave_up is not None:
+                # instead of waiting (forever, under heartbeat_only). Only a leg with nothing
+                # acceptable ends this way: the review file, the broker's final answer and a
+                # conforming transcript answer are all checked first and all win.
+                if gave_up is not None and not transcript_salvage:
                     if review_monitor is not None:
                         review_monitor.record["provider_terminal_state"] = gave_up
                         review_monitor.observe(
@@ -7808,7 +7867,9 @@ def _exec_claude_tui_leg(
     # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
         tail_failure = (
-            # The provider's typed give-up IS the reason; the idle PTY tail adds nothing.
+            # The provider's typed give-up IS the reason; the idle PTY tail adds nothing our
+            # validated templates can carry (Claude's "resets 6pm (UTC)" wording is not one
+            # ``_rendered_reset`` parses).
             _LegFailure(log_text) if log_text in _CLAUDE_PROVIDER_GAVE_UP_CODES
             else _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
         )
@@ -9396,6 +9457,9 @@ def _write_incremental_verdict(
             "text": result.text,
             "detail": result.detail,
         }
+        if result.review_monitoring is not None:
+            # agent-harness#1176: heartbeat_only only; metadata, never provider text.
+            payload["review_monitoring"] = dict(result.review_monitoring)
         # Atomic publish: write a temp sibling then os.replace, so a directory
         # watcher never observes/parses a partially-written verdict file.
         body = json.dumps(payload, indent=2, sort_keys=True)
