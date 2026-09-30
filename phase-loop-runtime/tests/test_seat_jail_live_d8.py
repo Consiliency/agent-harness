@@ -298,3 +298,86 @@ def test_live_jailed_claude_runs_a_tool_and_quotes_it(tmp_path):
             pi._EGRESS_LAUNCH_PREFIX.reset(token)
     assert status == "OK", (status, text)
     assert subject in text
+
+
+# --------------------------------------------------------------------------------------
+# Board round 2: the identity probe's filter checks, each layer on its own. The canonical
+# argv/filter digest (a separate layer) is bypassed so the PROBE alone must refuse a jail
+# whose own seccomp filter is missing -- including under an inherited outer filter, where
+# `Seccomp: 2` alone would lie (codex round 1).
+# --------------------------------------------------------------------------------------
+
+def _install_allow_all_filter_on_this_thread() -> None:
+    import ctypes
+    import struct
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    assert libc.prctl(38, 1, 0, 0, 0) == 0  # PR_SET_NO_NEW_PRIVS
+    program = ctypes.create_string_buffer(struct.pack("HBBI", 0x06, 0, 0, 0x7FFF0000))
+
+    class SockFprog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_void_p)]
+
+    fprog = SockFprog(1, ctypes.addressof(program))
+    assert libc.prctl(22, 2, ctypes.byref(fprog), 0, 0) == 0  # PR_SET_SECCOMP, FILTER
+
+
+def _probe_without_jail_filter(tmp_path, name, *, outer_filter: bool) -> str:
+    """Run the identity probe (canonical check bypassed) against a jail with NO seccomp
+    filter of its own, in a worker thread so any outer filter stays thread-local."""
+    import threading
+
+    result: dict[str, str] = {}
+
+    def worker():
+        with live_seat(tmp_path, name) as (jail, _prefix, _h, _d):
+            if outer_filter:
+                _install_allow_all_filter_on_this_thread()
+            owner = list(jail.process_owner)
+            at = owner.index("--seccomp")
+            del owner[at:at + 2]
+            object.__setattr__(jail, "process_owner", tuple(owner))
+            object.__setattr__(jail, "pass_fds",
+                               tuple(fd for fd in jail.pass_fds if fd != jail.seccomp_fd))
+            try:
+                pi._require_jailed_seat_identity(pi._compose_seat_jail_prefix(jail), jail,
+                                                 jail.pass_fds)
+                result["r"] = "accepted"
+            except seat_jail.SeatSandboxRefused:
+                result["r"] = "refused"
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    return result.get("r", "error")
+
+
+def test_r2_behavioural_check_refuses_a_filterless_jail_under_an_outer_filter(tmp_path, monkeypatch):
+    """Isolates the BEHAVIOURAL layer: the filter-count layer is neutralised (expected count
+    made to match what a filterless jail shows), so only `nested-userns-denied` can refuse."""
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda jail: None)
+    monkeypatch.setattr(seat_jail, "_own_seccomp_filters", lambda: 0)  # outer filter = 1 = "own + 1"
+    assert _probe_without_jail_filter(tmp_path, "beh", outer_filter=True) == "refused"
+
+
+def test_r2_filter_count_refuses_a_filterless_jail(tmp_path, monkeypatch):
+    """Isolates the COUNT layer: an outer filter supplies `Seccomp: 2`, and the behavioural
+    check is neutralised (the probe always prints `nested-userns-denied`), so only
+    `Seccomp_filters = own + 1` -- counted on the calling thread -- can refuse."""
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda jail: None)
+    monkeypatch.setattr(seat_jail, "JAIL_PROBE", seat_jail.JAIL_PROBE.replace(
+        "/usr/bin/unshare -U /bin/true 2>/dev/null && echo nested-userns-allowed "
+        "|| echo nested-userns-denied; ", "echo nested-userns-denied; "))
+    assert _probe_without_jail_filter(tmp_path, "cnt", outer_filter=True) == "refused"
+
+
+def test_r2_seccomp_descriptor_must_be_at_offset_zero(tmp_path):
+    """bwrap loads the program from the descriptor's current offset; a moved offset would
+    load a suffix while a digest over offset 0 still matched."""
+    import os as _os
+
+    with live_seat(tmp_path, "off") as (jail, _prefix, _h, _d):
+        pi._require_canonical_jail(jail)
+        _os.lseek(jail.seccomp_fd, 8, _os.SEEK_SET)
+        with pytest.raises(seat_jail.SeatSandboxRefused):
+            pi._require_canonical_jail(jail)

@@ -975,6 +975,11 @@ def jail_profile_digest(leg: str, arch: str | None = None) -> str:
 def installed_filter_sha256(jail: "SeatJail") -> str:
     """The digest of the bytes ACTUALLY in the jail's seccomp memfd -- what bwrap will load --
     never a stored attribute."""
+    # bwrap reads the program from the descriptor's CURRENT offset, so the digest is only
+    # the program bwrap loads when that offset is 0. A descriptor that has been read from, or
+    # rewound anywhere else, would hand bwrap a suffix of the program: refused.
+    if os.lseek(jail.seccomp_fd, 0, os.SEEK_CUR) != 0:
+        raise SeatSandboxRefused(refused("identity"), "seccomp descriptor is not at offset 0")
     size = os.fstat(jail.seccomp_fd).st_size
     return filter_digest(os.pread(jail.seccomp_fd, size, 0))
 
@@ -1202,9 +1207,11 @@ def expected_probe_lines(jail: SeatJail) -> list[str]:
 
 
 def _own_seccomp_filters() -> int:
-    """How many seccomp filters THIS process already carries: the jail adds exactly one."""
+    """How many seccomp filters the CALLING THREAD already carries -- the probe is forked from
+    it and inherits them -- so the jail's own filter makes exactly one more. `thread-self`,
+    not `self`: `self` is the thread-group leader, whose filters can differ."""
     try:
-        for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+        for line in Path("/proc/thread-self/status").read_text(encoding="ascii").splitlines():
             if line.startswith("Seccomp_filters:"):
                 return int(line.split()[1])
     except (OSError, ValueError, IndexError):

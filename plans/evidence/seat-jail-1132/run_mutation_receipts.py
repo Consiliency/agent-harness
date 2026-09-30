@@ -184,6 +184,22 @@ MUTATIONS: list[dict[str, object]] = [
      "old": "    tui_cwd = out_dir.resolve() if brokered else out_dir\n",
      "new": "    tui_cwd = out_dir.parent.resolve() if brokered else out_dir\n",
      "nodes": [f"{T_PERM}::test_hang_investigation_sealed_claude_tui_session_is_golden_to_main"]},
+    {"id": "R2-behavioural-seccomp-check-deleted", "file": SJ,
+     "edits": [("    '/usr/bin/unshare -U /bin/true 2>/dev/null && echo nested-userns-allowed '\n"
+                "    '|| echo nested-userns-denied; '\n", ""),
+               ('"nested-userns-denied", fds,', "fds,")],
+     "nodes": [f"{T_LIVE}::test_r2_behavioural_check_refuses_a_filterless_jail_under_an_outer_filter"]},
+    {"id": "R2-filter-count-check-deleted", "file": SJ,
+     "edits": [("NoNewPrivs|Seccomp|Seccomp_filters):", "NoNewPrivs|Seccomp):"),
+               ('"Seccomp:\\t2", f"Seccomp_filters:\\t{_own_seccomp_filters() + 1}",', '"Seccomp:\\t2",')],
+     "nodes": [f"{T_LIVE}::test_r2_filter_count_refuses_a_filterless_jail"]},
+    {"id": "R2-filter-count-read-from-group-leader", "file": SJ,
+     "old": 'Path("/proc/thread-self/status")', "new": 'Path("/proc/self/status")',
+     "nodes": [f"{T_LIVE}::test_r2_filter_count_refuses_a_filterless_jail"]},
+    {"id": "R2-seccomp-offset-unchecked", "file": SJ,
+     "old": "    if os.lseek(jail.seccomp_fd, 0, os.SEEK_CUR) != 0:\n",
+     "new": "    if False:\n",
+     "nodes": [f"{T_LIVE}::test_r2_seccomp_descriptor_must_be_at_offset_zero"]},
     {"id": "sealed-notice-dropped", "file": PI,
      "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
      "new": "    if not route.jailed:\n        return route, [], None",
@@ -217,12 +233,17 @@ def main() -> int:
         original = path.read_bytes()
         digest = hashlib.sha256(original).hexdigest()
         text = original.decode("utf-8")
-        old, new = str(mutation["old"]), str(mutation["new"])
-        if text.count(old) != 1:
-            raise SystemExit(f"{mutation['id']}: mutation anchor matches {text.count(old)} times")
+        # One mutation may need several literal edits (a check and its expectation).
+        edits = list(mutation.get("edits") or [(mutation["old"], mutation["new"])])
+        mutated_text = text
+        for old, new in edits:
+            if mutated_text.count(old) != 1:
+                raise SystemExit(f"{mutation['id']}: mutation anchor matches {mutated_text.count(old)} times")
+            mutated_text = mutated_text.replace(old, new, 1)
+        old, new = "\n".join(e[0] for e in edits), "\n".join(e[1] for e in edits)
         control = _run(list(mutation["nodes"]))
         try:
-            path.write_text(text.replace(old, new, 1), encoding="utf-8")
+            path.write_text(mutated_text, encoding="utf-8")
             mutated = _run(list(mutation["nodes"]))
         finally:
             path.write_bytes(original)

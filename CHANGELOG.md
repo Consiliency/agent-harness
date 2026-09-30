@@ -45,6 +45,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   pre-launch refusal keeps its own code; no parent-side transcript copy is written before the
   token scan; the heartbeat monitor reaches the jailed session; `reap` maps its namespace only
   after it exists; the module imports on platforms without POSIX open flags.
+- The identity probe's filter checks are each proven on their own: the behavioural check
+  and the filter count (read from the calling thread) each refuse a jail with no seccomp
+  filter of its own, even under an inherited outer filter. The seccomp descriptor must be
+  at offset 0, because bwrap reads from the current offset.
+- The capabilities card warns that storing the seat token before an EC-EXECFIND-2 pass is
+  recorded makes jailed-eligible Claude seats refuse (`seat_sandbox_refused:identity`), and
+  gives the order: record the pass, then store the token.
 - `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361) on every tooled or pointer seat record.
 - New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;

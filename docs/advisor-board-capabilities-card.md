@@ -485,6 +485,21 @@ Cloud APIs answer from inside the jail, because the egress namespace filters by 
 and Google API hosts share front-end addresses. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
+**Warning: storing the seat token switches every Claude seat to the jailed route.**
+On a host that has the prerequisite below, a Claude seat with a staged tree takes the
+jailed route as soon as a seat token is stored. Until an EC-EXECFIND-2 pass is recorded
+for this jail's profile digest, that route is refused. So after you store the token, every
+such brokered Claude seat is refused with `seat_sandbox_refused:identity` and returns
+DEGRADED; it does not fall back to the sealed route. This includes board rounds, which run
+the reviewed PR's own runtime.
+
+Operational order:
+1. Record the EC-EXECFIND-2 pass for the jail digest.
+2. Only then store the seat token.
+
+If you store the token earlier, accept those refusals. Or place the token only while you run
+a probe, and remove it before board rounds.
+
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
 conventional). The runtime never runs these. Without them the seat stays sealed with
