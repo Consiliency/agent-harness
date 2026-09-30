@@ -2726,6 +2726,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "4661bd07417ed5855f7f95c68c2f7f1e1f12b7e0ff6ce2ff49c410ccc29c7012",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
@@ -3401,6 +3407,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "bd2e5e8e8f821c8d2c912043ccb3cb18d3eb2210125aeeeadddfc45227bcd0c4",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
@@ -4409,6 +4421,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "405bfc657ba7e13610306f40d33fa6aa411f7a3ad5be44b0046925aa5cdd75e3",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4865,6 +4883,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "6c64286ed56c405e3b695f46160c1fd8b701b9f42854e6dda54ce46ee6b90188",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
@@ -5105,6 +5129,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "45614648e5e69931be408bfbd08a0279a61d8a390d1baf7113944b759d15fb84",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
@@ -5251,6 +5281,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "5443d34a98a55faf471abfa2c1baa4f1162d2dacc636fd68d8759975fd030bd6",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": null,
@@ -6193,6 +6229,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "664f6516884039f8724cb55732c58906b6a976e27a9b5e789b634d043e9745e7",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": null,
@@ -6415,6 +6457,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "1d474ef41c536deff7234e6449d14fc11fc434a199ac0dd49409c3a3c9c14aca",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": null,
@@ -6626,6 +6674,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "bae605d434cd09d9c1f52e990b609c9c254ecaf6591afd861025377d94ef9cbd",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/a27a6f9a/codex-v10-residual-plan/20260825T112801Z-01-residual-plan.md",
@@ -7471,6 +7525,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "f626ca937dc294732df008c946e204ca030c5953b86dd6fd0cb6380a2b3c8c7b",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05b770de/codex-v10-reviewtruth-plan-repair/20260904T072245Z-01-reviewtruth-plan.md",
@@ -7747,6 +7807,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "ad51e913814e9a5bb6ddd20aec70e05e5edc1a0ebb274b46edd577b2ca47a1ec",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
@@ -8352,6 +8418,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "93865389155adc61a293d5a77ee4410f8e7e94f9fb0983808fe02c4f7f9a225c",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/ea0bef92/codex-v10-sched-plan/20260820T003600Z-01-sched-plan.md",
@@ -9951,6 +10023,18 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1132"
+        },
+        {
+          "plan_sha256": "f8524f4b0f8ce191eb73610c7e9348324623f4275d0a4acfac77ec9d508b63d8",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
+        },
+        {
+          "plan_sha256": "24f695495460b05b7f59e54d968021c9dafc5cfb8c28ad326f0dadf456fe6dfb",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1163"
         }
       ],
       "reflection_ref": null,
@@ -9964,7 +10048,47 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-21T00:00:00Z"
+      "updated_at": "2026-09-21T00:00:00Z",
+      "sl0_repairs": [
+        {
+          "authorization_id": "agent-harness#1164:EXECFIND-SL2:EXECFIND",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1164",
+          "decision": "maintainer 2026-09-29 (relayed by the lead on agent-harness#1164): EXECFIND SL-2 may change exactly this node, replacing its free-text detail with the existing harness detail code and asserting that code in the reason",
+          "frozen_by": "EXECFIND SL-0 advisory re-freeze (.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.json)",
+          "reason": "agent-harness#1102 made PanelLegResult.detail a closed vocabulary, so the node's detail=\"EgressUnavailable\" is rewritten to the unknown-failure template and its reason assertion cannot hold; the node was skipped until SL-2's symbols existed, so main never ran it. Under the plan's re-freeze rule this correction restarts the advisory re-freeze: the advisory receipt and its RED logs are re-recorded against the pre-implementation commit 061a84e99d4cd1d6bc53a029438c936203caa2f8 (main 3c61b270 plus only this node), which is merged into the landing so the receipt's base stays reachable. The original (non-advisory) receipt and logs are unchanged.",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_governed_review.py",
+              "base_blob": "4e2aa19a687e84d0b3f015a465115de65902db7f",
+              "nodes": [
+                "ExecfindFindingTests::test_degraded_leg_whole_code"
+              ]
+            }
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after EXECFIND SL-2 merges, naming authorization_id agent-harness#1164:EXECFIND-SL2:EXECFIND: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link, as for agent-harness#1145's entries: the landed entry pairs with exactly this authorization; the old blob equals both the frozen blob and the blob at the merge's first parent; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        },
+        {
+          "authorization_id": "agent-harness#1164:EXECFIND-SL2:EXECFIND",
+          "entry": "landed",
+          "issue": "Consiliency/agent-harness#1164",
+          "merge_commit": "35702d13bb7ca8dbb47cdfc436938635264766b1",
+          "merge_first_parent": "c89c61abba397546c7b99fabcd33c558a9253fbb",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_governed_review.py",
+              "nodes": [
+                "ExecfindFindingTests::test_degraded_leg_whole_code"
+              ],
+              "old_blob": "4e2aa19a687e84d0b3f015a465115de65902db7f",
+              "new_blob": "71cd3ee18255e83e3c659ec15a90e310331393dc"
+            }
+          ],
+          "advisory_receipt_refreeze_base": "061a84e99d4cd1d6bc53a029438c936203caa2f8",
+          "note": "old_blob equals the authorization's base_blob and the path's blob at the merge's first parent; new_blob equals the path's blob at the merge. Appended once after the merge; never mutated."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": 5,
@@ -10483,6 +10607,12 @@
           "roadmap_sha256": "1851379b762257ccafe4b22dbbbf5bab2c260441fa83f26f1d71dcdc32da6066",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1078"
+        },
+        {
+          "plan_sha256": "efbd64bc1a0fe39192873dc0d4a42589caa1d94097c82691cdc8c6a48a9b77eb",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1154"
         }
       ],
       "reflection_ref": null,
