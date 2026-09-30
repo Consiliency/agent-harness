@@ -7163,6 +7163,22 @@ def attach_native_fill_provenance(leg: PanelLegResult, fill: NativeLegFill) -> P
     return leg
 
 
+def _not_deferred_detail(fill: NativeLegFill, leg: PanelLegResult | None) -> str:
+    """agent-harness#1183: say what the seat ACTUALLY did, so a seat that degraded before it
+    could defer (e.g. the staging free-space floor) is not reported as a routing problem.
+    ``leg.detail`` is already our closed vocabulary (the ``PanelLegResult`` chokepoint)."""
+    head = f"seat {fill.seat_key} did not defer as under_claude_code with a fill request"
+    if leg is None:
+        return f"{head}: this run returned no leg for that seat"
+    request = leg.needs_native_agent
+    if leg.status == "UNAVAILABLE" and leg.detail == _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE and request is not None:
+        return f"{head}: it deferred for model {request.model}, not the fill's model {fill.model}"
+    outcome = leg.status + (f" ({leg.detail})" if leg.detail else "")
+    if leg.status == "OK":
+        outcome += " with a runtime verdict, which a fill never replaces"
+    return f"{head}: the seat returned {outcome}"
+
+
 def apply_native_leg_fills(
     legs: Sequence[PanelLegResult], fills: Sequence[NativeLegFill]
 ) -> list[PanelLegResult]:
@@ -7184,9 +7200,7 @@ def apply_native_leg_fills(
             or (request.model or "").lower() != (fill.model or "").lower()
         ):
             raise NativeFillRefusalError(NativeFillRefusal(
-                NATIVE_FILL_SEAT_NOT_DEFERRED,
-                f"seat {fill.seat_key} did not defer as under_claude_code with a fill request",
-                fill.seat_key,
+                NATIVE_FILL_SEAT_NOT_DEFERRED, _not_deferred_detail(fill, leg), fill.seat_key,
             ))
         conforming = terminal_verdict(fill.text) is not None
         filled = PanelLegResult(
