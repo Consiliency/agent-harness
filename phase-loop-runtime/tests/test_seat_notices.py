@@ -151,8 +151,11 @@ def test_jailed_route_without_an_execfind_pass_is_refused_with_zero_launches(mon
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
     assert _FakeBroker.invoked == 0
     assert tuple(spawned)[0] == "DEGRADED"
-    assert pi._finalize_leg_detail(tuple(spawned)[-1]) == "seat_sandbox_refused:identity"
-    assert spawned.seat_notices == ("seat_sandbox_refused:identity",)
+    assert pi._finalize_leg_detail(tuple(spawned)[-1]) == "seat_sandbox_refused:jail_unqualified"
+    assert spawned.seat_notices == ("seat_sandbox_refused:jail_unqualified",)
+    notice = seat_jail.render_notice("seat_sandbox_refused:jail_unqualified", "claude:a")
+    assert "per-host EC-EXECFIND-2 jail qualification" in notice.fix
+    assert "seat-jail-passes" in notice.fix
 
 
 def test_gemini_seat_stays_sealed_with_one_notice(monkeypatch, tmp_path):

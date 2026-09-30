@@ -109,9 +109,16 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "namespace setup failed", "check slirp4netns"),
     "seat_sandbox_refused:identity": (
         "leg refused",
-        "seat not provably confined (seat ids, capabilities, mountinfo, fd set, filter "
-        "digest, or no EC-EXECFIND-2 pass for this jail digest)",
+        "seat not provably confined (seat ids, capabilities, mountinfo, fd set, or the jail "
+        "is not the qualified profile)",
         "report a defect"),
+    "seat_sandbox_refused:jail_unqualified": (
+        "leg refused",
+        "no EC-EXECFIND-2 pass is recorded on this host for this jail's profile digest (a new "
+        "host, a changed host layout, or a changed jail)",
+        "run the per-host EC-EXECFIND-2 jail qualification, which records the pass at "
+        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json; or remove the seat token "
+        "to use the sealed route"),
     "seat_sandbox_refused:preseed": (
         "leg refused", "seat-home not writable", "check disk"),
     "seat_sandbox_refused:token_file_unsafe": (
@@ -1243,20 +1250,39 @@ def close_jail_fds(jail: SeatJail) -> None:
 # EC-EXECFIND-2: a jail digest reaches the jailed route only with a recorded pass.
 # --------------------------------------------------------------------------------------
 
-def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None) -> bool:
-    """Has EC-EXECFIND-2's jail-falsifier run passed against exactly this digest?
+def jail_pass_dir() -> Path:
+    """Where THIS host's EC-EXECFIND-2 jail passes live (maintainer decision: option A).
 
-    The pass is recorded as evidence keyed by the digest, under
-    ``plans/evidence/seat-jail-execfind/<digest>.json`` of the runtime's own package
-    data. Recording it waits on agent-harness#1071's falsifier-run layout, so today no
-    digest has a pass and a jailed launch is refused with ``seat_sandbox_refused:identity``
-    (plan "EC-EXECFIND-2 obligations on the jail").
+    Per user and per host, never package data: the canonical digest binds this host's
+    layout (`/lib*`, the `/etc` subset), so a pass recorded elsewhere does not apply here."""
+    return state_home() / "phase-loop" / "seat-jail-passes"
+
+
+def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None) -> bool:
+    """Has EC-EXECFIND-2's jail-falsifier run passed on this host against exactly this digest?
+
+    The record is ``<jail_pass_dir()>/<digest>.json``, owned by the euid and not writable by
+    group or other, read without following a link. A missing, foreign or malformed record,
+    or one for another digest (a new host, a changed host layout, a changed jail), is no
+    pass: the jailed route is refused with ``seat_sandbox_refused:jail_unqualified``, whose
+    notice names the per-host qualification as the fix. Recording a pass uses
+    agent-harness#1071's falsifier-run layout.
     """
-    base = root if root is not None else Path(__file__).resolve().parent / "seat_jail_passes"
-    record = base / f"{profile_digest}.json"
+    base = root if root is not None else jail_pass_dir()
     try:
-        document = json.loads(record.read_text(encoding="utf-8"))
+        fd = os.open(base / f"{profile_digest}.json",
+                     os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > 64 * 1024):
+            return False
+        document = json.loads(os.read(fd, 64 * 1024))
     except (OSError, ValueError):
         return False
+    finally:
+        os.close(fd)
     return (isinstance(document, dict) and document.get("profile_digest") == profile_digest
             and document.get("result") == "pass")

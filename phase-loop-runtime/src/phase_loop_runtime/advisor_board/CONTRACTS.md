@@ -866,10 +866,20 @@ are recorded on agent-harness#1132.
   `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
   byte-identical to before, with that notice. Codex and grok are not jailed
   (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
-- **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no recorded
-  EC-EXECFIND-2 falsifier pass is REFUSED before any effect with
-  `seat_sandbox_refused:identity`. Recording that pass waits on agent-harness#1071, so the
-  jailed route is inert in this release.
+- **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
+  falsifier pass recorded on THIS host is REFUSED before any effect with
+  `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as
+  the fix.
+  - **Where passes live:** per user and per host, at
+    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`. The record is owned by the
+    euid, not group- or other-writable, and read without following a link.
+  - **Why per host:** the digest binds the host's layout (maintainer decision, option A).
+    A shipped host-independent policy digest plus a first-use self-check is
+    agent-harness#1186.
+  - **Today:** recording a pass uses agent-harness#1071's layout, so the jailed route is
+    inert in this release.
+  - **`seat_sandbox_refused:identity`** remains the code for a jail that is not the
+    qualified profile at launch, or a failed identity probe.
 - **Jail profile (`seat_jail_v1`).** bwrap, no `--unshare-user` and no `--unshare-net`:
   read-only `/usr` (merged-`/usr` links recreated), an `/etc` subset, the provider image at
   `/seat/bin/<leg>`, the bundle and instructions as sealed memfds at `/seat/review/`, the

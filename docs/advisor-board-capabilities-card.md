@@ -475,9 +475,14 @@ staged clone and the review bundle through tools instead of receiving the bundle
 The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
 changes: the seat keeps the sealed inline route and reports why in a typed notice.
 
-**Status in this release: inert.** A jailed launch also needs a recorded EC-EXECFIND-2
-falsifier pass for the jail's profile digest (agent-harness#1071); until then a seat that
-would be jailed is refused with `seat_sandbox_refused:identity`. Gemini stays sealed with
+**Status in this release: inert.** A jailed launch also needs an EC-EXECFIND-2 falsifier
+pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
+at `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`, and uses
+agent-harness#1071's falsifier-run layout. The digest binds this host's layout, so a pass
+does not carry over from another host, and an OS upgrade that changes `/lib*` or the `/etc`
+subset needs a new pass. Until a pass is recorded, a seat that would be jailed is refused
+with `seat_sandbox_refused:jail_unqualified`, whose notice names that per-host
+qualification as the fix. Gemini stays sealed with
 `gemini_seat_egress_unconfined`: the agy access token carries `cloud-platform` and other
 scopes beyond inference, and under the maintainer's "prove then enable" ruling the seat
 gets tools only once jail egress is limited to agy's inference hosts. Today other Google
@@ -489,7 +494,7 @@ not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when g
 On a host that has the prerequisite below, a Claude seat with a staged tree takes the
 jailed route as soon as a seat token is stored. Until an EC-EXECFIND-2 pass is recorded
 for this jail's profile digest, that route is refused. So after you store the token, every
-such brokered Claude seat is refused with `seat_sandbox_refused:identity` and returns
+such brokered Claude seat is refused with `seat_sandbox_refused:jail_unqualified` and returns
 DEGRADED; it does not fall back to the sealed route. This includes board rounds, which run
 the reviewed PR's own runtime.
 

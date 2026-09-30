@@ -2307,7 +2307,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_sandbox_unavailable_host", "seat_sandbox_unavailable_seat_uid",
     "seat_sandbox_unavailable_tiocsti", "seat_sandbox_not_staged",
     "seat_sandbox_refused:jail_build", "seat_sandbox_refused:namespace",
-    "seat_sandbox_refused:identity", "seat_sandbox_refused:preseed",
+    "seat_sandbox_refused:identity", "seat_sandbox_refused:jail_unqualified",
+    "seat_sandbox_refused:preseed",
     "seat_sandbox_refused:token_file_unsafe", "seat_sandbox_refused:gemini_credential_unsafe",
     "seat_sandbox_refused:stage_not_private", "seat_sandbox_refused:stage_changed",
     "seat_sandbox_refused:output_unsafe", "seat_sandbox_retained_after_teardown",
@@ -8864,7 +8865,7 @@ def _seat_route_for_spawn(
 
     Returns ``(route, notices, refusal)``. A sealed route carries its one notice code; a
     jailed route whose jail digest has no recorded EC-EXECFIND-2 falsifier pass is REFUSED
-    (``seat_sandbox_refused:identity``) before any effect -- it is never put on the jailed
+    (``seat_sandbox_refused:jail_unqualified``) before any effect -- it is never put on the jailed
     route and never silently sent sealed (plan "EC-EXECFIND-2 obligations on the jail")."""
     if not eligible:
         return None, [], None
@@ -8878,7 +8879,7 @@ def _seat_route_for_spawn(
         return route, [str(route.code)], None
     if not (pass_recorded or _seat_jail.execfind_pass_recorded)(
             _seat_jail.jail_profile_digest(leg)):
-        return route, [], _seat_jail.refused("identity")
+        return route, [], _seat_jail.refused("jail_unqualified")
     return route, [], None
 
 

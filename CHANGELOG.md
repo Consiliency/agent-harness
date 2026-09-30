@@ -22,7 +22,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
   closed detail vocabulary (F030).
 - **The jailed route is inert in this release.** A jail digest with no recorded
-  EC-EXECFIND-2 falsifier pass is refused (`seat_sandbox_refused:identity`) before any
+  EC-EXECFIND-2 falsifier pass recorded on this host is refused
+  (`seat_sandbox_refused:jail_unqualified`, whose notice names the per-host qualification;
+  passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`) before any
   effect; recording the pass waits on agent-harness#1071. Hosts also need the one-time root
   prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
   runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined`: live probe
@@ -50,7 +52,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   filter of its own, even under an inherited outer filter. The seccomp descriptor must be
   at offset 0, because bwrap reads from the current offset.
 - The capabilities card warns that storing the seat token before an EC-EXECFIND-2 pass is
-  recorded makes jailed-eligible Claude seats refuse (`seat_sandbox_refused:identity`), and
+  recorded makes jailed-eligible Claude seats refuse (`seat_sandbox_refused:jail_unqualified`), and
   gives the order: record the pass, then store the token.
 - `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361) on every tooled or pointer seat record.

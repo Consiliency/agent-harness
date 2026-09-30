@@ -151,7 +151,7 @@ def test_execfind_gate_refuses_an_unrecorded_digest_before_any_effect():
         "claude", _auth(True), eligible=True,
         decide=lambda leg, **k: seat_jail.SeatRoute(True), pass_recorded=lambda d: False,
     )
-    assert route.jailed and notices == [] and refusal == "seat_sandbox_refused:identity"
+    assert route.jailed and notices == [] and refusal == "seat_sandbox_refused:jail_unqualified"
 
 
 def test_execfind_gate_mutation_carrying_an_unrecorded_digest_would_jail():
@@ -176,15 +176,60 @@ def test_execfind_pass_record_is_keyed_by_the_exact_digest(tmp_path):
     digest = seat_jail.jail_profile_digest("claude")
     assert seat_jail.execfind_pass_recorded(digest, root=tmp_path) is False
     (tmp_path / f"{digest}.json").write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
+    (tmp_path / f"{digest}.json").chmod(0o600)
     assert seat_jail.execfind_pass_recorded(digest, root=tmp_path) is True
     other = "0" * 64
     (tmp_path / f"{other}.json").write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
+    (tmp_path / f"{other}.json").chmod(0o600)
     assert seat_jail.execfind_pass_recorded(other, root=tmp_path) is False
 
 
-def test_no_digest_has_a_recorded_pass_in_this_runtime():
-    """The jailed route is inert until agent-harness#1071's falsifier run is recorded."""
-    assert seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude")) is False
+def test_host_passes_live_in_per_user_state_not_package_data(tmp_path, monkeypatch):
+    """Maintainer decision (option A): passes are per host, keyed by digest, in
+    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    digest = seat_jail.jail_profile_digest("claude")
+    assert seat_jail.jail_pass_dir() == tmp_path / "state" / "phase-loop" / "seat-jail-passes"
+    assert seat_jail.execfind_pass_recorded(digest) is False
+    seat_jail.jail_pass_dir().mkdir(parents=True)
+    record = seat_jail.jail_pass_dir() / f"{digest}.json"
+    record.write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
+    record.chmod(0o600)
+    assert seat_jail.execfind_pass_recorded(digest) is True
+    assert not (Path(seat_jail.__file__).parent / "seat_jail_passes").exists()
+
+
+@pytest.mark.parametrize("shape", ["group-writable", "symlink", "failed-run"])
+def test_a_foreign_or_unsafe_pass_record_is_no_pass(tmp_path, shape):
+    digest = seat_jail.jail_profile_digest("claude")
+    real = tmp_path / "real.json"
+    real.write_text(json.dumps({"profile_digest": digest,
+                                "result": "fail" if shape == "failed-run" else "pass"}))
+    real.chmod(0o664 if shape == "group-writable" else 0o600)
+    if shape == "symlink":
+        (tmp_path / f"{digest}.json").symlink_to(real)
+    else:
+        real.rename(tmp_path / f"{digest}.json")
+    assert seat_jail.execfind_pass_recorded(digest, root=tmp_path) is False
+
+
+def test_a_host_layout_change_invalidates_the_recorded_pass(tmp_path, monkeypatch):
+    """The digest binds this host's layout: a pass recorded before `/etc` changed does not
+    match the jail after it, so the launch fails closed with the jail_unqualified notice."""
+    digest = seat_jail.jail_profile_digest("claude")
+    (tmp_path / f"{digest}.json").write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
+    (tmp_path / f"{digest}.json").chmod(0o600)
+    monkeypatch.setattr(seat_jail, "ETC_READONLY_SUBSET", seat_jail.ETC_READONLY_SUBSET + ("pl-new",))
+    real_lexists = os.path.lexists
+    monkeypatch.setattr(seat_jail.os.path, "lexists",
+                        lambda p: True if str(p) == "/etc/pl-new" else real_lexists(p))
+    changed = seat_jail.jail_profile_digest("claude")
+    assert changed != digest
+    route, _, refusal = panel_invoker._seat_route_for_spawn(
+        "claude", _auth(True), eligible=True,
+        decide=lambda leg, **k: seat_jail.SeatRoute(True),
+        pass_recorded=lambda d: seat_jail.execfind_pass_recorded(d, root=tmp_path))
+    assert refusal == "seat_sandbox_refused:jail_unqualified"
 
 
 def test_the_built_jail_reproduces_the_canonical_digest(tmp_path):
