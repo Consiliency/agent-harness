@@ -672,7 +672,20 @@ The TUI timestamp is refreshed by novel output lines, review-file growth and
 transcript growth — a startup banner is novel output and refreshes it; only
 repeated cosmetic repaints do not, once the existing novelty detector has seen
 their text. The CPU-tick heartbeat never refreshes it.
-Neither state is a health attestation or permission to terminate. Frozen
+Neither state is a health attestation or permission to terminate.
+The record also carries a progress notice (agent-harness#1176). When no genuine
+progress has been seen for `stall_notice_s` (default 1800 s; override with
+`PHASE_LOOP_REVIEW_STALL_NOTICE_S`), and no progress at all counts from seat
+start, `progress_notice` is `seat_progress_stalled`, `progress_notice_count`
+counts crossings, and one operator warning with only that code and numbers is
+logged. Resumed progress clears the notice. The notice never ends the seat.
+`provider_terminal_state` records the one case that does end it: the exact
+brokered Claude transcript journals, as the last record after the current
+request, an `isApiErrorMessage` give-up. That leg ends at once as DEGRADED with
+detail `claude_seat_output_budget_exhausted` (`error: max_output_tokens`),
+`claude_seat_rate_limited` (`error: rate_limit`) or
+`claude_seat_provider_api_error`. A `max_tokens` stop that the CLI continues is
+not a give-up. Frozen
 broker request/response keys, status literals, and observer envelopes are unchanged.
 
 When staging requires egress isolation, acquisition follows staged-tree and operation

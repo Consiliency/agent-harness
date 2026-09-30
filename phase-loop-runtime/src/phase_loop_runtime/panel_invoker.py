@@ -260,12 +260,30 @@ class _ReviewOperationCancelled(RuntimeError):
     pass
 
 
+# agent-harness#1176: how long a heartbeat_only seat may go without GENUINE progress before its
+# record carries a ``seat_progress_stalled`` notice. A notice only: silence never ends the seat
+# (ah#892). A max-effort Claude turn is progress-silent for its whole thinking phase (about ten
+# minutes per attempt in the measured journals), so the default leaves ample margin above that.
+_REVIEW_STALL_NOTICE_S = 1800.0
+_REVIEW_STALL_NOTICE_ENV = "PHASE_LOOP_REVIEW_STALL_NOTICE_S"
+
+
+def _review_stall_notice_s() -> float:
+    try:
+        value = float(os.environ.get(_REVIEW_STALL_NOTICE_ENV) or _REVIEW_STALL_NOTICE_S)
+    except ValueError:
+        return _REVIEW_STALL_NOTICE_S
+    return value if math.isfinite(value) and value > 0 else _REVIEW_STALL_NOTICE_S
+
+
 class _ReviewMonitor:
     """Operation-owned, content-free observation; silence grants no kill authority."""
 
-    def __init__(self, path: Path, invocation: str, position: int, cancel: threading.Event):
+    def __init__(self, path: Path, invocation: str, position: int, cancel: threading.Event,
+                 *, stall_notice_s: float | None = None):
         self.path, self.cancel = path, cancel
         self.write_failed = False
+        self.started = time.monotonic()
         self.record = {
             "schema": "review_monitoring.v1", "invocation": invocation,
             "seat_position": position, "requested_policy": "heartbeat_only",
@@ -273,6 +291,10 @@ class _ReviewMonitor:
             "model_deadline_s": None, "silence_deadline_s": None,
             "last_genuine_progress_age_s": None,
             "observation_state": "progress_unobserved", "terminal_reason": None,
+            # agent-harness#1176: a typed, visible notice instead of silent waiting.
+            "stall_notice_s": _review_stall_notice_s() if stall_notice_s is None else float(stall_notice_s),
+            "progress_notice": None, "progress_notice_count": 0,
+            "provider_terminal_state": None,
         }
 
     def observe(self, age: float | None = None, terminal: str | None = None) -> None:
@@ -281,6 +303,21 @@ class _ReviewMonitor:
         self.record.update(last_genuine_progress_age_s=age,
                            observation_state="progress_observed" if age is not None and age <= _LEG_LIVENESS_READ_INTERVAL_S else "progress_unobserved",
                            terminal_reason=terminal)
+        if terminal is None:
+            # Never-observed progress counts from the seat's start: a review that exists but
+            # was never observed must surface too (agent-harness#1176).
+            silence = age if age is not None else time.monotonic() - self.started
+            if silence < self.record["stall_notice_s"]:
+                self.record["progress_notice"] = None
+            elif self.record["progress_notice"] is None:
+                self.record["progress_notice"] = "seat_progress_stalled"
+                self.record["progress_notice_count"] += 1
+                # Our code and numbers only; never provider text on the operator's stderr.
+                logging.getLogger(__name__).warning(
+                    "advisor-board seat %d [seat_progress_stalled]: no genuine progress for %ds "
+                    "(notice window %ds); heartbeat_only keeps waiting",
+                    self.record["seat_position"], int(silence), int(self.record["stall_notice_s"]),
+                )
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
@@ -2269,6 +2306,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_tui_editor_not_ready", "claude_tui_file_output", "claude_tui_missing_canonical_output",
     "claude_tui_pty_eof_no_output", "claude_tui_stalled", "claude_tui_submit_failed",
     "claude_tui_unsupported_platform", "claude_tui_workspace_trust_blocked",
+    # agent-harness#1176: the provider's own journaled give-up
+    "claude_seat_output_budget_exhausted", "claude_seat_rate_limited", "claude_seat_provider_api_error",
     "claude_agent_session_id_missing", "brokered_claude_session_collision",
     "brokered_claude_transcript_cleanup_failed", "missing_claude_cli",
     "claude_version_probe_timeout", "claude_version_probe_failed", "claude_version_unparseable",
@@ -5223,6 +5262,63 @@ _CLAUDE_RESUME_PROMPT = (
 )
 
 
+# agent-harness#1176: when Claude Code gives up on a turn it journals a ``<synthetic>``
+# ``isApiErrorMessage`` assistant record naming the API error, then idles at the prompt. Measured
+# on the hung seats of 2026-09-29: four thinking-only ``max_tokens`` stops, then
+# ``error: max_output_tokens``. Its ``error`` field is the typed state; any other value maps to
+# the generic code.
+_CLAUDE_GAVE_UP_BY_ERROR = {
+    "max_output_tokens": "claude_seat_output_budget_exhausted",
+    "rate_limit": "claude_seat_rate_limited",
+}
+_CLAUDE_GAVE_UP_OTHER = "claude_seat_provider_api_error"
+_CLAUDE_PROVIDER_GAVE_UP_CODES = frozenset({*_CLAUDE_GAVE_UP_BY_ERROR.values(), _CLAUDE_GAVE_UP_OTHER})
+
+
+def _claude_transcript_provider_gave_up(path: Path) -> str | None:
+    """The typed give-up code when ``path`` proves Claude Code stopped the current turn on an
+    API error, else None.
+
+    Terminal only when, after the last genuine request (a user record that is not ``isMeta`` and
+    carries no tool_result), the LAST user/assistant record is an ``isApiErrorMessage``
+    assistant record: a later user record (the CLI's own resume prompt included) or assistant
+    record means the CLI went on. A last line that does not parse yet is a writer mid-append,
+    so the answer waits for the next read. A ``max_tokens`` stop alone is never terminal: the
+    CLI continues it (agent-harness#1077).
+    """
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8", errors="replace").split("\n")
+                 if line.strip()]
+    except OSError:
+        return None
+    records: list[tuple[dict, dict]] = []
+    for index, line in enumerate(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            if index == len(lines) - 1:
+                return None
+            continue
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
+            records.append((payload, message))
+
+    def _genuine_request(payload: dict, message: dict) -> bool:
+        content = message.get("content")
+        return (message.get("role") == "user" and payload.get("isMeta") is not True
+                and not (isinstance(content, list) and any(
+                    isinstance(item, dict) and item.get("type") == "tool_result" for item in content)))
+
+    if not any(_genuine_request(payload, message) for payload, message in records):
+        return None
+    payload, message = records[-1]
+    if message.get("role") != "assistant" or not (
+            payload.get("isApiErrorMessage") is True or message.get("isApiErrorMessage") is True):
+        return None
+    error = payload.get("error")
+    return _CLAUDE_GAVE_UP_BY_ERROR.get(error if isinstance(error, str) else "", _CLAUDE_GAVE_UP_OTHER)
+
+
 def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
     """Return the final turn's single assistant message, or "" when that cannot be proven.
 
@@ -6686,6 +6782,18 @@ def _run_claude_tui_session(
                     return _finish(0, broker_final, "claude_tui_broker_final_assistant")
                 if broker_final and mode == "president":
                     return _finish(0, broker_final, "claude_tui_broker_terminal_nonconforming")
+                # agent-harness#1176: the provider journaled that it gave up on this turn and
+                # now idles; nothing more can arrive, so end the leg now with the typed reason
+                # instead of waiting (forever, under heartbeat_only). The exact brokered
+                # transcript only: the unbrokered cwd scan may see a neighbouring session.
+                gave_up = (_claude_transcript_provider_gave_up(broker_transcript_path)
+                           if broker_transcript_path is not None else None)
+                if gave_up is not None:
+                    if review_monitor is not None:
+                        review_monitor.record["provider_terminal_state"] = gave_up
+                        review_monitor.observe(
+                            None if last_output_progress is None else now - last_output_progress)
+                    return _finish(proc.poll() or 1, "", gave_up)
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
@@ -7670,6 +7778,7 @@ def _exec_claude_tui_leg(
         "claude_tui_stalled",
         "claude_tui_workspace_trust_blocked",
         "claude_tui_editor_not_ready",
+        *_CLAUDE_PROVIDER_GAVE_UP_CODES,
     }
     if log_text in _typed_operational and status != "OK":
         status = "DEGRADED"
@@ -7698,7 +7807,11 @@ def _exec_claude_tui_leg(
     # The detail itself goes to a caller-owned sink so this function's (status, text) shape
     # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
-        tail_failure = _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
+        tail_failure = (
+            # The provider's typed give-up IS the reason; the idle PTY tail adds nothing.
+            _LegFailure(log_text) if log_text in _CLAUDE_PROVIDER_GAVE_UP_CODES
+            else _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
+        )
         if tail_failure is not None and tail_failure.unknown and log_text:
             tail_failure = replace(tail_failure, prefix=log_text)
         if tail_failure is not None:
