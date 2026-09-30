@@ -28,6 +28,7 @@ import binascii
 import errno
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -39,6 +40,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 PROFILE_ID = "seat_jail_v1"
+_LOG = logging.getLogger(__name__)
 
 SEAT_ROOT = "/seat"
 SEAT_BIN = "/seat/bin"
@@ -1368,11 +1370,22 @@ def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
     directory, and whose files are refused by owner), stale records, other hosts, and
     accidental reuse.
     """
+    # ONE fail-closed boundary around the WHOLE evaluation -- path building, opening,
+    # reading, parsing, binding checks and evidence re-hashing. Any Exception is "no pass"
+    # (the route then refuses with `seat_sandbox_refused:jail_unqualified` and launches
+    # nothing); its class is logged. A new failure shape therefore can never escape as an
+    # uncaught error. BaseException (KeyboardInterrupt, SystemExit) is not swallowed.
+    try:
+        return _evaluate_pass_record(profile_digest, root=root, layout=layout, host=host)
+    except Exception as exc:
+        _LOG.warning("seat jail pass record rejected: %s", type(exc).__name__)
+        return False
+
+
+def _evaluate_pass_record(profile_digest: str, *, root: Path | None, layout: str | None,
+                          host: str | None) -> bool:
     if layout is None:
-        try:
-            layout = falsifier_layout_identity()
-        except (OSError, TypeError, AttributeError, ImportError):
-            return False
+        layout = falsifier_layout_identity()
     host = host if host is not None else host_identity()
     if not layout or not host or not re.fullmatch(r"[0-9a-f]{64}", profile_digest or ""):
         return False

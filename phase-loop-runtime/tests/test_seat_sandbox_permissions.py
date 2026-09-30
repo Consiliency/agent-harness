@@ -708,3 +708,37 @@ def test_hang_investigation_sealed_claude_tui_session_is_golden_to_main(monkeypa
         captured[key] = str(captured[key]).replace(str(tmp_path), "<d>")
     captured["broker_transcript_path"] = "<redacted path>"
     assert captured == golden
+
+
+# --------------------------------------------------------------------------------------
+# Board round 5 (codex): the WHOLE record evaluation is one fail-closed boundary. Hostile
+# record shapes must yield the typed refusal through the real route gate, never an error.
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("shape", ["nul-in-evidence-name", "unpaired-surrogate",
+                                   "non-string-evidence", "huge-integer"])
+def test_codex_r5_hostile_records_refuse_typed_through_the_gate(tmp_path, monkeypatch, shape):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for directory in (tmp_path / "state", tmp_path / "state" / "phase-loop"):
+        directory.mkdir(mode=0o700)
+    digest = seat_jail.jail_profile_digest("claude")
+    store = seat_jail.jail_pass_dir()
+    _write_pass(store, digest, host=seat_jail.host_identity(),
+                layout=seat_jail.falsifier_layout_identity())
+    assert seat_jail.execfind_pass_recorded(digest) is True  # control: the bound record passes
+    record_path = store / f"{digest}.json"
+    record = json.loads(record_path.read_text())
+    raw = None
+    if shape == "nul-in-evidence-name":
+        record["evidence"] = "bad\u0000name"
+    elif shape == "unpaired-surrogate":
+        raw = json.dumps(record).replace(json.dumps(record["evidence"]), '"bad\\ud800name"')
+    elif shape == "non-string-evidence":
+        record["evidence"] = {"not": "a name"}
+    else:
+        raw = json.dumps(record).replace(json.dumps(record["evidence_sha256"]), "9" * 4000)
+    record_path.write_text(raw if raw is not None else json.dumps(record))
+    record_path.chmod(0o600)
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True))
+    assert refusal == "seat_sandbox_refused:jail_unqualified" and notices == []
