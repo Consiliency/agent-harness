@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175)
+
+- A sealed prompt of 96 KiB or less now goes to agy as one user event
+  (`agy_ndjson_single_event_v1`) that ends with the review instruction. It no longer
+  goes through an acknowledgement turn first. Larger prompts keep the chunked ingestion
+  protocol (`agy_ndjson_same_session_ingestion_v1`) unchanged.
+- Why: the acknowledgement turn carried the whole review task, and gemini-3.8-flash-high
+  acted on it there. On claw (agy 1.2.13), 6 of 8 single-chunk legs failed:
+  - 4 made tool calls (`run_command ls`, `view_file`), and the deny profile refused
+    every one;
+  - 2 wrote the review in place of the acknowledgement line.
+
+  Sent as one event, 10 of 12 legs were accepted, with no tool step and no
+  acknowledgement failure. The other 2 ended with a provider "stream was interrupted"
+  error, which the chunked protocol also hit in the same window.
+- The stream classifier is unchanged: any tool or subagent step still rejects the leg.
+  The HARDEN evidence verifier recomputes whichever protocol a record names. It
+  requires a one-chunk prompt for the single-event protocol.
+
 ### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
 
 - The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem
