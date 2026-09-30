@@ -3672,7 +3672,25 @@ def scenario_i9_resources() -> None:
     if WINDOWS:
         import psutil
 
-        assert not [pid for pid in disposed if psutil.pid_exists(pid)], "a disposed worker is still running"
+        # Windows reuses PIDs quickly: a live PID from the list counts only if it
+        # is still one of OUR children and not the current, permitted worker
+        # (whose PID may itself be a reused one from the list).
+        def ours(pid):
+            try:
+                proc = psutil.Process(pid)
+                return pid != _pid() and proc.ppid() == os.getpid()
+            except psutil.Error:
+                return False
+
+        def described(pid):
+            try:
+                proc = psutil.Process(pid)
+                return (pid, proc.ppid(), proc.name(), proc.create_time())
+            except psutil.Error as exc:
+                return (pid, repr(exc))
+
+        survivors = [pid for pid in set(disposed) if ours(pid)]
+        assert not survivors, ("a disposed worker is still running", [described(pid) for pid in survivors], os.getpid(), _pid())
         # Every disposed generation's Job Object is gone: with its last handle
         # closed the named object no longer exists (named, so a reused numeric
         # handle value cannot fake this; codex r15).
