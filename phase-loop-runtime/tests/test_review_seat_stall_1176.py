@@ -743,3 +743,66 @@ def test_r2_president_route_fails_closed_then_gives_up_instead_of_hanging(tmp_pa
         guard.cancel()
         release.touch()
     assert (log, text) == ("claude_seat_provider_api_error", "") and rc != 0
+
+
+# --- round 2 (codex): the verbatim falsifiers ----------------------------------------------------
+
+def test_codex_r2_f001_completed_review_survives_stray_error(tmp_path, monkeypatch):
+    """codex r2 F001 falsifier, verbatim."""
+    _fast_tui(monkeypatch)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    monitor = panel._ReviewMonitor(
+        tmp_path / "monitor.json", "review", 0, threading.Event(),
+        stall_notice_s=3600,
+    )
+    guard = threading.Timer(3, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=_provider(transcript, [REQUEST, ANSWER,
+                api_error("max_output_tokens")], release),
+            cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
+            timeout_s=600, backstop_s=600, stall_threshold_s=600,
+            env=os.environ, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert (rc, text) == (0, "Review complete\nAGREE"), (rc, text, log)
+
+
+def test_codex_r2_f002_replayed_open_version_cannot_restore_give_up(tmp_path):
+    """codex r2 F002 falsifier, verbatim."""
+    transcript = tmp_path / "session.jsonl"
+    opened = {**ANSWER, "message": {
+        **ANSWER["message"], "stop_reason": None,
+    }}
+    records = [REQUEST, opened, ANSWER, api_error("rate_limit")]
+    count, gave_up = panel._claude_transcript_state(write(transcript, records))
+    assert gave_up is None
+    replay = {**opened, "parentUuid": "re-journaled"}
+    after_count, after_give_up = panel._claude_transcript_state(
+        write(transcript, [*records, replay]),
+    )
+    assert after_count == count
+    assert after_give_up is None, "a stale open replay undid the completed answer"
+
+
+def test_r2_a_replayed_capped_version_cannot_undo_a_later_stop(tmp_path):
+    """The same rule for a stop-to-stop replay: an exact replay of an EARLIER stopped version is
+    not newer state either."""
+    early = {**ANSWER, "message": {**ANSWER["message"], "stop_reason": "max_tokens",
+                                    "content": [{"type": "thinking", "thinking": "", "signature": "s"}]}}
+    records = [REQUEST, early, ANSWER, api_error("server_error")]
+    path = write(tmp_path / "t.jsonl", records)
+    assert panel._claude_transcript_provider_gave_up(path) is None
+    assert panel._claude_transcript_provider_gave_up(write(path, [*records, early])) is None
+
+
+def test_r2_completion_is_sticky_against_an_unseen_open_version(tmp_path):
+    reopened = {**ANSWER, "message": {**ANSWER["message"], "stop_reason": None,
+                                       "content": [{"type": "text", "text": "partial"}]}}
+    path = write(tmp_path / "t.jsonl", [REQUEST, ANSWER, reopened, api_error("server_error")])
+    assert panel._claude_transcript_provider_gave_up(path) is None

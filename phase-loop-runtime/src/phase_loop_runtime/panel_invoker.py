@@ -5352,6 +5352,7 @@ def _claude_transcript_state(path: Path, *, require_terminal: bool = False) -> t
         return 0, None
     order: list[object] = []
     latest: dict[object, tuple[dict, dict]] = {}
+    seen: dict[object, set[str]] = {}  # every version of each identity, as in the answer parser
     versions: set[str] = set()
     complete = True
     for index, line in enumerate(lines):
@@ -5366,8 +5367,9 @@ def _claude_transcript_state(path: Path, *, require_terminal: bool = False) -> t
         uid = payload.get("uuid") if isinstance(payload.get("uuid"), str) and payload.get("uuid") else None
         said = json.dumps([message.get("id"), message.get("role"), message.get("content")], sort_keys=True,
                           default=str)
-        versions.add(json.dumps([uid, said, message.get("stop_reason"),
-                                 _claude_api_error_record(payload, message)], default=str))
+        version = json.dumps([uid, said, message.get("stop_reason"),
+                              _claude_api_error_record(payload, message)], default=str)
+        versions.add(version)
         if uid is None:
             identity: object = ("uuid-less", index)
         elif message.get("role") == "user":
@@ -5376,6 +5378,14 @@ def _claude_transcript_state(path: Path, *, require_terminal: bool = False) -> t
             identity = ("assistant", uid)
         if identity not in latest:
             order.append(identity)
+        elif version in seen[identity] or (
+                message.get("stop_reason") is None
+                and latest[identity][1].get("stop_reason") is not None):
+            # agent-harness#1194 r2 (codex F002): state only moves forward. A replay of any
+            # earlier version, or an open version after a stop, never replaces a later state,
+            # so a completion once seen stays seen (the answer parser's same two rules).
+            continue
+        seen.setdefault(identity, set()).add(version)
         latest[identity] = (payload, message)
     if not complete:
         return len(versions), None

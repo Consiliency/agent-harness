@@ -687,6 +687,8 @@ the governed record adds a `seat_progress_stalled` warn finding per seat.
 On the exact brokered Claude transcript, records are ordered by identity (an
 assistant record by uuid, a user record by uuid and content), so a re-journaled
 record or rewritten metadata is neither progress nor a new position in the turn.
+Record state only moves forward: a replay of any earlier version, or an open
+version after a stop, never replaces a later state, so a completion stays seen.
 `provider_terminal_state` records the one case that ends a seat: after the
 current request, the last record is an `isApiErrorMessage` give-up and no
 completed answer precedes it (on the president route, whose parser fails closed
