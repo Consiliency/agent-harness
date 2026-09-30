@@ -199,17 +199,31 @@ Plan 2a edits none of these.
   - **`test_cross_vendor_substitution_cannot_be_president`** (hb2 G3): `{"claude-sonnet-5-5": "gemini"}` meets the gemini floor and is recorded, and with a gemini-first ladder the rung reports `rung_cross_vendor` and the ladder descends;
   - **`test_model_id_rung_takes_its_canonical_floor`**: a ladder `["claude-sonnet-5-5", "sol", "grok", "gemini"]` over a board seating Sonnet reports `rung_below_floor` for rung 0;
   - a vendor-spelled ladder names the monitor files by canonical index;
-  - **named mutation 1:** making `seat_eligible` always return `(True, None)` lets Sonnet satisfy `fable` through the caller alias, and the test must fail. **Named mutation 1b:** restricting the check to default-alias matches, which was r1's rule, must also fail it.
+  - **Named mutations and their killers.** Each mutant below was checked for equivalence under the other guards in this plan (hb3). The table names the test that kills each one.
+
+    | mutant | the change | killed by | why it is not equivalent |
+    |---|---|---|---|
+    | **M1** | `seat_eligible` always returns `(True, None)` | `test_caller_alias_cannot_bypass_governed_fable_floor`, and the default-alias Sonnet-for-`fable` case | the floor is the only thing that refuses a Sonnet `fable` seat, because the Counter check passes |
+    | **M1b** | the floor applies **only** when the seat name came from `DEFAULT_REVIEW_SEAT_ALIASES` and the caller supplied **no** entry for that model (r1's rule) | `test_caller_alias_cannot_seat_sonnet_on_a_governed_grok_seat` (`claude-sonnet-5` has no default entry) and `test_caller_alias_to_vendor_name_is_floored` (the caller value `anthropic` differs from the default `fable`); `test_caller_alias_cannot_bypass_governed_fable_floor` also kills it, because under M1b the caller entry exists and bypasses the floor | the killing tests reach the floored seat **only** through a caller alias |
 - `tests/test_native_fill_declared_model.py` — create:
   - president: the deferral carries `model`; a CLI fill with a matching `ran_model` is accepted and recorded; a mismatch is refused with nothing persisted; a missing `ran_model` through the CLI is refused; the library seam without `ran_model` is accepted **and** marked `model_declared: false`;
   - review seats: the same three cases through `load_native_leg_fill`;
   - the president sidecar: an accepted CLI fill writes `president.fill.json` with `ran_model`, a library-seam fill without one writes `model_declared: false, ran_model: null`, and a refused fill writes neither the sidecar nor the ruling;
   - **`test_pending_model_cannot_rebind_a_frontier_president_to_sonnet`** (codex hb2 F001's falsifier, adopted verbatim): a tampered `pending.model` plus a matching `ran_model` is refused, and neither `president.ruling.json` nor `president.fill.json` exists;
+  - **`test_tampered_pending_model_is_refused_even_with_matching_ran_model`** (hb3): `pending.model` is rewritten outside the binding and `ran_model` equals the bound model; the fill is refused and neither file exists;
   - **`test_pre_2a_pending_is_refused_on_resume`** (hb2 C5): a pending file without `requested_model`/`seat_substitutions` in its binding is refused;
   - stale-sidecar cleanup (hb2 C3): after a new defer, and after a non-native ruling in the same stream, no `president.fill.json` from an earlier fill remains;
   - `fill_duty` is present, and `brief_sha256` over `instructions` equals main's value for the same request;
   - the construction-site checks (a)–(d) from decision 4;
-  - **named mutation 2:** skipping the `ran_model` comparison accepts a mismatched fill, and the test must fail. **Named mutation 2b:** comparing `ran_model` against `pending.model` instead of the re-derived bound model (r2's rule) must fail the rebinding test.
+  - **Named mutations and their killers.** Each mutant below was checked for equivalence under the other guards in this plan. r2's M2b, "compare `ran_model` against `pending.model`", is **withdrawn**: once the `pending.model == re-derived` guard holds, the two values are equal, so that mutant is equivalent (hb3 codex).
+
+    | mutant | the change | killed by | why it is not equivalent |
+    |---|---|---|---|
+    | **M2** | drop the `ran_model` comparison | the mismatch case: pending untouched, bound model `claude-opus-5-5`, `ran_model = "claude-sonnet-5-5"`, which must be refused | pending and the bound model agree, so only the `ran_model` comparison can refuse |
+    | **M2b** | remove the `pending.model` / binding-`requested_model` guard only, still comparing `ran_model` against the re-derived model | **`test_tampered_pending_model_is_refused_even_with_matching_ran_model`**: `pending.model` is rewritten to `claude-sonnet-5-5` **outside** the binding, `ran_model = "claude-opus-5-5"` (truthful to the bound seat), and the fill must be refused with nothing persisted | the `ran_model` comparison passes, since it equals the bound model, so only the guard can refuse |
+    | **M2c** | take `requested_model` from `pending.model` instead of the bound rung, **and** drop the guard (r2's actual rule) | `test_pending_model_cannot_rebind_a_frontier_president_to_sonnet` (codex's hb2 falsifier: pending and `ran_model` both Sonnet) | the requested model and `ran_model` agree, so only deriving from the bound rung can refuse |
+
+    The binding-level `requested_model` is covered separately by the whole-binding equality check that already exists. `test_pre_2a_pending_is_refused_on_resume` exercises it, and the plan does not name a separate mutant for it.
 - `tests/test_native_claude_seat_fill.py`, `tests/test_native_claude_seat_fill_green.py`, `tests/test_native_fill_refusal_cause.py`, `tests/test_presroute_cli.py`, `tests/test_advisor_board_advisory_cli_802.py` (the `load_native_leg_fills` calls around l.613 and l.835, and the `--native-leg` runs around l.444-452), `tests/test_train_review_packet.py` (the `--native-leg` continuation around l.2020-2029) — modify — their fill fixtures gain `ran_model`. None of these is frozen: checked against the 42-path set at `60585b97` (hb1 F5).
 
 ### Skills (modify, byte-parallel pairs; bundle regenerated)
@@ -257,8 +271,11 @@ PYTHONPATH=src:tests python3 -c "
 from pathlib import Path; import panel_content_tdd_adapter as ad
 assert ad.golden_bytes() == (Path('..')/ad.GOLDEN_PATH).read_bytes(); print('golden OK')"
 # named mutations (each must turn its test red), then restore:
-#   1. seat_eligible always returns (True, None)           -> test_seat_eligibility_floor fails
-#   2. drop the ran_model comparison in _resume_native_president -> test_native_fill_declared_model fails
+#   M1  seat_eligible always (True, None)                          -> test_caller_alias_cannot_bypass_governed_fable_floor
+#   M1b floor only for default-alias names with no caller entry     -> test_caller_alias_cannot_seat_sonnet_on_a_governed_grok_seat, test_caller_alias_to_vendor_name_is_floored
+#   M2  drop the ran_model comparison                              -> the ran_model mismatch case
+#   M2b drop the pending.model guard only                          -> test_tampered_pending_model_is_refused_even_with_matching_ran_model
+#   M2c requested_model from pending.model, guard dropped          -> test_pending_model_cannot_rebind_a_frontier_president_to_sonnet
 ```
 Edge cases:
 - A ladder that mixes spellings for one seat (`["fable","anthropic"]`) raises `president_ladder_invalid` (duplicate).
@@ -266,8 +283,8 @@ Edge cases:
 - `ran_model` differing only in case or date suffix is a mismatch, because the comparison is exact.
 
 ## Acceptance criteria
-- [ ] `tests/test_seat_eligibility_floor.py` passes. A governed PRODUCTION_CODE board seating `claude-sonnet-5-5` for `fable` raises `review_seat_below_floor` through the default alias **and** through a caller alias, `seat_for_rung` returns `None` for it, a floor-meeting caller substitution appears in `board.policy.json` read back from `stream_dir`, and mutations 1 and 1b each turn it red.
-- [ ] `tests/test_native_fill_declared_model.py` passes. A mismatched or undeclared `ran_model` through the CLI and leg loaders is refused with nothing persisted, the library seam without `ran_model` is accepted and recorded `model_declared: false` in `president.fill.json`, which is read back from `stream_dir`, a tampered `pending.model` is refused (codex's hb2 falsifier), and mutations 2 and 2b each turn it red.
+- [ ] `tests/test_seat_eligibility_floor.py` passes. A governed PRODUCTION_CODE board seating `claude-sonnet-5-5` for `fable` raises `review_seat_below_floor` through the default alias **and** through a caller alias, `seat_for_rung` returns `None` for it, a floor-meeting caller substitution appears in `board.policy.json` read back from `stream_dir`, and mutants M1 and M1b are each killed by their named tests.
+- [ ] `tests/test_native_fill_declared_model.py` passes. A mismatched or undeclared `ran_model` through the CLI and leg loaders is refused with nothing persisted, the library seam without `ran_model` is accepted and recorded `model_declared: false` in `president.fill.json`, which is read back from `stream_dir`, a tampered `pending.model` is refused whether `ran_model` matches the bound seat or the tampered value, and mutants M2, M2b and M2c are each killed by their named tests.
 - [ ] `tests/test_seat_vendor_names.py` passes. Vendor names are accepted in the policy, the ladder and the rung match, and a vendor-spelled ladder indexes consistently, while `PRESIDENT_LADDER`, `review_policy_for_tier().required_seats` and the `DEFAULT_REVIEW_SEAT_ALIASES` values are unchanged.
 - [ ] Every frozen path is byte-identical to origin/main, the frozen HARDEN, PRESROUTE, govlean and PANEL nodes pass (EC-PRESROUTE-2/-3/-4/-5 included), and `golden_bytes()` equals the frozen golden.
 
