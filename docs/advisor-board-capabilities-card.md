@@ -77,6 +77,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `gpt-6-sol`      | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6.1-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `claude-sonnet-5`| claude        | `claude`     | claude            | max            |
 | `claude-opus-4-8`| claude        | `claude`     | claude            | max            |
 | `claude-opus-5`  | claude        | `claude`     | claude            | max            |
@@ -93,6 +94,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `grok-4.5`       | grok          | `grok`       | grok              | max            |
 
 `gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
+
+`gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No shipped default names it. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →

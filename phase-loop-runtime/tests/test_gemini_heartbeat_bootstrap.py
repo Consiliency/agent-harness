@@ -237,6 +237,12 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(cli.read_bytes()).hexdigest(): "d" * 64})
+    # The synthetic provider reads its mode and reports through files under tmp_path,
+    # which the sandbox view does not otherwise include; bind that one directory.
+    view = panel._gemini_filesystem_view
+    monkeypatch.setattr(panel, "_gemini_filesystem_view",
+                        lambda cwd, mount_args, extra_ro=(): [*view(cwd, mount_args, extra_ro),
+                                                              "--bind", str(tmp_path), str(tmp_path)])
     return SimpleNamespace(module=gh, path=cli, attempts=attempts, observation=observation,
                            mode=mode_file, token=token, home=home)
 
@@ -1043,12 +1049,15 @@ def test_partial_admission_info_cannot_block_past_local_admission_bound(fixture_
 def test_owner_loss_through_real_broker_reclaims_namespace(fixture_cli, tmp_path):
     fixture_cli.mode.write_text("cancel")
     detached = tmp_path / "detached"
+    # The worker is its own process, so it applies fixture_cli's tmp_path bind itself.
     worker_code = f'''
 from dataclasses import replace
 from pathlib import Path
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
+view=panel._gemini_filesystem_view
+panel._gemini_filesystem_view=lambda cwd,mount_args,extra_ro=():[*view(cwd,mount_args,extra_ro),'--bind',{str(tmp_path)!r},{str(tmp_path)!r}]
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
 panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}),review_policy=panel.ReviewLandingPolicy(('gemini',),False))
 '''
@@ -1536,8 +1545,13 @@ def test_the_gemini_seat_probe_leaves_the_profile_descriptors_to_the_launch(fixt
     assert not any(flag in probe for flag in ("--info-fd", "--block-fd", "--ro-bind-data")), (
         "the probe must never touch the gemini profile's single-use descriptors")
     # Apart from those descriptor mounts (and their --perms), the probe ran through the
-    # launch's own wrapper.
+    # launch's own wrapper; the probe adds only a read-only bind of its own marker file.
     strip = {"--info-fd", "--block-fd", "--ro-bind-data", "--perms", "--dir", "--symlink"}
+    marker = probe[-1]
+    marker_bind = ["--ro-bind", marker, marker]
+    at = next(i for i in range(len(probe)) if probe[i:i + 3] == marker_bind)
+    probe = probe[:at] + probe[at + 3:]
+    assert marker not in launch
     def wrapper(argv):
         out, skip = [], 0
         for arg in argv[:argv.index("/usr/bin/env")]:
