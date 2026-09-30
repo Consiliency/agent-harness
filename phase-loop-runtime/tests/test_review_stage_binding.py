@@ -1755,7 +1755,7 @@ def test_falsifier_repository_with_a_submount_is_refused_before_staging(tmp_path
     assert staged == []
 
 
-def test_falsifier_scope_is_the_launched_interpreters_sys_path():
+def test_falsifier_scope_starts_with_the_launched_interpreters_sys_path():
     executable = Path(os.path.realpath("/usr/bin/python3"))
     if not executable.is_file():
         pytest.skip("canonical falsifier interpreter absent")
@@ -1767,7 +1767,8 @@ def test_falsifier_scope_is_the_launched_interpreters_sys_path():
     expected = tuple(Path(item) for item in eval(shown.stdout) if item)
     scoped, entries, identity = review_stage._falsifier_interpreter_scope()
     assert scoped == executable
-    assert entries == expected
+    # The final sys.path is always measured; startup's site dirs are measured too.
+    assert entries[:len(expected)] == expected
     assert identity == review_stage._falsifier_interpreter_scope()[2]
 
 
@@ -1831,3 +1832,55 @@ def test_falsifier_interpreter_digest_refuses_undigestable_entries(tmp_path):
     os.mkfifo(lib / "pipe")
     with pytest.raises(ValueError, match="cannot be digested"):
         review_stage._falsifier_interpreter_digest(executable, (lib,))
+
+
+def _scratch_interpreter_with_self_hiding_pth(root: Path, state: int) -> tuple[Path, Path]:
+    """A copied-interpreter venv whose site .pth sets state and hides its own dir."""
+    base = Path(os.path.realpath("/usr/bin/python3"))
+    if not base.is_file():
+        pytest.skip("canonical falsifier interpreter absent")
+    subprocess.run([str(base), "-m", "venv", "--without-pip", "--copies", str(root)],
+                   check=True, capture_output=True)
+    python = root / "bin" / "python3"
+    site_dir = Path(subprocess.check_output(
+        [str(python), "-c", "import site; print(site.getsitepackages()[0])"], text=True,
+    ).strip())
+    pth = site_dir / "startup_state.pth"
+    _write_self_hiding_pth(pth, state)
+    return python, pth
+
+
+def _write_self_hiding_pth(pth: Path, state: int) -> None:
+    pth.write_text(
+        f"import sys; sys.falsifier_probe_state = {state}; "
+        f"sys.path[:] = [p for p in sys.path if p != {str(pth.parent)!r}]\n",
+        encoding="utf-8",
+    )
+
+
+def test_falsifier_scope_measures_startup_site_dirs_absent_from_final_sys_path(tmp_path):
+    python, pth = _scratch_interpreter_with_self_hiding_pth(tmp_path / "venv", 1)
+    shown = subprocess.run(
+        [str(python), "-s", "-c",
+         "import sys; print(sys.falsifier_probe_state, repr(sys.path))"],
+        capture_output=True, text=True, check=True, cwd="/",
+        env=dict(review_stage._FALSIFIER_PYTHON_ENV),
+    ).stdout.split(" ", 1)
+    assert shown[0] == "1" and str(pth.parent) not in eval(shown[1])
+    _executable, entries, _identity = review_stage._falsifier_interpreter_scope(python)
+    assert pth.parent in entries and pth in entries
+
+
+def test_falsifier_self_hiding_startup_pth_change_is_error(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    python, pth = _scratch_interpreter_with_self_hiding_pth(tmp_path / "venv", 1)
+
+    def launch(**_kwargs):
+        _write_self_hiding_pth(pth, 2)
+        return 0, b"", b"", None, {}
+
+    monkeypatch.setattr(review_stage, "_falsifier_resolved_interpreter", lambda: python)
+    monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node", launch)
+    result = _run_real_falsifier(repo, _falsifier_entry("def test_trigger():\n    assert True\n"))
+    assert result.outcome == "error"
+    assert "system interpreter changed" in (result.detail or "")

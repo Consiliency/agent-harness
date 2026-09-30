@@ -454,33 +454,87 @@ _FALSIFIER_PYTHON_ENV = {
 }
 
 
-def _falsifier_interpreter_scope() -> tuple[Path, tuple[Path, ...], str]:
+# Replays startup with ``site`` instrumented (``-S`` then ``site.main()``, so the run's
+# own ``-s`` still governs the user site) and reports every site directory and
+# ``.pth`` startup processes, whether or not it stays on the final ``sys.path``.
+_FALSIFIER_STARTUP_PROBE = """
+import json, os, sys, sysconfig
+import site
+dirs, pth = [], []
+_addsitedir, _addpackage = site.addsitedir, site.addpackage
+def addsitedir(sitedir, known_paths=None):
+    dirs.append(os.path.abspath(sitedir))
+    return _addsitedir(sitedir, known_paths)
+def addpackage(sitedir, name, known_paths):
+    pth.append(os.path.abspath(os.path.join(sitedir, name)))
+    return _addpackage(sitedir, name, known_paths)
+site.addsitedir, site.addpackage = addsitedir, addpackage
+site.main()
+custom = [getattr(sys.modules.get(name), "__file__", None)
+          for name in ("sitecustomize", "usercustomize")]
+print(json.dumps({
+    "site_dirs": dirs, "pth": pth, "customize": [item for item in custom if item],
+    "site_packages": site.getsitepackages(),
+    "user_site": site.getusersitepackages() if site.ENABLE_USER_SITE else None,
+    "sysconfig": sorted({sysconfig.get_paths()[key]
+                         for key in ("stdlib", "platstdlib", "purelib", "platlib")}),
+}))
+"""
+
+
+def _falsifier_interpreter_scope(
+    executable: Path | None = None,
+) -> tuple[Path, tuple[Path, ...], str]:
     """Ask the resolved interpreter, launched as the run launches it, what it imports from.
 
-    Returns the executable, every absolute ``sys.path`` entry, and an identity string
-    over ``sys.path`` and the prefixes. The measured set is derived from the
-    interpreter itself, never from a list of expected directories.
+    The measured set is the UNION of the final ``sys.path`` under the run's own flags
+    and every site directory, ``.pth`` and customize module startup processes
+    (reported by an instrumented replay of startup), plus the ``site`` and
+    ``sysconfig`` install paths. It is derived from the interpreter itself, never
+    from a list of expected directories, and a directory startup consumes and then
+    drops from ``sys.path`` is still measured. Returns the executable, the entries,
+    and an identity string over both reports.
     """
-    executable = _falsifier_resolved_interpreter()
-    inventory = subprocess.run(
-        [str(executable), *_FALSIFIER_PYTHON_FLAGS, "-c",
-         "import json,sys; print(json.dumps({'path':sys.path,'prefix':sys.prefix,"
-         "'exec_prefix':sys.exec_prefix,'base_prefix':sys.base_prefix}))"],
-        capture_output=True, text=True, check=True, timeout=5,
-        cwd="/", env=dict(_FALSIFIER_PYTHON_ENV),
+    executable = executable or _falsifier_resolved_interpreter()
+
+    def report(*argv: str) -> dict[str, object]:
+        completed = subprocess.run(
+            [str(executable), *argv], capture_output=True, text=True, check=True,
+            timeout=5, cwd="/", env=dict(_FALSIFIER_PYTHON_ENV),
+        )
+        payload = json.loads(completed.stdout)
+        if not isinstance(payload, dict):
+            raise ValueError("falsifier system interpreter scope is invalid")
+        return payload
+
+    final = report(
+        *_FALSIFIER_PYTHON_FLAGS, "-c",
+        "import json,sys; print(json.dumps({'path':sys.path,'prefix':sys.prefix,"
+        "'exec_prefix':sys.exec_prefix,'base_prefix':sys.base_prefix}))",
     )
-    scope = json.loads(inventory.stdout)
-    paths = scope.get("path") if isinstance(scope, dict) else None
+    startup = report(*_FALSIFIER_PYTHON_FLAGS, "-S", "-c", _FALSIFIER_STARTUP_PROBE)
+    paths = final.get("path")
     if (not isinstance(paths, list) or not all(isinstance(item, str) for item in paths)
-            or not all(isinstance(scope.get(key), str)
+            or not all(isinstance(final.get(key), str)
                        for key in ("prefix", "exec_prefix", "base_prefix"))):
         raise ValueError("falsifier system interpreter scope is invalid")
+    collected: list[str] = list(paths)
+    for key in ("site_dirs", "pth", "customize", "site_packages", "sysconfig"):
+        values = startup.get(key)
+        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+            raise ValueError("falsifier system interpreter scope is invalid")
+        collected.extend(values)
+    user_site = startup.get("user_site")
+    if user_site is not None:
+        if not isinstance(user_site, str):
+            raise ValueError("falsifier system interpreter scope is invalid")
+        collected.append(user_site)
     # "" is the child's working directory, the staged tree; any other relative entry
     # has no fixed meaning and is refused.
-    if any(item and not item.startswith("/") for item in paths):
+    if any(item and not item.startswith("/") for item in collected):
         raise ValueError("falsifier system interpreter scope has a relative entry")
-    entries = tuple(dict.fromkeys(Path(item) for item in paths if item))
-    return executable, entries, json.dumps(scope, sort_keys=True)
+    entries = tuple(dict.fromkeys(Path(item) for item in collected if item))
+    return executable, entries, json.dumps({"final": final, "startup": startup}, sort_keys=True)
 
 
 _FALSIFIER_INTERPRETER_ENTRY_LIMIT = 1_000_000

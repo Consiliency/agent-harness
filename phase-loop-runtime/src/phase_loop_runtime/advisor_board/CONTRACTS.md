@@ -867,10 +867,13 @@ Those two trees are the run's protected objects: every regular file in them,
 and after it exits, or the run is `error` (agent-harness#1134). The shared system
 interpreter is read-only to the run and is not a protected object. The runner
 resolves `/usr/bin/python3` once and launches exactly that file. The measured set
-is derived from the interpreter itself: launched with the run's flags and
-environment (less the run's own staged and dependency paths), it reports its
-`sys.path` and prefixes. Every existing `sys.path` entry is digested before and
-after the run: archive entries and `.pth`, archive and customize files by content,
+is derived from the interpreter itself, launched with the run's flags and
+environment (less the run's own staged and dependency paths). It is the union of
+the final `sys.path` and prefixes, every site directory, `.pth` and customize
+module that startup processes (reported by an instrumented replay of startup,
+so a directory startup consumes and then drops from `sys.path` is still
+measured), and the `site`/`sysconfig` install paths. Every existing entry is
+digested before and after the run: archive entries and `.pth`, archive and customize files by content,
 directories by an lstat manifest (mode, size, device, inode, mtime, ctime), and
 every symlink target outside the set followed and hashed by content. An entry the
 runner cannot digest fails closed, and a changed scope or digest is `error`.
