@@ -9464,12 +9464,16 @@ def _run_execute_verification_impl(
         if manifests and install_argv is None
         else ({"triggered": True, "manifests": manifests, "install_argv": install_argv} if manifests else None)
     )
-    # agent-harness#1139: what the declared output paths looked like BEFORE this run, so
-    # the record attributes only what the run itself wrote (never pre-placed files).
+    # agent-harness#1139: observe each declared producer invocation on its own, so the
+    # record credits a producer only with what IT wrote. Evidence only: nothing here can
+    # change the verification outcome, and nothing is written into run_dir or
+    # verification.json.
+    output_recorder = None
+    output_record_error: str | None = None
     try:
-        generated_outputs_pre_run = generated_outputs.capture_pre_run_state(repo)
-    except Exception:  # noqa: BLE001 - no pre-run state means no record, i.e. outputs stay blocking
-        generated_outputs_pre_run = None
+        output_recorder = generated_outputs.ProducerRecorder.for_repo(repo)
+    except Exception as exc:  # noqa: BLE001 - an invalid declaration records nothing (audit exits 2)
+        output_record_error = f"generated-outputs declaration unusable: {exc}"
     result = run_verification(
         repo,
         run_dir,
@@ -9480,16 +9484,20 @@ def _run_execute_verification_impl(
         operational_exemptions=operational_exemptions,
         python_pin=resolve_python_pin(roadmap, plan),
         phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
+        stage_observer=output_recorder,
     )
-    # agent-harness#1139: when this run executed a producer the repo's committed
-    # generated-outputs declaration names, record the digests of what it left behind so
-    # the closeout audit can attribute those ignored outputs. Evidence only: a failure
-    # here must never change the verification outcome, and it writes nothing into
-    # run_dir or verification.json.
-    try:
-        generated_outputs.record_verification_outputs(repo, result, generated_outputs_pre_run)
-    except Exception:  # noqa: BLE001 - missing evidence leaves the outputs unknown, i.e. blocking
-        pass
+    if output_recorder is not None:
+        try:
+            output_recorder.write(
+                source="runner-verification", run_id=result.run_id, phase_alias=phase_alias
+            )
+        except Exception as exc:  # noqa: BLE001 - missing evidence leaves the outputs blocking
+            output_recorder.errors.append(f"record write failed: {exc}")
+        if output_recorder.errors:
+            output_record_error = "; ".join(output_recorder.errors)
+    if output_record_error:
+        # Visible, never silent: the audit would otherwise only say "no producer record".
+        print(f"phase-loop: generated-outputs recording problem: {output_record_error}", file=sys.stderr)
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
 
     # LEGIBLE (v10 SL-2, IF-0-LEGIBLE-2): narrowly scoped to the LEGIBLE plan's
@@ -9525,6 +9533,8 @@ def _run_execute_verification_impl(
     }
     if sidecar_error is not None:
         summary["legible_sidecar_error"] = sidecar_error
+    if output_record_error:
+        summary["generated_outputs_record_error"] = output_record_error
     # agent-harness#266 (source redaction) / agent-harness#243 CR recheck (whole-summary
     # redaction): this ``summary`` becomes ``runner_verification`` below, which is then merged
     # verbatim into ``launch.json`` (``merge_launch_metadata`` at the launch-action call site)

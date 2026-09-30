@@ -399,10 +399,12 @@ def main(argv: list[str]) -> int:
     Exit 2 = the probe itself failed (including an invalid committed
     generated-outputs declaration).
 
-    ``--record-outputs`` (agent-harness#1139) first runs every producer the
-    committed ``.phase-loop-generated-outputs.json`` declares and records the
-    digests of what they leave behind, then audits. The runner records the same
-    evidence itself when its verification runs a declared producer command.
+    ``--record-outputs`` (agent-harness#1139) first runs, one at a time and under
+    observation, every producer the committed ``.phase-loop-generated-outputs.json``
+    declares. It records what each invocation wrote, bound to HEAD, then audits.
+    With no declaration it is a no-op, so executors pass it in every repo. The
+    runner's verification records the same evidence when it runs a declared
+    producer command.
     """
 
     repo = Path(argv[argv.index("--repo") + 1]) if "--repo" in argv else Path.cwd()

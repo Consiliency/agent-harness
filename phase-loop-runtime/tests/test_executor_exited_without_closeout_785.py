@@ -79,8 +79,35 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # Historical INPUT, not regenerated candidate output: the normalized golden
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
-    canonical = json.dumps(golden, sort_keys=True, separators=(",", ":")).encode()
-    assert hashlib.sha256(canonical).hexdigest() == "4026eb47167dcb4b495ae273f82f77f0ba20085508abf702aa89d5dbd3483ecc"
+    canonical = json.dumps(golden, sort_keys=True, separators=(",", ":"))
+    # The third permitted delta (agent-harness#1139): the closeout-audit instruction in
+    # the runner prompt and the execute-phase skill prescribes `--record-outputs` and
+    # names the new producers behind exit 0. Undo exactly that prose, and the redacted
+    # prompt digest it moves, and nothing else.
+    record = " --record-outputs"
+    declared = (
+        "a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` "
+        "declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them"
+    )
+    for new, old in (
+        (f"closeout-audit --repo .{record}`", "closeout-audit --repo .`"),
+        (f"closeout_classifier --repo .{record}`", "closeout_classifier --repo .`"),
+        (f"the runner, its own toolchain, {declared} and ", "the runner and its own toolchain produced them and "),
+        (f"the runner, its own toolchain, {declared} (", "the runner or its own toolchain produced them ("),
+        (
+            "`.venv`), is a harness handoff, or was written by a producer the committed "
+            "`.phase-loop-generated-outputs.json` declares, re-run and recorded by "
+            "`--record-outputs` (agent-harness#1139) -- ",
+            "`.venv`) -- ",
+        ),
+        (
+            "5531b07c6ad3bb5290d7a5c73cd4fb464f7637a77d9dcfc13721d478850e6f75",
+            "dc7e4de7561b8bfcdad876382d2c53cf7de73e30c0ed7b95e75d1857dbdd397d",
+        ),
+    ):
+        assert new in canonical, new
+        canonical = canonical.replace(new, old)
+    assert hashlib.sha256(canonical.encode()).hexdigest() == "4026eb47167dcb4b495ae273f82f77f0ba20085508abf702aa89d5dbd3483ecc"
 
 
 @pytest.mark.parametrize("stream", [False, True])

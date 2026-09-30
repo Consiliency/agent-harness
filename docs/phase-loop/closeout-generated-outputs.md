@@ -25,15 +25,18 @@ Workflow skills write handoffs to `.dev-skills/handoffs/<harness>-<skill>/<run_i
 and `latest.md`. A file there counts as `runner_owned` only when it carries the handoff
 contract itself:
 
-- it is a regular `.md` file, not a symlink, at exactly that depth;
+- it is a regular `.md` file at exactly that depth, reached with no symlink on its path;
 - `<harness>-<skill>` is a skill the installed harness ships;
 - its YAML frontmatter has `from`, `timestamp`, `repo`, `repo_root`, `branch`,
   `branch_slug`, `commit`, `run_id` and `artifact`;
-- `from` equals the directory name.
+- `from` equals the directory name;
+- `repo_root` resolves to the repository being audited;
+- `commit` names a commit that exists in that repository.
 
-A hand-placed file under `.dev-skills/` is not trusted because of where it sits. The same
-applies to a note with no frontmatter, or to a handoff filed under the wrong skill. All of
-these stay `unknown_ignored`.
+Nothing else under `.dev-skills/` is trusted because of where it sits. That includes a
+hand-placed note, a file with no frontmatter, a handoff filed under the wrong skill, and
+a handoff copied from another checkout or repository. All of these stay
+`unknown_ignored`. The contract is self-reported metadata, so see the threat model below.
 
 ## Declaring build outputs
 
@@ -58,13 +61,18 @@ Commit a file named `.phase-loop-generated-outputs.json` at the repository root:
 ```
 
 - **`name`**: a unique lowercase identifier.
-- **`command`**: the producer's argv, as a list or a shell-split string. It must match,
-  token for token, a command in the phase plan's `## Verification` list (or its
-  `automation.suite_command`). That match is how the runner knows the producer ran.
+- **`command`**: the producer's argv, as a list or a shell-split string. It is not a
+  shell line: `&&`, `;`, `|` and redirections are rejected, so declare one producer per
+  command. `--record-outputs` runs it from the repository root. For the runner to
+  observe it, it must equal, token for token, a command in the phase plan's
+  `## Verification` list (or its `automation.suite_command`).
 - **`outputs`**: repo-relative globs. `*` matches within one path segment and `**`
   matches any number of whole segments. Each glob **must start with a literal path
   segment**, so `**`, `*` and `*.js` are rejected. Globs may not use `..`, and may not
-  claim `.git`, `.phase-loop`, `.codex` or `.dev-skills`.
+  claim `.git`, `.phase-loop`, `.codex` or `.dev-skills`, in any letter case.
+
+The v1 format is closed. Any other key, at the top level or on a producer, is an error,
+so a field added in a later version cannot be silently misread by an older runtime.
 
 The declaration is read from **`HEAD`**, so a declaration has no effect until it is
 committed. An uncommitted, staged or ignored edit never widens what counts. A malformed
@@ -80,52 +88,72 @@ acceptable.
 
 ## Evidence: the producer record
 
-A declaration alone accepts nothing. A declared file counts only when a recorded
-producer run **created or rewrote** it and it still has the **same content digest**. The
-record is written to `.phase-loop/generated-outputs/record.json`, which is runner state.
+A declaration alone accepts nothing. A declared file counts only when an **observed
+invocation of a producer whose globs cover it wrote it**, at the **current commit**, and
+it still has the **same content digest**. The record is written to
+`.phase-loop/generated-outputs/record.json`, which is runner state.
 
-- **At closeout (the in-phase path).** An executor that has run its verification runs
-  `phase-loop-closeout-audit --repo . --record-outputs`. This runs every declared producer
-  in declaration order, records what they wrote, and then audits. Use this whenever the
-  audit reports `declared output with no producer record`. That includes the executor
-  child of a runner-driven phase, because the child audits before the runner's own
-  verification runs.
-- **The runner's verification (a second source).** When the runner's post-launch
-  verification runs a command that equals a declared producer's `command`, it records
-  the same evidence. A later audit then passes without re-running the producers, for
-  example an operator's audit, a repair turn, or a relaunch.
+### How evidence is recorded
 
-What counts as written by the run:
+- **At closeout: every executor, every repo.** Run
+  `phase-loop-closeout-audit --repo . --record-outputs`. It runs each declared producer
+  in declaration order, observing each invocation separately. It records what each
+  invocation wrote and then audits. With no declaration it does nothing extra, so the
+  flag is safe to pass everywhere. The shipped execute-phase skills and runner prompt
+  prescribe this form.
+- **The runner's verification.** When the runner's verification runs a command that
+  equals a declared producer's `command`, it observes that invocation the same way.
+  A later audit at the same commit then passes without re-running anything. A
+  recording failure never changes the verification outcome. It is printed to stderr
+  and reported as `generated_outputs_record_error` in the runner's verification
+  summary.
 
-- An entry counts when it did not exist before the run, or when its status-change time
-  (`ctime`) moved during the run. A file already sitting under a declared glob that the
-  run did not touch is **not** attributed. A declaration is not a licence for whatever is
-  already in `dist/`.
-- **Incremental tools** skip unchanged outputs. An untouched file still counts if the
-  previous record, for the same committed declaration, attributed it to the same
-  producer at the same digest.
-- A producer that exits non-zero records nothing, so its outputs stay unknown.
-- The snapshot is taken once, after the whole run. A later producer that rewrites an
-  earlier producer's output, for example two producers writing into `.cache/`, is
-  therefore not a mismatch.
+### What counts as written
+
+- Each observed invocation is bracketed by a snapshot of the producer's own declared
+  outputs, taken just before and just after it runs. A file counts as written by that
+  producer if it is new, if its content changed, or if its mtime moved during the
+  invocation.
+- Nothing else is credited:
+  - a file an undeclared command wrote, even in the same verification run;
+  - a file that existed before and was only chmod-ed, linked or renamed;
+  - a file whose producer exited non-zero. A failed invocation also withdraws that
+    producer's earlier entries.
+- The one thing that still passes is an explicit `touch` of an existing file by the
+  producer itself, because that moves mtime.
+- **Overlapping globs.** When two producers' globs both cover a file, it belongs to
+  whichever producer wrote it last, regardless of declaration order.
+- **Incremental and byte-identical producers.** An output the producer did not rewrite
+  this time carries forward from the previous record. That happens only when the same
+  producer ran successfully in this recording and the bytes are unchanged.
+- **Commit binding.** The record is bound to `HEAD`. At the same commit, a recording
+  extends the record, so a repair turn that re-runs one producer keeps the others'
+  evidence. After a commit, for example in the next phase, the old record no longer
+  counts until the producers run again.
+- **Symlinks.** A symlink, or any path reached through a symlinked directory, is never
+  recorded and never accepted. Its content lives wherever the link points.
 
 A declared file stays `unknown_ignored`, with a reason printed beside it, when:
 
-- the recorded run did not create or rewrite it (it was hand-placed);
-- it changed after the run;
+- no observed producer invocation wrote it;
+- it changed after the recording;
+- it is a symlink;
 - no record exists;
-- the record was made against a different committed declaration.
+- the record was taken at another commit;
+- the record was made against another committed declaration.
 
-Re-recording is always safe, because it re-runs the producer: an edited generated file
+Re-recording is always safe, because it re-runs the producers: an edited generated file
 is regenerated, not laundered.
 
-**Caches.** Digest pinning suits generated SDKs and `dist/`. A tool cache that changes on
-every run (a test runner's `.cache/`) matches only until the next run that writes it, so
-declare it only if the executor re-records at closeout. Otherwise leave it undeclared, or
-move it out of the worktree.
+**Caches.** Declare a tool cache only if its producer writes it. Its evidence then lasts
+until something else writes to it.
 
 ### Threat model
 
-The audit catches accidental and unaccounted-for outputs. It does not defend against a
-local actor with write access to the worktree, who could forge the record as easily as
-the outputs themselves.
+The audit catches accidental and unaccounted-for outputs: files no declared producer
+wrote, stale evidence from an earlier phase, links that point outside the repository,
+and handoffs that belong to another checkout. It does not defend against a local actor
+with write access to the worktree. Such an actor can forge the record or a handoff's
+frontmatter as easily as the outputs themselves. It also does not defend against a
+declared producer that deliberately writes something harmful. Declaring a producer
+means trusting what it writes inside its globs.

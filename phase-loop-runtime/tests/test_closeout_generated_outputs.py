@@ -70,7 +70,7 @@ repo: example/app
 repo_root: {repo}
 branch: main
 branch_slug: main
-commit: 0000000
+commit: {commit}
 run_id: run-1
 artifact: plans/phase-plan-v1-STATE.md
 artifact_state: tracked
@@ -95,7 +95,8 @@ def _declaration(**overrides) -> dict:
             {
                 "name": "build",
                 "command": [sys.executable, "scripts/build.py"],
-                "outputs": ["dist/**", ".cache/tsbuildinfo"],
+                # Overlaps baml's `.cache/baml/**`: attribution follows whoever WROTE the file.
+                "outputs": ["dist/**", ".cache/**"],
             },
         ],
     }
@@ -143,10 +144,15 @@ class NodeBamlPhaseFixture:
         )
         return result
 
+    def handoff_text(self) -> str:
+        commit = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        return HANDOFF.format(repo=self.repo, commit=commit)
+
     def write_handoff(self, text: str | None = None, skill: str = "codex-execute-phase") -> Path:
         path = self.repo / ".dev-skills" / "handoffs" / skill / "latest.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(HANDOFF.format(repo=self.repo) if text is None else text)
+        path.write_text(self.handoff_text() if text is None else text)
         return path
 
 
@@ -191,7 +197,7 @@ class ReportedScenarioTest(unittest.TestCase):
             self.assertEqual(main(["--repo", str(fx.repo)]), 1)
             self.assertEqual(main(["--repo", str(fx.repo), "--record-outputs"]), 0)
             record = generated_outputs.load_record(fx.repo)
-            self.assertEqual(record["source"], "closeout-audit")
+            self.assertEqual({i["source"] for i in record["invocations"]}, {"closeout-audit"})
 
 
 class StillFailClosedTest(unittest.TestCase):
@@ -212,7 +218,7 @@ class StillFailClosedTest(unittest.TestCase):
             (fx.repo / "dist" / "stray.js").write_text("not produced\n")
             result = self._unknown(fx)
             self.assertEqual(result[UNKNOWN_IGNORED], ["dist/stray.js"])
-            self.assertIn("did not create or rewrite", result["unknown_reasons"]["dist/stray.js"])
+            self.assertIn("no recorded producer invocation wrote", result["unknown_reasons"]["dist/stray.js"])
 
     def test_a_file_placed_under_a_declared_glob_BEFORE_the_run_blocks(self):
         """A declaration is not a licence for whatever already sits in `dist/`: only
@@ -326,7 +332,7 @@ class StillFailClosedTest(unittest.TestCase):
     def test_a_handoff_whose_from_disagrees_with_its_directory_blocks(self):
         with tempfile.TemporaryDirectory() as td:
             fx = self._verified(td)
-            fx.write_handoff(HANDOFF.format(repo=fx.repo).replace(
+            fx.write_handoff(fx.handoff_text().replace(
                 "from: codex-execute-phase", "from: codex-plan-phase"))
             result = self._unknown(fx)
             self.assertIn("does not match", next(iter(result["unknown_reasons"].values())))
@@ -334,7 +340,7 @@ class StillFailClosedTest(unittest.TestCase):
     def test_a_marked_handoff_for_a_skill_the_harness_does_not_ship_blocks(self):
         with tempfile.TemporaryDirectory() as td:
             fx = self._verified(td)
-            fx.write_handoff(HANDOFF.format(repo=fx.repo).replace(
+            fx.write_handoff(fx.handoff_text().replace(
                 "from: codex-execute-phase", "from: codex-exfiltrate"), skill="codex-exfiltrate")
             self._unknown(fx)
 
@@ -380,3 +386,238 @@ class DeclarationBoundsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- round-1 board falsifiers (agent-harness#1189), kept verbatim in substance -------
+
+
+def _audit_blocks_on(fx, path):
+    result = audit_ignored_outputs(fx.repo)
+    assert result["blocks"], result
+    assert path in result[UNKNOWN_IGNORED], result
+    assert main(["--repo", str(fx.repo)]) == 1
+    return result
+
+
+def test_declared_output_symlink_blocks(tmp_path):
+    """codex F001 / grok F1: a producer-created symlink under a declared glob."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    target = tmp_path / "input.txt"
+    target.write_text("before the producer\n")
+    script = fx.repo / "scripts/build.py"
+    script.write_text(BUILD + "(root / 'dist' / 'borrowed.js').symlink_to('../../input.txt')\n")
+    commit_fixture_paths(fx.repo, "producer creates a symlink", script)
+    assert fx.verify()["ok"]
+    assert (fx.repo / "dist/borrowed.js").is_symlink()
+    target.write_text("changed after the producer\n")
+    _audit_blocks_on(fx, "dist/borrowed.js")
+    assert "dist/borrowed.js" not in generated_outputs.load_record(fx.repo)["files"]
+
+
+def test_a_file_reached_through_a_symlinked_directory_blocks(tmp_path):
+    """The containment check covers every path component, not just the leaf."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    script = fx.repo / "scripts/build.py"
+    script.write_text(
+        BUILD + "import os\nos.symlink(%r, str(root / 'dist' / 'linked'))\n"
+        "(root / 'dist' / 'linked' / 'x.js').write_text('x')\n" % str(outside)
+    )
+    commit_fixture_paths(fx.repo, "producer links a directory", script)
+    assert fx.verify()["ok"]
+    assert generated_outputs.file_identity(fx.repo, "dist/linked/x.js") is None
+    _audit_blocks_on(fx, "dist/linked")
+
+
+def test_undeclared_process_cannot_borrow_producer_provenance(tmp_path):
+    """codex F002: an undeclared verification command writes under a declared glob."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    script = fx.repo / "scripts/unrelated.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "Path('dist').mkdir(exist_ok=True)\n"
+        "Path('dist/stray.js').write_text('unrelated output\\n')\n"
+    )
+    fx.plan.write_text(fx.plan.read_text().replace(
+        "## Verification\n",
+        f"## Verification\n- `{sys.executable} scripts/unrelated.py`\n",
+    ))
+    commit_fixture_paths(fx.repo, "add an undeclared verification command", script, fx.plan)
+    assert fx.verify()["ok"]
+    _audit_blocks_on(fx, "dist/stray.js")
+
+
+def test_previous_phase_record_cannot_satisfy_current_phase(tmp_path):
+    """codex F003: CORE never runs the producers; STATE's record must not count."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    previous = generated_outputs.load_record(fx.repo)
+    assert {i["run_id"] for i in previous["invocations"]} == {"exec-state"}
+    fx.roadmap.write_text(fx.roadmap.read_text() + "\n### Phase 1 - Core (CORE)\n")
+    script = fx.repo / "scripts/core.py"
+    script.write_text("print('CORE passed without running the declared producers')\n")
+    plan = write_phase_plan(
+        fx.repo, "CORE", fx.roadmap,
+        body=f"# CORE\n\n## Verification\n- `{sys.executable} scripts/core.py`\n",
+    )
+    commit_fixture_paths(fx.repo, "next phase", script, plan, fx.roadmap)
+    run_dir = fx.repo / ".phase-loop/runs/exec-core"
+    run_dir.mkdir(parents=True)
+    verification = runner._run_execute_verification(
+        repo=fx.repo, roadmap=fx.roadmap, plan=plan,
+        artifacts={"root": run_dir}, phase_alias="CORE",
+    )
+    assert verification["ok"], verification
+    result = _audit_blocks_on(fx, "dist/index.js")
+    assert "different commit" in result["unknown_reasons"]["dist/index.js"]
+
+
+def test_the_next_phase_passes_once_it_reruns_the_deterministic_producers(tmp_path):
+    """The positive half of F003 and the consumer flow C1 prescribes. A new commit
+    and byte-identical regeneration still pass, because the producers ran in THIS
+    phase (`--record-outputs`)."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    marker = fx.repo / "CORE.md"
+    marker.write_text("next phase\n")
+    commit_fixture_paths(fx.repo, "next phase", marker)
+    fx.write_handoff()
+    assert main(["--repo", str(fx.repo)]) == 1          # stale evidence alone blocks
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+
+
+def test_metadata_only_touch_launders_a_planted_file(tmp_path):
+    """Claude C2: a producer that only chmods a planted file has not written it."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    (fx.repo / "dist").mkdir()
+    (fx.repo / "dist" / "planted.js").write_text("placed before the producer ran\n")
+    script = fx.repo / "scripts/build.py"
+    script.write_text(BUILD + "import os\nfor p in (root / 'dist').iterdir():\n    os.chmod(p, 0o644)\n")
+    commit_fixture_paths(fx.repo, "build normalises modes", script)
+    assert fx.verify()["ok"]
+    _audit_blocks_on(fx, "dist/planted.js")
+
+
+def test_a_partial_rerun_keeps_the_other_producers_evidence(tmp_path):
+    """Claude C3: a repair turn re-running only `build` keeps `baml`'s evidence at
+    the same commit."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
+    build = next(p for p in recorder.declaration.producers if p.name == "build")
+    assert recorder.run(build) == 0
+    recorder.write(source="closeout-audit", run_id=None)
+    result = audit_ignored_outputs(fx.repo)
+    assert not result["blocks"], result
+    assert "baml_sdk/index.js" in result[DECLARED_OUTPUT]
+
+
+def test_overlapping_globs_attribute_to_the_writer_not_declaration_order(tmp_path):
+    """grok F2: `.cache/baml/fingerprint` is covered by both producers; `build`
+    rewrote it last, so it is build's, whatever the declaration order."""
+
+    for order in (None, "reversed"):
+        with tempfile.TemporaryDirectory() as td:
+            decl = _declaration()
+            if order:
+                decl["producers"].reverse()
+            fx = NodeBamlPhaseFixture(Path(td), declaration=decl)
+            assert fx.verify()["ok"]
+            files = generated_outputs.load_record(fx.repo)["files"]
+            assert files[".cache/baml/fingerprint"]["producer"] == "build", order
+
+
+def test_declaration_rejects_unknown_keys_and_shell_syntax():
+    """Claude C4: v1 is closed; `command` is an argv, not a shell line."""
+
+    base = _declaration()
+    for mutate in (
+        lambda d: d.update(extra=1),
+        lambda d: d["producers"][0].update(cwd="pkg"),
+        lambda d: d["producers"][0].update(command="npm ci && npm run build"),
+        lambda d: d["producers"][0].update(command="npm run build; rm -rf x"),
+        lambda d: d["producers"][0].update(command=["npm", "run", "build", "|", "tee"]),
+    ):
+        data = json.loads(json.dumps(base))
+        mutate(data)
+        try:
+            generated_outputs.parse_declaration(json.dumps(data))
+        except generated_outputs.DeclarationError:
+            continue
+        raise AssertionError(f"accepted: {data}")
+
+
+def test_reserved_roots_are_matched_case_insensitively():
+    """grok F3."""
+
+    for glob in (".GIT/**", ".Phase-Loop/**", ".DEV-SKILLS/x"):
+        try:
+            generated_outputs.parse_declaration(json.dumps(_declaration(producers=[
+                {"name": "p", "command": "make", "outputs": [glob]}])))
+        except generated_outputs.DeclarationError:
+            continue
+        raise AssertionError(glob)
+
+
+def test_a_handoff_for_another_repo_or_commit_blocks(tmp_path):
+    """Claude C5: the handoff contract is bound to THIS repo and a commit in it."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    good = fx.handoff_text()
+    for bad, why in (
+        (good.replace(f"repo_root: {fx.repo}", "repo_root: /somewhere/else"), "repo_root"),
+        (good.replace(good.split("commit: ")[1].split("\n")[0], "deadbeefdeadbeef"), "commit"),
+    ):
+        fx.write_handoff(bad)
+        result = _audit_blocks_on(fx, ".dev-skills/handoffs/codex-execute-phase/latest.md")
+        assert why in next(iter(result["unknown_reasons"].values()))
+    fx.write_handoff(good)
+    assert main(["--repo", str(fx.repo)]) == 0
+
+
+def test_a_recording_failure_is_surfaced_not_swallowed(tmp_path):
+    """Claude C6: the runner reports a recording failure in its summary."""
+
+    from unittest.mock import patch
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    with patch.object(generated_outputs.ProducerRecorder, "write", side_effect=OSError("disk full")):
+        summary = fx.verify()
+    assert summary["ok"], summary                      # evidence never changes the outcome
+    assert "disk full" in summary["generated_outputs_record_error"]
+    _audit_blocks_on(fx, "dist/index.js")
+
+
+def test_record_outputs_is_a_no_op_without_a_declaration(tmp_path):
+    """C1: executors pass `--record-outputs` in EVERY repo, so it must not fail
+    where nothing is declared."""
+
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text(".phase-loop/\n")
+    commit_fixture_paths(repo, "seed", repo / ".gitignore")
+    assert main(["--repo", str(repo), "--record-outputs"]) == 0
+
+
+def test_a_partial_rerun_after_a_commit_does_not_inherit_the_old_phase(tmp_path):
+    """F003 through the merge path: at a NEW commit, re-running only `build` must not
+    carry `baml`'s earlier-phase entries into the fresh record."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    marker = fx.repo / "CORE.md"
+    marker.write_text("next phase\n")
+    commit_fixture_paths(fx.repo, "next phase", marker)
+    recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
+    build = next(p for p in recorder.declaration.producers if p.name == "build")
+    assert recorder.run(build) == 0
+    recorder.write(source="closeout-audit", run_id=None)
+    _audit_blocks_on(fx, "baml_sdk/index.js")

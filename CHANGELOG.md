@@ -43,17 +43,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (`!! .dev-skills/`, `!! dist/`) instead of blocking on the directory entry. The
   `/.dev-skills/` entry written by `phase-loop init` previously made every harness handoff
   `unknown_ignored`.
-- Harness handoffs are `runner_owned` only when the file carries the workflow-skill handoff
-  contract: the required frontmatter keys, and `from` equal to a shipped skill's
-  directory. This replaces the agent-harness#1084 rule, which trusted any path under
+- **Harness handoffs** are `runner_owned` only when the file carries the workflow-skill
+  handoff contract:
+  - the required frontmatter keys are present;
+  - `from` equals a shipped skill's directory;
+  - `repo_root` is this repository;
+  - `commit` exists in this repository.
+
+  This replaces the agent-harness#1084 rule, which trusted any path under
   `.dev-skills/handoffs/`.
-- New `declared_output` bucket. A project commits `.phase-loop-generated-outputs.json`,
-  which names each producer command and bounded output globs. A declared file passes only
-  when a recorded producer run created or rewrote it and it still has the recorded content
-  digest. The run is recorded by the new `phase-loop-closeout-audit --record-outputs`, or
-  by the runner's verification when it runs a declared producer command. Undeclared,
-  pre-placed, hand-placed and later-edited files still block, and an invalid declaration
-  exits 2. See `docs/phase-loop/closeout-generated-outputs.md`.
+- **New `declared_output` bucket.** A project commits `.phase-loop-generated-outputs.json`
+  (a closed v1 format), naming each producer command (an argv, not a shell line) and
+  bounded output globs. A declared file passes only if all of these hold:
+  - an observed invocation of a producer that covers it wrote it. Each invocation is
+    snapshotted before and after, so writes by other commands are never credited;
+  - the evidence was recorded at the current commit, so an earlier phase's record
+    never counts;
+  - its content digest is unchanged;
+  - it is not a symlink.
+- **Recording.** `phase-loop-closeout-audit --repo . --record-outputs` records the
+  evidence. It is a no-op without a declaration, and the execute-phase skills and
+  runner prompt now prescribe it. The runner's verification also records when it runs a
+  declared producer command, and it reports recording failures.
+- **Still blocks:** undeclared, pre-placed, metadata-only-touched, later-edited and
+  symlinked files, plus anything recorded at a different commit. An invalid declaration
+  exits 2.
+- See `docs/phase-loop/closeout-generated-outputs.md`.
 
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 

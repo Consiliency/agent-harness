@@ -425,10 +425,12 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             (root / "codex-execute-phase").mkdir(parents=True)
             # agent-harness#1139: trusted by the handoff contract the file carries, not
             # by its directory, so the fixture writes what the skills actually write.
+            head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
             (root / "codex-execute-phase" / "latest.md").write_text(
                 "---\nfrom: codex-execute-phase\ntimestamp: 2026-09-30T00:00:00Z\n"
-                "repo: r\nrepo_root: /r\nbranch: main\nbranch_slug: main\n"
-                "commit: 0\nrun_id: 1\nartifact: plans/p.md\n---\n")
+                f"repo: r\nrepo_root: {repo}\nbranch: main\nbranch_slug: main\n"
+                f"commit: {head}\nrun_id: 1\nartifact: plans/p.md\n---\n")
             result = audit_ignored_outputs(repo)
             self.assertFalse(result["blocks"], result)
             self.assertEqual(result[UNKNOWN_IGNORED], [])

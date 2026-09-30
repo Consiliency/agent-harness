@@ -608,6 +608,7 @@ def run_verification(
     operational_exemptions: list[Mapping[str, Any]] | None = None,
     python_pin: str | None = None,
     phase_alias: str | None = None,
+    stage_observer: Any = None,
 ) -> VerificationResult:
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
@@ -684,11 +685,18 @@ def run_verification(
                 suite_interpreter=interpreter.interpreter,
             )
             command_results = [
-                _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir) for argv in commands
+                _observed_stage(
+                    stage_observer, argv,
+                    lambda argv=argv: _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir),
+                )
+                for argv in commands
             ]
             suite_result = None
             if suite_command is not None:
-                suite_evidence = _run_process(repo_path, log_file, suite_command, timeout_s, path_prepend=shim_dir)
+                suite_evidence = _observed_stage(
+                    stage_observer, suite_command,
+                    lambda: _run_process(repo_path, log_file, suite_command, timeout_s, path_prepend=shim_dir),
+                )
                 suite_result = VerificationSuiteEvidence(
                     argv=suite_evidence.argv,
                     exit_code=suite_evidence.exit_code,
@@ -730,6 +738,26 @@ def run_verification(
     result = replace(unsealed, log_sha256=log_sha256)
     _write_artifact_atomic(artifact_path, _result_to_payload(result))
     return result
+
+
+def _observed_stage(observer: Any, argv: Sequence[str], run: Any) -> VerificationCommandEvidence:
+    """Run one stage, bracketed by an optional ``before(argv)``/``after(token, exit)``
+    observer (agent-harness#1139: producer provenance per invocation). The observer is
+    evidence-only: nothing it raises can change or abort the verification."""
+
+    token = None
+    if observer is not None:
+        try:
+            token = observer.before(list(argv))
+        except Exception:  # noqa: BLE001
+            token = None
+    evidence = run()
+    if observer is not None:
+        try:
+            observer.after(token, evidence.exit_code)
+        except Exception:  # noqa: BLE001
+            pass
+    return evidence
 
 
 def _append_verification_command(
