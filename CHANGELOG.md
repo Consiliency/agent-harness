@@ -41,6 +41,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   render (#10). A closeout integer beyond i64 now parses as `null` where v0 clamped it (#12). A
   serialized request over 4 MiB is refused with a plain `BamlValidationError` before anything
   is sent; the 17 MiB response cap is derived from it (#27).
+- **Message redaction.** Correct the redaction character class and replacement template used
+  for BAML client messages. Values of secret-named environment variables are now redacted first,
+  and bearer values and common token shapes are also covered. A reaped worker's fault-log entry
+  keeps a redacted, bounded tail of its stderr (`stderr_tail`).
 - **Not usable in a forked child that has not exec'd.** Call BAML from the parent or from a
   spawn- or exec-started process; a non-exec fork child gets `BamlWorkerError(kind="forked")`
   (#30). Nothing in-tree forks without exec (agent-harness#1140).

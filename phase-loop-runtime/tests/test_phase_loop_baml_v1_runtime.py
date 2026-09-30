@@ -3168,11 +3168,10 @@ def test_a_worker_recovery_disposed_is_not_logged_again_as_spawn_late():
 
 
 
-def test_stderr_tail_does_not_publish_a_password_value():
-    """codex round 5 (F002), as filed: a secret starting with "s" survived the
-    old ``[^\\\\s,;]`` class (inside a raw string)."""
+def test_stderr_tail_is_redacted():
+    """The worker's stderr tail goes through the same redaction as messages."""
     client = m._Client(test_mode=True, retries=0, deadline_s=2)
-    sentinel = "sCANARY_CREDENTIAL_VALUE"
+    sentinel = "sample-value-0001"
     peer = (
         "import sys\n"
         "sys.stdin.readline()\n"
@@ -3190,13 +3189,13 @@ def test_stderr_tail_does_not_publish_a_password_value():
         assert isinstance(exc, m.BamlWorkerError)
         assert _wait(lambda: any("stderr_tail" in e for e in client.fault_log), m._REAP_BOUND_S + 0.25)
         tail = next(e["stderr_tail"] for e in client.fault_log if "stderr_tail" in e)
-        assert sentinel not in tail, "the new diagnostic published the password value"
+        assert sentinel not in tail and "password=<redacted>" in tail, tail
     finally:
         client.stop(graceful=False, timeout=2)
 
 
-# Every character class a secret can start with, including the letters whose
-# regex escapes (s S d D w W b B) the old double-escaped class could swallow.
+# Values starting with any character class, including the letters that name
+# regex escapes (s S d D w W b B).
 _SECRET_STARTS = ["s", "S", "d", "D", "w", "W", "b", "B", "a", "Z", "0", "9", "\\", "-", "_", "/", "+", "=", ".", "~", "%"]
 _SECRET_FORMS = [
     "password={v}", "PASSWORD: {v}", "api_key={v}", "api-key = {v}", 'OPENAI_API_KEY="{v}"',
@@ -3205,20 +3204,20 @@ _SECRET_FORMS = [
 
 
 @pytest.mark.parametrize("start", _SECRET_STARTS)
-def test_redaction_removes_a_secret_whatever_it_starts_with(start):
-    value = f"{start}CANARYx7Qp2"
+def test_redaction_covers_values_starting_with_any_character(start):
+    value = f"{start}ampleValue42"
     for form in _SECRET_FORMS:
         text = "native error: " + form.format(v=value) + " trailing words"
         out = m._sanitize_text(text)
-        assert "CANARYx7Qp2" not in out, (form, out)
+        assert "ampleValue42" not in out, (form, out)
         assert "\\1" not in out and "trailing words" in out, (form, out)
 
 
-def test_redaction_removes_known_secret_values_even_without_a_key(monkeypatch):
-    """Exact values first: a secret from this process's environment is removed
-    wherever it appears; the patterns are the backup."""
-    monkeypatch.setenv("SOME_SERVICE_TOKEN", "sExactKnownValue123")
-    assert "sExactKnownValue123" not in m._sanitize_text("worker said: sExactKnownValue123 (while starting)")
+def test_redaction_covers_known_environment_values(monkeypatch):
+    """Known values first: a value of a secret-named environment variable is
+    redacted wherever it appears; the patterns are the backup."""
+    monkeypatch.setenv("SOME_SERVICE_TOKEN", "knownValue12345")
+    assert "knownValue12345" not in m._sanitize_text("worker said: knownValue12345 (while starting)")
     assert m._sanitize_text("the token was invalid") == "the token was invalid"  # prose is left alone
 
 

@@ -600,10 +600,9 @@ def _sanitize_error(exc: BaseException) -> str:
     return _sanitize_text(message) or exc.__class__.__name__
 
 
-# Secret redaction for every message and diagnostic this module publishes.
-# (The previous pattern was ``[^\\s,;]*`` inside a raw string: a class that
-# excluded a backslash and the LETTER s, so a secret starting with "s" survived,
-# and its ``\\1`` replacement was emitted literally -- codex round 5.)
+# Redaction for every message and diagnostic this module publishes: known
+# values first, then key/value patterns (corrected character class and
+# replacement template), bearer values and common token shapes.
 _SECRET_KV_RE = re.compile(
     r"(?i)(api[_-]?key|authorization|token|secret|password|passwd|credential)[\w-]*"
     r"(?P<value>[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?[^\s,;\"']*|\s+bearer\s+[^\s,;\"']*)"
