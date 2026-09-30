@@ -10029,6 +10029,12 @@
           "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1154"
+        },
+        {
+          "plan_sha256": "24f695495460b05b7f59e54d968021c9dafc5cfb8c28ad326f0dadf456fe6dfb",
+          "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1163"
         }
       ],
       "reflection_ref": null,
@@ -10042,7 +10048,47 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-21T00:00:00Z"
+      "updated_at": "2026-09-21T00:00:00Z",
+      "sl0_repairs": [
+        {
+          "authorization_id": "agent-harness#1164:EXECFIND-SL2:EXECFIND",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1164",
+          "decision": "maintainer 2026-09-29 (relayed by the lead on agent-harness#1164): EXECFIND SL-2 may change exactly this node, replacing its free-text detail with the existing harness detail code and asserting that code in the reason",
+          "frozen_by": "EXECFIND SL-0 advisory re-freeze (.phase-loop/evidence/EXECFIND/advisory/content-tdd-receipt.json)",
+          "reason": "agent-harness#1102 made PanelLegResult.detail a closed vocabulary, so the node's detail=\"EgressUnavailable\" is rewritten to the unknown-failure template and its reason assertion cannot hold; the node was skipped until SL-2's symbols existed, so main never ran it. Under the plan's re-freeze rule this correction restarts the advisory re-freeze: the advisory receipt and its RED logs are re-recorded against the pre-implementation commit 061a84e99d4cd1d6bc53a029438c936203caa2f8 (main 3c61b270 plus only this node), which is merged into the landing so the receipt's base stays reachable. The original (non-advisory) receipt and logs are unchanged.",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_governed_review.py",
+              "base_blob": "4e2aa19a687e84d0b3f015a465115de65902db7f",
+              "nodes": [
+                "ExecfindFindingTests::test_degraded_leg_whole_code"
+              ]
+            }
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after EXECFIND SL-2 merges, naming authorization_id agent-harness#1164:EXECFIND-SL2:EXECFIND: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link, as for agent-harness#1145's entries: the landed entry pairs with exactly this authorization; the old blob equals both the frozen blob and the blob at the merge's first parent; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        },
+        {
+          "authorization_id": "agent-harness#1164:EXECFIND-SL2:EXECFIND",
+          "entry": "landed",
+          "issue": "Consiliency/agent-harness#1164",
+          "merge_commit": "35702d13bb7ca8dbb47cdfc436938635264766b1",
+          "merge_first_parent": "c89c61abba397546c7b99fabcd33c558a9253fbb",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_governed_review.py",
+              "nodes": [
+                "ExecfindFindingTests::test_degraded_leg_whole_code"
+              ],
+              "old_blob": "4e2aa19a687e84d0b3f015a465115de65902db7f",
+              "new_blob": "71cd3ee18255e83e3c659ec15a90e310331393dc"
+            }
+          ],
+          "advisory_receipt_refreeze_base": "061a84e99d4cd1d6bc53a029438c936203caa2f8",
+          "note": "old_blob equals the authorization's base_blob and the path's blob at the merge's first parent; new_blob equals the path's blob at the merge. Appended once after the merge; never mutated."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": 5,
@@ -10658,6 +10704,60 @@
       "task_summary": "full-permission Claude and Gemini review seats inside a per-seat filesystem jail, pointer briefs and typed notices (agent-harness#1132)",
       "type": "detailed",
       "updated_at": "2026-09-29T08:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-29T12:00:00Z",
+      "file": "plans/detailed-remote-sandbox-placement-896-20260929.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-29T12:00:00Z",
+          "by": "claude-plan-detailed",
+          "transition": "committed",
+          "metadata": {
+            "issues": [
+              "Consiliency/agent-harness#896"
+            ],
+            "planning_artifact_only": true,
+            "review_status": "pending",
+            "open_decisions": [],
+            "follow_on_plans": [
+              "1b-execution-driver-lease-journal",
+              "egress-allowlist-config",
+              "self-hosted-https-remote",
+              "cloud-adapter-agent-harness#1165"
+            ],
+            "maintainer_decisions": {
+              "recorded_at": "2026-09-29",
+              "source": "Consiliency/agent-harness#1162",
+              "decisions": [
+                "RD1",
+                "RD2",
+                "RD3",
+                "RD4",
+                "RD5",
+                "RD6",
+                "CD1",
+                "CD2",
+                "CD3",
+                "CD4"
+              ]
+            }
+          }
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "remote-sandbox-placement-896",
+      "status": "committed",
+      "task_summary": "plan 1a for agent-harness#896: vendor-neutral placement seam contract (prepare/revalidate/commit/execute/release), receipt-bound placement evidence, local backend behind the seam, outcome-decided fail-closed knob; follow-ons: 1b execution driver + lease journal, egress config, self-hosted HTTPS remote, cloud adapter (agent-harness#1165)",
+      "type": "detailed",
+      "updated_at": "2026-09-30T18:00:00Z"
     }
   ],
   "schema_version": 1
