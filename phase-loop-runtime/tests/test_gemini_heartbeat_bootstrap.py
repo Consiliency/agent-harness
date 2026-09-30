@@ -1042,12 +1042,15 @@ def test_partial_admission_info_cannot_block_past_local_admission_bound(fixture_
 def test_owner_loss_through_real_broker_reclaims_namespace(fixture_cli, tmp_path):
     fixture_cli.mode.write_text("cancel")
     detached = tmp_path / "detached"
+    # The worker is its own process, so it applies fixture_cli's tmp_path bind itself.
     worker_code = f'''
 from dataclasses import replace
 from pathlib import Path
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
+view=panel._gemini_filesystem_view
+panel._gemini_filesystem_view=lambda cwd,mount_args,extra_ro=():[*view(cwd,mount_args,extra_ro),'--bind',{str(tmp_path)!r},{str(tmp_path)!r}]
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
 panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}),review_policy=panel.ReviewLandingPolicy(('gemini',),False))
 '''
