@@ -3026,12 +3026,12 @@ def test_stop_during_a_spawn_ends_killed_reaped_released_without_another_call(de
 
 
 def test_owner_death_in_its_final_statement_does_not_strand_the_baton():
-    """codex round 4: an exception landing on the owner's baton hand-back must
-    not strand the one baton (relaunch candidates could never repair that)."""
+    """codex round 4: an exception landing on the owner's baton hand-back (before
+    the put) strands the baton; the supervisor reclaims it -- exactly one."""
     client = m._Client(test_mode=True, retries=0, deadline_s=2.0)
     real_own = m._Client._own
     code = real_own.__code__
-    line = _line_of(real_own, "self.baton.put(baton); baton = None")
+    line = _line_of(real_own, "self.baton.put(token)")
     fired: list = []
 
     def local(frame, event, arg):
@@ -3054,10 +3054,51 @@ def test_owner_death_in_its_final_statement_does_not_strand_the_baton():
             client.call("parse_closeout", {"raw": OK})
             client.stop(graceful=False, timeout=3)  # the owner exits via its final statement
             assert fired, "the owner never reached its hand-back"
-            assert _wait(lambda: not client.baton.empty(), 2.0), "the baton was stranded"
-            assert client.baton.qsize() == 1  # returned exactly once
+            assert _wait(lambda: not client.baton.empty(), 2.0), "the stranded baton was never reclaimed"
+            time.sleep(2 * m._SUPERVISE_S)
+            assert client.baton.qsize() == 1  # reclaimed exactly once
+            assert any("reclaimed" in note for note in client.pending), client.pending
     finally:
         client.stop(graceful=False, timeout=2)
+
+
+
+def test_async_exception_after_baton_put_does_not_duplicate_the_token():
+    """codex round 5 (F001), as filed: an asynchronous exception delivered when
+    the hand-back's put returns must not lead to a second put (two owners)."""
+    import ctypes
+
+    client = m._Client(test_mode=True)
+    injected = threading.Event()
+    failures = []
+
+    def profile(frame, event, function):
+        if (
+            frame.f_code is m._Client._own.__code__
+            and event == "c_return"
+            and getattr(function, "__self__", None) is client.baton
+            and getattr(function, "__name__", None) == "put"
+            and not injected.is_set()
+        ):
+            injected.set()
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(threading.get_ident()), ctypes.py_object(SystemExit))
+
+    def own():
+        sys.setprofile(profile)
+        try:
+            client._own()
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(exc)
+        finally:
+            sys.setprofile(None)
+
+    with mock.patch.object(client, "_loop", return_value=True):
+        owner = threading.Thread(target=own, daemon=True)
+        owner.start()
+        owner.join(2)
+    assert injected.is_set(), "the post-put async exception was not delivered"
+    assert not owner.is_alive() and not failures
+    assert client.baton.qsize() == 1, "retrying the completed put duplicated the owner baton"
 
 
 def test_a_disposal_keeps_a_sanitized_tail_of_the_workers_stderr():
@@ -3121,6 +3162,61 @@ def test_a_worker_recovery_disposed_is_not_logged_again_as_spawn_late():
         assert len(entries) == 1, entries
     finally:
         client.stop(graceful=False, timeout=2)
+
+
+
+def test_stderr_tail_does_not_publish_a_password_value():
+    """codex round 5 (F002), as filed: a secret starting with "s" survived the
+    old ``[^\\\\s,;]`` class (inside a raw string)."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=2)
+    sentinel = "sCANARY_CREDENTIAL_VALUE"
+    peer = (
+        "import sys\n"
+        "sys.stdin.readline()\n"
+        f"sys.stderr.write('native panic: password={sentinel}\\n')\n"
+        "sys.stderr.flush()\n"
+        "raise SystemExit(3)\n"
+    )
+
+    def spawn(argv, **kwargs):
+        return _REAL_SPAWN([argv[0], "-I", "-S", "-c", peer], **kwargs)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", spawn):
+            exc = _raises(client.call, "parse_closeout", {"raw": OK})
+        assert isinstance(exc, m.BamlWorkerError)
+        assert _wait(lambda: any("stderr_tail" in e for e in client.fault_log), m._REAP_BOUND_S + 0.25)
+        tail = next(e["stderr_tail"] for e in client.fault_log if "stderr_tail" in e)
+        assert sentinel not in tail, "the new diagnostic published the password value"
+    finally:
+        client.stop(graceful=False, timeout=2)
+
+
+# Every character class a secret can start with, including the letters whose
+# regex escapes (s S d D w W b B) the old double-escaped class could swallow.
+_SECRET_STARTS = ["s", "S", "d", "D", "w", "W", "b", "B", "a", "Z", "0", "9", "\\", "-", "_", "/", "+", "=", ".", "~", "%"]
+_SECRET_FORMS = [
+    "password={v}", "PASSWORD: {v}", "api_key={v}", "api-key = {v}", 'OPENAI_API_KEY="{v}"',
+    '{{"api_key": "{v}"}}', "Authorization: Bearer {v}", "secret:{v}", "token = '{v}'", "x-auth-token={v}",
+]
+
+
+@pytest.mark.parametrize("start", _SECRET_STARTS)
+def test_redaction_removes_a_secret_whatever_it_starts_with(start):
+    value = f"{start}CANARYx7Qp2"
+    for form in _SECRET_FORMS:
+        text = "native error: " + form.format(v=value) + " trailing words"
+        out = m._sanitize_text(text)
+        assert "CANARYx7Qp2" not in out, (form, out)
+        assert "\\1" not in out and "trailing words" in out, (form, out)
+
+
+def test_redaction_removes_known_secret_values_even_without_a_key(monkeypatch):
+    """Exact values first: a secret from this process's environment is removed
+    wherever it appears; the patterns are the backup."""
+    monkeypatch.setenv("SOME_SERVICE_TOKEN", "sExactKnownValue123")
+    assert "sExactKnownValue123" not in m._sanitize_text("worker said: sExactKnownValue123 (while starting)")
+    assert m._sanitize_text("the token was invalid") == "the token was invalid"  # prose is left alone
 
 
 def test_owner_launch_tickets_do_not_grow_without_bound():

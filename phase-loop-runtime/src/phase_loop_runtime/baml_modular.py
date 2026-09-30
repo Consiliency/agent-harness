@@ -17,6 +17,7 @@ import sysconfig
 import tempfile
 import threading
 import time
+import weakref
 import _thread
 from dataclasses import dataclass
 from functools import lru_cache
@@ -599,8 +600,39 @@ def _sanitize_error(exc: BaseException) -> str:
     return _sanitize_text(message) or exc.__class__.__name__
 
 
+# Secret redaction for every message and diagnostic this module publishes.
+# (The previous pattern was ``[^\\s,;]*`` inside a raw string: a class that
+# excluded a backslash and the LETTER s, so a secret starting with "s" survived,
+# and its ``\\1`` replacement was emitted literally -- codex round 5.)
+_SECRET_KV_RE = re.compile(
+    r"(?i)(api[_-]?key|authorization|token|secret|password|passwd|credential)[\w-]*"
+    r"(?P<value>[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?[^\s,;\"']*|\s+bearer\s+[^\s,;\"']*)"
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;\"']+")
+_TOKEN_SHAPES_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})"
+)
+_SECRET_ENV_NAME_RE = re.compile(r"(?i)(key|token|secret|passw|credential|auth)")
+
+
+def _known_secret_values() -> list[str]:
+    """Exact values to redact first: this process's environment variables whose
+    names look secret (the patterns below are the backup)."""
+    values = {value for name, value in os.environ.items() if _SECRET_ENV_NAME_RE.search(name) and len(value) >= 8}
+    return sorted(values, key=len, reverse=True)
+
+
+def _redact_secrets(text: str) -> str:
+    for value in _known_secret_values():
+        text = text.replace(value, "<redacted>")
+    text = _SECRET_KV_RE.sub(lambda m: m.group(1) + "=<redacted>", text)  # a key WITH a value only
+    text = _BEARER_RE.sub("Bearer <redacted>", text)
+    return _TOKEN_SHAPES_RE.sub("<redacted>", text)
+
+
 def _sanitize_text(message: str) -> str:
-    message = re.sub(r"(?i)(api[_-]?key|authorization|token|secret|password)[^\\s,;]*", r"\\1=<redacted>", message)
+    message = _redact_secrets(message)
     message = " ".join(message.split())
     if len(message) > 500:
         message = message[:497] + "..."
@@ -749,6 +781,12 @@ class _Spawn:
         self.files = files
         self.fp = fp
         self.requested_at = time.monotonic()
+
+
+class _Baton:
+    """The single owner baton (see ``_Client.__init__``)."""
+
+    __slots__ = ("__weakref__",)
 
 
 class _Gen:
@@ -955,7 +993,16 @@ class _Client:
             raise ValueError("no_pdeathsig requires test_mode")
         self.events: queue.SimpleQueue = queue.SimpleQueue()
         self.baton: queue.SimpleQueue = queue.SimpleQueue()
-        self.baton.put(object())
+        # The one baton is a weakly referenceable token.  It is referenced only
+        # by this queue or by the thread holding it, so a token nobody
+        # references any more was provably stranded (its holder died before
+        # putting it back) and is reclaimed by the supervisor (``_reclaim_baton``).
+        # A hand-back is never retried, so the failure direction is a strand,
+        # never a duplicate (codex round 5).
+        token = _Baton()
+        self.baton_ref = weakref.ref(token)
+        self.baton.put(token)
+        del token
         self.spawns: queue.SimpleQueue = queue.SimpleQueue()
         self.snapshot: tuple[dict[str, str], str] | None = None
         self.fault_log: list[dict[str, Any]] = []
@@ -1152,18 +1199,17 @@ class _Client:
                 self.recover = not clean
                 self.owner_running = False
             finally:
-                # The baton goes back exactly once, whatever lands here (codex
-                # round 4: a stranded baton cannot be repaired by relaunch
-                # candidates).  The put and the clearing of the local share one
-                # line on purpose: no line event, and no point where CPython
-                # delivers an asynchronous exception, falls between them.
-                while True:
-                    try:
-                        self.baton.put(baton); baton = None  # noqa: E702
-                        break
-                    except BaseException:  # noqa: BLE001 - retried until the baton is back
-                        if baton is None:
-                            break
+                # One hand-back attempt, never retried: an exception can land
+                # after the put has taken effect (CALL checks for asynchronous
+                # exceptions on return), and a retry would then DUPLICATE the
+                # baton (two owners).  If it lands before the put instead, the
+                # baton is stranded, and ``_reclaim_baton`` recovers it once this
+                # frame (the last reference to it) is gone.
+                token, baton = baton, None
+                try:
+                    self.baton.put(token)
+                except BaseException:  # noqa: BLE001 - strand, never duplicate
+                    pass
 
     def _spawn_pending(self) -> bool:
         """True while a handed-over spawn can still publish a worker: its result
@@ -1291,7 +1337,7 @@ class _Client:
         supervisor = self.supervisor
         if supervisor is not None and not supervisor.is_alive() and (not self.closed or self._spawn_pending() or self.generations):
             try:
-                self._ensure_supervisor()  # a dead backstop is recreated here, not by the next request
+                self._ensure_supervisor()  # a dead backstop is recreated by this (the next) owner pass
             except Exception:  # noqa: BLE001 - retried on the next pass
                 pass
 
@@ -1331,6 +1377,17 @@ class _Client:
         self.spawns_outstanding += 1  # counted before it can exist
         self.spawns.put(spawn)
 
+    def _reclaim_baton(self) -> None:
+        """Replace a stranded baton: one that no queue and no thread references
+        any more.  Only the supervisor calls this, so there is exactly one
+        reclaimer, and a live token (queued or held) is never duplicated."""
+        if self.baton_ref() is not None:
+            return
+        token = _Baton()
+        self.baton_ref = weakref.ref(token)
+        self.baton.put(token)
+        self.pending.append("BAML worker owner baton was stranded by an interrupted hand-back and was reclaimed")
+
     def _ensure_supervisor(self) -> None:
         supervisor = self.supervisor
         if supervisor is not None and supervisor.is_alive():
@@ -1348,6 +1405,7 @@ class _Client:
                 time.sleep(_SUPERVISE_S)
                 if os.getpid() != self.owner_pid:
                     return
+                self._reclaim_baton()
                 if self.owner_running:
                     continue
                 pending = (
@@ -1361,7 +1419,7 @@ class _Client:
                         pass
                 elif self.closed:
                     return  # closed, and nothing registered or able to publish
-        except BaseException:  # noqa: BLE001 - a dead supervisor is recreated by the owner
+        except BaseException:  # noqa: BLE001 - a dead supervisor is recreated by the next owner pass
             return
 
     def _ensure_spawner(self) -> None:
