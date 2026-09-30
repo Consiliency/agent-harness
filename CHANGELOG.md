@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
+
+- `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and
+  every writer re-serialized all rows with sorted keys. Rows on main are in neither
+  order, so appending one entry rewrote the whole file (+7743/-7725).
+- `append_entry`, `update_lifecycle` and `register_historical_plans` now edit the parsed
+  document in place and write it back in file order. A new slug goes at the end, and
+  every row that was not changed keeps its bytes. The issue's repro now adds 18 lines
+  and removes none.
+- Replacing an existing slug keeps that row's position and key order, including nested
+  key order for values that did not change. Extension keys that the replacement omits,
+  such as `plan_authority_history`, are carried forward instead of being dropped.
+  `update_lifecycle` changes only `status`, `updated_at` and `lifecycle`.
+- A manifest file that exists but whose JSON is not an object (`null`, a list, a
+  string, a number) is still rejected with `manifest must be an object`. It is never
+  treated as absent.
+- Output stays ASCII-escaped, as before. A hand-edited row holding a raw non-ASCII
+  character is `\u`-escaped on the next write.
+- `plan_manifest.py` is part of the agy-qualified runtime source, so the next release
+  cut's agy qualification covers this change.
+
 ### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175)
 
 - A sealed prompt of 96 KiB or less now goes to agy as one user event
