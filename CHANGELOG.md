@@ -24,6 +24,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   file, so this needs no agy requalification of its own. The next release cut's full
   qualification covers it.
 
+### Register `claude-sonnet-5-5` as an explicit advisor-board seat (agent-harness#1178)
+
+- `claude-sonnet-5-5` (Claude Sonnet 5.5) is a registered model on the `claude` lane at effort
+  `max`, answering to the `fable` review-seat alias, so a governed policy requiring `fable`
+  accepts a board that seats it. It does not answer to `gemini`.
+- Registration only: no shipped default moves. `DEFAULT_LEG_MODELS["claude"]` and the HARDEN
+  claude route stay on `claude-opus-5-5`; no preset seats it; the capability-registry tier
+  constants are unchanged (`claude-sonnet-5` stays the regular tier); the planner, implementer
+  and executor defaults and the president ladder are unchanged.
+- No user-config route selects it for the production review boards yet (agent-harness#1171).
+  It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
+- No agy route-core file changes, so this needs no agy requalification of its own.
+
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
