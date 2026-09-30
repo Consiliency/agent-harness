@@ -28,6 +28,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     `/tmp/claude-<uid>` alone reached 6 GB of a 15 GB RAM `/tmp`.
   - Values you set are never overridden; set either variable to opt out. The brokered
     route's allowlist still drops ambient values.
+  - Not applied to the brokered Gemini heartbeat seat (its sandbox has its own private
+    `/tmp`) or to agy qualification's env.
 - **Caps and floor.**
   - Filesystem size comes from `shutil.disk_usage`, so it now works on Windows.
   - The retention ceiling is `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging

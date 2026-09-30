@@ -457,7 +457,7 @@ def _child_envs(base):
 
     return {
         "leg": panel_invoker._subscription_env(dict(base)),
-        "brokered": panel_invoker._broker_subscription_env(dict(base)),
+        "brokered": panel_invoker._broker_leg_env(dict(base), "claude"),
         "executor": harness_env_signatures.child_executor_env(dict(base)),
     }
 
@@ -509,13 +509,44 @@ class TestChildCliScratch:
                 "CLAUDE_CODE_TMPDIR": "/ambient/claude", "SOME_TOKEN": "x"}
 
         monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "ext4", raising=False)
-        on_disk = panel_invoker._broker_subscription_env(dict(base))
+        on_disk = panel_invoker._broker_leg_env(dict(base), "claude")
         assert set(on_disk) == {"PATH", "HOME"}, on_disk
 
         _slash_tmp_is_ram(monkeypatch)
-        on_ram = panel_invoker._broker_subscription_env(dict(base))
+        on_ram = panel_invoker._broker_leg_env(dict(base), "codex")
         assert set(on_ram) == {"PATH", "HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR"}, on_ram
         assert on_ram["TMPDIR"] == on_ram["CLAUDE_CODE_TMPDIR"] == str(cache / "phase-loop" / "tmp")
+
+        # Not the Gemini heartbeat seat (its sandbox shows a read-only view with its own
+        # /tmp), and not the shared allowlist agy qualification uses: both stay exactly
+        # the allowlist.
+        assert set(panel_invoker._broker_leg_env(dict(base), "gemini")) == {"PATH", "HOME"}
+        assert set(panel_invoker._broker_subscription_env(dict(base))) == {"PATH", "HOME"}
+
+    def test_the_brokered_exec_route_fills_by_leg(self, tmp_path, monkeypatch):
+        """Intercept `_exec_leg`'s brokered route at its auth preflight, per leg."""
+        from phase_loop_runtime import panel_invoker
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        seen: dict[str, dict] = {}
+
+        def _auth(leg, env):
+            seen[leg] = dict(env)
+            return False, "auth_failure"
+
+        monkeypatch.setattr(panel_invoker, "_leg_auth_ok", _auth)
+        review = tmp_path / "review"
+        review.mkdir()
+        (review / "review-bundle.md").write_text("x", encoding="utf-8")
+        for leg in ("codex", "gemini"):
+            panel_invoker._exec_leg(
+                leg, review, tmp_path / "out", 60, "x", "review", None, None,
+                {"PATH": "/usr/bin", "HOME": str(tmp_path)}, broker_prompt="p",
+            )
+        assert seen["codex"].get("TMPDIR") == str(cache / "phase-loop" / "tmp"), seen
+        assert "TMPDIR" not in seen["gemini"] and "CLAUDE_CODE_TMPDIR" not in seen["gemini"], seen
 
     def test_no_disk_backed_dir_leaves_the_env_alone_and_says_so_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs", raising=False)

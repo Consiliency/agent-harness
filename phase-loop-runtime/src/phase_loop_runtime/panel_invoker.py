@@ -4541,12 +4541,22 @@ def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[
     allowed = {
         "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
     }
-    # The ambient TMPDIR stays filtered out. What may be added back is only the runtime's
-    # OWN disk-backed per-user dir, and only when the child's temp dir is RAM-backed
-    # (agent-harness#1147) -- a path this runtime created, never a caller-supplied value.
-    return _sandbox_policy.fill_child_tmp_env(
-        {key: value for key, value in env.items() if key in allowed}
-    )
+    return {key: value for key, value in env.items() if key in allowed}
+
+
+def _broker_leg_env(base_env: Mapping[str, str] | None, leg: str) -> dict[str, str]:
+    """A brokered LEG's env: the broker allowlist, plus CLI scratch moved off RAM.
+
+    The ambient TMPDIR stays filtered out. What may be added back is only the runtime's
+    OWN private disk-backed dir, and only when the child's temp dir is RAM-backed
+    (agent-harness#1147) -- a path this runtime created, never a caller-supplied value.
+    Kept out of ``_broker_subscription_env`` itself so agy qualification, which shares
+    that allowlist, keeps its frozen env. Not for the Gemini heartbeat seat: its sandbox
+    shows a read-only allowlisted view with its own private ``/tmp``, where a host
+    directory would not exist.
+    """
+    env = _broker_subscription_env(base_env)
+    return env if leg == "gemini" else _sandbox_policy.fill_child_tmp_env(env)
 
 
 def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None, stream_dir=None):
@@ -7382,7 +7392,7 @@ def _exec_claude_tui_leg(
     brokered = broker_prompt is not None
     if brokered and not broker_prompt:
         return "UNAVAILABLE", "brokered route rejects empty prompt"
-    env = _broker_subscription_env(env) if brokered else _subscription_env(env)
+    env = _broker_leg_env(env, "claude") if brokered else _subscription_env(env)
     if brokered and (research_seat is not None or agy_capture is not None):
         return "UNAVAILABLE", "brokered route rejects capture and research transports"
     if research_seat is not None:
@@ -7863,7 +7873,7 @@ def _exec_leg(
             return 1, "", _HarnessCode("review_operation_cancelled")
     if brokered and not broker_prompt:
         return 1, "", _HarnessCode("brokered route rejects empty prompt")
-    env = _broker_subscription_env(env) if brokered else (
+    env = _broker_leg_env(env, leg) if brokered else (
         _subscription_env() if env is None else dict(env)
     )
     if not brokered and agy_capture is None:

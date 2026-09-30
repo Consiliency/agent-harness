@@ -456,7 +456,7 @@ class PresidentInvoke:
                 prompt=prompt,
                 output_file=out_dir / "president-claude.txt",
                 timeout_s=timeout_s,
-                env=panel_invoker._broker_subscription_env(self.base_env),
+                env=panel_invoker._broker_leg_env(self.base_env, "claude"),
                 mode="president",
                 backstop_s=backstop_s,
                 stall_threshold_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),

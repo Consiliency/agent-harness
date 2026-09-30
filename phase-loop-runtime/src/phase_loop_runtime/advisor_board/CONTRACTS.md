@@ -380,7 +380,10 @@ the caller passes a PATH and the runtime reads it.
     `phase-loop-<uid>/tmp` under the temp dir.
   - **Where it applies.** Board legs and advisory seats with a caller-built env
     (`_subscription_env`, and the `_exec_leg` explicit-env route), brokered legs and the
-    president (`_broker_subscription_env`), and executors (`child_executor_env`).
+    Claude president (`_broker_leg_env`), and executors (`child_executor_env`). It is not
+    applied to the brokered Gemini heartbeat seat, whose sandbox shows a read-only view with
+    its own private `/tmp`, nor to the shared `_broker_subscription_env` allowlist that agy
+    qualification uses.
   - **Overrides.** A value the caller set is never overridden. The brokered allowlist
     still drops ambient values, so there only the runtime's own dir can appear.
 - **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical

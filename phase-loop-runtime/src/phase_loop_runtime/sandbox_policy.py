@@ -41,7 +41,8 @@ Without an override the stage goes to the platform's per-user cache dir (``$XDG_
 or ``~/.cache`` on Linux, ``~/Library/Caches`` on macOS, ``%LOCALAPPDATA%`` on Windows) under
 ``phase-loop/sandboxes``, then to the system temp dir if that is not RAM-backed.
 
-Spawned agent CLIs (board legs, advisory seats, the president, executors) get ``TMPDIR`` and
+Spawned agent CLIs (board legs, advisory seats, the Claude president, executors; not the
+Gemini heartbeat seat, whose sandbox has its own private ``/tmp``) get ``TMPDIR`` and
 ``CLAUDE_CODE_TMPDIR`` pointed at a private (0700) disk-backed per-user dir with room --
 ``phase-loop/tmp`` in the cache dir -- for each variable that is unset and whose own default
 destination is RAM-backed (:func:`fill_child_tmp_env`). Setting a variable yourself opts
