@@ -10760,7 +10760,7 @@
       "updated_at": "2026-09-30T18:00:00Z"
     },
     {
-      "acceptance_criteria_count": 6,
+      "acceptance_criteria_count": null,
       "created_at": "2026-09-30T07:00:00Z",
       "file": "plans/phase-plan-v10-RATIFY.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/latest.md",
@@ -10790,7 +10790,7 @@
       },
       "slug": "v10-RATIFY",
       "status": "committed",
-      "task_summary": "Planning-only RATIFY draft: advisory receipt resolution, typed ruling classes, ancestor-frozen ruling ledger, additive human tier and four-harness skill instructions. Review and execution admission remain pending.",
+      "task_summary": null,
       "type": "phase",
       "updated_at": "2026-09-30T07:00:00Z"
     }
