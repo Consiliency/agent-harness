@@ -689,8 +689,11 @@ assistant record by uuid, a user record by uuid and content), so a re-journaled
 record or rewritten metadata is neither progress nor a new position in the turn.
 `provider_terminal_state` records the one case that ends a seat: after the
 current request, the last record is an `isApiErrorMessage` give-up and no
-completed answer precedes it. The review file, the broker's final answer and a
-conforming transcript answer are checked first and always win. That leg ends at
+completed answer precedes it (on the president route, whose parser fails closed
+on any error record in the turn, a completed answer does not hold the leg open).
+An `isApiErrorMessage` record is never answer text: the answer parser drops it
+on the same predicate. The review file and the broker's final answer are
+checked first and always win. That leg ends at
 once as DEGRADED with detail `claude_seat_output_budget_exhausted`
 (`error: max_output_tokens`), `claude_seat_usage_limited` (`error: rate_limit`
 with `quotaLimits.status: rejected`, a subscription cap; followed by

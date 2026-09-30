@@ -5314,7 +5314,7 @@ def _claude_api_error_record(payload: dict, message: dict) -> bool:
         _set(payload.get("isApiErrorMessage")) or _set(message.get("isApiErrorMessage")))
 
 
-def _claude_transcript_state(path: Path) -> tuple[int, str | None]:
+def _claude_transcript_state(path: Path, *, require_terminal: bool = False) -> tuple[int, str | None]:
     """One read of an exact Claude transcript: ``(record_versions, gave_up)``.
 
     Claude Code re-journals records: a replay repeats an earlier record under its uuid, often
@@ -5335,7 +5335,11 @@ def _claude_transcript_state(path: Path) -> tuple[int, str | None]:
         tool_result), the last record in identity order is an ``isApiErrorMessage``
         assistant record;
       * no completed answer (a non-error assistant record stopped with ``end_turn`` or
-        ``stop_sequence``) exists after that request. A give-up never outranks a review;
+        ``stop_sequence``) exists after that request. A give-up never outranks a review: the
+        answer parser drops error records on the same predicate, so it returns that answer.
+        With ``require_terminal`` (the president route) this rule is skipped: that parser
+        fails closed on any error record in the turn, so no answer there can be accepted and
+        the give-up ends the leg instead of leaving it waiting forever;
       * the file's last line parses. A writer that is mid-append means waiting for the next
         read.
     A ``max_tokens`` stop alone is never terminal, because the CLI continues it
@@ -5385,7 +5389,7 @@ def _claude_transcript_state(path: Path) -> tuple[int, str | None]:
     live = [latest[identity] for identity in order]
     requests = [i for i, (payload, message) in enumerate(live) if _genuine_request(payload, message)]
     turn = live[requests[-1] + 1:] if requests else []
-    if not turn or any(
+    if not turn or not require_terminal and any(
             message.get("role") == "assistant" and not _claude_api_error_record(payload, message)
             and message.get("stop_reason") in ("end_turn", "stop_sequence")
             for payload, message in turn):
@@ -5439,6 +5443,11 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     blocks stay null), carry a tool call, be a ``<synthetic>`` model record, or carry
     ``isApiErrorMessage`` on the message or the record.
 
+    Without ``require_terminal``, an ``isApiErrorMessage`` record (``_claude_api_error_record``,
+    the predicate the give-up detector ``_claude_transcript_state`` uses) is never answer text:
+    it is dropped before any other rule, so a stray error journaled after a completed review
+    cannot replace that review (agent-harness#1194 r2).
+
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
     """
@@ -5466,6 +5475,8 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
                 return ""
             if message.get("stop_reason") is not None and not isinstance(message.get("stop_reason"), str):
                 return ""
+            if not require_terminal and _claude_api_error_record(payload, message):
+                continue
             records.append((payload, message))
 
     def _uuid(payload: dict) -> str | None:
@@ -6872,7 +6883,8 @@ def _run_claude_tui_session(
                 # scan keeps byte growth: it may see a neighbouring session.
                 if broker_transcript_path is not None:
                     transcript_activity, gave_up = _broker_read(
-                        "state", lambda: _claude_transcript_state(broker_transcript_path))
+                        "state", lambda: _claude_transcript_state(
+                            broker_transcript_path, require_terminal=mode == "president"))
                 else:
                     transcript_activity, gave_up = _transcript_activity(), None
                 # #188: the session transcript growing (tool calls, streamed
@@ -6900,9 +6912,11 @@ def _run_claude_tui_session(
                 # agent-harness#1176: the provider journaled that it gave up on this turn and
                 # now idles; nothing more can arrive, so end the leg now with the typed reason
                 # instead of waiting (forever, under heartbeat_only). Only a leg with nothing
-                # acceptable ends this way: the review file, the broker's final answer and a
-                # conforming transcript answer are all checked first and all win.
-                if gave_up is not None and not transcript_salvage:
+                # accepted ends this way: the review file and the broker's final answer (the
+                # route's own acceptance rule; error records are never answer text) are
+                # checked first and win. A president's non-terminal transcript text is not an
+                # accepted ruling, so it does not hold the leg open.
+                if gave_up is not None:
                     if review_monitor is not None:
                         review_monitor.record["provider_terminal_state"] = _claude_gave_up_code(gave_up)
                         review_monitor.observe(

@@ -346,6 +346,8 @@ def test_grok_a_session_never_turns_a_completed_answer_into_a_degraded_give_up(t
         release.touch()
     assert log not in ("claude_seat_output_budget_exhausted", "claude_seat_rate_limited",
                        "claude_seat_provider_api_error"), log
+    # r2 (Grok, Gemini seat): not only no give-up -- the completed review itself is returned.
+    assert (rc, log, text) == (0, "claude_tui_broker_final_assistant", "Review complete\nAGREE")
 
 
 def test_an_accepted_review_file_wins_over_a_journaled_give_up(tmp_path, monkeypatch):
@@ -663,3 +665,81 @@ def test_an_unchanged_transcript_is_parsed_once_not_every_tick(tmp_path, monkeyp
     assert ticks > 20
     # while the file is absent, once it is written, and at most one more read across a write
     assert calls["final"] <= 3 and calls["state"] <= 3, calls
+
+
+# --- round 2 (Grok and Gemini seats): an API-error record is never answer text ------------------
+
+def _answer(uuid: str, mid: str, text: str) -> dict:
+    return {"type": "assistant", "uuid": uuid, "message": {
+        "id": mid, "role": "assistant", "model": "claude-sonnet-5", "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": text}]}}
+
+
+def test_r2_the_answer_parser_skips_a_stray_error_after_a_completed_review(tmp_path):
+    """The seats' direct-call repro: before r2 each returned the stray 'API Error: ...' text."""
+    path = tmp_path / "t.jsonl"
+    for kind in ("max_output_tokens", "rate_limit", "server_error"):
+        write(path, [REQUEST, ANSWER, api_error(kind)])
+        assert panel._final_assistant_text_from_jsonl(path) == "Review complete\nAGREE"
+    second = {"type": "user", "uuid": "u-2", "message": {"role": "user", "content": "Second request."}}
+    write(path, [REQUEST, _answer("a-1", "m-1", "First\nAGREE"), second,
+                 _answer("a-2", "m-2", "Second\nDISAGREE"), api_error("server_error")])
+    assert panel._final_assistant_text_from_jsonl(path) == "Second\nDISAGREE"
+    assert panel._claude_transcript_provider_gave_up(path) is None
+    # an error with no answer before it is still no answer, and still a give-up
+    write(path, [REQUEST, capped(1), api_error("max_output_tokens")])
+    assert panel._final_assistant_text_from_jsonl(path) == ""
+    assert panel._claude_transcript_provider_gave_up(path) == "claude_seat_output_budget_exhausted"
+
+
+@pytest.mark.parametrize("heartbeat_only", [True, False])
+def test_r2_session_returns_the_completed_review_not_the_stray_error(tmp_path, monkeypatch, heartbeat_only):
+    """The seats' full-session repro. Before r2: bounded ended claude_tui_stalled with
+    text='API Error: max_output_tokens'; heartbeat_only never resolved."""
+    _fast_tui(monkeypatch)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    monitor = (panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                    stall_notice_s=3600) if heartbeat_only else None)
+    guard = threading.Timer(15, lambda: (release.touch(), monitor and monitor.cancel.set()))
+    guard.start()
+    try:
+        rc, text, log, _tail = panel._run_claude_tui_session(
+            command=_provider(transcript, [REQUEST, ANSWER, api_error("max_output_tokens")], release),
+            cwd=tmp_path, prompt="input", output_file=tmp_path / "absent", timeout_s=600,
+            backstop_s=600, stall_threshold_s=1.5, env=os.environ, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert (rc, log, text) == (0, "claude_tui_broker_final_assistant", "Review complete\nAGREE")
+
+
+def test_r2_president_route_fails_closed_then_gives_up_instead_of_hanging(tmp_path, monkeypatch):
+    """The president parser rejects any turn holding an error record (ah#1016/#1017), so no
+    answer there can be accepted; the give-up must end that leg rather than leave it waiting."""
+    ruling = _answer("a-r", "m-r", "No blocking findings.\nFORCING DECISION: APPROVE")
+    records = [REQUEST, ruling, api_error("server_error")]
+    path = write(tmp_path / "t.jsonl", records)
+    assert panel._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
+    assert panel._claude_transcript_state(path, require_terminal=True)[1] == "claude_seat_provider_api_error"
+    assert panel._claude_transcript_state(path)[1] is None
+    _fast_tui(monkeypatch)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                   stall_notice_s=3600)
+    guard = threading.Timer(15, lambda: (release.touch(), monitor.cancel.set()))
+    guard.start()
+    try:
+        rc, text, log, _tail = panel._run_claude_tui_session(
+            command=_provider(transcript, records, release), cwd=tmp_path, prompt="input",
+            output_file=tmp_path / "absent", timeout_s=600, backstop_s=600, stall_threshold_s=600,
+            env=os.environ, mode="president", review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert (log, text) == ("claude_seat_provider_api_error", "") and rc != 0
