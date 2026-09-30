@@ -1,6 +1,6 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
-  "head": "5a083e1f8c38dbdb0bfdfe8c70bd0a450ef2662f",
+  "head": "0dcb3fe686e3e2acb4186793804003c2c97784ad",
   "issue": "agent-harness#1132",
   "receipts": [
     {
@@ -17,11 +17,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m41 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m41 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m, \u001b[32m39 passed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m, \u001b[32m39 passed\u001b[0m\u001b[31m in 1.16s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -39,11 +39,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.18s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.19s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.14s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.23s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -60,11 +60,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.14s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.18s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -81,11 +81,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.06s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -103,11 +103,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.19s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.14s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.23s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.22s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -124,11 +124,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.04s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.08s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -149,7 +149,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.22s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -166,7 +166,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.04s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.07s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -187,11 +187,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.12s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.11s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.17s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -208,11 +208,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.07s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.04s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.20s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -229,11 +229,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.13s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.18s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.21s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.25s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -250,7 +250,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -271,11 +271,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.08s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.14s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -292,11 +292,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.10s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -317,7 +317,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.16s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -334,11 +334,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.04s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.13s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -355,11 +355,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.00s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.04s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -380,7 +380,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -398,11 +398,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 2.61s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 2.66s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 5.51s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 5.29s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -419,11 +419,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.35s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.31s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.41s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.36s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -440,11 +440,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.95s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.08s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.02s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -461,11 +461,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.25s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.23s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 2.08s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 2.17s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -482,11 +482,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.98s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.04s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.02s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -503,11 +503,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.23s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -524,11 +524,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 6.35s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 6.26s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.26s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.22s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -545,11 +545,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.08s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.22s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -566,11 +566,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.81s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.85s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.90s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.85s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -587,11 +587,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.83s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.77s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.88s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.92s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -608,7 +608,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.89s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.83s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -629,11 +629,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.82s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.86s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.98s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.90s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -650,11 +650,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 6.93s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 6.83s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 6.52s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 6.47s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -671,11 +671,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.98s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.04s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.05s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -692,7 +692,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.96s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -713,11 +713,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.04s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.95s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.03s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -737,11 +737,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m4 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.36s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m\u001b[31m in 1.30s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -758,11 +758,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.14s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.00s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.06s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -779,11 +779,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.15s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.18s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.09s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -800,11 +800,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.91s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.83s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 4.12s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 4.15s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -821,11 +821,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.07s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -842,11 +842,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.82s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.83s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.91s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.99s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -863,11 +863,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.81s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.84s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.89s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.91s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -884,11 +884,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.79s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.89s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.87s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.94s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -905,11 +905,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.70s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 3.68s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.82s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 3.77s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -926,11 +926,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.44s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.46s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 2.62s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 2.52s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -947,11 +947,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.08s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -968,7 +968,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.13s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
@@ -989,11 +989,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.01s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.07s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1010,7 +1010,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 0.99s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": "timeout",
@@ -1031,11 +1031,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.06s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.34s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.32s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1052,11 +1052,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 1.02s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m2 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1073,11 +1073,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.00s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.08s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1094,18 +1094,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.10s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.15s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.10s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
     {
       "id": "Q-mount-check-disabled",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py",
-      "file_sha256": "139d2e579e982d34e535057064b8c215f03956a801bf0edf5f0c1358724152e8",
+      "file_sha256": "830a6b3553e86aa161e5e120a6a74fa4bf95ad7b773c0b75ff44a66485b613df",
       "mutation": {
         "old": "                          if (m[1], m[2]) in protected_ids | protected_file_ids | ancestors]",
         "new": "                          if False]"
@@ -1115,11 +1115,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 9.25s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 9.04s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 9.20s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 9.25s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1136,11 +1136,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.05s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.03s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.11s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 1.12s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1157,11 +1157,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m40 passed\u001b[0m\u001b[32m in 1.19s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m40 passed\u001b[0m\u001b[32m in 1.09s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m40 failed\u001b[0m\u001b[31m in 1.61s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m40 failed\u001b[0m\u001b[31m in 1.51s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     },
@@ -1178,11 +1178,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.51s\u001b[0m\u001b[0m"
+        "summary": "\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.69s\u001b[0m\u001b[0m"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 2.53s\u001b[0m\u001b[0m"
+        "summary": "\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 2.66s\u001b[0m\u001b[0m"
       },
       "result": "red_as_required"
     }
