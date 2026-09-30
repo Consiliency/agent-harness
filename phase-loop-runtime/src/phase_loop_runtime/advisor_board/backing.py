@@ -857,6 +857,22 @@ class ReviewIsolationAuthorization:
     staged_tree_sha256: str | None = None
 
 
+@dataclass(frozen=True)
+class FalsifierIsolationAuthorization:
+    """Single-use authority to run one attached test against a reviewed commit."""
+
+    operation: str
+    reviewed_sha: str
+    canonical_repo_sha256: str
+    child_credentialless: bool
+    child_network_egress: bool
+    live_tree_exposed: bool
+    issued_monotonic_ns: int
+    _seal: object
+    routes: tuple[tuple[str, str], ...] = ()
+    monitoring_policy: str = "bounded"
+
+
 def _staged_tree_digest(canonical_repo_authority: Path | str | None) -> str | None:
     """Digest of the reviewed tree a seat will be allowed to read.
 
@@ -903,6 +919,7 @@ def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=3,
+            env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
         ).strip()
     except (OSError, subprocess.SubprocessError):
         raise ValueError("HARDEN review has no canonical repository authority") from None
@@ -1203,6 +1220,83 @@ def close_review_isolation_authorization(
         return
     try:
         lease = _lease_for(authorization)
+    except ValueError:
+        return
+    with lease.lock:
+        lease.active = False
+        lease.closed = True
+        lease.cancel_event.set()
+
+
+def prepare_falsifier_isolation_authorization(
+    *, repo: Path, reviewed_sha: str,
+) -> FalsifierIsolationAuthorization:
+    """Mint one credentialless, no-egress staged-test operation."""
+    if platform.system() != "Linux" or len(reviewed_sha) != 40 or any(
+        character not in "0123456789abcdef" for character in reviewed_sha
+    ):
+        raise ValueError("invalid falsifier repository or reviewed SHA")
+    authorization = FalsifierIsolationAuthorization(
+        operation="public_board_falsifier.v1",
+        reviewed_sha=reviewed_sha,
+        canonical_repo_sha256=_canonical_repo_digest(repo),
+        child_credentialless=True,
+        child_network_egress=False,
+        live_tree_exposed=False,
+        issued_monotonic_ns=time.monotonic_ns(),
+        _seal=_AUTHORIZATION_SEAL,
+    )
+    _remember_lease(authorization)  # type: ignore[arg-type]
+    return authorization
+
+
+def _falsifier_authorization_lease(
+    authorization: FalsifierIsolationAuthorization | None,
+) -> _ReviewInvocationLease:
+    if (
+        not isinstance(authorization, FalsifierIsolationAuthorization)
+        or authorization._seal is not _AUTHORIZATION_SEAL
+        or authorization.operation != "public_board_falsifier.v1"
+        or not authorization.child_credentialless
+        or authorization.child_network_egress
+        or authorization.live_tree_exposed
+    ):
+        raise ValueError("missing, forged, or mismatched falsifier authorization")
+    return _lease_for(authorization)  # type: ignore[arg-type]
+
+
+def revalidate_falsifier_isolation_authorization(
+    authorization: FalsifierIsolationAuthorization | None, *, repo: Path,
+) -> None:
+    lease = _falsifier_authorization_lease(authorization)
+    if authorization.canonical_repo_sha256 != _canonical_repo_digest(repo):
+        raise ValueError("falsifier authorization repository drifted")
+    with lease.lock:
+        if lease.closed or (
+            not lease.active
+            and time.monotonic_ns() - lease.prepared_monotonic_ns > _PRE_ACTIVATION_FRESHNESS_NS
+        ):
+            raise ValueError("falsifier authorization is closed or expired")
+
+
+def activate_falsifier_isolation_authorization(
+    authorization: FalsifierIsolationAuthorization, *, repo: Path,
+) -> None:
+    revalidate_falsifier_isolation_authorization(authorization, repo=repo)
+    lease = _lease_for(authorization)  # type: ignore[arg-type]
+    with lease.lock:
+        if lease.closed or lease.active:
+            raise ValueError("falsifier authorization already consumed")
+        lease.active = True
+
+
+def close_falsifier_isolation_authorization(
+    authorization: FalsifierIsolationAuthorization | None,
+) -> None:
+    if not isinstance(authorization, FalsifierIsolationAuthorization):
+        return
+    try:
+        lease = _lease_for(authorization)  # type: ignore[arg-type]
     except ValueError:
         return
     with lease.lock:
@@ -1667,10 +1761,15 @@ __all__ = [
     "harden_subscription_model",
     "harden_subscription_review_board",
     "ReviewIsolationAuthorization",
+    "FalsifierIsolationAuthorization",
     "ReviewCompositionAuthorization",
     "ReviewLegAuthorization",
     "ParentUnixBroker",
     "prepare_review_isolation_authorization",
+    "prepare_falsifier_isolation_authorization",
+    "revalidate_falsifier_isolation_authorization",
+    "activate_falsifier_isolation_authorization",
+    "close_falsifier_isolation_authorization",
     "prepare_review_composition_authorization",
     "current_review_composition_authorization",
     "clear_review_composition_authorization",
