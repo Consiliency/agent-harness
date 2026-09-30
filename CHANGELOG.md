@@ -37,6 +37,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
 - No agy route-core file changes, so this needs no agy requalification of its own.
 
+### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139)
+
+- `phase-loop-closeout-audit` now grades the files inside a collapsed ignored directory
+  (`!! .dev-skills/`, `!! dist/`) instead of blocking on the directory entry. The
+  `/.dev-skills/` entry written by `phase-loop init` previously made every harness handoff
+  `unknown_ignored`.
+- Harness handoffs are `runner_owned` only when the file carries the workflow-skill handoff
+  contract: the required frontmatter keys, and `from` equal to a shipped skill's
+  directory. This replaces the agent-harness#1084 rule, which trusted any path under
+  `.dev-skills/handoffs/`.
+- New `declared_output` bucket. A project commits `.phase-loop-generated-outputs.json`,
+  which names each producer command and bounded output globs. A declared file passes only
+  when a recorded producer run, by the runner's verification or by the new
+  `phase-loop-closeout-audit --record-outputs`, left it behind with the same content
+  digest. Undeclared, hand-placed or later-edited files still block, and an invalid
+  declaration exits 2. See `docs/phase-loop/closeout-generated-outputs.md`.
+
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the

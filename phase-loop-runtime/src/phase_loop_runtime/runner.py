@@ -126,6 +126,7 @@ from .launcher import (
 from .lane_scheduler import select_ready_lane_wave, worktree_assignments_for_wave
 from .maintenance import MaintenanceOptions, active_loop, active_loop_blocker, run_maintenance
 from .closeout_classifier import classify_unowned_path
+from . import generated_outputs
 from .models import (
     CLOSEOUT_EXCEPTIONS_METADATA_KEY,
     CLOSEOUT_MODES,
@@ -9474,6 +9475,15 @@ def _run_execute_verification_impl(
         python_pin=resolve_python_pin(roadmap, plan),
         phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
     )
+    # agent-harness#1139: when this run executed a producer the repo's committed
+    # generated-outputs declaration names, record the digests of what it left behind so
+    # the closeout audit can attribute those ignored outputs. Evidence only: a failure
+    # here must never change the verification outcome, and it writes nothing into
+    # run_dir or verification.json.
+    try:
+        generated_outputs.record_verification_outputs(repo, result)
+    except Exception:  # noqa: BLE001 - missing evidence leaves the outputs unknown, i.e. blocking
+        pass
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
 
     # LEGIBLE (v10 SL-2, IF-0-LEGIBLE-2): narrowly scoped to the LEGIBLE plan's

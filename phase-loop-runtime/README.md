@@ -258,6 +258,12 @@ closeout, the persisted `terminal-summary.json` reflects the runner's blocking v
 (the child's self-reported `complete`/`passed` is not overlaid back), preventing a
 stale "complete" summary from reconcile-skipping the work on the next run.
 
+The `phase-loop-closeout-audit --repo .` command grades **ignored** paths by producer. It
+accepts harness handoffs that carry the handoff contract, and a project's declared build
+outputs backed by a recorded producer run. Declare those outputs in a committed
+`.phase-loop-generated-outputs.json`; anything else still blocks. See
+`docs/phase-loop/closeout-generated-outputs.md` (agent-harness#1139).
+
 ## Conformance library (one library, two roles)
 
 `phase_loop_runtime.conformance` is the named, stable, importable surface for the
