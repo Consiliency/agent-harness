@@ -662,6 +662,50 @@ def test_client_machinery_failures_are_typed_faults(client, seam):
     assert _parse()["terminal_status"] == "complete"
 
 
+
+# codex round 2 F002: the typed boundary extends past the reply, over all of the
+# public functions' processing of it (prompt extraction, the D1a schema append,
+# request and model construction).  Content errors stay plain, and an interrupt
+# is never mapped.
+_POST_REPLY_SEAMS = {
+    "extract-prompt": ("_extract_prompt", None, "build", MemoryError("prompt allocation failed")),
+    "schema-description": ("_render_schema_description", None, "closeout", RuntimeError("render bug")),
+    "request-model": ("BamlRequest", None, "build", TypeError("model bug")),
+    "closeout-validate": ("model_validate", "PhaseLoopCloseoutV1", "parse", MemoryError("validation allocation failed")),
+    "closeout-dump": ("model_dump", "PhaseLoopCloseoutV1", "parse", RecursionError("dump bug")),
+}
+
+
+def _post_reply_call(which: str):
+    if which == "build":
+        return lambda: m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+    if which == "closeout":
+        return lambda: m.build_baml_request("EmitPhaseCloseout", CLOSEOUT)
+    return _parse
+
+
+@pytest.mark.parametrize("seam", sorted(_POST_REPLY_SEAMS))
+def test_post_reply_processing_failures_are_typed_faults(client, seam):
+    name, owner, which, exc = _POST_REPLY_SEAMS[seam]
+    target = getattr(m, owner) if owner else m
+    call = _post_reply_call(which)
+    call()  # warm: the worker is up, so the injection lands after a real reply
+    with mock.patch.object(target, name, _boom(exc)):
+        raised = _raises(call)
+    assert type(raised) is BamlWorkerError and raised.kind == "fault", (seam, type(raised), raised)
+    assert raised.__cause__ is exc
+    # A content error raised at the same seam stays plain ...
+    content = BamlValidationError("content")
+    with mock.patch.object(target, name, _boom(content)):
+        assert _raises(call) is content
+    # ... an interrupt is never mapped ...
+    interrupt = KeyboardInterrupt()
+    with mock.patch.object(target, name, _boom(interrupt)):
+        assert _raises(call) is interrupt
+    # ... and the next call is healthy.
+    call()
+
+
 def test_worker_protocol_rejects_ops_before_init_and_a_second_init():
     files = m._read_baml_files()
     proc = subprocess.Popen(
@@ -2429,6 +2473,209 @@ def scenario_i3_owner_dies_before_publication() -> None:
     assert any(e["pid"] == orphan and e["phase"] == "owner_death" for e in _log()), _log()
     assert _parse()["terminal_status"] == "complete"
     spy.assert_each_once()
+
+
+# codex round 2 F001: recovery must finish terminal side effects, not trust the
+# flags that stand for them.  The owner is killed at EVERY line of every
+# terminal transition it runs (reply delivery, disposal, kill, release, stop,
+# spawn publication), in the flow that reaches that line.  Whatever line it dies
+# on, the caller gets a terminal outcome from recovery (never from the
+# independent total-budget bound), no worker outlives the reap bound, no helper
+# thread survives its worker, the registry forgets every released generation,
+# and the client keeps working.
+
+
+def _die_at_line(client, fn, line: int, fired: list):
+    """``fn`` wrapped so that, on the owner thread, the owner dies (once) on the
+    first ``line`` event of ``fn``'s own frame."""
+    code = fn.__code__
+
+    def local(frame, event, arg):
+        if event == "line" and frame.f_lineno == line and not fired:
+            fired.append(line)
+            raise _OwnerDeath()
+        return local
+
+    def tracer(frame, event, arg):
+        return local if frame.f_code is code else None
+
+    def wrapper(*args, **kwargs):
+        if fired or threading.get_ident() != client.owner_ident:
+            return fn(*args, **kwargs)
+        previous = sys.gettrace()
+        sys.settrace(tracer)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            sys.settrace(previous)
+
+    return wrapper
+
+
+def _body_lines(fn) -> list[int]:
+    code = fn.__code__
+    return sorted({ln for (_s, _e, ln) in code.co_lines() if ln is not None and ln > code.co_firstlineno})
+
+
+# flow -> (peer mode, functions whose every line the owner dies on)
+_TERMINAL_FLOWS = {
+    "reply": ("echo", [("module", "_deliver"), ("_Client", "_reply"), ("_Client", "_on_frame")]),
+    "dispose": ("non_json", [("_Client", "_fail"), ("_Client", "_dispose"), ("_Client", "_kill"), ("_Client", "_attempt_failed"), ("_Client", "_log")]),
+    "release": ("non_json", [("_Client", "_reap"), ("_Client", "_release")]),
+    "publish": ("echo", [("_Client", "_on_spawned"), ("_Client", "_request_spawn"), ("_Client", "_start")]),
+    "stop": ("echo", [("_Client", "_begin_stop"), ("_Client", "_stop_gen"), ("_Client", "_kill"), ("_Client", "_continue_stop"), ("_Client", "_release")]),
+}
+
+
+def _terminal_cases():
+    for flow, (_mode, fns) in _TERMINAL_FLOWS.items():
+        for owner, name in fns:
+            fn = getattr(m if owner == "module" else m._Client, name)
+            for line in _body_lines(fn):
+                yield pytest.param(flow, owner, name, line, id=f"{flow}-{name}-L{line - fn.__code__.co_firstlineno}")
+
+
+def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
+    mode, _fns = _TERMINAL_FLOWS[flow]
+    client = m._Client(test_mode=True, retries=0, deadline_s=2.0, queue_budget_s=2.0, abandon_grace_s=0.5)
+    target = m if owner == "module" else m._Client
+    fired: list = []
+    pids: list[int] = []
+    gens: list = []
+    real_spawn_worker = m._Client._spawn_worker
+
+    def recording_spawn_worker(self, spawn):
+        gen = real_spawn_worker(self, spawn)
+        gens.append(gen)
+        return gen
+
+    def call():
+        # The independent bound in _wait adds _OWNER_STALE_S on top of this: a
+        # caller released only by that bound was never answered by recovery.
+        answered_by = client.queue_budget_s + client.deadline_s + client.abandon_grace_s + REAP_BOUND
+        started = time.monotonic()
+        box = _call_in_thread(lambda: client.call("parse_closeout", {"raw": OK}), 30)
+        elapsed = time.monotonic() - started
+        exc = box.get("exc")
+        assert exc is None or type(exc) is BamlWorkerError, box
+        assert elapsed < answered_by, ("recovery never answered the caller", round(elapsed, 2), box)
+        return box
+
+    wrapped = _die_at_line(client, getattr(target, name), line, fired)
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn(mode, record=pids)), \
+                mock.patch.object(m._Client, "_spawn_worker", recording_spawn_worker):
+            if flow == "stop":
+                assert "value" in call()
+                with mock.patch.object(target, name, wrapped):
+                    client.stop(graceful=False, timeout=5)
+            else:
+                with mock.patch.object(target, name, wrapped):
+                    call()
+                    if flow == "release":
+                        # The failed worker is released by the owner's next pass.
+                        _wait(lambda: fired or not client.late, 5)
+            if not fired:
+                return False
+            assert client.owner_starts >= 1
+            # No worker and no helper thread outlives the reap bound.
+            deadline = REAP_BOUND + 1.0
+            live = client.gen if not client.closed else None
+            for gen in gens:
+                if gen is live:
+                    continue
+                assert _wait(lambda: _gone(gen.pid), deadline), (flow, name, line, "worker outlived its owner", gen.state, gen.killed_at)
+                assert _wait(lambda: not any(t.is_alive() for t in gen.threads), deadline), (flow, name, line, "helper outlived its worker")
+            if flow != "stop":
+                # The client keeps working, and a later owner pass releases every
+                # disposed generation (nothing stays registered or open).
+                with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo", record=pids)):
+                    assert "value" in call(), (flow, name, line)
+                assert _wait(lambda: client.generations == {client.gen}, REAP_BOUND + 1.0), (flow, name, line, client.generations)
+            else:
+                assert _wait(lambda: not client.generations, REAP_BOUND + 1.0), (flow, name, line, client.generations)
+            for gen in gens:
+                if gen is not client.gen:
+                    assert gen.err_file.closed, (flow, name, line)
+        return True
+    finally:
+        client.stop(graceful=False, timeout=5)
+        for gen in gens:
+            if gen.proc.poll() is None:
+                gen.proc.kill()
+                gen.proc.wait(5)
+            for thread in gen.threads:
+                thread.join(5)
+
+
+@pytest.mark.parametrize("flow,owner,name,line", list(_terminal_cases()))
+def test_owner_death_at_every_terminal_transition_line(flow, owner, name, line):
+    if not _owner_death_case(flow, owner, name, line):
+        pytest.skip("this line is not executed by the owner in this flow")
+
+
+# codex round 2's two falsifiers, as filed (F001).
+
+
+@pytest.mark.parametrize("boundary", ["reply", "dispose"])
+def test_owner_recovery_finishes_terminal_transitions(boundary):
+    import inspect
+
+    client = m._Client(test_mode=True, retries=0, deadline_s=0.5, queue_budget_s=0.5, abandon_grace_s=0.2)
+    captured = []
+    fired = []
+    original_deliver = m._deliver
+    original_kill = m._Client._kill
+    source, first = inspect.getsourcelines(original_deliver)
+    put_line = next(first + i for i, line in enumerate(source) if "req.reply.put(outcome)" in line)
+
+    def deliver(req, outcome):
+        captured.append(req)
+
+        def trace(frame, event, arg):
+            if event == "line" and frame.f_code is original_deliver.__code__ and frame.f_lineno == put_line and not fired:
+                fired.append(True)
+                raise _OwnerDeath()
+            return trace
+
+        sys.settrace(trace)
+        try:
+            original_deliver(req, outcome)
+        finally:
+            sys.settrace(None)
+
+    def kill(self, gen):
+        if self is client and not fired:
+            captured.append(gen)
+            fired.append(True)
+            raise _OwnerDeath()
+        original_kill(self, gen)
+
+    injection = mock.patch.object(m, "_deliver", deliver) if boundary == "reply" else mock.patch.object(m._Client, "_kill", kill)
+    mode = "echo" if boundary == "reply" else "non_json"
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn(mode)), injection:
+            try:
+                client.call("parse_closeout", {"raw": "{}"})
+            except BamlWorkerError:
+                pass
+        assert fired and client.owner_starts >= 2
+        if boundary == "reply":
+            assert captured[0].consumed, "the accepted request received no terminal outcome"
+        else:
+            gen = captured[0]
+            deadline = time.monotonic() + m._REAP_BOUND_S + 0.25
+            while gen.proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert gen.proc.poll() is not None, "recovery trusted disposed=True before the worker was killed"
+            assert all(not t.is_alive() for t in gen.threads)
+    finally:
+        for gen in list(client.generations):
+            original_kill(client, gen)
+            gen.proc.wait(timeout=2)
+            for thread in gen.threads:
+                thread.join(timeout=2)
+        client.stop(graceful=False, timeout=3)
 
 
 def scenario_i3_owner_killed_with_waiters() -> None:

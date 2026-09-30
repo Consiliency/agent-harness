@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import contextlib
 import hashlib
 import itertools
 import json
@@ -102,6 +103,11 @@ def build_baml_request(function_name: str, payload: dict[str, Any] | None = None
     op, params = bridge
     args = _bridge_args(function_name, params, payload or {})
     outcome, request = _worker_call(op, args)
+    with _client_boundary():
+        return _build_from_reply(function_name, request)
+
+
+def _build_from_reply(function_name: str, request: dict[str, Any]) -> BamlRequest:
     body = request["body"]
     headers = request.get("headers") or {}
     prompt = _extract_prompt(body)
@@ -135,13 +141,28 @@ def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
     if function_name != "EmitPhaseCloseout":
         raise BamlValidationError(f"BAML function not found: {function_name}")
     outcome, value = _worker_call("parse_closeout", {"raw": str(raw_text or "")})
-    if outcome == "error":
-        raise BamlValidationError(_sanitize_text(value))
+    with _client_boundary():
+        if outcome == "error":
+            raise BamlValidationError(_sanitize_text(value))
+        try:
+            typed = PhaseLoopCloseoutV1.model_validate(value)
+        except ValidationError as exc:
+            _raise_baml_validation_error(exc)
+        return ParsedResponse(function_name=function_name, payload=typed.model_dump(), value=typed)
+
+
+@contextlib.contextmanager
+def _client_boundary():
+    """I7 past the reply: processing a worker reply is client machinery too.
+    Content errors (``BamlValidationError``) stay plain, any other ``Exception``
+    becomes ``kind="fault"``, and a non-``Exception`` (an interrupt) is never
+    mapped."""
     try:
-        typed = PhaseLoopCloseoutV1.model_validate(value)
-    except ValidationError as exc:
-        _raise_baml_validation_error(exc)
-    return ParsedResponse(function_name=function_name, payload=typed.model_dump(), value=typed)
+        yield
+    except BamlValidationError:
+        raise
+    except Exception as exc:
+        raise BamlWorkerError("fault", f"BAML client failure: {_sanitize_error(exc)}") from exc
 
 
 def _bridge_args(function_name: str, params: tuple[str, ...], payload: dict[str, Any]) -> dict[str, Any]:
@@ -675,7 +696,7 @@ def worker_fault_log() -> list[dict[str, Any]]:
 class _Request:
     __slots__ = (
         "op", "body", "files", "fp", "reply", "enqueued_at", "started_at", "heartbeat",
-        "attempts", "attempt_deadline", "done", "consumed", "gen", "spawn",
+        "attempts", "attempt_deadline", "done", "consumed", "gen", "spawn", "outcome",
     )
 
     def __init__(self, op: str, body: bytes, files: dict[str, str], fp: str) -> None:
@@ -692,6 +713,7 @@ class _Request:
         self.attempt_deadline = 0.0
         self.done = False
         self.consumed = False
+        self.outcome: tuple[str, Any] | None = None
         self.gen: _Gen | None = None
         self.spawn: _Spawn | None = None
 
@@ -751,9 +773,14 @@ def _spawn_popen(argv: list[str], **kwargs: Any) -> subprocess.Popen:
 
 
 def _deliver(req: _Request, outcome: tuple[str, Any]) -> None:
-    """The single reply seam: each request is answered exactly once, here."""
-    req.done = True
+    """The single reply seam: each request is answered exactly once, here.
+
+    Effect before flag: the outcome is recorded and enqueued before ``done`` is
+    set, so a request marked done has always had its reply put.  A surplus
+    reply (recovery re-delivering, below) is harmless: the caller takes one."""
+    req.outcome = outcome
     req.reply.put(outcome)
+    req.done = True
 
 
 def _send_abandon(client: "_Client", req: _Request) -> None:
@@ -1074,7 +1101,8 @@ class _Client:
         # A previous owner died, possibly between any two of its steps.  Finish
         # everything it left behind from the durable registries: every accepted,
         # undelivered request outside the backlog gets a typed reply, and every
-        # live worker is disposed of.
+        # live worker is disposed of.  Terminal flags are not trusted here: the
+        # effect each one stands for is checked and completed again.
         if self.spawn is not None:
             self.spawn.retired = True
             self.spawn = None
@@ -1083,11 +1111,16 @@ class _Client:
                 if gen in self.dying:
                     self.dying.remove(gen)
                 self._dispose(gen, "fault", phase="owner_death")
-            elif gen not in self.late:
-                self.late.append(gen)  # disposed but never queued for release
+            else:
+                # Disposed, but the kill or the release hand-off may not have happened.
+                self._kill(gen)
+                if gen not in self.late:
+                    self.late.append(gen)
         waiting = set(self.backlog)
         for req in list(self.inflight):
             if req.done:
+                if not req.consumed and req.reply.empty() and req.outcome is not None:
+                    req.reply.put(req.outcome)  # done, but the put may not have landed
                 self.inflight.discard(req)
             elif req not in waiting:
                 req.gen = None
@@ -1201,10 +1234,11 @@ class _Client:
     def _on_spawned(self, spawn: _Spawn, result: Any) -> None:
         if spawn is not self.spawn or spawn.retired:
             if isinstance(result, _Gen):
-                result.state = "dying"
                 self._kill(result)
-                self.late.append(result)
+                if result not in self.late:
+                    self.late.append(result)
                 self._log("spawn_late", result, phase="spawn")
+                result.state = "disposed"
             return
         self.spawn = None
         req = self.active
@@ -1359,24 +1393,29 @@ class _Client:
 
     # -- disposal -------------------------------------------------------------
     def _dispose(self, gen: _Gen, kind: str, *, phase: str, rc: int | None = None) -> None:
+        # Effects before flags: until ``state`` reads "disposed", recovery treats
+        # the generation as live and disposes of it again.
         if gen.state == "disposed":
             return
+        self._kill(gen)
+        if gen not in self.late:
+            self.late.append(gen)
+        self._log(kind, gen, phase=phase, rc=rc if rc is not None else gen.proc.returncode)
+        gen.request = None
+        gen.state = "disposed"
         if gen is self.gen:
             self.gen = None
-        gen.state = "disposed"
-        gen.request = None
-        self._kill(gen)
-        self.late.append(gen)
-        self._log(kind, gen, phase=phase, rc=rc if rc is not None else gen.proc.returncode)
 
     def _kill(self, gen: _Gen) -> None:
+        """Idempotent: safe to repeat, and it re-kills until the kill is recorded."""
         gen.writes.put(None)
-        if gen.killed_at is None:
-            gen.killed_at = time.monotonic()
+        if gen.proc.returncode is None:
             try:
-                gen.proc.kill()
+                gen.proc.kill()  # a no-op once Popen has reaped the process
             except OSError:
                 pass
+        if gen.killed_at is None:
+            gen.killed_at = time.monotonic()
 
     def _log(self, kind: str, gen: _Gen, *, phase: str, rc: int | None = None) -> None:
         entry = {"kind": kind, "phase": phase, "pid": gen.pid, "generation": gen.number, "rc": rc}
@@ -1404,7 +1443,8 @@ class _Client:
                 self._release(gen)
 
     def _release(self, gen: _Gen) -> None:
-        self.generations.discard(gen)
+        # Close first, forget last: a generation stays recoverable until its
+        # resources are gone (both closes are idempotent).
         try:
             gen.err_file.close()
         except OSError:
@@ -1412,6 +1452,7 @@ class _Client:
         job = gen.job
         if job is not None:
             job.close()
+        self.generations.discard(gen)
 
     # -- stop / shutdown ------------------------------------------------------
     def _begin_stop(self, ack: queue.SimpleQueue, graceful: bool) -> None:
@@ -1437,9 +1478,10 @@ class _Client:
             elif event[0] == "stop":
                 self.stop_acks.append(event[1])
             elif event[0] == "spawned" and isinstance(event[2], _Gen) and event[2].state != "disposed":
-                event[2].state = "dying"
                 self._kill(event[2])
-                self.late.append(event[2])
+                if event[2] not in self.late:
+                    self.late.append(event[2])
+                event[2].state = "disposed"
         self.active = None
         if self.spawn is not None:
             self.spawn.retired = True
@@ -1453,22 +1495,24 @@ class _Client:
         self.spawns.put(None)
 
     def _stop_gen(self, gen: _Gen) -> None:
-        if gen is self.gen:
-            self.gen = None
+        self._kill(gen)
+        if gen not in self.late:
+            self.late.append(gen)
         if gen in self.dying:
             self.dying.remove(gen)
         gen.state = "disposed"
-        self._kill(gen)
-        self.late.append(gen)
+        if gen is self.gen:
+            self.gen = None
 
     def _continue_stop(self, now: float) -> None:
         gen = self.gen
         if gen is not None:
             if gen.proc.poll() is not None:
-                self.gen = None
-                gen.state = "disposed"
                 gen.killed_at = gen.killed_at or now
-                self.late.append(gen)
+                if gen not in self.late:
+                    self.late.append(gen)
+                gen.state = "disposed"
+                self.gen = None
             elif now - self.stop_started > _EXIT_GRACE_S:
                 self._stop_gen(gen)
         for g in list(self.dying):
@@ -1484,20 +1528,34 @@ class _Client:
             return
         self.closing = True
         ack: queue.SimpleQueue = queue.SimpleQueue()
-        try:
-            baton = self.baton.get_nowait()
-        except queue.Empty:
-            # An owner is running (or starting): it does the work.
-            self.events.put(("stop", ack, graceful))
+        deadline = time.monotonic() + timeout
+        sent = False
+        while True:
+            if sent and not ack.empty():
+                return
             try:
-                ack.get(True, timeout)
+                baton = self.baton.get_nowait()
+                break
             except queue.Empty:
                 pass
-            return
+            # An owner is running (or starting): it does the work.  If it dies
+            # before acknowledging, the baton comes back and this thread finishes.
+            if not sent:
+                self.events.put(("stop", ack, graceful))
+                sent = True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                ack.get(True, min(remaining, _HEARTBEAT_S))
+                return
+            except queue.Empty:
+                continue
         # No owner runs, so this thread may touch owner state; it starts no thread.
         try:
+            if self.recover:
+                self._recover()  # idempotent; a later owner repeats it
             self._begin_stop(ack, graceful)
-            deadline = time.monotonic() + timeout
             while self.stop_acks and time.monotonic() < deadline:
                 self._service_stop_inline()
                 time.sleep(_OWNER_TICK_S)

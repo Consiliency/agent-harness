@@ -208,6 +208,55 @@ def test_tier3_worker_fault_blocks_the_closeout_never_uncertain():
     assert audit.warnings == () and audit.invocations == ()
 
 
+
+# codex round 2 F002, as filed: a client failure AFTER a valid worker reply (here
+# in prompt extraction) must block Tier 3 as an outage, never become a
+# warning-only "uncertain" judgment.
+_VALID_REQUEST_PEER = """
+import hashlib, json, sys
+fp = None
+for line in sys.stdin:
+    req = json.loads(line)
+    if req['op'] == 'init':
+        canonical = json.dumps(req['files'], sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+        fp = hashlib.sha256(canonical.encode('ascii')).hexdigest()
+        response = {'id': req['id'], 'fingerprint': fp, 'ok': {'version': 'peer'}}
+    else:
+        request = {
+            'url': 'https://unused.invalid/v1/chat/completions', 'method': 'POST', 'headers': {},
+            'body': json.dumps({'messages': [{'role': 'user', 'content': 'valid prompt'}]}),
+        }
+        response = {'id': req['id'], 'fingerprint': fp, 'request': json.dumps(request)}
+    print(json.dumps(response), flush=True)
+"""
+
+
+def test_tier3_blocks_on_post_reply_client_machinery_failure(tmp_path):
+    (tmp_path / "evidence.json").write_text(json.dumps({"scores": [1.0, 1.0001, 0.9999, 1.00005]}), encoding="utf-8")
+    client = m._Client(test_mode=True, retries=0, deadline_s=1)
+    real_spawn = m._spawn_popen
+    reached = []
+    failure = MemoryError("prompt allocation failed")
+
+    def spawn(argv, **kwargs):
+        return real_spawn([argv[0], "-I", "-S", "-c", _VALID_REQUEST_PEER], **kwargs)
+
+    def fail_after_reply(body):
+        assert body["messages"][0]["content"] == "valid prompt"
+        reached.append(True)
+        raise failure
+
+    try:
+        with patch.object(m, "_CLIENT", client), patch.object(m, "_spawn_popen", spawn), patch.object(m, "_extract_prompt", fail_after_reply):
+            audit = evidence_audit.run_tier3_runner_audit(tmp_path, tier3_budget=1, dirty_only=False)
+        assert reached, "fault injection never reached the client after a valid worker reply"
+        assert audit.blocker is not None, "a client machinery failure became a warning-only uncertain judgment"
+        assert audit.blocker["blocker_class"] == "unretryable_external_outage"
+        assert audit.warnings == () and audit.invocations == ()
+    finally:
+        client.stop(graceful=False, timeout=3)
+
+
 def test_tier3_over_cap_sample_takes_the_v0_uncertain_path():
     finding = evidence_audit.LooseUniformFinding(
         json_artifact="evidence.json", json_pointer="$.scores", array_length=4, mean=1.0, stdev=0.0, coefficient_of_variation=0.0
