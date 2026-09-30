@@ -120,13 +120,19 @@ re-fetched and confirmed every documented claim below.
 
 ### Placement ordering (the whole adapter; binds 4a2 and 4b)
 
-1. **Before create (driver, 1b).** The compatibility check refuses before any vendor call, with
-   no sandbox created, if any of these hold:
-   - the request's `required_capabilities ⊄ capabilities()` (ask B2);
-   - `egress_needs` names a private allowlist (`e2b_private_allowlist_unsupported`);
-   - the leg deadline exceeds `tier_max_lifetime_s` (`e2b_lease_exceeds_tier`);
-   - a cap is breached;
-   - the key is unavailable.
+1. **Before create, in two places.** Both refuse before any vendor call, with no sandbox
+   created.
+   - **The driver (1b, vendor-neutral).** It refuses if any of these hold:
+     - `required_capabilities ⊄ capabilities()`;
+     - `egress_needs` names a private allowlist that `capabilities()` lacks
+       `private_allowlist` to serve;
+     - the leg deadline exceeds `declaration().max_lifetime_s`.
+   - **4a1, inside `commit` before `create`.** It refuses if any of these hold:
+     - the key or environment checks fail;
+     - the repo opt-out applies;
+     - a cap is breached under the ledger lock.
+
+     These refusals carry `e2b_*` codes.
 2. **`commit` (4a2 completes it).**
    1. `create`.
    2. The gating probe rows. None of them needs the tree.
@@ -136,7 +142,42 @@ re-fetched and confirmed every documented claim below.
 3. **After `commit` (driver, 1b).** Re-check `required_capabilities ⊆ verified` as a backstop
    **before `execute`**. On a refusal, kill with confirmation.
 
-In 4a1, `commit` is create plus the packaged null workload only, and no tree is uploaded.
+In 4a1, `commit` is create plus the null workload (`commands.run("true")`) only. **No file of any
+kind is uploaded.**
+
+### Control-plane qualification (4a1's only admissible request)
+
+4a1 verifies no confinement capability. Its `capabilities()` returns the **empty set**, and its
+`declaration()` returns:
+- `egress_residuals = ()`;
+- `guest_control_env = {E2B_SANDBOX, E2B_SANDBOX_ID, E2B_TEMPLATE_ID}`;
+- `max_lifetime_s = tier_max_lifetime_s`.
+
+**Chosen fix: option (b).** Full qualification moves to 4a2. 4a1 proves only its control plane.
+The reasons:
+- 4a1 claims no capability it cannot verify;
+- B2's required set stays mandatory for every review leg;
+- there is still one driver path.
+
+Option (a), a per-phase required set, was not chosen. It would add a phase switch to
+vendor-neutral 1b driver code. Option (b) needs only a scope value that one entry point sets.
+
+- **The qualification request** is built only by the B4 entry point
+  `qualify_control_plane(...)`. Nothing else can construct one. It carries:
+  - `qualification_scope = "control_plane"`;
+  - the null workload, with no tree and no snapshot;
+  - no `one_shot_secret`;
+  - an **empty** `egress_needs`;
+  - an **empty** `required_capabilities`.
+- **Its sandbox is created with all egress denied**: `deny_out=["0.0.0.0/0"]`, no `allow_out`
+  and `allow_public_traffic=False`. It therefore has no egress residual to declare.
+- **The runtime records** `qualification_scope = "control_plane"` in the evidence.
+  - Such a record never produces a `committed` snapshot receipt.
+  - It never sets `sandbox_root_applied`, and it is never counted as a placement.
+- **A review leg's request** always carries B2's non-empty required set. Against 4a1's empty
+  `capabilities()`, the driver refuses it before create. Cloud placement for review legs
+  therefore stays refused until 4a2's probes verify the set. There is also no `e2b` entry point
+  until 4b.
 
 ### Key custody
 
@@ -154,12 +195,15 @@ environment.** Removing its name from a child's environment does not satisfy thi
 - **How it is used.** The key is passed only as the SDK's `api_key=` argument, together with an
   explicit `domain=` from config. The key is never exported, never put in `os.environ`, and
   never passed to `envs`, `metadata`, a file write, a command line, a log or evidence.
-- **Environment refusal.** If any name in the configured secret-name set appears in the
-  runtime's environment at start, the E2B backend refuses with `e2b_key_in_environment`. It
-  never uses that value. The names include `E2B_API_KEY` and `E2B_ACCESS_TOKEN`; "Vendor-neutral
-  secret names" below describes the set. The backend also refuses with `e2b_env_override`
-  when an SDK-steering variable is set: `E2B_DEBUG` (F7), or `E2B_DOMAIN` / `E2B_API_URL`
-  differing from the configured domain.
+- **Environment refusal.**
+  - **Key in the environment.** The backend reads **B1's startup snapshot of the environment**,
+    never the live `os.environ`. If either of **E2B's own** secret names (`E2B_API_KEY`,
+    `E2B_ACCESS_TOKEN`) is present, it refuses with `e2b_key_in_environment` and never uses the
+    value. Another vendor's secret in the snapshot does not refuse E2B.
+  - **SDK overrides.** The backend refuses with `e2b_env_override` if **any** `E2B_*` name other
+    than the three guest-control names is present. That covers `E2B_DEBUG` (F7), `E2B_DOMAIN`,
+    `E2B_API_URL`, `E2B_SANDBOX_URL` and future SDK-steering variables. The names the SDK reads
+    are checked against 2.51 at implementation time.
 - **Vendor-neutral secret names (ask B1 of 1b).** The runtime reads `[sandbox] runtime_secret_env`
   from the user config **before any backend or plugin is constructed**, on every run and for
   every root.
@@ -169,13 +213,35 @@ environment.** Removing its name from a child's environment does not satisfy thi
     missing extra, a plugin failure, and qualification.
   - The `[e2b]` parser (4a1) refuses a config whose `runtime_secret_env` lacks `E2B_API_KEY` and
     `E2B_ACCESS_TOKEN`. That check is itself config parsing, so it needs no plugin.
+  - The user-level `[sandbox]` key closure belongs to **B1**, because 1b lands first. Otherwise a
+    `[sandbox]` table would be rejected before 4a1 exists.
 - **Presence notice.** When a configured secret name is found in the runtime's environment at
   start, the runtime records a typed notice. The key-file path is the only supported one.
-- **Exceptions.** An SDK exception text is scrubbed **with the key's value** (and its base64
-  and hex forms) at the backend call site before `_redact_leg_text`. The hb1 codex seat observed
-  that `_redact_leg_text` alone does not remove it.
-- **Evidence** records `project_label` and `domain` only. Nothing derived from the key is
-  recorded: no hash, prefix or length.
+- **Exceptions.**
+  - An SDK exception text is scrubbed **with the key's value**, and with the values of the
+    per-sandbox envd and traffic tokens, in their base64 and hex forms too. This happens at the
+    backend call site, before `_redact_leg_text`, because the hb1 codex seat observed that
+    `_redact_leg_text` alone does not remove them.
+  - The typed error is re-raised `from None`, so a traceback cannot print the raw `__cause__`.
+- **Key lifetime.** The backend keeps no `Sandbox` instance between calls, because one holds the
+  key in its connection config. Each operation uses the SDK classmethods, with a fresh key-file
+  read.
+- **Writing the key file.** `phase-loop sandbox-e2b key set` reads the key with no echo and
+  writes the file at 0600. Nothing reaches a transcript or the shell history.
+- **Opt-out caveat.** Seats outside the seat jail run as the operator's uid and can read
+  owner-only files, including the key file. That covers sandboxing disabled
+  (`PHASE_LOOP_SANDBOX_DISABLE=1`) and the codex and grok routes until agent-harness#895. This
+  is the accepted D1/D3 posture, and the capabilities card discloses it.
+- **Jail binding.** The agent-harness#1132 jail must never bind
+  `$XDG_STATE_HOME/phase-loop/credentials`. Its J1 mount set does not, and 4a1 adds a check that
+  this stays so.
+- **E2B CLI login.** A login through the E2B CLI stores credentials in `~/.e2b/config.json`, which
+  is outside this design. The operator docs say that 4a1 needs no CLI login.
+- **Evidence.** Nothing derived from the key is recorded: no hash, prefix or length.
+  - 4a1's receipt `details` are a closed set: `project_label`, `domain`,
+    `qualification_scope` and `e2b_template_ref` (a lookup handle).
+  - `_details_for` serializes only these, as strings matching a fixed pattern.
+  - 4a2 adds its keys, which were listed in round 1.
 - **Live qualification** reads the key file. It never uses `export`.
 
 ### Per-principal isolation under one project key
@@ -191,7 +257,8 @@ security boundary.
 ### Lifecycle
 
 - **Create.**
-  - `timeout = floor(min(lease_ttl_s, deadline_remaining))`.
+  - `timeout = floor(min(lease_ttl_s, deadline_remaining))`. If that is ≤ 0, the leg is
+    refused before create.
   - `lifecycle={"on_timeout": "kill", "auto_resume": False}`.
   - `envs={}`.
   - `network` always carries `allow_public_traffic=False`: a creation invariant, with the full
@@ -201,13 +268,16 @@ security boundary.
 - **No pause, ever.** No `on_timeout: "pause"`, `auto_resume`, `beta_pause`, resume-by-connect
   or `update_network`. `update_network` replaces the whole rule set, so a falsifier asserts it
   is never called.
-- **Renew.** `renew(until)` sets `set_timeout(floor(until - now))` only while that value is
-  **> 0**. At ≤ 0 it kills with confirmation and never calls `set_timeout(0)`.
+- **Renew.** `renew(until)` sets `set_timeout(floor(min(lease_ttl_s, until - now)))` only while
+  that value is **> 0**. `until` is the leg deadline, supplied by 1b's heartbeat.
+  - Each extension is capped at one `lease_ttl_s`, so a dead owner's sandbox expires within one
+    TTL of its last heartbeat, never at the leg deadline.
+  - At ≤ 0 it kills with confirmation and never calls `set_timeout(0)`.
 - **Lost create response.** If `create` raises or times out after the request was sent, `commit`
   lists by the `lease` metadata, kills every match with confirmation, and then re-raises.
 - **Release and cleanup confirmation.**
-  - `release` and `kill` call `kill()`. Deletion is confirmed only by `get_info` returning
-    not-found, or by the lease no longer being listed in **any** state.
+  - `release` and `kill` call `kill()`. Deletion is confirmed when `get_info` returns not-found,
+    **or** when the lease is no longer listed in **any** state.
   - **A paused or any other retained state is not cleanup.** It stays pending: 1b's journal
     entry is kept, and the reaper retries.
   - `kill() == False` (not found) counts as confirmed only when the follow-up confirmation agrees.
@@ -232,18 +302,20 @@ security boundary.
 
 | Key | Meaning |
 |---|---|
-| `template` | `"<name>:<build_id>"`. A **lookup handle only** (E1); it is never evidence. |
-| `template_manifest_sha256` | the manifest pin (codex F005) |
-| `template_inputs_sha256` | the digest of the E1(b) pinned-input lock (4a2) |
+| `qualify_template` | the vendor template used for the control-plane qualification. It is a lookup handle for a shell-only image, the vendor's stock base template being enough, and it claims no confinement. |
 | `domain` | the SDK domain, passed explicitly |
 | `project_label` | evidence only |
 | `tier_max_lifetime_s` | 3600 or 86400 |
 | `lease_ttl_s` | at most the tier maximum, and at least 3 heartbeat intervals |
 | `max_concurrent_per_run`, `max_seconds_per_run`, `max_seconds_per_day` | the CD3 caps |
-| `max_snapshot_bytes` | the snapshot size limit |
 | `eligible_legs` | a subset of `{"claude", "gemini"}` |
 
 **Optional:** `api_key_file`.
+
+**Added in 4a2, not accepted in 4a1:** `template` (`"<name>:<build_id>"`, a lookup handle only,
+per E1), `template_manifest_sha256` (codex F005), `template_inputs_sha256` and
+`max_snapshot_bytes`. Introducing them with their producer means operators never type
+placeholder digests.
 
 **Other rules:**
 - **The secret-name set.** The user file's `[sandbox] runtime_secret_env` must include
@@ -261,33 +333,50 @@ member is added.** The set is closed:
 
 | Area | Codes |
 |---|---|
-| Extra and configuration | `e2b_extra_missing`, `e2b_not_configured`, `e2b_template_unpinned` |
+| Extra and configuration | `e2b_extra_missing`, `e2b_not_configured` |
 | Key custody | `e2b_key_file_unsafe`, `e2b_key_in_environment`, `e2b_env_override` |
 | Enablement | `e2b_repo_opted_out`, `e2b_repo_opt_out_unreadable`, `e2b_leg_ineligible` |
 | Caps | `e2b_cap_concurrency`, `e2b_cap_run_seconds`, `e2b_cap_day_seconds` |
-| Lifecycle and contract | `e2b_lease_exceeds_tier`, `e2b_private_allowlist_unsupported`, `e2b_capability_unverified:<cap>`, `e2b_sandbox_ref_invalid`, `e2b_cleanup_unconfirmed` |
+| Lifecycle and contract | `e2b_lease_exceeds_tier`, `e2b_capability_unverified:<cap>`, `e2b_sandbox_ref_invalid`, `e2b_cleanup_unconfirmed` |
 
-4a2 adds its own snapshot, template and probe codes.
+4a2 adds its own snapshot, template and probe codes, including `e2b_template_unpinned`. The
+driver's pre-create refusals carry 1b's vendor-neutral codes.
 
-### Asks
+### Asks of plan 1b and plan 2
 
 **Of plan 1b.** 4a1 stops at these; it does not work around them.
 - **B1 A vendor-neutral secret-name set.**
   - `[sandbox] runtime_secret_env` is read before any backend is constructed.
   - All three local child-env builders drop the names on every run, and the runtime records the
     presence notice.
+  - B1 also owns the user-level `[sandbox]` key closure and a **startup snapshot** of the
+    environment, which the E2B refusal reads.
+  - B1 owns a vendor-neutral **spawn-site sweep test**: every spawn path uses one of the scrubbed
+    builders, and none inherits `os.environ`. 4a1's six-variant test is the E2B integration check
+    on top of it.
   - This replaces the earlier `declaration().runtime_secret_env` ask, which failed on exactly
     the fallback paths.
 - **B2 A required-capability set, and two checks.**
-  - `PlacementRequest.required_capabilities` is derived by the driver: always
-    `private_ranges_unreachable` and `inbound_closed`, plus `one_shot_secret_channel` when
-    `one_shot_secret` is set.
+  - For a review leg, the driver derives `PlacementRequest.required_capabilities` from the
+    request:
+    - `inbound_closed`;
+    - `private_ranges_unreachable`, or `private_allowlist` when `egress_needs` carries a
+      private allowlist (a vendor-neutral rule, not one shaped around one backend);
+    - `one_shot_secret_channel` when `one_shot_secret` is set.
+  - Only B4's control-plane entry point may build a request with an empty required set, and
+    only with `qualification_scope = "control_plane"`.
   - The driver runs the pre-create compatibility check and the post-`commit`, pre-`execute`
     `verified` check.
   - The set is passed to `commit`.
 - **B3 `PlacementRequest.base_ref`.** It is runtime-attested, and used for the opt-out.
-- **B4 Driver functions the operator commands can call.** The `qualify` receipts must come from
-  the real driver, not from a parallel path.
+
+B2 and B3 amend 1a's `PlacementRequest` and the inputs to `commit`, so 1b lands them as explicit
+CONTRACTS.md amendments.
+- **B4 Driver functions the operator commands can call.** This includes
+  `qualify_control_plane(...)`, the only builder of a `qualification_scope = "control_plane"`
+  request. It runs through the same driver as every leg: journal, heartbeat, renewal, cleanup
+  and reaper. It emits no snapshot `committed` receipt, and its records never count as applied.
+  There is no parallel path.
 
 **Of plan 2.**
 - **A1 A per-location egress allowlist.** `egress_needs` is derived from the allowlist configured
@@ -308,8 +397,8 @@ residual in the guest.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_e2b.py` (create)
 - `E2BConfig` / `load_e2b_config()` — add — the validated `[e2b]` table.
-- `_read_key_file(path)` — add — the owner-only, `O_NOFOLLOW` + `fstat` read at call time. It
-  returns bytes that are never stored on the backend beyond the SDK call.
+- `_read_key_file(path)` — add — the owner-only, `O_NOFOLLOW` + `fstat` read at call time. The
+  backend keeps no `Sandbox` instance between calls, and each operation re-reads the file.
 - `_check_environment()` — add — the `e2b_key_in_environment` and `e2b_env_override` refusals.
 - `E2BBackend.runtime_secret_env_names()` — add — a classmethod returning the module-level
   constant `{"E2B_API_KEY", "E2B_ACCESS_TOKEN"}`. It works without the SDK, which it never
@@ -321,16 +410,18 @@ residual in the guest.
   - `execute` and `wait` run the null workload only.
   - Never implemented: `prepare`.
   - `import e2b` happens only in `__init__`, and an `ImportError` becomes `e2b_extra_missing`.
-- `_confirm_deleted(sandbox_ref)` — add — not-found in `get_info` and absent from every state in
-  `list_owned`. Paused never counts.
+- `_confirm_deleted(sandbox_ref)` — add — not-found in `get_info`, **or** absent from every state
+  in `list_owned`. Paused never counts.
 - `_validate_sandbox_ref` — add — 1a's charset. A mismatch is killed and refused.
 - `CostLedger` — add — the locked per-run and per-day reservations and settlements.
-- `_scrub_exception(exc, key)` — add — value-aware redaction.
+- `_scrub_exception(exc, secrets)` — add — value-aware redaction of the key and the per-sandbox
+  tokens, re-raised `from None`.
+- `_details_for(receipt)` — add — the closed 4a1 `details` set.
 - **No entry point in 4a1.** 4b adds the `e2b` entry point.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py` (modify)
-- `_KNOWN_TOP_KEYS` — modify — add `"e2b"`. The user-level `"sandbox"` table carries
-  `runtime_secret_env`; its reader is 1b's, and its key closure is here.
+- `_KNOWN_TOP_KEYS` — modify — add `"e2b"`. The user-level `"sandbox"` table and its closure come
+  from 1b (B1).
 - `_KNOWN_E2B_KEYS` / `_parse_e2b` / `load_e2b_section` — add — the table above, including
   the secret-name set check.
 - `_KNOWN_REPO_TOP_KEYS` — modify — add `"sandbox"` (`{"cloud"}`).
@@ -339,9 +430,9 @@ residual in the guest.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/cli.py` (modify)
 - `sandbox-e2b` subparser — add — following the `add_parser` pattern around lines 424–451.
-  - `qualify-lifecycle` creates, runs the null workload, renews, kills and confirms, then checks
-    the reap. It uses the packaged synthetic fixture only, never a repository tree. It goes
-    through 1b's driver functions (B4).
+  - `qualify-control-plane` calls B4's `qualify_control_plane` to create, run `true`, renew,
+    kill, confirm and check the reap. It uploads nothing and reads no repository path.
+  - `key set` reads the key with no echo and writes the key file at 0600.
   - `reap` runs the reaper by hand through 1b.
 
 ### `phase-loop-runtime/tests/test_sandbox_e2b.py`, `tests/test_sandbox_e2b_live.py` (create); `tests/test_advisor_board_config.py` (modify)
@@ -357,7 +448,11 @@ residual in the guest.
   - the console spending-limit backstop.
 - `docs/advisor-board-capabilities-card.md` — modify — covers:
   - project-level key scope and cooperative owner metadata;
-  - vendor retention after kill (logs), and the pause retention a key holder could trigger.
+  - vendor retention after kill (logs), and the pause retention a key holder could trigger;
+  - the opt-out caveat for seats outside the seat jail.
+- `docs/phase-loop/convergence-runtime.md` — also — until 4b, **board legs never reach E2B**.
+  There is no entry point, and 4a1's empty `capabilities()` refuses review legs, so an `e2b://`
+  root falls back to local, or fails closed. 4a1 qualification is control-plane only.
 - `phase-loop-runtime/README.md` — modify — `pip install 'phase-loop-runtime[e2b]'`, and the key
   file.
 - `CHANGELOG.md` — modify — the extra and the operator commands. A new `.py` module drifts the
@@ -420,15 +515,25 @@ backend import. With `sys.modules["e2b"] = None`, `E2BBackend.runtime_secret_env
 contains `E2B_API_KEY` (hb1 sonnet falsifier). Mutation: skip the check, or import the SDK in the
 classmethod.
 
-**SDK steering.** With `E2B_DEBUG=1`, or with `E2B_DOMAIN` differing from the config, the backend
-refuses with `e2b_env_override` and the create counter reads 0. Mutation: drop either check.
+**SDK steering.**
+- With `E2B_DEBUG=1`, `E2B_DOMAIN`, or any other non-guest `E2B_*` name, the backend refuses with
+  `e2b_env_override` and the create counter reads 0.
+- A foreign vendor's secret in the startup snapshot does not refuse E2B.
+- The refusal reads the snapshot: clearing `os.environ` after startup still refuses.
 
-**No paid sandbox outlives its lease** (`test_sigkilled_owner_sandbox_dies_within_lease`). The owner
-stops without calling `release`. After `lease_ttl_s + 1` virtual seconds, a listing across every
-state is empty. Mutations:
-- `timeout=86400`;
-- `on_timeout="pause"`;
-- a heartbeat of `2 * lease_ttl_s`.
+Mutations: a name list instead of the prefix rule; read the live `os.environ`.
+
+**No paid sandbox outlives its lease** (`test_sigkilled_owner_sandbox_dies_within_lease`).
+- Setup: `lease_ttl_s=120` and a leg deadline 3600 s away. The owner heartbeats once, then stops
+  without `release`, which simulates SIGKILL.
+- Assertions:
+  - after the heartbeat, the remote timeout set is ≤ `lease_ttl_s`;
+  - after `lease_ttl_s + 1` virtual seconds, a listing across every state is empty.
+- Mutations:
+  - `timeout=86400`;
+  - `on_timeout="pause"`;
+  - a heartbeat of `2 * lease_ttl_s`;
+  - **renew passes `until - now` through uncapped**, which gives 3560 s and turns it red.
 
 **Paused is not cleanup.**
 - The fake `kill()` leaves the sandbox paused.
@@ -440,8 +545,13 @@ Mutation: accept a non-running state.
 **Lost create response.** The fake SDK creates the sandbox and then raises. `commit` lists by lease,
 kills and confirms, then re-raises. Mutation: re-raise without listing.
 
-**Renew at the edge.** With the remaining time at 0 or negative, `renew` kills with confirmation and
-never calls `set_timeout(0)`. Mutation: clamp to 0.
+**Renew at the edge.**
+- With `until - now > lease_ttl_s`, the timeout set is exactly `lease_ttl_s`.
+- With the remaining time at 0 or negative, `renew` kills with confirmation and never calls
+  `set_timeout(0)`.
+- A create whose computed timeout is ≤ 0 is refused before create.
+
+Mutations: drop the `min`; clamp to 0.
 
 **Reaper scope.** The fake SDK returns three pages of sandboxes:
 - a paused dead lease;
@@ -464,8 +574,26 @@ create. Mutation: count outside the lock.
 
 Mutations: read only the working tree; treat unreadable as absent.
 
-**`qualify` uses the fixture only.** The uploaded or created payload is the packaged fixture, and no
-repository path is read. Mutation: pass the cwd.
+**Control-plane qualification is scoped, not a bypass.**
+- `qualify_control_plane` uploads nothing, reads no repository path, creates with all egress
+  denied, and runs through the driver. Its journal entry, heartbeat and confirmed kill are
+  observed.
+- Its record carries `qualification_scope = "control_plane"`, no snapshot `committed` receipt,
+  and `sandbox_root_applied` false.
+- A **board-shaped** review request against the 4a1 backend is refused by the driver before create
+  (`required_capabilities ⊄ capabilities()`), with the create counter at 0.
+- Only the B4 entry point can build an empty-required-set request.
+- The `phase_loop_runtime.placement_backends` metadata has no `e2b` entry (restored).
+
+Mutations: let a review request carry an empty required set; count a control-plane record as
+applied; declare the entry point; pass the cwd.
+
+**Evidence `details`.** Only the four 4a1 keys are serialized. Mutation: pass arbitrary backend
+keys through.
+
+**Jail binding.** The agent-harness#1132 J1 mount set contains no path under
+`$XDG_STATE_HOME/phase-loop/credentials`. This is skipped until the jail module exists. Mutation:
+add the bind.
 
 **Contract binding.**
 - There is no `prepare`.
@@ -474,10 +602,14 @@ repository path is read. Mutation: pass the cwd.
 - A backend `runtime_end_to_end` is recorded as `backend_attested` (1a's coercion).
 - `import phase_loop_runtime` never imports `e2b`.
 
-**Live qualification** (`test_sandbox_e2b_live.py`). It skips with an exact reason when any of these
-is missing: the extra, the key file, `PHASE_LOOP_E2B_LIVE=1`, or `[e2b]`.
+**Live qualification** (`test_sandbox_e2b_live.py`). It skips with the first applicable reason:
+- `"E2B live qualification skipped: the e2b extra is not installed"`;
+- `"E2B live qualification skipped: no E2B key file"`;
+- `"E2B live qualification skipped: PHASE_LOOP_E2B_LIVE != 1"`;
+- `"E2B live qualification skipped: no [e2b] section in the user config"`.
 
-When run, it drives `qualify-lifecycle` against the operator's project and records:
+When it runs, it drives `qualify-control-plane` against the operator's project. That is a
+control-plane record only; full qualification moves to 4a2. It records:
 - create, renew, kill and confirmation;
 - a SIGKILLed child, followed by zero leftover sandboxes after `lease_ttl_s` (120 s) plus 60 s;
 - the billed seconds;
@@ -489,24 +621,28 @@ skips. The record is attached to the 4a1 PR as operational evidence.
 Run on a tree left untouched for the duration.
 
 ## Acceptance criteria
-- [ ] `test_e2b_key_never_in_runtime_env` passes on all six fallback variants and the `qualify`
-  path, and each named mutation turns it red. `os.environ` never contains the key after a qualify
+- [ ] `test_e2b_key_never_in_runtime_env` passes on all six fallback variants (the sixth is
+  control-plane qualification), and each named mutation turns it red. `os.environ` never contains the key after a qualify
   run.
-- [ ] `test_sigkilled_owner_sandbox_dies_within_lease` and the paused-is-not-cleanup falsifier
-  pass, and each named mutation turns one of them red.
+- [ ] `test_sigkilled_owner_sandbox_dies_within_lease` (including the uncapped-renew mutation),
+  the renew-edge test and the paused-is-not-cleanup falsifier pass. Each named mutation turns
+  one of them red.
 - [ ] The reaper-scope falsifier kills exactly the dead-lease sandbox across three pages. The
   same-process live lease and another owner's sandbox survive.
 - [ ] With the fake SDK, the following each give their code with the create counter at 0:
   - each cap breach;
   - `E2B_DEBUG=1`;
-  - an unpinned template;
   - a key in the environment;
+  - a board-shaped review request, refused by the driver;
   - a base-only opt-out, and an unreadable base.
 
   With `e2b` absent, `import phase_loop_runtime.sandbox_e2b` succeeds and construction raises
   `e2b_extra_missing`.
-- [ ] `test_sandbox_e2b_live.py` skips with its exact reason when the key file is absent. The
-  maintainer's live record is attached and shows zero leftover sandboxes after the SIGKILL case.
+- [ ] `test_sandbox_e2b_live.py` skips with exactly
+  `"E2B live qualification skipped: no E2B key file"` when the key file is absent. The
+  maintainer's live **control-plane** record is attached, carries
+  `qualification_scope = "control_plane"`, and shows zero leftover sandboxes after the SIGKILL
+  case.
 
 ## Follow-on: plan 4a2, image and guest (specified; its own bounded plan)
 
@@ -547,6 +683,27 @@ Run on a tree left untouched for the duration.
     `e2b_template_input_unpinnable`, and E1 goes back to the maintainer with the recorded
     result.
   - It **never** falls back to option (a) silently.
+  - **Rejection is not the only trigger.** A builder might accept `repo@sha256:…` without
+    honouring it, so every build, and every rebuild, also runs two checks:
+    - **a negative control:** a well-formed but non-existent digest must fail the build;
+    - **a positive check:** a fingerprint of the pinned base, taken in the VM, must equal the one
+      computed locally from the image.
+
+    If either check fails, 4a2 stops the same way.
+- **Tying a placement to the lock.**
+  - The template manifest carries the lock digest.
+  - At launch, three digests must agree:
+    - the one reported in the VM (`backend_attested`);
+    - the configured `template_inputs_sha256`;
+    - the installed runtime's packaged lock digest.
+
+    Any disagreement refuses with `e2b_template_stale`.
+  - `template build` writes a runtime-owned record: "sent lock L, received `build_id` B". That
+    record is the only link the runtime itself observes.
+  - The expected binary hashes derive from the lock, never from the build's own output.
+- **4a2 configuration keys.** `template`, `template_manifest_sha256`, `template_inputs_sha256`
+  and `max_snapshot_bytes` are introduced here, together with their producer, the `template
+  build` command.
 
 ### Snapshot
 - **The archive.** A deterministic tar is built from the revalidated local stage. The digest is
@@ -576,8 +733,9 @@ Run on a tree left untouched for the duration.
 
 **`seat-tool`** has no non-loopback output.
 
-**Loopback.** Every root-owned listener (tcp and udp, IPv4 and IPv6, and unix sockets),
-enumerated at probe time, is dropped for both seat uids.
+**Loopback.** Every root-owned tcp and udp listener, IPv4 and IPv6, is enumerated at probe time
+and dropped for both seat uids by nftables. Root-owned **unix sockets** are closed by file
+permissions and mount layout instead, because nftables cannot filter them. P21 checks both.
 
 | # | Requirement | E2B | In-guest | Probe |
 |---|---|---|---|---|
@@ -637,8 +795,15 @@ enumerated at probe time, is dropped for both seat uids.
 - `sandbox_e2b_template.py` — add — the build from `template_inputs.lock`.
 - `sandbox_e2b.py` `commit` — modify — the order: create, then the gating probes, then kill-and-refuse or upload.
 
-**4a2 acceptance, outlined.** The probe falsifiers above. The template-input qualification record.
-The drift test. A live `qualify` showing every gating row passing.
+**4a2 acceptance, outlined.**
+- The probe falsifiers above.
+- The template-input qualification record, including the negative-control and fingerprint checks.
+- The three-digest launch check.
+- The drift test.
+- **The full live qualification, moved here from 4a1.** It runs through the same driver with a
+  review-shaped request whose required set is non-empty. Every gating row must pass and every
+  required capability must be verified before any upload. This is the first record that may be
+  counted as a placement.
 
 ## Follow-on: plan 4b, a seat runs inside the VM (outlined; its own bounded plan)
 
