@@ -9,7 +9,7 @@
     "protected_files_single_link": true,
     "sentinels_intact": true
   },
-  "evidence_sha256": "2c4ec7f304ca25baf89ef78166bcee45eb3231eecf5fdeaf600d3e0e09d5ac12",
+  "evidence_sha256": "2a407120833537e29619af854b0871a5c61cd66afcab00f8a8c49ce4c577d0e1",
   "falsifier_layout": "execfind-falsifier-layout.v1:175589eeea9b793f1fe2529e5f768b95a65f484896999e08514cd57b9bb066c9",
   "issue": "agent-harness#1132",
   "note": "public summary; the full evidence (host-bound) lives in the operator's per-host store",
@@ -31,9 +31,9 @@
     "unix-path": "ENOENT"
   },
   "probe_resolved_protected_paths": 0,
-  "profile_digest": "63bec360e578c0589bb057ebc6e6d3e2bb83978cd8f46411070f3429d0def4d3",
+  "profile_digest": "aad69a4d159bed2e2279ce617b82e986e46305a1d3a6b50f23399f1e7cd9f5a9",
   "protected_dir_count": 52,
-  "recorded_at": "2026-09-30T03:35:57+00:00",
+  "recorded_at": "2026-09-30T04:29:16+00:00",
   "result": "pass",
   "run_outcome": "green_on_head",
   "schema": "seat_jail_execfind2_qualification_summary.v1",
