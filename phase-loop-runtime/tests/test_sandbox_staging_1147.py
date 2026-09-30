@@ -252,10 +252,13 @@ _REAL_LAYOUT = r"""
 set -e
 root="$1"; disk="$root/disk"; mkdir -p "$disk/one" "$disk/two" "$root/a" "$root/t" "$root/m"
 # Layout 1: a disk bind at a/, a disk submount at a/sub, then a tmpfs over a/.
-mount --bind "$disk/one" "$root/a"; mkdir -p "$root/a/sub"
-mount --bind "$disk/two" "$root/a/sub"; mount -t tmpfs none "$root/a"; mkdir -p "$root/a/sub"
+# `-n`: no userspace mount table. Older util-linux cannot update it inside an unprivileged
+# namespace and exits 16 even though the kernel mount succeeded (seen on the CI runner).
+mount -n --bind "$disk/one" "$root/a"; mkdir -p "$root/a/sub"
+mount -n --bind "$disk/two" "$root/a/sub"; mount -n -t tmpfs none "$root/a"; mkdir -p "$root/a/sub"
 # Layout 2: an older tmpfs at t/ moved over a newer disk bind at m/.
-mount -t tmpfs none "$root/t"; mount --bind "$disk/two" "$root/m"; mount --move "$root/t" "$root/m"
+mount -n -t tmpfs none "$root/t"; mount -n --bind "$disk/two" "$root/m"; mount -n --move "$root/t" "$root/m"
+echo LAYOUT-READY
 exec python3 -c 'import sys; from phase_loop_runtime import sandbox_policy as p
 print(p._mount_fstype(sys.argv[1] + "/a/sub"), p._mount_fstype(sys.argv[1] + "/m"))' "$root"
 """
@@ -276,8 +279,11 @@ def test_real_overmount_layouts_in_a_mount_namespace(tmp_path):
         ["unshare", "-rm", "sh", "-c", _REAL_LAYOUT, "sh", str(tmp_path)],
         capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(src)},
     )
+    if "LAYOUT-READY" not in result.stdout:
+        # The kernel or sandbox refused to BUILD the layout; nothing about the probe ran.
+        pytest.skip(f"cannot build the mount layout here: {result.stderr.strip()[:200]}")
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["tmpfs", "tmpfs"], result.stdout
+    assert result.stdout.split()[1:] == ["tmpfs", "tmpfs"], result.stdout
 
 
 class TestCapacityProbe:
