@@ -131,10 +131,11 @@ def _build_from_reply(function_name: str, request: dict[str, Any]) -> BamlReques
 
 def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
     if _is_class_name(function_name):
-        schema = export_function_schema(function_name)
-        payload = _find_json_payload(str(raw_text or ""))
-        _validate_payload_against_schema(payload, schema)
-        return ParsedResponse(function_name=function_name, payload=payload, value=payload)
+        with _client_boundary():
+            schema = export_function_schema(function_name)
+            payload = _find_json_payload(str(raw_text or ""))
+            _validate_payload_against_schema(payload, schema)
+            return ParsedResponse(function_name=function_name, payload=payload, value=payload)
 
     if os.getpid() != _CLIENT.owner_pid:
         raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
@@ -1127,6 +1128,7 @@ class _Client:
                 req.spawn = None
                 self._reply(req, ("error", BamlWorkerError("fault", "BAML worker client owner died")))
         self.active = None
+        self.gen = None  # every generation above is disposed; the slot may still name one
 
     def _reply(self, req: _Request, outcome: tuple[str, Any]) -> None:
         """Deliver ``req``'s one reply, then forget it (the order matters: until

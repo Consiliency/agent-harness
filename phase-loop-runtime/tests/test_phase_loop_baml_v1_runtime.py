@@ -673,7 +673,13 @@ _POST_REPLY_SEAMS = {
     "request-model": ("BamlRequest", None, "build", TypeError("model bug")),
     "closeout-validate": ("model_validate", "PhaseLoopCloseoutV1", "parse", MemoryError("validation allocation failed")),
     "closeout-dump": ("model_dump", "PhaseLoopCloseoutV1", "parse", RecursionError("dump bug")),
+    # The class-name branch never calls the worker, but it is public response
+    # processing too, and Tier 3 parses its judgment through it.
+    "class-find-json": ("_find_json_payload", None, "class", MemoryError("scan allocation failed")),
+    "class-validate": ("_validate_payload_against_schema", None, "class", RecursionError("schema walk bug")),
 }
+
+JUDGMENT = json.dumps({"verdict": "real", "confidence": 0.9, "reasoning": "r", "specific_concerns": []})
 
 
 def _post_reply_call(which: str):
@@ -681,6 +687,8 @@ def _post_reply_call(which: str):
         return lambda: m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
     if which == "closeout":
         return lambda: m.build_baml_request("EmitPhaseCloseout", CLOSEOUT)
+    if which == "class":
+        return lambda: m.parse_baml_response("EvidenceJudgment", JUDGMENT)
     return _parse
 
 
@@ -2524,6 +2532,8 @@ _TERMINAL_FLOWS = {
     "release": ("non_json", [("_Client", "_reap"), ("_Client", "_release")]),
     "publish": ("echo", [("_Client", "_on_spawned"), ("_Client", "_request_spawn"), ("_Client", "_start")]),
     "stop": ("echo", [("_Client", "_begin_stop"), ("_Client", "_stop_gen"), ("_Client", "_kill"), ("_Client", "_continue_stop"), ("_Client", "_release")]),
+    # A spawn that returns after its request gave up: the late-spawn branch.
+    "late_spawn": ("echo", [("_Client", "_on_spawned"), ("_Client", "_kill"), ("_Client", "_log")]),
 }
 
 
@@ -2537,7 +2547,8 @@ def _terminal_cases():
 
 def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
     mode, _fns = _TERMINAL_FLOWS[flow]
-    client = m._Client(test_mode=True, retries=0, deadline_s=2.0, queue_budget_s=2.0, abandon_grace_s=0.5)
+    late = flow == "late_spawn"
+    client = m._Client(test_mode=True, retries=0, deadline_s=0.4 if late else 2.0, queue_budget_s=2.0, abandon_grace_s=0.5)
     target = m if owner == "module" else m._Client
     fired: list = []
     pids: list[int] = []
@@ -2562,13 +2573,26 @@ def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
         return box
 
     wrapped = _die_at_line(client, getattr(target, name), line, fired)
+    peer = _peer_spawn(mode, record=pids)
+    if late:
+        first = peer
+
+        def peer(argv, **kwargs):  # noqa: F811 - the first spawn outlives its request
+            if not pids:
+                time.sleep(0.8)
+            return first(argv, **kwargs)
+
     try:
-        with mock.patch.object(m, "_spawn_popen", _peer_spawn(mode, record=pids)), \
+        with mock.patch.object(m, "_spawn_popen", peer), \
                 mock.patch.object(m._Client, "_spawn_worker", recording_spawn_worker):
             if flow == "stop":
                 assert "value" in call()
                 with mock.patch.object(target, name, wrapped):
                     client.stop(graceful=False, timeout=5)
+            elif late:
+                with mock.patch.object(target, name, wrapped):
+                    call()  # fails with kind="spawn": the spawn is retired
+                    _wait(lambda: fired or (gens and gens[0].state == "disposed"), 5)
             else:
                 with mock.patch.object(target, name, wrapped):
                     call()
@@ -2578,6 +2602,11 @@ def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
             if not fired:
                 return False
             assert client.owner_starts >= 1
+            if late:
+                # The caller had already returned, so no waiter restarts the owner:
+                # recovery runs on the next call, which must still be healthy.
+                with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo", record=pids)):
+                    assert "value" in call(), (flow, name, line)
             # No worker and no helper thread outlives the reap bound.
             deadline = REAP_BOUND + 1.0
             live = client.gen if not client.closed else None
