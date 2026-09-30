@@ -221,6 +221,21 @@ def _findings_from_panel(
                 f"record_digest={digest}; president ruling required")
 
     for leg in panel.legs:
+        # agent-harness#1176: a heartbeat_only seat that went without genuine progress past its
+        # notice window is recorded, whatever its final status. A warn: the notice is history,
+        # never a verdict, and never permission to end a seat.
+        monitoring = leg.review_monitoring or {}
+        notices = monitoring.get("progress_notice_count")
+        if type(notices) is int and notices > 0:
+            window = monitoring.get("stall_notice_s")
+            window_s = f"{int(window)}s" if type(window) in (int, float) else "its"
+            findings.append(ReviewFinding(
+                code="seat_progress_stalled",
+                reason=(f"panel leg {leg.leg} went without genuine progress past its {window_s} "
+                        f"notice window ({notices} notice(s); final status {leg.status})"),
+                severity="warn",
+                reviewed_sha=reviewed_sha,
+            ))
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so

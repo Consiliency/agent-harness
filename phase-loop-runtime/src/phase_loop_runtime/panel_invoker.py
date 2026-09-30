@@ -294,7 +294,7 @@ class _ReviewMonitor:
             "observation_state": "progress_unobserved", "terminal_reason": None,
             # agent-harness#1176: a typed, visible notice instead of silent waiting.
             "stall_notice_s": _review_stall_notice_s() if stall_notice_s is None else float(stall_notice_s),
-            "progress_notice": None, "progress_notice_count": 0,
+            "progress_notice": None, "progress_notice_count": 0, "last_progress_notice": None,
             "provider_terminal_state": None,
         }
 
@@ -304,9 +304,11 @@ class _ReviewMonitor:
         self.record.update(last_genuine_progress_age_s=age,
                            observation_state="progress_observed" if age is not None and age <= _LEG_LIVENESS_READ_INTERVAL_S else "progress_unobserved",
                            terminal_reason=terminal)
-        # A terminal observation leaves the notice fields as they were: a seat that stalled and
-        # then completed keeps ``progress_notice_count`` as history.
-        if terminal is None:
+        # A terminal observation ends the ACTIVE notice; ``progress_notice_count`` stays as the
+        # history of a seat that stalled and then finished (agent-harness#1194 r1).
+        if terminal is not None:
+            self.record["progress_notice"] = None
+        else:
             # Never-observed progress counts from the seat's start: a review that exists but
             # was never observed must surface too (agent-harness#1176).
             silence = age if age is not None else time.monotonic() - self.started
@@ -314,6 +316,7 @@ class _ReviewMonitor:
                 self.record["progress_notice"] = None
             elif self.record["progress_notice"] is None:
                 self.record["progress_notice"] = "seat_progress_stalled"
+                self.record["last_progress_notice"] = "seat_progress_stalled"
                 self.record["progress_notice_count"] += 1
                 # Our code and numbers only; never provider text on the operator's stderr.
                 logging.getLogger(__name__).warning(
@@ -2311,6 +2314,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_tui_unsupported_platform", "claude_tui_workspace_trust_blocked",
     # agent-harness#1176: the provider's own journaled give-up
     "claude_seat_output_budget_exhausted", "claude_seat_rate_limited", "claude_seat_provider_api_error",
+    "claude_seat_usage_limited",
     "claude_agent_session_id_missing", "brokered_claude_session_collision",
     "brokered_claude_transcript_cleanup_failed", "missing_claude_cli",
     "claude_version_probe_timeout", "claude_version_probe_failed", "claude_version_unparseable",
@@ -5275,7 +5279,30 @@ _CLAUDE_GAVE_UP_BY_ERROR = {
     "rate_limit": "claude_seat_rate_limited",
 }
 _CLAUDE_GAVE_UP_OTHER = "claude_seat_provider_api_error"
-_CLAUDE_PROVIDER_GAVE_UP_CODES = frozenset({*_CLAUDE_GAVE_UP_BY_ERROR.values(), _CLAUDE_GAVE_UP_OTHER})
+# A ``rate_limit`` record whose ``quotaLimits.status`` is ``rejected`` is a subscription usage
+# limit (the weekly or session cap, "You've hit your weekly limit"), not a transient 429.
+_CLAUDE_GAVE_UP_USAGE = "claude_seat_usage_limited"
+_CLAUDE_PROVIDER_GAVE_UP_CODES = frozenset({
+    *_CLAUDE_GAVE_UP_BY_ERROR.values(), _CLAUDE_GAVE_UP_OTHER, _CLAUDE_GAVE_UP_USAGE})
+
+
+def _claude_quota_reset(payload: dict) -> str | None:
+    """``quotaLimits.resetsAt`` (epoch seconds) re-rendered by us, in UTC, in the one reset
+    format the detail validator accepts; None when absent or not a plausible epoch."""
+    import datetime as _dt
+
+    quota = payload.get("quotaLimits")
+    value = quota.get("resetsAt") if isinstance(quota, dict) else None
+    if type(value) is not int or not 1_000_000_000 <= value <= 10_000_000_000:
+        return None
+    when = _dt.datetime.fromtimestamp(value, _dt.timezone.utc)
+    return f"{when:%H:%M}, {_MONTHS[when.month - 1]} {when.day} {when.year}"
+
+
+def _claude_gave_up_code(detail: object) -> str | None:
+    """The give-up code a session log carries, with or without its rendered reset."""
+    code = str.__str__(detail).split(": ", 1)[0] if isinstance(detail, str) else ""
+    return code if code in _CLAUDE_PROVIDER_GAVE_UP_CODES else None
 
 
 def _claude_api_error_record(payload: dict, message: dict) -> bool:
@@ -5367,6 +5394,11 @@ def _claude_transcript_state(path: Path) -> tuple[int, str | None]:
     if not _claude_api_error_record(payload, message):
         return len(versions), None
     error = payload.get("error")
+    quota = payload.get("quotaLimits")
+    if error == "rate_limit" and isinstance(quota, dict) and quota.get("status") == "rejected":
+        reset = _claude_quota_reset(payload)
+        return len(versions), (f"{_CLAUDE_GAVE_UP_USAGE}: usage_limit (resets {reset})"
+                               if reset else _CLAUDE_GAVE_UP_USAGE)
     return len(versions), _CLAUDE_GAVE_UP_BY_ERROR.get(
         error if isinstance(error, str) else "", _CLAUDE_GAVE_UP_OTHER)
 
@@ -6542,9 +6574,29 @@ def _run_claude_tui_session(
             else _read_review_output(output_file)
         )
 
+    # agent-harness#1194 r1: a real seat transcript reaches megabytes and is read every tick.
+    # Each parse of the exact brokered transcript is cached under the file's identity and
+    # size, so an unchanged file costs one stat and the final-answer parse is shared.
+    broker_reads: dict[str, object] = {}
+
+    def _broker_read(kind: str, parse: Callable[[], _CaptureMutationResult]) -> _CaptureMutationResult:
+        try:
+            stat = broker_transcript_path.stat()
+            key: object = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            key = "unreadable"  # re-parsed as soon as the file appears or changes
+        if broker_reads.get("key") != key:
+            broker_reads.clear()
+            broker_reads["key"] = key
+        elif kind in broker_reads:
+            return cast("_CaptureMutationResult", broker_reads[kind])
+        broker_reads[kind] = value = parse()
+        return value
+
     def _transcript_text() -> str:
         if broker_transcript_path is not None:
-            return _final_assistant_text_from_jsonl(broker_transcript_path)
+            return _broker_read(
+                "final", lambda: _final_assistant_text_from_jsonl(broker_transcript_path))
         return _latest_claude_transcript_text(str(cwd), since=start_wall)
 
     def _transcript_activity() -> int:
@@ -6558,9 +6610,11 @@ def _run_claude_tui_session(
         # A president may need a format re-ask. Hand its completed API turn to
         # invoke_president even when the text lacks the required ruling grammar;
         # never treat a streaming or partial transcript as that completed turn.
-        return _final_assistant_text_from_jsonl(
-            broker_transcript_path, require_terminal=mode == "president",
-        )
+        if mode != "president":
+            return _transcript_text()
+        return _broker_read("final_terminal", lambda: _final_assistant_text_from_jsonl(
+            broker_transcript_path, require_terminal=True,
+        ))
 
     def _pending_tool_uses() -> tuple[str, ...]:
         # Brokered Claude has an empty tool surface, so only the exact assistant
@@ -6817,7 +6871,8 @@ def _run_claude_tui_session(
                 # same single read yields the provider's typed give-up. The unbrokered cwd
                 # scan keeps byte growth: it may see a neighbouring session.
                 if broker_transcript_path is not None:
-                    transcript_activity, gave_up = _claude_transcript_state(broker_transcript_path)
+                    transcript_activity, gave_up = _broker_read(
+                        "state", lambda: _claude_transcript_state(broker_transcript_path))
                 else:
                     transcript_activity, gave_up = _transcript_activity(), None
                 # #188: the session transcript growing (tool calls, streamed
@@ -6849,7 +6904,7 @@ def _run_claude_tui_session(
                 # conforming transcript answer are all checked first and all win.
                 if gave_up is not None and not transcript_salvage:
                     if review_monitor is not None:
-                        review_monitor.record["provider_terminal_state"] = gave_up
+                        review_monitor.record["provider_terminal_state"] = _claude_gave_up_code(gave_up)
                         review_monitor.observe(
                             None if last_output_progress is None else now - last_output_progress)
                     return _finish(proc.poll() or 1, "", gave_up)
@@ -7837,9 +7892,8 @@ def _exec_claude_tui_leg(
         "claude_tui_stalled",
         "claude_tui_workspace_trust_blocked",
         "claude_tui_editor_not_ready",
-        *_CLAUDE_PROVIDER_GAVE_UP_CODES,
     }
-    if log_text in _typed_operational and status != "OK":
+    if (log_text in _typed_operational or _claude_gave_up_code(log_text)) and status != "OK":
         status = "DEGRADED"
         text = (
             review_text  # real review content only (empty ⇒ governed WARN, not block)
@@ -7867,10 +7921,10 @@ def _exec_claude_tui_leg(
     # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
         tail_failure = (
-            # The provider's typed give-up IS the reason; the idle PTY tail adds nothing our
-            # validated templates can carry (Claude's "resets 6pm (UTC)" wording is not one
-            # ``_rendered_reset`` parses).
-            _LegFailure(log_text) if log_text in _CLAUDE_PROVIDER_GAVE_UP_CODES
+            # The provider's typed give-up IS the reason; the idle PTY tail adds nothing.
+            # A usage limit carries the reset time from the journal's ``quotaLimits``, rendered
+            # by ``_claude_quota_reset``, never from provider text.
+            _LegFailure(log_text) if _claude_gave_up_code(log_text)
             else _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
         )
         if tail_failure is not None and tail_failure.unknown and log_text:

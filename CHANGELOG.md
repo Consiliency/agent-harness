@@ -11,13 +11,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A brokered Claude seat that gives up on its turn now ends at once as DEGRADED with a typed
   reason instead of waiting forever. This is the case where Claude Code journals an API-error
   record after exhausting its output budget, hitting a rate or usage limit, or a server error.
-  The reasons are `claude_seat_output_budget_exhausted`, `claude_seat_rate_limited` and
-  `claude_seat_provider_api_error`. A review that completed always wins over a give-up.
+  The reasons are `claude_seat_output_budget_exhausted`, `claude_seat_usage_limited` (a
+  subscription cap, with its reset time in UTC when the journal records one),
+  `claude_seat_rate_limited` and `claude_seat_provider_api_error`. A review that completed
+  always wins over a give-up.
   Re-journaled transcript records count neither as progress nor as a new turn position.
 - A heartbeat_only seat with no genuine progress for `PHASE_LOOP_REVIEW_STALL_NOTICE_S`
   (default 3600 s) is flagged `seat_progress_stalled`, not ended. The flag appears in the
   seat's monitoring record, as one stderr warning, in `advisor-board --json` legs
-  (`review_monitoring`), in the text summary and in each streamed per-leg verdict file.
+  (`review_monitoring`), in the text summary, in each streamed per-leg verdict file and as a
+  governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
+  as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
 
 ### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
 

@@ -678,11 +678,12 @@ progress has been seen for `stall_notice_s` (default 3600 s; override with
 `PHASE_LOOP_REVIEW_STALL_NOTICE_S`), and no progress at all counts from seat
 start, `progress_notice` is `seat_progress_stalled`, `progress_notice_count`
 counts crossings, and one operator warning with only that code and numbers is
-logged. Resumed progress clears the notice; a terminal observation keeps the
-fields as history. The notice never ends the seat. The record reaches the board:
-`advisor-board --json` legs carry it as `review_monitoring`, the text summary
-prints a `[seat_progress_stalled]` line per affected seat on stderr, and each
-streamed per-leg verdict file carries it.
+logged. Resumed progress and a terminal observation clear the active notice;
+`last_progress_notice` and the count stay as history. The notice never ends the
+seat. The record reaches the board: `advisor-board --json` legs carry it as
+`review_monitoring`, the text summary prints a `[seat_progress_stalled]` line
+per affected seat on stderr, each streamed per-leg verdict file carries it, and
+the governed record adds a `seat_progress_stalled` warn finding per seat.
 On the exact brokered Claude transcript, records are ordered by identity (an
 assistant record by uuid, a user record by uuid and content), so a re-journaled
 record or rewritten metadata is neither progress nor a new position in the turn.
@@ -691,8 +692,12 @@ current request, the last record is an `isApiErrorMessage` give-up and no
 completed answer precedes it. The review file, the broker's final answer and a
 conforming transcript answer are checked first and always win. That leg ends at
 once as DEGRADED with detail `claude_seat_output_budget_exhausted`
-(`error: max_output_tokens`), `claude_seat_rate_limited` (`error: rate_limit`,
-which also covers subscription usage limits) or `claude_seat_provider_api_error`. A `max_tokens` stop that the CLI continues is
+(`error: max_output_tokens`), `claude_seat_usage_limited` (`error: rate_limit`
+with `quotaLimits.status: rejected`, a subscription cap; followed by
+`: usage_limit (resets HH:MM, Mon D YYYY)` rendered in UTC from
+`quotaLimits.resetsAt` when present), `claude_seat_rate_limited` (any other
+`rate_limit`) or `claude_seat_provider_api_error`. `isApiErrorMessage` matches
+JSON `true` or the string `"true"`, on the record or the message. A `max_tokens` stop that the CLI continues is
 not a give-up. Frozen
 broker request/response keys, status literals, and observer envelopes are unchanged.
 

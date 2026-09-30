@@ -292,7 +292,8 @@ def test_terminal_observation_never_raises_a_notice(tmp_path):
 # --- the leg result -----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("code", ["claude_seat_output_budget_exhausted", "claude_seat_rate_limited",
-                                  "claude_seat_provider_api_error"])
+                                  "claude_seat_provider_api_error", "claude_seat_usage_limited",
+                                  "claude_seat_usage_limited: usage_limit (resets 18:00, Sep 30 2026)"])
 def test_give_up_code_reaches_the_leg_as_degraded_with_its_reason(monkeypatch, tmp_path, code):
     monkeypatch.setattr(panel, "_run_claude_tui_session",
                         lambda **kw: (1, "", panel._HarnessCode(code), ""))
@@ -306,7 +307,7 @@ def test_give_up_code_reaches_the_leg_as_degraded_with_its_reason(monkeypatch, t
         tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink)
     assert (status, text) == ("DEGRADED", "")
     assert sink and str(sink[-1].rendered()) == code
-    assert code in panel._HARNESS_DETAIL_CODES
+    assert panel._finalize_leg_detail(panel._HarnessCode(code)) == code
 
 
 # --- round 1 (agent-harness#1194): a give-up never outranks a review ---------------------------
@@ -570,3 +571,95 @@ def test_streamed_verdict_file_carries_the_monitoring_record(tmp_path):
     panel._write_incremental_verdict(tmp_path, 1, plain)
     assert "review_monitoring" not in json.loads(
         next(tmp_path.glob("leg-0001-*.verdict.json")).read_text())
+
+
+# --- round 1 addendum (Opus seat N2, N3, N5) ---------------------------------------------------
+
+def test_terminal_observation_ends_the_active_notice_but_keeps_its_history(tmp_path):
+    monitor = panel._ReviewMonitor(tmp_path / "m.json", "t", 0, threading.Event(), stall_notice_s=10)
+    monitor.observe(11.0)
+    assert monitor.record["progress_notice"] == "seat_progress_stalled"
+    monitor.observe(terminal="completed")
+    record = json.loads(monitor.path.read_text())
+    assert record["progress_notice"] is None and record["progress_notice_count"] == 1
+    assert record["last_progress_notice"] == "seat_progress_stalled"
+
+
+def _usage_limit(**quota) -> dict:
+    """The measured weekly-limit record: ``error: rate_limit`` plus a rejected ``quotaLimits``."""
+    record = api_error("rate_limit")
+    record["quotaLimits"] = {"status": "rejected", "rateLimitType": "seven_day", **quota}
+    record["message"]["content"] = [{"type": "text", "text": "You've hit your weekly limit · resets 6pm (UTC)"}]
+    return record
+
+
+def test_usage_limit_is_told_apart_from_a_429_and_keeps_its_reset_time(tmp_path):
+    path = tmp_path / "t.jsonl"
+    code = panel._claude_transcript_provider_gave_up(
+        write(path, [REQUEST, _usage_limit(resetsAt=1790877600)]))  # 2026-10-01T18:00:00Z
+    assert code == "claude_seat_usage_limited: usage_limit (resets 18:00, Oct 1 2026)"
+    assert panel._finalize_leg_detail(panel._HarnessCode(code)) == code
+    assert panel._claude_transcript_provider_gave_up(
+        write(path, [REQUEST, _usage_limit()])) == "claude_seat_usage_limited"
+    for bad in ("soon", 12, True, 10**12):
+        assert panel._claude_transcript_provider_gave_up(
+            write(path, [REQUEST, _usage_limit(resetsAt=bad)])) == "claude_seat_usage_limited"
+    plain = {**api_error("rate_limit"), "quotaLimits": {"status": "allowed_warning"}}
+    assert panel._claude_transcript_provider_gave_up(write(path, [REQUEST, plain])) == "claude_seat_rate_limited"
+
+
+def test_governed_record_carries_a_stalled_seat_as_a_warn(tmp_path):
+    from phase_loop_runtime import governed_review
+    leg = panel.PanelLegResult("claude", "OK", "Review complete\nAGREE", seat_key="claude")
+    object.__setattr__(leg, "_review_monitoring", {"progress_notice": None, "progress_notice_count": 2,
+                                                    "stall_notice_s": 3600.0})
+    quiet = panel.PanelLegResult("codex", "OK", "Review complete\nAGREE", seat_key="codex")
+    findings = governed_review._findings_from_panel(panel.PanelResult((leg, quiet)), "a" * 40)
+    stalled = [f for f in findings if f.code == "seat_progress_stalled"]
+    assert len(stalled) == 1 and stalled[0].severity == "warn"
+    assert "claude" in stalled[0].reason and "3600s" in stalled[0].reason and "2 notice" in stalled[0].reason
+
+
+def test_an_unchanged_transcript_is_parsed_once_not_every_tick(tmp_path, monkeypatch):
+    _fast_tui(monkeypatch)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    calls = {"final": 0, "state": 0}
+    final, state = panel._final_assistant_text_from_jsonl, panel._claude_transcript_state
+
+    def counted_final(*a, **k):
+        calls["final"] += 1
+        return final(*a, **k)
+
+    def counted_state(*a, **k):
+        calls["state"] += 1
+        return state(*a, **k)
+
+    monkeypatch.setattr(panel, "_final_assistant_text_from_jsonl", counted_final)
+    monkeypatch.setattr(panel, "_claude_transcript_state", counted_state)
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                   stall_notice_s=3600)
+    ticks = 0
+    observe = monitor.observe
+
+    def capture(*args, **kwargs):
+        nonlocal ticks
+        ticks += 1
+        observe(*args, **kwargs)
+
+    monkeypatch.setattr(monitor, "observe", capture)
+    guard = threading.Timer(2, monitor.cancel.set)
+    guard.start()
+    try:
+        panel._run_claude_tui_session(
+            command=_provider(transcript, [*META, REQUEST, capped(1), resume(1)], release),
+            cwd=tmp_path, prompt="input", output_file=tmp_path / "absent", timeout_s=1,
+            backstop_s=1, stall_threshold_s=.05, env=os.environ, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert ticks > 20
+    # while the file is absent, once it is written, and at most one more read across a write
+    assert calls["final"] <= 3 and calls["state"] <= 3, calls
