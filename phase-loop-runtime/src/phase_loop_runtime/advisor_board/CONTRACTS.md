@@ -839,3 +839,70 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   verified pushed oid in its own `watch_push` entry, and reads both the record and the
   created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
   agree. It refuses when it cannot prove its open-PR listing complete.
+
+## ABDFALSIFY — Executable review findings (IF-0-EXECFIND-1)
+
+An optional `falsifier` attachment names one `FindingFalsifier` with
+`finding_id`, `new_test_path`, `expected_nodeid`, and a unified `diff` creating
+only `phase-loop-runtime/tests/test_finding_<finding_id>.py`. A
+`FindingFalsifierAttachment` contains a tuple of these entries with unique
+finding IDs. The attachment is a non-field property on `PanelLegResult`; it
+does not change the serialized leg or board schema. The seat supplies text,
+never an executable command or a claimed test outcome.
+
+`run_finding_falsifier` accepts one attached falsifier, board `seat_key`, canonical
+repository, positive wall-clock/output bounds, and a single-use
+`FalsifierIsolationAuthorization` bound to the exact 40-character `reviewed_sha`.
+Its identity is `public_board_falsifier.v1`; its child has no credentials,
+network egress, or live-tree mount. The source must be clean at that SHA.
+Before applying the diff, the staged materialized path set, bytes, symlink
+targets, and executable bits must equal the reviewed Git tree, including no
+ignored extra files. Only the named pytest node runs in the staged clone.
+
+Each run stages its own tree from the canonical repository at the head under
+test, never from a seat's tree, and copies installed dependency files into a
+per-run import root (copies, never links; uv's `--link-mode=copy` equivalent).
+Those two trees are the run's protected objects: every regular file in them,
+`.git` included, must have a link count of exactly one before the node starts
+and after it exits, or the run is `error` (agent-harness#1134). The shared system
+interpreter is read-only to the run and is not a protected object. The runner
+resolves `/usr/bin/python3` once and launches exactly that file. Falsifier runs
+execute without site processing (`-S`): no `.pth`, `sitecustomize` or
+`usercustomize` runs and no host site directory is on `sys.path`, so the
+interpreter's inputs are its standard-library entries plus the run's explicit
+staged paths. Every dependency, pytest included, comes from the per-run staged
+dependency root (a distribution without a RECORD is staged from its declared
+top-level modules); a host site directory on the falsifier path is refused as
+`falsifier_host_site_packages_refused`. The measured set is the launched
+interpreter's own `sys.path` under the same flags and environment, so the
+inventory and the launch are identical by construction. Every entry is
+digested before and after the run: archive entries and `.pth`, archive and
+customize files by content, directories by an lstat manifest (mode, size,
+device, inode, mtime, ctime), and every symlink target outside the set followed
+and hashed by content. An entry the runner cannot digest fails closed, and a
+changed scope or digest is `error`.
+Before staging, the canonical repository must not be reachable through any
+system-root mount (compared by device and in-filesystem path, not by pathname),
+and a repository that contains any mount point is refused as
+`falsifier_repository_submount_refused`. The record schema is unchanged; the reason
+stays in the result's `detail`.
+
+The frozen outcome tuple is `red_on_head`, `green_on_head`, `apply_failed`,
+`node_missing`, `error`. Pytest emits JUnit, but the recorded outcome comes from
+the wrapper's reported call-phase result; the test-writable XML is not read as
+authority. Seat-authored and reviewed-tree Python (including conftest) run
+in the wrapper's process and can forge
+the reported status, including a parent-keyed frame. RED and GREEN are therefore
+observed, untrusted results: neither binds nor dismisses a finding. Drift,
+expiry, unavailable isolation, and incomplete evidence are `error`; every
+valid attached result remains a blocking `finding_receipt` pending a president
+ruling. The metadata-only
+`finding_falsifier.v1` record has exactly `schema`,
+`authorization_identity`, `seat_key`, `reviewed_sha`, `finding_id`, `nodeid`,
+`outcome`, `red_output_digest`, `diff_digest`, `wall_clock_bound_s`, and
+`output_cap_bytes`. `diff_digest` hashes the offered UTF-8 diff bytes;
+`red_output_digest` hashes separately captured stdout followed by stderr
+and is null unless RED. The caller binds the record with SHA-256 over
+canonical JSON (`sort_keys=True`, compact separators, `ensure_ascii=False`).
+The full freeze and golden values live in
+`tests/data/execfind_falsifier_attachment_v1.golden.json`.
