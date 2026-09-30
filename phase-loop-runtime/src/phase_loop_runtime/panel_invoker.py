@@ -199,6 +199,33 @@ LEG_STATUSES: tuple[str, ...] = (
 )
 
 
+# Host directories the Gemini heartbeat provider has no use for. Each one present on the
+# host is replaced by an empty private tmpfs inside its sandbox; a missing one is skipped,
+# because the read-only root cannot take a new mount point.
+_GEMINI_PRIVATE_ROOTS = ("/tmp", "/var/tmp", "/home", "/root", "/mnt", "/media", "/srv", "/run/user")
+
+
+def _gemini_filesystem_view(cwd, mount_args) -> list[str]:
+    """The Gemini heartbeat sandbox's view of the host: read-only, with private scratch.
+
+    The host root is bound read-only and the directories in ``_GEMINI_PRIVATE_ROOTS`` are
+    replaced by empty tmpfs mounts, so the only writable places are the profile's private
+    HOME under ``/dev``, a private ``/tmp``, an empty private working directory at ``cwd``,
+    and each file the profile's HOME links to (the subscription credential), bound back
+    at its own path so that a token refresh still reaches it.
+    """
+    view = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+    roots = sorted({os.path.realpath(root) for root in _GEMINI_PRIVATE_ROOTS if os.path.isdir(root)})
+    for root in roots:
+        if not any(root.startswith(outer + "/") for outer in roots):
+            view += ["--tmpfs", root]
+    for index, arg in enumerate(mount_args):
+        if arg == "--symlink":
+            target = mount_args[index + 1]
+            view += ["--bind", os.path.realpath(target), target]
+    return view + ["--dir", os.path.abspath(cwd)]
+
+
 class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
     """A provider process group could not be proven absent after termination."""
 
@@ -238,7 +265,8 @@ class _ReviewMonitor:
             self.record["terminal_reason"] = "monitoring_write_failed"
             raise
 
-    def owned_command(self, command: Sequence[str], *, gemini_profile=None) -> list[str]:
+    def owned_command(self, command: Sequence[str], *, gemini_profile=None, cwd=None,
+                      probe_marker=None) -> list[str]:
         if self.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
         # The PID namespace's init owns even descendants that start a new session.
@@ -249,10 +277,17 @@ class _ReviewMonitor:
         # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
         # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
         # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
-        return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-                "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-                *(gemini_profile.mount_args if gemini_profile is not None else ()),
-                "--", *command]
+        # The Gemini profile supplies its own read-only view of the host (same /dev and
+        # /proc mounts); its HOME mounts follow, on that /dev. The seat-identity probe
+        # gets the same view with only its marker file in place of the HOME mounts.
+        if gemini_profile is None:
+            view = ["--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        else:
+            view = _gemini_filesystem_view(os.getcwd() if cwd is None else cwd,
+                                           gemini_profile.mount_args)
+            view += (gemini_profile.mount_args if probe_marker is None
+                     else ["--ro-bind", probe_marker, probe_marker])
+        return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid", *view, "--", *command]
 
 
 _CaptureMutationResult = TypeVar("_CaptureMutationResult")
@@ -3442,9 +3477,11 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
     file the operator just created as the operator's own, and exactly the expected
     capability and no-new-privs lines. Anything else refuses the launch, in every egress
     mode -- a namespace that is up but not what it must be is a defect, not a missing
-    host capability.
+    host capability. ``prefix`` may be a callable that builds the prefix for the marker.
     """
     with _seat_probe_marker() as marker:
+        if callable(prefix):
+            prefix = prefix(marker)
         try:
             seen = subprocess.run(
                 [*prefix, "/bin/sh", "-c", _SEAT_PROBE, "sh", marker],
@@ -3485,14 +3522,20 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     (`_require_seat_identity`). ``probe_owner`` exists for ONE owner only: the gemini
     heartbeat profile's wrapper carries single-use descriptors (a gate its bubblewrap blocks
     on, sealed image data it reads once), so its probe uses the same wrapper without them.
+    A callable ``probe_owner`` receives the probe's marker path, for an owner whose
+    filesystem view must include that one file.
     """
     cwd = kwargs.get("cwd")
     prefix = _compose_launch_prefix(cwd, process_owner, retain_caps)
     if _probes_seat(prefix, process_owner):
-        _require_seat_identity(
-            prefix if probe_owner is None else _compose_launch_prefix(cwd, probe_owner, retain_caps),
-            retain_caps,
-        )
+        if probe_owner is None:
+            probe = prefix
+        elif callable(probe_owner):
+            def probe(marker):
+                return _compose_launch_prefix(cwd, probe_owner(marker), retain_caps)
+        else:
+            probe = _compose_launch_prefix(cwd, probe_owner, retain_caps)
+        _require_seat_identity(probe, retain_caps)
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
@@ -5730,8 +5773,11 @@ def _run_leg_with_liveness(
         # so the seat lands in the namespace instead of beside it.
         proc = launch_provider(
             cmd,
-            process_owner=() if review_monitor is None else review_monitor.owned_command((), gemini_profile=gemini_profile),
-            probe_owner=None if gemini_profile is None else review_monitor.owned_command(()),
+            process_owner=() if review_monitor is None else review_monitor.owned_command(
+                (), gemini_profile=gemini_profile, cwd=cwd),
+            probe_owner=None if gemini_profile is None else (
+                lambda marker: review_monitor.owned_command(
+                    (), gemini_profile=gemini_profile, cwd=cwd, probe_marker=marker)),
             retain_caps=retain_caps,
             cwd=str(cwd),
             env=dict(env),

@@ -234,6 +234,11 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(cli.read_bytes()).hexdigest(): "d" * 64})
+    # The synthetic provider reads its mode and reports through files under tmp_path,
+    # which the sandbox view does not otherwise include; bind that one directory.
+    view = panel._gemini_filesystem_view
+    monkeypatch.setattr(panel, "_gemini_filesystem_view",
+                        lambda cwd, mount_args: [*view(cwd, mount_args), "--bind", str(tmp_path), str(tmp_path)])
     return SimpleNamespace(module=gh, path=cli, attempts=attempts, observation=observation,
                            mode=mode_file, token=token, home=home)
 
@@ -1529,8 +1534,13 @@ def test_the_gemini_seat_probe_leaves_the_profile_descriptors_to_the_launch(fixt
     assert not any(flag in probe for flag in ("--info-fd", "--block-fd", "--ro-bind-data")), (
         "the probe must never touch the gemini profile's single-use descriptors")
     # Apart from those descriptor mounts (and their --perms), the probe ran through the
-    # launch's own wrapper.
+    # launch's own wrapper; the probe adds only a read-only bind of its own marker file.
     strip = {"--info-fd", "--block-fd", "--ro-bind-data", "--perms", "--dir", "--symlink"}
+    marker = probe[-1]
+    marker_bind = ["--ro-bind", marker, marker]
+    at = next(i for i in range(len(probe)) if probe[i:i + 3] == marker_bind)
+    probe = probe[:at] + probe[at + 3:]
+    assert marker not in launch
     def wrapper(argv):
         out, skip = [], 0
         for arg in argv[:argv.index("/usr/bin/env")]:

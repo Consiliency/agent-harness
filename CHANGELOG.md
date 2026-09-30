@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Harden the Gemini heartbeat sandbox's filesystem view (read-only host binds, minimal writable paths)
+
+- The brokered Gemini heartbeat seat's sandbox binds the host root read-only. Host
+  directories the provider has no use for (`/tmp`, `/var/tmp`, `/home`, `/root`, `/mnt`,
+  `/media`, `/srv`, `/run/user`, where present) are replaced by empty private tmpfs mounts.
+- The writable paths are the ones measured from a real leg: the profile's private HOME
+  under `/dev`, a private `/tmp`, an empty private working directory at the leg's cwd, and
+  the subscription credential file (so a token refresh still reaches it). The leg's output
+  still reaches the runtime only through the provider's stdout.
+- The seat-identity probe runs through the same view, adding only its own marker file.
+  Other seats' owner wrappers are unchanged.
+- The change is in the launch wrapper (`panel_invoker.py`), not in an agy route-core
+  file, so this needs no agy requalification of its own. The next release cut's full
+  qualification covers it.
+
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
