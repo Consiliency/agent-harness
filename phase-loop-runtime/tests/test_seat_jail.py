@@ -379,8 +379,10 @@ def test_j3_descriptors_are_exactly_the_declared_set(tmp_path):
     0-2 and the token fd (a hosted CI bwrap left its data/seccomp descriptors open)."""
     jail = _jail(tmp_path)
     owner = [*_test_owner(jail), *seat_jail.seat_fd_closer(str(jail.token_fd))]
-    done = _run_in(jail, 'ls /proc/$$/fd | sort -n | tr "\\n" " "', owner=owner)
-    assert done.stdout.split() == [str(fd) for fd in sorted({0, 1, 2, jail.token_fd})]
+    # No pipeline: a shell holds its pipe ends while `ls` reads the shell's fd table, which
+    # races (CI saw a pipe end as fd 4). A lone command leaves the shell's table as inherited.
+    done = _run_in(jail, 'ls /proc/$$/fd', owner=owner)
+    assert sorted(done.stdout.split(), key=int) == [str(fd) for fd in sorted({0, 1, 2, jail.token_fd})]
 
 
 @requires_userns
