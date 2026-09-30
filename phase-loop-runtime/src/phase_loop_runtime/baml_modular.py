@@ -773,6 +773,23 @@ class _Gen:
         self.threads: list[threading.Thread] = []
         self.eof_partial = False
         self.overdue = False
+        self.log_entry: dict[str, Any] | None = None
+
+
+_STDERR_TAIL_BYTES = 2048
+
+
+def _stderr_tail(err_file) -> str:
+    try:
+        if err_file.closed:
+            return ""
+        size = err_file.seek(0, os.SEEK_END)
+        err_file.seek(max(0, size - _STDERR_TAIL_BYTES))
+        data = err_file.read(_STDERR_TAIL_BYTES)
+    except (OSError, ValueError):
+        return ""
+    text = data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+    return _sanitize_text(text) if text.strip() else ""
 
 
 def _exiting(proc: subprocess.Popen) -> bool:
@@ -968,6 +985,10 @@ class _Client:
         self.dying: list[_Gen] = []
         self.late: list[_Gen] = []
         self.spawner: threading.Thread | None = None
+        # Spawns handed to the spawner whose result the owner has not handled.
+        # While one of them can still publish a worker, nothing may stop
+        # watching for it (codex round 4).
+        self.spawns_outstanding = 0
         self.next_frame_id = 0
         self.next_gen = 0
         self.next_token = 0
@@ -1060,6 +1081,10 @@ class _Client:
         # launch that is interrupted, or a candidate that finds the baton taken,
         # costs at most one bucket before a waiter launches again.
         bucket = int(time.monotonic() / _OWNER_LAUNCH_BUCKET_S)
+        # Only the current bucket matters; older tickets are dropped so a recurring
+        # fault cannot grow this without bound (pop is atomic, list() is one C call).
+        for old in [key for key in list(self.owner_launches) if key < bucket]:
+            self.owner_launches.pop(old, None)
         mine = object()
         if self.owner_launches.setdefault(bucket, mine) is not mine:
             return
@@ -1114,14 +1139,41 @@ class _Client:
                     # the owner (the supervisor then relaunches one).
                     failures = failures + 1 if self.owner_beat == beat else 1
                     if failures > _OWNER_REENTRIES:
+                        self.pending.append(
+                            f"BAML worker owner gave up after {failures} in-thread recoveries without progress; "
+                            "the supervisor relaunches it"
+                        )
                         break
                     self.owner_starts += 1
         except BaseException:  # noqa: BLE001 - the owner must hand the baton back
             clean = False
         finally:
-            self.recover = not clean
-            self.owner_running = False
-            self.baton.put(baton)
+            try:
+                self.recover = not clean
+                self.owner_running = False
+            finally:
+                # The baton goes back exactly once, whatever lands here (codex
+                # round 4: a stranded baton cannot be repaired by relaunch
+                # candidates).  The put and the clearing of the local share one
+                # line on purpose: no line event, and no point where CPython
+                # delivers an asynchronous exception, falls between them.
+                while True:
+                    try:
+                        self.baton.put(baton); baton = None  # noqa: E702
+                        break
+                    except BaseException:  # noqa: BLE001 - retried until the baton is back
+                        if baton is None:
+                            break
+
+    def _spawn_pending(self) -> bool:
+        """True while a handed-over spawn can still publish a worker: its result
+        is unhandled and either the spawner is alive or the result is queued.
+        (Read in this order, so a spawner that reports and exits in between is
+        still seen through the queued event.)"""
+        if self.spawns_outstanding <= 0:
+            return False
+        spawner = self.spawner
+        return (spawner is not None and spawner.is_alive()) or not self.events.empty()
 
     def _loop(self) -> bool:
         get = self.events.get
@@ -1135,7 +1187,10 @@ class _Client:
                 self._handle(event)
             self._service()
             self.owner_beat = time.monotonic()
-            if self.closed and not self.dying and not self.late and self.gen is None and not self.stop_acks:
+            if (
+                self.closed and not self.dying and not self.late and self.gen is None
+                and not self.stop_acks and not self._spawn_pending()
+            ):
                 return True
 
     def _recover(self) -> None:
@@ -1189,6 +1244,7 @@ class _Client:
         elif kind == "abandon":
             self._abandon(event[1])
         elif kind == "spawned":
+            self.spawns_outstanding -= 1  # the worker, if any, is in ``generations`` already
             self._on_spawned(event[1], event[2])
         elif kind == "frame":
             self._on_frame(event[1], event[2])
@@ -1203,7 +1259,10 @@ class _Client:
             if gen is self.gen and gen.state in ("init", "busy"):
                 self._fail(gen, "died", "worker stdin closed")
         elif kind == "stop":
-            self._begin_stop(event[1], graceful=event[2])
+            if self.closed:
+                self.stop_acks.append(event[1])  # a stop is already under way
+            else:
+                self._begin_stop(event[1], graceful=event[2])
 
     def _service(self) -> None:
         now = time.monotonic()
@@ -1229,6 +1288,12 @@ class _Client:
         self._reap(now)
         if self.stop_acks:
             self._continue_stop(now)
+        supervisor = self.supervisor
+        if supervisor is not None and not supervisor.is_alive() and (not self.closed or self._spawn_pending() or self.generations):
+            try:
+                self._ensure_supervisor()  # a dead backstop is recreated here, not by the next request
+            except Exception:  # noqa: BLE001 - retried on the next pass
+                pass
 
     def _start(self, req: _Request) -> None:
         self.active = req
@@ -1263,6 +1328,7 @@ class _Client:
         spawn = _Spawn(self.next_token, req.files, req.fp)
         self.spawn = spawn
         req.spawn = spawn
+        self.spawns_outstanding += 1  # counted before it can exist
         self.spawns.put(spawn)
 
     def _ensure_supervisor(self) -> None:
@@ -1286,7 +1352,7 @@ class _Client:
                     continue
                 pending = (
                     self.recover or self.generations or self.inflight or self.backlog
-                    or self.spawn is not None or self.stop_acks
+                    or self.spawn is not None or self.stop_acks or self._spawn_pending()
                 )
                 if pending:
                     try:
@@ -1294,8 +1360,8 @@ class _Client:
                     except Exception:  # noqa: BLE001 - no thread available now; retried next tick
                         pass
                 elif self.closed:
-                    return
-        except BaseException:  # noqa: BLE001 - a dead supervisor is recreated with the next spawner
+                    return  # closed, and nothing registered or able to publish
+        except BaseException:  # noqa: BLE001 - a dead supervisor is recreated by the owner
             return
 
     def _ensure_spawner(self) -> None:
@@ -1311,7 +1377,8 @@ class _Client:
 
     def _on_spawned(self, spawn: _Spawn, result: Any) -> None:
         if spawn is not self.spawn or spawn.retired:
-            if isinstance(result, _Gen):
+            if isinstance(result, _Gen) and result.state != "disposed":
+                # (A generation recovery already disposed of is not logged twice.)
                 self._kill(result)
                 if result not in self.late:
                     self.late.append(result)
@@ -1499,6 +1566,7 @@ class _Client:
         entry = {"kind": kind, "phase": phase, "pid": gen.pid, "generation": gen.number, "rc": rc}
         if gen.job is not None:
             entry["job"] = gen.job.name  # Windows: the generation's Job Object name
+        gen.log_entry = entry
         self.fault_log.append(entry)
         self.pending.append(f"BAML worker pid {gen.pid} disposed: {kind} ({phase}, rc={rc})")
 
@@ -1536,6 +1604,11 @@ class _Client:
     def _release(self, gen: _Gen) -> None:
         # Close first, forget last: a generation stays recoverable until its
         # resources are gone (both closes are idempotent).
+        entry = gen.log_entry
+        if entry is not None and "stderr_tail" not in entry:
+            # The worker has been reaped, so its stderr is complete: keep a
+            # bounded, sanitized tail for the operator (Opus N7).
+            entry["stderr_tail"] = _stderr_tail(gen.err_file)
         try:
             gen.err_file.close()
         except OSError:
@@ -1568,11 +1641,13 @@ class _Client:
                 self._reply(event[1], ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
             elif event[0] == "stop":
                 self.stop_acks.append(event[1])
-            elif event[0] == "spawned" and isinstance(event[2], _Gen) and event[2].state != "disposed":
-                self._kill(event[2])
-                if event[2] not in self.late:
-                    self.late.append(event[2])
-                event[2].state = "disposed"
+            elif event[0] == "spawned":
+                self.spawns_outstanding -= 1
+                if isinstance(event[2], _Gen) and event[2].state != "disposed":
+                    self._kill(event[2])
+                    if event[2] not in self.late:
+                        self.late.append(event[2])
+                    event[2].state = "disposed"
         self.active = None
         if self.spawn is not None:
             self.spawn.retired = True
@@ -1608,7 +1683,8 @@ class _Client:
                 self._stop_gen(gen)
         for g in list(self.dying):
             self._stop_gen(g)
-        if self.gen is None and not self.late:
+        if self.gen is None and not self.late and not self._spawn_pending():
+            # Never acknowledged while a spawn can still publish a worker.
             acks, self.stop_acks = self.stop_acks, []
             for ack in acks:
                 ack.put(True)
@@ -1645,7 +1721,10 @@ class _Client:
         # No owner runs, so this thread may touch owner state; it starts no thread.
         try:
             if self.recover:
-                self._recover()  # idempotent; a later owner repeats it
+                try:
+                    self._recover()  # idempotent; a later owner repeats it
+                except Exception:  # noqa: BLE001 - never raise into atexit; the stop below still runs
+                    pass
             self._begin_stop(ack, graceful)
             while self.stop_acks and time.monotonic() < deadline:
                 self._service_stop_inline()
@@ -1654,6 +1733,14 @@ class _Client:
             self.baton.put(baton)
 
     def _service_stop_inline(self) -> None:
+        # Events keep arriving while no owner runs: a spawn that returns now is
+        # handled here (retired, so killed and queued for release).
+        while True:
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+            self._handle(event)
         now = time.monotonic()
         self._reap(now)
         self._continue_stop(now)

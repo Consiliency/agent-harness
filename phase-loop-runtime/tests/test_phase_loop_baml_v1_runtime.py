@@ -126,6 +126,13 @@ def _gone(pid: int) -> bool:
     return False
 
 
+def _reaped(gen) -> bool:
+    """The client itself waited on this worker (``returncode`` is set only by
+    the client's own poll/wait) AND the process no longer exists.  On Windows,
+    where ``_gone`` can only see the PID, the return code is what proves it."""
+    return gen.proc.returncode is not None and _gone(gen.pid)
+
+
 def _wait(cond, timeout: float, interval: float = 0.02) -> bool:
     deadline = time.monotonic() + timeout
     while True:
@@ -2652,7 +2659,7 @@ def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
             # all within the I4 bound.
             deadline = REAP_BOUND + 0.5
             for gen in gens:
-                assert _wait(lambda: gen.proc.returncode is not None and _gone(gen.pid), deadline), (
+                assert _wait(lambda: _reaped(gen), deadline), (
                     flow, name, line, "worker not reaped without a further call", gen.state, gen.killed_at,
                     client.owner_running, client.recover,
                 )
@@ -2872,6 +2879,257 @@ def test_a_worker_is_released_only_after_it_is_reaped():
             if proc.poll() is None:
                 subprocess.Popen.kill(proc)
                 proc.wait(5)
+
+
+
+# codex round 4 (F001) and Opus round 4 F1: a spawn that returns after shutdown
+# must still be killed, reaped and released with no further call.  A live
+# spawner is pending work: the owner does not exit, stop() does not
+# acknowledge, and the supervisor does not retire, while a spawn can publish.
+
+
+def test_late_spawn_after_shutdown_is_reaped_without_another_call():
+    """codex's falsifier, adapted: it waited up to 2 s for the owner and the
+    supervisor to EXIT after stop() (the defect's precondition) and asserted
+    that they had.  The wait is kept, so the spawn is released at the same
+    point; the assertion is replaced by its opposite, since under the fix they
+    stay until the spawn publishes."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=0.2)
+    release_spawn = threading.Event()
+    spawned = threading.Event()
+    generations = []
+    returned_at = []
+    real_spawn = m._spawn_popen
+    real_worker = m._Client._spawn_worker
+
+    def delayed_spawn(argv, **kwargs):
+        assert release_spawn.wait(5)
+        proc = real_spawn(argv, **kwargs)
+        returned_at.append(time.monotonic())
+        return proc
+
+    def record_worker(self, token):
+        gen = real_worker(self, token)
+        if self is client:
+            generations.append(gen)
+            spawned.set()
+        return gen
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", delayed_spawn), mock.patch.object(m._Client, "_spawn_worker", record_worker):
+            raised = _raises(client.call, "parse_closeout", {"raw": "{}"})
+            assert type(raised) is BamlWorkerError and raised.kind == "spawn"
+            client.stop(graceful=False, timeout=2)  # returns unacknowledged: a spawn can still publish
+            _wait(lambda: not client.owner_running and not client.supervisor.is_alive(), 2)
+            assert client.owner_running or client.supervisor.is_alive(), "nothing is left to watch the spawn"
+            # No API call after shutdown; only release the outstanding Popen.
+            release_spawn.set()
+            assert spawned.wait(2)
+            gen = generations[0]
+            deadline = returned_at[0] + m._REAP_BOUND_S + 0.25
+
+            def disposed():
+                return (
+                    gen.killed_at is not None
+                    and _reaped(gen)
+                    and not any(t.is_alive() for t in gen.threads)
+                    and gen.err_file.closed
+                    and gen not in client.generations
+                )
+
+            assert _wait(disposed, max(0, deadline - time.monotonic())), (
+                gen.state, gen.killed_at, gen.proc.returncode,
+                client.owner_running, client.supervisor.is_alive(),
+                [t.is_alive() for t in gen.threads], gen.err_file.closed,
+            )
+            # With nothing left that can publish, the owner and supervisor retire.
+            assert _wait(lambda: not client.owner_running and not client.supervisor.is_alive(), 2.0)
+    finally:
+        release_spawn.set()
+        for gen in generations:
+            if gen.proc.poll() is None:
+                gen.proc.kill()
+            gen.proc.wait(2)
+            gen.writes.put(None)
+            for thread in gen.threads:
+                thread.join(2)
+            gen.err_file.close()
+        client.stop(graceful=False, timeout=2)
+
+
+@pytest.mark.parametrize("stop_timeout", [0.2, 5.0], ids=["stop-times-out", "stop-waits"])
+@pytest.mark.parametrize("delay", [0.05, 0.3, 0.6, 1.5])
+def test_stop_during_a_spawn_ends_killed_reaped_released_without_another_call(delay, stop_timeout):
+    """The sweep over stop() landing while a spawn is in flight, at several
+    spawn delays.  A stop given enough time acknowledges only after the late
+    worker is reaped; one that times out first returns, and the client still
+    finishes the job on its own within the bound of the spawn's return."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=5.0)
+    gens: list = []
+    returned_at: list = []
+    real = _peer_spawn("echo")
+    real_worker = m._Client._spawn_worker
+
+    def slow(argv, **kwargs):
+        time.sleep(delay)
+        proc = real(argv, **kwargs)
+        returned_at.append(time.monotonic())
+        return proc
+
+    def record_worker(self, token):
+        gen = real_worker(self, token)
+        gens.append(gen)
+        return gen
+
+    box: dict = {}
+
+    def call():
+        try:
+            box["value"] = client.call("parse_closeout", {"raw": OK})
+        except BaseException as exc:  # noqa: BLE001
+            box["exc"] = exc
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", slow), mock.patch.object(m._Client, "_spawn_worker", record_worker):
+            caller = threading.Thread(target=call, daemon=True)
+            caller.start()
+            assert _wait(lambda: client.spawn is not None, 5)
+            started = time.monotonic()
+            client.stop(graceful=False, timeout=stop_timeout)
+            stop_took = time.monotonic() - started
+            caller.join(10)
+            assert not caller.is_alive() and type(box.get("exc")) is BamlWorkerError, box
+            assert _wait(lambda: returned_at and gens, delay + 5)
+            gen = gens[0]
+            if stop_timeout > delay + REAP_BOUND:
+                # An acknowledged stop means the late worker is already gone.
+                assert stop_took < stop_timeout, "stop was never acknowledged"
+                assert _reaped(gen) and gen not in client.generations, (gen.state, gen.killed_at)
+            deadline = returned_at[0] + REAP_BOUND + 0.25 - time.monotonic()
+            assert _wait(lambda: gen.killed_at is not None and _reaped(gen), max(0.0, deadline)), (
+                "late worker not reaped without a further call", gen.state, gen.killed_at, client.owner_running,
+            )
+            assert _wait(lambda: not any(t.is_alive() for t in gen.threads) and gen.err_file.closed and gen not in client.generations, 0.5)
+            assert [e["kind"] for e in client.fault_log if e["pid"] == gen.pid] == ["spawn_late"], client.fault_log
+            assert _wait(lambda: not client.owner_running and not client.supervisor.is_alive(), 2.0)
+    finally:
+        client.stop(graceful=False, timeout=2)
+        for gen in gens:
+            if gen.proc.poll() is None:
+                gen.proc.kill()
+                gen.proc.wait(5)
+
+
+def test_owner_death_in_its_final_statement_does_not_strand_the_baton():
+    """codex round 4: an exception landing on the owner's baton hand-back must
+    not strand the one baton (relaunch candidates could never repair that)."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=2.0)
+    real_own = m._Client._own
+    code = real_own.__code__
+    line = _line_of(real_own, "self.baton.put(baton); baton = None")
+    fired: list = []
+
+    def local(frame, event, arg):
+        if event == "line" and frame.f_lineno == line and not fired:
+            fired.append(True)
+            raise _OwnerDeath()
+        return local
+
+    def own(self):
+        if fired:
+            return real_own(self)
+        sys.settrace(lambda f, e, a: local if f.f_code is code else None)
+        try:
+            real_own(self)
+        finally:
+            sys.settrace(None)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo")), mock.patch.object(m._Client, "_own", own):
+            client.call("parse_closeout", {"raw": OK})
+            client.stop(graceful=False, timeout=3)  # the owner exits via its final statement
+            assert fired, "the owner never reached its hand-back"
+            assert _wait(lambda: not client.baton.empty(), 2.0), "the baton was stranded"
+            assert client.baton.qsize() == 1  # returned exactly once
+    finally:
+        client.stop(graceful=False, timeout=2)
+
+
+def test_a_disposal_keeps_a_sanitized_tail_of_the_workers_stderr():
+    """Opus N7: a worker's own diagnostics survive into its fault-log entry."""
+    peer = (
+        "import json, sys, hashlib\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        "    sys.stderr.write('native panic: something broke token=abc123\\n'); sys.stderr.flush()\n"
+        "    raise SystemExit(3)\n"
+    )
+    client = m._Client(test_mode=True, retries=0, deadline_s=2.0)
+
+    def spawn(argv, **kwargs):
+        return _REAL_SPAWN([argv[0], "-I", "-S", "-c", peer], **kwargs)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", spawn):
+            raised = _raises(client.call, "parse_closeout", {"raw": OK})
+        assert type(raised) is BamlWorkerError
+        assert _wait(lambda: any("stderr_tail" in e for e in client.fault_log), REAP_BOUND + 1.0), client.fault_log
+        tail = next(e["stderr_tail"] for e in client.fault_log if "stderr_tail" in e)
+        assert "native panic" in tail and "abc123" not in tail
+    finally:
+        client.stop(graceful=False, timeout=2)
+
+
+
+def test_a_worker_recovery_disposed_is_not_logged_again_as_spawn_late():
+    """Opus N7: recovery disposes of a registered worker whose "spawned" event
+    is still queued; handling that event later must not log it a second time."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=5.0)
+    real_worker = m._Client._spawn_worker
+    real_service = m._Client._service
+    armed = threading.Event()
+    fired = threading.Event()
+    gens: list = []
+
+    def registered_then_wait(self, spawn):
+        gen = real_worker(self, spawn)  # now in client.generations
+        gens.append(gen)
+        armed.set()
+        fired.wait(5)  # the "spawned" event is sent only after the owner died
+        return gen
+
+    def dying_service(self):
+        if self is client and armed.is_set() and not fired.is_set():
+            fired.set()
+            raise _OwnerDeath()
+        real_service(self)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo")), \
+                mock.patch.object(m._Client, "_spawn_worker", registered_then_wait), \
+                mock.patch.object(m._Client, "_service", dying_service):
+            box = _call_in_thread(lambda: client.call("parse_closeout", {"raw": OK}), 15)
+            assert fired.is_set() and gens, box
+            gen = gens[0]
+            assert _wait(lambda: _reaped(gen) and gen not in client.generations, REAP_BOUND + 1.0)
+        entries = [e["kind"] for e in client.fault_log if e["pid"] == gen.pid]
+        assert len(entries) == 1, entries
+    finally:
+        client.stop(graceful=False, timeout=2)
+
+
+def test_owner_launch_tickets_do_not_grow_without_bound():
+    """Opus N-D: a recurring fault relaunches the owner every bucket; the
+    tickets of past buckets are dropped."""
+    client = m._Client(test_mode=True)
+    try:
+        now = int(time.monotonic() / m._OWNER_LAUNCH_BUCKET_S)
+        for key in range(now - 500, now):
+            client.owner_launches[key] = object()
+        client._launch_owner()
+        assert all(key >= now for key in client.owner_launches), sorted(client.owner_launches)[:3]
+    finally:
+        client.stop(graceful=False, timeout=2)
 
 
 def test_supervisor_relaunches_an_owner_that_exited_with_recovery_pending():
