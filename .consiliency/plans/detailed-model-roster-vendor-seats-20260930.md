@@ -66,7 +66,9 @@ Plan 2a edits none of these.
    - `SEAT_MIN_SLOT = {"fable": "frontier", "sol": "frontier", "grok": "frontier", "gemini": "standard"}`. The gemini floor is `standard` because the shipped gemini seat is the google **standard** model (`gemini-3.8-flash`, per P1-D7). Every shipped seat therefore meets its floor.
    - `seat_eligible(seat_name, model_id) -> (bool, reason)` returns true when `MODEL_SLOT_CLASS[model_id]` is at or above the floor for the canonical seat name. The order is `frontier > standard > fast`. A model not in the table is **not** eligible for a floored seat.
    - **The floor applies to every match on a governed tier, whatever alias produced it (hb1 F1/F001).**
-     - Governed means any policy other than `("grounded",)`: PLAN, PRODUCTION_CODE, and any caller-built policy naming floored seats.
+     - Governed is decided **from the `policy` object**, not from the landing tier (hb2 G4). It means any policy other than `("grounded",)`: PLAN, PRODUCTION_CODE, and any caller-built policy naming floored seats.
+     - `_validate_review_board_policy` keeps exactly its signature `(board, policy, seat_aliases)` and is called once per `invoke_board` (hb2 C2). The frozen HARDEN guard wraps it with three positional arguments. It returns the eligibility rows and substitutions, and the frozen wrapper ignores the return value.
+     - When PANEL SL-1 lands, its relaxed named-seat check must call the same `seat_eligible` floor (hb2 G4). This is a coordination item for agent-harness#1078.
      - Every seat counted under a floored seat name must pass `seat_eligible`. This holds whether the name came from `DEFAULT_REVIEW_SEAT_ALIASES`, from a caller `seat_aliases` entry (including one byte-identical to a default entry, such as `{"claude-sonnet-5-5": "fable"}`), from a vendor name, or from the model id itself.
      - A seat that fails raises `PresidentPolicyError("review_seat_below_floor", …)`, naming the seat name, model, slot and alias source. That code is new, and it is distinct from `review_board_policy_mismatch`.
      - The existing Counter check runs **first** and is unchanged, so frozen `test_gpt_6_sol_cannot_fill_a_governed_grok_seat` still fails on `'sol': 2`.
@@ -75,12 +77,16 @@ Plan 2a edits none of these.
    - **Consequence, stated plainly.** Once plan 2a is implemented, the fleet's operational board tool can no longer count a Sonnet stand-in as a governed `fable` or `grok` seat. That covers `CLAUDE_SEAT_MODEL=claude-sonnet-5-5`, and "sonnet fills grok until 2026-10-02". A governed board seating one is refused with `review_seat_below_floor`. This is intended: the maintainer calls manual substitution a stopgap, which automatic fallback replaces.
    - **Where substitutions are durably visible (hb1 grok 3).**
      - `PanelResult` gains an additive field, `seat_substitutions: tuple[Mapping[str, object], ...] = ()`. `PanelResult` has no `labels` field; that was an error in r1.
-     - On a governed tier with a `stream_dir`, `invoke_board` writes **`board.policy.json`** atomically, right after `_validate_review_board_policy` succeeds and before any seat runs. Its schema is `board.policy.v1`, with these keys:
+     - On a governed tier with a `stream_dir`, `invoke_board` writes **`board.policy.json`** atomically **after review authorization and revalidation succeed, and before the first seat spawns** (hb2 C1). That is the same point at which the first incremental verdict could be written, so a run later refused at revalidation leaves no governed record (HARDEN `forbid_pre_authorization_effects`). Its schema is `board.policy.v1`, with these keys:
        - `landing_tier` and `required_seats`;
        - `seats`: a list of `{seat_key, model, seat_name, vendor, slot, eligible, via}`, where `via` is one of `default_alias`, `caller_alias`, `vendor_name` or `model_id`;
        - `seat_substitutions`.
      - The president binding (`president.pending.json`, around l.900-920) gains the same `seat_substitutions` list as an additive key. It is written by defer and compared by resume symmetrically, so a resume under a different substitution set is refused like any other binding change.
-     - Governed callers already pass `stream_dir` (`governed_review`, `train_runner`). Without a `stream_dir`, the record exists only on `PanelResult`, and CONTRACTS.md says so.
+     - **Pending requests written before 2a are refused on resume (hb2 C5).** They lack `seat_substitutions` and `requested_model` in the binding, so resume refuses them with the existing "belongs to a different run" mismatch. This is intended. Resume must **not** default either missing key, and a test pins that.
+     - **Which callers get the durable record (hb2 C4, corrected).** At `60585b97` the tiered callers that pass a `stream_dir` are `runner._run_legible_panel` (runner.py around l.8518-8550: `CODE_REVIEW_BOARD`, `PRODUCTION_CODE`, `implementation-panel-stream`) and `cli.py --landing-tier` (around l.2272-2292).
+       - `governed_review.py` (around l.511 it "never passes `landing_tier`/`president_invoke`/`mode`") and `train_runner.py` pass **neither** a `stream_dir` nor a tier. On those paths plan 2a produces neither the floor check nor `board.policy.json`.
+       - That is safe today, because `compose_review_board` seats only `_VENDOR_SEAT` models and all of them meet the floor. **Plan 2b must add the floor and the durable record on that tierless path** once roster pins flow into composition.
+       - Without a `stream_dir`, the record exists only on `PanelResult`, and CONTRACTS.md says so.
    - **Manual substitutions are a stopgap, and plan 4 retires them** (maintainer decision on agent-harness#1199, 2026-09-30).
      - **Retirement condition:** automatic fallback runs in **every production composition entry point** (`cli.py` advisor-board, `governed_review`, `train_runner`). The harness itself picks the next available model or vendor, and records what it picked:
        - PANEL fallback lanes choose the vendor (agent-harness#1078);
@@ -93,14 +99,23 @@ Plan 2a edits none of these.
    - The floor applies on **every** rung, whatever alias produced the match: caller alias, default alias, vendor name, or the model id itself (hb1 F1).
    - A rung spelled as a model id, for example `"claude-sonnet-5-5"`, which `validate_president_ladder` accepts, takes the floor of its canonical seat name, so `claude-sonnet-5-5` falls under `fable` and frontier. It is `rung_below_floor` on a board seating it (hb1 F7).
    - `president_adapter._monitor` (around l.279) indexes the ladder for monitor-file naming. It compares rungs canonically, so a vendor-spelled ladder does not collapse to `rung-0.json`.
-   - `PresidentInvoke` reports `rung_below_floor` through the existing typed-unavailable path (`president_unavailable`), so the ladder descends. The detail is recorded; it is never a silent skip.
+   - **A cross-vendor seat cannot be a president rung (hb2 G3).** A floor-meeting cross-vendor caller substitution may sit on a review seat, but `rung_seat` refuses it as a rung with `rung_cross_vendor`. The model's vendor, from its registry vendor family, must equal the rung's seat vendor (`seat_vendor(canonical_seat_name(rung))`). This way no substitution can make another vendor's model the president of a governed landing, for example Sonnet on the `gemini` seat with a gemini-first ladder. The maintainer's stopgap intent favours refusal here.
+   - **A caller-supplied `president_invoke` bypasses the rung floor (hb2 G6).** `invoke_board(president_invoke=…)` is a library-only seam: no production entry point passes one. This is documented in CONTRACTS.md as outside the governed guarantee.
+   - `PresidentInvoke` reports `rung_below_floor` or `rung_cross_vendor` through the existing typed-unavailable path (`president_unavailable`), so the ladder descends. The detail is recorded; it is never a silent skip.
 4. **Native fill is model-honest.**
    - **Requests carry the requested model.** Additive keys:
      - president: `_native_fill` adds `"model": seat.model` to the deferred response, the persisted pending request and `PanelResult.needs_native_president`;
      - review seats: `native_fill_request_payload` already carries `model`.
-   - **Fills declare what ran.** A fill must carry `ran_model` (the exact model id the filler ran). The runtime compares it with the request's `model`:
+   - **The requested model is bound, never free-standing (hb2 codex F001, grok G2).**
+     - At resume the requested model is **re-derived**, never read from the file. It is the model of the rung seat that `_resume_native_president` resolves independently from the current board (`seat_for_rung(board, rung, …)`, around l.1054, floor applied). That board is itself bound by the binding's `seat_keys`, and `harness:model:effort:lens` contains the model.
+     - The binding written at defer also gains `requested_model`, so a tampered value fails the whole-binding equality.
+     - The persisted `pending.model` must equal the re-derived model, or resume refuses with `PRESIDENT_FILL_MODEL_MISMATCH` before any fill comparison.
+     - `ran_model` is compared against the **re-derived** model only.
+     - A rewritten `pending.model` therefore fails, and codex's falsifier `test_pending_model_cannot_rebind_a_frontier_president_to_sonnet` is adopted as a test.
+   - **Fills declare what ran.** A fill must carry `ran_model` (the exact model id the filler ran). The runtime compares it with the requested model, which is the re-derived bound model from the previous point:
      - equal: accepted, and `ran_model` is recorded durably. For review seats it goes in the leg record's fill provenance (`attach_native_fill_provenance`). For the president it goes in a **`president.fill.json`** sidecar (hb1 F2):
-       - the sidecar is written by `_resume_native_president` atomically next to `president.ruling.json`, as the step immediately before it, so either both files exist or neither does;
+       - `_resume_native_president` writes the sidecar atomically, immediately before `president.ruling.json`. These are two separate atomic writes, so a crash between them can leave a sidecar without a ruling (hb2 C3). The rule is therefore: **a sidecar is valid only beside a ruling whose `brief_digest` and `findings_digest` equal its own.** Readers check that; a lone or mismatched sidecar is ignored as stale;
+       - a stale `president.fill.json` is unlinked on every new defer (`_resolve_native_president`, next to the existing stale-ruling unlink around l.978-980) and whenever `_persist_president_ruling` writes a non-native ruling, so an earlier fill's `ran_model` never stands beside a later ruling;
        - its schema is `president.fill.v1`, with keys `{rung, requested_model, ran_model, model_declared, brief_digest, findings_digest}`;
        - `_resume_native_president` builds no `PresidentInvoke` and has no attempt log, so r1's "PresidentAttempt record" wording does not apply on the resume path;
        - the frozen `president.ruling.v1` shape is unchanged (see `president_operation.py` in Changes), and the frozen test asserts only that ruling file's contents and that it is absent on refusal. The sidecar does not conflict with either assertion.
@@ -142,12 +157,13 @@ Plan 2a edits none of these.
   - canonicalize `required_seats`;
   - on a governed tier, enforce `seat_eligible` for **every** match onto a floored seat, whatever the alias source, raising `review_seat_below_floor` after the unchanged Counter check;
   - return the per-seat eligibility rows and `seat_substitutions` (floor-meeting caller-alias matches).
-- `invoke_board` (around l.10057) — modify — write `board.policy.json` atomically after validation when governed and `stream_dir` is set, set `PanelResult.seat_substitutions`, and pass the substitutions into the president binding.
-- `PanelResult` (around l.1620) — modify — add the additive field `seat_substitutions`.
+- `invoke_board` (around l.10057) — modify — write `board.policy.json` atomically after review authorization and revalidation, before the first spawn, when governed and `stream_dir` is set, set `PanelResult.seat_substitutions`, and pass the substitutions into the president binding.
+- `PanelResult` (around l.1620) — modify — append `seat_substitutions: tuple = ()` as the **last** field. Frozen tests construct `PanelResult((leg,))` positionally (hb2 C2).
+- `_persist_president_ruling` (around l.844) and `_resolve_native_president` (around l.978) — modify — unlink a stale `president.fill.json` (hb2 C3).
 - `validate_president_ladder` (around l.597) — modify — accept vendor names; deduplicate on `canonical_seat_name(DEFAULT_REVIEW_SEAT_ALIASES.get(r, r))`.
 - `_resume_native_president` (around l.992) — modify:
   - compare `rung` against the ladder canonically;
-  - check `ran_model` against the pending `model`, raising `PRESIDENT_FILL_MODEL_MISMATCH` (nothing persisted);
+  - re-derive the requested model from the bound rung seat; refuse if `pending.model` or the binding's `requested_model` differs from it; then check `ran_model` against the re-derived model. Every refusal is `PRESIDENT_FILL_MODEL_MISMATCH`, and nothing is persisted;
   - write `president.fill.json` (`president.fill.v1`) atomically, as the step immediately before `president.ruling.json`.
 - The pending-request persistence and `needs_native_president` (around l.821-915) — modify — carry `model` as an additive key.
 - `load_native_leg_fill(s)` (around l.7144/7171), `preflight_native_leg_fills` (around l.7189), `attach_native_fill_provenance` (around l.7227) — modify — require, compare and record `ran_model`, using the new `NativeFillRefusal` codes `NATIVE_FILL_MODEL_MISMATCH`/`NATIVE_FILL_MODEL_UNDECLARED`.
@@ -179,6 +195,8 @@ Plan 2a edits none of these.
   - **`test_caller_alias_cannot_bypass_governed_fable_floor`** (codex F001's falsifier): a PRODUCTION_CODE board seating `claude-sonnet-5-5` with `seat_aliases={"claude-sonnet-5-5": "fable"}` raises `review_seat_below_floor`, and `seat_for_rung(board, "fable", seat_aliases=…)` is `None`;
   - **`test_caller_alias_cannot_seat_sonnet_on_a_governed_grok_seat`**: `{"claude-sonnet-5": "grok"}` on a governed tier is refused. This covers the stated fleet-tool consequence;
   - **`test_floor_meeting_caller_substitution_is_recorded`**: `{"gpt-6.1-sol": "grok"}` passes and appears in `PanelResult.seat_substitutions` **and** in `board.policy.json` read back from `stream_dir` with `cross_vendor: true`;
+  - **`test_caller_alias_to_vendor_name_is_floored`** (hb2 G1): `{"claude-sonnet-5-5": "anthropic"}` on a governed tier raises `review_seat_below_floor`;
+  - **`test_cross_vendor_substitution_cannot_be_president`** (hb2 G3): `{"claude-sonnet-5-5": "gemini"}` meets the gemini floor and is recorded, and with a gemini-first ladder the rung reports `rung_cross_vendor` and the ladder descends;
   - **`test_model_id_rung_takes_its_canonical_floor`**: a ladder `["claude-sonnet-5-5", "sol", "grok", "gemini"]` over a board seating Sonnet reports `rung_below_floor` for rung 0;
   - a vendor-spelled ladder names the monitor files by canonical index;
   - **named mutation 1:** making `seat_eligible` always return `(True, None)` lets Sonnet satisfy `fable` through the caller alias, and the test must fail. **Named mutation 1b:** restricting the check to default-alias matches, which was r1's rule, must also fail it.
@@ -186,9 +204,12 @@ Plan 2a edits none of these.
   - president: the deferral carries `model`; a CLI fill with a matching `ran_model` is accepted and recorded; a mismatch is refused with nothing persisted; a missing `ran_model` through the CLI is refused; the library seam without `ran_model` is accepted **and** marked `model_declared: false`;
   - review seats: the same three cases through `load_native_leg_fill`;
   - the president sidecar: an accepted CLI fill writes `president.fill.json` with `ran_model`, a library-seam fill without one writes `model_declared: false, ran_model: null`, and a refused fill writes neither the sidecar nor the ruling;
+  - **`test_pending_model_cannot_rebind_a_frontier_president_to_sonnet`** (codex hb2 F001's falsifier, adopted verbatim): a tampered `pending.model` plus a matching `ran_model` is refused, and neither `president.ruling.json` nor `president.fill.json` exists;
+  - **`test_pre_2a_pending_is_refused_on_resume`** (hb2 C5): a pending file without `requested_model`/`seat_substitutions` in its binding is refused;
+  - stale-sidecar cleanup (hb2 C3): after a new defer, and after a non-native ruling in the same stream, no `president.fill.json` from an earlier fill remains;
   - `fill_duty` is present, and `brief_sha256` over `instructions` equals main's value for the same request;
   - the construction-site checks (a)–(d) from decision 4;
-  - **named mutation:** skipping the `ran_model` comparison accepts a mismatched fill, and the test must fail.
+  - **named mutation 2:** skipping the `ran_model` comparison accepts a mismatched fill, and the test must fail. **Named mutation 2b:** comparing `ran_model` against `pending.model` instead of the re-derived bound model (r2's rule) must fail the rebinding test.
 - `tests/test_native_claude_seat_fill.py`, `tests/test_native_claude_seat_fill_green.py`, `tests/test_native_fill_refusal_cause.py`, `tests/test_presroute_cli.py`, `tests/test_advisor_board_advisory_cli_802.py` (the `load_native_leg_fills` calls around l.613 and l.835, and the `--native-leg` runs around l.444-452), `tests/test_train_review_packet.py` (the `--native-leg` continuation around l.2020-2029) — modify — their fill fixtures gain `ran_model`. None of these is frozen: checked against the 42-path set at `60585b97` (hb1 F5).
 
 ### Skills (modify, byte-parallel pairs; bundle regenerated)
@@ -199,7 +220,9 @@ Plan 2a edits none of these.
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify:
   - vendor seat names (aliases, canonical outputs unchanged);
   - `SEAT_MIN_SLOT` and `review_seat_below_floor`;
-  - `seat_substitutions`, and the governed record files `board.policy.json` (`board.policy.v1`) and `president.fill.json` (`president.fill.v1`);
+  - `seat_substitutions`, and the governed record files `board.policy.json` (`board.policy.v1`) and `president.fill.json` (`president.fill.v1`), including the rule that a sidecar is valid only beside a ruling with matching digests;
+  - the resume notes (hb2 G5): pre-2a pending requests are refused, and the requested model is re-derived from the bound rung seat;
+  - the library-only bypasses (hb2 G6): a caller-supplied `president_invoke`, and the tierless composition paths until plan 2b (hb2 C4);
   - the native-fill `ran_model` contract and the trust boundary (a declared model, since the session model is unobservable).
 - `docs/advisor-board-capabilities-card.md` — modify — the Models table gains a slot class column, and there is a note that a Sonnet id cannot fill a governed `fable` seat.
 - `CHANGELOG.md` — add — vendor seat names, the eligibility floor (a behaviour change: on a governed tier a below-floor model is refused **whatever alias maps it**, so Sonnet stand-ins no longer count as governed `fable`/`grok` seats or president rungs), and declared-model native fills (a behaviour change: `--native-president`/`--native-leg` fills need `ran_model`).
@@ -244,7 +267,7 @@ Edge cases:
 
 ## Acceptance criteria
 - [ ] `tests/test_seat_eligibility_floor.py` passes. A governed PRODUCTION_CODE board seating `claude-sonnet-5-5` for `fable` raises `review_seat_below_floor` through the default alias **and** through a caller alias, `seat_for_rung` returns `None` for it, a floor-meeting caller substitution appears in `board.policy.json` read back from `stream_dir`, and mutations 1 and 1b each turn it red.
-- [ ] `tests/test_native_fill_declared_model.py` passes. A mismatched or undeclared `ran_model` through the CLI and leg loaders is refused with nothing persisted, the library seam without `ran_model` is accepted and recorded `model_declared: false` in `president.fill.json`, which is read back from `stream_dir`, and mutation 2 turns it red.
+- [ ] `tests/test_native_fill_declared_model.py` passes. A mismatched or undeclared `ran_model` through the CLI and leg loaders is refused with nothing persisted, the library seam without `ran_model` is accepted and recorded `model_declared: false` in `president.fill.json`, which is read back from `stream_dir`, a tampered `pending.model` is refused (codex's hb2 falsifier), and mutations 2 and 2b each turn it red.
 - [ ] `tests/test_seat_vendor_names.py` passes. Vendor names are accepted in the policy, the ladder and the rung match, and a vendor-spelled ladder indexes consistently, while `PRESIDENT_LADDER`, `review_policy_for_tier().required_seats` and the `DEFAULT_REVIEW_SEAT_ALIASES` values are unchanged.
 - [ ] Every frozen path is byte-identical to origin/main, the frozen HARDEN, PRESROUTE, govlean and PANEL nodes pass (EC-PRESROUTE-2/-3/-4/-5 included), and `golden_bytes()` equals the frozen golden.
 
@@ -280,4 +303,4 @@ The maintainer-accepted `sl0_repairs` stays reserved for the shipped openai fron
 - `governed_review.py` around l.589-595;
 - `train_runner.py` around l.3862.
 
-Plan 2b threads the Part-B call-time roster into composition at each of them, with one falsifier per entry point asserting the launched seat model. It also adds governed-policy validation to any board a config supplies (agent-harness#1172 president item 3), including the plan-2a floor. How this interacts with PANEL's `[panel.<task>]` vendor lists follows the PANEL/roster split in plan 1: PANEL picks the vendor, and the roster picks the model.
+Plan 2b must also run the plan-2a seat floor (`seat_eligible`) and write `board.policy.json` on the **tierless** `governed_review`/`train_runner` composition path, which today passes neither a tier nor a `stream_dir` (hb2 C4/G4). The implementer must also make sure PANEL SL-1's relaxed named-seat check applies the same floor. Plan 2b threads the Part-B call-time roster into composition at each of them, with one falsifier per entry point asserting the launched seat model. It also adds governed-policy validation to any board a config supplies (agent-harness#1172 president item 3), including the plan-2a floor. How this interacts with PANEL's `[panel.<task>]` vendor lists follows the PANEL/roster split in plan 1: PANEL picks the vendor, and the roster picks the model.
