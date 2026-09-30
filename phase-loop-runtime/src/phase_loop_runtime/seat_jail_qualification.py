@@ -422,8 +422,17 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
 def _record_pass(evidence: dict[str, object]) -> Path:
     store = seat_jail.jail_pass_dir()
     for directory in (seat_jail.state_home(), seat_jail.state_home() / "phase-loop", store):
-        directory.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(directory, 0o700)
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            # Never re-permission an existing directory of the operator's: the gate would
+            # refuse a pass under a group/other-writable parent, so say how to fix it.
+            info = os.lstat(directory)
+            if (not os.path.isdir(directory) or os.path.islink(directory)
+                    or info.st_uid != os.geteuid() or info.st_mode & 0o022):
+                raise QualificationError(
+                    f"{directory} must be a directory you own that is not group- or "
+                    f"other-writable (e.g. chmod go-w {directory}); no pass recorded")
     digest = str(evidence["profile_digest"])
     raw = json.dumps(evidence, indent=2, sort_keys=True).encode("utf-8")
     evidence_name = f"{digest}.evidence.json"

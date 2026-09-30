@@ -436,3 +436,16 @@ def test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run(tmp_path, m
     assert evidence["result"] == "fail"
     assert not evidence["checks"]["no_seat_mount_resolves_to_protected_object_or_ancestor"]
     assert not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
+
+
+def test_recording_never_repermissions_an_existing_state_directory(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o775)
+    state.chmod(0o775)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    with pytest.raises(q.QualificationError, match="not group- or other-writable"):
+        q._record_pass({"profile_digest": "0" * 64, "host_identity": "h",
+                        "falsifier_layout": "l", "result": "pass"})
+    assert state.stat().st_mode & 0o777 == 0o775

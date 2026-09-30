@@ -271,6 +271,7 @@ work continues.
 | P4 | `p4-agy-d7-credential.json` | `121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035` | **stop**: `gemini_seat_token_scope_excess` |
 | P4 containment (maintainer ruling "prove then enable") | `p4-containment.json` | `fe71bb819a2e701e5e60685e79aa33602e9ab56c8d19b42d70a49b0d6b6cab45` | **stop**: `gemini_seat_egress_unconfined`; (a) holds, (b) fails |
 | P3 | — | — | not run: P3 runs only after P4 passes |
+| EC-EXECFIND-2 jail falsifiers (claw) | `execfind2-jail-qualification-claw.json` (public summary; full evidence in the per-host store) | see file | **pass**, against the EXECFIND falsifier-run layout (agent-harness#1163/#1164) |
 
 **Measured deviations from the plan's literal argv (accepted by the lead 2026-09-29; the
 board ratifies them).** P5 changed the D8 launch order as measured. None of these is a P5
