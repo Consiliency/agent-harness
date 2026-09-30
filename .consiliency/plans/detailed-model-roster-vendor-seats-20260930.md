@@ -73,8 +73,26 @@ Plan 2a edits none of these.
      - A seat that fails raises `PresidentPolicyError("review_seat_below_floor", …)`, naming the seat name, model, slot and alias source. That code is new, and it is distinct from `review_board_policy_mismatch`.
      - The existing Counter check runs **first** and is unchanged, so frozen `test_gpt_6_sol_cannot_fill_a_governed_grok_seat` still fails on `'sol': 2`.
    - Result: `claude-sonnet-5-5` keeps its `fable` alias (agent-harness#1178's registration test stays green). It can sit on a non-governed or user board, but on a governed tier it **cannot** satisfy the `fable` seat or fill any floored president rung, by any alias route.
-   - **Caller-supplied `seat_aliases` are explicit operator substitutions.** On a governed tier they are honoured only when the model **meets the seat's floor**. Such a substitution, for example `gpt-6.1-sol` mapped to `grok`, is allowed and recorded as `{"seat_name", "model", "slot", "vendor", "seat_vendor", "cross_vendor", "via": "caller_alias"}`. On a non-governed tier caller aliases behave as today, and are also recorded.
-   - **Consequence, stated plainly.** Once plan 2a is implemented, the fleet's operational board tool can no longer count a Sonnet stand-in as a governed `fable` or `grok` seat. That covers `CLAUDE_SEAT_MODEL=claude-sonnet-5-5`, and "sonnet fills grok until 2026-10-02". A governed board seating one is refused with `review_seat_below_floor`. This is intended: the maintainer calls manual substitution a stopgap, which automatic fallback replaces.
+   - **Manual stand-ins on governed tiers follow the ratified, narrowed decision 2.** See the maintainer comment of 2026-09-30, [issuecomment-5919221436](https://github.com/Consiliency/agent-harness/pull/1199#issuecomment-5919221436). It resolves the president's DISAGREE by narrowing [issuecomment-5910412508](https://github.com/Consiliency/agent-harness/pull/1199#issuecomment-5910412508) item 2. Decision 1, the floor, takes precedence; decision 2 is **not** "any floor-meeting caller substitution is allowed".
+     - **What counts as a stand-in.** A caller-alias match is a *stand-in* when, after `canonical_seat_name`, the caller maps a model onto a seat name that `DEFAULT_REVIEW_SEAT_ALIASES` does not map it to. A caller entry equal to the default mapping (such as `{"claude-sonnet-5-5": "fable"}`, or `{"claude-sonnet-5-5": "anthropic"}` once canonicalized) is **not** a stand-in. It is treated as a default match, so the floor applies.
+     - **The allowed stand-in set.** This is an explicit allow-list: the floor alone does not decide it. `advisor_board/registries.py` gains `ALLOWED_STANDINS`, a mapping from registered model id to its allowed family, computed from `MODEL_SLOT_CLASS` plus the family rules below:
+
+       | vendor | family rule | frontier ids today |
+       |---|---|---|
+       | openai | **sol** family (`gpt-*-sol`), frontier slot | `gpt-6.1-sol`, `gpt-6-sol`, `gpt-5.6-sol` |
+       | anthropic | **Opus** family (`claude-opus-*`), frontier slot | `claude-opus-5-5`, `claude-opus-5`, `claude-opus-4-8` |
+       | xai | the **latest** Grok frontier model only | `grok-4.7`, pinned as `LATEST_XAI_GROK_STANDIN` with a `model-id-source` marker; a test asserts it equals `profiles.GROK_DEFAULT_MODEL` |
+       | google | **none** | — |
+
+       - `STANDIN_EXCLUDED_FAMILIES = {"gemini": "no Gemini stand-in until a qualifying newer Gemini frontier release"}`. The `gemini` seat itself keeps its standard floor.
+       - By this literal reading, `gpt-6-astra` (not sol-family) and `claude-fable-*` (not Opus-family) are **not** allowed stand-ins, although both still fill their own seats by default alias. This is flagged for maintainer confirmation in the PR body.
+     - **The rule.** On a governed tier, a stand-in must (a) be in `ALLOWED_STANDINS` **and** (b) meet the target seat's floor.
+       - Failing (a) raises `PresidentPolicyError("review_standin_not_allowed", …)`. For a Gemini model the message carries the `STANDIN_EXCLUDED_FAMILIES` reason.
+       - Failing (b) raises `review_seat_below_floor`.
+       - An allowed stand-in is honoured and recorded as `{"seat_name", "model", "slot", "vendor", "seat_vendor", "cross_vendor", "via": "caller_alias", "standin_family"}`.
+       - On a non-governed tier caller aliases behave as today and are still recorded.
+     - **The president rung is unchanged by this decision.** An allowed cross-vendor stand-in may fill a review seat, but it still cannot be a president rung (`rung_cross_vendor`, decision 3), and the rung floor still applies.
+   - **Consequence, stated plainly.** Once plan 2a is implemented, the fleet's operational board tool can no longer count a Sonnet stand-in as a governed `fable`, `sol` or `grok` seat. That covers `CLAUDE_SEAT_MODEL=claude-sonnet-5-5` and "sonnet fills grok until 2026-10-02". Those are refused (`review_seat_below_floor`, or `review_standin_not_allowed` for a cross-vendor Sonnet). The allowed stand-ins until plan 4 are sol-family, Opus-family and latest-Grok models. This is intended: manual substitution is a stopgap that automatic fallback replaces.
    - **Where substitutions are durably visible (hb1 grok 3).**
      - `PanelResult` gains an additive field, `seat_substitutions: tuple[Mapping[str, object], ...] = ()`. `PanelResult` has no `labels` field; that was an error in r1.
      - On a governed tier with a `stream_dir`, `invoke_board` writes **`board.policy.json`** atomically **after review authorization and revalidation succeed, and before the first seat spawns** (hb2 C1). That is the same point at which the first incremental verdict could be written, so a run later refused at revalidation leaves no governed record (HARDEN `forbid_pre_authorization_effects`). Its schema is `board.policy.v1`, with these keys:
@@ -149,6 +167,7 @@ Plan 2a edits none of these.
 ## Changes (plan 2a)
 
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/registries.py` (modify)
+- `ALLOWED_STANDINS`, `LATEST_XAI_GROK_STANDIN`, `STANDIN_EXCLUDED_FAMILIES` — add — the ratified decision-2 allow-list.
 - `MODEL_SLOT_CLASS` — add — decision 2 table. It covers every `_MODEL_DEFS` id exactly: a test enforces set equality. The file is on the guard allowlist.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (modify)
@@ -194,9 +213,12 @@ Plan 2a edits none of these.
   - a ladder whose `fable` seat is Sonnet descends with `rung_below_floor` recorded;
   - **`test_caller_alias_cannot_bypass_governed_fable_floor`** (codex F001's falsifier): a PRODUCTION_CODE board seating `claude-sonnet-5-5` with `seat_aliases={"claude-sonnet-5-5": "fable"}` raises `review_seat_below_floor`, and `seat_for_rung(board, "fable", seat_aliases=…)` is `None`;
   - **`test_caller_alias_cannot_seat_sonnet_on_a_governed_grok_seat`**: `{"claude-sonnet-5": "grok"}` on a governed tier is refused. This covers the stated fleet-tool consequence;
-  - **`test_floor_meeting_caller_substitution_is_recorded`**: `{"gpt-6.1-sol": "grok"}` passes and appears in `PanelResult.seat_substitutions` **and** in `board.policy.json` read back from `stream_dir` with `cross_vendor: true`;
+  - **`test_allowed_standins_are_accepted_and_recorded`** (ratified decision 2): on a governed tier, `{"gpt-6.1-sol": "grok"}`, `{"claude-opus-5-5": "sol"}` and `{"grok-4.7": "fable"}` are each accepted and appear in `PanelResult.seat_substitutions` and in `board.policy.json` with `standin_family` set;
+  - **`test_sonnet_and_gemini_standins_are_refused`**: `claude-sonnet-5-5` and `gemini-3.8-flash` mapped onto each of `fable`, `sol` and `grok` are refused. Sonnet on the fable seat is a default match and gets `review_seat_below_floor`; Sonnet on sol or grok gets `review_standin_not_allowed`; Gemini on any of them gets `review_standin_not_allowed` with the Gemini reason. `{"Gemini 3.1 Pro": "fable"}` (frontier) is also refused, with the Gemini reason;
+  - **`test_non_allowed_frontier_standin_is_refused`**: `{"grok-4.6": "sol"}` and `{"Gemini 3.1 Pro": "fable"}` raise `review_standin_not_allowed`. This test kills M3;
+  - **`test_floor_meeting_caller_substitution_is_recorded`**: `{"gpt-6.1-sol": "grok"}` (an allowed sol stand-in) passes and appears in `PanelResult.seat_substitutions` **and** in `board.policy.json` read back from `stream_dir` with `cross_vendor: true`;
   - **`test_caller_alias_to_vendor_name_is_floored`** (hb2 G1): `{"claude-sonnet-5-5": "anthropic"}` on a governed tier raises `review_seat_below_floor`;
-  - **`test_cross_vendor_substitution_cannot_be_president`** (hb2 G3): `{"claude-sonnet-5-5": "gemini"}` meets the gemini floor and is recorded, and with a gemini-first ladder the rung reports `rung_cross_vendor` and the ladder descends;
+  - **`test_cross_vendor_substitution_cannot_be_president`** (hb2 G3): `{"claude-opus-5-5": "gemini"}` is an allowed Opus stand-in that meets the gemini floor, so it is recorded. With a gemini-first ladder the rung reports `rung_cross_vendor` and the ladder descends;
   - **`test_model_id_rung_takes_its_canonical_floor`**: a ladder `["claude-sonnet-5-5", "sol", "grok", "gemini"]` over a board seating Sonnet reports `rung_below_floor` for rung 0;
   - a vendor-spelled ladder names the monitor files by canonical index;
   - **Named mutations and their killers.** Each mutant below was checked for equivalence under the other guards in this plan (hb3). The table names the test that kills each one.
@@ -204,7 +226,10 @@ Plan 2a edits none of these.
     | mutant | the change | killed by | why it is not equivalent |
     |---|---|---|---|
     | **M1** | `seat_eligible` always returns `(True, None)` | `test_caller_alias_cannot_bypass_governed_fable_floor`, and the default-alias Sonnet-for-`fable` case | the floor is the only thing that refuses a Sonnet `fable` seat, because the Counter check passes |
-    | **M1b** | the floor applies **only** when the seat name came from `DEFAULT_REVIEW_SEAT_ALIASES` and the caller supplied **no** entry for that model (r1's rule) | `test_caller_alias_cannot_seat_sonnet_on_a_governed_grok_seat` (`claude-sonnet-5` has no default entry) and `test_caller_alias_to_vendor_name_is_floored` (the caller value `anthropic` differs from the default `fable`); `test_caller_alias_cannot_bypass_governed_fable_floor` also kills it, because under M1b the caller entry exists and bypasses the floor | the killing tests reach the floored seat **only** through a caller alias |
+    | **M1b** | the floor applies **only** when the seat name came from `DEFAULT_REVIEW_SEAT_ALIASES` and the caller supplied **no** entry for that model (r1's rule) | `test_caller_alias_cannot_bypass_governed_fable_floor` and `test_caller_alias_to_vendor_name_is_floored` | in both, the caller entry equals the default mapping, so it is **not** a stand-in and the allow-list never runs. Under M1b the caller entry skips the floor, and nothing else refuses Sonnet. The Sonnet-as-grok test does **not** kill M1b, because the allow-list refuses it anyway, and it is not claimed as a killer. |
+    | **M3** | remove the `ALLOWED_STANDINS` check (floor only) | `test_non_allowed_frontier_standin_is_refused`: `{"grok-4.6": "sol"}` (frontier but not the latest Grok) and `{"Gemini 3.1 Pro": "fable"}` (frontier but Gemini) are refused with `review_standin_not_allowed` | both models meet the frontier floor, so only the allow-list can refuse them |
+
+    The Gemini exclusion is **not** named as a separate mutant. The allow-list has no Google entry, so removing only the exclusion text changes the error message but not the outcome, which makes it equivalent. The test asserts the Gemini reason string instead.
 - `tests/test_native_fill_declared_model.py` — create:
   - president: the deferral carries `model`; a CLI fill with a matching `ran_model` is accepted and recorded; a mismatch is refused with nothing persisted; a missing `ran_model` through the CLI is refused; the library seam without `ran_model` is accepted **and** marked `model_declared: false`;
   - review seats: the same three cases through `load_native_leg_fill`;
@@ -234,6 +259,7 @@ Plan 2a edits none of these.
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify:
   - vendor seat names (aliases, canonical outputs unchanged);
   - `SEAT_MIN_SLOT` and `review_seat_below_floor`;
+  - the ratified stand-in allow-list (`ALLOWED_STANDINS`, the Gemini exclusion) and `review_standin_not_allowed`;
   - `seat_substitutions`, and the governed record files `board.policy.json` (`board.policy.v1`) and `president.fill.json` (`president.fill.v1`), including the rule that a sidecar is valid only beside a ruling with matching digests;
   - the resume notes (hb2 G5): pre-2a pending requests are refused, and the requested model is re-derived from the bound rung seat;
   - the library-only bypasses (hb2 G6): a caller-supplied `president_invoke`, and the tierless composition paths until plan 2b (hb2 C4);
@@ -272,7 +298,8 @@ from pathlib import Path; import panel_content_tdd_adapter as ad
 assert ad.golden_bytes() == (Path('..')/ad.GOLDEN_PATH).read_bytes(); print('golden OK')"
 # named mutations (each must turn its test red), then restore:
 #   M1  seat_eligible always (True, None)                          -> test_caller_alias_cannot_bypass_governed_fable_floor
-#   M1b floor only for default-alias names with no caller entry     -> test_caller_alias_cannot_seat_sonnet_on_a_governed_grok_seat, test_caller_alias_to_vendor_name_is_floored
+#   M1b floor only for default-alias names with no caller entry     -> test_caller_alias_cannot_bypass_governed_fable_floor, test_caller_alias_to_vendor_name_is_floored
+#   M3  remove the ALLOWED_STANDINS check                          -> test_non_allowed_frontier_standin_is_refused
 #   M2  drop the ran_model comparison                              -> the ran_model mismatch case
 #   M2b drop the pending.model guard only                          -> test_tampered_pending_model_is_refused_even_with_matching_ran_model
 #   M2c requested_model from pending.model, guard dropped          -> test_pending_model_cannot_rebind_a_frontier_president_to_sonnet
@@ -283,7 +310,7 @@ Edge cases:
 - `ran_model` differing only in case or date suffix is a mismatch, because the comparison is exact.
 
 ## Acceptance criteria
-- [ ] `tests/test_seat_eligibility_floor.py` passes. A governed PRODUCTION_CODE board seating `claude-sonnet-5-5` for `fable` raises `review_seat_below_floor` through the default alias **and** through a caller alias, `seat_for_rung` returns `None` for it, a floor-meeting caller substitution appears in `board.policy.json` read back from `stream_dir`, and mutants M1 and M1b are each killed by their named tests.
+- [ ] `tests/test_seat_eligibility_floor.py` passes. A governed PRODUCTION_CODE board seating `claude-sonnet-5-5` for `fable` raises `review_seat_below_floor` through the default alias **and** through a caller alias, `seat_for_rung` returns `None` for it, a floor-meeting caller substitution appears in `board.policy.json` read back from `stream_dir`, the allowed Sol, Opus and latest-Grok stand-ins are accepted and recorded, Sonnet and Gemini stand-ins on fable, sol and grok are refused, and mutants M1, M1b and M3 are each killed by their named tests.
 - [ ] `tests/test_native_fill_declared_model.py` passes. A mismatched or undeclared `ran_model` through the CLI and leg loaders is refused with nothing persisted, the library seam without `ran_model` is accepted and recorded `model_declared: false` in `president.fill.json`, which is read back from `stream_dir`, a tampered `pending.model` is refused whether `ran_model` matches the bound seat or the tampered value, and mutants M2, M2b and M2c are each killed by their named tests.
 - [ ] `tests/test_seat_vendor_names.py` passes. Vendor names are accepted in the policy, the ladder and the rung match, and a vendor-spelled ladder indexes consistently, while `PRESIDENT_LADDER`, `review_policy_for_tier().required_seats` and the `DEFAULT_REVIEW_SEAT_ALIASES` values are unchanged.
 - [ ] Every frozen path is byte-identical to origin/main, the frozen HARDEN, PRESROUTE, govlean and PANEL nodes pass (EC-PRESROUTE-2/-3/-4/-5 included), and `golden_bytes()` equals the frozen golden.
