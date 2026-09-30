@@ -2125,14 +2125,31 @@ def _token_site_violations(repo: Path) -> list[str]:
 
 # PANEL-RESIDUAL-SL1B (maintainer decision S1, 2026-09-29): the non-target publish sites of
 # credsep and agy_watch stay unguarded in SL-1 and move to SL-1b (agent-harness#1168), which
-# removes this list. Each entry is (path, enclosing function, finding); the residual is
-# EXACT -- see test_sl1_ec1_the_sl1b_residual_is_exactly_the_four_named_sites.
-_TW_RESIDUAL_SL1B = frozenset({
-    ("phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py", "execute", "git push"),
-    ("phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py", "execute", "gh pr create"),
-    ("phase-loop-runtime/src/phase_loop_runtime/agy_watch.py", "_push_argv", "git push"),
-    ("phase-loop-runtime/src/phase_loop_runtime/agy_watch.py", "main", "gh pr create"),
-})
+# empties the list. Each entry is (path, enclosing function, finding); the residual is
+# EXACT -- see test_sl1_ec1_the_sl1b_residual_is_exactly_the_four_named_sites. The list is
+# data (plan amendment #3): the SL-3.3 closeout gate
+# (plans/evidence/panel-sl1-amendment-3/residual_carry_gate.py) reads the same file, so the
+# tripwire and the gate cannot disagree. The load is strict: any other shape fails here.
+_TW_RESIDUAL_SL1B_PATH = Path(__file__).resolve().parent / "data" / "panel_residual_sl1b.json"
+
+
+def _load_residual_sl1b(path: Path = _TW_RESIDUAL_SL1B_PATH) -> frozenset:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if type(payload) is not dict or set(payload) != {"schema", "sites"} \
+            or payload["schema"] != "panel_residual_sl1b.v1" or type(payload["sites"]) is not list:
+        raise ValueError(f"{path}: not a panel_residual_sl1b.v1 document")
+    keys = []
+    for site in payload["sites"]:
+        if type(site) is not dict or set(site) != {"path", "function", "finding"} \
+                or not all(type(site[k]) is str and site[k] for k in ("path", "function", "finding")):
+            raise ValueError(f"{path}: malformed site {site!r}")
+        keys.append((site["path"], site["function"], site["finding"]))
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"{path}: a site is listed more than once")
+    return frozenset(keys)
+
+
+_TW_RESIDUAL_SL1B = _load_residual_sl1b()
 
 
 def _enclosing_function(repo: Path, rel: str, line: int) -> str | None:

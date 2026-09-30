@@ -1,0 +1,25 @@
+{
+  "schema": "panel_residual_sl1b.v1",
+  "sites": [
+    {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py",
+      "function": "execute",
+      "finding": "git push"
+    },
+    {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py",
+      "function": "execute",
+      "finding": "gh pr create"
+    },
+    {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/agy_watch.py",
+      "function": "_push_argv",
+      "finding": "git push"
+    },
+    {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/agy_watch.py",
+      "function": "main",
+      "finding": "gh pr create"
+    }
+  ]
+}
