@@ -2068,7 +2068,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         write_private_board,
     )
     from .panel_invoker import _mode_instructions, _preflight_gemini_heartbeat, invoke_board
-    from .panel_invoker import PresidentPolicyError
+    from .panel_invoker import NativeFillRefusalError, PresidentPolicyError
 
     # The authoritative review instructions: the code-review brief, or the advisory contract,
     # staged as the brief file every seat and native fill binds (agent-harness#802).
@@ -2364,6 +2364,14 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     except PresidentPolicyError as exc:
         # PRESROUTE: a refused president path (override, stream, resume) is a typed exit.
         print(f"advisor-board: president refused [{exc.code}]: {exc}", file=sys.stderr)
+        if capture is not None:
+            capture.close()
+        return 2
+    except NativeFillRefusalError as exc:
+        # agent-harness#1183: a fill refused at binding (the seat did not defer) is a native-fill
+        # refusal naming the seat's real outcome, never an artifact-staging failure.
+        refusal = exc.refusal
+        print(f"advisor-board: native fill refused [{refusal.reason}]: {refusal.detail} (seat {refusal.seat_key})", file=sys.stderr)
         if capture is not None:
             capture.close()
         return 2

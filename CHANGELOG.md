@@ -6,6 +6,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
+
+- `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and
+  every writer re-serialized all rows with sorted keys. Rows on main are in neither
+  order, so appending one entry rewrote the whole file (+7743/-7725).
+- `append_entry`, `update_lifecycle` and `register_historical_plans` now edit the parsed
+  document in place and write it back in file order. A new slug goes at the end, and
+  every row that was not changed keeps its bytes. The issue's repro now adds 18 lines
+  and removes none.
+- Replacing an existing slug keeps that row's position and key order, including nested
+  key order for values that did not change. Extension keys that the replacement omits,
+  such as `plan_authority_history`, are carried forward instead of being dropped.
+  `update_lifecycle` changes only `status`, `updated_at` and `lifecycle`.
+- A manifest file that exists but whose JSON is not an object (`null`, a list, a
+  string, a number) is still rejected with `manifest must be an object`. It is never
+  treated as absent.
+- Output stays ASCII-escaped, as before. A hand-edited row holding a raw non-ASCII
+  character is `\u`-escaped on the next write.
+- `plan_manifest.py` is part of the agy-qualified runtime source, so the next release
+  cut's agy qualification covers this change.
+
+### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175)
+
+- A sealed prompt of 96 KiB or less now goes to agy as one user event
+  (`agy_ndjson_single_event_v1`) that ends with the review instruction. It no longer
+  goes through an acknowledgement turn first. Larger prompts keep the chunked ingestion
+  protocol (`agy_ndjson_same_session_ingestion_v1`) unchanged.
+- Why: the acknowledgement turn carried the whole review task, and gemini-3.8-flash-high
+  acted on it there. On claw (agy 1.2.13), 6 of 8 single-chunk legs failed:
+  - 4 made tool calls (`run_command ls`, `view_file`), and the deny profile refused
+    every one;
+  - 2 wrote the review in place of the acknowledgement line.
+
+  Sent as one event, 10 of 12 legs were accepted, with no tool step and no
+  acknowledgement failure. The other 2 ended with a provider "stream was interrupted"
+  error, which the chunked protocol also hit in the same window.
+- The stream classifier is unchanged: any tool or subagent step still rejects the leg.
+  The HARDEN evidence verifier recomputes whichever protocol a record names. It
+  requires a one-chunk prompt for the single-event protocol.
+
 ### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
 
 - The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem

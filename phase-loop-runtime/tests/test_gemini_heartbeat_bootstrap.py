@@ -79,7 +79,10 @@ def _stream(protocol, final="No blocking findings.\nAGREE"):
     ("final", "terminal response"), ("truncation", "truncation"),
 ])
 def test_stream_rejections_are_fixed_and_never_review_prose(mutation, reason):
-    protocol = panel._broker_gemini_stream_protocol("synthetic input")
+    # Two chunks: the ack and session mutations need an ingestion turn, and a prompt
+    # that fits one chunk is sent as one event (agent-harness#1175).
+    protocol = panel._broker_gemini_stream_protocol("synthetic input\n" * 7000)
+    assert len(protocol.acknowledgements) == 2
     rows = _stream(protocol)
     if mutation == "event": rows.insert(0, ["PRIVATE_FIXTURE_SENTINEL"])
     if mutation == "tool":
@@ -469,8 +472,12 @@ def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path,
     fixture_cli.mode.write_text(mode)
     repo = _fixture_repo(tmp_path)
     monkeypatch.chdir(repo)  # the HARDEN review authority defaults to the cwd
+    # The ack, session and count modes need an ingestion turn: a review input that fits
+    # one chunk is sent as one event with no acknowledgement (agent-harness#1175).
+    review_input = ("synthetic review input\n" * 5000 if mode in ("ack", "session", "count")
+                    else "synthetic review input")
     result = panel.invoke_board(
-        gemini_board(), "synthetic review input", monitoring_policy="heartbeat_only",
+        gemini_board(), review_input, monitoring_policy="heartbeat_only",
         stream_dir=tmp_path / "records", gateway_available=False,
         repo_dir=repo,
     )

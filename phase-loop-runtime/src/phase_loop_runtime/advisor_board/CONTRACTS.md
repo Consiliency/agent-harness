@@ -551,7 +551,7 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
 - **Rung routes** (`president_adapter.build_president_invoke(..., monitoring_policy=)`).
   Unseated rung → typed `president_unavailable` (descend). `sol` / `grok` → the brokered
   `_exec_leg` in a throwaway directory, whose only launch is `launch_provider`. `gemini` →
-  the broker's acknowledged agy stream with the PRESIDENT's own final instruction (a ruling,
+  the broker's agy stream with the PRESIDENT's own final instruction (a ruling,
   not a review verdict), launched through `_run_leg_with_liveness` → `launch_provider` and
   decoded by `_broker_gemini_stream_result`; with the agy subscription credential it runs in
   the broker's agy profile, without one in an empty private HOME (no credential of any kind),
@@ -710,7 +710,8 @@ HOME fallback truthfully if HOME is absent. Legitimate refresh writes survive.
 The real qualification driver requires an explicit HOME and checks target
 presence before and after, without reading its contents.
 
-The broker transports same-session acknowledged input over stdin, with no tree
+The broker transports same-session input over stdin (one event when the sealed prompt fits
+one chunk, acknowledged chunks otherwise; agent-harness#1175), with no tree
 attachment, `--add-dir`, permission bypass, retry or native thinking timer. Empty,
 rejected and nonzero-exit streams remain non-votes with fixed diagnostics;
 provider stdout/stderr and arbitrary exception strings are not substituted for
