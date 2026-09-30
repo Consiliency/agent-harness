@@ -2970,7 +2970,10 @@ def test_stop_during_a_spawn_ends_killed_reaped_released_without_another_call(de
     real = _peer_spawn("echo")
     real_worker = m._Client._spawn_worker
 
+    in_spawn = threading.Event()
+
     def slow(argv, **kwargs):
+        in_spawn.set()  # the spawn is in flight from here until it returns
         time.sleep(delay)
         proc = real(argv, **kwargs)
         returned_at.append(time.monotonic())
@@ -2993,7 +2996,9 @@ def test_stop_during_a_spawn_ends_killed_reaped_released_without_another_call(de
         with mock.patch.object(m, "_spawn_popen", slow), mock.patch.object(m._Client, "_spawn_worker", record_worker):
             caller = threading.Thread(target=call, daemon=True)
             caller.start()
-            assert _wait(lambda: client.spawn is not None, 5)
+            # Not a poll of client.spawn: at the shortest delay the spawn can come
+            # and go between two polls (seen on macOS).
+            assert in_spawn.wait(5)
             started = time.monotonic()
             client.stop(graceful=False, timeout=stop_timeout)
             stop_took = time.monotonic() - started
