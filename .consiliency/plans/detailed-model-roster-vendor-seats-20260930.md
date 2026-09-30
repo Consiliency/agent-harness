@@ -73,7 +73,12 @@ Plan 2a edits none of these.
      - every seat matched through a caller alias whose model is below the floor, or belongs to a different vendor than the seat name, is recorded as `{"seat", "model", "slot", "via": "caller_alias", "eligible": false}`;
      - the record goes in a new additive `seat_substitutions` list in the president binding and the `PanelResult` labels;
      - the existing counter check (`'sol': 2`) is unchanged.
-   - Plan 3 replaces caller-alias substitutions with expiring substitution records (brief item 4, "for now" entries with an expiry).
+   - **Manual substitutions are a stopgap, and plan 4 retires them** (maintainer decision on agent-harness#1199, 2026-09-30).
+     - **Retirement condition:** automatic fallback runs in **every production composition entry point** (`cli.py` advisor-board, `governed_review`, `train_runner`). The harness itself picks the next available model or vendor, and records what it picked:
+       - PANEL fallback lanes choose the vendor (agent-harness#1078);
+       - plan 4's ordered model walk, with plan 3's expiry records, chooses the model within a vendor.
+     - **What plan 4 does when that holds:** in governed tiers, caller `seat_aliases` that substitute below the floor or across vendors are refused (`review_seat_below_floor`) instead of recorded. The `seat_substitutions` record then logs only automatic fallbacks.
+     - **Until then:** plan 3's expiring records are the interim, time-boxed form of a substitution. The retirement itself belongs to plan 4 and is listed in its scope.
 3. **The president rung obeys the same floor.**
    - New `rung_seat(board, rung, *, seat_aliases) -> tuple[Seat | None, str | None]` returns the seat and, when there is no eligible seat, a reason: `rung_unseated` or `rung_below_floor`.
    - `seat_for_rung` keeps its signature and returns only an eligible seat, or `None`.
