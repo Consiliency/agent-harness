@@ -73,6 +73,7 @@ from .agy_canary_evidence import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
+from . import credential_redaction as _credential_redaction
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
@@ -2124,25 +2125,7 @@ _LEG_DETAIL_PLACEHOLDERS = ("<redacted>", "<user>", "<email>", "<path>", "~")
 _LEG_DETAIL_PLACEHOLDER_RE = re.compile(r"<redacted>|<user>|<email>|<path>|~")
 _LEG_DETAIL_ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
 _LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
-# Credential SHAPES (values we cannot know in advance).
-_LEG_DETAIL_CREDENTIAL_RES: tuple[re.Pattern[str], ...] = (
-    # an auth scheme and its token, across whitespace/newlines
-    re.compile(r"(?i)\b(?:bearer|basic|token|digest|negotiate)\s+[A-Za-z0-9._~+/=-]{8,}"),
-    # prefixed API keys / tokens
-    re.compile(
-        r"\b(?:sk-(?:ant-)?|sk_live_|sess-|xai-|gh[pousr]_|github_pat_|glpat-|hf_|"
-        r"xox[abceoprs]-|AIza|ya29\.|AKIA)[A-Za-z0-9_.-]{8,}"
-    ),
-    re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"),
-)
-# key=value / key: value secrets: the VALUE (with an optional scheme word) is the span, so
-# the key name stays readable. Quoted keys and values are allowed.
-_LEG_DETAIL_KV_RE = re.compile(
-    r"(?i)[\"']?\b(?:api[_-]?key|authorization|proxy-authorization|access[_-]?token|"
-    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|token|secret|password|passwd)[\"']?"
-    r"\s*[:=]\s*(?P<value>[\"']?(?:(?:bearer|basic|token|digest)\s+)?[^\s\"',;]+[\"']?)"
-)
+# Credential shapes and their value spans come from the shared `credential_redaction` module.
 _LEG_DETAIL_EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # A known path starts at the text start, after whitespace, a quote, `=`, `:`, `(`, or right
 # after a `file://` scheme — never after `~` or `/` (so `~/app` is not re-matched for
@@ -2191,9 +2174,7 @@ def _leg_detail_spans(
 ) -> list[tuple[int, int, str]]:
     """Every detector's spans over the SAME normalized text: (start, end, kind)."""
     spans: list[tuple[int, int, str]] = []
-    for pattern in _LEG_DETAIL_CREDENTIAL_RES:
-        spans += [(m.start(), m.end(), "credential") for m in pattern.finditer(text)]
-    spans += [(m.start("value"), m.end("value"), "credential") for m in _LEG_DETAIL_KV_RE.finditer(text)]
+    spans += [(s, e, "credential") for s, e in _credential_redaction.credential_spans(text)]
     spans += [(m.start(), m.end(), "email") for m in _LEG_DETAIL_EMAIL_RE.finditer(text)]
     homes, users = _redaction_identity()
     seat = [str(p).rstrip("/") for p in known if str(p).rstrip("/") not in ("", "/")]

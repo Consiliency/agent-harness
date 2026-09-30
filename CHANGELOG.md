@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### One shared credential redactor with broader credential-shape coverage
+
+- New module `credential_redaction`. It holds every credential shape and a span-union
+  redactor. The review-leg details, PTY tails, private leg logs and run-metadata stderr excerpts
+  all use it, so a shape recognised at one site is recognised at all of them.
+- Newly recognised shapes: a secret command-line flag followed by its value
+  (`--api-key <v>`), URL userinfo, `Cookie`/`Set-Cookie` headers, PEM private-key blocks,
+  `x-api-key`, and key names with a prefix (`GITHUB_TOKEN=`, `db-password:`). The run-metadata
+  excerpt now also gets the auth-scheme, prefixed-token and quoted-key shapes the leg details
+  already had.
+- `redaction.STDERR_SECRET_KV_RE` is removed; `runner._redacted_stderr_excerpt` uses the
+  shared redactor.
+- The BAML adapter's error sanitizer moves onto this module in a follow-up, after its
+  in-flight change lands.
+- No agy route-core file changes, so this needs no agy requalification.
+
 ### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
 
 - `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and

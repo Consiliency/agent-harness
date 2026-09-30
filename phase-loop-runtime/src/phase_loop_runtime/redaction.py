@@ -32,11 +32,6 @@ _CATEGORY_BY_PROTECTED_SOURCE_ROLE = {
     "root_specs_intake": "unmanaged_spec",
 }
 
-# key=value / key: value credential shape used by `runner._redacted_stderr_excerpt`. It lives
-# here (not in runner) so the panel's private-log hygiene pass can share it without importing
-# runner.
-STDERR_SECRET_KV_RE = re.compile(r"(?i)(api[_-]?key|authorization|token|secret|password)(\s*[:=]\s*)\S+")
-
 _FORBIDDEN_METADATA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("raw_diff", re.compile(r"diff --git|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@")),
     ("raw_spec_body", re.compile(r"raw spec bod(?:y|ies)|spec body bytes|verbatim spec", re.I)),
