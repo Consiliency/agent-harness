@@ -98,6 +98,20 @@ runtime package and its explicit installed Python 3.12 interpreter. The declared
 consiliency-contract floor remains unverified in source mode (test warning);
 the locked environment installs consiliency-contract 0.6.5.
 
+The first container is now retained as failed evidence: missing prerequisites,
+orphan-reaper behavior, and Docker's namespace denial do not qualify it as a
+venue for these native isolation tests. No test assertion or Display security
+policy is relaxed. The three host-native failures trace to canonical coreutils
+assumptions (`true`/`sleep` aliases), not a proven GitHub authentication failure.
+Use the existing exact-head hosted CI for full qualification instead of adding
+more custom environments. An explicitly draft PR is permitted only with fresh
+targeted source evidence and independent Sol review; test.yml must be manually
+dispatched with chronology=true and its real jobs plus retained JUnit witness
+must pass before readiness or merge. Refreshed main input is
+`d5774a93d328435cf4062cfc414705c392c8ff55`; the diagnostic baseline above stays
+bound to its historical input. The current offload readiness is false, so this
+does not put test work on the inference host.
+
 ## Acceptance and preservation
 
 The diagnostic patch is not a global liveness-policy cure. The controlled
@@ -109,7 +123,7 @@ Talk-to-Tux migration acceptance remains blocked on production symbol/operation
 freeze, parity, port/cutover and packaging. Original in-process memory/parity
 failures stay failed evidence. Source is unchanged after its accepted freeze.
 
-No deployment, publication, merge, worktree prune, global CLI upgrade/downgrade
+At the diagnostic checkpoint, no deployment, publication, merge, worktree prune, global CLI upgrade/downgrade
 or source changes outside the declared owned paths have occurred. An owned-path
 local verification checkpoint is not a published release. Only owned
 private evidence and the runtime diagnostic/test/plan delta are new here.

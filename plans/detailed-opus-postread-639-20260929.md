@@ -121,6 +121,21 @@ subscription auth preflight passed. No direct API, gateway or print-mode route.
    privileged or unconfined container. Check its source hashes and Git tree
    against the committed owned candidate. Its runner-owned targeted/full
    receipt is the amended full-suite gate, not a fabricated host-route verdict.
+   The first container proved unqualified: missing prerequisites, no orphan
+   reaper, and default Docker refusal of the required nested namespaces. Retain
+   its failed receipt. Native sandbox availability does not certify a newly
+   assembled filesystem; stop extending ad-hoc qualification environments.
+   Reconcile the owned delta against refreshed main input
+   d5774a93d328435cf4062cfc414705c392c8ff55. Obtain a fresh runner-owned targeted
+   source receipt and repeat the read-only Sol delta review. Full acceptance is
+   deferred, not waived, to the repository's existing exact-head hosted CI:
+   publish one explicitly draft PR through the admitted broker, then dispatch
+   test.yml on that candidate with chronology=true. Keep the draft and all
+   deployment/merge readiness false until the real required jobs and retained
+   chronology JUnit witness pass. Manual dispatch retains quarantine controls;
+   its current offload-readiness=false means no inference-host workload. No
+   Display namespace/security-policy change, unconfined Docker workaround,
+   invented board receipt or relabeling of the failed local full runs.
    Reconcile the completed Opus review in the existing owned Talk-to-Tux tree:
    `plans/detailed-baml-language-migration-probe-20260928-0605.md`,
    `plans/baml-language/parity.json`, and
