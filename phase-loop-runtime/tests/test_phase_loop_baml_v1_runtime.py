@@ -272,12 +272,15 @@ class _DeliverySpy:
         self.counts: collections.Counter = collections.Counter()
         self.outcomes: dict = {}
         self._deliver = m._deliver
-        self._init = m._Request.__init__
+        self._handle = m._Client._handle
         spy = self
 
-        def init(req, *args, **kwargs):
-            spy._init(req, *args, **kwargs)
-            spy.requests.append(req)
+        def handle(client, event):
+            # A request counts once the owner has ACCEPTED it; one that never left
+            # the calling thread (an exception before the hand-off) has no reply.
+            if event[0] == "request":
+                spy.requests.append(event[1])
+            spy._handle(client, event)
 
         def deliver(req, outcome):
             spy.counts[id(req)] += 1
@@ -285,11 +288,11 @@ class _DeliverySpy:
             assert spy.counts[id(req)] == 1, "a request was answered twice"
             spy._deliver(req, outcome)
 
-        m._Request.__init__ = init
+        m._Client._handle = handle
         m._deliver = deliver
 
     def close(self) -> None:
-        m._Request.__init__ = self._init
+        m._Client._handle = self._handle
         m._deliver = self._deliver
 
     def assert_each_once(self, timeout: float = 10.0) -> None:
@@ -525,6 +528,37 @@ def test_adoption_bundle_excludes_the_bridge(tmp_path):
     assert adoption_bundle._stale_schema_refs(refs, adoption_bundle._schema_refs(tmp_path)) == []
 
 
+def test_adoption_bundle_refresh_and_check_end_to_end(tmp_path):
+    """#26 end to end: refresh writes a bundle whose check is fresh; a bridge edit
+    keeps it fresh; a schema edit makes it stale."""
+    from phase_loop_runtime import adoption_bundle
+
+    root = tmp_path / adoption_bundle.BAML_SCHEMA_ROOT
+    root.mkdir(parents=True)
+    for path in (PKG / "baml_src").glob("*.baml"):
+        (root / path.name).write_bytes(path.read_bytes())
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for doc in (adoption_bundle.SOURCE_AUTHORITY_CONTRACT, adoption_bundle.C4_DOCUMENT, adoption_bundle.TASK_CATALOG):
+        (tmp_path / doc).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / doc).write_text("# fixture\n\n## Anchors\n\n## Audiences\n- operator\n", encoding="utf-8")
+    # A bundle committed before the upgrade: its digests are the v0 sources'.
+    stale = adoption_bundle.generate_adoption_bundle(tmp_path)
+    stale["schema_refs"] = [{**ref, "digest": "sha256:" + "0" * 64} for ref in stale["schema_refs"]]
+    bundle_path = tmp_path / adoption_bundle.ADOPTION_BUNDLE_PATH
+    bundle_path.parent.mkdir(parents=True)
+    bundle_path.write_bytes(adoption_bundle.stable_json_bytes(stale))
+    assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "stale"
+    assert adoption_bundle.refresh_adoption_bundle(tmp_path)["refreshed"] is True
+    bundle = json.loads((tmp_path / adoption_bundle.ADOPTION_BUNDLE_PATH).read_text(encoding="utf-8"))
+    assert len(bundle["schema_refs"]) == 8
+    assert not any(ref["source_path"].endswith("phase_loop_bridge.baml") for ref in bundle["schema_refs"])
+    assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "fresh"
+    (root / "phase_loop_bridge.baml").write_text("// host glue edited\n", encoding="utf-8")
+    assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "fresh"
+    (root / "verification_evidence.baml").write_text("// schema edited\n", encoding="utf-8")
+    assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "stale"
+
+
 def test_environment_inside_the_worker_is_the_allowlist(client):
     """#15: sentinels in the parent never reach the worker or a request."""
     with mock.patch.dict(os.environ, ENV_SENTINELS):
@@ -585,6 +619,42 @@ def test_serialization_errors_are_plain_and_send_nothing(client):
     ):
         assert type(exc) is BamlValidationError
     assert (_pid(), _log()) == (pid, log)
+
+
+def _boom(exc):
+    def raise_(*_args, **_kwargs):
+        raise exc
+
+    return raise_
+
+
+# I7 (codex hb1 B3): every seam of the client's own machinery on the calling
+# thread.  Whatever ordinary Exception escapes there must surface as
+# BamlWorkerError(kind="fault"), never untyped and never as a plain content error.
+_MACHINERY_SEAMS = {
+    "raw-source-read": ("_read_raw_baml_files", None, OSError(5, "I/O error")),
+    "source-render": ("_read_baml_files", None, UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")),
+    "fingerprint": ("_fingerprint", None, RuntimeError("hash failure")),
+    "serialize": ("_serialize_args", None, TypeError("encoder bug")),
+    "drain-warnings": ("_drain_pending", "_Client", ValueError("logging bug")),
+    "owner-launch": ("_ensure_owner", "_Client", OSError(12, "Cannot allocate memory")),
+    "wait": ("_wait", "_Client", KeyError("queue bug")),
+}
+
+
+@pytest.mark.parametrize("seam", sorted(_MACHINERY_SEAMS))
+def test_client_machinery_failures_are_typed_faults(client, seam):
+    name, owner, exc = _MACHINERY_SEAMS[seam]
+    target = getattr(m, owner) if owner else m
+    for call in (_parse, lambda: m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)):
+        m._reset_worker_for_tests(test_mode=True)
+        with mock.patch.object(target, name, _boom(exc)):
+            raised = _raises(call)
+        assert type(raised) is BamlWorkerError and raised.kind == "fault", (seam, type(raised), raised)
+        assert raised.__cause__ is exc
+    # Content errors stay plain, and the next call is healthy.
+    assert type(_raises(m.parse_baml_response, "EmitPhaseCloseout", "\ud83d")) is BamlValidationError
+    assert _parse()["terminal_status"] == "complete"
 
 
 def test_worker_protocol_rejects_ops_before_init_and_a_second_init():
@@ -939,26 +1009,45 @@ _OPS = {
 
 
 def _recovery_parity(op: str) -> None:
+    """Kill attempt 1 mid-call: the retried answer equals a healthy call's, and
+    the frames actually WRITTEN to the two workers' stdin differ only in ``id``
+    (observed at the os.write boundary, not at the client's inputs)."""
     bridge_fn, call = _OPS[op]
     _use(None)
     healthy = call()
     spy = _scenario_setup(_hostile(bridge_fn, _sleep(1.5)))
-    sent: list[tuple[bytes, str, int]] = []
-    real_send = m._Client._send_op
+    worker_fds: dict[int, int] = {}  # write fd -> worker pid
+    written: dict[int, bytearray] = collections.defaultdict(bytearray)
+    real_send, real_write = m._Client._send_op, os.write
 
     def send_spy(self, gen, req):
-        sent.append((req.body, req.fp, gen.pid))
+        worker_fds[gen.write_fd] = gen.pid
         real_send(self, gen, req)
 
+    def write_spy(fd, data):
+        count = real_write(fd, data)
+        if fd in worker_fds:
+            written[(fd, worker_fds[fd])].extend(bytes(data[:count]))
+        return count
+
     m._Client._send_op = send_spy
+    m.os.write = write_spy
     killer = _Killer()
     try:
         assert call() == healthy
     finally:
         killer.close()
         m._Client._send_op = real_send
-    assert len(sent) == 2 and sent[0][2] != sent[1][2]
-    assert sent[0][:2] == sent[1][:2], "retry body bytes or source snapshot differ"
+        m.os.write = real_write
+    frames = []
+    for (_fd, pid), data in written.items():
+        for line in bytes(data).split(b"\n"):
+            if line and json.loads(line).get("op") == op:
+                frames.append((pid, line))
+    assert len(frames) == 2 and frames[0][0] != frames[1][0], [f[0] for f in frames]
+    strip = [re.sub(rb'^\{"id":\d+,', b"{", line) for _pid, line in frames]
+    assert strip[0] == strip[1], "retry frames differ in more than the id"
+    assert frames[0][1] != frames[1][1]  # the ids do differ
     spy.assert_each_once()
 
 
@@ -1900,6 +1989,24 @@ def _at_line(fn, needle: str):
     return pick
 
 
+def _through(fn, needle: str):
+    """Select every boundary from the first one on ``fn``'s ``needle`` line up to
+    the last boundary ``fn`` itself executes: the operation's INTERIOR, including
+    every callee boundary it reaches (codex hb1 B4)."""
+    code, line = fn.__code__, _line_of(fn, needle)
+
+    def pick(points):
+        def line_of(point):
+            return next((ln for (s, e, ln) in point[0].co_lines() if s <= point[1] < e), None)
+
+        start = next((i for i, p in enumerate(points) if p[0] is code and line_of(p) == line), None)
+        assert start is not None, f"no boundary on {fn.__qualname__}:{line} ({needle!r})"
+        end = max(i for i, p in enumerate(points) if p[0] is code)
+        return points[start:end + 1]
+
+    return pick
+
+
 # The fixed PR-CI subset of the I1 sweep.  Each entry is (variant, label, selector).
 # First, middle and last boundary of a warm call; the request hand-off; the
 # owner launch and its compare-and-set ticket (where an interrupt once wedged
@@ -1914,19 +2021,28 @@ _SUBSET = [
     ("normal", "middle", lambda points: [points[len(points) // 2]]),
     ("normal", "last", lambda points: points[-1:]),
     ("normal", "request-hand-off", lambda points: _at_line(m._Client.call, 'self.events.put(("request", req))')(points)),
-    ("cold", "owner-launch", lambda points: _at_line(m._Client._ensure_owner, "_thread.start_new_thread(")(points)),
-    ("cold", "launch-ticket", lambda points: _at_line(m._Client._ensure_owner, "owner_launches.setdefault(")(points)),
-    ("mid_op", "wait-mid-op", lambda points: _at_line(m._Client._wait, "req.heartbeat = time.monotonic()")(points)),
-    ("stalled_spawn", "wait-during-spawn", lambda points: _at_line(m._Client._wait, "req.heartbeat = time.monotonic()")(points)),
+    # Every boundary from the launch ticket through the owner start and its
+    # error handling, including whatever the start reaches on the calling
+    # thread.  A threading.Thread.start here would put threading's internals
+    # into this range, and injecting there wedges the process or maps the
+    # interrupt (the historical bug).
+    ("cold", "owner-launch-interior", lambda points: _through(m._Client._ensure_owner, "owner_launches.setdefault(")(points)),
+    ("mid_op", "wait-mid-op", lambda points: _at_line(m._Client._wait, "req.heartbeat = now")(points)),
+    ("stalled_spawn", "wait-during-spawn", lambda points: _at_line(m._Client._wait, "req.heartbeat = now")(points)),
 ]
 
 
 def scenario_i1_subset(exc_name: str) -> None:
+    import faulthandler
+
+    # A wedged process (e.g. a stuck threading lock) fails fast, not at the CI timeout.
+    faulthandler.dump_traceback_later(240, exit=True)
     for variant, label, select in _SUBSET:
         _use(None)
         stats = _sweep(variant, exc_name, select=select)
-        assert stats["runs"] == 1, (variant, label, dict(stats))
-        print("SUBSET", variant, label, flush=True)
+        assert stats["runs"] == stats["selected"] >= 1, (variant, label, dict(stats))
+        print("SUBSET", variant, label, stats["runs"], flush=True)
+    faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.mark.parametrize("exc_name", sorted(_EXCEPTIONS))
@@ -2019,9 +2135,10 @@ def scenario_i1_double_injection(mode: str) -> None:
     pid = [e for e in _log() if e["kind"] == "abandoned"][0]["pid"]
     assert _wait(lambda: _gone(pid), max(0.0, injected_at + bound - time.monotonic()) + 0.2)
     spy.close()
-    m._read_raw_baml_files = _REAL_RAW
-    m._reset_worker_for_tests(test_mode=True)
-    assert _parse()["terminal_status"] == "complete"
+    # The next call, on the SAME client (no reset), succeeds on a fresh worker.
+    # (The evidence op: only the closeout parse is made to hang here.)
+    request = m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+    assert request.body["model"] == "phase-loop-evidence-audit" and _pid() not in (None, pid)
     print("DOUBLE", mode, where, flush=True)
 
 
@@ -2126,31 +2243,41 @@ def test_i1_signals_and_abandonment(name, arg):
 
 
 def scenario_i2_stalled_caller_after_reply() -> None:
-    """A's reply is delivered; A's caller stalls past every grace while B runs."""
-    spy = _scenario_setup(abandon_grace_s=0.5)
+    """A's reply is delivered; A's caller then stalls well past the abandonment
+    grace while B executes on the same worker for longer than that grace."""
+    grace = 0.5
+    spy = _scenario_setup(_hostile("phase_loop_parse_closeout", _sleep(3 * grace)), abandon_grace_s=grace)
     _parse()
     pid = _pid()
     real_wait = m._Client._wait
+    a_req: list = []
+    b_started = threading.Event()
     b_done = threading.Event()
 
     def wait(client, req):
         if threading.current_thread().name == "A":
+            a_req.append(req)
             while not req.done:
                 req.heartbeat = time.monotonic()
                 time.sleep(0.01)
-            b_done.wait(10)  # stalled well past abandon_grace_s after delivery
-            time.sleep(1.0)
+            # A's reply is delivered.  Stall (no heartbeat) until B has run for
+            # longer than the grace, then past B's completion.
+            assert b_started.wait(10)
+            assert b_done.wait(20)
+            time.sleep(2 * grace)
         return real_wait(client, req)
 
     m._Client._wait = wait
     box = {}
     a = threading.Thread(target=lambda: box.setdefault("a", _parse()), name="A")
     a.start()
-    assert _wait(lambda: spy.requests and spy.requests[0].done, 5 + _cold_slack())
+    assert _wait(lambda: a_req and a_req[0].done, 10 + _cold_slack())
+    b_started.set()
+    started = time.monotonic()
     box["b"] = _parse()
-    assert _pid() == pid
+    assert time.monotonic() - started > grace  # B executed across A's grace interval
     b_done.set()
-    a.join(15)
+    a.join(30)
     m._Client._wait = real_wait
     assert box["a"] == box["b"]
     assert _log() == [] and _pid() == pid
@@ -2209,6 +2336,89 @@ def scenario_i2_stale_frame() -> None:
 # ---------------------------------------------------------------------------
 # I3: a single owner
 # ---------------------------------------------------------------------------
+
+
+class _OwnerDeath(BaseException):
+    """Raised inside the owner thread to kill it at a chosen transition."""
+
+
+def _call_in_thread(fn, timeout: float):
+    box: dict = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["exc"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert not thread.is_alive(), "the caller is still waiting: the request was lost"
+    return box
+
+
+def scenario_i3_owner_dies_before_delivery() -> None:
+    """codex hb1 B1: the owner dies between accepting a reply and delivering it.
+    Recovery must still answer the request, with no further API call, and
+    dispose of the worker it held."""
+    spy = _scenario_setup(retries=0)
+    m._spawn_popen = _peer_spawn("echo")
+    _parse()
+    pid = _pid()
+    real = m._deliver
+    armed = {"on": True}
+
+    def dying_deliver(req, outcome):
+        if armed["on"] and outcome[0] == "reply":
+            armed["on"] = False
+            raise _OwnerDeath()
+        real(req, outcome)
+
+    m._deliver = dying_deliver
+    try:
+        box = _call_in_thread(_parse, 10)
+    finally:
+        m._deliver = real
+    exc = box.get("exc")
+    assert type(exc) is BamlWorkerError and exc.kind == "fault", box
+    assert m._CLIENT.owner_starts == 2
+    assert _wait(lambda: _gone(pid), REAP_BOUND + 1)
+    assert any(e["pid"] == pid and e["phase"] == "owner_death" for e in _log()), _log()
+    assert _parse()["terminal_status"] == "complete" and _pid() != pid
+    spy.assert_each_once()
+
+
+def scenario_i3_owner_dies_before_publication() -> None:
+    """codex hb1 B1: the owner dies after the spawn returned and before the new
+    worker is published.  The worker and its helper threads must still be
+    disposed of, and the caller answered, without a further API call."""
+    spy = _scenario_setup(retries=0)
+    pids: list[int] = []
+    m._spawn_popen = _peer_spawn("echo", record=pids)
+    real = m._Client._on_spawned
+    armed = {"on": True}
+
+    def dying_on_spawned(self, spawn, result):
+        if armed["on"]:
+            armed["on"] = False
+            raise _OwnerDeath()
+        real(self, spawn, result)
+
+    m._Client._on_spawned = dying_on_spawned
+    try:
+        box = _call_in_thread(_parse, 10)
+    finally:
+        m._Client._on_spawned = real
+    exc = box.get("exc")
+    assert type(exc) is BamlWorkerError and exc.kind == "fault", box
+    assert pids, "no worker was spawned"
+    orphan = pids[0]
+    assert _wait(lambda: _gone(orphan), REAP_BOUND + 1), "the unpublished worker outlived its owner"
+    assert _wait(lambda: not any(t.name.endswith(f"-{orphan}") for t in threading.enumerate()), REAP_BOUND + 1)
+    assert any(e["pid"] == orphan and e["phase"] == "owner_death" for e in _log()), _log()
+    assert _parse()["terminal_status"] == "complete"
+    spy.assert_each_once()
 
 
 def scenario_i3_owner_killed_with_waiters() -> None:
@@ -2678,6 +2888,8 @@ def _job_exists(name: str) -> bool:
         pytest.param("i2_concurrent_abandonment"),
         pytest.param("i2_stale_frame", marks=needs_posix),
         pytest.param("i3_owner_killed_with_waiters"),
+        pytest.param("i3_owner_dies_before_delivery"),
+        pytest.param("i3_owner_dies_before_publication"),
         pytest.param("i4_busy"),
         pytest.param("i4_backlog_success"),
         pytest.param("i4_publish_before_expiry"),

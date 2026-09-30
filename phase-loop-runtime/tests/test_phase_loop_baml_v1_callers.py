@@ -513,3 +513,74 @@ def test_worker_kill_helper_really_kills():
     with _worker_fault("phase_loop_parse_closeout") as killer:
         exc = _raises(m.parse_baml_response, "EmitPhaseCloseout", OK)
     assert type(exc) is BamlWorkerError and exc.rc == -signal.SIGKILL and len(killer.killed) == 1
+
+
+# ---------------------------------------------------------------------------
+# codex hb1 B2: no later candidate or incomplete-turn rule overwrites an outage
+# ---------------------------------------------------------------------------
+
+
+def _failing_first_spawn():
+    """Spawn failure on the first spawn only (a real missing-interpreter error),
+    then the real worker: the second candidate WOULD parse cleanly."""
+    real = m._spawn_popen
+    used = {"n": 0}
+
+    def spawn(argv, **kwargs):
+        used["n"] += 1
+        if used["n"] == 1:
+            argv = ["/nonexistent/phase-loop/python3", *argv[1:]]
+        return real(argv, **kwargs)
+
+    return spawn
+
+
+def _spec(executor: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(executor=executor, prompt_bundle=SimpleNamespace(workflow_command="execute"))
+
+
+def test_outage_on_the_first_candidate_is_not_overwritten_by_the_retained_log(tmp_path):
+    log = tmp_path / "executor.log"
+    log.write_text("log preamble\n" + _native_closeout(), encoding="utf-8")
+    result = LaunchResult(command=["claude"], returncode=0, output=_native_closeout(), executor="claude", log_path=str(log))
+    _use(None, retries=0)
+    with patch.object(m, "_spawn_popen", _failing_first_spawn()):
+        parsed = runner._parsed_child_automation(result, _spec("claude"))
+    assert parsed["automation_status"] == "blocked", parsed.get("automation_status")
+    assert parsed["automation_parse_error_blocker_class"] == "unretryable_external_outage"
+    assert parsed["automation_blocker_class"] == "unretryable_external_outage"
+
+
+def test_outage_survives_the_codex_incomplete_turn_rule():
+    result = LaunchResult(
+        command=["codex"], returncode=1, output="", executor="codex",
+        codex_turn_completion={"completed": False}, codex_final_message=_native_closeout(),
+    )
+    _use(None, retries=0)
+    with patch.object(m, "_spawn_popen", _failing_first_spawn()):
+        parsed = runner._parsed_child_automation(result, _spec("codex"))
+    assert parsed["automation_parse_error_blocker_class"] == "unretryable_external_outage"
+    assert parsed["automation_blocker_class"] == "unretryable_external_outage"
+
+
+# ---------------------------------------------------------------------------
+# codex hb1 B3: a client-machinery failure is an outage end to end, never a
+# fail-open 'uncertain' Tier-3 result or a content verdict
+# ---------------------------------------------------------------------------
+
+
+def test_tier3_blocks_on_a_client_machinery_failure():
+    _use(None)
+    with tempfile.TemporaryDirectory() as td, patch.object(m, "_read_raw_baml_files", side_effect=OSError(5, "I/O error")):
+        audit = evidence_audit.run_tier3_runner_audit(_tier3_repo(td), tier3_budget=1, dirty_only=False)
+    assert audit.blocker is not None and audit.blocker["blocker_class"] == "unretryable_external_outage"
+    assert audit.warnings == () and audit.invocations == ()
+
+
+def test_closeout_parse_is_not_evaluated_on_a_client_machinery_failure():
+    _use(None)
+    with patch.object(m, "_read_raw_baml_files", side_effect=OSError(5, "I/O error")):
+        parsed = runner._parse_native_closeout_status(OK)
+    assert parsed["automation_parse_error_blocker_class"] == "unretryable_external_outage"

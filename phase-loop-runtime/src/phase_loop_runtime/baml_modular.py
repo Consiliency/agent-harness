@@ -903,6 +903,12 @@ class _Client:
         self.owner_ident: int | None = None
         self.recover = False
         self.backlog: collections.deque[_Request] = collections.deque()
+        # Durable ownership (codex hb1 B1): every request the owner has accepted
+        # stays here until its one reply is delivered, and every worker the
+        # spawner started stays in ``generations`` until it is released.  A new
+        # owner recovers from these, never from the transient slots alone.
+        self.inflight: set[_Request] = set()
+        self.generations: set[_Gen] = set()
         self.active: _Request | None = None
         self.gen: _Gen | None = None
         self.spawn: _Spawn | None = None
@@ -921,8 +927,15 @@ class _Client:
     def files(self) -> tuple[dict[str, str], str]:
         snap = self.snapshot
         if snap is None:
-            files = _read_baml_files()
-            snap = (files, _fingerprint(files))
+            try:
+                files = _read_baml_files()
+                snap = (files, _fingerprint(files))
+            except BamlValidationError:
+                raise
+            except Exception as exc:
+                # I7: a failure of the client's own machinery (e.g. an unreadable
+                # packaged source) is typed, never a raw OSError.
+                raise BamlWorkerError("fault", f"BAML source snapshot failed: {_sanitize_error(exc)}") from exc
             self.snapshot = snap
         return snap
 
@@ -930,25 +943,45 @@ class _Client:
     def call(self, op: str, args: dict[str, Any]) -> tuple[str, str]:
         if os.getpid() != self.owner_pid:
             raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
-        self._drain_pending()
-        if self.closing:
-            raise BamlWorkerError("shutdown", "BAML worker client is shutting down")
-        body = _serialize_args(args)
-        files, fp = self.files()
-        req = _Request(op, body, files, fp)
+        try:
+            self._drain_pending()
+            if self.closing:
+                raise BamlWorkerError("shutdown", "BAML worker client is shutting down")
+            body = _serialize_args(args)
+            files, fp = self.files()
+            req = _Request(op, body, files, fp)
+        except BamlValidationError:
+            raise  # content errors stay plain; BamlWorkerError passes through
+        except Exception as exc:
+            raise BamlWorkerError("fault", f"BAML client failure: {_sanitize_error(exc)}") from exc
         try:
             self._ensure_owner()
             self.events.put(("request", req))
             return self._wait(req)
-        except BaseException:
+        except BaseException as exc:
             if not req.consumed:
                 _send_abandon(self, req)
+            if isinstance(exc, Exception) and not isinstance(exc, BamlValidationError):
+                # I7: any other caller-side Exception is kind="fault".  A
+                # BaseException that is not an Exception (an interrupt) is never
+                # mapped (I1).
+                raise BamlWorkerError("fault", f"BAML client failure: {_sanitize_error(exc)}") from exc
             raise
 
     def _wait(self, req: _Request) -> tuple[str, str]:
+        # An independent bound, derived from the request's own budgets: however
+        # the owner fails, the caller never waits past queue + execution budget
+        # plus the abandonment and reap bounds.
+        limit = (
+            req.enqueued_at + self.queue_budget_s + (self.retries + 1) * self.deadline_s
+            + self.abandon_grace_s + _REAP_BOUND_S + _OWNER_STALE_S
+        )
         get = req.reply.get
         while True:
-            req.heartbeat = time.monotonic()
+            now = time.monotonic()
+            req.heartbeat = now
+            if now > limit:
+                raise BamlWorkerError("timeout", "BAML request exceeded its total budget without a reply")
             try:
                 outcome = get(True, _HEARTBEAT_S)
             except queue.Empty:
@@ -1038,23 +1071,44 @@ class _Client:
                 return True
 
     def _recover(self) -> None:
-        # A previous owner died.  Finish everything it left behind.
-        active = self.active
-        self.active = None
+        # A previous owner died, possibly between any two of its steps.  Finish
+        # everything it left behind from the durable registries: every accepted,
+        # undelivered request outside the backlog gets a typed reply, and every
+        # live worker is disposed of.
         if self.spawn is not None:
             self.spawn.retired = True
             self.spawn = None
-        if self.gen is not None:
-            self._dispose(self.gen, "fault", phase="owner_death")
-        if active is not None and not active.done:
-            _deliver(active, ("error", BamlWorkerError("fault", "BAML worker client owner died")))
+        for gen in list(self.generations):
+            if gen.state != "disposed":
+                if gen in self.dying:
+                    self.dying.remove(gen)
+                self._dispose(gen, "fault", phase="owner_death")
+            elif gen not in self.late:
+                self.late.append(gen)  # disposed but never queued for release
+        waiting = set(self.backlog)
+        for req in list(self.inflight):
+            if req.done:
+                self.inflight.discard(req)
+            elif req not in waiting:
+                req.gen = None
+                req.spawn = None
+                self._reply(req, ("error", BamlWorkerError("fault", "BAML worker client owner died")))
+        self.active = None
+
+    def _reply(self, req: _Request, outcome: tuple[str, Any]) -> None:
+        """Deliver ``req``'s one reply, then forget it (the order matters: until
+        the reply is out, ``inflight`` keeps the request recoverable)."""
+        if not req.done:
+            _deliver(req, outcome)
+        self.inflight.discard(req)
 
     def _handle(self, event: tuple) -> None:
         kind = event[0]
         if kind == "request":
             req = event[1]
+            self.inflight.add(req)
             if self.closing:
-                _deliver(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+                self._reply(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
             else:
                 self.backlog.append(req)
         elif kind == "abandon":
@@ -1085,10 +1139,10 @@ class _Client:
                     self.backlog.remove(req)
                 elif now - req.heartbeat > self.abandon_grace_s:
                     self.backlog.remove(req)
-                    _deliver(req, ("abandoned", None))
+                    self._reply(req, ("abandoned", None))
                 elif now - req.enqueued_at > self.queue_budget_s:
                     self.backlog.remove(req)
-                    _deliver(req, ("error", BamlWorkerError("busy", "BAML worker queue budget exhausted")))
+                    self._reply(req, ("error", BamlWorkerError("busy", "BAML worker queue budget exhausted")))
         active = self.active
         if active is not None:
             if now - active.heartbeat > self.abandon_grace_s:
@@ -1229,9 +1283,9 @@ class _Client:
         gen.pending_id = None
         gen.request = None
         if req is not None and req is self.active:
-            self.active = None
             req.gen = None
-            _deliver(req, ("reply", (outcome, decoded)))
+            self._reply(req, ("reply", (outcome, decoded)))
+            self.active = None
 
     def _on_eof(self, gen: _Gen, partial: bool) -> None:
         if gen is not self.gen or self.closing:
@@ -1266,11 +1320,10 @@ class _Client:
             return
         if req in self.backlog:
             self.backlog.remove(req)
-            _deliver(req, ("abandoned", None))
+            self._reply(req, ("abandoned", None))
             return
         if req is not self.active:
             return
-        self.active = None
         spawn = req.spawn
         if spawn is not None and spawn is self.spawn:
             spawn.retired = True
@@ -1282,7 +1335,8 @@ class _Client:
             self._dispose(gen, "abandoned", phase=gen.state)
         req.gen = None
         req.spawn = None
-        _deliver(req, ("abandoned", None))
+        self._reply(req, ("abandoned", None))
+        self.active = None
 
     def _fail(self, gen: _Gen, kind: str, message: str, *, phase: str | None = None) -> None:
         req = gen.request if gen.request is not None and gen.request is self.active else None
@@ -1300,8 +1354,8 @@ class _Client:
         if error.kind in _RETRYABLE_KINDS and req.attempts <= self.retries and budget_left > 0 and not self.closing:
             self._attempt(req)
             return
+        self._reply(req, ("error", error))
         self.active = None
-        _deliver(req, ("error", error))
 
     # -- disposal -------------------------------------------------------------
     def _dispose(self, gen: _Gen, kind: str, *, phase: str, rc: int | None = None) -> None:
@@ -1350,6 +1404,7 @@ class _Client:
                 self._release(gen)
 
     def _release(self, gen: _Gen) -> None:
+        self.generations.discard(gen)
         try:
             gen.err_file.close()
         except OSError:
@@ -1367,11 +1422,25 @@ class _Client:
         self.stop_started = time.monotonic()
         for req in list(self.backlog):
             self.backlog.remove(req)
-            if not req.done:
-                _deliver(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
-        active, self.active = self.active, None
-        if active is not None and not active.done:
-            _deliver(active, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+            self._reply(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+        for req in list(self.inflight):
+            self._reply(req, ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+        # Requests handed over but never accepted (an inline stop, with no owner
+        # running) are answered too; other queued events are moot once closing.
+        while True:
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if event[0] == "request" and not event[1].done:
+                self._reply(event[1], ("error", BamlWorkerError("shutdown", "BAML worker client is shutting down")))
+            elif event[0] == "stop":
+                self.stop_acks.append(event[1])
+            elif event[0] == "spawned" and isinstance(event[2], _Gen) and event[2].state != "disposed":
+                event[2].state = "dying"
+                self._kill(event[2])
+                self.late.append(event[2])
+        self.active = None
         if self.spawn is not None:
             self.spawn.retired = True
             self.spawn = None
@@ -1492,11 +1561,15 @@ class _Client:
         os.close(read_in)
         os.close(write_out)
         job = None
+        gen = None
         try:
             if os.name == "nt":
                 job = _WindowsJob(int(proc._handle))  # assigned before init is sent
             self.next_gen += 1
             gen = _Gen(self.next_gen, proc, read_out, write_in, err_file, spawn.fp, job)
+            # Registered before anyone can lose it: an owner that dies anywhere
+            # between here and publication still finds and disposes of it.
+            self.generations.add(gen)
             reader = threading.Thread(target=self._reader_loop, args=(gen,), name=f"phase-loop-baml-reader-{gen.pid}", daemon=True)
             writer = threading.Thread(target=self._writer_loop, args=(gen,), name=f"phase-loop-baml-writer-{gen.pid}", daemon=True)
             gen.threads = [reader, writer]
@@ -1507,6 +1580,8 @@ class _Client:
                 proc.wait(_REAP_BOUND_S)
             except BaseException:  # noqa: BLE001
                 pass
+            if gen is not None:
+                self.generations.discard(gen)
             os.close(read_out)
             os.close(write_in)
             err_file.close()
@@ -1521,6 +1596,7 @@ class _Client:
                 proc.wait(_REAP_BOUND_S)
             except BaseException:  # noqa: BLE001
                 pass
+            self.generations.discard(gen)
             os.close(write_in)  # the reader closes read_out on EOF
             err_file.close()
             if job is not None:

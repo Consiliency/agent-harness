@@ -10422,6 +10422,14 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
     native_failure: dict[str, object] | None = None
     for source, candidate in _native_closeout_text_candidates(result, spec, text):
         native = _parse_native_closeout_status(candidate)
+        if native.get("baml_worker_outage"):
+            # agent-harness#1135 (#24): the closeout was NOT evaluated.  No later
+            # candidate may stand in for it; the outage is the result.
+            native["native_closeout_source"] = source
+            parsed = native
+            text = candidate
+            native_failure = None
+            break
         if native and not native.get("automation_parse_error"):
             native["native_closeout_source"] = source
             parsed = native
@@ -10452,7 +10460,7 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
         spec.executor == "codex" and result.codex_turn_completion is not None
         and (not result.codex_turn_completion.get("completed") or not parsed)
     )
-    if not result.dry_run and result.returncode is not None and (
+    if not result.dry_run and result.returncode is not None and not parsed.get("baml_worker_outage") and (
         missing_completed_closeout or parsed.get("automation_status") == "executing"
     ):
         summary = (
@@ -10512,6 +10520,7 @@ def _parse_native_closeout_status(text: str) -> dict[str, object]:
             "automation_verification_status": "blocked",
             "automation_parse_error": summary,
             "automation_parse_error_blocker_class": "unretryable_external_outage",
+            "baml_worker_outage": exc.kind,
         }
     except BamlValidationError as exc:
         return {

@@ -302,6 +302,18 @@ jobs:
           baml-cli --agent-skill-check off check --project "$rendered" 2>&1 | tee "$RUNNER_TEMP/rendered.log"
           grep -q 'Finished checked 9 file(s)' "$RUNNER_TEMP/rendered.log"
 
+      - name: I1 interrupt subset on Python 3.12 (sys.monitoring)
+        # agent-harness#1135: pull requests run the pytest lane on 3.10 only
+        # (settrace injection). The fixed I1 regression subset and the double-
+        # injection test also run here, on 3.12, where the sweep injects through
+        # sys.monitoring. The full sweep is baml-i1-sweep.yml.
+        working-directory: phase-loop-runtime
+        run: |
+          set -euo pipefail
+          python -m pip install ".[visual]" pytest
+          PYTHONPATH=src:tests python -m pytest -q -p no:cacheprovider \
+            tests/test_phase_loop_baml_v1_runtime.py -k "i1_boundary_subset or i1_double_injection"
+
   lint:
     name: lint (pyflakes)
     runs-on: ubuntu-latest
