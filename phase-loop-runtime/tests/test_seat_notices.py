@@ -145,6 +145,8 @@ def test_sealed_claude_seat_carries_its_notice_through_the_spawn(monkeypatch, tm
 
 
 def test_jailed_route_without_an_execfind_pass_is_refused_with_zero_launches(monkeypatch, tmp_path):
+    # Isolated from this host's own store: a qualified host would otherwise admit the route.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "empty-state"))
     monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
                         lambda leg, **k: seat_jail.SeatRoute(True))
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
