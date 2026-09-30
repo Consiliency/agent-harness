@@ -20,9 +20,6 @@ import pytest
 
 from phase_loop_runtime import panel_invoker, sandbox_egress, seat_jail, seat_uid
 
-from ._seat_prereq import (
-    require_seat_uid,
-)
 
 GOLDEN = json.loads((Path(__file__).parent / "data" / "seat_jail_1132_sealed_golden.json")
                     .read_text(encoding="utf-8"))

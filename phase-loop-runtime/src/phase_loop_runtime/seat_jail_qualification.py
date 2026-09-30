@@ -41,9 +41,7 @@ import json
 import os
 import secrets
 import shutil
-import signal as _signal
 import subprocess
-import sys
 import tempfile
 import threading
 import time
