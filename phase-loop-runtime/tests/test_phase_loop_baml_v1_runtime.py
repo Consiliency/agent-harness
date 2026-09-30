@@ -105,20 +105,18 @@ def _pid() -> int | None:
 
 
 def _gone(pid: int) -> bool:
-    """True when ``pid`` has exited (a zombie counts as gone)."""
+    """True when ``pid`` no longer exists at all: exited AND reaped.
+
+    The same predicate on every platform.  A zombie is NOT gone: for a worker
+    of this process only the client itself can reap it, so a zombie means the
+    client killed it but never waited on it (it hid a leak on Linux, where this
+    once counted zombies as gone; found on macOS)."""
     if LINUX:
-        try:
-            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        except (OSError, IndexError):
-            return True
-        return state in ("Z", "X")
+        return not Path(f"/proc/{pid}").exists()
     if WINDOWS:
         import psutil  # os.kill(pid, 0) would send CTRL_C_EVENT on Windows
 
-        try:
-            return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-        except psutil.NoSuchProcess:
-            return True
+        return not psutil.pid_exists(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -624,6 +622,14 @@ def test_serialization_errors_are_plain_and_send_nothing(client):
     ):
         assert type(exc) is BamlValidationError
     assert (_pid(), _log()) == (pid, log)
+
+
+
+@pytest.mark.parametrize("field", ["plan_produces", "plan_owned_files"])
+def test_a_non_list_closeout_field_is_a_plain_content_error(client, field):
+    """Opus round 3 N1: a bad payload shape is content, never an untyped TypeError."""
+    exc = _raises(m.build_baml_request, "EmitPhaseCloseout", {**CLOSEOUT, field: 5})
+    assert type(exc) is BamlValidationError
 
 
 def _boom(exc):
@@ -2088,7 +2094,7 @@ _SUBSET = [
     # thread.  A threading.Thread.start here would put threading's internals
     # into this range, and injecting there wedges the process or maps the
     # interrupt (the historical bug).
-    ("cold", "owner-launch-interior", lambda points: _through(m._Client._ensure_owner, "owner_launches.setdefault(")(points)),
+    ("cold", "owner-launch-interior", lambda points: _through(m._Client._launch_owner, "owner_launches.setdefault(")(points)),
     ("mid_op", "wait-mid-op", lambda points: _at_line(m._Client._wait, "req.heartbeat = now")(points)),
     ("stalled_spawn", "wait-during-spawn", lambda points: _at_line(m._Client._wait, "req.heartbeat = now")(points)),
 ]
@@ -2483,8 +2489,9 @@ def scenario_i3_owner_dies_before_publication() -> None:
     spy.assert_each_once()
 
 
-# codex round 2 F001: recovery must finish terminal side effects, not trust the
-# flags that stand for them.  The owner is killed at EVERY line of every
+# codex rounds 2 and 3 (F001): recovery must finish terminal side effects, not
+# trust the flags that stand for them, and it must never wait for a future API
+# call.  Every check below runs BEFORE any further call on the client.  The owner is killed at EVERY line of every
 # terminal transition it runs (reply delivery, disposal, kill, release, stop,
 # spawn publication), in the flow that reaches that line.  Whatever line it dies
 # on, the caller gets a terminal outcome from recovery (never from the
@@ -2534,6 +2541,9 @@ _TERMINAL_FLOWS = {
     "stop": ("echo", [("_Client", "_begin_stop"), ("_Client", "_stop_gen"), ("_Client", "_kill"), ("_Client", "_continue_stop"), ("_Client", "_release")]),
     # A spawn that returns after its request gave up: the late-spawn branch.
     "late_spawn": ("echo", [("_Client", "_on_spawned"), ("_Client", "_kill"), ("_Client", "_log")]),
+    # A stop that drains a spawned worker still queued behind it (_begin_stop's
+    # drained-spawn branch).
+    "stop_drain": ("echo", [("_Client", "_begin_stop"), ("_Client", "_kill")]),
 }
 
 
@@ -2548,6 +2558,7 @@ def _terminal_cases():
 def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
     mode, _fns = _TERMINAL_FLOWS[flow]
     late = flow == "late_spawn"
+    drain = flow == "stop_drain"
     client = m._Client(test_mode=True, retries=0, deadline_s=0.4 if late else 2.0, queue_budget_s=2.0, abandon_grace_s=0.5)
     target = m if owner == "module" else m._Client
     fired: list = []
@@ -2574,13 +2585,27 @@ def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
 
     wrapped = _die_at_line(client, getattr(target, name), line, fired)
     peer = _peer_spawn(mode, record=pids)
-    if late:
+    release = threading.Event()
+    if late or drain:
         first = peer
 
-        def peer(argv, **kwargs):  # noqa: F811 - the first spawn outlives its request
+        def peer(argv, **kwargs):  # noqa: F811 - the first spawn is held back
             if not pids:
-                time.sleep(0.8)
+                if late:
+                    time.sleep(0.8)
+                else:
+                    release.wait(5)
             return first(argv, **kwargs)
+
+    real_handle = m._Client._handle
+
+    def handle_stop_after_spawned(self, event):
+        # Deterministic drain: the stop is handled only once the held spawn has
+        # returned and its "spawned" event is queued behind it.
+        if self is client and event[0] == "stop":
+            release.set()
+            _wait(lambda: not client.events.empty(), 5)
+        return real_handle(self, event)
 
     try:
         with mock.patch.object(m, "_spawn_popen", peer), \
@@ -2593,29 +2618,47 @@ def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
                 with mock.patch.object(target, name, wrapped):
                     call()  # fails with kind="spawn": the spawn is retired
                     _wait(lambda: fired or (gens and gens[0].state == "disposed"), 5)
+            elif drain:
+                box: dict = {}
+
+                def waiting_call():
+                    try:
+                        box["value"] = client.call("parse_closeout", {"raw": OK})
+                    except BaseException as exc:  # noqa: BLE001
+                        box["exc"] = exc
+
+                caller = threading.Thread(target=waiting_call, daemon=True)
+                with mock.patch.object(m._Client, "_handle", handle_stop_after_spawned), mock.patch.object(target, name, wrapped):
+                    caller.start()
+                    assert _wait(lambda: client.spawn is not None, 5)
+                    client.stop(graceful=False, timeout=5)
+                    caller.join(10)
+                assert not caller.is_alive(), "the caller was never answered"
+                assert type(box.get("exc")) is BamlWorkerError, box
             else:
                 with mock.patch.object(target, name, wrapped):
                     call()
                     if flow == "release":
                         # The failed worker is released by the owner's next pass.
                         _wait(lambda: fired or not client.late, 5)
-            if not fired:
+            # The owner may still be on its way to the line after the caller returned.
+            if not _wait(lambda: bool(fired), 0.3):
                 return False
-            assert client.owner_starts >= 1
-            if late:
-                # The caller had already returned, so no waiter restarts the owner:
-                # recovery runs on the next call, which must still be healthy.
-                with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo", record=pids)):
-                    assert "value" in call(), (flow, name, line)
-            # No worker and no helper thread outlives the reap bound.
-            deadline = REAP_BOUND + 1.0
-            live = client.gen if not client.closed else None
+            # (Usually the owner died and recovered in-thread; a few lines sit
+            # inside a handler of their own, e.g. _request_spawn's spawner start.)
+            # WITHOUT any further call: every worker is killed AND reaped by the
+            # client (a zombie does not count; returncode is set only by the
+            # client's own poll), its helpers are gone, and it is released,
+            # all within the I4 bound.
+            deadline = REAP_BOUND + 0.5
             for gen in gens:
-                if gen is live:
-                    continue
-                assert _wait(lambda: _gone(gen.pid), deadline), (flow, name, line, "worker outlived its owner", gen.state, gen.killed_at)
+                assert _wait(lambda: gen.proc.returncode is not None and _gone(gen.pid), deadline), (
+                    flow, name, line, "worker not reaped without a further call", gen.state, gen.killed_at,
+                    client.owner_running, client.recover,
+                )
                 assert _wait(lambda: not any(t.is_alive() for t in gen.threads), deadline), (flow, name, line, "helper outlived its worker")
-            if flow != "stop":
+                assert _wait(lambda: gen not in client.generations and gen.err_file.closed, deadline), (flow, name, line, "not released")
+            if flow not in ("stop", "stop_drain"):
                 # The client keeps working, and a later owner pass releases every
                 # disposed generation (nothing stays registered or open).
                 with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo", record=pids)):
@@ -2704,6 +2747,177 @@ def test_owner_recovery_finishes_terminal_transitions(boundary):
             gen.proc.wait(timeout=2)
             for thread in gen.threads:
                 thread.join(timeout=2)
+        client.stop(graceful=False, timeout=3)
+
+
+
+# codex round 3 (F001), as filed: a late worker whose spawn was retired must be
+# reaped after owner death with no caller left to trigger recovery.
+
+
+def test_retired_spawn_is_reaped_after_owner_death_without_another_call():
+    client = m._Client(test_mode=True, retries=0, deadline_s=0.2, queue_budget_s=0.5, abandon_grace_s=0.5)
+    release_spawn = threading.Event()
+    owner_died = threading.Event()
+    generations = []
+    real_spawn = m._spawn_popen
+    original_on_spawned = m._Client._on_spawned
+
+    def delayed_spawn(argv, **kwargs):
+        assert release_spawn.wait(5)
+        return real_spawn(argv, **kwargs)
+
+    def die_before_late_kill(self, spawn, result):
+        if self is client and spawn.retired and isinstance(result, m._Gen):
+            generations.append(result)
+            owner_died.set()
+            raise _OwnerDeath()
+        return original_on_spawned(self, spawn, result)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", delayed_spawn), mock.patch.object(m._Client, "_on_spawned", die_before_late_kill):
+            raised = _raises(client.call, "parse_closeout", {"raw": "{}"})
+            assert type(raised) is BamlWorkerError and raised.kind == "spawn"
+            release_spawn.set()
+            assert owner_died.wait(5), "late-spawn injection did not fire"
+            gen = generations[0]
+            deadline = time.monotonic() + m._REAP_BOUND_S + 0.25
+            while gen.proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert gen.proc.poll() is not None, "retired worker survives the reap bound until another API call"
+            assert _wait(lambda: all(not thread.is_alive() for thread in gen.threads), 0.5)
+            assert _wait(lambda: gen.err_file.closed and gen not in client.generations, 0.5)
+    finally:
+        release_spawn.set()
+        client.stop(graceful=False, timeout=3)
+        for gen in generations:
+            if gen.proc.poll() is None:
+                gen.proc.kill()
+            gen.proc.wait(timeout=2)
+            gen.writes.put(None)
+            for thread in gen.threads:
+                thread.join(timeout=2)
+
+
+
+def test_owner_recovers_in_thread_without_a_relaunch():
+    """The primary path: a transition that dies is recovered by the SAME owner
+    thread at once; no relaunch (by a caller or the supervisor) is involved."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=2.0)
+    real_dispose = m._Client._dispose
+    real_launch = m._Client._launch_owner
+    armed = {"on": False}
+    launches: list[str] = []
+
+    def dying_dispose(self, gen, kind, *, phase, rc=None):
+        if self is client and armed["on"]:
+            armed["on"] = False
+            raise _OwnerDeath()
+        real_dispose(self, gen, kind, phase=phase, rc=rc)
+
+    def recording_launch(self):
+        if self is client:
+            launches.append(threading.current_thread().name)
+        real_launch(self)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn("non_json")), \
+                mock.patch.object(m._Client, "_dispose", dying_dispose), \
+                mock.patch.object(m._Client, "_launch_owner", recording_launch):
+            # Start an owner first, then arm the death for the framing disposal.
+            client._ensure_owner()
+            assert _wait(lambda: client.owner_running, 2)
+            ident, starts = client.owner_ident, client.owner_starts
+            launches.clear()
+            armed["on"] = True
+            box = _call_in_thread(lambda: client.call("parse_closeout", {"raw": OK}), 10)
+            assert type(box.get("exc")) is BamlWorkerError, box
+            assert not armed["on"], "the injection never fired"
+            assert client.owner_ident == ident and client.owner_starts == starts + 1
+            assert launches == [], launches
+    finally:
+        client.stop(graceful=False, timeout=3)
+
+
+
+def test_a_worker_is_released_only_after_it_is_reaped():
+    """Released means waited on.  A killed worker that has not exited by the
+    reap bound is killed again and logged once (``reap_overdue``), and it stays
+    tracked; it is released only once the client has reaped it."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=0.5)
+    procs: list = []
+    real = _peer_spawn("hang")
+
+    def unkillable(argv, **kwargs):
+        proc = real(argv, **kwargs)
+        proc.kill = lambda: None  # the client's kills do not land
+        procs.append(proc)
+        return proc
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", unkillable):
+            raised = _raises(client.call, "parse_closeout", {"raw": OK})
+            assert type(raised) is BamlWorkerError and raised.kind == "timeout"
+            gen = next(g for g in list(client.generations))
+            time.sleep(REAP_BOUND + 0.5)
+            assert gen.proc.returncode is None and not _gone(gen.pid)
+            assert gen in client.generations and gen in client.late, "released before it was reaped"
+            assert [e["kind"] for e in client.fault_log].count("reap_overdue") == 1, client.fault_log
+            subprocess.Popen.kill(procs[0])  # the kill finally lands
+            assert _wait(lambda: gen.proc.returncode is not None and _gone(gen.pid), 2.0)
+            assert _wait(lambda: gen not in client.generations and gen.err_file.closed, 2.0)
+    finally:
+        client.stop(graceful=False, timeout=3)
+        for proc in procs:
+            if proc.poll() is None:
+                subprocess.Popen.kill(proc)
+                proc.wait(5)
+
+
+def test_supervisor_relaunches_an_owner_that_exited_with_recovery_pending():
+    """The backstop: the owner thread really exits (its in-thread recovery keeps
+    failing without progress), no caller is waiting, and the supervisor still
+    relaunches an owner that disposes of the worker within the I4 bound."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=2.0)
+    real_recover = m._Client._recover
+    real_service = m._Client._service
+    real_launch = m._Client._launch_owner
+    state = {"service": 1, "recover": m._OWNER_REENTRIES + 1}
+    launchers: list[str] = []
+
+    def dying_service(self):
+        if self is client and state["service"]:
+            state["service"] -= 1
+            raise _OwnerDeath()
+        real_service(self)
+
+    def failing_recover(self):
+        if self is client and state["recover"]:
+            state["recover"] -= 1
+            raise _OwnerDeath()
+        real_recover(self)
+
+    def recording_launch(self):
+        if self is client:
+            launchers.append(threading.current_thread().name)
+        real_launch(self)
+
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo")):
+            client.call("parse_closeout", {"raw": OK})
+            gen = client.gen
+            launchers.clear()
+            with mock.patch.object(m._Client, "_service", dying_service), \
+                    mock.patch.object(m._Client, "_recover", failing_recover), \
+                    mock.patch.object(m._Client, "_launch_owner", recording_launch):
+                assert _wait(lambda: gen.proc.returncode is not None, REAP_BOUND + m._SUPERVISE_S + 0.5), (
+                    "no relaunch: the worker waits for a future call", client.owner_running, client.recover,
+                )
+            assert state == {"service": 0, "recover": 0}
+            assert "phase-loop-baml-supervisor" in launchers, launchers
+            assert _wait(lambda: gen not in client.generations and gen.err_file.closed, 1.0)
+            assert "value" in _call_in_thread(lambda: client.call("parse_closeout", {"raw": OK}), 10)
+    finally:
         client.stop(graceful=False, timeout=3)
 
 

@@ -600,6 +600,8 @@ def test_outage_on_the_first_candidate_is_not_overwritten_by_the_retained_log(tm
     assert parsed["automation_status"] == "blocked", parsed.get("automation_status")
     assert parsed["automation_parse_error_blocker_class"] == "unretryable_external_outage"
     assert parsed["automation_blocker_class"] == "unretryable_external_outage"
+    # Opus round 3 N2: the operator can find the preserved executor output.
+    assert str(log) in parsed["automation_blocker_summary"]
 
 
 def test_outage_survives_the_codex_incomplete_turn_rule():

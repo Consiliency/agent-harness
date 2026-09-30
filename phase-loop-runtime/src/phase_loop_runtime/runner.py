@@ -10426,6 +10426,12 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
             # agent-harness#1135 (#24): the closeout was NOT evaluated.  No later
             # candidate may stand in for it; the outage is the result.
             native["native_closeout_source"] = source
+            log_path = getattr(result, "log_path", None)
+            if log_path:
+                # The operator deciding whether to re-run needs the preserved output.
+                native["automation_blocker_summary"] = str(native["automation_blocker_summary"]).replace(
+                    "preserved in the launch log", f"preserved at {log_path}"
+                )
             parsed = native
             text = candidate
             native_failure = None

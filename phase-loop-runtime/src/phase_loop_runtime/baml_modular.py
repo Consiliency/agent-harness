@@ -131,7 +131,7 @@ def _build_from_reply(function_name: str, request: dict[str, Any]) -> BamlReques
 
 def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
     if _is_class_name(function_name):
-        with _client_boundary():
+        with _client_boundary(worker=False):
             schema = export_function_schema(function_name)
             payload = _find_json_payload(str(raw_text or ""))
             _validate_payload_against_schema(payload, schema)
@@ -153,17 +153,19 @@ def parse_baml_response(function_name: str, raw_text: str) -> ParsedResponse:
 
 
 @contextlib.contextmanager
-def _client_boundary():
+def _client_boundary(*, worker: bool = True):
     """I7 past the reply: processing a worker reply is client machinery too.
     Content errors (``BamlValidationError``) stay plain, any other ``Exception``
     becomes ``kind="fault"``, and a non-``Exception`` (an interrupt) is never
-    mapped."""
+    mapped.  ``worker=False`` is the class-name branch, which never reaches the
+    worker: still ``kind="fault"`` (fail closed), but not reported as one."""
     try:
         yield
     except BamlValidationError:
         raise
     except Exception as exc:
-        raise BamlWorkerError("fault", f"BAML client failure: {_sanitize_error(exc)}") from exc
+        where = "BAML client failure" if worker else "BAML response processing failure (no worker involved)"
+        raise BamlWorkerError("fault", f"{where}: {_sanitize_error(exc)}") from exc
 
 
 def _bridge_args(function_name: str, params: tuple[str, ...], payload: dict[str, Any]) -> dict[str, Any]:
@@ -174,10 +176,17 @@ def _bridge_args(function_name: str, params: tuple[str, ...], payload: dict[str,
         # v0 rendered the closeout prompt in Python from payload.get(...) with
         # these defaults; the normalization keeps every v0-accepted payload valid.
         sha = payload.get("closeout_commit_sha")
+        lists = {}
+        for name in ("plan_produces", "plan_owned_files"):
+            value = payload.get(name) or []
+            if not isinstance(value, (list, tuple)):
+                # A bad payload shape is a content error (Opus round 3 N1).
+                raise BamlValidationError(f"BAML payload field {function_name}.{name} must be a list")
+            lists[name] = [str(item) for item in value]
         return {
             "phase_alias": str(payload.get("phase_alias") or ""),
-            "plan_produces": [str(item) for item in (payload.get("plan_produces") or [])],
-            "plan_owned_files": [str(item) for item in (payload.get("plan_owned_files") or [])],
+            "plan_produces": lists["plan_produces"],
+            "plan_owned_files": lists["plan_owned_files"],
             "closeout_commit_sha": str(sha) if sha else None,
         }
     missing = [name for name in params if name not in payload]
@@ -626,6 +635,12 @@ def _raise_baml_validation_error(exc: BaseException) -> None:
 #   PR_SET_PDEATHSIG fires when the forking *thread* exits.
 # - Per generation, a READER thread owns the worker's stdout fd and a WRITER
 #   thread owns its stdin fd; each closes its fd when it stops.
+# - RECOVERY NEVER WAITS FOR A FUTURE API CALL (codex round 3).  An exception
+#   that unwinds an owner transition is caught by the owner itself, which runs
+#   recovery on the same thread at once and resumes its loop.  As a backstop,
+#   for an owner thread that exits anyway (its handler died too, or it gave up
+#   after repeated failures without progress), a SUPERVISOR thread relaunches
+#   an owner within ``_SUPERVISE_S`` whenever recovery or cleanup is pending.
 # - Daemon threads never log.  Owner-side notes go to ``_Client.pending``,
 #   which the calling thread drains lock-free on its next call.
 # ---------------------------------------------------------------------------
@@ -646,6 +661,8 @@ _OWNER_TICK_S = 0.05
 _OWNER_IDLE_TICK_S = 0.5
 _OWNER_STALE_S = 2.0
 _OWNER_LAUNCH_BUCKET_S = 0.25
+_OWNER_REENTRIES = 3  # in-thread recoveries in a row without loop progress before the owner exits
+_SUPERVISE_S = 0.25  # backstop: an exited owner with pending work is relaunched this fast
 _EXIT_GRACE_S = 4.5  # atexit: graceful EOF wait before kill; the whole exit stays under 5 s
 _EOF_RC_WAIT_S = 0.5
 
@@ -678,6 +695,10 @@ class BamlWorkerError(BamlValidationError):
     ``desync``, ``framing``, ``fingerprint``, ``fault``, ``busy``, ``forked``,
     ``shutdown``.  ``rc`` is set only when the worker is known to be dead.
     Callers treat it as "not evaluated", never as a verdict on content.
+
+    ``kind="fault"`` also covers a non-content failure of the client's own
+    machinery, including the class-name parse branch, which never reaches the
+    worker: I7 types it and fails closed rather than letting it escape.
     """
 
     def __init__(self, kind: str, message: str = "", rc: int | None = None) -> None:
@@ -751,6 +772,7 @@ class _Gen:
         self.eof_state = ""
         self.threads: list[threading.Thread] = []
         self.eof_partial = False
+        self.overdue = False
 
 
 def _exiting(proc: subprocess.Popen) -> bool:
@@ -923,12 +945,15 @@ class _Client:
         self.pending: list[str] = []
         self.closing = False
         self.closed = False
-        # Owner-only state below (touched only by the thread holding the baton).
+        # Owner bookkeeping, read (never taken) by callers and the supervisor.
+        # ``owner_launches`` is written by the launching threads (a CAS by bucket).
         self.owner_running = False
         self.owner_beat = 0.0
         self.owner_launches: dict[int, object] = {}
         self.owner_starts = 0
         self.owner_ident: int | None = None
+        self.supervisor: threading.Thread | None = None
+        # Owner-only state below (touched only by the thread holding the baton).
         self.recover = False
         self.backlog: collections.deque[_Request] = collections.deque()
         # Durable ownership (codex hb1 B1): every request the owner has accepted
@@ -949,7 +974,6 @@ class _Client:
         self.stop_acks: list[queue.SimpleQueue] = []
         self.stop_graceful = False
         self.stop_started = 0.0
-        self.jobs: dict[int, Any] = {}
 
     # -- snapshot (lock-free: computed locally, published by one store) ------
     def files(self) -> tuple[dict[str, str], str]:
@@ -1029,6 +1053,9 @@ class _Client:
             return
         if self.closed:
             raise BamlWorkerError("shutdown", "BAML worker client is closed")
+        self._launch_owner()
+
+    def _launch_owner(self) -> None:
         # One launch per short time bucket (a compare-and-set, never a lock).  A
         # launch that is interrupted, or a candidate that finds the baton taken,
         # costs at most one bucket before a waiter launches again.
@@ -1072,10 +1099,23 @@ class _Client:
             # get_ident() registers nothing: threading.current_thread() here would
             # leave a _DummyThread in threading._active for every owner ever run.
             self.owner_ident = threading.get_ident()
-            if self.recover:
-                self._recover()
-            self.recover = True
-            clean = self._loop()
+            failures = 0
+            while True:
+                beat = self.owner_beat
+                try:
+                    if self.recover:
+                        self._recover()
+                    self.recover = True
+                    clean = self._loop()
+                    break
+                except BaseException:  # noqa: BLE001 - recover here and now, never on a future call
+                    # A transition died part-way.  Recovery re-runs on this thread
+                    # immediately; only repeated failures with no loop progress end
+                    # the owner (the supervisor then relaunches one).
+                    failures = failures + 1 if self.owner_beat == beat else 1
+                    if failures > _OWNER_REENTRIES:
+                        break
+                    self.owner_starts += 1
         except BaseException:  # noqa: BLE001 - the owner must hand the baton back
             clean = False
         finally:
@@ -1225,7 +1265,43 @@ class _Client:
         req.spawn = spawn
         self.spawns.put(spawn)
 
+    def _ensure_supervisor(self) -> None:
+        supervisor = self.supervisor
+        if supervisor is not None and supervisor.is_alive():
+            return
+        supervisor = threading.Thread(target=self._supervise, name="phase-loop-baml-supervisor", daemon=True)
+        supervisor.start()
+        self.supervisor = supervisor
+
+    def _supervise(self) -> None:
+        """Backstop: relaunch an exited owner while recovery or cleanup is
+        pending, so that none of it waits for a future API call.  It only reads
+        owner state; the launch itself is the owner baton's compare-and-set."""
+        try:
+            while True:
+                time.sleep(_SUPERVISE_S)
+                if os.getpid() != self.owner_pid:
+                    return
+                if self.owner_running:
+                    continue
+                pending = (
+                    self.recover or self.generations or self.inflight or self.backlog
+                    or self.spawn is not None or self.stop_acks
+                )
+                if pending:
+                    try:
+                        self._launch_owner()
+                    except Exception:  # noqa: BLE001 - no thread available now; retried next tick
+                        pass
+                elif self.closed:
+                    return
+        except BaseException:  # noqa: BLE001 - a dead supervisor is recreated with the next spawner
+            return
+
     def _ensure_spawner(self) -> None:
+        # The supervisor exists before any worker can: it is started with the
+        # spawner, which every worker comes from.
+        self._ensure_supervisor()
         spawner = self.spawner
         if spawner is not None and spawner.is_alive():
             return
@@ -1440,9 +1516,22 @@ class _Client:
                     message = "worker closed its output mid-frame" if gen.eof_partial else "worker exited"
                     self._fail(gen, kind, message, phase="in_flight")
         for gen in list(self.late):
-            if gen.proc.poll() is not None or (gen.killed_at is not None and now - gen.killed_at > _REAP_BOUND_S):
+            # Released means REAPED (waited on), never merely marked: a process
+            # that has not been waited on stays tracked, however long it takes.
+            if gen.proc.poll() is not None:
                 self.late.remove(gen)
                 self._release(gen)
+            elif gen.killed_at is None:
+                self._kill(gen)  # queued for release without a kill: finish the effect
+            elif now - gen.killed_at > _REAP_BOUND_S and not gen.overdue:
+                # Past the reap bound and still not exited: kill again and say so
+                # once, but keep it tracked until it can be waited on.
+                gen.overdue = True
+                try:
+                    gen.proc.kill()
+                except OSError:
+                    pass
+                self._log("reap_overdue", gen, phase="release")
 
     def _release(self, gen: _Gen) -> None:
         # Close first, forget last: a generation stays recoverable until its
