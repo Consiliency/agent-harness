@@ -414,7 +414,8 @@ class ExecfindFindingTests(unittest.TestCase):
     def test_degraded_leg_whole_code(self):
         def check():
             execfind_tdd.require_attr(governed_review, "FalsifierRunBinding")
-            leg = PanelLegResult("claude", "DEGRADED", "", detail="EgressUnavailable")
+            detail = "egress isolation unavailable; refusing to launch WITHOUT network restriction"
+            leg = PanelLegResult("claude", "DEGRADED", "", detail=detail)
             findings = governed_review._findings_from_panel(
                 PanelResult((leg,)), reviewed_sha="1" * 40,
                 falsifier_runs={}, falsifier_policy="optional",
@@ -422,7 +423,7 @@ class ExecfindFindingTests(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0].code, "panel_leg_degraded")
             self.assertEqual(findings[0].severity, "warn")
-            self.assertIn("EgressUnavailable", findings[0].reason)
+            self.assertIn(detail, findings[0].reason)
 
         execfind_tdd.run_execfind_contract("degraded_leg_whole_code", check)
 
