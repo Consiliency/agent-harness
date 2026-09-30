@@ -1,9 +1,9 @@
 {
-  "base_commit": "82f70c4df3efcd8969c40ab196b6b7325c34f471",
-  "base_tree_digest": "9ecc2ce76191d66482d5f43dcac9d86ac95c3021",
-  "landing_commit": "82f70c4df3efcd8969c40ab196b6b7325c34f471",
+  "base_commit": "061a84e99d4cd1d6bc53a029438c936203caa2f8",
+  "base_tree_digest": "cc05df80a72588681cf3215e53f31868e254ef55",
+  "landing_commit": "061a84e99d4cd1d6bc53a029438c936203caa2f8",
   "landing_ref": "HEAD",
-  "landing_tree_digest": "9ecc2ce76191d66482d5f43dcac9d86ac95c3021",
+  "landing_tree_digest": "cc05df80a72588681cf3215e53f31868e254ef55",
   "red_argv": [
     "env",
     "PHASE_LOOP_TDD_EXPECT_EXECFIND=1",
@@ -115,7 +115,7 @@
   "red_stderr_path": "content-tdd-receipt.red.stderr.log",
   "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "red_stdout_path": "content-tdd-receipt.red.stdout.log",
-  "red_stdout_sha256": "9f7d06bcb2ffe2694bc3a98502c5ee944bb15a8f790275dccc45ea9fd6e5320b",
+  "red_stdout_sha256": "d9ea63d3053d19a97a9be71cfeb58a5833e23d165be332f1d6ac22ccb95996a1",
   "schema": "content_tdd_receipt.v1",
   "test_files": [
     {
@@ -136,7 +136,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/test_governed_review.py",
-      "sha256": "076961ae9c3eb7ac28a15d3cad62d00403a63e1fcdd73bc79a2240e9b24dc79c"
+      "sha256": "717ce798121f71fe9377de5929ff70f1bd824f8fbdf0d793a34c3c009daa8df1"
     }
   ]
 }
