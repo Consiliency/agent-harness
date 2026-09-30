@@ -80,13 +80,15 @@ plan references agent-harness#896's acceptance items rather than restating them.
 
 | Phase | Local | Non-local |
 |---|---|---|
-| `prepare` | Stage the tree locally. **Always.** | Stage the tree locally. Nothing leaves the host. |
+| `prepare` | Runtime code: stage the tree locally | The **same runtime code**. Backends never implement `prepare`. |
 | Runtime revalidation | Unchanged. Always against the local stage, so `_revalidate_staged_tree` works for every backend. | Same |
-| `commit` | No-op | Transfer the **revalidated** local stage. The backend recomputes the digest, and a mismatch refuses. |
+| `commit` | No-op | Transfer the **revalidated** local stage. The backend recomputes the digest, and a mismatch refuses. `commit` owns any partial remote state until it returns, and removes it on any exception. |
 | `execute` → `wait` / `cancel` / `renew` | The runtime's own launch branches, unchanged | Backend-executed (plan 1b) |
 | `release` | Remove the stage | Kill the sandbox and remove the stage |
 
-This order means the code never leaves the operator's custody before revalidation.
+The code never leaves the operator's custody before revalidation. This holds **by
+construction**, because `prepare` is runtime code (`sandbox_placement.prepare_local_stage`,
+today's `LocalBackend` sequence) run for every backend.
 
 **Receipts.**
 - Backends return `BackendReceipt` values only.
@@ -99,9 +101,19 @@ This order means the code never leaves the operator's custody before revalidatio
 - Backend claims are wrapped as `attested_by="backend"`, and are never receipt-class on their
   own.
 - Every receipt carries `sandbox_ref` and `snapshot_sha256`, and both are serialized.
+- `sandbox_ref` must match `[A-Za-z0-9._:-]{1,128}`. Any other value refuses the placement.
+- **Digest source.** The runtime **computes** `prepared.snapshot_sha256` from the local stage
+  with `review_tree_manifest_sha256`; it is never copied from the authorization. A refusal
+  record carries the computed digest as it is. The check that a digest equals the
+  authorization's `staged_tree_sha256` applies only to receipts cited in support of
+  `applied=true`.
 
 **`sandbox_root_applied`.**
-- **Local:** today's rule, written out: `backend.is_local and host is None and path == staged_at.parent`.
+- **Local:** today's rule, written out: `backend is the built-in LocalBackend and host is None
+  and path == staged_at.parent`.
+  - `is_local` is not an attribute a backend declares. The registry binds it to the built-in
+    `LocalBackend`, and refuses a plugin that registers a built-in scheme (`local`,
+    `hostpath`).
 - **Non-local:** true iff all of these hold:
   - runtime-attested `committed` and `completed` receipts share one `sandbox_ref`;
   - both carry `snapshot_sha256 ==` the authorization's `staged_tree_sha256`;
@@ -129,6 +141,8 @@ This order means the code never leaves the operator's custody before revalidatio
     success alone;
   - `backend_attested`.
 - `verified` is always a subset of `capabilities()`.
+- Only the runtime writes `runtime_end_to_end`. An entry supplied by a backend is coerced to
+  `backend_attested`.
 - `LocalBackend.capabilities()` is the **empty set**. Local egress and uid facts stay in their
   existing fields, which are recorded by the code that enforces them.
 
@@ -144,10 +158,44 @@ This order means the code never leaves the operator's custody before revalidatio
 `sandbox_policy.egress_allowlist()`, the only source today. It also carries
 `one_shot_secret: bool`, the decided CD1 channel.
 
+**Execution gate: commit only what this build will execute.** A runtime may call a method of
+a non-local backend (`available`, `commit`, `execute`) only if **that same build's** driver
+will execute on it. One driver constant in `panel_invoker`, `_NONLOCAL_EXECUTION_DRIVER`, fixes
+this:
+- **In 1a it is `False`.** Every resolved non-local backend is refused with
+  `PlacementUnavailable("sandbox_placement_driver_unavailable")` **before `prepare` and before
+  any backend method**. No stage is built for it, and no snapshot byte leaves the host.
+  - Knob off: a recorded local fallback, with `sandbox_root_fell_back=True` and a reason naming
+    the scheme and the code.
+  - Knob on: `sandbox_placement_required_unavailable`, with zero spawns.
+- **1b sets it to `True`** in the same change that adds the execute branch.
+
+Registration checks the protocol only; it does not make anything execute. The gate is what
+keeps a conformant backend package, installed on a 1a-only runtime, from receiving the tree
+while the leg runs locally. In 1a no transfer happens at all, because `commit` is reached only
+for `LocalBackend`, where it is a no-op. From 1b on, `commit` is the only transfer.
+
+**Exemption from the fail-closed knob is by execution, not by origin.** The knob exempts only
+a leg the runtime ran through the backend's `execute` and completed. In 1a that is never true.
+Once 1b lands it equals "placed remotely and executed there".
+
 **Launch is final.** Once `execute` has been called, even if the call raised or its outcome is
 unknown, the attempt is `launched`:
 - it never falls back to local;
 - a retry in the same round reuses the same backend or refuses.
+
+**Execution types.** 1b owns the full field set. The minimum is:
+- `ExecSpec`: argv, in-sandbox cwd, env (the declared set only), `one_shot_secret`
+  (bytes or `None`), `deadline_s` and `output_cap_bytes`;
+- `ExecResult`: `sandbox_ref`, exit status, stdout bytes, stderr bytes, and `truncated`.
+
+**Plugin loading.**
+- Entry points under `phase_loop_runtime.placement_backends` are loaded **only** when the
+  configured root names a non-built-in scheme. A run with no root configured, or a local root,
+  never imports a plugin.
+- A plugin that fails to import or register becomes a pre-launch `PlacementUnavailable` for
+  that scheme alone. It falls back or fails closed like any other refusal, and local legs are
+  untouched.
 
 ## Changes
 
@@ -157,16 +205,20 @@ unknown, the attempt is `launched`:
   - `PlacementRequest`, `EgressNeeds`, `BackendReceipt`, `PlacementReceipt`, `Prepared`,
     `PlacedSandbox`, `Declaration`;
   - the closed `CAPABILITIES` and `VERIFICATION_METHODS`, and `PlacementUnavailable(code, reason)`.
-- `PlacementBackend` (a `Protocol`: `name`, `is_local`, `capabilities`, `declaration`,
-  `available`, `prepare`, `commit`, `release`) — add — the two-phase placement contract.
+- `PlacementBackend` (a `Protocol`: `name`, `capabilities`, `declaration`, `available`,
+  `commit`, `release`) — add — the placement contract.
+- `prepare_local_stage` — add — the runtime-owned `prepare`, run for every backend.
 - `ExecutingBackend(PlacementBackend)` (`execute`, `wait`, `cancel`, `renew`, `list_owned`,
   `kill`), with `ExecSpec` and `ExecResult` — add — the execution types. Their driver is plan 1b.
 - `register_backend`, `resolve_backend`, and entry-point discovery under
   `phase_loop_runtime.placement_backends` — add — optional extras register themselves, so core
-  names no vendor. Registration **refuses** a non-local backend that does not implement
-  `ExecutingBackend`, so a backend can never stage remotely while the provider starts locally.
+  names no vendor. Plugins are loaded under the "Plugin loading" rule.
+  - Registration refuses a non-local backend that does not implement `ExecutingBackend`, and
+    refuses a plugin claiming a built-in scheme.
+  - That is a protocol check only. The execution gate is what prevents a non-local stage
+    from being followed by a local launch.
 - `LocalBackend` — add:
-  - `prepare` runs today's `ensure_staging_space` → `stage_review_tree` → rename → `mark_as_sandbox`
+  - `prepare_local_stage` runs today's `ensure_staging_space` → `stage_review_tree` → rename → `mark_as_sandbox`
     sequence, and **owns the partial state until it returns**. On any exception it removes
     whatever it created, the pre-rename path or the post-rename path, then re-raises.
   - `commit` is a no-op.
@@ -181,34 +233,56 @@ unknown, the attempt is `launched`:
 - `select_sandbox_root` — modify — a scheme with no registered backend is never probed: no
   `ssh`, no DNS, no socket. It falls back to local, and the reason names the scheme. `hostpath`
   is unchanged; RD6 is ruled record-only.
-- `remote_required()` — add — reads `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED`. It governs
-  **board-seat** placement only (RD3 is ruled seats-only), and the documentation says so.
+- `remote_required()` — add — reads `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED`.
+  - The values `1`, `true`, `yes` and `on` mean on, and unset, empty, `0`, `false`, `no` and
+    `off` mean off, all case-insensitive. **Any other value means on**, with a warning: an
+    unrecognised value fails closed.
+  - It governs seat legs only, as defined under `panel_invoker.py`, because RD3 is ruled
+    seats-only.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (modify)
 - `_default_spawn` — modify:
-  - `resolve_backend`, then `backend.prepare`, replaces PI:8500–8516. Selection at PI:8484
-    stays.
+  - `resolve_backend`, then `prepare_local_stage`, replaces PI:8500–8516. Selection at
+    PI:8484 stays.
+  - The execution gate comes **first**, before `prepare_local_stage` and before any backend
+    method, as the Contract section describes.
+  - Under the knob, 1a also refuses **before `prepare`**. The outcome is already known there.
+    The launch-boundary check below stays as a backstop.
   - Both revalidations run next, unchanged, against the local stage; then `backend.commit`.
   - Egress, launch and `rmtree(base)` are unchanged, in the same order.
   - `prepared` and `placed` are initialised to `None` before the `try`, and the `finally`
     releases whichever exists.
-- The fail-closed check — add — at the **launch boundary**, for every review-mode seat leg,
-  whether or not a tree was authorized. It raises `sandbox_placement_required_unavailable`
-  unless the placement came from a registered non-local backend matching the configured
-  scheme. In 1a no such backend exists, so the knob always refuses:
+- The fail-closed check — add — as the backstop at the **launch boundary**, before egress
+  acquisition so that an egress failure cannot pre-empt its code.
+  - **Scope:** "seat legs", which means every review-mode leg `_default_spawn` launches for a
+    board seat, whether or not a tree was authorized. The documentation uses the same
+    definition.
+  - **Rule:** raise `sandbox_placement_required_unavailable` unless the Contract's
+    execution-based exemption holds. Where placement came from is never enough.
+  - **In 1a** the knob always refuses **by construction**, even with a conformant non-local
+    backend installed; this does not rest on none being bundled. So it refuses:
   - with a reachable `hostpath`;
   - with an unset or local root;
   - on a route with no staged tree.
-- The per-leg provider-spawn counter — add — a contextvar incremented at the provider spawn
-  chokepoints: `run_provider` and its `Popen` sibling, next to PI:3495–3500. The identity probe
-  is excluded. It is the "zero local spawns" observation.
+- The per-leg provider-spawn counter — add:
+  - a **mutable per-leg cell** (a small locked counter object), installed at leg start in a
+    `ContextVar`;
+  - copied contexts share the same object, and helper threads receive it explicitly;
+  - it is incremented at the chokepoints `run_provider` and `launch_provider`, next to
+    PI:3495–3500. Every launch branch, brokered legs included, reaches one of them, and the
+    identity probe is excluded;
+  - it is read when the record is **serialized**, so a `DEGRADED` record cannot report 0
+    after a spawn.
 - The fact recording — modify:
   - `_record_sandbox_facts` is called right after `prepare` and updated after `commit` and
     after launch.
-  - The `except` at PI:8850 attaches `_sandbox_evidence()` to the `DEGRADED` result through the
-    existing `attach_harden_isolation_evidence` / `_BrokeredSpawnResult(evidence=…)` path. A
-    placement therefore always reaches the leg record, including when refusal comes after
-    placement.
+  - The `except` at PI:8850 attaches `_sandbox_evidence()` to the `DEGRADED` result whenever
+    facts exist, **whether or not a review monitor or broker exists**. It returns a result
+    object that carries the evidence on every branch. The implementer first confirms that every
+    caller of `_default_spawn` accepts `_BrokeredSpawnResult` on the non-monitor path; if one
+    does not, the evidence goes through `attach_harden_isolation_evidence` on the object that
+    caller builds. A placement therefore always reaches the leg record, including when refusal
+    comes after placement.
 - `_record_sandbox_facts` — modify:
   - Every existing field stays.
   - Add `sandbox_placement_backend`, `sandbox_placement_receipts`, `sandbox_placement_verified`
@@ -216,20 +290,31 @@ unknown, the attempt is `launched`:
   - `applied` and `sandbox_staged_at` follow the Contract section.
   - The fallback reason stays in `sandbox_root_reason`. `sandbox_root_unapplied_reason` appears
     only when `applied` is false.
-  - The reset-token discipline is unchanged.
-- `_HARNESS_DETAIL_CODES` — modify — add exactly `"sandbox_placement_required_unavailable"`.
+  - **Reset on every exit.** From the first `set`, the reset token is registered in the leg's
+    own outer `try`/`finally`, not on the egress `ExitStack`. Every exit therefore restores the
+    pre-leg value.
+- `_HARNESS_DETAIL_CODES` — modify — add exactly two fixed codes,
+  `"sandbox_placement_required_unavailable"` and `"sandbox_placement_driver_unavailable"`.
 
   **Frozen vocabulary, quoted from PI:2115–2123:** "`PanelLegResult.detail` is built ONLY from
   our own closed vocabulary … a HARNESS CODE — a fixed string this runtime itself emits
-  (`_HARNESS_DETAIL_CODES`)". This adds one member by that mechanism, and no template or
+  (`_HARNESS_DETAIL_CODES`)". This adds two members by that mechanism, and no template or
   category.
 
 ### `phase-loop-runtime/scripts/verify_harden_evidence.py` (modify)
-- `verify_broker` closed key set — modify — accept every `sandbox_*` key the producer emits,
-  existing and new. The current set already rejects them (hb1, measured).
+- `verify_broker` closed key set — modify — **enumerate** the keys; never accept by prefix. The
+  current set already rejects them (hb1, measured).
+  - Existing: `sandbox_root_host`, `sandbox_root_path`, `sandbox_root_fell_back`,
+    `sandbox_root_reason`, `sandbox_staged_at`, `sandbox_root_applied`,
+    `sandbox_network_filtered`, `sandbox_network_mechanism`,
+    `sandbox_network_unfiltered_reason`, `sandbox_seat_identity`,
+    `sandbox_root_unapplied_reason`.
+  - New: `sandbox_placement_backend`, `sandbox_placement_receipts`,
+    `sandbox_placement_verified`, `sandbox_local_provider_spawns`, `sandbox_snapshot_sha256`.
 - A placement check — add:
   - `sandbox_root_applied=true` must satisfy the Contract rule for the recorded backend;
-  - every receipt's `snapshot_sha256` must equal the authorization's staged-tree digest. If
+  - every receipt cited in support of `applied=true` must carry a `snapshot_sha256` equal to the
+    authorization's staged-tree digest. If
     the verifier's input does not already carry that digest, the producer adds it as
     `sandbox_snapshot_sha256`, taken from the authorization and never from a receipt;
   - backend-only receipts can never support `applied` for a non-local backend.
@@ -246,8 +331,10 @@ unknown, the attempt is `launched`:
   Contract section: phases, receipts, the `applied` rule, capabilities and declarations, and
   "launch is final".
 - `docs/phase-loop/convergence-runtime.md` — modify — URL-scheme roots and their recorded
-  fallback. `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` covers board seats only, and in this release
-  always refuses.
+  fallback. `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` covers seat legs only (the same definition as the
+  code), reads an unrecognised value as on, and in this release always refuses. A configured
+  *local* path root stays record-only (`applied=false`). Local staging location is set by
+  agent-harness#1161's staging-directory setting, not by this root.
 - `CHANGELOG.md` — modify — the seam, the evidence fields, the verifier key set and the knob.
   Note that the agy pin set drifts, so the next release cut requalifies agy.
 
@@ -255,7 +342,7 @@ unknown, the attempt is `launched`:
 1. **agent-harness#1161.** It changes scratch allocation, the effective floor, pre-stage
    reclamation, retention marking, cleanup and child temp dirs. Whichever of #1161 and this plan
    lands second rebases, **re-captures the local-equivalence golden** on the merged base, and
-   adds `tests/test_sandbox_staging_1147.py` to the gate. `LocalBackend.prepare` must preserve
+   adds `tests/test_sandbox_staging_1147.py` to the gate. `prepare_local_stage` must preserve
    all of #1161's staging behaviour, not one site.
 2. **agent-harness#1132, #1071 and #1166.** There is no functional dependency. They touch
    `_default_spawn` and `_record_sandbox_facts`, so the same rule applies: the second to land
@@ -295,40 +382,88 @@ Compare it to the golden captured at `input_base_commit`. Mutations:
 
 **Partial-failure ownership.** Inject a fault after `stage_review_tree`, after the rename, and
 at `mark_as_sandbox`: no stage directory remains, and the exception propagates. Inject a
-revalidation failure after `prepare`: the `finally` releases it. Mutation: remove `prepare`'s
-rollback.
+revalidation failure after `prepare`: the `finally` releases it. Mutation: remove
+`prepare_local_stage`'s rollback.
 
-**Failure exits keep the evidence.** Inject an egress failure after a successful `prepare`. The
-`DEGRADED` result carries the placement facts and a `prepared` receipt. Mutation: drop the
-attach in the `except`.
+**Failure exits keep the evidence.** Inject an egress failure after a successful `prepare`, on
+**each** launch branch (brokered, claude TUI, `_exec_leg`) and with and without a review
+monitor. The `DEGRADED` result carries the placement facts and a `prepared` receipt.
+Mutation: attach only when a broker exists.
+
+**No stale facts.** Run two legs on one thread. The first fails at revalidation and the second
+inside `prepare`. The second must carry no sandbox facts. Mutation: reset only through the
+egress stack.
+
+**Spawn counter.** A spawn made from a helper thread, and one made from a copied context, both
+count. A `DEGRADED` record serialized after a spawn reports it. Mutation: an integer
+`ContextVar`.
 
 **Unregistered schemes never probe.** With `https://example.invalid/x`, `e2b://t` or
-`modal://t`, spies on `subprocess`, `socket.connect` and `socket.getaddrinfo` all record zero
-calls. The leg runs local with a recorded fallback reason. Mutation: route unknown schemes to
+`modal://t`, spies on `subprocess`, `socket.connect` and `socket.getaddrinfo` record zero calls
+**during selection**, which is where the spies are scoped. No plugin is imported unless the
+scheme is configured. The leg runs local with a recorded fallback reason. Mutation: route unknown schemes to
 `_probe_root`.
 
-**Backend claims never apply.** A fake `ExecutingBackend` is registered, but the 1a driver never
-calls `execute`, so no runtime `completed` receipt exists. It returns only backend receipts:
-`applied=False`. Mutation: ignore `attested_by`.
+**The execution gate.** A conformant fake `ExecutingBackend` is registered for the configured
+scheme, and it counts every method call. Run it with the knob **off** and **on**:
+- **Both runs:** zero calls to `available`, `commit` and `execute`, and zero
+  `prepare_local_stage` calls for it.
+- **Knob off:** a local run, with `sandbox_root_fell_back=True` and a reason naming the scheme and
+  `sandbox_placement_driver_unavailable`.
+- **Knob on:** detail `sandbox_placement_required_unavailable`, with a spawn count of 0.
 
-**Registry.** Registering a non-local backend that is not an `ExecutingBackend` raises.
-Mutation: accept it.
+Mutations:
+- exempt by where placement came from;
+- set `_NONLOCAL_EXECUTION_DRIVER = True` without an execute branch.
 
-**Fail closed.** Each case below ends with detail `sandbox_placement_required_unavailable`, zero
-`stage_review_tree` calls where staging had not yet occurred, and a spawn count of 0:
+**Plugin failure.**
+- A broken entry point is never imported while no root is configured.
+- Once its scheme is configured, it becomes a pre-launch fallback, or a refusal under the knob.
+- A local leg in the same process is unaffected.
+
+Mutation: load all entry points at import.
+
+**Backend claims never apply.** This is a derivation-level unit test of the `applied` rule on
+synthesized non-local placement state, because 1a cannot reach it end to end.
+- Backend-attested `committed` and `completed` receipts with a matching `sandbox_ref` and the
+  authorization digest, and a spawn count of 0, give `applied=False`. In that setup
+  `attested_by` is the only guard. Mutation: ignore `attested_by`.
+- Runtime receipts are present, but a backend receipt names a different `sandbox_ref` or
+  digest: `applied=False`, with a distinct unapplied reason. Mutation: ignore backend
+  receipts.
+
+**Registry and self-declared honesty inputs.**
+- Registering a non-local backend that is not an `ExecutingBackend` raises.
+- A plugin registering `local` or `hostpath` raises.
+- A backend-supplied `runtime_end_to_end` entry is recorded as `backend_attested`.
+- A `sandbox_ref` outside the allowed characters refuses the placement.
+
+Mutations:
+- accept the non-executing backend;
+- accept the built-in scheme;
+- keep the backend's method label.
+
+**Fail closed.** Each case below ends with detail `sandbox_placement_required_unavailable`, **zero
+`stage_review_tree` calls** (1a refuses before `prepare`) and a spawn count of 0. Each case runs
+on every launch branch (brokered, claude TUI, `_exec_leg`), and again with sandboxing disabled:
 - a `hostpath` root whose probe **passes**;
 - a `hostpath` root whose probe fails;
 - an unset root, and a local root;
 - an unregistered scheme;
-- a route with no authorized tree.
+- a route with no authorized tree;
+- the knob set to an unrecognised value such as `enable`.
 
-Mutation: decide by `fell_back`.
+Mutations:
+- decide by `fell_back`;
+- read an unrecognised value as off;
+- drop the pre-`prepare` refusal. The launch-boundary backstop still refuses, but staging is
+  then observed.
 
 **No credential leaks.** `https://u:t@h/p?k=v` appears as `https://h/p` in `repr`, `asdict`,
 evidence, warnings and the leg log. Mutation: redact only in `__str__`.
 
-**Vocabulary.** The code is a member of `_HARNESS_DETAIL_CODES` and passes
-`_finalize_leg_detail` unchanged. Mutation: remove the member; the detail then becomes the
+**Vocabulary.** Both codes are members of `_HARNESS_DETAIL_CODES` and pass
+`_finalize_leg_detail` unchanged. Mutation: remove either member; the detail then becomes the
 unknown-failure template.
 
 **Verifier.** A real sandboxed brokered record passes. The same record with `applied=true` and
@@ -345,17 +480,23 @@ Run the suite on a tree **left untouched** for its duration.
 - [ ] With no root configured, the local-equivalence falsifier matches the
   `input_base_commit` golden: call sequence (including the egress exit), provider argv and
   `provider_cwd_sha256`. Every file in `automation.suite_command` passes.
-- [ ] With the egress failure injected after `prepare`, the `DEGRADED` leg result carries
-  `sandbox_placement_receipts` with a runtime-attested `prepared` receipt.
-- [ ] A registered fake backend that returns only backend-attested receipts yields
-  `sandbox_root_applied=False`. Removing the `attested_by` check turns
-  `test_sandbox_placement.py::test_backend_claims_never_apply` red.
+- [ ] With an egress failure injected after `prepare`, on each of the brokered, claude TUI and
+  `_exec_leg` branches, the `DEGRADED` leg result carries `sandbox_placement_receipts` with a
+  runtime-attested `prepared` receipt.
+- [ ] Register a conformant fake `ExecutingBackend` for the configured scheme. With the knob off
+  **and** on, it records zero calls to `available`, `commit` and `execute`.
+  - Knob off: `sandbox_root_fell_back=True`, with a reason naming the scheme and
+    `sandbox_placement_driver_unavailable`.
+  - Knob on: `sandbox_placement_required_unavailable`, with a spawn count of 0.
 - [ ] With `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1`, each fail-closed case listed under
   Verification ends with detail `sandbox_placement_required_unavailable`, and the spawn-seam
   counter reads 0. That includes a reachable `hostpath`, an unset root, and a route with no
   tree.
 - [ ] `verify_harden_evidence.py` accepts a real sandboxed brokered record produced by this
   runtime, and rejects the same record once `applied=true` rests only on backend receipts.
+  `test_sandbox_placement.py::test_backend_claims_never_apply` passes at derivation level:
+  backend-attested `committed` and `completed` receipts with a matching ref and digest, and 0
+  spawns, give `applied=False`.
 
 ## Follow-on plans
 
@@ -388,6 +529,9 @@ journal.
     runs before any leg record.
   - It produces runtime `launched` and `completed` receipts.
   - It enforces "launch is final".
+  - It sets `_NONLOCAL_EXECUTION_DRIVER = True` **in the same change** as the execute branch,
+    and its falsifier replaces 1a's gate test: a registered fake backend is committed and then
+    executed, with zero local spawns.
   - It adds two fixed detail codes, `sandbox_placement_lost_after_launch` and
     `sandbox_placement_lease_expired`.
 
@@ -426,6 +570,7 @@ journal.
   - Retention, the floor and the cap.
   - The qualification command.
   - A falsifier for each consumer prerequisite on agent-harness#896.
+  - The RD6 (a) typed notice for a legacy `host:path` root.
 - **Dependencies.**
   - It needs 1a and 1b.
   - The launch path for jailed seats waits on the seat jail.
@@ -435,8 +580,13 @@ journal.
 
 ### Plans 4a and 4b: first cloud adapter (agent-harness#1165)
 - **Dependencies.** 1a and 1b only.
-- **Inherited from the hb1 board.** agent-harness#1165 carries these items; they are not
-  restated in this plan:
+- **Inherited from the hb1 and hb2 boards.** agent-harness#1165 carries these items; they are
+  not restated in this plan:
+  - a scan for the API key in the **local** provider environment, because fallback legs
+    inherit the runtime's environment;
+  - per-principal isolation under a single project key. Owner metadata is cooperative, not a
+    security boundary;
+  - CD2's per-repository opt-out;
   - sandbox creation always restricts public inbound traffic, with an unauthenticated-access
     falsifier;
   - the owner-filtered, paginated listing covers every state;
@@ -454,7 +604,12 @@ journal.
 **Recorded on agent-harness#1162:**
 - RD1–RD6 are accepted as recommended. RD3 is seats only.
 - CD1 is the same one-shot channel as the local route.
-- CD2 is all repositories.
+- CD2 is all repositories, with a per-repository opt-out. agent-harness#1165 implements the
+  opt-out.
+- RD6 (a) is record-only for `host:path`. Plan 3 owns its typed notice. Until then, 1a keeps
+  today's record, adds the new fields, and makes the knob refuse.
+- No plan in this lineage makes a configured *local* path root `applied`. It stays honest
+  record-only. Local staging location belongs to agent-harness#1161's setting.
 - CD3 and CD4 are accepted as recommended.
 
 **Open for plan 1a:** none.
