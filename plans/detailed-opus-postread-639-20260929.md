@@ -102,6 +102,25 @@ subscription auth preflight passed. No direct API, gateway or print-mode route.
    than mocking cleanliness or weakening the assertion. Keep private runner
    evidence excluded. Run the original inventory on that committed candidate
    with the isolated fixture and a 3600s bound, preserving earlier failures.
+   A controlled exact historical package replay subsequently proved another
+   environment input: process umask 002 changes archive digests, while 022
+   reproduces all four frozen documents exactly. Preserve this evidence and
+   every original seal/assertion. The isolated-full run was interrupted through
+   an anchored pidfd for its exact owned UV process after that independent
+   reproducer; its nonzero receipt and three additional host-native failures
+   remain failed evidence, not an accepted partial suite. Two native failures
+   use `/usr/bin/true`, now a symlink to `gnutrue` on Display; a third synthetic
+   helper exceeded its startup deadline. Do not alter Display's system tools,
+   relax strict executable trust, or widen that deadline.
+   Execute the same original inventory in a source-equivalent committed test
+   clone inside an isolated Ubuntu 24.04/Python 3.12 container. Use locked test
+   requirements, process-local umask 022, canonical regular system tools, and
+   the read-only owned dotfiles fixture. Bind only that test clone, the UV
+   executable, and fixture, with no host credentials/config/raw traces or host
+   network. Limit it to four CPUs, 4GiB memory/no swap, and 1024 PIDs; no
+   privileged or unconfined container. Check its source hashes and Git tree
+   against the committed owned candidate. Its runner-owned targeted/full
+   receipt is the amended full-suite gate, not a fabricated host-route verdict.
    Reconcile the completed Opus review in the existing owned Talk-to-Tux tree:
    `plans/detailed-baml-language-migration-probe-20260928-0605.md`,
    `plans/baml-language/parity.json`, and

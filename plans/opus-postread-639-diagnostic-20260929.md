@@ -74,9 +74,23 @@ its runner artifact remains `nonzero_exit`. Failure localization identified:
   (`candidate_clean=False`); all required historical objects are present. A
   local owned-path checkpoint supplies real clean identity, not a mocked result.
 
-Original full-suite acceptance must come from the new isolated-fixture runner
-artifact at `phase-loop-runtime/.dev-skills/verification/opus-postread-639-20260929/isolated-full/verification.json`;
-no pass is claimed until it completes and validates. Two initial runner setup
+The clean candidate then exposed a historical archive-seal mismatch. A
+controlled replay proves that process umask 002 changes the archive digests;
+022 reproduces all four frozen documents byte-for-byte. Neither document seals
+nor assertions are changed. The owned isolated-full run was interrupted after
+that reproducer, retaining its `nonzero_exit` receipt and buffered result:
+3 failed, 3944 passed, 84 skipped, 598 deselected. The three recorded failures
+are two canonical `/usr/bin/true` assumptions on Display's now-symlinked tool
+and a synthetic-helper startup deadline. No host tool or deadline is changed.
+
+Full-suite acceptance now requires the same original inventory in a committed,
+source-equivalent Ubuntu 24.04/Python 3.12 test clone with umask 022, locked
+requirements and the read-only fixture. The isolated container has no host
+credentials/config/raw traces or host network, is not privileged, and is capped
+at four CPUs, 4GiB/no swap and 1024 PIDs. Its artifact is under the owned private
+`container-checkout/phase-loop-runtime/.dev-skills/verification/opus-postread-639-20260929/container-full/verification.json`
+prefix. No pass or installed-host route qualification is claimed before that
+runner completes and validates. Two initial runner setup
 failures are preserved, not relabeled: a Python pin was incorrectly authored
 as a version string rather than an executable, then the monorepo root included
 the unrelated Dagger Python 3.14 floor. Corrected verification targets the
