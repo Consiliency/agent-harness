@@ -7,8 +7,12 @@ thousands of lines to add one entry. The fixture below is built to catch both.
 """
 
 import dataclasses
+import os
+import subprocess
 import json
 from pathlib import Path
+
+import pytest
 
 from phase_loop_runtime import plan_manifest as pm
 
@@ -138,3 +142,64 @@ def test_rewriting_an_unchanged_manifest_is_a_byte_noop(tmp_path):
     before = _seed(tmp_path)
     pm.append_entry(tmp_path, pm.read_manifest(tmp_path).plans[0])
     assert (tmp_path / "plans/manifest.json").read_bytes() == before
+
+
+def test_rewriting_an_unchanged_unsorted_row_is_a_byte_noop(tmp_path):
+    # Replacing a row whose keys are NOT alphabetical keeps its key order, and its
+    # nested key order, when nothing changed (FABREADMIT/HARDEN/PRESROUTE shape).
+    before = _seed(tmp_path)
+    unsorted_row = pm.read_manifest(tmp_path).plans[1]
+    assert unsorted_row.slug == "mm-unsorted-keys"
+    pm.append_entry(tmp_path, unsorted_row)
+    assert (tmp_path / "plans/manifest.json").read_bytes() == before
+
+
+def test_replacing_a_row_carries_forward_extensions_it_omits(tmp_path):
+    _seed(tmp_path)
+    replacement = dataclasses.replace(_entry("mm-unsorted-keys"), status="executing")
+    assert not replacement.extensions
+
+    pm.append_entry(tmp_path, replacement)
+
+    row = json.loads((tmp_path / "plans/manifest.json").read_text(encoding="utf-8"))["plans"][1]
+    assert row["status"] == "executing"
+    assert row["plan_authority_history"][0]["decision"] == "maintainer — option (a)"
+    assert list(row)[-2:] == ["plan_authority_history", "lifecycle"]
+
+
+@pytest.mark.parametrize("payload", [b"null\n", b"[]\n", b'"plans"\n', b"7\n", b"true\n"])
+def test_writers_refuse_a_present_non_object_manifest(tmp_path, payload):
+    # A manifest that EXISTS but is not an object is malformed, never "absent".
+    manifest = tmp_path / "plans/manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_bytes(payload)
+    (tmp_path / "plans/probe.md").write_text("# probe\n", encoding="utf-8")
+    assert not pm.validate_manifest(manifest).valid
+
+    with pytest.raises(ValueError, match="manifest must be an object"):
+        pm.read_manifest(tmp_path)
+    with pytest.raises(ValueError, match="manifest must be an object"):
+        pm.append_entry(tmp_path, _entry("probe"))
+    with pytest.raises(ValueError, match="manifest must be an object"):
+        pm.update_lifecycle(tmp_path, "probe", "executing", "claude-execute-detailed", {})
+    assert manifest.read_bytes() == payload
+
+
+def test_register_historical_plans_appends_without_reordering(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    before = _seed(tmp_path)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed"],
+                   check=True, env=env)
+
+    projected = pm.register_historical_plans(tmp_path)
+
+    after = (tmp_path / "plans/manifest.json").read_bytes()
+    assert after.startswith(_prior_rows_prefix(before))
+    slugs = [row["slug"] for row in json.loads(after)["plans"]]
+    assert slugs == ["zz-first", "mm-unsorted-keys", "aa-last", *(row["slug"] for row in projected)]
+    # Rerunning changes nothing.
+    pm.register_historical_plans(tmp_path)
+    assert (tmp_path / "plans/manifest.json").read_bytes() == after

@@ -163,19 +163,23 @@ class ValidationResult:
 
 
 def read_manifest(repo: Path) -> DotfilesPlanManifest:
-    document = _load_manifest_document(repo)
-    if document is None:
+    present, document = _load_manifest_document(repo)
+    if not present:
         return DotfilesPlanManifest()
     return _typed_manifest(document)
 
 
-def _load_manifest_document(repo: Path) -> Any:
-    """The manifest as parsed JSON, rows and keys in file order; None when absent."""
+def _load_manifest_document(repo: Path) -> tuple[bool, Any]:
+    """``(present, parsed JSON)``, rows and keys in file order.
+
+    Presence is reported separately so a file holding JSON ``null`` (or any other
+    non-object) is rejected by validation, never mistaken for an absent manifest.
+    """
     manifest_path = _manifest_path(repo)
     if not manifest_path.exists():
-        return None
+        return False, None
     try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        return True, json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"manifest JSON is malformed at line {exc.lineno} column {exc.colno}") from exc
 
@@ -570,8 +574,8 @@ def _manifest_rows_for_write(repo: Path) -> tuple[dict[str, Any], list[Any]]:
     The document is validated through the typed model first, so a writer refuses
     exactly what ``read_manifest`` refuses.
     """
-    document = _load_manifest_document(repo)
-    if document is None:
+    present, document = _load_manifest_document(repo)
+    if not present:
         document = {"plans": [], "schema_version": SCHEMA_VERSION}
     _typed_manifest(document)
     if "plans" not in document:
@@ -580,11 +584,26 @@ def _manifest_rows_for_write(repo: Path) -> tuple[dict[str, Any], list[Any]]:
 
 
 def _upsert_row(rows: list[Any], row: dict[str, Any]) -> None:
-    """Replace the row with ``row``'s slug where it stands, else append at the end."""
+    """Replace the row with ``row``'s slug where it stands, else append at the end.
+
+    A replacement keeps the existing row's key order, and keeps an unchanged value
+    as the existing object so its nested key order survives too; new keys go at
+    the end. Extension keys the replacement does not carry (for example
+    ``plan_authority_history``) are carried forward from the existing row rather
+    than dropped.
+    """
     row = _sorted_json(row)
     for index, existing in enumerate(rows):
         if isinstance(existing, dict) and str(existing.get("slug", "")) == row["slug"]:
-            rows[index] = row
+            merged: dict[str, Any] = {}
+            for key, value in existing.items():
+                if key in row:
+                    merged[key] = value if value == row[key] else row[key]
+                elif key not in _ENTRY_KNOWN_KEYS:
+                    merged[key] = value
+            for key, value in row.items():
+                merged.setdefault(key, value)
+            rows[index] = merged
             return
     rows.append(row)
 
@@ -596,7 +615,10 @@ def _sorted_json(value: Any) -> Any:
 
 def _write_manifest_document(repo: Path, document: Any) -> None:
     # No sort_keys: rows and keys serialize in file order, so a row nobody changed
-    # comes out byte-identical to what was read (agent-harness#1174).
+    # comes out byte-identical to what was read (agent-harness#1174). The output is
+    # ASCII (json's default escaping), as every writer of this file has produced; a
+    # hand-edited row holding a raw non-ASCII character is \u-escaped on the next
+    # write.
     manifest_path = _manifest_path(repo)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(document, indent=2) + "\n"
@@ -660,29 +682,32 @@ def _manifest_from_json(data: Any) -> DotfilesPlanManifest:
     )
 
 
+# The row keys the typed model owns; any other key in a row is an extension.
+_ENTRY_KNOWN_KEYS = frozenset({
+    "acceptance_criteria_count",
+    "created_at",
+    "file",
+    "handoff_ref",
+    "if_gates_produced",
+    "lanes",
+    "lifecycle",
+    "owner_skill",
+    "phase_alias",
+    "reflection_ref",
+    "roadmap_ref",
+    "slug",
+    "status",
+    "task_summary",
+    "type",
+    "updated_at",
+})
+
+
 def _entry_from_json(data: Any) -> DotfilesPlanEntry:
     if not isinstance(data, dict):
         raise ValueError("manifest entry must be an object")
     roadmap_ref = data.get("roadmap_ref")
-    known_keys = {
-        "acceptance_criteria_count",
-        "created_at",
-        "file",
-        "handoff_ref",
-        "if_gates_produced",
-        "lanes",
-        "lifecycle",
-        "owner_skill",
-        "phase_alias",
-        "reflection_ref",
-        "roadmap_ref",
-        "slug",
-        "status",
-        "task_summary",
-        "type",
-        "updated_at",
-    }
-    extensions = {key: value for key, value in data.items() if key not in known_keys}
+    extensions = {key: value for key, value in data.items() if key not in _ENTRY_KNOWN_KEYS}
     return DotfilesPlanEntry(
         slug=str(data.get("slug", "")),
         file=str(data.get("file", "")),
