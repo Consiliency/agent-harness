@@ -163,14 +163,25 @@ class ValidationResult:
 
 
 def read_manifest(repo: Path) -> DotfilesPlanManifest:
+    document = _load_manifest_document(repo)
+    if document is None:
+        return DotfilesPlanManifest()
+    return _typed_manifest(document)
+
+
+def _load_manifest_document(repo: Path) -> Any:
+    """The manifest as parsed JSON, rows and keys in file order; None when absent."""
     manifest_path = _manifest_path(repo)
     if not manifest_path.exists():
-        return DotfilesPlanManifest()
+        return None
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"manifest JSON is malformed at line {exc.lineno} column {exc.colno}") from exc
-    manifest = _manifest_from_json(data)
+
+
+def _typed_manifest(document: Any) -> DotfilesPlanManifest:
+    manifest = _manifest_from_json(document)
     if manifest.schema_version != SCHEMA_VERSION:
         raise ValueError(f"unsupported manifest schema_version: {manifest.schema_version}")
     return manifest
@@ -310,22 +321,26 @@ def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
 
 
 def append_entry(repo: Path, entry: DotfilesPlanEntry) -> None:
-    manifest = read_manifest(repo)
-    entries = {existing.slug: existing for existing in manifest.plans}
-    entries[entry.slug] = entry
-    _write_manifest(repo, DotfilesPlanManifest(plans=tuple(entries[slug] for slug in sorted(entries))))
+    """Add ``entry`` at the end, or replace the row with its slug where it stands.
+
+    Every other row keeps its position and its bytes: the manifest is append-only
+    history, so a writer never re-sorts or re-serializes rows it did not change
+    (agent-harness#1174).
+    """
+    document, rows = _manifest_rows_for_write(repo)
+    _upsert_row(rows, _entry_to_json(entry))
+    _write_manifest_document(repo, document)
 
 
 def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: dict[str, Any]) -> None:
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be an object")
-    manifest = read_manifest(repo)
+    document, rows = _manifest_rows_for_write(repo)
+    manifest = _typed_manifest(document)
     now = _utc_now()
-    entries: list[DotfilesPlanEntry] = []
     updated = False
-    for entry in manifest.plans:
+    for index, entry in enumerate(manifest.plans):
         if entry.slug != slug:
-            entries.append(entry)
             continue
         allowed = TRANSITIONS.get(entry.status, set())
         if transition not in allowed:
@@ -389,31 +404,16 @@ def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: 
             metadata["issue_dispositions"] = normalized_dispositions
 
         event = DotfilesPlanLifecycleEvent(transition=transition, by=by, at=now, metadata=metadata)
-        entries.append(
-            DotfilesPlanEntry(
-                slug=entry.slug,
-                file=entry.file,
-                type=entry.type,
-                status=transition,
-                created_at=entry.created_at,
-                updated_at=now,
-                owner_skill=entry.owner_skill,
-                handoff_ref=entry.handoff_ref,
-                reflection_ref=entry.reflection_ref,
-                task_summary=entry.task_summary,
-                acceptance_criteria_count=entry.acceptance_criteria_count,
-                roadmap_ref=entry.roadmap_ref,
-                phase_alias=entry.phase_alias,
-                if_gates_produced=entry.if_gates_produced,
-                lanes=entry.lanes,
-                lifecycle=(*entry.lifecycle, event),
-                extensions=entry.extensions,
-            )
-        )
+        # Change only this row, and only the fields a transition owns; the row's
+        # other keys keep their order and every other row keeps its bytes (ah#1174).
+        row = rows[index]
+        row["status"] = transition
+        row["updated_at"] = now
+        row["lifecycle"] = [*(row.get("lifecycle") or []), _sorted_json(_event_to_json(event))]
         updated = True
     if not updated:
         raise ValueError(f"manifest entry not found: {slug}")
-    _write_manifest(repo, DotfilesPlanManifest(plans=tuple(entries)))
+    _write_manifest_document(repo, document)
 
 
 def validate_manifest(manifest_path: Path) -> ValidationResult:
@@ -561,9 +561,45 @@ def _manifest_path(repo: Path) -> Path:
 
 
 def _write_manifest(repo: Path, manifest: DotfilesPlanManifest) -> None:
+    _write_manifest_document(repo, _sorted_json(_manifest_to_json(manifest)))
+
+
+def _manifest_rows_for_write(repo: Path) -> tuple[dict[str, Any], list[Any]]:
+    """The parsed manifest document and its ``plans`` list, for an in-place edit.
+
+    The document is validated through the typed model first, so a writer refuses
+    exactly what ``read_manifest`` refuses.
+    """
+    document = _load_manifest_document(repo)
+    if document is None:
+        document = {"plans": [], "schema_version": SCHEMA_VERSION}
+    _typed_manifest(document)
+    if "plans" not in document:
+        document["plans"] = []
+    return document, document["plans"]
+
+
+def _upsert_row(rows: list[Any], row: dict[str, Any]) -> None:
+    """Replace the row with ``row``'s slug where it stands, else append at the end."""
+    row = _sorted_json(row)
+    for index, existing in enumerate(rows):
+        if isinstance(existing, dict) and str(existing.get("slug", "")) == row["slug"]:
+            rows[index] = row
+            return
+    rows.append(row)
+
+
+def _sorted_json(value: Any) -> Any:
+    """``value`` with every object's keys sorted: the shape of a row this module writes."""
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def _write_manifest_document(repo: Path, document: Any) -> None:
+    # No sort_keys: rows and keys serialize in file order, so a row nobody changed
+    # comes out byte-identical to what was read (agent-harness#1174).
     manifest_path = _manifest_path(repo)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(_manifest_to_json(manifest), indent=2, sort_keys=True) + "\n"
+    payload = json.dumps(document, indent=2) + "\n"
     if manifest_path.exists() and manifest_path.read_text(encoding="utf-8") == payload:
         return
     manifest_path.write_text(payload, encoding="utf-8")
@@ -3358,14 +3394,13 @@ def register_historical_plans(repo: Path, *, dry_run: bool = False) -> tuple[dic
     if dry_run:
         return tuple(projected)
 
-    manifest = read_manifest(repo)
-    existing = {entry.slug: entry for entry in manifest.plans}
+    document, rows = _manifest_rows_for_write(repo)
     for payload in projected:
         slug = payload["slug"]
         roadmap_ref = (
             DotfilesPlanRef(**payload["roadmap_ref"]) if payload["roadmap_ref"] is not None else None
         )
-        existing[slug] = DotfilesPlanEntry(
+        entry = DotfilesPlanEntry(
             slug=slug,
             file=payload["file"],
             type=payload["type"],
@@ -3376,7 +3411,8 @@ def register_historical_plans(repo: Path, *, dry_run: bool = False) -> tuple[dic
             roadmap_ref=roadmap_ref,
             phase_alias=payload["phase_alias"],
         )
-    _write_manifest(repo, DotfilesPlanManifest(plans=tuple(existing[slug] for slug in sorted(existing))))
+        _upsert_row(rows, _entry_to_json(entry))
+    _write_manifest_document(repo, document)
     return tuple(projected)
 
 
