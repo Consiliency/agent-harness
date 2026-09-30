@@ -10773,7 +10773,8 @@
           "metadata": {
             "issues": [
               "Consiliency/agent-harness#896",
-              "Consiliency/agent-harness#1162"
+              "Consiliency/agent-harness#1162",
+              "Consiliency/agent-harness#1165"
             ],
             "maintainer_decisions": {
               "decisions": [
@@ -10784,10 +10785,11 @@
                 "CD4"
               ],
               "recorded_at": "2026-09-29",
-              "source": "Consiliency/agent-harness#1162"
+              "source": "Consiliency/agent-harness#1162",
+              "note": "M2 settled by CD1 (stdin one-shot channel; header injection at most a probed alternative in 4b)"
             },
             "open_decisions": [
-              "M2"
+              "E1"
             ],
             "planning_artifact_only": true,
             "review_status": "pending"
@@ -10801,9 +10803,9 @@
       "roadmap_ref": null,
       "slug": "e2b-cloud-backend-896",
       "status": "committed",
-      "task_summary": "E2B cloud placement backend for board review seats, plan 4a substrate with 4b seat-launch outline (agent-harness#896, plan 4 of 4)",
+      "task_summary": "E2B cloud placement backend (agent-harness#896 plan 4): 4a E2B ExecutingBackend substrate with null workload against the merged 1a contract, after 1b; 4b seat-launch outline",
       "type": "detailed",
-      "updated_at": "2026-09-29T18:00:00Z"
+      "updated_at": "2026-09-30T20:00:00Z"
     }
   ],
   "schema_version": 1

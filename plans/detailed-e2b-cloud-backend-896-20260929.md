@@ -3,7 +3,7 @@ type: detailed
 status: planned
 owner_skill: claude-plan-detailed
 input_base_commit: 3c61b270
-related_issues: [agent-harness#896, agent-harness#1162, agent-harness#1132, agent-harness#1161, agent-harness#999, agent-harness#1076, agent-harness#848]
+related_issues: [agent-harness#896, agent-harness#1162, agent-harness#1165, agent-harness#1132, agent-harness#1161, agent-harness#999, agent-harness#1076, agent-harness#848]
 automation:
   suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_sandbox_e2b.py tests/test_sandbox_e2b_live.py tests/test_advisor_board_config.py tests/test_president_ladder_config.py"
   verification_status: not_run
@@ -17,9 +17,22 @@ automation:
 This is follow-on plan 4 of agent-harness#896: the first cloud adapter behind the vendor-neutral
 placement seam.
 
-- **The seam.** Plan 1 defines it. It is agent-harness#1162, head `f4b27401`, file
-  `plans/detailed-remote-sandbox-placement-896-20260929.md` on branch
-  `claude/896-remote-sandbox-plan`. This plan implements against that file and does not copy it.
+- **The seam.** Plan 1a defines it. It merged as agent-harness#1162 (`f59ed953`) in
+  `plans/detailed-remote-sandbox-placement-896-20260929.md`. Its Contract section is normative
+  for this plan, which cites it and does not copy it. The terms this plan binds to are:
+  - **the execution gate** `_NONLOCAL_EXECUTION_DRIVER`. It is `False` until plan 1b flips it;
+  - **the runtime-owned `prepare_local_stage`.** E2B implements `available`, `commit`,
+    `release`, `capabilities`, `declaration`, and the `ExecutingBackend` methods `execute`,
+    `wait`, `cancel`, `renew`, `list_owned` and `kill`. It **never** implements `prepare`;
+  - **`BackendReceipt`.** It is the only thing a backend returns. A backend-supplied
+    `runtime_end_to_end` is coerced to `backend_attested`;
+  - **the `sandbox_ref` charset** `[A-Za-z0-9._:-]{1,128}`;
+  - **entry-point loading** only for a configured non-built-in scheme.
+- **The dependency chain is 1a → 1b → this plan.**
+  - 1a is merged.
+  - 1b is the execution driver and the lease journal. It flips the gate and owns the journal,
+    heartbeat and restart-reaper contract that this plan binds to.
+  - Plan 3, the self-hosted backend, is **not** on this path.
 - **The maintainer decisions.** They were recorded 2026-09-29 on agent-harness#1162 and are
   binding here:
   - RD3: board review seats only; no executors.
@@ -27,6 +40,7 @@ placement seam.
     per leg. Egress is locked to that seat vendor's API. Short-lived or scoped tokens are used
     where the vendor supports them. The threat is the reviewed code running in the same VM.
   - CD2: vendor visibility is acceptable for every repository, and a per-repo opt-out exists.
+    **This plan implements the opt-out.**
     The in-VM uid boundary and the codex `CAP_SETFCAP` and seccomp gaps are measured and
     disclosed, never assumed.
   - CD3: per-run concurrency and sandbox-seconds caps, plus a per-day ceiling. A breach is
@@ -35,7 +49,17 @@ placement seam.
 - **Packaging.** The SDK is only the optional extra `[e2b]`, and nothing in the design is
   fleet-specific.
 
-**Bounded-plan threshold: this plan must be split.** The whole adapter touches about 12 source
+**Bounded-plan threshold.** After the 1a/1b merge, 4a no longer builds a lease journal or an
+execution driver.
+- It touches four Python modules (`sandbox_e2b.py`, `sandbox_e2b_template.py`,
+  `advisor_board/config.py`, `cli.py`) and four guest asset files that run in the VM.
+- It covers three concerns: control plane (lifecycle, caps, key, config), image and transfer,
+  and in-guest confinement.
+
+That is at the threshold, not over it. The seat launch stays split out as 4b, for the reason
+below.
+
+**Why the adapter was split.** The whole adapter touches about 12 source
 files and has five distinct concerns:
 1. the substrate: lifecycle, leases and caps;
 2. template pinning;
@@ -52,6 +76,12 @@ Concern 5 also has a hard dependency that does not exist yet (Finding F1). The s
     every fact that layout relies on.
 
 ## Findings against plan 1 (stated precisely; the seam is not reshaped here)
+
+**Status after the merge.** F1 is **resolved** by 1a's Contract (`ExecutingBackend`, and the
+phase order prepare → revalidate → commit → execute) together with 1b's driver. F2–F5 are in
+1a's vocabulary: `private_ranges_unreachable`, the `runtime_end_to_end`-only-by-runtime rule,
+`egress_residuals`, and `guest_control_env`. F6 and F7 stay here. The text below is the
+original record.
 
 - **F1 E2B can stage against the seam, but cannot run a seat against it.**
   - Plan 1's `PlacementBackend` has only `name`, `available`, `place(request, review_dir) ->
@@ -181,7 +211,8 @@ Template, SandboxQuery, SandboxState`.
   **every `*.py` in the package**. Any new module here therefore drifts the agy pin set, and
   forces agy requalification at the next release cut.
 - **Leases.** `lease_store.py` handles path-set coordination leases and is **not** a sandbox
-  lease journal. Plan 1's outline assigns the lease journal to plan 3.
+  lease journal. The lease journal belongs to plan 1b. It is fsynced before `commit`, liveness
+  is an `flock`, and renewal never passes the leg deadline. This plan uses it and builds none.
 - **Not yet in code.** No `live` pytest marker exists. The `seat_sandbox_refused:*` codes and
   the J3 token pipe exist only in the agent-harness#1132 plan.
 
@@ -228,7 +259,11 @@ and the E2B codes live only in the fallback reason and evidence. The codes are:
 - environment: `e2b_debug_mode_refused`, `e2b_api_key_missing`;
 - snapshot: `e2b_snapshot_too_large`, `e2b_snapshot_digest_mismatch`;
 - template: `e2b_template_stale`;
-- probe: `e2b_probe_failed:<row>`, where `<row>` is a closed set, the probe row ids P1–P12.
+- probe: `e2b_probe_failed:<row>`, where `<row>` is a closed set of probe row ids: P1–P3,
+  P6–P11, P14 and P15. P4, P5, P12 and P13 are measured and disclosed, and never refuse;
+- contract: `e2b_private_allowlist_unsupported`, `e2b_capability_unverified:<capability>` and
+  `e2b_sandbox_ref_invalid`;
+- inbound: `e2b_public_traffic_not_restricted`.
 
 ### The E2B API key
 
@@ -241,13 +276,34 @@ and the E2B codes live only in the fallback reason and evidence. The codes are:
     prefix or length. A prefix hash of an `e2b_<hex>` key has too little entropy to be safe.
 - **Environment scrubbing.**
   - The in-VM environment is built from an explicit allowlist, never from `os.environ`.
-  - `E2B_API_KEY` is removed from the environment of every local provider child. This matches
-    how the existing sandbox env builders drop credentials; the implementer searches for the
-    local child-env builder in `panel_invoker.py` and adds the key there.
+  - `E2B_API_KEY` is removed from the environment of every local provider child. Core
+    runtime code never names a vendor variable, so this goes through the seam:
+    - the backend declares `declaration().runtime_secret_env = {"E2B_API_KEY"}`;
+    - the runtime's local child-env builders drop every name declared by the **configured**
+      backend.
+
+    That declaration field is **a contract addition for plan 1b** (see "Asks of plan 1b").
+- **Local provider environment.** A leg that falls back to local inherits the runtime's
+  environment. The scrub above therefore applies to **every** local provider child, not only
+  to cloud legs, and a falsifier scans the local provider env of a fallback leg.
 - **Exceptions.** Before any SDK exception message is recorded, it is scrubbed through
   `_redact_leg_text` (`panel_invoker.py`, around line 2086).
 - **Operator docs** recommend a dedicated E2B project for harness sandboxes, and a console
   spending limit.
+
+### Per-principal isolation under one project key
+
+An E2B API key is scoped to exactly one project. **Any holder of that key can list, connect to
+and kill every sandbox in the project.**
+- The `agent_harness_owner` metadata is **cooperative**. It scopes this runtime's reaper, so
+  that the reaper never kills another owner's sandbox, but it is not a security boundary.
+- Isolation between principals therefore exists **only** when each principal uses its own
+  project and key. The operator docs say so. The capabilities card discloses that principals
+  sharing a key are not isolated from each other: each can read, drive or kill the other's
+  sandboxes and uploaded trees.
+- The runtime cannot detect a shared key, and does not claim to. Evidence records
+  `project_label` so a reviewer can see which project was used. That is the consumer's
+  "per-user auth and workspace" prerequisite, met by configuration and disclosed as such.
 
 ### Template build and pinning
 
@@ -310,6 +366,73 @@ and the E2B codes live only in the fallback reason and evidence. The codes are:
     recomputes the digest with the packaged copy of `review_tree_manifest_sha256`.
   - The in-VM digest is a `backend` claim. A mismatch refuses before any launch.
 
+### Binding to the 1a contract
+
+| 1a phase or method | E2B implementation |
+|---|---|
+| `prepare` | **Not implemented.** The runtime's `prepare_local_stage` builds and revalidates the local stage for every backend. |
+| `available()` | Local checks only, with **no network call**: the extra is importable, `[e2b]` config is valid, `E2B_API_KEY` is present, and `E2B_DEBUG` is unset. The driver calls it only after the execution gate allows a non-local backend. That wires `available()` into selection without adding a probe to unregistered or gated schemes. |
+| `commit(prepared)` | `create` → upload of the **revalidated** local stage (see "Snapshot upload") → in-VM extract and digest → guest probe. `commit` **owns the partial remote state**. On any exception it calls `kill()`, confirms the sandbox is gone (see "Release"), and re-raises. |
+| `execute(placed, ExecSpec)` / `wait` / `cancel` | In 4a, only the packaged null workload. The seat launch is 4b. `ExecSpec.one_shot_secret` travels only over stdin (CD1; see 4b). |
+| `renew(placed, until)` | `set_timeout(min(lease_ttl_s, until - now))`. Renewal never passes the leg deadline (1b rule). |
+| `list_owned(owner_id)` | `Sandbox.list(query=SandboxQuery(metadata={"agent_harness_owner": owner_id}, state=[running, paused]))`, across **every page**. |
+| `kill(sandbox_ref)` | `Sandbox.kill`, then confirmation. |
+| `release` | `kill`, then confirmation. |
+
+**The one sandbox reference.** `sandbox_ref` is the E2B `sandbox_id`. The backend checks it
+against `[A-Za-z0-9._:-]{1,128}` before returning any receipt. A non-matching id is killed and
+refused with `e2b_sandbox_ref_invalid`.
+
+**Receipts.** The backend returns `BackendReceipt` values only, and 1b's driver produces the
+runtime-attested `committed`, `launched` and `completed` receipts. Every value the VM or the E2B
+API reports is `backend_attested`. That includes the guest probe, even where it measures
+destination-level results, because the runtime cannot observe inside the VM.
+
+**`details` serialization.** The president deferred this item to this plan. The keys are a
+closed set:
+- `e2b_template_ref`;
+- `e2b_template_id_reported`;
+- `template_manifest_sha256_reported`;
+- `snapshot_sha256_in_vm`;
+- `probe`, a closed-schema object keyed by row id;
+- `project_label`.
+
+Every value is a string or boolean matching a fixed pattern. Values of `guest_control_env`
+variables are redacted, and nothing derived from the API key appears.
+
+**`capabilities()` and `declaration()`**, in 1a's closed vocabulary:
+
+| Item | E2B value | When |
+|---|---|---|
+| `private_ranges_unreachable` | verified as `backend_attested` | only if P9 passed |
+| `inbound_closed` | verified as `runtime_end_to_end` (the runtime makes the P15 request) | only if P15 passed |
+| `filesystem_confined` | verified as `backend_attested` | always: the VM holds no operator file |
+| `uid_isolated`, `one_shot_secret_channel` | — | 4b only |
+| `seccomp_filtered` | measured | only if P5 shows a filter can be installed; 4b decides use |
+| `bounding_set_empty` | — | never in 4a |
+| `resource_bounded` | — | never in 4a |
+| `public_egress` | — | **never**, because CD1 locks egress to vendor hosts |
+| `private_allowlist` | — | **never**, because E2B cannot express `host:port` into a private network |
+| `operator_custody` | — | **never**: the vendor holds the tree |
+
+- **`declaration().egress_residuals`:**
+  - `resolver_allowed`, `closed_in_guest=True` (E4);
+  - `udp_unfiltered_by_name`, `closed_in_guest=True` (E5).
+
+  If P13 shows SNI spoofing passes, that residual has no kind in 1a's closed list. **This plan
+  asks plan 1b to add one kind, `sni_destination_unchecked`, to 1a's closed `egress_residuals`
+  list.** E2B then declares it with `closed_in_guest=False` (see "Asks of plan 1b").
+- **`declaration().guest_control_env`:** `{E2B_SANDBOX, E2B_SANDBOX_ID, E2B_TEMPLATE_ID}` (F5).
+- **`declaration().max_lifetime_s`:** the configured tier maximum (`[e2b] tier_max_lifetime_s`,
+  3600 or 86400). E2B exposes no API for it.
+
+**Matching `egress_needs` against `verified`.** The president deferred this item to this plan.
+Before `commit`, the driver compares the leg's `PlacementRequest`:
+- `egress_needs.needs_private_allowlist` is refused with `e2b_private_allowlist_unsupported`;
+- every capability the leg requires must appear in `verified` after the probe, or the leg is
+  refused with `e2b_capability_unverified:<capability>`. A required capability that is only
+  declared, and not verified, is never enough.
+
 ### Lifecycle: no paid sandbox outlives its lease
 
 - **Create.**
@@ -322,21 +445,23 @@ and the E2B codes live only in the fallback reason and evidence. The codes are:
     (`e2b_lease_exceeds_tier`), never truncated.
 - **No pause.** The adapter never uses `on_timeout: "pause"`, `auto_resume`, `beta_pause` or
   `connect()`-to-resume.
-- **Heartbeat.** Every `lease_ttl_s / 3`, the owner calls `set_timeout(lease_ttl_s)`. Because
+- **Heartbeat.** 1b's heartbeat calls `renew` every `lease_ttl_s / 3`, which issues
+  `set_timeout(min(lease_ttl_s, deadline_remaining))`. Because
   E2B measures from now, a dead owner stops extending and E2B's own timer kills the VM within
   `lease_ttl_s`. That holds with the client killed by SIGKILL.
 - **Release.** `release()` calls `kill()` and then confirms that `get_info` returns not-found or
   a non-running state. `kill() == False` (not found) counts as success. Any other state is
   retried and then recorded.
-- **Reaper.**
+- **Reaper.** This is 1b's reaper, driven through `list_owned` and `kill`.
   - It runs at backend construction (runtime startup and restart) and before every create.
   - It lists `Sandbox.list(query=SandboxQuery(metadata={"agent_harness_owner": id},
     state=[running, paused]))` across all pages, and kills every sandbox whose `lease` has no
     live entry in the local lease journal.
   - Paused sandboxes are included, so a sandbox paused out of band is also reaped.
-- **Lease journal.** 4a binds to plan 3's lease journal: `acquire`, `renew`, `release`,
-  `live(owner)`, fsynced and append-only. If plan 3 has not landed, that is a precondition. 4a
-  does not build a second journal.
+  - It kills **only** sandboxes carrying this owner's id. Liveness is 1b's lease `flock`, never
+    pid or age.
+- **Lease journal.** 4a binds to 1b's lease journal: written and fsynced before `commit`, with
+  liveness held by `flock`. 4a does not build a second journal.
 
 ### Cost caps (CD3)
 
@@ -362,7 +487,9 @@ The required policy for a seat leg has four parts:
 - the envd port unreachable from seat uids.
 
 The network config is `deny_out=["0.0.0.0/0"]`, `allow_out=[<vendor hostnames for the leg>]`,
-`allow_public_traffic=False`. The hostnames per leg are **data measured by probe, never
+`allow_public_traffic=False`. `allow_public_traffic=False` is a **creation invariant**. E2B
+serves guest ports publicly by default, and reviewed code can start a listener, so every
+`create` call carries it. A create without it is a bug that a falsifier catches. The hostnames per leg are **data measured by probe, never
 guessed**. For `claude` and `gemini`, the implementer records them from the local
 agent-harness#1132 P2/P4 runs, and 4b's live qualification proves a turn completes with exactly
 that set. The null workload in 4a uses one test hostname.
@@ -378,6 +505,8 @@ that set. The null workload in 4a uses one test hostname.
 | E7 | `seat-tool` (reviewed code) has no network at all | **Cannot** filter per uid | nftables drops all non-loopback output for `meta skuid seat-tool` | refuse (`P11`) |
 | E8 | TLS confidentiality toward the vendor | **Cannot**: the egress-proxy CA is in the guest trust store | none | **disclosed** CD2 residual, not a refusal |
 | E10 | An allowed SNI cannot reach a non-vendor IP (SNI spoofing) | **Not documented**: whether the proxy checks that the destination IP belongs to the allowed domain | none | measured by P13. If E2B passes it, R1 is **disclosed as widened** (exfiltration to any 443 host), not refused |
+| E11 | No IPv6 egress around the IPv4 rules | **Not documented**: whether `deny_out` or the proxy covers IPv6 | nftables `inet` table drops all IPv6 output for both seat uids | refuse (`P14`) |
+| E12 | No unauthenticated inbound to guest listeners | **Can**: `allow_public_traffic=False` at create, which is a creation invariant | none | refuse (`P15`), and the create call is checked by a falsifier |
 | E9 | Per-port rules outside 80/443 | **Cannot** (not documented) | none needed: E1/E2 allow 443 only | not applicable |
 
 - **Where the rules live.** The in-guest rules are loaded by root at template start, and again
@@ -405,9 +534,17 @@ Rows:
   `user.max_user_namespaces`. Whether `bwrap --unshare-user` works as `seat-cli`.
 - **P5** Seccomp: whether a filter can be installed (`bwrap --seccomp`), and the
   `Seccomp`/`NoNewPrivs` status fields.
-- **P6** envd is unreachable from both seat uids: a request to `127.0.0.1:49983` gets no HTTP
-  response.
+- **P6** The guest loopback daemon: envd is unreachable from both seat uids. A request to
+  `127.0.0.1:49983`, and to the port on the guest's other addresses, gets no HTTP response. This
+  is the destination-level check.
 - **P7–P11** Egress rows E1, E2, E3, E4/E5 and E7.
+- **P14** IPv6. From each seat uid, a TLS handshake to a public IPv6 literal on 443 must not
+  complete. This is proven at the application level, never by `connect()` (F3).
+- **P15** Inbound. The probe starts a listener in the guest. The **local runtime** then requests
+  the port's `get_host` URL with no traffic token and must get a refusal (HTTP 403 per the
+  docs), never the listener's response. This is the one row **the runtime itself observes**, at
+  destination level. So `inbound_closed` is recorded as `runtime_end_to_end`, which the runtime
+  writes and the backend never does.
 - **P13** From `seat-cli`, a TLS connection to a public **non-vendor** IP on 443, with SNI set to
   an allowed vendor host, must not complete a handshake and exchange (row E10). The result is
   recorded either way.
@@ -416,26 +553,26 @@ Rows:
   `CAP_SETFCAP` works. That is codex's local route (agent-harness#999); it is measured even
   though codex is ineligible in v1.
 
-P1–P3, P6 and P7–P11 gate every leg. P4, P5, P12 and P13 are **measured and disclosed** (CD2):
+P1–P3, P6, P7–P11, P14 and P15 gate every leg. P4, P5, P12 and P13 are **measured and disclosed** (CD2):
 their values go into evidence and the operator docs, and gate only what 4b makes depend on
 them.
 
-### Receipts (plan 1 vocabulary; no new receipt kinds)
+### Receipts
 
-- **`staged` receipt** from `place()`:
-  - `sandbox_ref`: the `sandbox_id` returned by create;
-  - `attested_by="runtime"` for what the runtime itself sent: the requested `name:build_id` and
-    the archive's local digest.
-  - `details`, declared by the adapter: `e2b_template_ref` (requested),
-    `e2b_template_id_reported`, `template_manifest_sha256_reported`, `snapshot_sha256_in_vm`
-    and `probe`. Every `_reported` or in-VM value is `attested_by="backend"`.
-- **Capabilities declared by `capabilities()`:** `filesystem_confined` and `credential_free`.
-  They are declared only when the probe passes, and `network_filtered` only when P7–P11 pass.
-  `uid_isolated` depends on P1–P3, and is declared only in 4b. `bounding_set_empty` and
-  `resource_bounded` are **never declared** in 4a.
-- **What decides the verdict.** Remote output is never receipt-class on its own. The local
-  runtime keeps the verdict. `sandbox_root_applied` requires an `executed` receipt, so it can
-  become true only in 4b.
+See "Binding to the 1a contract". There are no new receipt kinds. `sandbox_root_applied`
+follows 1a's non-local rule, so it can become true only in 4b, when a seat runs through
+`execute`.
+
+### Asks of plan 1b (seam additions this plan needs; not implemented here)
+
+- **`declaration().runtime_secret_env`.** Local child-env builders drop the names the
+  configured backend declares, so no vendor variable name enters core code.
+- **The residual kind `sni_destination_unchecked`**, added to 1a's closed `egress_residuals`
+  list.
+- **The `egress_needs` matching step**, placed in the driver before `commit`, with the refusal
+  codes this plan names.
+
+If 1b does not take one of these, 4a stops at that point and does not work around it.
 
 ## Changes (plan 4a)
 
@@ -447,14 +584,27 @@ them.
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_e2b.py` (create)
 - `E2BConfig` / `load_e2b_config()` — add — the validated `[e2b]` table, through
   `advisor_board.config`.
-- `E2BBackend` — add — plan 1's `PlacementBackend`: `available`, `place`, `release` and
-  `capabilities`, as designed above. It also has `heartbeat(placed)` and `reap()`. `import
-  e2b` happens only inside `E2BBackend.__init__`; an `ImportError` becomes `e2b_extra_missing`.
+- `E2BBackend` — add — 1a's `ExecutingBackend`:
+  - `available`, `commit`, `release`, `capabilities` and `declaration`;
+  - `execute`, `wait` and `cancel`, for the packaged null workload only in 4a;
+  - `renew`, `list_owned` and `kill`, as in "Binding to the 1a contract".
+
+  It never implements `prepare`. `import e2b` happens only inside `E2BBackend.__init__`, and an
+  `ImportError` becomes `e2b_extra_missing`.
+- `_validate_sandbox_ref` and `_details_for(receipt)` — add — the charset check and the closed
+  `details` serialization.
 - `CostLedger` — add — the per-run and per-day reservations and settlements.
 - `build_network_rules(leg_hosts)` / `resolve_hosts_for_guest(leg_hosts)` — add — the E1/E2
   config and the `/etc/hosts` payload.
 - `build_tree_archive(stage) -> (path, sha256)` — add — the deterministic tar.
-- **Not registered** with plan 1's `register_backend` (F1).
+- **No entry point in 4a.**
+  - While `_NONLOCAL_EXECUTION_DRIVER` is `False`, the 1a gate refuses it anyway.
+  - After 1b flips the gate, a registered `e2b` scheme would reach `execute` with a seat
+    `ExecSpec`, and 4a supports only the null workload.
+  - So the `phase_loop_runtime.placement_backends` entry point for `e2b` is added in **4b**,
+    together with the seat launch.
+  - 4a's operator commands construct `E2BBackend` directly and drive it through 1b's driver
+    functions, so their receipts are real.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_e2b_template.py` (create)
 - `template_definition(pins)` — add — the `Template()` builder chain above.
@@ -475,7 +625,9 @@ a non-UTF-8 name.
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py` (modify)
 - `_KNOWN_TOP_KEYS` — modify — add `"e2b"`.
 - `_KNOWN_E2B_KEYS` / `_parse_e2b` / `load_e2b_section` — add — follow the `_parse_agy` model:
-  a closed key set, typed values, and `eligible_legs ⊆ {"claude", "gemini"}`.
+  - a closed key set, including `tier_max_lifetime_s`, which must be 3600 or 86400;
+  - typed values;
+  - `eligible_legs ⊆ {"claude", "gemini"}`.
 - `_KNOWN_REPO_TOP_KEYS` — modify — add `"sandbox"` (`_KNOWN_SANDBOX_KEYS = {"cloud"}`).
 - `repo_cloud_opt_out(repo_dir, base_ref)` — add — the union rule (base-ref blob **or** working
   tree).
@@ -515,10 +667,18 @@ a non-UTF-8 name.
   the key is read only from `E2B_API_KEY`.
 
 ## Dependencies & order
-1. **Plan 1 (agent-harness#1162) must land first**: `PlacementBackend`, `PlacementReceipt`,
-   `PlacementUnavailable` and the scheme parse.
-2. **Plan 3's lease journal must land first**, or be split out of plan 3 first. 4a does not
-   build its own.
+**The chain is 1a → 1b → 4a → 4b.**
+1. **Plan 1a (agent-harness#1162, merged `f59ed953`)** is written as a plan but not yet
+   implemented. Its implementation PR must land first: `PlacementBackend`, `ExecutingBackend`,
+   `BackendReceipt` / `PlacementReceipt`, `PlacementUnavailable`, `prepare_local_stage`, the
+   registry and the scheme parse.
+2. **Plan 1b must land next.** It provides:
+   - the execution driver;
+   - `_NONLOCAL_EXECUTION_DRIVER = True`;
+   - the lease journal, heartbeat and reaper;
+   - the three "Asks of plan 1b".
+
+   4a builds neither a journal nor a driver. Plan 3 (self-hosted) is not a dependency.
 3. Within 4a, the order is:
    1. config keys, then the ledger and caps;
    2. the archive, digest and extractor, with the drift test;
@@ -527,7 +687,8 @@ a non-UTF-8 name.
    5. the CLI;
    6. the live test.
 
-   Tests are written first, skip-guarded on the new symbols, and each gets a RED receipt.
+   Tests are written first and fail on the missing symbols; that failure is recorded as the RED
+   receipt. They land together with the implementation.
 4. 4a does **not** depend on agent-harness#1132. 4b does.
 
 ## Verification
@@ -580,10 +741,38 @@ that must turn it red:
 - **The extractor refuses** absolute paths, `..`, hard links and symlink traversal. Mutation:
   allow a member under an extracted symlink.
 - **Egress table.** `build_network_rules` emits `deny_out ["0.0.0.0/0"]` and only the leg's
-  hosts. A probe JSON with any of P6–P11 false refuses with `e2b_probe_failed:<row>`, and never
-  retries with a weaker network. Mutation: drop `deny_out`.
-- **Not registered.** `resolve_backend("e2b://x")` is still plan 1's unregistered fallback in
-  4a. Mutation: register the backend.
+  hosts. A probe JSON with any of P6–P11, P14 or P15 false refuses with `e2b_probe_failed:<row>`,
+  and never retries with a weaker network. Mutation: drop `deny_out`.
+- **Inbound is always restricted.** Every recorded `create` call carries
+  `allow_public_traffic=False`. Mutation: omit it on one create path, for example the qualify
+  command.
+- **No entry point in 4a.** The `phase_loop_runtime.placement_backends` metadata has no `e2b`
+  entry. `resolve_backend("e2b://x")` gives 1a's unregistered fallback: no plugin import, no
+  socket. Mutation: declare the entry point.
+- **Contract binding.**
+  - `E2BBackend` has no `prepare`: `hasattr` is false, and the driver never calls one.
+  - A fake-SDK `sandbox_id` of `"bad/id"` is killed and refused with `e2b_sandbox_ref_invalid`.
+  - A backend receipt carrying `runtime_end_to_end` is recorded as `backend_attested`, which
+    exercises 1a's coercion.
+  - `commit` raising after `create` leaves `list_owned` empty.
+  - Mutations: skip the charset check; skip the rollback on a `commit` failure.
+- **Renewal is capped.** With 30 s left to the leg deadline, `renew` sets the timeout to at most
+  30 s. Mutation: always `lease_ttl_s`.
+- **Reaper pagination and scope.**
+  - The fake SDK returns this owner's sandboxes over 3 pages. One of them is paused, and one
+    belongs to a live lease held by a second process's `flock`.
+  - The reaper kills exactly the dead-lease sandboxes on every page, and spares both the live
+    lease and another owner's sandbox.
+  - Mutations: first page only; running state only; no owner filter; liveness by pid.
+- **`egress_needs` matching.** A request with `needs_private_allowlist` is refused with
+  `e2b_private_allowlist_unsupported` before `create`. A required capability that is declared
+  but not verified gives `e2b_capability_unverified:<cap>`. Mutation: accept declared
+  capabilities.
+- **Local provider env.** With `E2B_API_KEY` set, the provider env of a leg that fell back to
+  local contains no key and none of its encodings. Mutation: drop the declared
+  `runtime_secret_env` scrub.
+- **`details` closed set.** Serialized `details` contain only the declared keys. Values of
+  `guest_control_env` variables are redacted. Mutation: pass the raw probe env through.
 - **Opt-out union.** An opt-out only in the base ref still refuses. Mutation: read only the
   working tree.
 - **Extra absent.** With `e2b` hidden from `sys.modules`, construction raises
@@ -597,7 +786,7 @@ of these exact reasons:
 - `"E2B live qualification skipped: no [e2b] template pin in the user config"`.
 
 When it runs, it drives `phase-loop sandbox-e2b qualify` against the real project. It asserts:
-- the probe rows P1–P3 and P6–P11 pass, and P4, P5 and P12 are recorded;
+- the probe rows P1–P3, P6–P11, P14 and P15 pass, and P4, P5, P12 and P13 are recorded;
 - the digest round-trip;
 - a client SIGKILL of a child qualify process leaves no sandbox with its lease id after
   `lease_ttl_s` (set to 120 s) plus 60 s;
@@ -615,32 +804,37 @@ Run the suite on a tree **left untouched** for its duration.
 ## Acceptance criteria
 - [ ] `test_sandbox_e2b.py::test_sigkilled_owner_sandbox_dies_within_lease` passes. Each of
   mutations (a)–(e) turns it or its named companion red.
-- [ ] `test_sandbox_e2b.py::test_e2b_api_key_never_leaves_runtime` passes. Each of its three
-  named mutations turns it red.
+- [ ] `test_sandbox_e2b.py::test_e2b_api_key_never_leaves_runtime` passes, including the
+  local-provider-env scan of a fallback leg. Each of its named mutations turns it red.
 - [ ] With the fake SDK, every cap breach, `E2B_DEBUG=1`, an unpinned template and a repo
   opt-out (base ref only) each raise their `e2b_*` code with the create counter at 0. With
   `e2b` absent, `import phase_loop_runtime.sandbox_e2b` succeeds and construction raises
   `e2b_extra_missing`.
-- [ ] `resolve_backend("e2b://x")` returns plan 1's unregistered fallback, with no socket
-  connect and no SDK import. The drift test shows `e2b_guest/extract_tree.py` reproduces
-  `review_tree_manifest_sha256` on the exec-bit, symlink and non-UTF-8 fixture.
+- [ ] `resolve_backend("e2b://x")` returns 1a's unregistered fallback, with no socket connect and
+  no SDK import. The drift test shows `e2b_guest/extract_tree.py` reproduces
+  `review_tree_manifest_sha256` on the exec-bit, symlink and non-UTF-8 fixture. The reaper
+  falsifier, run over 3 pages with a paused sandbox, a live foreign lease and another owner's
+  sandbox, kills exactly the dead-lease sandboxes.
 - [ ] `test_sandbox_e2b_live.py` skips with the exact reason
   `"E2B live qualification skipped: E2B_API_KEY not set in the runtime environment"` when
-  the key is absent. The maintainer's live run is attached to the PR, and shows P1–P3 and
-  P6–P11 passing and zero leftover sandboxes after the SIGKILL case.
+  the key is absent. The maintainer's live run is attached to the PR, and shows:
+  - P1–P3, P6–P11, P14 and P15 passing;
+  - an unauthenticated request to a guest listener refused;
+  - zero leftover sandboxes after the SIGKILL case.
 
 ## Follow-on: plan 4b, a seat runs inside the VM (outlined; its own bounded plan)
 
 **Preconditions.**
 - 4a has landed.
 - agent-harness#1132 has landed: the J3 token pipe, D2 and D7.
-- Plan 3 has supplied the remote-execution extension. The minimum 4b binds to is:
-  - `launch(placed, argv, env, credential_channel, pty) -> handle`, plus `heartbeat`, `cancel`
-    and `collect_output`;
-  - an `executed` receipt;
-  - a spawn-seam counter that proves zero local provider spawns.
+- Plan 1b has landed. It supplies:
+  - the execution driver, calling `execute(placed, ExecSpec)` / `wait` / `cancel` / `renew`;
+  - the runtime-attested `launched` and `completed` receipts;
+  - 1a's per-leg spawn counter;
+  - "launch is final".
 
-  4b binds to whatever names plan 3 lands. It does not define its own.
+  Plan 3 is not a precondition.
+- 4b adds the `phase_loop_runtime.placement_backends` entry point for `e2b`.
 
 **The CD1 in-VM layout.** This is what E2B actually allows, measured by probe P:
 
@@ -716,12 +910,42 @@ Run the suite on a tree **left untouched** for its duration.
     token out of the VM entirely. But it stores the credential persistently with the vendor,
     and requires the CLI to start with a placeholder credential. **Open decision M2:** probe
     it as an alternative to the stdin channel, or rule it out.
-- **4b acceptance** includes plan 1's `sandbox_root_applied` rule: the `staged` and `executed`
-  receipts share one sandbox id, and the spawn-seam counter reads 0.
+- **4b acceptance** includes 1a's non-local `sandbox_root_applied` rule. The runtime-attested
+  `committed` and `completed` receipts share one `sandbox_ref` and the authorization digest,
+  and the spawn counter reads 0.
 
-## Open maintainer decisions
-- **M2 E2B header injection versus the stdin channel.** The recommendation is to keep the
-  stdin channel, which CD1 describes, and to record injection as a probed alternative only.
+## Maintainer decisions
+
+**Recorded (not reopened):**
+- RD3: seats only.
+- CD1: the same one-shot channel as the local route. That settles M2: the credential goes over
+  stdin, and E2B header injection is at most a probed alternative in 4b.
+- CD2: all repositories, with a per-repo opt-out. The opt-out is implemented here.
+- CD3 and CD4 are accepted.
+
+**Open: E1 — the template pin: the vendor build id versus a content digest.** The requirement
+reads "templates pinned by id+digest". E2B documents **no content digest**: `build_id` is an
+opaque vendor identifier, and the template manifest is a claim hashed inside the VM, so it is
+not a runtime observation. The options:
+- **(a) Accept the vendor pin.**
+  - `name:build_id` plus the in-VM manifest hash, recorded as `backend_attested`.
+  - The requirement is reworded to "pinned by vendor build id, with a manifest claim".
+  - Cheapest, but nothing the runtime observes ties the build to its inputs.
+- **(b) Pin the inputs by digest.**
+  - The template builds `from` a base image referenced **by OCI digest**. Whether the builder
+    accepts a digest reference is to be verified in 4a.
+  - All toolchain artifacts are fetched by hash in the build definition. The runtime records
+    the input digests as `runtime`-attested, and `build_id` as the vendor's output id.
+  - Stronger provenance, but the vendor build step itself is still trusted.
+- **(c) Refuse cloud placement** until the vendor exposes a content digest of the built image.
+  - Honest, but it blocks the cloud path indefinitely.
+- **(d) Reproduce and compare.**
+  - Build twice, from the pinned inputs, and require the in-VM manifest hash to match across
+    builds.
+  - This detects nondeterminism, not substitution, and doubles the build cost.
+
+This plan does not decide E1. 4a's code keeps `name:build_id` plus the manifest check in any
+case, and (b) adds input pinning on top of that.
 
 Decided here as conventional defaults, not asked:
 - The Gemini D7 copy in the VM is a tmpfs file readable only by `seat-cli`, which maps the
