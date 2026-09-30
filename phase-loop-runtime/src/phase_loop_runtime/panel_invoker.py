@@ -199,31 +199,57 @@ LEG_STATUSES: tuple[str, ...] = (
 )
 
 
-# Host directories the Gemini heartbeat provider has no use for. Each one present on the
-# host is replaced by an empty private tmpfs inside its sandbox; a missing one is skipped,
-# because the read-only root cannot take a new mount point.
-_GEMINI_PRIVATE_ROOTS = ("/tmp", "/var/tmp", "/home", "/root", "/mnt", "/media", "/srv", "/run/user")
+# The Gemini heartbeat sandbox starts from an empty root and carries only what the
+# provider measurably uses. Top-level system entries: a symlink (``/bin -> usr/bin`` on a
+# merged-/usr host) is recreated as the same symlink, a directory is bound read-only, and
+# an absent one is skipped.
+_GEMINI_VIEW_SYSTEM = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
+# Individual host files and directories bound read-only when present: name resolution,
+# TLS roots, the local user database, time zone, loader cache and CPU/memory facts.
+_GEMINI_VIEW_FILES = (
+    "/etc/resolv.conf", "/etc/hosts", "/etc/host.conf", "/etc/gai.conf", "/etc/nsswitch.conf",
+    "/etc/passwd", "/etc/group", "/etc/localtime", "/etc/ld.so.cache",
+    "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/ca-certificates",
+    "/sys/devices/system/cpu", "/sys/kernel/mm/transparent_hugepage",
+)
+# The one link in the profile's private HOME whose host target is bound back writable.
+_GEMINI_CREDENTIAL_LINK = gemini_heartbeat.PRIVATE_HOME + "/.gemini/antigravity-cli/antigravity-oauth-token"
 
 
-def _gemini_filesystem_view(cwd, mount_args) -> list[str]:
-    """The Gemini heartbeat sandbox's view of the host: read-only, with private scratch.
+def _gemini_credential_target(mount_args) -> str:
+    """The host file the profile's credential link points at; exactly one, or refuse."""
+    targets = [mount_args[index + 1] for index, arg in enumerate(mount_args)
+               if arg == "--symlink" and mount_args[index + 2] == _GEMINI_CREDENTIAL_LINK]
+    if len(targets) != 1 or not os.path.isabs(targets[0]):
+        raise ValueError("gemini_heartbeat_credential_link_invalid")
+    return targets[0]
 
-    The host root is bound read-only and the directories in ``_GEMINI_PRIVATE_ROOTS`` are
-    replaced by empty tmpfs mounts, so the only writable places are the profile's private
-    HOME under ``/dev``, a private ``/tmp``, an empty private working directory at ``cwd``,
-    and each file the profile's HOME links to (the subscription credential), bound back
-    at its own path so that a token refresh still reaches it.
+
+def _gemini_filesystem_view(cwd, mount_args, extra_ro=()) -> list[str]:
+    """The Gemini heartbeat sandbox's view of the host: an allowlist, read-only.
+
+    Nothing of the host is visible except the entries in ``_GEMINI_VIEW_SYSTEM`` and
+    ``_GEMINI_VIEW_FILES`` (read-only), a fresh ``/dev`` and ``/proc``, and the
+    subscription credential file, bound back at the path the profile's HOME links to so
+    that a token refresh still reaches it. ``/tmp`` and ``cwd`` are empty private tmpfs
+    mounts; the profile's HOME lives on the ``/dev`` mount. ``extra_ro`` files are bound
+    read-only at their own paths. The root itself is then made read-only.
     """
-    view = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
-    roots = sorted({os.path.realpath(root) for root in _GEMINI_PRIVATE_ROOTS if os.path.isdir(root)})
-    for root in roots:
-        if not any(root.startswith(outer + "/") for outer in roots):
-            view += ["--tmpfs", root]
-    for index, arg in enumerate(mount_args):
-        if arg == "--symlink":
-            target = mount_args[index + 1]
-            view += ["--bind", os.path.realpath(target), target]
-    return view + ["--dir", os.path.abspath(cwd)]
+    view = []
+    for entry in _GEMINI_VIEW_SYSTEM:
+        if os.path.islink(entry):
+            view += ["--symlink", os.readlink(entry), entry]
+        elif os.path.isdir(entry):
+            view += ["--ro-bind", entry, entry]
+    for entry in _GEMINI_VIEW_FILES:
+        view += ["--ro-bind-try", entry, entry]
+    credential = _gemini_credential_target(mount_args)
+    view += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+             "--tmpfs", os.path.abspath(cwd),
+             "--bind", os.path.realpath(credential), credential]
+    for path in extra_ro:
+        view += ["--ro-bind", path, path]
+    return view + ["--remount-ro", "/"]
 
 
 class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
@@ -277,16 +303,18 @@ class _ReviewMonitor:
         # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
         # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
         # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
-        # The Gemini profile supplies its own read-only view of the host (same /dev and
-        # /proc mounts); its HOME mounts follow, on that /dev. The seat-identity probe
+        # The Gemini profile gets an allowlisted, read-only view of the host (with its own
+        # /dev and /proc); its HOME mounts follow, on that /dev. The seat-identity probe
         # gets the same view with only its marker file in place of the HOME mounts.
         if gemini_profile is None:
             view = ["--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        elif probe_marker is None:
+            view = [*_gemini_filesystem_view(os.getcwd() if cwd is None else cwd,
+                                             gemini_profile.mount_args),
+                    *gemini_profile.mount_args]
         else:
             view = _gemini_filesystem_view(os.getcwd() if cwd is None else cwd,
-                                           gemini_profile.mount_args)
-            view += (gemini_profile.mount_args if probe_marker is None
-                     else ["--ro-bind", probe_marker, probe_marker])
+                                           gemini_profile.mount_args, extra_ro=(probe_marker,))
         return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid", *view, "--", *command]
 
 

@@ -6,14 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Harden the Gemini heartbeat sandbox's filesystem view (read-only host binds, minimal writable paths)
+### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
 
-- The brokered Gemini heartbeat seat's sandbox binds the host root read-only. Host
-  directories the provider has no use for (`/tmp`, `/var/tmp`, `/home`, `/root`, `/mnt`,
-  `/media`, `/srv`, `/run/user`, where present) are replaced by empty private tmpfs mounts.
-- The writable paths are the ones measured from a real leg: the profile's private HOME
-  under `/dev`, a private `/tmp`, an empty private working directory at the leg's cwd, and
-  the subscription credential file (so a token refresh still reaches it). The leg's output
+- The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem
+  view. It starts from an empty root and binds read-only only what the provider was
+  measured to use: the system directories (`/usr` and the `/bin`, `/lib*` and `/sbin`
+  entries), a short list of `/etc` files (name resolution, TLS roots, user database, time
+  zone, loader cache) and two CPU and memory fact directories under `/sys`. It then makes
+  the root read-only.
+- The writable paths were measured from a real leg. They are the profile's private HOME
+  under `/dev`, a private `/tmp`, a private tmpfs at the leg's working directory, and the
+  subscription credential file, so a token refresh still reaches it. The leg's output
   still reaches the runtime only through the provider's stdout.
 - The seat-identity probe runs through the same view, adding only its own marker file.
   Other seats' owner wrappers are unchanged.

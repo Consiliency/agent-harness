@@ -238,7 +238,8 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
     # which the sandbox view does not otherwise include; bind that one directory.
     view = panel._gemini_filesystem_view
     monkeypatch.setattr(panel, "_gemini_filesystem_view",
-                        lambda cwd, mount_args: [*view(cwd, mount_args), "--bind", str(tmp_path), str(tmp_path)])
+                        lambda cwd, mount_args, extra_ro=(): [*view(cwd, mount_args, extra_ro),
+                                                              "--bind", str(tmp_path), str(tmp_path)])
     return SimpleNamespace(module=gh, path=cli, attempts=attempts, observation=observation,
                            mode=mode_file, token=token, home=home)
 
