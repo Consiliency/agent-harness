@@ -1,0 +1,39 @@
+diff --git a/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py b/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
+index 7c901bbf..070c26ed 100644
+--- a/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
++++ b/phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py
+@@ -10107,7 +10107,8 @@ def invoke_board(
+         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+     review_lease_active = False
+     explicit_spawn_refusal = explicit_mode and mode == "review" and spawn is not None
+-    switched = _govlean_authority_switched(repo_dir)
++    switched = _panel_state["switched"] if _panel_state is not None and "switched" in _panel_state \
++        else _govlean_authority_switched(repo_dir)
+     policy: ReviewLandingPolicy | None = None
+     if landing_tier is None and review_policy is None:
+         if switched:
+@@ -11211,12 +11212,13 @@ def _panel_run(call: dict) -> PanelResult:
+     context = call.get("panel_context")
+     tier = _coerce_review_landing_tier(landing_tier) if landing_tier is not None else None
+     landing = tier is not None
+-    if landing and tier.value in _PRESIDENT_TIER_VALUES and context is None:
++    switched = _govlean_authority_switched(call.get("repo_dir"))
++    if landing and tier.value in _PRESIDENT_TIER_VALUES and context is None and switched:
+         raise _panel_refusal(
+             "panel_context_required", f"a {tier.value} landing requires a panel context (PanelContext)",
+         )
+     if context is None:
+-        token = _ACTIVE_PANEL_RUN.set({"context": None, "tier": tier, "delivery": {}})
++        token = _ACTIVE_PANEL_RUN.set({"context": None, "tier": tier, "delivery": {}, "switched": switched})
+         try:
+             return _INVOKE_BOARD(**call)
+         finally:
+@@ -11250,7 +11252,7 @@ def _panel_run(call: dict) -> PanelResult:
+         _merge_guard.record_landing_call(facts.get("repo_dir"))
+     if call.get("board") != context.composed.board:
+         raise _panel_refusal("panel_board_mismatch", "invoke_board was handed a board other than the context's")
+-    state = {"context": context, "tier": tier, "delivery": {}}
++    state = {"context": context, "tier": tier, "delivery": {}, "switched": switched}
+     token = _ACTIVE_PANEL_RUN.set(state)
+     try:
+         result = _INVOKE_BOARD(**call)
