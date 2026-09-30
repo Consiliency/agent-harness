@@ -10782,15 +10782,14 @@
                 "CD1",
                 "CD2",
                 "CD3",
-                "CD4"
+                "CD4",
+                "E1"
               ],
               "recorded_at": "2026-09-29",
               "source": "Consiliency/agent-harness#1162",
-              "note": "M2 settled by CD1 (stdin one-shot channel; header injection at most a probed alternative in 4b)"
+              "note": "E1 = option (b), pin inputs by digest (issuecomment-5905290928); M2 settled by CD1"
             },
-            "open_decisions": [
-              "E1"
-            ],
+            "open_decisions": [],
             "planning_artifact_only": true,
             "review_status": "pending"
           },
@@ -10803,9 +10802,9 @@
       "roadmap_ref": null,
       "slug": "e2b-cloud-backend-896",
       "status": "committed",
-      "task_summary": "E2B cloud placement backend (agent-harness#896 plan 4): 4a E2B ExecutingBackend substrate with null workload against the merged 1a contract, after 1b; 4b seat-launch outline",
+      "task_summary": "E2B cloud backend (agent-harness#896 plan 4): 4a1 control plane (lifecycle, confirmed cleanup, key custody, [e2b] config and caps) against the merged 1a contract after 1b and plan 2; 4a2 image/guest (E1(b) digest-pinned inputs, probes, egress) and 4b seat launch as follow-ons",
       "type": "detailed",
-      "updated_at": "2026-09-30T20:00:00Z"
+      "updated_at": "2026-09-30T23:00:00Z"
     }
   ],
   "schema_version": 1
