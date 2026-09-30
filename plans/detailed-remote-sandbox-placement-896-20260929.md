@@ -3,214 +3,271 @@ type: detailed
 status: planned
 owner_skill: claude-plan-detailed
 input_base_commit: 3c61b270
-related_issues: [agent-harness#896, agent-harness#848, agent-harness#891, agent-harness#895, agent-harness#1132, agent-harness#1147, agent-harness#1161, agent-harness#1071, agent-harness#999, agent-harness#1102]
+related_issues: [agent-harness#896, agent-harness#1165, agent-harness#848, agent-harness#1147, agent-harness#1161, agent-harness#1132, agent-harness#1071, agent-harness#1166, agent-harness#1102]
 automation:
-  suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_sandbox_placement.py tests/test_sandbox_egress.py tests/test_sandbox_policy.py tests/test_sandbox_retention.py tests/test_seat_host_uid_1098.py tests/test_review_monitor_policy.py tests/test_harden_evidence_producer.py tests/test_review_stage_board_findings.py tests/test_sandbox_preamble.py"
+  suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_sandbox_placement.py tests/test_sandbox_egress.py tests/test_sandbox_policy.py tests/test_sandbox_retention.py tests/test_seat_host_uid_1098.py tests/test_review_monitor_policy.py tests/test_gemini_heartbeat_bootstrap.py tests/test_harden_evidence_producer.py tests/test_harden_evidence_verifier.py tests/test_review_stage_board_findings.py tests/test_sandbox_preamble.py tests/test_panel_invoker_timeout_argv.py tests/test_panel_tui_workspace_trust_223.py"
   verification_status: not_run
   human_required: true
 ---
 
-# Detailed plan: a vendor-neutral sandbox placement seam with honest placement evidence, local backend first (agent-harness#896, plan 1 of 4)
+# Detailed plan: vendor-neutral sandbox placement seam, receipt-bound evidence and local backend (agent-harness#896, plan 1a)
 
 ## Task
 
-agent-harness#896: the runtime resolves a remote sandbox root, then stages and runs the sandbox
-locally anyway. The maintainer's scope has three placement backends behind one interface:
+agent-harness#896: a configured sandbox root is resolved, and then the sandbox is staged and
+run locally anyway. The fix is one vendor-neutral placement seam with several backends:
 - **local:** today's behaviour;
-- **self-hosted remote:** an operator-chosen Linux host over authenticated HTTPS, with no SSH
-  requirement;
-- **cloud:** E2B first, with Modal, Daytona and others as adapters only.
+- **self-hosted:** a remote host over authenticated HTTPS;
+- **cloud:** first vendor planned in agent-harness#1165.
 
-All three must meet these binding rules:
-- a general product, with no fleet names in product code;
-- confinement parity with the agent-harness#1132 jail;
-- a falsifier for each consumer prerequisite on agent-harness#896;
-- honest `sandbox_root_applied` / `sandbox_staged_at`;
-- a recorded local fallback, with a fail-closed option;
-- the E2B SDK only as an optional extra.
+A second cloud vendor must need only an adapter.
 
-**Bounded-plan threshold: this work must be split.** The whole design touches well over 8
-source files and at least 5 distinct changes: the seam, the evidence, an HTTPS agent with
-auth, leases and cgroups, a cloud adapter, and the egress configuration. This document is
-**plan 1**, and covers only:
-1. the vendor-neutral placement interface;
-2. honest placement evidence built from receipts;
-3. today's local path refactored behind the interface, with no behaviour change.
+**Bounded-plan split.** The board round asked for a full lifecycle contract, the revision queue
+moved execution and the lease journal into plan 1, and the fail-closed and evidence fixes were
+added. Together that is more than three distinct changes, so plan 1 is split:
+- **Plan 1a**, this document, written in full:
+  - the complete seam **contract**, including the execution and lease types;
+  - receipt-bound placement evidence;
+  - today's local path behind the seam, with no behaviour change;
+  - an outcome-decided fail-closed knob.
+- **Plan 1b**, listed under "Follow-on plans": the runtime driver for executing backends and the
+  lease journal (heartbeat, fsynced journal, restart reaper).
 
-It also adds the recorded-fallback and fail-closed handling for backends that are configured
-but not yet implemented. The follow-on plans are listed under "Follow-on plans" with their
-scope, dependencies and open decisions.
+The cloud path is plan 1a, then 1b, then agent-harness#1165 (4a, 4b). It no longer passes
+through the self-hosted plan. Nothing here depends on the seat jail (agent-harness#1166). This
+plan references agent-harness#896's acceptance items rather than restating them.
 
 ## Research summary
 
-**The placement steps in `panel_invoker._default_spawn`.** A recon pass mapped them, with
-line numbers read at `input_base_commit`:
-- scratch GC runs first (`_gc_stale_panel_scratch`, PI:8436);
-- `mkdtemp("pl-panel-").resolve()` (PI:8446). The `.resolve()` is load-bearing, because it
-  is the preimage of `provider_cwd_sha256` (PI:4495);
-- `select_sandbox_root(fallback=review_dir)` (PI:8484). Its result is recorded and never used;
-- `ensure_staging_space(review_dir)` (PI:8500);
-- `stage_review_tree` (PI:8503), with the staged path tracked across the rename (PI:8508–8510);
-- `mark_as_sandbox` (PI:8516);
-- `_revalidate_staged_tree` (PI:8527), then `revalidate_review_isolation_authorization`
-  (PI:8537);
-- **only then** the egress namespace (PI:8542–8568);
-- `_record_sandbox_facts(..., staged_at=...)` (PI:8573–8588), whose reset token goes on the
-  egress `ExitStack`;
-- cleanup in `finally` (PI:8866–8879): close egress, `remove_review_stage`, then `rmtree(base)`.
+**The placement sequence in `panel_invoker._default_spawn`**, read at `input_base_commit`:
+- scratch GC (PI:8436);
+- `mkdtemp("pl-panel-").resolve()` (PI:8446). The `.resolve()` is the `provider_cwd_sha256`
+  preimage (PI:4495);
+- `select_sandbox_root` (PI:8484), whose result is recorded and never used;
+- `ensure_staging_space` (PI:8500), then `stage_review_tree` (PI:8503);
+- the staged path is tracked across the rename (PI:8508–8510), then `mark_as_sandbox`
+  (PI:8516);
+- `_revalidate_staged_tree` (PI:8527, implemented in `advisor_board/backing.py:1069`), then
+  `revalidate_review_isolation_authorization` (PI:8537);
+- the egress namespace (PI:8542–8568);
+- `_record_sandbox_facts` (PI:8573–8588);
+- the launch branches: brokered, claude TUI, and `_exec_leg` (PI:7633);
+- the fail-closed `except` (PI:8850). It returns a bare `("DEGRADED", "", detail)` with no
+  isolation evidence, unless a review monitor and broker exist;
+- the `finally` (PI:8866–8879).
 
-`_record_sandbox_facts` (PI:3506) computes
-`applied = host is None and path == staged_at.parent`. The facts reach the leg record in only
-one place: they are merged into the brokered evidence dict (`**_sandbox_evidence()`, around
-PI:8693).
+**What the board established by execution (hb1):**
+- A staged leg that fails at egress leaves no placement facts in its result.
+- A healthy legacy `host:path` selection returns `fell_back=False`.
+- `scripts/verify_harden_evidence.py` `verify_broker` (around line 2334) has a closed key set.
+  A valid fixture with `sandbox_root_applied` added is **rejected**, so today's `sandbox_*`
+  keys and the verifier already disagree.
 
-**Tests that pin the field names and the `applied` rule:**
-- `tests/test_sandbox_egress.py`, around lines 139–676. It includes `sandbox_root_host == "ai"`
-  as a fixture value, and a source-grep that the launch site calls `_record_sandbox_facts(` and
-  `_SANDBOX_ROUND_FACTS.reset`, around lines 605–606;
-- `tests/test_seat_host_uid_1098.py`, `tests/test_review_monitor_policy.py` and
-  `tests/test_gemini_heartbeat_bootstrap.py`.
+**Tests that pin the facts:**
+- `tests/test_sandbox_egress.py`. It has direct `_record_sandbox_facts` calls, and a source-grep
+  around lines 605–606.
+- `tests/test_seat_host_uid_1098.py`, which also calls it directly.
+- `tests/test_review_monitor_policy.py` and `tests/test_gemini_heartbeat_bootstrap.py`.
 
-**Coupling that constrains the refactor:**
-- `phase-loop-runtime/scripts/verify_harden_evidence.py` `verify_broker`, around line 2334,
-  checks broker evidence against a **closed** key set that has no `sandbox_*` keys.
-- `verify_broker_argv_paths`, around lines 327–352, requires the argv cwd to hash to
-  `provider_cwd_sha256`, and the out dir to be a direct child of the cwd.
-- `launcher._stage_review_tree` (`launcher.py:3166`) is a separate implementation and is out of
-  scope here.
-- `sandbox_policy.parse_location` treats `host:path` as remote, and `_probe_root` /
-  `_free_bytes_at` spawn `ssh`.
+**Precedents in this repo:**
+- Optional extras follow the `visual` extra in `phase-loop-runtime/pyproject.toml`, which is
+  imported lazily.
+- The detail vocabulary is closed at PI:2115–2131.
 
-**E2B facts**, from current docs read 2026-09-29, apply to plan 4 and are cited there.
+## Contract (normative for plans 1a, 1b, 3 and agent-harness#1165)
+
+**Phases, in this order.** Every backend goes through them.
+
+| Phase | Local | Non-local |
+|---|---|---|
+| `prepare` | Stage the tree locally. **Always.** | Stage the tree locally. Nothing leaves the host. |
+| Runtime revalidation | Unchanged. Always against the local stage, so `_revalidate_staged_tree` works for every backend. | Same |
+| `commit` | No-op | Transfer the **revalidated** local stage. The backend recomputes the digest, and a mismatch refuses. |
+| `execute` → `wait` / `cancel` / `renew` | The runtime's own launch branches, unchanged | Backend-executed (plan 1b) |
+| `release` | Remove the stage | Kill the sandbox and remove the stage |
+
+This order means the code never leaves the operator's custody before revalidation.
+
+**Receipts.**
+- Backends return `BackendReceipt` values only.
+- Only the runtime's own driver constructs `PlacementReceipt(attested_by="runtime")`, and only
+  for a step the runtime itself performed and observed:
+  - `prepared`: it staged;
+  - `committed`: it sent snapshot bytes with digest D and got reference R;
+  - `launched`: it called `execute(R)`, or spawned locally;
+  - `completed`: it received the terminal result.
+- Backend claims are wrapped as `attested_by="backend"`, and are never receipt-class on their
+  own.
+- Every receipt carries `sandbox_ref` and `snapshot_sha256`, and both are serialized.
+
+**`sandbox_root_applied`.**
+- **Local:** today's rule, written out: `backend.is_local and host is None and path == staged_at.parent`.
+- **Non-local:** true iff all of these hold:
+  - runtime-attested `committed` and `completed` receipts share one `sandbox_ref`;
+  - both carry `snapshot_sha256 ==` the authorization's `staged_tree_sha256`;
+  - the per-leg local provider-spawn count is 0;
+  - any backend receipts agree with them.
+
+  Backend receipts alone never make it true.
+
+**`sandbox_staged_at`.**
+- Local: the path, as today.
+- Non-local: `<scheme>:<sandbox_ref>`. It never includes userinfo, query or a host credential.
+
+**Capabilities.**
+- `capabilities()` is what a backend *can* enforce. The vocabulary is closed:
+
+  | Group | Capabilities |
+  |---|---|
+  | Network | `private_ranges_unreachable`, `public_egress`, `private_allowlist`, `inbound_closed` |
+  | Confinement | `filesystem_confined`, `uid_isolated`, `bounding_set_empty`, `seccomp_filtered` |
+  | Other | `resource_bounded`, `one_shot_secret_channel`, `operator_custody` |
+
+- `PlacedSandbox.verified` maps each capability that was **verified for this placement** to its
+  method, which is one of:
+  - `runtime_end_to_end`: the runtime observed a destination-level result, never `connect()`
+    success alone;
+  - `backend_attested`.
+- `verified` is always a subset of `capabilities()`.
+- `LocalBackend.capabilities()` is the **empty set**. Local egress and uid facts stay in their
+  existing fields, which are recorded by the code that enforces them.
+
+**Declarations.** A backend's `declaration()` names:
+- its `egress_residuals`, from a closed kind list (for example `resolver_allowed` or
+  `udp_unfiltered_by_name`), each marked `closed_in_guest: bool`;
+- its `guest_control_env`: the names of the control-plane variables it injects into the guest.
+  Their values are redacted from evidence and logs;
+- its `max_lifetime_s`, or `None`.
+
+**Request.** `PlacementRequest` carries the leg, the round id, the repo, the snapshot digest,
+`deadline_s` and `egress_needs`. `egress_needs` is derived from the global
+`sandbox_policy.egress_allowlist()`, the only source today. It also carries
+`one_shot_secret: bool`, the decided CD1 channel.
+
+**Launch is final.** Once `execute` has been called, even if the call raised or its outcome is
+unknown, the attempt is `launched`:
+- it never falls back to local;
+- a retry in the same round reuses the same backend or refuses.
 
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py` (create)
-- `PlacementRequest` — add — a frozen dataclass: the resolved repo, the authorization's
-  `staged_tree_sha256`, the leg name, and the round id. It carries no vendor or transport
-  fields, so no backend's API shape reaches the core types.
-- `PlacementReceipt` — add — a frozen dataclass:
-  - `kind` (`staged` | `executed`), `backend` (a registered name), `sandbox_ref` (an opaque
-    string the backend chooses) and `snapshot_sha256`;
-  - `attested_by` (`runtime` | `backend`), which is `runtime` only when this process performed
-    the step itself;
-  - `details`, a closed, backend-declared mapping for things like an image identity.
-- `PlacedSandbox` — add — the backend name, the location string (for evidence only), the
-  local tree path or `None`, the receipts, and the `enforced` capability declaration (below).
-- `PlacementBackend` (a `Protocol`) — add — `name`, `available(timeout_s) -> Availability`,
-  `place(request, review_dir) -> PlacedSandbox`, `release(placed)`, and
-  `capabilities() -> frozenset[str]`.
-  - The capability vocabulary is closed: `filesystem_confined`, `network_filtered`,
-    `uid_isolated`, `bounding_set_empty`, `resource_bounded`, `credential_free`.
-  - Each backend declares only what it enforces, so a later cloud adapter cannot over-claim by
-    omission.
-- `LocalBackend` — add — wraps **exactly** today's calls, in today's order: `ensure_staging_space`,
-  `stage_review_tree`, the rename with the path tracked across it, and `mark_as_sandbox`.
-  - `release` performs today's `remove_review_stage`.
-  - It emits one `staged` receipt, `attested_by="runtime"`.
-  - It does not move revalidation, egress or launch. Those stay in `_default_spawn` in their
-    current order.
-- `register_backend(scheme, factory)` / `resolve_backend(location)` — add — a registry keyed by
-  location scheme. It holds only local in this plan. `https://` and cloud schemes resolve to
-  **unregistered**, and later plans register them.
-- `PlacementUnavailable(code, reason)` — add — the typed pre-launch failure every backend
-  raises. It is the only path to a fallback.
+- The types, the phase order and the `applied` rule — add — they encode the Contract section
+  above:
+  - `PlacementRequest`, `EgressNeeds`, `BackendReceipt`, `PlacementReceipt`, `Prepared`,
+    `PlacedSandbox`, `Declaration`;
+  - the closed `CAPABILITIES` and `VERIFICATION_METHODS`, and `PlacementUnavailable(code, reason)`.
+- `PlacementBackend` (a `Protocol`: `name`, `is_local`, `capabilities`, `declaration`,
+  `available`, `prepare`, `commit`, `release`) — add — the two-phase placement contract.
+- `ExecutingBackend(PlacementBackend)` (`execute`, `wait`, `cancel`, `renew`, `list_owned`,
+  `kill`), with `ExecSpec` and `ExecResult` — add — the execution types. Their driver is plan 1b.
+- `register_backend`, `resolve_backend`, and entry-point discovery under
+  `phase_loop_runtime.placement_backends` — add — optional extras register themselves, so core
+  names no vendor. Registration **refuses** a non-local backend that does not implement
+  `ExecutingBackend`, so a backend can never stage remotely while the provider starts locally.
+- `LocalBackend` — add:
+  - `prepare` runs today's `ensure_staging_space` → `stage_review_tree` → rename → `mark_as_sandbox`
+    sequence, and **owns the partial state until it returns**. On any exception it removes
+    whatever it created, the pre-rename path or the post-rename path, then re-raises.
+  - `commit` is a no-op.
+  - `release` calls `remove_review_stage`.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py` (modify)
 - `SandboxLocation` / `parse_location` — modify:
-  - add a `scheme` field: `local`, `hostpath` (the legacy `host:path` form), or a URL scheme
-    such as `https`, `e2b` or `modal`;
-  - bare paths and Windows drive letters parse exactly as today;
-  - `SandboxLocation.__str__` renders a URL location without any userinfo or query, so a
-    credential can never reach evidence.
-- `select_sandbox_root` — modify — a location whose scheme has **no registered backend** is not
-  probed: no `ssh` and no network call. It falls back to local, with reason
-  `"<scheme> placement backend not available in this runtime"` and a `RuntimeWarning`. The
-  legacy `hostpath` probe and floor behaviour stay as they are today; follow-on plan 2 decides
-  its disposition (RD6).
-- `remote_required()` — add — reads `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` in the same style
-  as `sandbox_enabled()`. When it is true and the selection fell back, placement raises
-  `PlacementUnavailable` instead of staging locally.
+  - add `scheme`: `local`, `hostpath`, or a URL scheme;
+  - strip userinfo and the query string **at parse**, so a credential never reaches `repr`,
+    `asdict` or evidence;
+  - bare paths and drive letters parse as they do today.
+- `select_sandbox_root` — modify — a scheme with no registered backend is never probed: no
+  `ssh`, no DNS, no socket. It falls back to local, and the reason names the scheme. `hostpath`
+  is unchanged; RD6 is ruled record-only.
+- `remote_required()` — add — reads `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED`. It governs
+  **board-seat** placement only (RD3 is ruled seats-only), and the documentation says so.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (modify)
 - `_default_spawn` — modify:
-  - PI:8484–8516 become `resolve_backend(...)` then `backend.place(...)`. For local, this is a
-    byte-for-byte equivalent call sequence.
-  - `staged_tree_path` comes from `placed.local_tree`.
-  - The `finally` calls `backend.release(placed)` in place of the direct `remove_review_stage`.
-  - The mkdtemp and resolve, both revalidations, the egress acquisition, launch and
-    `rmtree(base)` are unchanged, in the same order.
-  - `PlacementUnavailable` under `remote_required()` refuses the leg before any provider effect.
-- `_record_sandbox_facts` — modify — its signature takes the `PlacedSandbox`:
-  - keeps every existing field, and `sandbox_root_host` keeps its current meaning;
-  - adds `sandbox_placement_backend`, `sandbox_placement_receipts` (kinds and `attested_by`
-    only, plus the `snapshot_sha256`) and `sandbox_placement_enforced` (the declared
-    capabilities);
-  - `sandbox_root_applied` becomes: a `staged` receipt from the **selected** backend exists
-    **and** (local backend ⇒ today's `path == staged_at.parent` rule). For local this gives the
-    same truth table as today. It can never be true for a backend that produced no receipt;
-  - `sandbox_root_unapplied_reason` carries the fallback reason from `select_sandbox_root`
-    instead of the fixed agent-harness#896 sentence, whenever one exists;
-  - the contextvar reset-token discipline is unchanged.
-- `_HARNESS_DETAIL_CODES` — modify — add exactly one fixed code,
-  `"sandbox_placement_required_unavailable"`, raised as the exception message when
-  `remote_required()` refuses. It flows through `_exception_failure`'s exact-equality branch
-  (around PI:2508).
+  - `resolve_backend`, then `backend.prepare`, replaces PI:8500–8516. Selection at PI:8484
+    stays.
+  - Both revalidations run next, unchanged, against the local stage; then `backend.commit`.
+  - Egress, launch and `rmtree(base)` are unchanged, in the same order.
+  - `prepared` and `placed` are initialised to `None` before the `try`, and the `finally`
+    releases whichever exists.
+- The fail-closed check — add — at the **launch boundary**, for every review-mode seat leg,
+  whether or not a tree was authorized. It raises `sandbox_placement_required_unavailable`
+  unless the placement came from a registered non-local backend matching the configured
+  scheme. In 1a no such backend exists, so the knob always refuses:
+  - with a reachable `hostpath`;
+  - with an unset or local root;
+  - on a route with no staged tree.
+- The per-leg provider-spawn counter — add — a contextvar incremented at the provider spawn
+  chokepoints: `run_provider` and its `Popen` sibling, next to PI:3495–3500. The identity probe
+  is excluded. It is the "zero local spawns" observation.
+- The fact recording — modify:
+  - `_record_sandbox_facts` is called right after `prepare` and updated after `commit` and
+    after launch.
+  - The `except` at PI:8850 attaches `_sandbox_evidence()` to the `DEGRADED` result through the
+    existing `attach_harden_isolation_evidence` / `_BrokeredSpawnResult(evidence=…)` path. A
+    placement therefore always reaches the leg record, including when refusal comes after
+    placement.
+- `_record_sandbox_facts` — modify:
+  - Every existing field stays.
+  - Add `sandbox_placement_backend`, `sandbox_placement_receipts`, `sandbox_placement_verified`
+    and `sandbox_local_provider_spawns`.
+  - `applied` and `sandbox_staged_at` follow the Contract section.
+  - The fallback reason stays in `sandbox_root_reason`. `sandbox_root_unapplied_reason` appears
+    only when `applied` is false.
+  - The reset-token discipline is unchanged.
+- `_HARNESS_DETAIL_CODES` — modify — add exactly `"sandbox_placement_required_unavailable"`.
 
-  **Frozen-vocabulary note.** The `detail` vocabulary is closed by the agent-harness#1102
-  decision recorded at PI:2115–2130 ("`PanelLegResult.detail` is built ONLY from our own closed
-  vocabulary … a HARNESS CODE — a fixed string this runtime itself emits
-  (`_HARNESS_DETAIL_CODES`)"). This plan adds one member by the mechanism that comment defines.
-  It adds no template, no parametrized code and no new category.
+  **Frozen vocabulary, quoted from PI:2115–2123:** "`PanelLegResult.detail` is built ONLY from
+  our own closed vocabulary … a HARNESS CODE — a fixed string this runtime itself emits
+  (`_HARNESS_DETAIL_CODES`)". This adds one member by that mechanism, and no template or
+  category.
 
 ### `phase-loop-runtime/scripts/verify_harden_evidence.py` (modify)
-- `verify_broker` closed key set — modify, **conditionally**. The implementer first builds a
-  sandboxed brokered record with today's code and runs the verifier on it.
-  - If today's `sandbox_*` keys already reach `verify_broker`, add the three new keys beside
-    them, and add a check that `sandbox_root_applied` is true only with a `staged` receipt.
-  - If they never reach it, leave the verifier untouched and record that finding in the PR
-    body.
-
-  The recon could not settle which case holds (the facts are merged into `broker.evidence`,
-  around PI:8693), so this plan does not assume either.
+- `verify_broker` closed key set — modify — accept every `sandbox_*` key the producer emits,
+  existing and new. The current set already rejects them (hb1, measured).
+- A placement check — add:
+  - `sandbox_root_applied=true` must satisfy the Contract rule for the recorded backend;
+  - every receipt's `snapshot_sha256` must equal the authorization's staged-tree digest. If
+    the verifier's input does not already carry that digest, the producer adds it as
+    `sandbox_snapshot_sha256`, taken from the authorization and never from a receipt;
+  - backend-only receipts can never support `applied` for a non-local backend.
 
 ### `phase-loop-runtime/tests/test_sandbox_placement.py` (create)
-- The falsifiers listed under "Verification", each with a named mutation.
+- The falsifiers under "Verification".
 
-### `phase-loop-runtime/tests/test_sandbox_egress.py` (modify)
-- The source-grep, around lines 605–606 — modify — to accept the launch site's new
-  `_record_sandbox_facts(` call shape. The existing assertions on `root_applied`, `staged_at`,
-  `sandbox_root_host` and the unapplied reason are kept. The reason text is asserted by prefix
-  only where it now carries the selection reason.
+### `phase-loop-runtime/tests/test_sandbox_egress.py`, `tests/test_seat_host_uid_1098.py`, `tests/test_harden_evidence_verifier.py` (modify)
+- The direct `_record_sandbox_facts` calls and the source-grep — modify — to the new signature.
+- A producer→verifier round trip on a real sandboxed record — add.
 
 ## Documentation impact
-- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify — document
-  the placement seam and the three new evidence fields. State that `sandbox_root_applied` is
-  receipt-derived, and that a backend's receipts with `attested_by="backend"` are claims and
-  never receipt-class on their own.
-- `docs/phase-loop/convergence-runtime.md` — modify:
-  - `PHASE_LOOP_SANDBOX_ROOT` accepts URL-scheme locations that fall back with a recorded reason
-    until their backend exists;
-  - `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` fails closed.
-- `CHANGELOG.md` — modify — the placement seam, the new evidence fields and the fail-closed knob.
-  A `panel_invoker.py` / `sandbox_policy.py` change drifts the agy pin set, so the next release
-  cut requalifies agy; note that.
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify — the
+  Contract section: phases, receipts, the `applied` rule, capabilities and declarations, and
+  "launch is final".
+- `docs/phase-loop/convergence-runtime.md` — modify — URL-scheme roots and their recorded
+  fallback. `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` covers board seats only, and in this release
+  always refuses.
+- `CHANGELOG.md` — modify — the seam, the evidence fields, the verifier key set and the knob.
+  Note that the agy pin set drifts, so the next release cut requalifies agy.
 
 ## Dependencies & order
-1. **Rebase over agent-harness#1161 first**, if it has merged. It changes the local staging
-   root (`staging_root()`), and `LocalBackend` must wrap whatever `_default_spawn` stages into
-   at rebase time. If #1161 has not merged, land this first; #1161 then rebases onto
-   `LocalBackend.place` as a one-site change.
-2. `sandbox_placement.py` types and the `LocalBackend` wrapper come before `_default_spawn`
-   consumes them.
-3. The `sandbox_policy` scheme parse and `remote_required()` come before the `_default_spawn`
-   fallback branch.
-4. The verifier investigation comes before the evidence-field change is finalized.
-5. Tests are written first with skip-guards on the new symbols, and each gets a RED receipt.
-
-This plan does **not** depend on agent-harness#1132 or agent-harness#1071. It touches none of
-their named `panel_invoker.py` sites except `_default_spawn` and `_record_sandbox_facts`;
-re-check both at rebase.
+1. **agent-harness#1161.** It changes scratch allocation, the effective floor, pre-stage
+   reclamation, retention marking, cleanup and child temp dirs. Whichever of #1161 and this plan
+   lands second rebases, **re-captures the local-equivalence golden** on the merged base, and
+   adds `tests/test_sandbox_staging_1147.py` to the gate. `LocalBackend.prepare` must preserve
+   all of #1161's staging behaviour, not one site.
+2. **agent-harness#1132, #1071 and #1166.** There is no functional dependency. They touch
+   `_default_spawn` and `_record_sandbox_facts`, so the same rule applies: the second to land
+   rebases and re-captures.
+3. **Order within this plan:**
+   1. Capture the equivalence golden **at `input_base_commit`** first, before any code moves.
+   2. Write the tests. They fail on the missing symbols, and that is recorded as the RED receipt
+      on the branch. They land together with the implementation.
+   3. `sandbox_placement.py`.
+   4. `sandbox_policy`.
+   5. `_default_spawn` and the facts.
+   6. The verifier.
 
 ## Verification
 
@@ -219,324 +276,190 @@ cd phase-loop-runtime
 PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' \
   tests/test_sandbox_placement.py tests/test_sandbox_egress.py tests/test_sandbox_policy.py \
   tests/test_sandbox_retention.py tests/test_seat_host_uid_1098.py \
-  tests/test_review_monitor_policy.py tests/test_harden_evidence_producer.py \
+  tests/test_review_monitor_policy.py tests/test_gemini_heartbeat_bootstrap.py \
+  tests/test_harden_evidence_producer.py tests/test_harden_evidence_verifier.py \
   tests/test_review_stage_board_findings.py tests/test_sandbox_preamble.py \
   tests/test_panel_invoker_timeout_argv.py tests/test_panel_tui_workspace_trust_223.py
+# after rebasing over agent-harness#1161, also: tests/test_sandbox_staging_1147.py
 ```
 
-Falsifiers in `tests/test_sandbox_placement.py`. Each has a control-green receipt and a
-named mutation that must turn it red:
+Falsifiers in `test_sandbox_placement.py`. Each is control-green, and red under its named
+mutation.
 
-- **Local equivalence.**
-  - Record the call order of `ensure_staging_space`, `stage_review_tree`, rename,
-    `mark_as_sandbox`, `_revalidate_staged_tree`, `revalidate_review_isolation_authorization`,
-    `isolated_network` and `remove_review_stage` with and without the seam.
-  - The sequences are identical, and so are the provider argv and `provider_cwd_sha256`.
-  - Mutation: call `mark_as_sandbox` before the rename.
-- **An unregistered scheme never probes.**
-  - With `PHASE_LOOP_SANDBOX_ROOT=https://example.invalid/x` or `e2b://tpl`, a `subprocess` spy
-    records no `ssh`, and a socket spy records no connect.
-  - The leg stages locally with `sandbox_root_fell_back=True`, a reason naming the scheme, and
-    `sandbox_root_applied=True` for the local receipt.
-  - Mutation: route unknown schemes to `_probe_root`.
-- **Receipt-derived `applied`.** A fake registered backend that returns a `PlacedSandbox`
-  with no `staged` receipt yields `sandbox_root_applied=False` and an unapplied reason.
-  Mutation: derive `applied` from the selection.
-- **Fail closed.** `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1` with an unregistered scheme ends
-  the leg with detail `sandbox_placement_required_unavailable`, with zero provider spawns
-  (spawn-seam counter) and no local stage directory. Mutation: ignore `remote_required()`.
-- **No credential in evidence.** `https://user:tok@host/p?k=v` is recorded as
-  `https://host/p` in every sandbox field. Mutation: `str(location)` with userinfo.
-- **Vocabulary.** The new code is a member of `_HARNESS_DETAIL_CODES`, and
-  `_finalize_leg_detail` passes it through unchanged.
+**Local equivalence.** Record the full call sequence, including the entry and **exit** of
+`isolated_network` and `remove_review_stage`, plus the provider argv and `provider_cwd_sha256`.
+Compare it to the golden captured at `input_base_commit`. Mutations:
+- `mark_as_sandbox` before the rename;
+- `local_tree` returns the pre-rename path;
+- `release` before the egress exit.
 
-Edge cases:
-- A Windows drive-letter root still parses as local.
-- A `hostpath` root keeps today's probe and `applied=False` record, byte-identical.
-- With nothing configured, no probe runs, and the goldens and argv tests above stay green.
+**Partial-failure ownership.** Inject a fault after `stage_review_tree`, after the rename, and
+at `mark_as_sandbox`: no stage directory remains, and the exception propagates. Inject a
+revalidation failure after `prepare`: the `finally` releases it. Mutation: remove `prepare`'s
+rollback.
+
+**Failure exits keep the evidence.** Inject an egress failure after a successful `prepare`. The
+`DEGRADED` result carries the placement facts and a `prepared` receipt. Mutation: drop the
+attach in the `except`.
+
+**Unregistered schemes never probe.** With `https://example.invalid/x`, `e2b://t` or
+`modal://t`, spies on `subprocess`, `socket.connect` and `socket.getaddrinfo` all record zero
+calls. The leg runs local with a recorded fallback reason. Mutation: route unknown schemes to
+`_probe_root`.
+
+**Backend claims never apply.** A fake `ExecutingBackend` is registered, but the 1a driver never
+calls `execute`, so no runtime `completed` receipt exists. It returns only backend receipts:
+`applied=False`. Mutation: ignore `attested_by`.
+
+**Registry.** Registering a non-local backend that is not an `ExecutingBackend` raises.
+Mutation: accept it.
+
+**Fail closed.** Each case below ends with detail `sandbox_placement_required_unavailable`, zero
+`stage_review_tree` calls where staging had not yet occurred, and a spawn count of 0:
+- a `hostpath` root whose probe **passes**;
+- a `hostpath` root whose probe fails;
+- an unset root, and a local root;
+- an unregistered scheme;
+- a route with no authorized tree.
+
+Mutation: decide by `fell_back`.
+
+**No credential leaks.** `https://u:t@h/p?k=v` appears as `https://h/p` in `repr`, `asdict`,
+evidence, warnings and the leg log. Mutation: redact only in `__str__`.
+
+**Vocabulary.** The code is a member of `_HARNESS_DETAIL_CODES` and passes
+`_finalize_leg_detail` unchanged. Mutation: remove the member; the detail then becomes the
+unknown-failure template.
+
+**Verifier.** A real sandboxed brokered record passes. The same record with `applied=true` and
+only backend receipts fails. Mutation: skip the placement check.
+
+**Edge cases.**
+- A drive-letter root is local.
+- For the `hostpath` record, the existing fields are identical and only the new fields are added.
+- With nothing configured, no probe runs.
 
 Run the suite on a tree **left untouched** for its duration.
 
 ## Acceptance criteria
-- [ ] With no `PHASE_LOOP_SANDBOX_ROOT`, the local-equivalence falsifier shows an identical
-  placement call order, provider argv and `provider_cwd_sha256` before and after the seam.
-  Every test file named in `automation.suite_command` passes.
-- [ ] With `PHASE_LOOP_SANDBOX_ROOT=https://example.invalid/x`, the leg record shows the
-  following, and the `ssh` and socket spies record zero calls:
-  - `sandbox_placement_backend="local"`;
-  - `sandbox_root_fell_back=True`, with a reason naming `https`;
-  - a `staged` receipt with `attested_by="runtime"`.
-- [ ] A fake backend that returns no `staged` receipt yields `sandbox_root_applied=False`.
-  Mutating `applied` to derive from the selection turns
-  `test_sandbox_placement.py::test_applied_requires_staged_receipt` red.
-- [ ] With `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1` and an unregistered scheme, the leg ends
-  with detail `sandbox_placement_required_unavailable` and the spawn-seam counter reads 0.
+- [ ] With no root configured, the local-equivalence falsifier matches the
+  `input_base_commit` golden: call sequence (including the egress exit), provider argv and
+  `provider_cwd_sha256`. Every file in `automation.suite_command` passes.
+- [ ] With the egress failure injected after `prepare`, the `DEGRADED` leg result carries
+  `sandbox_placement_receipts` with a runtime-attested `prepared` receipt.
+- [ ] A registered fake backend that returns only backend-attested receipts yields
+  `sandbox_root_applied=False`. Removing the `attested_by` check turns
+  `test_sandbox_placement.py::test_backend_claims_never_apply` red.
+- [ ] With `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED=1`, each fail-closed case listed under
+  Verification ends with detail `sandbox_placement_required_unavailable`, and the spawn-seam
+  counter reads 0. That includes a reachable `hostpath`, an unset root, and a route with no
+  tree.
+- [ ] `verify_harden_evidence.py` accepts a real sandboxed brokered record produced by this
+  runtime, and rejects the same record once `applied=true` rests only on backend receipts.
 
 ## Follow-on plans
 
-Each is its own bounded detailed plan, written after the one before it lands. They are listed
-here so the seam above is designed against them. They are not planned in detail here.
+### Plan 1b: execution driver and lease journal (next; the cloud path depends on it)
 
-### Plan 2: egress allowlist without fleet addresses (small, independent)
-- **Scope.** `sandbox_policy._INFERENCE_ALLOW` hard-codes one private address on ports 8020 and
-  3131, which the consumer comment names. Replace it with `PHASE_LOOP_SANDBOX_EGRESS_ALLOW`
-  (`host:port`, comma-separated, default empty). Add a static test: no private or CGNAT
-  **host** address literal appears in product code. CIDR network constants and the slirp range
-  are exempt.
-- **Dependencies.** None; it can land before or after plan 1. Our fleet's value is set in
-  deployment config later, as a maintainer-gated step.
+**Scope.** The runtime side of `ExecutingBackend`, for any non-local backend, and the lease
+journal.
 
-### Plan 3: self-hosted remote backend over authenticated HTTPS
-- **Scope.**
-  - The agent: `phase-loop sandbox-agent serve`, in the same wheel and Linux-only. It fails
-    closed. It is registered for `https://`.
-  - The client: stdlib TLS with no insecure mode, and no `ssh` spawned.
-  - A version and profile handshake.
-  - Snapshot streaming. The agent recomputes `review_tree_manifest_sha256`, which must equal the
-    authorization's `staged_tree_sha256`.
-  - Per-principal workspaces, and a subordinate uid per seat.
-  - A cgroup v2 scope per seat: `memory.max`, `pids.max`, `cpu.max`, and a disk bound (RD5).
-  - A heartbeat lease with an fsynced journal, cancel, and a startup reaper for owner loss,
-    agent restart and reboot.
-  - The agent's own retention, floor and cap.
-  - An attestation run inside the jail: the J6/J15 probe, the egress `enforcement_report`,
-    cgroup values, and a nonce bound to the snapshot. It gates the leg but is never
-    receipt-class.
-  - The local runtime ingests output bytes under J10-equivalent checks and the token scan.
-  - A qualification command, `sandbox-remote qualify <url>`.
-- **Parity, per route.** Jailed legs (Claude, and Gemini if agent-harness#1132 L3 is in scope)
-  get the full agent-harness#1132 jail. Codex and grok, only if RD3 (ii) is chosen, keep their
-  current route: `CapBnd` exactly `SEAT_RETAINABLE_CAPS` (`setfcap`) for codex, and empty for
-  grok. They run under a remote subordinate uid and keep `seat_filesystem_unconfined`.
-- **Consumer prerequisites and their falsifiers:**
+- **`sandbox_placement.py` or a new `placement_lease.py`:**
+  - **Owner and journal.**
+    - A per-user random owner id lives in the state directory.
+    - The lease journal is under `$XDG_STATE_HOME/phase-loop/placement-leases/` (directory 0700,
+      files 0600).
+    - Each entry is written and fsynced, together with its directory, **before `commit`**.
+      Backends must tag every remote sandbox with the owner id and lease id at create.
+  - **Liveness** is an `flock` on each lease file, held by the owning process. It is never
+    decided by pid or age.
+  - **Heartbeat.** A thread renews through `backend.renew`, and never past the leg deadline.
+    A leg whose deadline exceeds the backend's `max_lifetime_s` is refused before `commit`.
+    That refusal is pre-launch, so it can fall back.
+  - **Reaper.** It runs at runtime start, beside `_gc_stale_panel_scratch`, periodically, and
+    from `phase-loop sandbox reap` in `cli.py`. It calls `list_owned(owner_id)` across every
+    page and every state, paused included. It kills only sandboxes whose lease lock is free,
+    then clears stale journal entries.
+- **`panel_invoker.py`:**
+  - The non-local execution branch: after `commit`, it runs `execute(ExecSpec)` with the CD1
+    one-shot secret channel, then `wait` with the deadline.
+  - `cancel` runs on cancellation, timeout or quiescence.
+  - Output bytes are ingested under a size cap and a regular-bytes check, and the token scan
+    runs before any leg record.
+  - It produces runtime `launched` and `completed` receipts.
+  - It enforces "launch is final".
+  - It adds two fixed detail codes, `sandbox_placement_lost_after_launch` and
+    `sandbox_placement_lease_expired`.
 
-  | Prerequisite | Falsifier |
-  |---|---|
-  | Receipts | Staging and execution receipts are present, with zero local provider spawns. |
-  | Per-user auth and workspace | Cross-principal list, get, cancel and reap are refused 403/404; concurrent seats have distinct uids. |
-  | Bounds | A fork bomb stops at `pids.max`; an OOM kill stays inside the scope; the CPU is throttled; the disk bound is hit. |
-  | Transport | `http://` is refused, a bad CA is refused, the `ssh` spawn count is 0, and the peer port is recorded. |
-  | Cleanup | Cancel; client SIGKILL (the scope is gone within the TTL plus grace); agent restart (reaped from the journal). |
-  | Retention | Below the floor, a typed refusal becomes a local fallback; over the cap, the oldest sandbox is reaped after `work/` is archived. |
+**Falsifiers (fake `ExecutingBackend`):**
 
-- **Dependencies.**
-  - It needs plan 1.
-  - The substrate, qualified with a null workload, can land before agent-harness#1132.
-  - Remote **jailed-seat** launch waits on agent-harness#1132, which waits on agent-harness#1071.
-    It also needs the provider CLIs at their qualified pins on the target, with the #1132 probes
-    replayed there.
-  - Remote fallback lands on agent-harness#1161's disk-backed `staging_root()`.
-- **Open decisions:** RD1–RD6 below.
-
-### Plan 4: E2B cloud backend (first cloud adapter)
-- **Scope.**
-  - An `E2BBackend`, registered for the `e2b` scheme, in a lazily imported module.
-  - The SDK is an optional extra, `phase-loop-runtime[e2b]`, following the existing `visual`
-    extra pattern in `phase-loop-runtime/pyproject.toml`. The core install never imports `e2b`.
-    The package is `e2b` on PyPI, version 2.51.0 on 2026-09-18, with 12 dependencies including
-    httpx and protobuf ([pypi](https://pypi.org/project/e2b/),
-    [pyproject](https://raw.githubusercontent.com/e2b-dev/E2B/main/packages/python-sdk/pyproject.toml)).
-    Without the extra, the scheme is unregistered and plan 1's fallback applies.
-- **Adapter rule.** Nothing E2B-specific enters `sandbox_placement.py`: no template, build,
-  `allow_out` or timeout type. The E2B identity goes only into `PlacementReceipt.details`, under
-  keys the adapter declares. A Modal or Daytona adapter is another `PlacementBackend`.
-
-**Templates and image pinning.**
-- The seat image is an E2B template built with the SDK `Template()` builder. The CLI
-  `template init` is an alternative ([quickstart](https://docs.e2b.dev/template/quickstart)).
-- `Template.build(...)` returns `BuildInfo(name, template_id, build_id)`
-  ([build](https://docs.e2b.dev/template/build.md)).
-- Tags can be moved, so the adapter pins `Sandbox.create("<name>:<build_id>")` and never a tag
-  ([tags](https://docs.e2b.dev/template/tags.md)).
-- E2B documents no content digest. The template therefore carries a runtime-written manifest
-  with the hash of every toolchain binary and the CLI versions, built from the same pins as
-  local seats. The in-VM attestation hashes it.
-- Only `E2B_TEMPLATE_ID` is visible inside the VM
-  ([env vars](https://docs.e2b.dev/sandbox/environment-variables.md)), and `SandboxInfo` has no
-  `build_id`. So the receipt records the **requested** build id as `attested_by="runtime"`, and
-  the manifest hash as `attested_by="backend"`, labelled as a claim.
-
-**Snapshot upload with no credentials.**
-- The adapter uploads the staged tree with `files.write_files` (a batch write)
-  ([upload](https://docs.e2b.dev/filesystem/upload.md)).
-- It never uses `sandbox.git.clone`, which could put credentials into the sandbox through
-  `dangerouslyStoreCredentials` ([git](https://docs.e2b.dev/sandbox/git-integration.md)).
-- The in-VM attestation recomputes the tree digest. A mismatch refuses the leg before launch.
-- E2B documents no size limit, so plan 4 measures one.
-
-**Egress: what E2B can and cannot enforce against our `sandbox_egress` policy.** E2B filters
-at an egress proxy outside the VM, through `network={"allow_out", "deny_out"}` with IPs, CIDRs
-and domains. `allow_internet_access=False` is equivalent to `deny_out=["0.0.0.0/0"]`
-([internet access](https://docs.e2b.dev/sandbox/internet-access),
-[network](https://docs.e2b.dev/network/internet-access.md)).
-
-| Our guarantee | E2B | Behaviour |
+| Case | Expected | Mutation that must turn it red |
 |---|---|---|
-| Deny RFC 1918, CGNAT, link-local and metadata | **Can**, by listing those CIDRs in `deny_out`. The docs do not state the default, so it is proven per sandbox, not assumed. | The pre-launch in-VM connect probe to each range must fail. If any connect succeeds, the leg is refused before launch. |
-| Allow the public internet | **Can** (the default). | Probed: one public name resolves and a public host answers. |
-| `host:port` allowlist into a private network | **Cannot**. Domain rules apply only on ports 80/443, there is no per-port rule, and "allow beats deny", so an allow entry would reopen a denied range. The operator's private network is unreachable from the cloud anyway. | A leg whose policy needs a non-empty private allowlist is refused cloud placement with a typed code, and falls back or fails closed per plan 1. |
-| Loopback services unreachable | **Not applicable** in the same way. The VM's loopback holds only E2B's in-VM daemon, and none of the operator's services. | Recorded as a difference; nothing to enforce. |
-| UDP/QUIC and DNS | **Partly.** QUIC is not domain-filtered, and domain rules auto-allow `8.8.8.8` for DNS. | The adapter uses CIDR rules only, never domain rules. The residual is recorded. |
-| Enforcement authority | E2B's proxy, which the runtime cannot observe. | The in-VM probe result is `attested_by="backend"`, never receipt-class. |
-
-**Confinement parity with the agent-harness#1132 jail.** Each sandbox is a Firecracker
-microVM with its own kernel
-([security](https://docs.e2b.dev/faq/security-and-compliance.md)). What it gives instead of
-each jail item:
-
-| Jail item | What E2B gives | Parity |
-|---|---|---|
-| Operator filesystem unreachable (J1/J2) | The VM holds none of the operator's files. | **Stronger** |
-| No sibling access (J4) | One sandbox per seat, each its own VM. | **Stronger** |
-| Subordinate uid (J15, D8) | The default user is `user` ([user](https://docs.e2b.dev/template/user-and-workdir.md)). Passwordless sudo is reported by third parties, not by E2B's docs. Inside the VM, a uid is not the boundary. | **Not equivalent.** The template can remove sudo and run the seat under a dedicated uid; the attestation proves it. |
-| `CapBnd = 0` (J6, agent-harness#999) | Achievable inside the VM with `setpriv --bounding-set=-all`, if the template ships util-linux. | Achievable; probed per sandbox |
-| Codex keeps `CAP_SETFCAP` for its nested bwrap | Depends on unprivileged user namespaces in the guest kernel (6.1 LTS, [how it works](https://docs.e2b.dev/template/how-it-works.md)). Not documented. | **Unknown.** Measured in plan 4; if absent, codex is refused cloud placement. |
-| Seccomp J14 | Only if bwrap runs inside the guest. Not documented. | **Unknown**; measured |
-| No credentials in the sandbox | The E2B API key is not among the documented in-VM variables. Seat CLIs need subscription credentials. | See CD1 |
-| Code confidentiality | The tree, the output and any credential are visible to a third party (E2B). | **New residual.** See CD2 |
-| Exact snapshot, local outcome authority | The same as plan 3. | Equal |
-
-**Limits, cost and cleanup.**
-
-| Plan tier | vCPU | RAM | Disk | Max lifetime |
-|---|---|---|---|---|
-| Hobby | 8 | 8 GiB | 10 GiB | 1 h |
-| Pro | 8+ | 8+ GiB | 20+ GiB | 24 h |
-
-- The defaults are 2 vCPU / 512 MiB and a 5-minute timeout, with kill on timeout. Billing is
-  per second while a sandbox runs ([billing](https://docs.e2b.dev/billing.md),
-  [lifetime](https://docs.e2b.dev/faq/sandbox-lifetime.md)).
-- Paused sandboxes are kept until killed ([persistence](https://docs.e2b.dev/sandbox/persistence.md)).
-- **How the adapter avoids leaking paid sandboxes:**
-  - It **never** uses `on_timeout="pause"` or auto-pause.
-  - It creates each sandbox with `timeout = lease_ttl` and extends it with `set_timeout` as the
-    heartbeat. When the owner dies, E2B's own timer kills the VM whether or not the client is
-    alive.
-  - It tags every sandbox with metadata: owner id, round id, leg and runtime version
-    ([metadata](https://docs.e2b.dev/sandbox/metadata.md)).
-  - It runs a reaper at startup and periodically. The reaper uses
-    `Sandbox.list(metadata={"phase_loop_owner": …})`
-    ([list](https://docs.e2b.dev/sandbox/list.md)) and kills every sandbox with no live local
-    lease.
-  - It calls `kill()` in the backend's `release`.
-- **Falsifiers.**
-  - With a fake SDK: SIGKILL of the client leaves `list()` empty after `lease_ttl` plus grace.
-    Mutations: create with a 24-hour timeout; `on_timeout="pause"`; the reaper skips the
-    metadata filter.
-  - Live, in the plan 4 qualification: the same, against a real project, with billed seconds
-    recorded.
-- **Cost caps** are a maintainer decision (CD3). E2B's own concurrency limits are 20 on Hobby,
-  and from 100 on Pro.
-
-**The E2B API key.**
-- It is read only from the local runtime's environment (`E2B_API_KEY`) or a 0600 config file,
-  and passed only to the SDK constructor.
-- A falsifier scans every `commands.run` env, every uploaded byte, the evidence and the leg
-  logs for the key.
-- Keys are scoped to one project, with no per-key restriction documented
-  ([projects](https://docs.e2b.dev/projects.md)). So the operator docs recommend a dedicated
-  E2B project for harness sandboxes, which also bounds the blast radius and the plan limits.
-- Evidence records the project name and never the key.
-- Secured envd access (the `X-Access-Token`) stays on, the SDK v2 default
-  ([secured access](https://docs.e2b.dev/sandbox/secured-access.md)).
-- Public port exposure is not used. If it ever is, it uses `allow_public_traffic=False`
-  ([restrict public access](https://docs.e2b.dev/network/restrict-public-access.md)).
-
-**Evidence.**
-- Receipts:
-  - `staged`, with the sandbox id returned by `create`;
-  - `executed`, from the command handle;
-  - the requested `name:build_id`, the reported `E2B_TEMPLATE_ID`, the template-manifest hash
-    and the in-VM egress probe result.
-- `sandbox_root_applied` is true only when the `staged` and `executed` receipts share one
-  sandbox id and the spawn-seam counter reads 0.
-- Everything E2B reports is `attested_by="backend"`, and remote output is never receipt-class
-  by itself. The local runtime ingests the bytes under J10-equivalent checks.
-
-**Seat CLIs in E2B.** claude, codex and agy all need subscription credentials, which conflicts
-with "no credentials in the sandbox". The options are CD1 below. E2B also documents secret
-injection at its egress proxy ([network](https://docs.e2b.dev/network/internet-access.md)),
-which keeps a secret out of the VM but not away from the vendor.
+| Execute path | `applied=true`, zero local spawns | — |
+| Post-launch failure, including a lost acknowledgement | No local spawn, no fallback | Fall back on any exception |
+| Owner SIGKILLed | The next start's reaper kills its sandbox | — |
+| Another owner's sandbox, and a live same-owner lease held by a second process | Survives | Drop the owner filter; liveness by pid |
+| Paused sandbox listed across pages | Reaped | Running-only listing; first page only |
+| Renewal | Never exceeds the deadline | Fixed extension |
+| Journal write | Happens before `commit` | Write after `commit` |
 
 **Dependencies.**
-- It needs plan 1.
-- It needs plan 3's attestation checker, output ingestion and lease model, which are reused and
-  not rebuilt. Plan 3's substrate lanes must land first.
-- Any seat workload inside E2B also waits on agent-harness#1132, and on CD1.
+- It needs plan 1a.
+- It unblocks agent-harness#1165 (4a, then 4b) directly.
 
-## Open maintainer decisions (not ruled here)
+### Plan 2: egress allowlist from configuration
+- **Scope.** The fleet-specific inference address in `sandbox_policy._INFERENCE_ALLOW` is
+  replaced by `PHASE_LOOP_SANDBOX_EGRESS_ALLOW` (`host:port`, default empty). A static test
+  keeps private or CGNAT host literals out of product code.
+- **Ship it together with** the deployment's own configuration value, so no operator loses
+  access in between.
+- **Dependencies.** None.
 
-RD numbers belong to plan 3 and CD numbers to plan 4; plan 1 needs none. Each recommendation
-is the planner's.
+### Plan 3: self-hosted remote over HTTPS (RD1–RD6 as ruled)
+- **Scope.**
+  - An `https://` `ExecutingBackend` and the agent: TLS with no insecure mode, and a 401 for an
+    unauthenticated request.
+  - Per-principal workspaces and subordinate uids.
+  - cgroup bounds.
+  - A server-side journal that mirrors 1b, and an attestation that gates the leg and is
+    never receipt-class.
+  - Retention, the floor and the cap.
+  - The qualification command.
+  - A falsifier for each consumer prerequisite on agent-harness#896.
+- **Dependencies.**
+  - It needs 1a and 1b.
+  - The launch path for jailed seats waits on the seat jail.
+  - Because of its size, it is expected to split again when written.
+- **Note.** RD1 (a) per-user service and RD5 (a) project quotas need a one-time root setup
+  on the host, which is a documented host prerequisite.
 
-- **RD1 Remote server process model.**
-  - **(a) Recommended:** one agent per user, as a systemd user service behind the host's HTTPS
-    proxy. Separation between principals is then enforced by the OS.
-  - (b) One multi-tenant daemon under a dedicated account, with its subuid range partitioned.
-    Simplest to run, but separation rests on agent code.
-  - (c) A socket-activated worker per request. The leases and the journal need separate
-    state.
-  - (d) A container runtime, agent-harness#891, which is still deferred.
-- **RD2 Remote authentication.**
-  - **(a) Recommended:** a per-principal bearer token, with the server storing only its hash,
-    and an optional server-certificate pin.
-  - (b) mTLS. Proxies make it fragile.
-  - (c) A proxy identity header. Deployment-specific.
-  - (d) SSH-key request signing, without an SSH transport.
-- **RD3 v1 scope.**
-  - Workloads:
-    - **(a) Recommended:** board seats only.
-    - (b) plus read-only executor legs.
-    - (c) plus writing executors.
-  - Legs:
-    - (i) jailed legs only.
-    - **(ii) Recommended:** also codex and grok, on their current route under a remote
-      subordinate uid.
-- **RD4 How the seat credential reaches a self-hosted remote.**
-  - **(a) Recommended:** forwarded per leg into the J3 token pipe, never persisted, plus a
-    signed attestation.
-  - (b) A remote-resident credential.
-  - (c) Inference local and execution remote: the SBXEXEC design, agent-harness#848.
-- **RD5 Disk bound.**
-  - **(a) Recommended:** project quotas, with a watchdog as the typed degraded mode.
-  - (b) A watchdog only.
-  - (c) A filesystem per principal.
-- **RD6 The legacy `host:path` SSH form.**
-  - **(a) Recommended:** record-only, with a typed notice.
-  - (b) An optional SSH adapter later.
-  - (c) A configuration error.
-- **CD1 Seat CLI credentials in the cloud.**
-  - **(a) Recommended for v1:** cloud runs only **credential-free** workloads. That means reviewed
-    code execution: the agent-harness#848 executor role, such as a seat's test and falsifier
-    runs. Seat CLIs stay local or on a self-hosted remote.
-  - (b) The CLI runs locally and only tool execution goes to E2B, through a harness-owned tool
-    bridge. This is SBXEXEC, a larger design.
-  - (c) A brokered credential proxy: the VM gets a short-lived, revocable capability, and a proxy
-    the runtime controls injects the real credential. The proxy must be reachable from the cloud,
-    and the subscription CLIs must support routing through it; neither is established.
-  - (d) The credential is forwarded into the VM, or injected by E2B's egress proxy. The credential
-    then leaves our custody to a third party. This contradicts "no credentials in the sandbox"
-    for (d)-forwarded.
-- **CD2 Acceptable confinement gaps in the cloud.** Code confidentiality toward the vendor, the
-  in-VM uid not being a boundary, codex's `CAP_SETFCAP` nested sandbox where the guest cannot
-  support it, and seccomp J14.
-  - **(a) Recommended:** refuse cloud placement for any leg whose gap is not closed by
-    measurement, and require a per-repository opt-in acknowledging vendor visibility.
-  - (b) Accept the recorded gaps globally.
-  - (c) Cloud only for public repositories.
-- **CD3 Cost caps.**
-  - **(a) Recommended:** per-run caps on concurrent cloud sandboxes and total sandbox-seconds,
-    plus a per-day ceiling in the operator config. Exceeding a cap refuses before create, with a
-    recorded reason, then falls back or fails closed.
-  - (b) Rely on E2B's plan limits only.
-  - (c) Per-run caps only.
-- **CD4 Cloud opt-in granularity.**
-  - **(a) Recommended:** off by default, enabled per run by configuration, with a per-seat
-    allowlist of eligible legs.
-  - (b) Per board preset.
-  - (c) Per seat only.
+### Plans 4a and 4b: first cloud adapter (agent-harness#1165)
+- **Dependencies.** 1a and 1b only.
+- **Inherited from the hb1 board.** agent-harness#1165 carries these items; they are not
+  restated in this plan:
+  - sandbox creation always restricts public inbound traffic, with an unauthenticated-access
+    falsifier;
+  - the owner-filtered, paginated listing covers every state;
+  - the leak falsifier includes another owner's sandbox, which must survive;
+  - egress probes check the destination, not the connection;
+  - IPv6 ranges are covered;
+  - the guest loopback daemon cannot be driven by the seat's uid;
+  - the vendor's opaque build identifier versus the "pinned by digest" requirement is
+    surfaced as a decision there;
+  - the revision-queue items F6 and F7 (the SDK's secure-access flag, and a debug mode that
+    disables kill).
+
+## Maintainer decisions
+
+**Recorded on agent-harness#1162:**
+- RD1–RD6 are accepted as recommended. RD3 is seats only.
+- CD1 is the same one-shot channel as the local route.
+- CD2 is all repositories.
+- CD3 and CD4 are accepted as recommended.
+
+**Open for plan 1a:** none.
 
 ## Execution Policy
 
-- execute: effort=high, reason=refactor of the attested launch site and its evidence record; a
-  behaviour-preserving seam whose falsifiers must prove byte-identical local placement
+- execute: effort=high, reason=behaviour-preserving refactor of the attested launch site, its
+  evidence record and its verifier; falsifiers must prove byte-identical local placement

@@ -10660,7 +10660,7 @@
       "updated_at": "2026-09-29T08:00:00Z"
     },
     {
-      "acceptance_criteria_count": 4,
+      "acceptance_criteria_count": 5,
       "created_at": "2026-09-29T12:00:00Z",
       "file": "plans/detailed-remote-sandbox-placement-896-20260929.md",
       "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
@@ -10677,23 +10677,29 @@
             ],
             "planning_artifact_only": true,
             "review_status": "pending",
-            "open_decisions": [
-              "RD1",
-              "RD2",
-              "RD3",
-              "RD4",
-              "RD5",
-              "RD6",
-              "CD1",
-              "CD2",
-              "CD3",
-              "CD4"
-            ],
+            "open_decisions": [],
             "follow_on_plans": [
+              "1b-execution-driver-lease-journal",
               "egress-allowlist-config",
               "self-hosted-https-remote",
-              "e2b-cloud-adapter"
-            ]
+              "cloud-adapter-agent-harness#1165"
+            ],
+            "maintainer_decisions": {
+              "recorded_at": "2026-09-29",
+              "source": "Consiliency/agent-harness#1162",
+              "decisions": [
+                "RD1",
+                "RD2",
+                "RD3",
+                "RD4",
+                "RD5",
+                "RD6",
+                "CD1",
+                "CD2",
+                "CD3",
+                "CD4"
+              ]
+            }
           }
         }
       ],
@@ -10703,9 +10709,9 @@
       "roadmap_ref": null,
       "slug": "remote-sandbox-placement-896",
       "status": "committed",
-      "task_summary": "plan 1 of 4 for agent-harness#896: vendor-neutral sandbox placement seam, receipt-derived placement evidence, local backend refactor and fail-closed knob; follow-ons: egress de-fleeting, self-hosted HTTPS remote, E2B cloud adapter",
+      "task_summary": "plan 1a for agent-harness#896: vendor-neutral placement seam contract (prepare/revalidate/commit/execute/release), receipt-bound placement evidence, local backend behind the seam, outcome-decided fail-closed knob; follow-ons: 1b execution driver + lease journal, egress config, self-hosted HTTPS remote, cloud adapter (agent-harness#1165)",
       "type": "detailed",
-      "updated_at": "2026-09-29T12:00:00Z"
+      "updated_at": "2026-09-30T12:00:00Z"
     }
   ],
   "schema_version": 1
