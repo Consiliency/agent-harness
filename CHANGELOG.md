@@ -67,6 +67,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.
 
+### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
+
+- The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem
+  view. It starts from an empty root and binds read-only only what the provider was
+  measured to use: the system directories (`/usr` and the `/bin`, `/lib*` and `/sbin`
+  entries), a short list of `/etc` files (name resolution, TLS roots, user database, time
+  zone, loader cache) and two CPU and memory fact directories under `/sys`. It then makes
+  the root read-only.
+- The writable paths were measured from a real leg. They are the profile's private HOME
+  under `/dev`, a private `/tmp`, a private tmpfs at the leg's working directory, and the
+  subscription credential file, so a token refresh still reaches it. The leg's output
+  still reaches the runtime only through the provider's stdout.
+- The seat-identity probe runs through the same view, adding only its own marker file.
+  Other seats' owner wrappers are unchanged.
+- The change is in the launch wrapper (`panel_invoker.py`), not in an agy route-core
+  file, so this needs no agy requalification of its own. The next release cut's full
+  qualification covers it.
+
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
