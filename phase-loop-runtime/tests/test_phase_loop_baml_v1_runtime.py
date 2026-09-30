@@ -1362,12 +1362,14 @@ def scenario_pool_thread_exit() -> None:
 
 
 def scenario_killpg_leaves_worker() -> None:
-    signal.signal(signal.SIGINT, lambda *_: print("SIGINT", flush=True))
+    got = []
+    signal.signal(signal.SIGINT, lambda *_: got.append(1))  # the runner survives a terminal Ctrl-C here
     spy = _scenario_setup()
     _parse()
     pid = _pid()
     print("READY", pid, flush=True)
     assert sys.stdin.readline().strip() == "go"
+    assert got, "the SIGINT never reached the runner"
     assert not _gone(pid)
     _parse()
     assert _pid() == pid
@@ -1382,10 +1384,13 @@ def test_killpg_sigint_to_the_runner_group_leaves_the_worker():
         _read_tagged(owner, "READY")
         os.killpg(owner.pid, signal.SIGINT)
         time.sleep(0.5)
-        owner.stdin.write("go\n")
-        owner.stdin.flush()
+        try:
+            owner.stdin.write("go\n")
+            owner.stdin.flush()
+        except BrokenPipeError:
+            pass  # the runner already exited; report its status and stderr below
         out, err = owner.communicate(timeout=30)
-        assert owner.returncode == 0, err
+        assert owner.returncode == 0, (owner.returncode, err[-3000:])
         assert "DONE" in out
     finally:
         if owner.poll() is None:
