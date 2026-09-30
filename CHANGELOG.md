@@ -24,7 +24,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **The jailed route is inert in this release.** A jail digest with no recorded
   EC-EXECFIND-2 falsifier pass recorded on this host is refused
   (`seat_sandbox_refused:jail_unqualified`, whose notice names the per-host qualification;
-  passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`) before any
+  passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the digest,
+  the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence file, and
+  re-checked against the built jail at launch) before any
   effect; recording the pass waits on agent-harness#1071. Hosts also need the one-time root
   prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
   runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined`: live probe

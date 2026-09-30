@@ -482,7 +482,11 @@ agent-harness#1071's falsifier-run layout. The digest binds this host's layout, 
 does not carry over from another host, and an OS upgrade that changes `/lib*` or the `/etc`
 subset needs a new pass. Until a pass is recorded, a seat that would be jailed is refused
 with `seat_sandbox_refused:jail_unqualified`, whose notice names that per-host
-qualification as the fix. Gemini stays sealed with
+qualification as the fix. A pass record binds this host, the falsifier-run layout and the
+run's evidence, which is re-hashed on every check. A copied, stale or hand-written record
+does not qualify another host or another run. The operator's own account can still forge
+one, and that is accepted, because the operator is trusted. The store defends against the
+seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
 `gemini_seat_egress_unconfined`: the agy access token carries `cloud-platform` and other
 scopes beyond inference, and under the maintainer's "prove then enable" ruling the seat
 gets tools only once jail egress is limited to agy's inference hosts. Today other Google

@@ -3482,6 +3482,18 @@ def _require_canonical_jail(jail: "_seat_jail.SeatJail") -> None:
                                             "jail is not the qualified profile")
 
 
+def _require_qualified_jail(jail: "_seat_jail.SeatJail",
+                            pass_recorded: "Callable[[str], bool] | None" = None) -> None:
+    """At LAUNCH, re-establish qualification against the jail actually built: it must be the
+    canonical profile, AND that profile's digest must have a recorded pass on this host.
+    The route gate admitted a digest earlier; if the host layout (or anything else) changed
+    in between, the built jail's digest differs and has no pass -- refused, never launched."""
+    _require_canonical_jail(jail)
+    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(_seat_jail.actual_profile_digest(jail)):
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_unqualified"),
+                                            "built jail has no recorded pass on this host")
+
+
 def _require_jailed_seat_identity(prefix: "Sequence[str]", jail: "_seat_jail.SeatJail",
                                   pass_fds: "Sequence[int]" = ()) -> None:
     """J6/J15: launch only on POSITIVE evidence the seat is confined as declared.
@@ -3625,7 +3637,7 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         if not isinstance(probe_owner, _seat_jail.SeatJail):
             raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
                                                 "a jailed launch needs its probe jail")
-        _require_canonical_jail(process_owner)
+        _require_qualified_jail(process_owner)
         _require_jailed_seat_identity(_compose_seat_jail_prefix(probe_owner), probe_owner,
                                       probe_owner.pass_fds)
         kwargs.pop("cwd", None)

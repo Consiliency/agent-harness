@@ -871,8 +871,20 @@ are recorded on agent-harness#1132.
   `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as
   the fix.
   - **Where passes live:** per user and per host, at
-    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`. The record is owned by the
-    euid, not group- or other-writable, and read without following a link.
+    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`. A record qualifies only if it
+    binds all of:
+    - the digest;
+    - this host (sha256 of `/etc/machine-id`);
+    - the EC-EXECFIND-2 falsifier-run layout (none is recognised until the EXECFIND runner
+      lands, so nothing qualifies today);
+    - the run's evidence file, which the gate re-hashes and which must name the same values.
+
+    The record, the evidence and every directory up to the state home must be regular and
+    operator-owned, not group- or other-writable, and not links. They are read non-blocking
+    with size caps, and any failure is the typed refusal.
+  - **Checked at launch:** qualification is re-checked against the jail actually built.
+  - **Threat model:** the operator's own account can forge a record, and is trusted to. The
+    store defends against the seat uid, stale records, other hosts and accidental reuse.
   - **Why per host:** the digest binds the host's layout (maintainer decision, option A).
     A shipped host-independent policy digest plus a first-use self-check is
     agent-harness#1186.

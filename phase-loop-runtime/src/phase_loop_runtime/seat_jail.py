@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import stat
 import struct
 import sys
@@ -1258,31 +1259,121 @@ def jail_pass_dir() -> Path:
     return state_home() / "phase-loop" / "seat-jail-passes"
 
 
-def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None) -> bool:
-    """Has EC-EXECFIND-2's jail-falsifier run passed on this host against exactly this digest?
+# The identity of the EC-EXECFIND-2 falsifier-run layout a pass must come from. It is set
+# when the EXECFIND runner lands (agent-harness#1163/#1164). Until then NO record can
+# qualify a jail, whatever it says: the jailed route stays refused with
+# `seat_sandbox_refused:jail_unqualified`.
+EXECFIND_FALSIFIER_LAYOUT: str | None = None
 
-    The record is ``<jail_pass_dir()>/<digest>.json``, owned by the euid and not writable by
-    group or other, read without following a link. A missing, foreign or malformed record,
-    or one for another digest (a new host, a changed host layout, a changed jail), is no
-    pass: the jailed route is refused with ``seat_sandbox_refused:jail_unqualified``, whose
-    notice names the per-host qualification as the fix. Recording a pass uses
-    agent-harness#1071's falsifier-run layout.
-    """
-    base = root if root is not None else jail_pass_dir()
+PASS_RECORD_SCHEMA = "seat_jail_pass.v1"
+_PASS_RECORD_CAP = 64 * 1024
+_PASS_EVIDENCE_CAP = 16 * 1024 * 1024
+_MACHINE_ID = Path("/etc/machine-id")
+
+
+def host_identity(path: Path = _MACHINE_ID) -> str | None:
+    """sha256 of this host's machine-id (read-only), or None when there is none."""
     try:
-        fd = os.open(base / f"{profile_digest}.json",
-                     os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        raw = path.read_bytes().strip()
+    except OSError:
+        return None
+    return hashlib.sha256(raw).hexdigest() if raw else None
+
+
+def _private_dir(path: Path) -> bool:
+    """A directory the operator alone controls: not a link, owned by the euid, and not
+    group- or other-writable."""
+    try:
+        info = os.lstat(path)
     except OSError:
         return False
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+            and not stat.S_IMODE(info.st_mode) & 0o022)
+
+
+def _read_private_file(directory: Path, name: str, cap: int) -> bytes | None:
+    """Read ``directory/name`` safely or not at all: no link, no block on a FIFO or device,
+    a regular file owned by the euid, not group/other-writable, within ``cap``."""
+    if "/" in name or name in ("", ".", ".."):
+        return None
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd = os.open(directory / name, flags)
+    except OSError:
+        return None
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > 64 * 1024):
-            return False
-        document = json.loads(os.read(fd, 64 * 1024))
-    except (OSError, ValueError):
-        return False
+                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > cap):
+            return None
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > cap:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
     finally:
         os.close(fd)
-    return (isinstance(document, dict) and document.get("profile_digest") == profile_digest
-            and document.get("result") == "pass")
+
+
+def _parse_json(data: bytes | None) -> object:
+    if data is None:
+        return None
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError, MemoryError, UnicodeDecodeError):
+        return None
+
+
+def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
+                           layout: str | None = None, host: str | None = None) -> bool:
+    """Is there a qualification of exactly this jail on THIS host from the EC-EXECFIND-2
+    falsifier run? Every rejection is a plain ``False`` -- the route then refuses with
+    ``seat_sandbox_refused:jail_unqualified`` -- and nothing here blocks or raises.
+
+    The record ``<jail_pass_dir()>/<digest>.json`` must bind all of:
+    - the jail's profile digest;
+    - this host (sha256 of ``/etc/machine-id``), so a copied record does not qualify
+      another host;
+    - the falsifier-run layout (:data:`EXECFIND_FALSIFIER_LAYOUT`), so no record qualifies
+      before the EXECFIND runner exists;
+    - the run's evidence: a file in the same directory whose sha256 the record names, and
+      which itself names the same digest, host, layout and a pass. The gate re-hashes it.
+
+    The pass directory and its parents up to the state home must be real directories the
+    operator alone controls. Threat model: the operator's own account can forge a record,
+    and is trusted to; the store defends against the seat uid (which cannot reach this
+    directory, and whose files are refused by owner), stale records, other hosts, and
+    accidental reuse.
+    """
+    layout = layout if layout is not None else EXECFIND_FALSIFIER_LAYOUT
+    host = host if host is not None else host_identity()
+    if not layout or not host or not re.fullmatch(r"[0-9a-f]{64}", profile_digest or ""):
+        return False
+    base = root if root is not None else jail_pass_dir()
+    chain = [base] if root is not None else [state_home(), state_home() / "phase-loop", base]
+    if not all(_private_dir(directory) for directory in chain):
+        return False
+    record = _parse_json(_read_private_file(base, f"{profile_digest}.json", _PASS_RECORD_CAP))
+    if not isinstance(record, dict):
+        return False
+    bound = {"schema": PASS_RECORD_SCHEMA, "profile_digest": profile_digest, "result": "pass",
+             "host_identity": host, "falsifier_layout": layout}
+    if any(record.get(key) != value for key, value in bound.items()):
+        return False
+    evidence_name, evidence_sha = record.get("evidence"), record.get("evidence_sha256")
+    if not isinstance(evidence_name, str) or not isinstance(evidence_sha, str):
+        return False
+    evidence_bytes = _read_private_file(base, evidence_name, _PASS_EVIDENCE_CAP)
+    if evidence_bytes is None or hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha:
+        return False
+    evidence = _parse_json(evidence_bytes)
+    return isinstance(evidence, dict) and all(
+        evidence.get(key) == value for key, value in bound.items() if key != "schema")

@@ -172,64 +172,164 @@ def test_non_production_routes_decide_nothing():
     assert panel_invoker._seat_route_for_spawn("claude", _auth(True), eligible=False) == (None, [], None)
 
 
-def test_execfind_pass_record_is_keyed_by_the_exact_digest(tmp_path):
+LAYOUT = "execfind-layout-test"
+HOST = "a" * 64
+
+
+def _write_pass(directory: Path, digest: str, *, host: str = HOST, layout: str = LAYOUT,
+                evidence: dict | None = None) -> None:
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
+    body = evidence if evidence is not None else {
+        "profile_digest": digest, "result": "pass", "host_identity": host,
+        "falsifier_layout": layout, "falsifiers": ["J1", "J14"]}
+    raw = json.dumps(body).encode()
+    (directory / f"{digest}.evidence.json").write_bytes(raw)
+    (directory / f"{digest}.evidence.json").chmod(0o600)
+    record = {"schema": seat_jail.PASS_RECORD_SCHEMA, "profile_digest": digest, "result": "pass",
+              "host_identity": host, "falsifier_layout": layout,
+              "evidence": f"{digest}.evidence.json",
+              "evidence_sha256": __import__("hashlib").sha256(raw).hexdigest()}
+    (directory / f"{digest}.json").write_text(json.dumps(record))
+    (directory / f"{digest}.json").chmod(0o600)
+
+
+def _qualified(directory: Path, digest: str, **kw) -> bool:
+    return seat_jail.execfind_pass_recorded(digest, root=directory, layout=kw.get("layout", LAYOUT),
+                                            host=kw.get("host", HOST))
+
+
+def test_a_complete_bound_record_qualifies_exactly_its_digest(tmp_path):
     digest = seat_jail.jail_profile_digest("claude")
-    assert seat_jail.execfind_pass_recorded(digest, root=tmp_path) is False
-    (tmp_path / f"{digest}.json").write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
+    _write_pass(tmp_path, digest)
+    assert _qualified(tmp_path, digest) is True
+    assert _qualified(tmp_path, "0" * 64) is False
+
+
+def test_no_record_qualifies_before_the_execfind_runner_exists(tmp_path):
+    """Until the falsifier-run layout is known (agent-harness#1163/#1164), nothing qualifies."""
+    digest = seat_jail.jail_profile_digest("claude")
+    _write_pass(tmp_path, digest)
+    assert seat_jail.EXECFIND_FALSIFIER_LAYOUT is None
+    assert seat_jail.execfind_pass_recorded(digest, root=tmp_path, host=HOST) is False
+
+
+def test_codex_r4_a_hand_written_pass_without_evidence_is_no_pass(tmp_path):
+    """Round 4 (codex): an owner-written 0600 record with the digest and `result: pass`
+    admitted the route. Without the evidence it names, re-hashed, it does not."""
+    digest = seat_jail.jail_profile_digest("claude")
+    tmp_path.chmod(0o700)
+    (tmp_path / f"{digest}.json").write_text(json.dumps({
+        "schema": seat_jail.PASS_RECORD_SCHEMA, "profile_digest": digest, "result": "pass",
+        "host_identity": HOST, "falsifier_layout": LAYOUT}))
     (tmp_path / f"{digest}.json").chmod(0o600)
-    assert seat_jail.execfind_pass_recorded(digest, root=tmp_path) is True
-    other = "0" * 64
-    (tmp_path / f"{other}.json").write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
-    (tmp_path / f"{other}.json").chmod(0o600)
-    assert seat_jail.execfind_pass_recorded(other, root=tmp_path) is False
+    assert _qualified(tmp_path, digest) is False
 
 
-def test_host_passes_live_in_per_user_state_not_package_data(tmp_path, monkeypatch):
-    """Maintainer decision (option A): passes are per host, keyed by digest, in
-    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`."""
+def test_codex_r4_another_hosts_record_is_no_pass(tmp_path):
+    digest = seat_jail.jail_profile_digest("claude")
+    _write_pass(tmp_path, digest, host="b" * 64)          # recorded on another host
+    assert _qualified(tmp_path, digest) is False
+
+
+def test_codex_r4_a_stale_record_is_no_pass(tmp_path):
+    digest = seat_jail.jail_profile_digest("claude")
+    _write_pass(tmp_path, digest)
+    evidence = tmp_path / f"{digest}.evidence.json"
+    evidence.chmod(0o600)
+    evidence.write_text(evidence.read_text().replace('"J14"', '"J14", "edited"'))
+    assert _qualified(tmp_path, digest) is False            # evidence no longer hashes
+    _write_pass(tmp_path, digest, layout="older-layout")
+    assert _qualified(tmp_path, digest) is False            # recorded by another layout
+
+
+def test_codex_r4_accidental_reuse_of_a_copied_record_is_no_pass(tmp_path):
+    digest = seat_jail.jail_profile_digest("claude")
+    _write_pass(tmp_path / "a", digest)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir(mode=0o700)
+    (fresh / f"{digest}.json").write_bytes((tmp_path / "a" / f"{digest}.json").read_bytes())
+    (fresh / f"{digest}.json").chmod(0o600)
+    assert _qualified(fresh, digest) is False               # the evidence did not come with it
+
+
+def test_codex_r4_a_seat_owned_record_is_no_pass(tmp_path, monkeypatch):
+    """The seat uid is not the operator: a record it owned would be refused by owner."""
+    digest = seat_jail.jail_profile_digest("claude")
+    _write_pass(tmp_path, digest)
+    real = seat_jail.os.geteuid
+    monkeypatch.setattr(seat_jail.os, "geteuid", lambda: real() + 200000)
+    assert _qualified(tmp_path, digest) is False
+
+
+@pytest.mark.parametrize("parent", ["symlink", "group-writable"])
+def test_codex_r4_an_unsafe_parent_directory_is_no_pass(tmp_path, monkeypatch, parent):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     digest = seat_jail.jail_profile_digest("claude")
+    (tmp_path / "state").mkdir(mode=0o700)
+    real = tmp_path / "elsewhere"
+    _write_pass(real, digest)
+    if parent == "symlink":
+        (tmp_path / "state" / "phase-loop").mkdir(mode=0o700)
+        (tmp_path / "state" / "phase-loop" / "seat-jail-passes").symlink_to(real)
+    else:
+        _write_pass(seat_jail.jail_pass_dir(), digest)
+        (tmp_path / "state" / "phase-loop").chmod(0o770)
+    assert seat_jail.execfind_pass_recorded(digest, layout=LAYOUT, host=HOST) is False
+
+
+def test_the_default_store_is_per_user_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "state").mkdir(mode=0o700)
+    digest = seat_jail.jail_profile_digest("claude")
     assert seat_jail.jail_pass_dir() == tmp_path / "state" / "phase-loop" / "seat-jail-passes"
-    assert seat_jail.execfind_pass_recorded(digest) is False
-    seat_jail.jail_pass_dir().mkdir(parents=True)
-    record = seat_jail.jail_pass_dir() / f"{digest}.json"
-    record.write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
-    record.chmod(0o600)
-    assert seat_jail.execfind_pass_recorded(digest) is True
+    (tmp_path / "state" / "phase-loop").mkdir(mode=0o700)
+    _write_pass(seat_jail.jail_pass_dir(), digest)
+    assert seat_jail.execfind_pass_recorded(digest, layout=LAYOUT, host=HOST) is True
     assert not (Path(seat_jail.__file__).parent / "seat_jail_passes").exists()
 
 
-@pytest.mark.parametrize("shape", ["group-writable", "symlink", "failed-run"])
-def test_a_foreign_or_unsafe_pass_record_is_no_pass(tmp_path, shape):
+@pytest.mark.parametrize("shape", ["fifo", "nested-json-bomb", "oversized", "directory"])
+def test_codex_r4_unsafe_records_give_a_typed_refusal_in_bounded_time(tmp_path, shape):
+    import time
+
     digest = seat_jail.jail_profile_digest("claude")
-    real = tmp_path / "real.json"
-    real.write_text(json.dumps({"profile_digest": digest,
-                                "result": "fail" if shape == "failed-run" else "pass"}))
-    real.chmod(0o664 if shape == "group-writable" else 0o600)
-    if shape == "symlink":
-        (tmp_path / f"{digest}.json").symlink_to(real)
+    tmp_path.chmod(0o700)
+    target = tmp_path / f"{digest}.json"
+    if shape == "fifo":
+        os.mkfifo(target, 0o600)
+    elif shape == "nested-json-bomb":
+        target.write_text("[" * 3000 + "]" * 3000)
+        target.chmod(0o600)
+    elif shape == "oversized":
+        target.write_bytes(b" " * (seat_jail._PASS_RECORD_CAP + 1))
+        target.chmod(0o600)
     else:
-        real.rename(tmp_path / f"{digest}.json")
-    assert seat_jail.execfind_pass_recorded(digest, root=tmp_path) is False
+        target.mkdir(mode=0o700)
+    started = time.monotonic()
+    route, _, refusal = panel_invoker._seat_route_for_spawn(
+        "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True),
+        pass_recorded=lambda d: _qualified(tmp_path, d))
+    assert refusal == "seat_sandbox_refused:jail_unqualified"
+    assert time.monotonic() - started < 5
 
 
-def test_a_host_layout_change_invalidates_the_recorded_pass(tmp_path, monkeypatch):
-    """The digest binds this host's layout: a pass recorded before `/etc` changed does not
-    match the jail after it, so the launch fails closed with the jail_unqualified notice."""
-    digest = seat_jail.jail_profile_digest("claude")
-    (tmp_path / f"{digest}.json").write_text(json.dumps({"profile_digest": digest, "result": "pass"}))
-    (tmp_path / f"{digest}.json").chmod(0o600)
+def test_codex_r4_a_digest_change_between_gate_and_launch_is_refused(tmp_path, monkeypatch):
+    """Round 4 (codex): the gate admitted digest A, then the host layout changed and the jail
+    was built with digest B. The launch re-checks qualification against the BUILT jail."""
+    admitted = seat_jail.jail_profile_digest("claude")
     monkeypatch.setattr(seat_jail, "ETC_READONLY_SUBSET", seat_jail.ETC_READONLY_SUBSET + ("pl-new",))
     real_lexists = os.path.lexists
     monkeypatch.setattr(seat_jail.os.path, "lexists",
                         lambda p: True if str(p) == "/etc/pl-new" else real_lexists(p))
-    changed = seat_jail.jail_profile_digest("claude")
-    assert changed != digest
-    route, _, refusal = panel_invoker._seat_route_for_spawn(
-        "claude", _auth(True), eligible=True,
-        decide=lambda leg, **k: seat_jail.SeatRoute(True),
-        pass_recorded=lambda d: seat_jail.execfind_pass_recorded(d, root=tmp_path))
-    assert refusal == "seat_sandbox_refused:jail_unqualified"
+    jail = _fake_jail(tmp_path)
+    try:
+        assert jail.profile_digest != admitted
+        with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+            panel_invoker._require_qualified_jail(jail, pass_recorded=lambda d: d == admitted)
+    finally:
+        seat_jail.close_jail_fds(jail)
+    assert refused.value.code == "seat_sandbox_refused:jail_unqualified"
 
 
 def test_the_built_jail_reproduces_the_canonical_digest(tmp_path):

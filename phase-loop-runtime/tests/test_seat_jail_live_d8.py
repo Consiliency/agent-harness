@@ -381,3 +381,21 @@ def test_r2_seccomp_descriptor_must_be_at_offset_zero(tmp_path):
         _os.lseek(jail.seccomp_fd, 8, _os.SEEK_SET)
         with pytest.raises(seat_jail.SeatSandboxRefused):
             pi._require_canonical_jail(jail)
+
+
+def test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass(tmp_path):
+    """Round 4 threat model, the seat uid: a pass record (and its evidence) chowned to a real
+    subordinate seat uid is refused by owner, even though its content is valid."""
+    from .test_seat_sandbox_permissions import HOST, LAYOUT, _write_pass
+
+    digest = seat_jail.jail_profile_digest("claude")
+    store = tmp_path / "passes"
+    _write_pass(store, digest)
+    assert seat_jail.execfind_pass_recorded(digest, root=store, layout=LAYOUT, host=HOST)
+    with seat_uid.mapped_namespace() as pid:
+        done = subprocess.run(["/usr/bin/nsenter", "-t", str(pid), "-U", "-m",
+                               "--preserve-credentials", "/bin/chown", "3:3",
+                               str(store / f"{digest}.json")], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert os.stat(store / f"{digest}.json").st_uid == seat_uid.subordinate_host_uid(3)
+    assert seat_jail.execfind_pass_recorded(digest, root=store, layout=LAYOUT, host=HOST) is False
