@@ -319,9 +319,14 @@ def _deadline() -> float:
 
 
 def _isolated(name: str, *, timeout: float = 180.0, env: dict | None = None) -> str:
-    """Run ``scenario_<name>`` from this module in a fresh interpreter; it must exit 0."""
+    """Run ``scenario_<name>`` from this module in a fresh interpreter; it must exit 0.
+
+    Every scenario interpreter re-installs Python's SIGINT handler first: a
+    parent started as a background job (``cmd &`` without job control) passes
+    SIGINT down IGNORED, and Python then never installs ``default_int_handler``,
+    so SIGINT-driven scenarios would silently receive nothing."""
     code = (
-        "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(); "
+        "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(); "
         "sys.stdout.flush(); import os; os._exit(0)" % (str(TESTS), str(SRC), MODULE, name)
     )
     proc = subprocess.run(
@@ -1284,7 +1289,7 @@ def test_worker_fault_scenario(name):
 
 def _scenario_proc(name: str, *args: str, new_session: bool = False) -> subprocess.Popen:
     code = (
-        "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(*sys.argv[1:])"
+        "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(*sys.argv[1:])"
         % (str(TESTS), str(SRC), MODULE, name)
     )
     return subprocess.Popen(
@@ -1571,7 +1576,7 @@ def test_worker_is_gone_after_owner_exit_with_a_non_exec_fork_child(mode, no_pde
 @needs_posix
 def test_fork_after_use_is_typed_and_touches_nothing(tmp_path):
     code = (
-        "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_fork_after_use(%r)"
+        "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_fork_after_use(%r)"
         % (str(TESTS), str(SRC), MODULE, str(tmp_path / "child-calls"))
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(TESTS.parent))
@@ -1695,7 +1700,7 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
 @needs_linux
 def test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn(tmp_path):
     code = (
-        "import sys; sys.path[:0] = [%r, %r]; import %s as t; "
+        "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; "
         "t.scenario_launch_path_with_live_worker_and_stalled_spawn(%r)" % (str(TESTS), str(SRC), MODULE, str(tmp_path))
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180, cwd=str(TESTS.parent))
@@ -1964,7 +1969,7 @@ FULL_SWEEP_ENV = "PHASE_LOOP_BAML_FULL_SWEEP"
 @pytest.mark.parametrize("variant", ["normal", "mid_op", "cold", "stalled_spawn"])
 def test_i1_boundary_sweep(variant, exc_name):
     """I1(a): inject at every instruction boundary of the calling-thread path."""
-    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_sweep(%r, %r)" % (
+    code = "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_sweep(%r, %r)" % (
         str(TESTS), str(SRC), MODULE, variant, exc_name,
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=1500, cwd=str(TESTS.parent))
@@ -2053,7 +2058,7 @@ def scenario_i1_subset(exc_name: str) -> None:
 @pytest.mark.parametrize("exc_name", sorted(_EXCEPTIONS))
 def test_i1_boundary_subset(exc_name):
     """I1(a) in PR CI: the fixed regression boundaries, each with the full I1 checks."""
-    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_subset(%r)" % (
+    code = "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_subset(%r)" % (
         str(TESTS), str(SRC), MODULE, exc_name,
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600, cwd=str(TESTS.parent))
@@ -2150,7 +2155,7 @@ def scenario_i1_double_injection(mode: str) -> None:
 @needs_posix
 @pytest.mark.parametrize("mode", [pytest.param("monitoring", marks=pytest.mark.skipif(not PY312, reason="sys.monitoring is 3.12+")), "seam"])
 def test_i1_double_injection(mode):
-    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_double_injection(%r)" % (
+    code = "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_i1_double_injection(%r)" % (
         str(TESTS), str(SRC), MODULE, mode,
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120, cwd=str(TESTS.parent))
@@ -2237,7 +2242,7 @@ def scenario_i1_never_calls_again(variant: str) -> None:
 @pytest.mark.parametrize("name,arg", [("i1_real_signals", None), ("i1_never_calls_again", "d1"), ("i1_never_calls_again", "d2")])
 def test_i1_signals_and_abandonment(name, arg):
     args = "" if arg is None else repr(arg)
-    code = "import sys; sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(%s)" % (str(TESTS), str(SRC), MODULE, name, args)
+    code = "import signal, sys; signal.signal(signal.SIGINT, signal.default_int_handler); sys.path[:0] = [%r, %r]; import %s as t; t.scenario_%s(%s)" % (str(TESTS), str(SRC), MODULE, name, args)
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180, cwd=str(TESTS.parent))
     assert proc.returncode == 0, proc.stderr[-4000:]
 
