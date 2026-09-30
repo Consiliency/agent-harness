@@ -105,8 +105,8 @@ MUTATIONS: list[dict[str, object]] = [
      "new": "        if leg not in JAILED_LEGS:\n            return SeatRoute(False, \"gemini_seat_profile_unqualified\")\n        if not (gemini_credential_present or gemini_operator_credential_present)():\n            return SeatRoute(False, \"gemini_seat_credential_missing\")\n",
      "nodes": [f"{T_PERM}::test_j7_step3_credential_before_qualification_for_gemini"]},
     {"id": "EXECFIND-carry-unrecorded-digest", "file": PI,
-     "old": "    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(",
-     "new": "    if False and not (pass_recorded or _seat_jail.execfind_pass_recorded)(",
+     "old": "    if not (pass_recorded or _seat_jail.execfind_pass_recorded)(\n            _seat_jail.jail_profile_digest(leg)):",
+     "new": "    if False and not (pass_recorded or _seat_jail.execfind_pass_recorded)(\n            _seat_jail.jail_profile_digest(leg)):",
      "nodes": [f"{T_PERM}::test_execfind_gate_refuses_an_unrecorded_digest_before_any_effect",
                f"{T_NOTE}::test_jailed_route_without_an_execfind_pass_is_refused_with_zero_launches"]},
     {"id": "keyring-shim-skipped", "file": SK,
@@ -252,9 +252,14 @@ def _run(nodes: list[str]) -> dict[str, object]:
     cache = tempfile.mkdtemp(prefix="seat-jail-mutation-pyc-")
     env = {**os.environ, "PYTHONPATH": str(RUNTIME / "src"), "PYTHONPYCACHEPREFIX": cache,
            "PYTHONDONTWRITEBYTECODE": "1"}
-    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                           "-o", "addopts=", *nodes], cwd=RUNTIME, env=env,
-                          capture_output=True, text=True, timeout=900)
+    try:
+        done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                               "-o", "addopts=", *nodes], cwd=RUNTIME, env=env,
+                              capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        # A mutation that makes the falsifier HANG (e.g. a blocking open on a FIFO) has not
+        # passed it: record it as red, with the reason.
+        return {"returncode": "timeout", "summary": "falsifier did not complete within 300 s"}
     tail = [line for line in done.stdout.splitlines() if line.strip()][-1:] or [""]
     return {"returncode": done.returncode, "summary": tail[0]}
 
@@ -285,7 +290,7 @@ def main() -> int:
             path.write_bytes(original)
         if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise SystemExit(f"{mutation['id']}: restore failed")
-        ok = control["returncode"] == 0 and mutated["returncode"] != 0
+        ok = control["returncode"] == 0 and mutated["returncode"] not in (0,)
         if not ok:
             survived.append(mutation["id"])
         receipts.append({

@@ -393,6 +393,8 @@ def test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass(tmp_path):
     _write_pass(store, digest)
     assert seat_jail.execfind_pass_recorded(digest, root=store, layout=LAYOUT, host=HOST)
     with seat_uid.mapped_namespace() as pid:
+        # World-readable (0644), so the operator CAN read it: only the owner check refuses.
+        (store / f"{digest}.json").chmod(0o644)
         done = subprocess.run(["/usr/bin/nsenter", "-t", str(pid), "-U", "-m",
                                "--preserve-credentials", "/bin/chown", "3:3",
                                str(store / f"{digest}.json")], capture_output=True, text=True)
