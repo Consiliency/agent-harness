@@ -10068,6 +10068,25 @@
           ],
           "landed": null,
           "landed_note": "appended as exactly one separate landed entry after EXECFIND SL-2 merges, naming authorization_id agent-harness#1164:EXECFIND-SL2:EXECFIND: the file's blob at the merge's first parent (the old blob) and at the merge (the new blob), and the merge commit. It is accepted only as a chain link, as for agent-harness#1145's entries: the landed entry pairs with exactly this authorization; the old blob equals both the frozen blob and the blob at the merge's first parent; links are followed by blob and ancestry, never by manifest order. This entry is never mutated once on main."
+        },
+        {
+          "authorization_id": "agent-harness#1164:EXECFIND-SL2:EXECFIND",
+          "entry": "landed",
+          "issue": "Consiliency/agent-harness#1164",
+          "merge_commit": "35702d13bb7ca8dbb47cdfc436938635264766b1",
+          "merge_first_parent": "c89c61abba397546c7b99fabcd33c558a9253fbb",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_governed_review.py",
+              "nodes": [
+                "ExecfindFindingTests::test_degraded_leg_whole_code"
+              ],
+              "old_blob": "4e2aa19a687e84d0b3f015a465115de65902db7f",
+              "new_blob": "71cd3ee18255e83e3c659ec15a90e310331393dc"
+            }
+          ],
+          "advisory_receipt_refreeze_base": "061a84e99d4cd1d6bc53a029438c936203caa2f8",
+          "note": "old_blob equals the authorization's base_blob and the path's blob at the merge's first parent; new_blob equals the path's blob at the merge. Appended once after the merge; never mutated."
         }
       ]
     },
