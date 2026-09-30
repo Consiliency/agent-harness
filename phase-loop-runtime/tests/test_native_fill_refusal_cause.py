@@ -76,3 +76,36 @@ def test_deferred_seat_still_binds():
     seat = _seat()
     (bound,) = pi.apply_native_leg_fills([_deferred_leg(seat)], [_fill(pi.NativeLegFill, seat)])
     assert bound.status == "OK" and bound.detail == pi.NATIVE_FILL_DETAIL
+
+
+def test_cli_reports_a_binding_refusal_as_a_native_fill_refusal(tmp_path, monkeypatch):
+    """The operator surface: a refusal raised at binding is not relabeled as an artifact-staging
+    failure; it prints the typed reason and the seat's real outcome."""
+    import json
+    from pathlib import Path
+
+    from test_advisor_board_advisory_cli_802 import _BUNDLE, _Run, _repo_root
+
+    bundle = tmp_path / "bundle.md"
+    bundle.write_text(_BUNDLE, encoding="utf-8")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.chdir(_repo_root())
+    fill_dir = tmp_path / "fills"
+    rc, out, err = _Run(monkeypatch)(
+        ["advisor-board", str(bundle), "--emit-native-request", "--native-fill-dir", str(fill_dir), "--json"])
+    assert rc == 0, err
+    request = json.loads(out)
+    request_dir = Path(request["request_path"]).parent
+    (request_dir / pi.NATIVE_FILL_REVIEW_FILE).write_text("Reviewed.\nAGREE\n", encoding="utf-8")
+
+    run = _Run(monkeypatch)
+    detail = f"seat {request['seat_key']} did not defer as under_claude_code with a fill request: the seat returned DEGRADED ({FLOOR})"
+
+    def refuse(board, artifact, **kwargs):
+        raise pi.NativeFillRefusalError(pi.NativeFillRefusal(pi.NATIVE_FILL_SEAT_NOT_DEFERRED, detail, request["seat_key"]))
+
+    monkeypatch.setattr(pi, "invoke_board", refuse)
+    rc, _out, err = run(["advisor-board", str(bundle), "--native-leg", f"claude={request_dir}", "--json"])
+    assert rc == 2
+    assert f"native fill refused [{pi.NATIVE_FILL_SEAT_NOT_DEFERRED}]" in err and FLOOR in err
+    assert "could not stage the artifact" not in err
