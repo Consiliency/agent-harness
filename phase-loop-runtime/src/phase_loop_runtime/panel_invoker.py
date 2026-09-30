@@ -5675,6 +5675,42 @@ def _latest_claude_pending_tool_uses(cwd: str, *, since: float) -> tuple[str, ..
     return ()
 
 
+def _claude_exact_tool_diagnostic(path: Path | None) -> str:
+    if path is None:
+        return "tool_progress=unknown"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return "tool_progress=unknown"
+    uses: set[str] = set()
+    results: set[str] = set()
+    last_assistant = -1
+    last_result = -1
+    for index, line in enumerate(lines):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "assistant":
+            last_assistant = index
+        message = event.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+                uses.add(block["id"])
+            elif block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str):
+                results.add(block["tool_use_id"])
+                last_result = index
+    completed = len(uses & results)
+    after = str(last_result >= 0 and last_assistant > last_result).lower()
+    return f"completed_tools={completed} pending_tools={len(uses - results)} assistant_after_tools={after}"
+
+
 def _read_review_output(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()
@@ -6366,6 +6402,7 @@ def _run_claude_tui_session(
                 f"elapsed_s={finished_at - start_monotonic:.1f} "
                 f"last_progress_age_s={finished_at - last_heartbeat:.1f} "
                 f"child_running={str(proc is not None and proc.poll() is None).lower()}"
+                f" {_claude_exact_tool_diagnostic(broker_transcript_path)}"
             )
             tail = diagnostic + (f"; {tail}" if tail else "")
         # The marker is ours (provenance by type for the detail prefix, agent-harness#1102).
