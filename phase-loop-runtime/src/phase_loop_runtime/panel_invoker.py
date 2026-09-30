@@ -5046,7 +5046,13 @@ def _cleanup_claude_launch_timeout(
 
 
 def _claude_project_dir_for_cwd(cwd: str) -> Path:
-    slug = re.sub(r"[^A-Za-z0-9.-]", "-", cwd)
+    # Claude Code names a project's transcript dir by replacing EVERY character outside
+    # [A-Za-z0-9-] with "-" -- dots included: `/home/u/.cache/x` is `-home-u--cache-x`.
+    # Keeping the dot was invisible while every seat cwd lived under `/tmp`; with the
+    # stage under `~/.cache` (agent-harness#1147) it pointed the adapter at a directory
+    # that never exists, so a seat's finished review was never observed and the brokered
+    # Claude seat looked hung until cancelled.
+    slug = re.sub(r"[^A-Za-z0-9-]", "-", cwd)
     return Path.home() / ".claude" / "projects" / slug
 
 

@@ -43,6 +43,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   temp-dir root, so sandboxes left in `/tmp` by earlier releases are still reclaimed. A
   round's scratch dir is removed with the mode-restoring helper, so a read-only directory
   left by a panelist no longer leaks it.
+- **Claude transcript lookup.** The adapter now derives a seat's Claude transcript dir with
+  Claude Code's own rule: every character outside `[A-Za-z0-9-]` becomes `-`, dots
+  included. It used to keep dots. That was harmless under `/tmp`, but under `~/.cache` the
+  adapter looked in a directory that never exists, so a brokered Claude seat's progress and
+  finished review went unseen and the seat hung until cancelled.
 - **agy requalification.** `panel_invoker.py`, `sandbox_policy.py`, `sandbox_retention.py`
   and `harness_env_signatures.py` changed, so the agy pin set drifts: the next release cut
   requalifies agy.

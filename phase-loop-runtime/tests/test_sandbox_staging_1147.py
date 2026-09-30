@@ -689,3 +689,33 @@ class TestLegacyRootIsSwept:
 
         assert not stale_old.exists(), "a pre-#1147 /tmp staging root was stranded"
         assert not stale_new.exists(), "the current staging root is not swept"
+
+
+class TestClaudeSeatObservesItsTranscript:
+    """With the stage under `~/.cache`, a Claude seat's cwd contains a dot. Claude Code
+    names the transcript dir by mapping every character outside [A-Za-z0-9-] to "-"
+    (observed: `/home/u/.cache/x/pl-panel-a_b/out` -> `-home-u--cache-x-pl-panel-a-b-out`).
+    The adapter kept the dot, looked in a directory that never exists, never saw the
+    seat's progress or its finished review, and the brokered seat hung until cancelled."""
+
+    def test_progress_and_the_review_are_found_under_a_dotted_cwd(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from phase_loop_runtime import panel_invoker
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(panel_invoker.Path, "home", classmethod(lambda cls: tmp_path))
+        cwd = f"{tmp_path}/.cache/phase-loop/sandboxes/pl-panel-a_b.c/out"
+        slug = cwd.replace("/", "-").replace(".", "-").replace("_", "-")
+        project = tmp_path / ".claude" / "projects" / slug
+        project.mkdir(parents=True)
+        (project / "11111111-2222-4333-8444-555555555555.jsonl").write_text(
+            _json.dumps({"type": "assistant", "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "REVIEW BODY\nAGREE"}],
+            }}) + "\n",
+            encoding="utf-8",
+        )
+
+        assert panel_invoker._claude_project_dir_for_cwd(cwd) == project
+        assert panel_invoker._latest_claude_transcript_activity(cwd, since=0) > 0
+        assert "REVIEW BODY" in panel_invoker._latest_claude_transcript_text(cwd, since=0)
