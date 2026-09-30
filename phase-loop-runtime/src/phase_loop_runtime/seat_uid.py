@@ -474,10 +474,15 @@ def run_in_h(holder_pid: int, verb: str, *args: str, timeout_s: float = 60.0) ->
 @contextlib.contextmanager
 def mapped_namespace() -> Iterator[int]:
     """A fresh user namespace mapped like H, for ``reap``: yields its holder pid."""
+    from .sandbox_egress import _wait_for_new_user_namespace
+
     holder = subprocess.Popen(["/usr/bin/unshare", "--user", "--mount", "/bin/sh", "-c",
                                "read -r _gate; exec sleep 600"],
                               stdin=subprocess.PIPE, env={"PATH": "/usr/bin:/bin"})
     try:
+        # Board round 1 (codex): the map can only be written once the holder IS in its new
+        # user namespace; `Popen` returns before `unshare` has made the call.
+        _wait_for_new_user_namespace(holder)
         map_holder(holder.pid)
         yield holder.pid
     finally:

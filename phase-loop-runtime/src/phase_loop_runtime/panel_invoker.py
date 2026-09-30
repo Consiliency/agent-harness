@@ -3471,6 +3471,16 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
     ]
 
 
+def _require_canonical_jail(jail: "_seat_jail.SeatJail") -> None:
+    """The jail about to run must BE the qualified profile: the digest of its actual owner
+    argv and the bytes actually in its seccomp memfd must equal the canonical digest -- the
+    one EC-EXECFIND-2's pass is recorded against. An added bind, a dropped flag or a
+    different filter is a mismatch, refused with `seat_sandbox_refused:identity`."""
+    if _seat_jail.actual_profile_digest(jail) != _seat_jail.jail_profile_digest(jail.leg):
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
+                                            "jail is not the qualified profile")
+
+
 def _require_jailed_seat_identity(prefix: "Sequence[str]", jail: "_seat_jail.SeatJail",
                                   pass_fds: "Sequence[int]" = ()) -> None:
     """J6/J15: launch only on POSITIVE evidence the seat is confined as declared.
@@ -3483,8 +3493,7 @@ def _require_jailed_seat_identity(prefix: "Sequence[str]", jail: "_seat_jail.Sea
     ``seat_sandbox_refused:identity`` and zero provider launches.
     """
     identity = _seat_jail.refused("identity")
-    if jail.filter_digest != _seat_jail.production_filter_digest():
-        raise _seat_jail.SeatSandboxRefused(identity, "seat filter is not the production filter")
+    _require_canonical_jail(jail)
     with _seat_probe_marker() as marker:
         try:
             seen = subprocess.run(
@@ -3615,6 +3624,7 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         if not isinstance(probe_owner, _seat_jail.SeatJail):
             raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
                                                 "a jailed launch needs its probe jail")
+        _require_canonical_jail(process_owner)
         _require_jailed_seat_identity(_compose_seat_jail_prefix(probe_owner), probe_owner,
                                       probe_owner.pass_fds)
         kwargs.pop("cwd", None)
@@ -6519,6 +6529,10 @@ def _run_claude_tui_session(
     except Exception as exc:
         if master_fd is not None:
             os.close(master_fd)
+        if type(exc) is _seat_jail.SeatSandboxRefused:
+            # A jailed launch's pre-launch refusal keeps its ONE code (J7/J13), never the
+            # generic launch-error template.
+            return 1, "", _HarnessCode(exc.code), ""
         return 1, "", f"claude_tui_launch_error:{type(exc).__name__}", ""
 
     try:
@@ -7849,7 +7863,7 @@ def _exec_jailed_claude_leg(
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
                                          sandboxed=jail)
-    snapshots = Path(tempfile.mkdtemp(prefix="pl-seat-snapshot-"))
+    snapshots = Path(tempfile.mkdtemp(prefix="pl-seat-snapshot-"))  # 0700, parent-owned
     transcript_snapshot = snapshots / "transcript.jsonl"
     output_snapshot = snapshots / _seat_jail.CLAUDE_OUTPUT_NAME
     transcript_rel = str(_claude_project_dir_for_cwd(
@@ -7867,15 +7881,29 @@ def _exec_jailed_claude_leg(
             unsafe.append(relpath)
             return b""
 
+    token_seen: list[bool] = []
+
     def _refresh_transcript() -> None:
         data = _read(home, transcript_rel, _seat_jail.TRANSCRIPT_READ_CAP_BYTES)
+        # SCAN BEFORE ANY PARENT-SIDE COPY: a transcript carrying the seat token is never
+        # written to a parent-owned file, so no crash can leave the token outside the
+        # seat's own (retained, reapable) directories.
+        if _seat_jail.contains_secret(data, seat.token):
+            token_seen.append(True)
+            data = b""
         temporary = transcript_snapshot.with_suffix(".tmp")
-        temporary.write_bytes(data)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+                     | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
         os.replace(temporary, transcript_snapshot)
 
     def _read_output() -> str:
-        return _read(out, _seat_jail.CLAUDE_OUTPUT_NAME,
-                     _seat_jail.OUTPUT_READ_CAP_BYTES).decode("utf-8", errors="replace")
+        data = _read(out, _seat_jail.CLAUDE_OUTPUT_NAME, _seat_jail.OUTPUT_READ_CAP_BYTES)
+        if _seat_jail.contains_secret(data, seat.token):
+            token_seen.append(True)
+            return ""
+        return data.decode("utf-8", errors="replace")
 
     _record_broker_provider_evidence(
         broker_evidence, harness="claude",
@@ -7910,6 +7938,7 @@ def _exec_jailed_claude_leg(
             allow_transcript_final=True, broker_transcript_path=transcript_snapshot,
             seat_jail=jail, probe_jail=seat.probe_jail,
             transcript_refresh=_refresh_transcript,
+            **({"review_monitor": review_monitor} if review_monitor is not None else {}),
         )
         _refresh_transcript()
         kept = transcript_snapshot.read_bytes()
@@ -7929,7 +7958,7 @@ def _exec_jailed_claude_leg(
         shutil.rmtree(snapshots, ignore_errors=True)
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
-    if (_seat_jail.contains_secret(review_text.encode("utf-8", errors="replace"), seat.token)
+    if (token_seen or _seat_jail.contains_secret(review_text.encode("utf-8", errors="replace"), seat.token)
             or _seat_jail.contains_secret(kept, seat.token)):
         return _jailed_failure("claude_seat_token_in_output", failure_detail_sink)
     if broker_evidence is not None:

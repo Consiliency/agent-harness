@@ -9,6 +9,7 @@ the literal prerequisite; it neither fails nor passes on a host without it.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -21,7 +22,6 @@ from phase_loop_runtime import panel_invoker, sandbox_egress, seat_jail, seat_ui
 
 from ._seat_prereq import (
     EXECFIND_1071,
-    require_seat_token,
     require_seat_uid,
 )
 
@@ -187,11 +187,65 @@ def test_no_digest_has_a_recorded_pass_in_this_runtime():
     assert seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude")) is False
 
 
-def test_the_jail_digest_covers_mounts_flags_and_filter():
-    base = seat_jail.jail_profile("claude", "x86_64")
-    assert base["filter_sha256"] == seat_jail.production_filter_digest("x86_64")
-    assert seat_jail.jail_profile_digest("claude", "x86_64") != seat_jail.jail_profile_digest(
-        "gemini", "x86_64")
+def test_the_built_jail_reproduces_the_canonical_digest(tmp_path):
+    jail = _fake_jail(tmp_path)
+    try:
+        assert jail.profile_digest == seat_jail.jail_profile_digest("claude")
+        panel_invoker._require_canonical_jail(jail)
+    finally:
+        seat_jail.close_jail_fds(jail)
+    assert seat_jail.jail_profile_digest("claude") != seat_jail.jail_profile_digest("gemini")
+
+
+def test_codex_r1_an_extra_bind_invalidates_the_qualified_digest(tmp_path):
+    """Board round 1 (codex): an added host bind kept the digest and passed the probe. The
+    digest now binds the ACTUAL argv, so the launch is refused."""
+    jail = _fake_jail(tmp_path)
+    owner = list(jail.process_owner)
+    at = owner.index("--remount-ro")
+    owner[at:at] = ["--ro-bind", str(Path.home()), "/seat/leak"]
+    mutated = dataclasses.replace(jail, process_owner=tuple(owner))
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+            panel_invoker._require_canonical_jail(mutated)
+    finally:
+        seat_jail.close_jail_fds(jail)
+    assert refused.value.code == "seat_sandbox_refused:identity"
+
+
+def test_codex_r1_dropping_seccomp_invalidates_the_qualified_digest(tmp_path):
+    jail = _fake_jail(tmp_path)
+    owner = list(jail.process_owner)
+    at = owner.index("--seccomp")
+    del owner[at:at + 2]
+    mutated = dataclasses.replace(jail, process_owner=tuple(owner))
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused):
+            panel_invoker._require_canonical_jail(mutated)
+    finally:
+        seat_jail.close_jail_fds(jail)
+
+
+def test_codex_r1_the_installed_filter_bytes_are_checked_not_metadata(tmp_path):
+    """The memfd holds the test-only variant while the stored digest claims production."""
+    jail = _fake_jail(tmp_path, seccomp_program=seat_jail.build_seccomp_filter(key_rules=False))
+    lying = dataclasses.replace(jail, filter_digest=seat_jail.production_filter_digest())
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused):
+            panel_invoker._require_canonical_jail(lying)
+    finally:
+        seat_jail.close_jail_fds(jail)
+
+
+def test_expected_mounts_do_not_follow_an_extra_bind(tmp_path):
+    jail = _fake_jail(tmp_path)
+    owner = list(jail.process_owner)
+    owner[owner.index("--remount-ro"):owner.index("--remount-ro")] = ["--bind", "/srv", "/seat/leak"]
+    mutated = dataclasses.replace(jail, process_owner=tuple(owner))
+    try:
+        assert "/seat/leak" not in seat_jail.expected_mount_points(mutated)
+    finally:
+        seat_jail.close_jail_fds(jail)
 
 
 @pytest.mark.skip(reason=EXECFIND_1071)
@@ -434,10 +488,6 @@ def test_unmapped_holder_that_cannot_be_mapped_refuses(monkeypatch):
 # Live D8 (P5-shaped): skip-guarded on the maintainer's prerequisite.
 # --------------------------------------------------------------------------------------
 
-def test_live_jailed_claude_runs_a_tool_and_quotes_it():
-    require_seat_uid()
-    require_seat_token()
-    pytest.skip("L5 live board on a prerequisite host with a seat token")
 
 
 # --------------------------------------------------------------------------------------
@@ -471,3 +521,39 @@ def test_j8_a_sealed_record_is_not_reported_unmet():
     verifier = _verifier()
     assert verifier.harden5_unmet({"provider_input_inline": True,
                                    "provider_live_tree_cwd": False}) is False
+
+
+def test_hang_investigation_sealed_claude_tui_session_is_golden_to_main(monkeypatch, tmp_path):
+    """Board round 1 hang investigation (agent-harness#1166): on the sealed route this
+    runtime hands the Claude TUI session EXACTLY what main's runtime does -- argv, cwd shape,
+    env keys, prompt and every liveness/monitoring kwarg. The golden was captured from
+    main's runtime (origin/main b6a482fa) with the same inputs."""
+    import uuid as _uuid
+
+    golden = json.loads((Path(__file__).parent / "data"
+                         / "seat_jail_1132_sealed_tui_session_golden.json").read_text())
+    captured: dict[str, object] = {}
+
+    def fake(**kw):
+        captured.update({k: (list(v) if k == "command" else sorted(v) if k == "env"
+                             else str(v) if isinstance(v, (str, int, float, bool, type(None), Path))
+                             else type(v).__name__) for k, v in kw.items()})
+        return 0, "ok\n\nAGREE", "claude_tui_file_output", ""
+
+    monkeypatch.setattr(panel_invoker, "_run_claude_tui_session", fake)
+    monkeypatch.setattr(panel_invoker, "_claude_code_support_status", lambda *a: (True, "supported"))
+    monkeypatch.setattr(panel_invoker, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(panel_invoker, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(panel_invoker, "_cleanup_broker_claude_transcript", lambda p, e: True)
+    monkeypatch.setattr(panel_invoker.uuid, "uuid4",
+                        lambda: _uuid.UUID("00000000-0000-4000-8000-000000000000"))
+    (tmp_path / "r").mkdir()
+    (tmp_path / "o").mkdir()
+    panel_invoker._exec_claude_tui_leg(
+        tmp_path / "r", tmp_path / "o", 30, "BUNDLE", model="claude-opus-5-5", effort="max",
+        env={"HOME": "/h", "PATH": "/usr/bin", "TERM": "xterm"}, broker_prompt="PROMPT",
+        broker_evidence={})
+    for key in ("cwd", "output_file"):
+        captured[key] = str(captured[key]).replace(str(tmp_path), "<d>")
+    captured["broker_transcript_path"] = "<redacted path>"
+    assert captured == golden

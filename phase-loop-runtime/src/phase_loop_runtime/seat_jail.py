@@ -23,6 +23,7 @@ keyring shim in :mod:`phase_loop_runtime.seat_keyring_exec`.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import binascii
 import errno
 import hashlib
@@ -522,8 +523,11 @@ def decide_seat_route(
 # J10: hardened fd-relative reads, walks and teardown.
 # --------------------------------------------------------------------------------------
 
-_O_READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-_O_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# POSIX-only flags, looked up without failing at import: `panel_invoker` imports this module
+# on every platform, and only the Linux jail ever reaches these reads (a Windows host is
+# never seat-sandbox capable, so it never calls them).
+_O_READ = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+_O_DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 
 
 class UnsafeSeatObject(OSError):
@@ -909,6 +913,9 @@ class SeatJail:
     review_dir: str = ""
     tree_dir: str = ""
     token_fd: int | None = None
+    provider_path: str = ""
+    bundle_fd: int = -1
+    instructions_fd: int = -1
 
     def redacted_owner(self) -> list[str]:
         """The owner argv with every descriptor number replaced by a placeholder, for
@@ -937,34 +944,55 @@ def _system_mounts() -> list[str]:
     return args
 
 
-def jail_profile(leg: str, arch: str | None = None) -> dict[str, object]:
-    """The inputs the profile digest covers: the mount set, the flags and the filter.
+# Placeholders that stand for the per-launch values in the CANONICAL owner argv. The
+# profile digest is taken over the argv with these substituted, so it binds the ACTUAL
+# policy the launch uses: an added bind, a dropped flag or a different filter changes it.
+_PLACEHOLDERS = {"tree": "<tree>", "home": "<home>", "out": "<out>", "provider": "<provider>",
+                 "bundle_fd": "<bundle-fd>", "instructions_fd": "<instructions-fd>",
+                 "token_fd": "<token-fd>", "seccomp_fd": "<seccomp-fd>"}
 
-    Host-specific values (fd numbers, host paths, seat ids) are excluded, so one digest
-    names one jail shape on every host of an architecture.
-    """
-    arch = arch or host_arch()
-    return {
-        "profile_id": PROFILE_ID,
-        "leg": leg,
-        "arch": arch,
-        "system_readonly": list(SYSTEM_READONLY_PATHS),
-        "etc_subset": list(ETC_READONLY_SUBSET),
-        "seat_paths": [SEAT_BIN, SEAT_REVIEW, SEAT_TREE, SEAT_HOME, SEAT_OUT],
-        "flags": ["--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-                  "--unshare-cgroup-try", "--proc", "--dev", "--tmpfs 1777 /tmp",
-                  "--tmpfs 1777 /dev/shm", "--remount-ro /", "--clearenv", "--seccomp",
-                  "--cap-drop ALL", *(f"--cap-add {c}" for c in JAIL_CAP_ADD),
-                  "--dir 0755 /seat /seat/bin /seat/review /etc", "cwd after drop",
-                  *(["--new-session"] if leg == "gemini" else [])],
-        "filter_sha256": production_filter_digest(arch),
-    }
+
+def _profile_digest_of(leg: str, owner: Sequence[str], filter_sha256: str, arch: str) -> str:
+    document = {"profile_id": PROFILE_ID, "leg": leg, "arch": arch, "owner": list(owner),
+                "drop": [*setpriv_drop("<seat-id>"), *seat_cwd()], "filter_sha256": filter_sha256}
+    return hashlib.sha256(json.dumps(document, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def jail_profile_digest(leg: str, arch: str | None = None) -> str:
-    return hashlib.sha256(
-        json.dumps(jail_profile(leg, arch), sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    """The digest of the canonical jail for ``leg`` on this host: the production owner argv
+    (placeholders for the per-launch values) and the production filter. EC-EXECFIND-2's pass
+    is recorded against exactly this digest, and every launch must reproduce it."""
+    arch = arch or host_arch()
+    owner = _owner_argv(leg, tree=_PLACEHOLDERS["tree"], home=_PLACEHOLDERS["home"],
+                        out=_PLACEHOLDERS["out"], provider=_PLACEHOLDERS["provider"],
+                        bundle_fd=_PLACEHOLDERS["bundle_fd"],
+                        instructions_fd=_PLACEHOLDERS["instructions_fd"],
+                        token_fd=_PLACEHOLDERS["token_fd"] if leg == "claude" else None,
+                        seccomp_fd=_PLACEHOLDERS["seccomp_fd"])
+    return _profile_digest_of(leg, owner, production_filter_digest(arch), arch)
+
+
+def installed_filter_sha256(jail: "SeatJail") -> str:
+    """The digest of the bytes ACTUALLY in the jail's seccomp memfd -- what bwrap will load --
+    never a stored attribute."""
+    size = os.fstat(jail.seccomp_fd).st_size
+    return filter_digest(os.pread(jail.seccomp_fd, size, 0))
+
+
+def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
+    """The profile digest of THIS jail's real owner argv and installed filter bytes."""
+    arch = arch or host_arch()
+    substitute = {jail.tree_dir: _PLACEHOLDERS["tree"],
+                  str(Path(jail.review_dir) / HOST_HOME_DIRNAME): _PLACEHOLDERS["home"],
+                  str(Path(jail.review_dir) / HOST_OUT_DIRNAME): _PLACEHOLDERS["out"],
+                  jail.provider_path: _PLACEHOLDERS["provider"],
+                  str(jail.bundle_fd): _PLACEHOLDERS["bundle_fd"],
+                  str(jail.instructions_fd): _PLACEHOLDERS["instructions_fd"],
+                  str(jail.seccomp_fd): _PLACEHOLDERS["seccomp_fd"]}
+    if jail.token_fd is not None:
+        substitute[str(jail.token_fd)] = _PLACEHOLDERS["token_fd"]
+    owner = [substitute.get(item, item) for item in jail.process_owner]
+    return _profile_digest_of(jail.leg, owner, installed_filter_sha256(jail), arch)
 
 
 def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
@@ -1010,6 +1038,48 @@ def memfd_with(name: str, data: bytes) -> int:
     return fd
 
 
+def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bundle_fd: str,
+                instructions_fd: str, token_fd: str | None, seccomp_fd: str) -> list[str]:
+    """The bwrap owner argv, as a pure function of its per-launch values, so the canonical
+    profile (placeholders) and every real launch are built by the same code."""
+    owner: list[str] = [
+        BWRAP, "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--unshare-cgroup-try",
+        # P5 (measured): bwrap run as H-root keeps EVERY capability unless told otherwise,
+        # so the set is emptied first and exactly the three the drop needs are added back.
+        "--cap-drop", "ALL",
+        *(item for cap in JAIL_CAP_ADD for item in ("--cap-add", cap)),
+        *_system_mounts(),
+        # The tmpfs mounts are sticky world-writable: bwrap would make them 0755 and owned by
+        # H-root, and the seat could not create its own temp files (P1: Claude EACCES).
+        "--proc", "/proc", "--dev", "/dev", "--perms", "1777", "--tmpfs", "/tmp",
+        "--perms", "1777", "--tmpfs", "/dev/shm",
+        # Explicit, world-searchable seat directories (P5): bwrap creates the parent of a
+        # FILE bind 0700 and owned by H-root, which the seat uid could not traverse.
+        *(item for directory in (SEAT_ROOT, SEAT_BIN, SEAT_REVIEW)
+          for item in ("--perms", "0755", "--dir", directory)),
+        "--ro-bind", provider, f"{SEAT_BIN}/{leg}",
+        "--perms", "0444", "--ro-bind-data", bundle_fd, SEAT_BUNDLE,
+        "--perms", "0444", "--ro-bind-data", instructions_fd, SEAT_INSTRUCTIONS,
+        "--bind", tree, SEAT_TREE,
+        "--bind", home, SEAT_HOME,
+        "--bind", out, SEAT_OUT,
+        "--remount-ro", "/",
+        # No `--chdir`: with no DAC capability, H-root cannot enter the seat's 0700 tree.
+        # The cwd is entered after the drop, as the seat (`seat_cwd`).
+        "--clearenv",
+    ]
+    env = seat_env(leg, token_fd=None)
+    if leg == "claude" and token_fd is not None:
+        env[CLAUDE_TOKEN_FD_ENV] = token_fd
+    for key in sorted(env):
+        owner += ["--setenv", key, env[key]]
+    if leg == "gemini":
+        owner.append("--new-session")
+    owner += ["--seccomp", seccomp_fd]
+    return owner
+
+
 def build_seat_jail(
     leg: str,
     review_dir: Path,
@@ -1052,50 +1122,25 @@ def build_seat_jail(
     program = seccomp_program if seccomp_program is not None else build_seccomp_filter(arch)
     seccomp_fd = memfd_with("seat-seccomp", program)
     seat_bin = f"{SEAT_BIN}/{leg}"
-    owner: list[str] = [
-        BWRAP, "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-        "--unshare-cgroup-try",
-        # P5 (measured): bwrap run as H-root keeps EVERY capability unless told otherwise,
-        # so the set is emptied first and exactly the three the drop needs are added back.
-        "--cap-drop", "ALL",
-        *(item for cap in JAIL_CAP_ADD for item in ("--cap-add", cap)),
-        *_system_mounts(),
-        # The tmpfs mounts are sticky world-writable: bwrap would make them 0755 and owned by
-        # H-root, and the seat could not create its own temp files (P1: Claude EACCES).
-        "--proc", "/proc", "--dev", "/dev", "--perms", "1777", "--tmpfs", "/tmp",
-        "--perms", "1777", "--tmpfs", "/dev/shm",
-        # Explicit, world-searchable seat directories (P5): bwrap creates the parent of a
-        # FILE bind 0700 and owned by H-root, which the seat uid could not traverse.
-        *(item for directory in (SEAT_ROOT, SEAT_BIN, SEAT_REVIEW)
-          for item in ("--perms", "0755", "--dir", directory)),
-        "--ro-bind", str(provider), seat_bin,
-        "--perms", "0444", "--ro-bind-data", str(bundle_memfd), SEAT_BUNDLE,
-        "--perms", "0444", "--ro-bind-data", str(instructions_memfd), SEAT_INSTRUCTIONS,
-        "--bind", str(tree), SEAT_TREE,
-        "--bind", str(home), SEAT_HOME,
-        "--bind", str(out), SEAT_OUT,
-        "--remount-ro", "/",
-        # No `--chdir`: with no DAC capability, H-root cannot enter the seat's 0700 tree.
-        # The cwd is entered after the drop, as the seat (`seat_cwd`).
-        "--clearenv",
-    ]
+    owner = _owner_argv(leg, tree=str(tree), home=str(home), out=str(out), provider=str(provider),
+                        bundle_fd=str(bundle_memfd), instructions_fd=str(instructions_memfd),
+                        token_fd=None if token_fd is None else str(token_fd),
+                        seccomp_fd=str(seccomp_fd))
     env = seat_env(leg, token_fd=token_fd)
-    for key in sorted(env):
-        owner += ["--setenv", key, env[key]]
-    if leg == "gemini":
-        owner.append("--new-session")
-    owner += ["--seccomp", str(seccomp_fd)]
     pass_fds = tuple(fd for fd in (bundle_memfd, instructions_memfd, token_fd) if fd is not None)
-    return SeatJail(
+    jail = SeatJail(
         leg=leg,
         process_owner=tuple(owner),
+        provider_path=str(provider),
+        bundle_fd=bundle_memfd,
+        instructions_fd=instructions_memfd,
         path_map={str(tree): SEAT_TREE, str(home): SEAT_HOME, str(out): SEAT_OUT,
                   str(provider): seat_bin},
         env=env,
         pass_fds=(*pass_fds, seccomp_fd),
         seccomp_fd=seccomp_fd,
         profile_id=PROFILE_ID,
-        profile_digest=jail_profile_digest(leg, arch),
+        profile_digest="",
         filter_digest=filter_digest(program),
         seat_ids=seat_ids,
         provider_argv0=seat_bin,
@@ -1103,6 +1148,7 @@ def build_seat_jail(
         tree_dir=str(tree),
         token_fd=token_fd,
     )
+    return dataclasses.replace(jail, profile_digest=actual_profile_digest(jail, arch))
 
 
 # bwrap's own `--dev` populates these mount points (and `/dev/console` when its stdout is a
@@ -1110,26 +1156,19 @@ def build_seat_jail(
 BWRAP_DEV_MOUNTS: tuple[str, ...] = (
     "/dev/full", "/dev/null", "/dev/pts", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero",
 )
-_MOUNT_DEST_FLAGS = {"--ro-bind": 2, "--bind": 2, "--ro-bind-data": 2, "--tmpfs": 1,
-                     "--proc": 1, "--dev": 1}
-
-
 def expected_mount_points(jail: SeatJail) -> list[str]:
-    """J1: exactly the mount points the jail's own argv declares, plus `/` and the bwrap
-    `/dev` set -- derived from the argv the launch uses, never listed twice."""
-    points = {"/"}
-    argv = list(jail.process_owner)
-    index = 0
-    while index < len(argv):
-        flag = argv[index]
-        width = _MOUNT_DEST_FLAGS.get(flag)
-        if width is not None:
-            points.add(argv[index + width])
-            if flag == "--dev":
-                points.update(BWRAP_DEV_MOUNTS)
-            index += width + 1
-            continue
-        index += 1
+    """J1: the DECLARED mount set, from the profile's constants and this host's layout --
+    independently of the argv the launch uses, so an extra bind in that argv is a mismatch,
+    not a new expectation."""
+    points = {"/", "/proc", "/dev", *BWRAP_DEV_MOUNTS, "/tmp", "/dev/shm",
+              f"{SEAT_BIN}/{jail.leg}", SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
+              SEAT_OUT}
+    for path in SYSTEM_READONLY_PATHS:
+        if os.path.isdir(path) and not os.path.islink(path):
+            points.add(path)
+    for name in ETC_READONLY_SUBSET:
+        if os.path.lexists(os.path.join("/etc", name)):
+            points.add(os.path.join("/etc", name))
     return sorted(points)
 
 
@@ -1138,7 +1177,12 @@ def expected_mount_points(jail: SeatJail) -> list[str]:
 # visible. Printed through the very prefix the provider uses.
 JAIL_PROBE = (
     'id -u; id -g; '
-    'grep -E "^(CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs|Seccomp):" /proc/self/status; '
+    'grep -E "^(CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs|Seccomp|Seccomp_filters):" '
+    '/proc/self/status; '
+    # Behavioural: the J14 filter itself must refuse a nested user namespace. A seccomp mode
+    # inherited from an outer sandbox shows `Seccomp: 2` without this jail's filter.
+    '/usr/bin/unshare -U /bin/true 2>/dev/null && echo nested-userns-allowed '
+    '|| echo nested-userns-denied; '
     'ls /proc/$$/fd | sort -n | tr "\\n" " "; echo; '
     'awk "{print \\$5}" /proc/self/mountinfo | sort; '
     'if test -e "$1"; then echo host-marker-visible; else echo host-marker-hidden; fi'
@@ -1153,8 +1197,19 @@ def expected_probe_lines(jail: SeatJail) -> list[str]:
         () if jail.token_fd is None else (jail.token_fd,))})) + " "
     return [str(uid), str(gid),
             *(f"{name}:\t{0:016x}" for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")),
-            "NoNewPrivs:\t1", "Seccomp:\t2", fds, *expected_mount_points(jail),
-            "host-marker-hidden"]
+            "NoNewPrivs:\t1", "Seccomp:\t2", f"Seccomp_filters:\t{_own_seccomp_filters() + 1}",
+            "nested-userns-denied", fds, *expected_mount_points(jail), "host-marker-hidden"]
+
+
+def _own_seccomp_filters() -> int:
+    """How many seccomp filters THIS process already carries: the jail adds exactly one."""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+            if line.startswith("Seccomp_filters:"):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
 
 
 def setpriv_drop(seat_id: int) -> list[str]:

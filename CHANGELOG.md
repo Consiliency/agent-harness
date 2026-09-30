@@ -37,7 +37,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   are created 0755, the tmpfs mounts are 1777, and the Claude pre-seed is pinned
   (`hasCompletedOnboarding`, `bypassPermissionsModeAccepted`, workspace trust for
   `/seat/tree`).
-- The sealed Claude, president and agy launches are byte-identical to before (J9 goldens).
+- The sealed Claude, president and agy launches are byte-identical to before (J9 goldens),
+  and the sealed Claude TUI session receives exactly what main's runtime passes (a golden
+  captured from main).
+- The jail's qualified digest is taken over the launch's actual owner argv and the bytes in
+  its seccomp descriptor, and the identity probe checks the filter by behaviour; a jailed
+  pre-launch refusal keeps its own code; no parent-side transcript copy is written before the
+  token scan; the heartbeat monitor reaches the jailed session; `reap` maps its namespace only
+  after it exists; the module imports on platforms without POSIX open flags.
 - `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361) on every tooled or pointer seat record.
 - New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;

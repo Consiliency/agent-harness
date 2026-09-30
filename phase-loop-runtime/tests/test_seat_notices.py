@@ -290,3 +290,104 @@ def test_retention_record_sits_under_an_operator_owned_0700_parent(tmp_path):
     assert info.st_uid == os.getuid() and info.st_mode & 0o777 == 0o700
     record = seat_uid.record_retention(scratch / "seat" / "seat-home", directory=tmp_path / "r")
     assert json.loads(record.read_text())["path"] == str(scratch / "seat" / "seat-home")
+
+
+def test_codex_r1_reap_namespace_is_mapped_only_after_it_exists(monkeypatch):
+    """Board round 1 (codex): `mapped_namespace` wrote the map straight after `Popen`. With a
+    self-map that fails unless the holder is already in its namespace, it must now pass."""
+    import subprocess as sp
+
+    def _self_map(pid, **_):
+        Path(f"/proc/{pid}/uid_map").write_text(f"0 {os.getuid()} 1\n")
+        Path(f"/proc/{pid}/setgroups").write_text("deny\n")
+        Path(f"/proc/{pid}/gid_map").write_text(f"0 {os.getgid()} 1\n")
+        return 1
+
+    if sp.run(["unshare", "--user", "true"], capture_output=True).returncode:
+        pytest.skip("unprivileged user namespaces unavailable")
+    monkeypatch.setattr(seat_uid, "map_holder", _self_map)
+    for _ in range(10):
+        with seat_uid.mapped_namespace() as pid:
+            assert Path(f"/proc/{pid}/uid_map").read_text().split()[:3] == ["0", str(os.getuid()), "1"]
+
+
+# --------------------------------------------------------------------------------------
+# Board round 1 (codex) regressions.
+# --------------------------------------------------------------------------------------
+
+def _tui_session_with_launch_refusal(monkeypatch, tmp_path):
+    def _refuse(*a, **k):
+        raise seat_jail.SeatSandboxRefused("seat_sandbox_refused:identity", "probe mismatch")
+
+    monkeypatch.setattr(pi, "launch_provider", _refuse)
+    fake_jail = types.SimpleNamespace(leg="claude")
+    return pi._run_claude_tui_session(
+        command=["/seat/bin/claude"], cwd=tmp_path, prompt="p", output_file=tmp_path / "o",
+        timeout_s=5, env={}, seat_jail=fake_jail, probe_jail=fake_jail)
+
+
+def test_codex_r1_a_jailed_launch_refusal_keeps_its_code(monkeypatch, tmp_path):
+    rc, text, log, _tail = _tui_session_with_launch_refusal(monkeypatch, tmp_path)
+    assert rc != 0 and text == ""
+    assert pi._finalize_leg_detail(log) == "seat_sandbox_refused:identity"
+
+
+class _FakeSeat:
+    def __init__(self, tmp_path):
+        self.jail = types.SimpleNamespace(
+            leg="claude", provider_argv0="/seat/bin/claude", env={"HOME": "/seat/home"},
+            profile_id="seat_jail_v1", profile_digest="d" * 64, filter_digest="f" * 64,
+            pass_fds=(), redacted_owner=lambda: ["bwrap"])
+        self.probe_jail = self.jail
+        self.holder_pid = 1
+        self.token = b"SEAT-JAIL-SENTINEL-r1-transcript-token"
+        self.review_dir = tmp_path / "review"
+        self.seat_dir = tmp_path / "seat"
+        self.notices = []
+
+
+def test_codex_r1_no_parent_snapshot_ever_holds_the_token(monkeypatch, tmp_path):
+    seat = _FakeSeat(tmp_path)
+    leaked = b'{"type":"assistant","message":{"role":"assistant","content":"' + seat.token + b'"}}\n'
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: leaked)
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda jail: None)
+    monkeypatch.setattr(pi, "_broker_claude_tui_command", lambda **k: ["/seat/bin/claude"])
+    seen: dict[str, object] = {}
+
+    def _session(**kwargs):
+        kwargs["transcript_refresh"]()
+        snapshot = kwargs["broker_transcript_path"]
+        seen["snapshot"] = snapshot.read_bytes()
+        seen["mode"] = snapshot.stat().st_mode & 0o777
+        seen["review_monitor"] = kwargs.get("review_monitor")
+        return 0, "a review", "claude_tui_file_output", ""
+
+    monkeypatch.setattr(pi, "_run_claude_tui_session", _session)
+    import threading
+
+    monitor = types.SimpleNamespace(cancel=threading.Event())
+    sink: list = []
+    status, _text = pi._exec_jailed_claude_leg(
+        seat, timeout_s=5, backstop_s=5, model=None, effort=None, prompt="p",
+        broker_evidence={}, failure_detail_sink=sink, review_monitor=monitor)
+    assert seat.token not in seen["snapshot"], "the token reached a parent-owned snapshot"
+    assert seen["mode"] == 0o600
+    assert status == "DEGRADED" and sink[-1].template == "claude_seat_token_in_output"
+    # ...and the heartbeat monitor reaches the jailed session (codex r1, finding 6).
+    assert seen["review_monitor"] is monitor
+
+
+def test_codex_r1_panel_invoker_imports_without_posix_open_flags():
+    import subprocess as sp
+
+    code = (
+        "import os\n"
+        "for name in ('O_NOFOLLOW', 'O_DIRECTORY', 'O_NONBLOCK', 'O_CLOEXEC', 'O_PATH'):\n"
+        "    if hasattr(os, name): delattr(os, name)\n"
+        "import phase_loop_runtime.panel_invoker\n"
+        "print('imported')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(pi.__file__).resolve().parent.parent)}
+    done = sp.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert done.stdout.strip() == "imported", done.stderr[-800:]

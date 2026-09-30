@@ -242,3 +242,59 @@ def test_live_pre_drop_set_is_exactly_the_three_capabilities(tmp_path):
                               capture_output=True, text=True, pass_fds=jail.pass_fds,
                               env=seat_uid._pythonpath_env(), timeout=60)
     assert done.stdout.split() == ["CapEff:", "00000000000001c0"], done
+
+
+# --------------------------------------------------------------------------------------
+# Tool use (plan "Tests": a jailed Claude seat runs a command and quotes its output).
+# Runs for real once the maintainer's seat token is in place (P2); the EC-EXECFIND-2 gate
+# sits above `_prepare_jailed_claude`, so this drives the jailed leg directly.
+# --------------------------------------------------------------------------------------
+
+def test_live_jailed_claude_runs_a_tool_and_quotes_it(tmp_path):
+    import hashlib
+    import types
+
+    from phase_loop_runtime import review_stage
+
+    from ._seat_prereq import require_seat_token
+
+    require_seat_token()
+    subject = "seat-jail-tool-use-" + hashlib.sha256(os.urandom(8)).hexdigest()[:12]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@e.st"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", subject],
+                   check=True)
+    base = Path(tempfile.mkdtemp(prefix="pl-live-tool-", dir=tmp_path))
+    review = base / "review"
+    review.mkdir()
+    staged = review_stage.stage_review_tree(repo, review)
+    staged.rename(review / seat_jail.HOST_TREE_DIRNAME)
+    auth = types.SimpleNamespace(staged_tree_sha256=review_stage.review_tree_manifest_sha256(
+        review / seat_jail.HOST_TREE_DIRNAME))
+    instructions = ("Run `git log -1 --format=%s` in /seat/tree and reply with its exact output "
+                    "on one line, then the verdict AGREE.")
+    uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
+    gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
+    with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+            sandbox_egress.isolated_network(timeout_s=1200, required=True, seat_uid_map=True) as egress:
+        token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
+        try:
+            seat = pi._prepare_jailed_claude(review, base / "seat", auth, n,
+                                             seat_uid.holder_pid_from_prefix(egress),
+                                             ("BUNDLE: see the tree.", instructions))
+            prompt = pi._render_broker_pointer_prompt(
+                "BUNDLE: see the tree.", instructions,
+                source_commit=(review / seat_jail.HOST_TREE_DIRNAME / ".git"
+                               / "phase-loop-source-commit").read_text().strip(),
+                staged_tree_sha256=auth.staged_tree_sha256)
+            status, text = pi._exec_jailed_claude_leg(
+                seat, timeout_s=600, backstop_s=900, model=None, effort="low", prompt=prompt,
+                broker_evidence={})
+        finally:
+            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert status == "OK", (status, text)
+    assert subject in text
