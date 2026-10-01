@@ -268,6 +268,25 @@ throttled provider, a constrained host), or `N` to cap. Seat order and
 fail-closed-per-seat semantics are identical regardless; the governed gates thread
 the knob through, defaulting to parallel.
 
+**Pointer briefs** (agent-harness#1204):
+
+```sh
+phase-loop advisor-board bundle.md --pointer-brief --json
+```
+
+`--pointer-brief` declares that the brief tells reviewers to open files in the staged tree instead of carrying their content inline.
+
+**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. On main that means the brokered Claude seat and the brokered Gemini (agy) seat. A Claude seat filled natively has file access.
+
+**What happens to that seat.** It still runs, but its verdict is **not source-grounded**:
+- It does not count toward the floor, the landing count or the pre-merge minimum of reviewers.
+- The president sees it as "not counted".
+- A `DISAGREE` from it still blocks.
+
+The payload adds `notices`, `legs[].notices`, `legs[].source_grounded` and `grounded_seats`, and only when the flag is set.
+
+**The fix.** Inline the referenced content, or fill the seat through a route with file access. Once agent-harness#1132 lands, a jailed Claude seat will have file access. The Gemini tool route is agent-harness#1170.
+
 ### Opt-in governed web research
 
 `ResearchPolicy(enabled=True)` gives enforceable homebrew Codex and Claude TUI

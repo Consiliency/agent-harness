@@ -3838,8 +3838,7 @@ def _zero_source_seal_lock_paths(
     bootstrap_root = _canonical_input_path(
         authority_root or default_fabpub_authority_root(), label="authority root"
     )
-    if (bootstrap_root / "ACTIVE_BOOTSTRAP").exists():
-        paths.add(bootstrap_root / "bootstrap.lock")
+    paths.add(bootstrap_root / "bootstrap.lock")
     return tuple(sorted(paths, key=str))
 
 
@@ -3873,32 +3872,47 @@ def onboard_zero_legacy_repository(
     cutover_id = _validate_cutover_id(cutover_id)
     bootstrap_inventory_sha256 = None
     bootstrap_authority_root = None
-    bootstrap_seal_locks = None
-    if roots is None:
-        bootstrap = _active_bootstrap_inventory(authority_root)
-        if bootstrap is not None:
-            bootstrap_id = bootstrap["cutover_id"]
-            if cutover_id == ZERO_SOURCE_ONBOARDING_CUTOVER_ID:
-                cutover_id = bootstrap_id
-            elif cutover_id != bootstrap_id:
-                raise LegacyCutoverConflict(
-                    f"active bootstrap {bootstrap_id!r} may not onboard receipt "
-                    f"{cutover_id!r}"
-                )
+    bootstrap_seal_locks = ()
+    bootstrap = _active_bootstrap_inventory(authority_root)
+    if bootstrap is not None:
+        bootstrap_id = bootstrap["cutover_id"]
+        if cutover_id == ZERO_SOURCE_ONBOARDING_CUTOVER_ID:
+            cutover_id = bootstrap_id
+        elif cutover_id != bootstrap_id:
+            raise LegacyCutoverConflict(
+                f"active bootstrap {bootstrap_id!r} may not onboard receipt "
+                f"{cutover_id!r}"
+            )
+        if roots is None:
             roots = tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
-            bootstrap_inventory_sha256 = bootstrap["inventory_sha256"]
-            bootstrap_authority_root = Path(bootstrap["authority_root"])
-            bootstrap_seal_locks = _bootstrap_seal_lock_paths(bootstrap)
-        else:
-            roots = declared_legacy_roots()
+        bootstrap_inventory_sha256 = bootstrap["inventory_sha256"]
+        bootstrap_authority_root = Path(bootstrap["authority_root"])
+        bootstrap_seal_locks = _bootstrap_seal_lock_paths(bootstrap)
+    elif roots is None:
+        roots = declared_legacy_roots()
+    roots = tuple(_canonical_input_path(root, label="legacy root") for root in roots)
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
             "zero-source onboarding requires a persistent global ACTIVE authority"
         )
-    seal_locks = bootstrap_seal_locks or _zero_source_seal_lock_paths(
-        roots, authority_root
+    seal_locks = tuple(
+        sorted(
+            set(bootstrap_seal_locks)
+            | set(_zero_source_seal_lock_paths(roots, authority_root)),
+            key=str,
+        )
     )
     with _hold_all(seal_locks):
+        active_bootstrap = _active_bootstrap_inventory(bootstrap_authority_root or authority_root)
+        if (
+            (active_bootstrap is None) != (bootstrap is None)
+            or active_bootstrap is not None
+            and (
+                active_bootstrap["inventory_sha256"] != bootstrap_inventory_sha256
+                or active_bootstrap["cutover_id"] != cutover_id
+            )
+        ):
+            raise LegacyCutoverConflict("active bootstrap changed before onboarding seal")
         return _onboard_zero_legacy_repository_under_seal(
             worktree,
             cutover_id=cutover_id,
@@ -3980,16 +3994,17 @@ def _onboard_zero_legacy_repository_under_seal(
                     f"existing zero-source receipt belongs to {existing.cutover_id!r}, "
                     f"not {cutover_id!r}"
                 )
-            if (
-                bootstrap_inventory_sha256 is not None
-                and (
-                    (bootstrap_claim := _receipt_bootstrap_claim(existing)) is None
-                    or bootstrap_claim["inventory_sha256"]
-                    != bootstrap_inventory_sha256
-                    or bootstrap_claim["authority_root"]
-                    != bootstrap_authority_root
-                )
-            ):
+            if existing.legacy_root_inventory != tuple(str(root) for root in roots):
+                raise LegacyCutoverConflict("existing zero-source receipt has different history coverage")
+            expected_bootstrap_claim = (
+                {
+                    "inventory_sha256": bootstrap_inventory_sha256,
+                    "authority_root": bootstrap_authority_root,
+                }
+                if bootstrap_inventory_sha256 is not None
+                else None
+            )
+            if _receipt_bootstrap_claim(existing) != expected_bootstrap_claim:
                 raise LegacyCutoverConflict(
                     "existing zero-source receipt is not bound to the active "
                     "bootstrap inventory"
@@ -4048,6 +4063,16 @@ def _onboard_zero_legacy_repository_under_seal(
         sealed["inventory_sha256"] = _inventory_digest(sealed)
         if inventory_path.exists():
             sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
+            if _inventory_digest(sealed) != sealed.get("inventory_sha256"):
+                raise LegacyCutoverConflict("onboarding inventory digest drifted")
+            if sealed.get("legacy_root_inventory") != [str(root) for root in roots]:
+                raise LegacyCutoverConflict("sealed onboarding inventory has different history coverage")
+            if (
+                sealed.get("bootstrap_inventory_sha256") != bootstrap_inventory_sha256
+                or sealed.get("bootstrap_authority_root")
+                != (str(bootstrap_authority_root) if bootstrap_authority_root is not None else None)
+            ):
+                raise LegacyCutoverConflict("sealed onboarding inventory has different bootstrap binding")
         else:
             _atomic_write_json(inventory_path, sealed)
         transaction = LegacyBrokerCutoverTransaction(
@@ -5252,14 +5277,25 @@ def _receipt_seal_lock_paths(
     receipt: LegacyRepositoryPartitionReceipt | RotatedPartitionReceipt,
 ) -> tuple[Path, ...]:
     receipt = _rotation_base_receipt(receipt)
+    roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
+    if receipt.zero_source:
+        roots = tuple(_canonical_input_path(root, label="receipt legacy root") for root in roots)
+    root_locks = _traditional_seal_lock_paths(roots)
     bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
     if bootstrap_claim is not None:
         bootstrap = _active_bootstrap_inventory(bootstrap_claim["authority_root"])
         if bootstrap is None:
-            return ()
-        return _bootstrap_seal_lock_paths(bootstrap)
-    roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
-    return _traditional_seal_lock_paths(roots)
+            return tuple(
+                sorted(
+                    {
+                        bootstrap_claim["authority_root"] / "bootstrap.lock",
+                        *root_locks,
+                    },
+                    key=str,
+                )
+            )
+        return tuple(sorted(set(_bootstrap_seal_lock_paths(bootstrap)) | set(root_locks), key=str))
+    return root_locks
 
 
 def is_git_repository(worktree: Path | str) -> bool:
@@ -5339,17 +5375,24 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
             if receipt is not None
             for path in _receipt_seal_lock_paths(receipt)
         }
-        if any(receipt is None for _snapshot, receipt in snapshots):
+        needs_onboarding = any(receipt is None for _snapshot, receipt in snapshots)
+        if needs_onboarding:
             bootstrap = _active_bootstrap_inventory()
             if bootstrap is not None:
                 authority_lock_paths.update(_bootstrap_seal_lock_paths(bootstrap))
             else:
-                roots = declared_legacy_roots()
-                authority_lock_paths.update(_traditional_seal_lock_paths(roots))
+                roots = tuple(
+                    _canonical_input_path(root, label="legacy root")
+                    for root in declared_legacy_roots()
+                )
+                authority_lock_paths.update(_zero_source_seal_lock_paths(roots, None))
         authority_locks = contextlib.ExitStack()
         report["_authority_locks"] = authority_locks
         for path in sorted(authority_lock_paths, key=str):
             authority_locks.enter_context(_reentrant_flock(path))
+
+        if needs_onboarding and _active_bootstrap_inventory() != bootstrap:
+            raise LegacyCutoverConflict("active bootstrap changed while entering the barrier")
 
         for snapshot, prior_receipt in snapshots:
             receipt = load_partition_receipt(snapshot.store_root)
@@ -5357,7 +5400,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} receipt changed while entering the barrier"
                 )
-            if prior_receipt is None and receipt is not None:
+            if receipt is not None:
                 required_locks = set(_receipt_seal_lock_paths(receipt))
                 if not required_locks.issubset(authority_lock_paths):
                     raise LegacyCutoverConflict(
@@ -5386,6 +5429,16 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                     raise LegacyCutoverConflict(
                         f"repository {snapshot.identity} could not be authenticated or onboarded"
                     )
+            base_receipt = _rotation_base_receipt(receipt)
+            if base_receipt.zero_source:
+                _prove_zero_source(
+                    snapshot,
+                    tuple(
+                        _canonical_input_path(root, label="receipt legacy root")
+                        for root in base_receipt.legacy_root_inventory
+                    ),
+                    "before_generation_lease",
+                )
             latch = WriterGenerationLatch(snapshot.namespace_root)
             if latch.read().generation_state != "ACTIVE":
                 raise LegacyCutoverConflict(
