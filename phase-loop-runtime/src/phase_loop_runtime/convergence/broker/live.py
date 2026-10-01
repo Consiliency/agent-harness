@@ -5285,7 +5285,15 @@ def _receipt_seal_lock_paths(
     if bootstrap_claim is not None:
         bootstrap = _active_bootstrap_inventory(bootstrap_claim["authority_root"])
         if bootstrap is None:
-            return ()
+            return tuple(
+                sorted(
+                    {
+                        bootstrap_claim["authority_root"] / "bootstrap.lock",
+                        *root_locks,
+                    },
+                    key=str,
+                )
+            )
         return tuple(sorted(set(_bootstrap_seal_lock_paths(bootstrap)) | set(root_locks), key=str))
     return root_locks
 
@@ -5392,7 +5400,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} receipt changed while entering the barrier"
                 )
-            if prior_receipt is None and receipt is not None:
+            if receipt is not None:
                 required_locks = set(_receipt_seal_lock_paths(receipt))
                 if not required_locks.issubset(authority_lock_paths):
                     raise LegacyCutoverConflict(
