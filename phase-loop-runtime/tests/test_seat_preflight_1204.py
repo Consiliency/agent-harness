@@ -133,8 +133,9 @@ def _leg(leg: str, verdict: str, *, grounded: bool) -> PanelLegResult:
     result = PanelLegResult(leg=leg, status="OK", text=f"finding one\n\n{verdict}",
                             seat_key=f"{leg}:a")
     if not grounded:
+        # A one-leg list: the leg is at position 0 of what it is attached against.
         pi.attach_seat_preflight_notices(
-            [result], [sp.SeatPreflightNotice(UNREADABLE, f"{leg}:a", leg)])
+            [result], [sp.SeatPreflightNotice(UNREADABLE, f"{leg}:a", leg, 0)])
     return result
 
 
@@ -286,3 +287,175 @@ def test_premerge_reviewer_floor_does_not_count_an_ungrounded_seat():
                                      _leg("gemini", "AGREE", grounded=False)))
     held = loop(one_grounded)
     assert not held.mergeable and held.reason == "below_reviewer_floor"
+
+
+# --------------------------------------------------------------------------------------
+# Board round 1 (agent-harness#1205): a native president RESUME keeps the marks the
+# deferral persisted, and the pointer_brief flag is part of the run binding.
+# --------------------------------------------------------------------------------------
+
+def _fable_president_run(tmp_path, gemini_verdict, *, resume_pointer_brief=True):
+    """A Fable-president board deferred and resumed under Claude Code. The Claude seat is
+    native-filled (file access) and grok can read the tree; the brokered gemini seat cannot."""
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    from phase_loop_runtime.advisor_board.schema import Board
+
+    board = Board(name="fable-president", purpose="premerge-review",
+                  seats=tuple(seat for seat in DEFAULT_SEATS if seat.harness != "codex"))
+    policy = pi.ReviewLandingPolicy(required_seats=("fable", "gemini", "grok"),
+                                    requires_president=True)
+
+    def spawn(leg, artifact):
+        verdict = gemini_verdict if leg == "gemini" else "AGREE"
+        return "OK", f"{leg} found: the {leg} concern\n{verdict}"
+
+    def dispatch(pointer_brief, **extra):
+        return invoke_sanctioned_board_control(
+            board, "artifact", spawn=spawn, landing_tier=pi.ReviewLandingTier.PRODUCTION_CODE,
+            review_policy=policy, base_env={"CLAUDECODE": "1"},
+            **({"pointer_brief": True} if pointer_brief else {}), **extra)
+
+    stream = tmp_path / "stream"
+    deferred = dispatch(True, stream_dir=stream)
+    pending = deferred.needs_native_president
+    assert pending is not None and pending["rung"] == "fable"
+    assert [leg.leg for leg in deferred.legs if not leg.source_grounded] == ["gemini"]
+    text = "\n".join(f"FINDING {f.split(':', 1)[0]}: DEFERRED — ruled"
+                     for f in deferred.president_findings) + "\nFORCING DECISION: LAND"
+    fill = {"brief_digest": pending["brief_digest"], "findings_digest": pending["findings_digest"],
+            "rung": "fable", "text": text}
+    return dispatch(resume_pointer_brief, native_president_fill=fill, stream_dir=stream), deferred
+
+
+@pytest.mark.parametrize("verdict", ["PARTIALLY AGREE", "DISAGREE"])
+def test_r1_a_native_president_resume_keeps_the_ungrounded_mark(tmp_path, verdict):
+    resumed, deferred = _fable_president_run(tmp_path, verdict)
+    assert resumed.president is not None                    # PARTIALLY AGREE no longer refuses
+    assert resumed.president_findings == deferred.president_findings
+    by_leg = {leg.leg: leg for leg in resumed.legs}
+    assert not by_leg["gemini"].source_grounded              # DISAGREE no longer fails open
+    assert [n.code for n in by_leg["gemini"].seat_preflight_notices] == [UNREADABLE]
+    assert by_leg["claude"].source_grounded and by_leg["grok"].source_grounded
+
+
+def test_r1_a_resume_without_the_flag_is_refused(tmp_path):
+    from phase_loop_runtime.panel_invoker import PresidentPolicyError
+
+    with pytest.raises(PresidentPolicyError) as refused:
+        _fable_president_run(tmp_path, "PARTIALLY AGREE", resume_pointer_brief=False)
+    assert refused.value.code == "president_fill_digest_mismatch"
+    assert not (tmp_path / "stream" / "president.ruling.json").exists()
+
+
+def test_r1_the_binding_carries_the_flag_only_when_set():
+    board = DEFAULT_BOARD
+    plain = pi._president_run_binding(board, "a", mode="review", policy=None, landing_tier=None)
+    flagged = pi._president_run_binding(board, "a", mode="review", policy=None, landing_tier=None,
+                                        pointer_brief=True)
+    assert "pointer_brief" not in plain and flagged == {**plain, "pointer_brief": True}
+
+
+def test_r1_persisted_marks_are_inside_the_digest_and_absent_when_unmarked():
+    marked = _leg("gemini", "AGREE", grounded=False)
+    plain = _leg("codex", "AGREE", grounded=True)
+    record = pi._president_legs_record([plain, marked])
+    assert "seat_preflight" not in record[0]
+    assert record[1]["seat_preflight"] == [UNREADABLE]
+    tampered = [dict(record[0]), {k: v for k, v in record[1].items() if k != "seat_preflight"}]
+    assert pi._president_legs_digest(tampered) != pi._president_legs_digest(record)
+
+
+# --------------------------------------------------------------------------------------
+# Board round 1, non-blocking items.
+# --------------------------------------------------------------------------------------
+
+def test_r1_governed_gate_passes_the_flag_and_prints_the_preflight(tmp_path, monkeypatch, capsys):
+    from phase_loop_runtime import governed_review as gr
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+
+    seen: dict = {}
+    notice = sp.SeatPreflightNotice(UNREADABLE, "gemini:a", "gemini", 1)
+
+    def invoke(board, artifact, **kwargs):
+        seen.update(kwargs)
+        kwargs["on_seat_preflight"]((notice,))
+        raise OSError("isolation unavailable after the preflight")
+
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization",
+                        lambda *a, **k: object())
+    monkeypatch.setattr(backing_mod, "set_review_instruction_digest", lambda *a, **k: object())
+    monkeypatch.setattr(backing_mod, "reset_review_instruction_digest", lambda *a, **k: None)
+    gate = gr.governed_board_gate(
+        artifact="# bundle\n", author_executor="train-coordinator", run_mode="governed",
+        available_legs=("codex", "gemini", "grok"), canonical_repo_authority=tmp_path,
+        compose=lambda: DEFAULT_BOARD, invoke=invoke, pointer_brief=True,
+    )
+    assert seen.get("pointer_brief") is True
+    assert "governed board: preflight: seat gemini:a (gemini)" in capsys.readouterr().err
+    assert not gate.promoted
+    assert [f.code for f in gate.findings if f.code == UNREADABLE] == [UNREADABLE]
+
+
+def test_r1_governed_gate_without_the_flag_passes_nothing(tmp_path, monkeypatch):
+    from phase_loop_runtime import governed_review as gr
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+
+    seen: dict = {}
+
+    def invoke(board, artifact, **kwargs):
+        seen.update(kwargs)
+        return PanelResult(legs=(_leg("codex", "AGREE", grounded=True),))
+
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization",
+                        lambda *a, **k: object())
+    monkeypatch.setattr(backing_mod, "set_review_instruction_digest", lambda *a, **k: object())
+    monkeypatch.setattr(backing_mod, "reset_review_instruction_digest", lambda *a, **k: None)
+    gr.governed_board_gate(
+        artifact="# bundle\n", author_executor="train-coordinator", run_mode="governed",
+        available_legs=("codex", "gemini", "grok"), canonical_repo_authority=tmp_path,
+        compose=lambda: DEFAULT_BOARD, invoke=invoke,
+    )
+    assert "pointer_brief" not in seen and "on_seat_preflight" not in seen
+
+
+def test_r1_the_falsifier_hold_keeps_the_marks():
+    from phase_loop_runtime import governed_review as gr
+
+    legs = (_leg("codex", "AGREE", grounded=True), _leg("gemini", "AGREE", grounded=False))
+    object.__setattr__(legs[0], "_finding_falsifiers", object())
+    held = gr._foreign_falsifier_hold(PanelResult(legs=legs), reviewed_sha=None,
+                                      falsifier_policy="optional")
+    assert held is not None and not held.promoted
+    marked = [f for f in held.findings if f.code == UNREADABLE]
+    assert len(marked) == 1 and "seat gemini:a (gemini)" in marked[0].reason
+
+
+def test_r1_identical_seats_each_get_exactly_their_own_notice():
+    seat = _seat("gemini", key="gemini:same")
+    notices = sp.pointer_brief_preflight(
+        [seat, seat], staged_tree=True, brokered=lambda leg: True,
+        native_fill=lambda s, leg: False, sandbox_usable_by=pi.sandbox_usable_by)
+    legs = [PanelLegResult(leg="gemini", status="OK", text="x\nAGREE", seat_key="gemini:same")
+            for _ in range(2)]
+    pi.attach_seat_preflight_notices(legs, notices)
+    assert [len(leg.seat_preflight_notices) for leg in legs] == [1, 1]
+    assert [n.position for leg in legs for n in leg.seat_preflight_notices] == [0, 1]
+
+
+def test_r1_the_all_native_early_path_still_publishes_its_preflight(tmp_path, monkeypatch):
+    """An all-Claude board under Claude Code launches nothing, but the caller's preflight
+    still arrives: every seat is native-filled, so it warns none."""
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    from phase_loop_runtime.advisor_board.schema import Board
+
+    claude = next(seat for seat in DEFAULT_SEATS if seat.harness == "claude")
+    board = Board(name="all-claude", purpose="premerge-review", seats=(claude,))
+    published: list = []
+    monkeypatch.setenv("CLAUDECODE", "1")
+    result = invoke_sanctioned_board_control(
+        board, "artifact", base_env={"CLAUDECODE": "1"}, pointer_brief=True,
+        on_seat_preflight=published.append)
+    assert published == [()]
+    assert all(leg.status == "UNAVAILABLE" and leg.source_grounded for leg in result.legs)

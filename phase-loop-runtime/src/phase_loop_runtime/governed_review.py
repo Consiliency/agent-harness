@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from hashlib import sha256
 from dataclasses import dataclass
 from dataclasses import replace
@@ -130,6 +131,18 @@ class FalsifierRunBinding:
     record_digest: str
 
 
+def _seat_preflight_leg_notices(leg: object):
+    from .seat_preflight import leg_notices
+    return leg_notices(leg)
+
+
+def _seat_preflight_findings(notices, reviewed_sha: str | None) -> tuple[ReviewFinding, ...]:
+    """One non-gating finding per pointer-brief notice, rendered from the notice literals."""
+    return tuple(ReviewFinding(code=notice.code, reason=f"seat preflight: {notice.render()}",
+                               severity="warn", reviewed_sha=reviewed_sha)
+                 for notice in notices)
+
+
 def _foreign_falsifier_hold(
     panel: PanelResult, *, reviewed_sha: str | None, falsifier_policy: str,
 ) -> "GateResult | None":
@@ -143,6 +156,11 @@ def _foreign_falsifier_hold(
     if not foreign:
         return None
     stripped = PanelResult(tuple(replace(leg) for leg in panel.legs))
+    # agent-harness#1204: each copy keeps its own leg's pointer-brief marks (non-field).
+    for original, copy in zip(panel.legs, stripped.legs):
+        marks = _seat_preflight_leg_notices(original)
+        if marks:
+            object.__setattr__(copy, "_seat_preflight_notices", marks)
     return _block_result(
         "foreign_falsifier_attachment", "governed_foreign_falsifier_attachment",
         f"seat {foreign[0]} arrived with a falsifier attachment the gate did not parse; "
@@ -223,14 +241,7 @@ def _findings_from_panel(
     for leg in panel.legs:
         # agent-harness#1204: each pre-launch seat notice reaches the governed path as one
         # non-gating finding, rendered only from the notice table's literals.
-        from .seat_preflight import leg_notices
-        for notice in leg_notices(leg):
-            findings.append(ReviewFinding(
-                code=notice.code,
-                reason=f"seat preflight: {notice.render()}",
-                severity="warn",
-                reviewed_sha=reviewed_sha,
-            ))
+        findings.extend(_seat_preflight_findings(_seat_preflight_leg_notices(leg), reviewed_sha))
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so
@@ -704,6 +715,13 @@ def governed_board_gate(
     # scratch allocated without a digest).
     scratch: Path | None = None
     token: object = _UNSET
+    published_preflight: list = []
+
+    def _publish_governed_preflight(notices) -> None:
+        # agent-harness#1204: called by the invoker BEFORE any seat launches.
+        published_preflight[:] = list(notices)
+        for notice in notices:
+            print(f"governed board: preflight: {notice.render()}", file=sys.stderr)
     try:
         brief_text = _pi._resolve_brief("review", brief_ref)
         scratch = Path(tempfile.mkdtemp(prefix="train-review-"))
@@ -754,14 +772,18 @@ def governed_board_gate(
         if native_leg_fills:
             invoke_kwargs["native_leg_fills"] = tuple(native_leg_fills)
         if pointer_brief:
-            # agent-harness#1204: the invoker warns before any launch and marks the seats.
+            # agent-harness#1204: the invoker publishes the notices before any launch; the
+            # gate prints them (an operator sees them before the seats run) and keeps them,
+            # so a hold before any leg returns still carries them as findings.
             invoke_kwargs["pointer_brief"] = True
+            invoke_kwargs["on_seat_preflight"] = _publish_governed_preflight
         panel = invoke_fn(board, staged_artifact, **invoke_kwargs)
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         return _block_result(
             "review_isolation_unavailable",
             "governed_board_isolation_unavailable",
             f"review isolation unavailable: {exc}; holding (non-human)",
+            extra_findings=_seat_preflight_findings(published_preflight, reviewed_sha),
         )
     finally:
         if token is not _UNSET:

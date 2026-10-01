@@ -46,6 +46,9 @@ class SeatPreflightNotice:
     code: str
     seat_key: str
     leg: str
+    #: The seat's position on the board. Seat keys are labels, not identities (two
+    #: identical seats share one), so a notice is attached by position.
+    position: int = -1
 
     def __post_init__(self) -> None:
         if self.code not in NOTICE_TEXT:
@@ -90,13 +93,14 @@ def pointer_brief_preflight(
 ) -> tuple[SeatPreflightNotice, ...]:
     """One notice per seat that cannot open the pointer brief's files, in seat order."""
     notices = []
-    for seat in seats:
+    for position, seat in enumerate(seats):
         leg = (getattr(seat, "harness", None) or "").lower()
         if not seat_has_file_access(leg, staged_tree=staged_tree, brokered=brokered(leg),
                                     native_fill=native_fill(seat, leg),
                                     sandbox_usable_by=sandbox_usable_by):
             notices.append(SeatPreflightNotice(POINTER_BRIEF_UNREADABLE,
-                                               str(getattr(seat, "seat_key", "") or leg), leg))
+                                               str(getattr(seat, "seat_key", "") or leg), leg,
+                                               position))
     return tuple(notices)
 
 
@@ -115,6 +119,25 @@ def write_preflight_record(stream_dir: Path, notices: Sequence[SeatPreflightNoti
 # --------------------------------------------------------------------------------------
 # Policy (ii): a marked seat is not source-grounded and never counts as a passing seat.
 # --------------------------------------------------------------------------------------
+
+def leg_record_marks(leg: object) -> dict[str, list[str]]:
+    """What a persisted leg record carries so a resume restores the marks (inside the
+    record's digest). Empty -- the record is byte-identical -- for an unmarked leg."""
+    codes = [n.code for n in leg_notices(leg)]
+    return {"seat_preflight": codes} if codes else {}
+
+
+def notices_from_record(item: Mapping[str, object], position: int
+                        ) -> tuple[SeatPreflightNotice, ...]:
+    """The marks a persisted leg record carries. Raises ``ValueError`` when malformed."""
+    if "seat_preflight" not in item:
+        return ()
+    codes = item["seat_preflight"]
+    if not isinstance(codes, list) or not codes or not all(isinstance(c, str) for c in codes):
+        raise ValueError("malformed seat_preflight marks in a persisted leg record")
+    return tuple(SeatPreflightNotice(code, str(item.get("seat_key") or item.get("leg") or ""),
+                                     str(item.get("leg") or ""), position) for code in codes)
+
 
 def leg_notices(leg: object) -> tuple[SeatPreflightNotice, ...]:
     return tuple(getattr(leg, "_seat_preflight_notices", ()) or ())

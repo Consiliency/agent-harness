@@ -5,9 +5,9 @@ RT = Path(__file__).resolve().parents[3] / "phase-loop-runtime"
 SRC = RT / "src/phase_loop_runtime"
 T = "tests/test_seat_preflight_1204.py"
 M = [
- ("P1-preflight-never-runs", SRC/"panel_invoker.py", "        if pointer_brief:\n            # The PRODUCTION route", "        if False:\n            # The PRODUCTION route",
+ ("P1-preflight-never-runs", SRC/"panel_invoker.py", "    if not pointer_brief:\n        return ()\n    brokered_route", "    if True:\n        return ()\n    brokered_route",
   [f"{T}::test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run"]),
- ("P2-not-published-before-launch", SRC/"panel_invoker.py", "            if on_seat_preflight is not None:\n                on_seat_preflight(seat_preflight_notices)\n", "",
+ ("P2-not-published-before-launch", SRC/"panel_invoker.py", "    if on_seat_preflight is not None:\n        on_seat_preflight(notices)\n", "",
   [f"{T}::test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run"]),
  ("P3-seats-never-marked", SRC/"panel_invoker.py", "        attach_seat_preflight_notices(results, seat_preflight_notices)\n", "",
   [f"{T}::test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run"]),
@@ -19,7 +19,7 @@ M = [
   [f"{T}::test_without_a_staged_tree_no_brokered_seat_can_open_the_files"]),
  ("C1-governed-counts-ungrounded", SRC/"governed_review.py", "    if not any(counts_as_grounded_vote(leg, counts_toward_landing) for leg in panel.legs):", "    if not any(counts_toward_landing(leg) for leg in panel.legs):",
   [f"{T}::test_governed_landing_needs_a_grounded_seat"]),
- ("C2-governed-notice-finding-dropped", SRC/"governed_review.py", "        for notice in leg_notices(leg):\n", "        for notice in ():\n",
+ ("C2-governed-notice-finding-dropped", SRC/"governed_review.py", "        findings.extend(_seat_preflight_findings(_seat_preflight_leg_notices(leg), reviewed_sha))\n", "",
   [f"{T}::test_governed_notice_finding_is_rendered_from_literals_and_warns"]),
  ("C3-president-counts-ungrounded", SRC/"panel_invoker.py", "        elif (ungrounded := _seat_preflight.uncounted_president_items(\n                leg, terminal_verdict)) is not None:", "        elif False and (ungrounded := _seat_preflight.uncounted_president_items(\n                leg, terminal_verdict)) is not None:",
   [f"{T}::test_president_input_does_not_count_an_ungrounded_pass_but_keeps_its_disagree"]),
@@ -36,6 +36,30 @@ M = [
  ("C9-stream-record-not-atomic", SRC/"seat_preflight.py", "    tmp.replace(path)\n", "    tmp.replace(path)\n    tmp.write_text('x')\n",
   [f"{T}::test_the_stream_record_is_published_atomically"]),
 ]
+R1 = f"{T}::test_r1_a_native_president_resume_keeps_the_ungrounded_mark"
+M += [
+ ("R1-resume-drops-marks", SRC/"panel_invoker.py", "    attach_seat_preflight_notices(legs, restored)\n", "",
+  [f"{R1}[PARTIALLY AGREE]", f"{R1}[DISAGREE]"]),
+ ("R1-marks-not-persisted", SRC/"panel_invoker.py", "         **_seat_preflight.leg_record_marks(leg)}", "         }",
+  [f"{R1}[PARTIALLY AGREE]", f"{R1}[DISAGREE]",
+   f"{T}::test_r1_persisted_marks_are_inside_the_digest_and_absent_when_unmarked"]),
+ ("R1-binding-omits-flag", SRC/"panel_invoker.py", '    flag = {"pointer_brief": True} if pointer_brief else {}', "    flag = {}",
+  [f"{T}::test_r1_a_resume_without_the_flag_is_refused"]),
+ ("R1-governed-flag-not-passed", SRC/"governed_review.py", '            invoke_kwargs["pointer_brief"] = True\n', "",
+  [f"{T}::test_r1_governed_gate_passes_the_flag_and_prints_the_preflight"]),
+ ("R1-governed-preflight-not-surfaced", SRC/"governed_review.py", '            invoke_kwargs["on_seat_preflight"] = _publish_governed_preflight\n', "",
+  [f"{T}::test_r1_governed_gate_passes_the_flag_and_prints_the_preflight"]),
+ ("R1-governed-early-hold-drops-preflight", SRC/"governed_review.py", "            extra_findings=_seat_preflight_findings(published_preflight, reviewed_sha),\n", "",
+  [f"{T}::test_r1_governed_gate_passes_the_flag_and_prints_the_preflight"]),
+ ("R1-falsifier-hold-drops-marks", SRC/"governed_review.py", '            object.__setattr__(copy, "_seat_preflight_notices", marks)', "            pass",
+  [f"{T}::test_r1_the_falsifier_hold_keeps_the_marks"]),
+ ("R1-attached-by-seat-key", SRC/"panel_invoker.py", "        mine = by_position.get(position)\n", "        mine = [n for ns in by_position.values() for n in ns if n.seat_key == str(leg.seat_key)]\n",
+  [f"{T}::test_r1_identical_seats_each_get_exactly_their_own_notice"]),
+ ("R1-early-path-silent", SRC/"panel_invoker.py", "                early_preflight = _publish_seat_preflight(\n                    board, pointer_brief=pointer_brief,", "                early_preflight = _publish_seat_preflight(\n                    board, pointer_brief=False,",
+  [f"{T}::test_r1_the_all_native_early_path_still_publishes_its_preflight"]),
+]
+
+
 def run(nodes):
     env = {**os.environ, "PYTHONPATH": str(RT/"src"), "PYTHONPYCACHEPREFIX": tempfile.mkdtemp(), "PYTHONDONTWRITEBYTECODE": "1"}
     env.pop("CLAUDECODE", None); env.pop("CLAUDE_CODE_ENTRYPOINT", None)
