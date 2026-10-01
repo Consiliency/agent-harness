@@ -10,12 +10,14 @@ input.
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 
 import pytest
 
 from phase_loop_runtime import cli, credential_redaction, observability, panel_invoker, redaction, runner
+from phase_loop_runtime.pipeline_adapter import branch_ops
 
 _PEM_LABEL = " ".join(("PRIVATE", "KEY"))
 _PGP_LABEL = " ".join(("PGP", "PRIVATE", "KEY", "BLOCK"))
@@ -103,6 +105,8 @@ SITES = {
     "pty_tail": lambda text: panel_invoker._sanitized_pty_tail(text.encode(), max_chars=100_000),
     "hotfix_reason_observability": lambda text: observability._redact_hotfix_reason(text)[:200],
     "hotfix_reason_cli": lambda text: cli._redact_hotfix_reason(text),
+    "branch_ops_git_excerpt": lambda text: branch_ops._stderr_excerpt(
+        type("Result", (), {"stderr": text, "stdout": ""})()),
 }
 
 
@@ -113,7 +117,8 @@ def test_every_site_removes_every_fragment(site, shape, value_class):
     embedded = _embed(VALUES[value_class], how)
     line = template.format(v=embedded)
     # hotfix reasons keep only 200 characters, so the shape goes first for them
-    text = line if site.startswith("hotfix") else f"prefix line\n{line}\nsuffix line"
+    short = site.startswith(("hotfix", "branch_ops"))
+    text = line if short else f"prefix line\n{line}\nsuffix line"
     output = SITES[site](text)
     assert _surviving(embedded, output) == [], (site, shape, value_class, output)
 
@@ -144,6 +149,7 @@ ORDINARY_TEXT = [
     "digest 3f2a9c1b7e4d5a6f8091",
     "max_tokens: 4096 and token_count=12",
     "the tokens were counted",
+    "hint: use --token to pass it",
 ]
 
 
@@ -190,6 +196,8 @@ _TIMING_INPUTS = {
     "at_run": "a@" * 32_000,
     "begin_armour_run": ("-----BEGIN " + _PEM_LABEL + "-----") * 2_000,
     "cookie_run": "cookie:" * 9_000,
+    "jwt_prefix_run": "eyJ-" * 64_000,
+    "wide_separator_run": "password" + " " * 64_000,
 }
 
 
@@ -199,3 +207,77 @@ def test_patterns_stay_linear_on_long_adversarial_input(name):
     started = time.perf_counter()
     credential_redaction.redact_text(text, identity=((), ()))
     assert time.perf_counter() - started < 2.0, name
+
+
+# Generative parity: for random keys, quoting, separators, whitespace widths, escape wrapping and
+# value classes, every site redacts at least as much as BOTH previous implementations did: the
+# single stderr-excerpt pattern and the previous leg-detail key/value pattern.
+_PREVIOUS_LEG_KV_RE = re.compile(
+    r"(?i)[\"']?\b(?:api[_-]?key|authorization|proxy-authorization|access[_-]?token|"
+    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|token|secret|password|passwd)[\"']?"
+    r"\s*[:=]\s*(?P<value>[\"']?(?:(?:bearer|basic|token|digest)\s+)?[^\s\"',;]+[\"']?)"
+)
+_KEYS = ["password", "passwd", "token", "api_key", "api-key", "apiKey", "secret", "authorization",
+         "dbPassword", "GITHUB_TOKEN", "access_token", "client_secret", "mysecret"]
+_KEY_QUOTES = ["", '"', "'"]
+_SEPARATORS = [":", "="]
+_SPACES = ["", " ", "\t", " " * 17, "\t" * 20, " " * 40]
+_TRUECOLOR = "\x1b[38;2;255;100;0m"
+_WRAPS = ["plain", "truecolor", "bold_truecolor", "dq_then_tail", "sq_then_tail", "colour_inside"]
+_TAILS = ["", " next", ",x", ";", " and more"]
+
+
+def _previous_surviving(text: str, value: str) -> int:
+    previous = _PREVIOUS_EXCERPT_RE.sub(r"\1\2<redacted>", text)
+    leg = text
+    for m in reversed(list(_PREVIOUS_LEG_KV_RE.finditer(text))):
+        leg = leg[:m.start("value")] + "<redacted>" + leg[m.end("value"):]
+    return min(len(_surviving(value, previous)), len(_surviving(value, leg)))
+
+
+def _generated_cases(count: int = 1500, seed: int = 20261001):
+    rng = random.Random(seed)
+    for _ in range(count):
+        value = VALUES[rng.choice(sorted(_BARE - {"single_quote"}))]
+        key, quote = rng.choice(_KEYS), rng.choice(_KEY_QUOTES)
+        wrap = rng.choice(_WRAPS)
+        if wrap == "truecolor":
+            shown = f"{_TRUECOLOR}{value}\x1b[0m"
+        elif wrap == "bold_truecolor":
+            shown = f"\x1b[1m{_TRUECOLOR}{value}\x1b[0m"
+        elif wrap == "dq_then_tail":
+            half = len(value) // 2
+            shown = f'"{value[:half]}"{value[half:]}'
+        elif wrap == "colour_inside":
+            half = len(value) // 2
+            shown = f"{value[:half]}\x1b[0m{value[half:]}"
+        elif wrap == "sq_then_tail":
+            half = len(value) // 2
+            shown = f"'{value[:half]}'{value[half:]}"
+        else:
+            shown = value
+        text = (f"{quote}{key}{quote}{rng.choice(_SPACES)}{rng.choice(_SEPARATORS)}"
+                f"{rng.choice(_SPACES)}{shown}{rng.choice(_TAILS)}")
+        yield text, value
+
+
+_GENERATED = list(_generated_cases())
+
+
+@pytest.mark.parametrize("site", sorted(set(SITES) - {"pty_tail"}))
+def test_generated_inputs_redact_at_least_as_much_as_before(site):
+    worse = []
+    for text, value in _GENERATED:
+        now = len(_surviving(value, SITES[site](text)))
+        if now > _previous_surviving(text, value):
+            worse.append((text, now))
+    assert worse == [], (len(worse), worse[:5])
+
+
+def test_generated_inputs_through_the_pty_tail():
+    worse = []
+    for text, value in _GENERATED[:300]:
+        now = len(_surviving(value, SITES["pty_tail"](text)))
+        if now > _previous_surviving(text, value):
+            worse.append((text, now))
+    assert worse == [], (len(worse), worse[:5])

@@ -23,6 +23,9 @@ import re
 from collections.abc import Sequence
 
 PLACEHOLDER = "<redacted>"
+# An excerpt keeps only a prefix of its input, so the input is capped at this many characters
+# before redaction (well beyond any excerpt length, so no value is cut at the excerpt edge).
+EXCERPT_INPUT_CAP = 8192
 _QUOTED_MAX = 4096
 
 # Names that mark the next value as a credential. Matched with no left word boundary, so glued
@@ -32,13 +35,13 @@ _SECRET_WORDS = (
     r"auth[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|access[_-]?key|"
     r"credentials?|signature|passphrase|password|passwd|token|secret"
 )
-# A value: a double- or single-quoted string (escapes allowed, bounded), else the whole
-# unquoted run up to whitespace.
-_VALUE = (
-    r'"(?:[^"\\\n]|\\.){0,' + str(_QUOTED_MAX) + r'}"'
-    r"|'(?:[^'\\\n]|\\.){0," + str(_QUOTED_MAX) + r"}'"
-    r"|\S+"
-)
+# A value: a double- or single-quoted string (escapes allowed, bounded) that ends the token,
+# i.e. is followed by a delimiter or the end of the text; otherwise the whole unquoted run up
+# to whitespace (so `"A"B` is redacted whole).
+_QUOTED_END = r"(?=[\s,;:)\]}]|$)"
+_DQ = r'"(?:[^"\\\n]|\\.){0,' + str(_QUOTED_MAX) + r'}"' + _QUOTED_END
+_SQ = r"'(?:[^'\\\n]|\\.){0," + str(_QUOTED_MAX) + r"}'" + _QUOTED_END
+_VALUE = _DQ + "|" + _SQ + r"|\S+"
 
 # Shapes whose WHOLE match is the credential.
 CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -55,7 +58,7 @@ CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"xox[abceoprs]-|AIza|ya29\.|AKIA)[A-Za-z0-9_.-]{8,}"
     ),
     re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"),
+    re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"),
     # a PEM or PGP private-key block, to its END line (or to the end of the text when cut)
     re.compile(
         r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----.*?"
@@ -69,25 +72,23 @@ CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
 VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # key=value / key: value, quoted or bare key, optional auth-scheme word before the value
     re.compile(
-        r"(?i)(?:" + _SECRET_WORDS + r")[\"']?\s{0,16}[:=]\s{0,16}"
-        r"(?:(?:bearer|basic|token|digest|negotiate)\s{1,16})?(?P<value>" + _VALUE + r")"
+        r"(?i)(?:" + _SECRET_WORDS + r")[\"']?\s*[:=]\s*"
+        r"(?:(?:bearer|basic|token|digest|negotiate)\s+)?(?P<value>" + _VALUE + r")"
     ),
     # a command-line flag followed by its value: --api-key VALUE / -token 'VALUE' / --db-password=V
     re.compile(
-        r"(?i)(?<![\w-])--?[A-Za-z0-9_-]{0,48}?(?:" + _SECRET_WORDS + r")(?:\s{1,16}|=)"
-        r"(?P<value>(?!-)(?:" + _VALUE + r"))"
+        r"(?i)(?<![\w-])--?[A-Za-z0-9_-]{0,48}?(?:" + _SECRET_WORDS + r")(?:\s+|=)"
+        r"(?![a-z]{1,5}(?:\s|$))(?P<value>(?!-)(?:" + _VALUE + r"))"
     ),
     # URL userinfo: scheme://user:VALUE@host or scheme://VALUE@host (the whole userinfo)
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]{0,31}://(?P<value>[^\s/@:]{1,256}(?::[^\s/@]{0,256})?)@"),
     # Cookie / Set-Cookie: a quoted value (JSON/dict form) or the rest of the header line
     re.compile(
-        r"(?i)\b(?:set-)?cookie[\"']?\s{0,16}:\s{0,16}(?P<value>"
-        r'"(?:[^"\\\n]|\\.){0,' + str(_QUOTED_MAX) + r'}"'
-        r"|'(?:[^'\\\n]|\\.){0," + str(_QUOTED_MAX) + r"}'"
-        r"|[^\r\n]+)"
+        r"(?i)\b(?:set-)?cookie[\"']?\s*:\s*(?P<value>" + _DQ + "|" + _SQ + r"|[^\r\n]+)"
     ),
 )
 
+_SGR_RE = re.compile(r"\x1b\[[0-9;:]*m")
 _ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
 _CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 _EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -133,9 +134,12 @@ def redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def normalize(text: str) -> str:
-    """Every escape-sequence and control character (newline kept) becomes ONE space, so
-    offsets are preserved and `Bearer\\t<tok>` / `Bearer\\x1b[1C<tok>` stay two words."""
-    text = _ESCAPE_RE.sub(lambda m: " " * len(m.group(0)), text or "")
+    """Colour and attribute sequences (SGR) are removed, so a value wrapped in colour stays one
+    token next to its key. Every other escape sequence becomes ONE space, and every other
+    control character (newline kept) becomes one space, so `Bearer\\t<tok>` and
+    `Bearer\\x1b[1C<tok>` stay two words."""
+    text = _SGR_RE.sub("", text or "")
+    text = _ESCAPE_RE.sub(" ", text)
     return _CTRL_RE.sub(" ", text)
 
 

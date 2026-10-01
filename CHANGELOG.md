@@ -31,6 +31,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A scheme word followed by prose ("token validation", "basic authentication",
   "digest <hex>") is no longer redacted as a credential.
 - Every pattern is linear in the input length, with bounded quantifiers after alternations.
+- Colour and attribute escape sequences are removed before detection, so a coloured value stays
+  one token next to its key; other escape sequences become one space. Whitespace around the
+  separator is unbounded. A quoted value counts as quoted only when a delimiter or the end of
+  the text follows its closing quote; otherwise the whole run to whitespace is redacted.
+- Inputs whose output is only an excerpt are capped before redaction
+  (`credential_redaction.EXCERPT_INPUT_CAP`), and the private leg log redacts only the tail it
+  keeps. Pipeline branch-operation error messages now go through the same pipeline.
 - `redaction.STDERR_SECRET_KV_RE` and the panel's private detector copies are removed.
 - The BAML adapter's error sanitizer moves onto this module in a follow-up, after its
   in-flight change lands.
