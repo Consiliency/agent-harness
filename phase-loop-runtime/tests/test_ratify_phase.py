@@ -1,5 +1,5 @@
 """EC-RATIFY-1/-2/-4/-5 falsifiers, with legacy and receipt-soundness controls."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -32,12 +32,14 @@ def _ruling(ruling_class="round_local", *, disposition="DEFERRED"):
     )
 
 
-def _gate(tmp_path, monkeypatch, president=None, *, with_seam=True, foreign=False):
+def _gate(tmp_path, monkeypatch, president=None, *, with_seam=True, foreign=False,
+          verdicts=("AGREE",) * 4):
     repo, head = _source_repo(tmp_path)
     entry = _golden()["attachment"]["falsifiers"][0]
     body = _falsifier_text(entry).removesuffix("DISAGREE\n") + "AGREE\n"
     board = DEFAULT_BOARD
-    legs = tuple(pi.PanelLegResult(seat.harness, "OK", body if i < 2 else "AGREE",
+    legs = tuple(pi.PanelLegResult(seat.harness, "OK",
+                                  body.removesuffix("AGREE\n") + verdicts[i] + "\n" if i < 2 else verdicts[i],
                                   seat_key=seat.seat_key)
                  for i, seat in enumerate(board.seats))
     panel = pi.PanelResult(legs)
@@ -74,11 +76,11 @@ def _gate(tmp_path, monkeypatch, president=None, *, with_seam=True, foreign=Fals
     return gate, runs, head
 
 
-def _defer_all(_model, prompt):
+def _defer_all(_model, prompt, *, ruling_class="round_local"):
     ids = re.findall(r"(?m)^(F[0-9]+):", prompt)
     assert ids, "president received no residuals"
     return {"status": "ok", "text": "\n".join(
-        f"FINDING {fid}: DEFERRED round_local — author retains the concern" for fid in ids
+        f"FINDING {fid}: DEFERRED {ruling_class} — author retains the concern" for fid in ids
     ) + "\nFORCING DECISION: PROCEED"}
 
 
@@ -113,6 +115,39 @@ def test_receipt_partition_scope_item_requires_ruling():
         text = text.replace("\nFORCING", "\nFINDING F002: DEFERRED round_local — tracked follow-up\nFORCING")
         assert pi._valid_president_grammar(text, findings)
     tdd.run_contract("receipt_partition_scope_item_requires_ruling", "resolution", check)
+
+
+def test_receipt_partition_changing_without_row(tmp_path, monkeypatch):
+    def check():
+        for ruling_class in CLASSES[1:]:
+            folder = tmp_path / ruling_class; folder.mkdir()
+            seen = []
+            def president(model, prompt):
+                seen.append(prompt)
+                return _defer_all(model, prompt, ruling_class=ruling_class)
+            gate, runs, _head = _gate(folder, monkeypatch, president)
+            assert len(runs) == 2 and len(seen) == 1, "post-receipt president seam not entered"
+            assert not gate.promoted, "changing DEFERRED ruling has no checked ledger row"
+            saved = json.loads((folder / "stream" / "president.ruling.json").read_text())
+            assert saved["schema"] == "president.ruling.v1" and ruling_class in json.dumps(saved)
+    tdd.run_contract("receipt_partition_changing_without_row", "resolution", check)
+
+
+def test_receipt_partition_nonunanimous(tmp_path, monkeypatch):
+    def check():
+        for verdict in ("PARTIALLY AGREE", "DISAGREE"):
+            folder = tmp_path / verdict; folder.mkdir()
+            seen = []
+            def president(model, prompt):
+                seen.append(prompt)
+                return _defer_all(model, prompt)
+            gate, runs, _head = _gate(folder, monkeypatch, president,
+                                     verdicts=("AGREE", "AGREE", "AGREE", verdict))
+            assert len(runs) == 2 and len(seen) == 1, "post-receipt president seam not entered"
+            assert not gate.promoted, "DEFERRED ruling erased a non-unanimous board"
+            saved = json.loads((folder / "stream" / "president.ruling.json").read_text())
+            assert saved["schema"] == "president.ruling.v1"
+    tdd.run_contract("receipt_partition_nonunanimous", "resolution", check)
 
 
 def test_receipt_partition_bound_findings_excluded():
@@ -223,6 +258,11 @@ def test_ruling_classes_binding():
         for key in _bindings():
             changed = {**_bindings(), key: "foreign"}
             assert pi.president_blocks_landing(_bind(_ruling(), binding=changed)), key
+        for key, value in _bindings().items():
+            if key == "authorization_identity":
+                continue
+            changed = {**_bindings(), key: "e" * len(value)}
+            assert pi.president_blocks_landing(_bind(_ruling(), binding=changed)), f"well-formed stale {key}"
         assert pi.president_blocks_landing(_ruling("contract_changing"))
     tdd.run_contract("ruling_classes_binding", "resolution", check)
 
@@ -401,6 +441,57 @@ def test_guard_proof_fixture_control(tmp_path):
     cases = list(ElementTree.parse(proof["junit_path"]).getroot().iter("testcase"))
     assert len(cases) == 1 and cases[0].get("name") == "test_guard"
     assert cases[0].find("failure") is None and cases[0].find("skipped") is None
+
+
+def test_governed_gate_bypass_control(tmp_path, monkeypatch):
+    real_gate = gr.governed_board_gate
+    def bypass(**kwargs):
+        president = kwargs.pop("president_invoke", None)
+        stream = kwargs.pop("stream_dir", None)
+        gate = real_gate(**kwargs)
+        if president is None:
+            return gate
+        prompt = "\n".join(
+            f"F{i:03}: {finding.reason}\n{finding.body or ''}"
+            for i, finding in enumerate(gate.findings, 1) if finding.code == "finding_receipt")
+        text = president("claude-opus-5-5", prompt)["text"]
+        stream.mkdir(parents=True, exist_ok=True)
+        (stream / "president.ruling.json").write_text(json.dumps({
+            "schema": "president.ruling.v1", "authorization_identity": "public_board_president.v1", "text": text}))
+        return replace(gate, promoted=True)  # Mutation: bypass ledger and unanimity.
+    with monkeypatch.context() as mutation:
+        mutation.delenv("PHASE_LOOP_TDD_EXPECT_RATIFY", raising=False)
+        mutation.setattr(tdd, "capability", lambda lane: object())
+        mutation.setattr(gr, "governed_board_gate", bypass)
+        positive = tmp_path / "positive"; positive.mkdir()
+        test_receipt_partition(positive, mutation)
+        for case in (test_receipt_partition_changing_without_row, test_receipt_partition_nonunanimous):
+            folder = tmp_path / case.__name__; folder.mkdir()
+            with pytest.raises(AssertionError, match="changing DEFERRED|non-unanimous board"):
+                case(folder, mutation)
+    assert gr.governed_board_gate is real_gate
+
+
+def test_shape_only_binding_control(monkeypatch):
+    real_predicate = pi.president_blocks_landing
+    def shape_only(ruling, *, required_seat_verdicts, binding, expected_binding):
+        widths = {"reviewed_sha": 40, "instruction_digest": 64, "board_digest": 64, "findings_digest": 64}
+        valid = all(re.fullmatch(r"[0-9a-f]{%d}" % width, binding.get(key, "")) for key, width in widths.items())
+        valid = valid and binding.get("authorization_identity") == "public_board_president.v1"
+        return SimpleNamespace(held=not valid or any(v != "AGREE" for v in required_seat_verdicts))
+    def blocks(ruling):
+        if hasattr(ruling, "held"):
+            return ruling.held
+        return "contract_changing" in ruling.text or ": BLOCKING" in ruling.text
+    with monkeypatch.context() as mutation:
+        mutation.delenv("PHASE_LOOP_TDD_EXPECT_RATIFY", raising=False)
+        mutation.setattr(tdd, "capability", lambda lane: object())
+        mutation.setattr(pi, "bind_ratify_resolution", shape_only, raising=False)
+        mutation.setattr(pi, "president_blocks_landing", blocks)
+        assert not blocks(_bind(_ruling()))
+        with pytest.raises(AssertionError, match="well-formed stale"):
+            test_ruling_classes_binding()
+    assert pi.president_blocks_landing is real_predicate
 
 
 def test_unknown_capability_strict_failure(monkeypatch):

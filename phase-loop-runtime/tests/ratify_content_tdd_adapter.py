@@ -24,6 +24,7 @@ PHASE_CASES = (
     "receipt_partition", "receipt_partition_scope_item_requires_ruling",
     "receipt_partition_missing_or_stale_ruling", "receipt_partition_native_deferral",
     "receipt_partition_foreign_attachment", "ruling_classes",
+    "receipt_partition_changing_without_row", "receipt_partition_nonunanimous",
     "receipt_partition_bound_findings_excluded", "ruling_classes_binding",
     "ruling_classes_legacy_compatibility", "ruling_classes_changing_without_row",
     "ruling_classes_real_consumers", "human_tiers", "human_tiers_universal_triggers",
@@ -45,6 +46,7 @@ CONTROL_CASES = (
     "receipt_binding_control",
     "landed_guard_marker_removal",
     "guard_proof_fixture_control",
+    "governed_gate_bypass_control", "shape_only_binding_control",
 )
 TEST_DIR = "phase-loop-runtime/tests"
 FROZEN_TEST_FILES = tuple(f"{TEST_DIR}/{name}" for name in (
