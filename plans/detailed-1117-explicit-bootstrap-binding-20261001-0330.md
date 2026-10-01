@@ -19,6 +19,14 @@ Frozen contract: the public signature `onboard_zero_legacy_repository(worktree, 
 
 ## Changes
 
+### Panel repair amendment — Consiliency/agent-harness#1211
+
+The owner requested a full manual panel with tools and authorized draft updates. Round one at the existing draft input produced Gemini AGREE and Claude/Astra/Sol PARTIALLY AGREE. Their actual fixture probes establish three blockers under the existing criteria: aliases double-acquire one lock, relative supplemental coverage changes with the barrier's working directory, and a bootstrap appearing after an absent initial read can produce an unbound receipt. Merge remains pending; no production authority or history attestation is authorized.
+
+Before source repair, add regressions for absolute `..` aliases, relative and symlink refusal, activation from another working directory, and an initially absent bootstrap becoming ACTIVE. Require the authority-slot lock during traditional-only scans. Canonicalize explicit roots with the existing `_canonical_input_path` boundary, retaining their order; reject non-absolute recorded receipt roots before barrier admission. Hold the bootstrap authority-slot lock even when absent and revalidate both presence and binding before repository mutation. These changes preserve the existing vocabulary, signatures, receipt schema and sealed global inventory. Clarify canonical coverage and ordered retries in the contract document.
+
+Generated repair evidence/read allowlist: `.phase-loop/runs/1117-panel-fix/**` and this task's manual reports, launch metadata and streams under `/home/viperjuice/workspace/reviews/agent-harness-1117-explicit-bootstrap-binding/manual-panel-round*/**`. This includes only task-generated evidence; credentials and operational authority payloads remain excluded. Re-run the dissenting seats against the actual repair delta, carrying only a usable AGREE verdict. The predeclared cap remains three rounds.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py` (modify)
 
 - `onboard_zero_legacy_repository` — move authenticated bootstrap lookup outside the implicit-roots branch. Preserve supplied roots; inherit bootstrap roots only when omitted. Reuse its real cutover ID/digest/root; reject a conflicting requested cutover before canonical mutation. Deduplicate and sort the union of bootstrap seal locks and explicit-root authority locks. Revalidate the bootstrap binding while holding that union before draining/writing.
@@ -65,6 +73,7 @@ All commands run from this isolated worktree with `PYTHONPATH=phase-loop-runtime
 - Bootstrap module: the same wrapper with `python -m pytest -q phase-loop-runtime/tests/test_fabpub_zero_history_bootstrap.py`.
 - Required complete bounded subsystem suite: the exact `automation.suite_command` above (bootstrap, shared epoch, partition rotation, recovery controls and admission compatibility). No full repository suite or live-provider qualification is claimed.
 - `git diff --check`.
+- Panel-fix RED: the new `explicit_root_alias`, `relative_supplemental_root`, `absent_bootstrap` and `traditional_scan_guards_bootstrap` regressions against the unchanged reviewed source. Run the complete bootstrap module and the same bounded subsystem suite after repair, with the isolated environment's `bin` directory first on `PATH` so fixture subprocesses use the matching phase-loop command.
 
 Use installed `phase_loop_runtime.verification_evidence.run_verification` to execute/record the environment refresh, bootstrap module, diff check and required suite; cite its actual sealed `verification.json` and log. No hand-authored success evidence. The task authorizes focused validation; full repository/provider-dependent gates are outside this local repair closeout.
 

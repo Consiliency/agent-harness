@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -150,6 +151,191 @@ def test_explicit_roots_hold_bootstrap_and_history_locks_through_activation(
     finally:
         live.release_barrier_leases(report)
     assert not any((str(path), threading.get_ident()) in live._LOCK_DEPTH for path in expected)
+
+
+@pytest.mark.parametrize("alias_kind", ["dotdot", "relative", "symlink"])
+def test_explicit_root_alias_does_not_double_acquire_bootstrap_lock(
+    tmp_path: Path, alias_kind: str
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    canonical = tmp_path / "legacy"
+    (tmp_path / "alias-parent").mkdir()
+    if alias_kind == "dotdot":
+        alias = tmp_path / "alias-parent" / ".." / "legacy"
+    elif alias_kind == "relative":
+        alias = Path("legacy")
+    else:
+        alias = tmp_path / "legacy-link"
+        alias.symlink_to(canonical, target_is_directory=True)
+    script = """
+import sys
+from pathlib import Path
+from phase_loop_runtime.convergence.broker import live
+fresh, root, authority = map(Path, sys.argv[1:4])
+kind = sys.argv[4]
+try:
+    receipt = live.onboard_zero_legacy_repository(fresh, roots=(root,), authority_root=authority)
+except live.LegacyCutoverConflict as error:
+    assert kind != 'dotdot', str(error)
+    assert ('absolute' if kind == 'relative' else 'symlink') in str(error)
+    assert not live.repository_namespace_root(fresh).exists()
+else:
+    assert kind == 'dotdot'
+    assert receipt.legacy_root_inventory == (str(root.resolve()),)
+    locks = live._receipt_seal_lock_paths(receipt)
+    assert len(locks) == len({path.resolve() for path in locks})
+    report = live.fabpub_activation_barrier([fresh])
+    try:
+        assert live.WriterGenerationLatch.open(fresh).held_leases()
+    finally:
+        live.release_barrier_leases(report)
+    assert not live.WriterGenerationLatch.open(fresh).held_leases()
+print('alias boundary checked')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(fresh), str(alias),
+         str(tmp_path / "authority"), alias_kind],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path(live.__file__).resolve().parents[3])},
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "alias boundary checked" in result.stdout
+
+
+def test_relative_supplemental_root_is_refused_before_namespace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    live.bootstrap_zero_history_authority(_probe(tmp_path, known), confirmed_zero_history=True)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(live.LegacyCutoverConflict, match="absolute"):
+        live.onboard_zero_legacy_repository(
+            fresh, roots=(Path("history"),), authority_root=tmp_path / "authority"
+        )
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+def test_absolute_supplemental_root_blocks_legacy_from_another_cwd(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    live.bootstrap_zero_history_authority(_probe(tmp_path, known), confirmed_zero_history=True)
+    root = tmp_path / "history"
+    live.onboard_zero_legacy_repository(
+        fresh, roots=(root,), authority_root=tmp_path / "authority"
+    )
+    leaf = root / "legacy-train" / "legacy-repository"
+    leaf.mkdir(parents=True)
+    (leaf / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
+    other = tmp_path / "barrier-cwd"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    with pytest.raises(live.LegacyCutoverConflict, match="live legacy source"):
+        live.fabpub_activation_barrier([fresh])
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    assert not (other / "history").exists()
+
+
+def test_relative_supplemental_root_in_historical_receipt_blocks_other_cwd(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    operator = tmp_path / "operator-cwd"
+    operator.mkdir()
+    monkeypatch.chdir(operator)
+    roots = (Path("history"),)
+    locks = {*live._bootstrap_seal_lock_paths(inventory),
+             *live._zero_source_seal_lock_paths(roots, tmp_path / "authority")}
+    with live._hold_all(sorted(locks, key=str)):
+        receipt = live._onboard_zero_legacy_repository_under_seal(
+            fresh, cutover_id=inventory["cutover_id"], roots=roots,
+            authority_root=tmp_path / "authority",
+            bootstrap_inventory_sha256=inventory["inventory_sha256"],
+            bootstrap_authority_root=tmp_path / "authority",
+        )
+    assert receipt.legacy_root_inventory == ("history",)
+    leaf = operator / "history" / "legacy-train" / "legacy-repository"
+    leaf.mkdir(parents=True)
+    (leaf / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
+    other = tmp_path / "barrier-cwd"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    with pytest.raises(live.LegacyCutoverConflict, match="absolute"):
+        live.fabpub_activation_barrier([fresh])
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    assert not (other / "history").exists()
+
+
+def test_absent_bootstrap_appearing_before_seal_refuses_before_namespace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    original = live.global_active_authority_exists
+    activated = False
+
+    def activate_before_authority_check(roots=None, *, authority_root=None):
+        nonlocal activated
+        if not activated:
+            activated = True
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+        return original(roots, authority_root=authority_root)
+
+    monkeypatch.setattr(live, "global_active_authority_exists", activate_before_authority_check)
+    with pytest.raises(live.LegacyCutoverConflict, match="bootstrap changed"):
+        live.onboard_zero_legacy_repository(
+            fresh, roots=(tmp_path / "history",), authority_root=tmp_path / "authority"
+        )
+    assert activated
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+def test_traditional_scan_guards_bootstrap_slot_when_absent(tmp_path: Path, monkeypatch) -> None:
+    fresh = _git_repo(tmp_path / "fresh")
+    root = tmp_path / "traditional"
+    authority = root / "fabpub-global-cutover"
+    authority.mkdir(parents=True)
+    cutover_id = "traditional-only"
+    (authority / "ACTIVE_CUTOVER").write_text(cutover_id + "\n", encoding="utf-8")
+    (authority / f"{cutover_id}.journal.jsonl").write_text(
+        json.dumps({"cutover_id": cutover_id, "state": "ACTIVE"}) + "\n",
+        encoding="utf-8",
+    )
+    original = live._prove_zero_source
+    boundaries = []
+    guard = tmp_path / "authority" / "bootstrap.lock"
+
+    def observe_guard(snapshot, roots, boundary):
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import fcntl,sys\n"
+             "with open(sys.argv[1], 'a') as handle:\n"
+             "    try: fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+             "    except BlockingIOError: pass\n"
+             "    else: sys.exit(1)\n", str(guard)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        boundaries.append(boundary)
+        return original(snapshot, roots, boundary)
+
+    monkeypatch.setattr(live, "_prove_zero_source", observe_guard)
+    receipt = live.onboard_zero_legacy_repository(
+        fresh, cutover_id=cutover_id, roots=(root,), authority_root=tmp_path / "authority"
+    )
+    assert boundaries
+    assert live._receipt_bootstrap_claim(receipt) is None
+    assert not (tmp_path / "authority" / "ACTIVE_BOOTSTRAP").exists()
 
 
 def test_explicit_roots_reject_conflicting_bootstrap_cutover_before_mutation(

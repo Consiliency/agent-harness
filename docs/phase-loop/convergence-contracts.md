@@ -61,18 +61,28 @@ when one exists, including when the caller supplies explicit legacy roots. It
 retains that bootstrap's cutover ID, inventory digest and authority root in the
 sealed onboarding inventory. Explicit roots define the receipt's actual history
 coverage; they do not replace or modify the sealed global bootstrap inventory.
+As in the bootstrap probe, roots must be absolute and have no symlinked ancestors;
+`..` is resolved before computing lock identities and recording coverage. Relative
+or symlinked roots are refused before repository mutation, so recorded coverage
+cannot change with the activation command's working directory.
 Without a persistent bootstrap, the existing traditional ACTIVE route applies.
 
 Onboarding holds the deduplicated, sorted union of bootstrap seal locks and the
 declared history-root authority locks. It revalidates the bootstrap binding
-under those locks before changing the repository generation, and performs the
-actual repeated zero-source scans before activation. Retrying an interrupted
-or completed onboarding requires the same immutable history coverage and
-bootstrap binding. A retry cannot silently replace either claim.
+and its presence under those locks before changing the repository generation.
+The bootstrap authority-slot lock is held even when no bootstrap is ACTIVE;
+a bootstrap appearing after the initial read is refused before mutation.
+Onboarding performs the actual repeated zero-source scans before activation.
+Retrying an interrupted or completed onboarding requires the same canonical
+history roots in the same order and bootstrap binding. A retry cannot silently
+replace either claim.
 
 Subsequent activation retains both lock sets and checks the zero-source
 receipt's recorded roots again before granting a generation lease. Newly
 discovered legacy evidence blocks activation and releases acquired leases.
+The rescan applies to all zero-source receipts, including traditional authority
+and rotated receipts' base coverage. Non-absolute or symlinked zero-source receipt
+roots are refused before barrier admission.
 
 The operator remains responsible for identifying all authoritative history
 locations. A successful scan of supplied roots does not establish that the

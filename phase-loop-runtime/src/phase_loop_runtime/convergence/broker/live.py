@@ -3838,8 +3838,7 @@ def _zero_source_seal_lock_paths(
     bootstrap_root = _canonical_input_path(
         authority_root or default_fabpub_authority_root(), label="authority root"
     )
-    if (bootstrap_root / "ACTIVE_BOOTSTRAP").exists():
-        paths.add(bootstrap_root / "bootstrap.lock")
+    paths.add(bootstrap_root / "bootstrap.lock")
     return tuple(sorted(paths, key=str))
 
 
@@ -3891,6 +3890,7 @@ def onboard_zero_legacy_repository(
         bootstrap_seal_locks = _bootstrap_seal_lock_paths(bootstrap)
     elif roots is None:
         roots = declared_legacy_roots()
+    roots = tuple(_canonical_input_path(root, label="legacy root") for root in roots)
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
             "zero-source onboarding requires a persistent global ACTIVE authority"
@@ -3903,14 +3903,16 @@ def onboard_zero_legacy_repository(
         )
     )
     with _hold_all(seal_locks):
-        if bootstrap is not None:
-            active_bootstrap = _active_bootstrap_inventory(bootstrap_authority_root)
-            if (
-                active_bootstrap is None
-                or active_bootstrap["inventory_sha256"] != bootstrap_inventory_sha256
+        active_bootstrap = _active_bootstrap_inventory(bootstrap_authority_root or authority_root)
+        if (
+            (active_bootstrap is None) != (bootstrap is None)
+            or active_bootstrap is not None
+            and (
+                active_bootstrap["inventory_sha256"] != bootstrap_inventory_sha256
                 or active_bootstrap["cutover_id"] != cutover_id
-            ):
-                raise LegacyCutoverConflict("active bootstrap changed before onboarding seal")
+            )
+        ):
+            raise LegacyCutoverConflict("active bootstrap changed before onboarding seal")
         return _onboard_zero_legacy_repository_under_seal(
             worktree,
             cutover_id=cutover_id,
@@ -5276,6 +5278,8 @@ def _receipt_seal_lock_paths(
 ) -> tuple[Path, ...]:
     receipt = _rotation_base_receipt(receipt)
     roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
+    if receipt.zero_source:
+        roots = tuple(_canonical_input_path(root, label="receipt legacy root") for root in roots)
     root_locks = _traditional_seal_lock_paths(roots)
     bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
     if bootstrap_claim is not None:
