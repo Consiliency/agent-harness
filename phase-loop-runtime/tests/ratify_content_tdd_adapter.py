@@ -43,6 +43,7 @@ CONTROL_CASES = (
     "red_xpass_refused", "landing_junit_zero_skips", "touch_shape_owner_serialization",
     "rejected_recording_no_receipt", "verify_rescans_red_log",
     "receipt_binding_control",
+    "landed_guard_marker_removal",
 )
 TEST_DIR = "phase-loop-runtime/tests"
 FROZEN_TEST_FILES = tuple(f"{TEST_DIR}/{name}" for name in (

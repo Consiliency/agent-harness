@@ -1,11 +1,25 @@
 """A landed RATIFY corpus must execute every node, including its docs falsifier."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 import ratify_content_tdd_adapter as tdd
+
+
+def _ratify_completed():
+    manifest = Path(__file__).resolve().parents[2] / "plans/manifest.json"
+    if not manifest.exists():
+        return False
+    rows = json.loads(manifest.read_text(encoding="utf-8"))["plans"]
+    return any(row.get("phase_alias") == "RATIFY" and (
+        row.get("status") == "completed" or any(
+            event.get("transition") == "completed" for event in row.get("lifecycle", ())
+        )
+    ) for row in rows)
 
 
 def test_no_ratify_contract_skips_as_unimplemented():
@@ -33,4 +47,8 @@ def test_no_ratify_contract_skips_as_unimplemented():
                         if "test_ratify_landed.py" not in node}
             assert len(cases) == len(expected) and {case.get("name") for case in cases} == expected
             assert not any(any(case.find(tag) is not None for tag in ("skipped", "error", "failure")) for case in cases)
-    tdd.run_contract("landed_no_skips", "resolution", check)
+    # Completion is durable manifest history, independent of removable source
+    # markers. A later deletion must fail ordinary CI, even with no strict env.
+    overrides = {"PHASE_LOOP_TDD_REQUIRE_RATIFY_GREEN": "1"} if _ratify_completed() else {}
+    with patch.dict(os.environ, overrides):
+        tdd.run_contract("landed_no_skips", "resolution", check)

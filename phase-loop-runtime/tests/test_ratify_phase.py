@@ -379,6 +379,16 @@ def test_receipt_binding_control(tmp_path, monkeypatch):
     assert not gate.promoted  # The no-seam compatibility hold remains.
 
 
+def test_landed_guard_marker_removal(monkeypatch):
+    import test_ratify_landed as landed
+    monkeypatch.delenv("PHASE_LOOP_TDD_EXPECT_RATIFY", raising=False)
+    monkeypatch.delenv("PHASE_LOOP_TDD_REQUIRE_RATIFY_GREEN", raising=False)
+    monkeypatch.setattr(landed, "_ratify_completed", lambda: True)
+    monkeypatch.setattr(tdd, "capability", lambda lane: (_ for _ in ()).throw(tdd.MissingCapability("deleted marker")))
+    with pytest.raises(tdd.MissingCapability, match="deleted marker"):
+        landed.test_no_ratify_contract_skips_as_unimplemented()
+
+
 def test_unknown_capability_strict_failure(monkeypatch):
     monkeypatch.delenv("PHASE_LOOP_TDD_EXPECT_RATIFY", raising=False)
     monkeypatch.setenv("PHASE_LOOP_TDD_REQUIRE_RATIFY_RESOLUTION_GREEN", "1")
