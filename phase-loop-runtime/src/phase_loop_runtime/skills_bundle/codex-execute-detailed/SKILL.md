@@ -126,14 +126,18 @@ Do NOT infer "runner owns closeout" from `verification_artifact_path` — every 
 records it; it does not signal a runner. The following applies for human-invoked plan
 execution.
 
-Call `phase_loop_runtime.publishing.publish_from_worktree(repo, owned_paths, draft=<intent>)`
-(IF-0-P1-1 — the runtime publication primitive), supplying the worktree root, the plan's
-owned paths, and the draft/ready intent:
+Call `phase_loop_runtime.publishing.publish_human_invoked_from_worktree(repo,
+owned_paths, plan_path=<plan>, verification_artifact_path=<artifact>, draft=<intent>)`
+(IF-0-P1-1 — the supported human publication adapter), supplying the worktree root, the
+plan's owned paths, the exact detailed plan and verification artifact, and the draft/ready
+intent:
 - `draft=True` when dependencies remain or verification was partial/skipped;
 - `draft=False` when verification is complete (skipped or partial verification never opens
   a ready PR).
 
-The primitive performs the complete #28 flow in code, not prose:
+The adapter authenticates the repository receipt and ACTIVE authority, binds the plan and
+verification-artifact digests into a durable publication checkpoint outside the worktree,
+and then performs the complete agent-harness#28 flow through the broker-only primitive:
 
 1. **Preflight.** Confirms the branch is non-protected, non-main, and not in a
    dirty/unowned state; confirms a remote, push auth, and the `gh` CLI. A preflight
@@ -153,7 +157,8 @@ The primitive performs the complete #28 flow in code, not prose:
 Returns `{status: "published", branch, head_sha, pr_url}` on success (IF-0-P1-1; report
 `pr_url` in the final response and include `head_sha` in the handoff for downstream
 consumers). Returns `{status: "publication_blocked", reason: <slug>}` on any violation —
-report `publication blocked` with the reason and stop.
+report `publication blocked` with the reason and the returned `handoff`, then stop. Never
+construct authority preimages, receipts, bootstrap claims, or checkpoint roots by hand.
 
 ## Worktree lifecycle — prune after merge (standing rule)
 

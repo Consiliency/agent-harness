@@ -24,6 +24,7 @@ from _fabpub_tdd_guard import fabpub_migrated_activated, fabpub_symbol
 from phase_loop_runtime.publishing import (
     PROTECTED_BRANCHES,
     _is_secret_path,
+    publish_human_invoked_from_worktree,
     publish_from_worktree,
 )
 from phase_loop_runtime.convergence.contracts import AdmissionRequest, PublishCommittedBranchResult, BrokerTerminalEvidence
@@ -663,6 +664,214 @@ def test_successful_publish_returns_if_0_p1_1_shape(tmp_path: Path, request):
     assert isinstance(result["head_sha"], str)
     assert len(result["head_sha"]) >= 7
     assert all(c in "0123456789abcdef" for c in result["head_sha"])
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1117: supported human-invoked FABPUB authority handoff
+
+
+def _human_publish_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+    plan = tmp_path / "plan.md"
+    verification = tmp_path / "verification.json"
+    plan.write_text("# Detailed plan\n", encoding="utf-8")
+    verification.write_text('{"status":"passed"}\n', encoding="utf-8")
+    return plan, verification
+
+
+def test_human_publish_requires_plan_and_verification_context(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+
+    result = publish_human_invoked_from_worktree(repo, ["owned.py"])
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "human_publication_context_required"
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["required_inputs"] == [
+        "plan_path",
+        "verification_artifact_path",
+    ]
+
+
+def test_human_publish_returns_typed_bootstrap_handoff_when_repo_is_deferred(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    released = []
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(
+        live,
+        "fabpub_activation_barrier",
+        lambda worktrees: {"repositories": [], "deferred": [str(repo)], "leases": []},
+    )
+    monkeypatch.setattr(live, "release_barrier_leases", lambda report: released.append(report))
+    monkeypatch.setattr(
+        live,
+        "build_routing_broker_client",
+        lambda: pytest.fail("a deferred repository must not construct a broker client"),
+    )
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "repository_publication_authority_required"
+    handoff = result["handoff"]
+    assert handoff["schema"] == "HumanPublicationHandoff.v1"
+    assert handoff["canonical_repository_identity"] == live.repository_snapshot(repo).identity
+    assert handoff["next_step"] == "probe_and_confirm_fabpub_authority"
+    assert handoff["probe_command"][:3] == ["phase-loop", "fabpub-bootstrap", "--probe"]
+    assert "--legacy-root" in handoff["operator_must_supply"]
+    assert "--historical-evidence-root" in handoff["operator_must_supply"]
+    assert "--search-root" in handoff["operator_must_supply"]
+    assert released
+    checkpoint_parent = live.repository_snapshot(repo).common_dir / "phase-loop-human-publication-v1"
+    assert not checkpoint_parent.exists()
+
+
+def test_human_publish_builds_digest_bound_authority_and_releases_resources(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    report = {"repositories": [str(repo.resolve())], "leases": [object()]}
+    events = []
+    captured = {}
+
+    class _ClosableBroker:
+        def close(self):
+            events.append("broker_closed")
+
+    broker = _ClosableBroker()
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda worktrees: report)
+    monkeypatch.setattr(live, "release_barrier_leases", lambda value: events.append(("released", value)))
+    monkeypatch.setattr(live, "build_routing_broker_client", lambda: broker)
+
+    def fake_publish(repo_arg, owned_paths, **kwargs):
+        captured.update(repo=repo_arg, owned_paths=owned_paths, **kwargs)
+        return {
+            "status": "published",
+            "branch": "feat/p1-test",
+            "head_sha": "a" * 40,
+            "pr_url": "https://github.com/owner/repo/pull/99",
+        }
+
+    monkeypatch.setattr(publishing, "publish_from_worktree", fake_publish)
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+        draft=False,
+    )
+
+    assert result["status"] == "published"
+    assert captured["broker_client"] is broker
+    assert captured["draft"] is False
+    authority = captured["publish_authority"]
+    preimage = authority.envelope_authority_preimage
+    assert preimage["schema"] == "PublishEnvelopeAuthorityPreimage.v1"
+    assert preimage["roadmap_digest"] == publishing._sha256(plan.read_bytes())
+    assert preimage["verification_plan_digest"] == publishing._sha256(
+        publishing._canonical_bytes(
+            {
+                "schema": "HumanVerificationBinding.v1",
+                "plan_sha256": publishing._sha256(plan.read_bytes()),
+                "verification_artifact_sha256": publishing._sha256(
+                    verification.read_bytes()
+                ),
+            }
+        )
+    )
+    assert preimage["authority_domain_scope"] == (
+        f"repository:{live.repository_snapshot(repo).identity}"
+    )
+    assert preimage["operation_identity"] == "publish:feat/p1-test"
+    checkpoint = captured["checkpoint_root"]
+    assert checkpoint == authority.checkpoint_root
+    assert checkpoint.is_dir()
+    assert live.repository_snapshot(repo).common_dir in checkpoint.parents
+    assert events == ["broker_closed", ("released", report)]
+
+
+def test_human_publish_converts_authority_refusal_to_typed_handoff(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+
+    def refuse(_worktrees):
+        raise live.LegacyCutoverConflict("receipt does not authenticate")
+
+    monkeypatch.setattr(live, "fabpub_activation_barrier", refuse)
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "repository_publication_authority_refused"
+    assert result["detail"] == "legacy_cutover_conflict: receipt does not authenticate"
+    assert result["handoff"]["next_step"] == "repair_fabpub_authority"
+
+
+def test_human_publish_uses_real_activation_barrier_to_onboard_repository(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    authority_root = tmp_path / "authority"
+    inventory = live.probe_zero_history_bootstrap(
+        cutover_id="human-publication-test",
+        authority_root=authority_root,
+        worktrees=(repo,),
+    )
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(authority_root))
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    broker = _Broker()
+    monkeypatch.setattr(live, "build_routing_broker_client", lambda: broker)
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    snapshot = live.repository_snapshot(repo)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert result["status"] == "published"
+    assert receipt is not None
+    assert live._receipt_active_authority_exists(receipt)
+    assert broker.requests[0].admission.canonical_repository_identity == snapshot.identity
+    assert broker.requests[0].admission.roadmap_digest == publishing._sha256(
+        plan.read_bytes()
+    )
+    assert live.WriterGenerationLatch.open(repo).held_leases() == ()
 
 
 # ---------------------------------------------------------------------------

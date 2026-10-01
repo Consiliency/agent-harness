@@ -1105,6 +1105,298 @@ def _envelope_from_transaction(transaction: PublishTransaction, authority: dict,
     )
 
 
+def _human_publication_handoff(
+    repo: Path,
+    *,
+    next_step: str,
+    required_inputs: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Return the actionable, non-authorizing handoff for a human publish refusal."""
+    handoff: dict[str, Any] = {
+        "schema": "HumanPublicationHandoff.v1",
+        "repository": str(Path(repo).resolve()),
+        "next_step": next_step,
+        "human_required": True,
+    }
+    if required_inputs:
+        handoff["required_inputs"] = list(required_inputs)
+    try:
+        from .convergence.broker.live import repository_snapshot
+
+        snapshot = repository_snapshot(repo)
+    except Exception:
+        return handoff
+    inventory = (
+        snapshot.common_dir
+        / "phase-loop-fabpub-bootstrap-v1"
+        / f"{snapshot.identity}.inventory.json"
+    )
+    handoff.update(
+        canonical_repository_identity=snapshot.identity,
+        repository_common_dir=str(snapshot.common_dir),
+        probe_command=[
+            "phase-loop",
+            "fabpub-bootstrap",
+            "--probe",
+            "--inventory",
+            str(inventory),
+            "--worktree",
+            str(snapshot.worktree),
+        ],
+        operator_must_supply=[
+            "--legacy-root",
+            "--historical-evidence-root",
+            "--search-root",
+        ],
+        apply_command=[
+            "phase-loop",
+            "fabpub-bootstrap",
+            "--apply",
+            "--inventory",
+            str(inventory),
+            "--confirm-zero-history",
+        ],
+        apply_requires=(
+            "operator review that the inventory covers every authoritative legacy, "
+            "historical-evidence, and search root"
+        ),
+        resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
+    )
+    return handoff
+
+
+def _human_publication_context_digest(
+    identity: str,
+    branch: str,
+    owned_paths: Sequence[str],
+    plan_sha256: str,
+    verification_artifact_sha256: str,
+) -> str:
+    return _sha256(
+        _canonical_bytes(
+            {
+                "schema": "HumanPublicationContext.v1",
+                "canonical_repository_identity": identity,
+                "branch": branch,
+                "owned_paths": sorted(owned_paths),
+                "plan_sha256": plan_sha256,
+                "verification_artifact_sha256": verification_artifact_sha256,
+            }
+        )
+    )
+
+
+def _human_publication_authority(
+    repo: Path,
+    owned_paths: Sequence[str],
+    *,
+    plan_sha256: str,
+    verification_artifact_sha256: str,
+    branch: str,
+    checkpoint_root: Path,
+) -> PublishAuthorityPreimages:
+    identity = canonical_repository_identity(repo)
+    context_digest = _human_publication_context_digest(
+        identity,
+        branch,
+        owned_paths,
+        plan_sha256,
+        verification_artifact_sha256,
+    )
+    verification_digest = _sha256(
+        _canonical_bytes(
+            {
+                "schema": "HumanVerificationBinding.v1",
+                "plan_sha256": plan_sha256,
+                "verification_artifact_sha256": verification_artifact_sha256,
+            }
+        )
+    )
+    authority = {
+        "schema": "PublishEnvelopeAuthorityPreimage.v1",
+        "train_id": f"human-publication-{context_digest[:24]}",
+        "node_id": f"human-{context_digest[:24]}",
+        "action": "publish_committed_branch",
+        "roadmap_digest": plan_sha256,
+        "effective_code_digest": _sha256(os.fsencode("\0".join(sorted(owned_paths)))),
+        "dependency_digest": _sha256(b""),
+        "verification_plan_digest": verification_digest,
+        "expected_version_predicate": "head == expected_commit_oid",
+        "authority_domain_scope": f"repository:{identity}",
+        "operation_identity": f"publish:{branch}",
+    }
+    return PublishAuthorityPreimages(checkpoint_root, authority)
+
+
+def publish_human_invoked_from_worktree(
+    repo: Path,
+    owned_paths: Sequence[str],
+    *,
+    plan_path: Path | None = None,
+    verification_artifact_path: Path | None = None,
+    draft: bool = True,
+    pr_body: str | None = None,
+    commit_message: str | None = None,
+    protected_branches: frozenset[str] = PROTECTED_BRANCHES,
+    prebuilt: bool = False,
+    base: str = "main",
+) -> dict[str, Any]:
+    """Publish a human-invoked detailed-plan run through authenticated FABPUB.
+
+    This adapter derives only pre-admission authority. The broker still allocates
+    all fencing fields, and repository routing remains receipt- and lease-gated.
+    """
+    required = [
+        name
+        for name, value in (
+            ("plan_path", plan_path),
+            ("verification_artifact_path", verification_artifact_path),
+        )
+        if value is None
+    ]
+    if required:
+        result = _blocked(
+            "human_publication_context_required",
+            "human publication requires the detailed plan and verification artifact",
+        )
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="supply_publication_context", required_inputs=required
+        )
+        return result
+
+    artifacts: dict[str, Path] = {
+        "plan_path": Path(plan_path),
+        "verification_artifact_path": Path(verification_artifact_path),
+    }
+    invalid = [name for name, path in artifacts.items() if not path.is_file()]
+    if invalid:
+        result = _blocked(
+            "human_publication_context_invalid",
+            f"human publication context is not a regular file: {', '.join(invalid)}",
+        )
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_publication_context", required_inputs=invalid
+        )
+        return result
+
+    from .convergence.broker import live
+
+    try:
+        active = live.fabpub_capability_active()
+    except live.FabpubConfigurationError as error:
+        result = _blocked("repository_publication_authority_refused", str(error))
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_fabpub_configuration"
+        )
+        return result
+    if not active:
+        result = _blocked(
+            "fabpub_inactive",
+            "the supported human publication route requires active FABPUB",
+        )
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="activate_or_upgrade_fabpub"
+        )
+        return result
+
+    topology = collect_git_topology(repo)
+    if not topology.get("available"):
+        return _blocked("not_a_git_worktree", "Repo is not a git worktree")
+    branch = str(topology.get("branch", ""))
+    if not branch or branch.startswith("detached@"):
+        return _blocked("detached_head", "Cannot publish from detached HEAD state")
+    if branch in protected_branches:
+        return _blocked("branch_protected", f"Cannot publish from protected branch {branch!r}")
+
+    try:
+        plan_sha256 = _sha256(artifacts["plan_path"].read_bytes())
+        verification_sha256 = _sha256(
+            artifacts["verification_artifact_path"].read_bytes()
+        )
+        snapshot = live.repository_snapshot(repo)
+    except (OSError, live.LegacyCutoverConflict, PermissionError) as error:
+        result = _blocked("human_publication_context_invalid", str(error))
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_publication_context"
+        )
+        return result
+    context_digest = _human_publication_context_digest(
+        snapshot.identity,
+        branch,
+        owned_paths,
+        plan_sha256,
+        verification_sha256,
+    )
+    checkpoint_root = (
+        snapshot.common_dir / "phase-loop-human-publication-v1" / context_digest
+    )
+    barrier_report: dict[str, Any] | None = None
+    broker_client = None
+    try:
+        barrier_report = live.fabpub_activation_barrier([repo])
+        authenticated = {
+            str(Path(worktree).resolve())
+            for worktree in barrier_report.get("repositories", ())
+        }
+        if str(snapshot.worktree) not in authenticated:
+            result = _blocked(
+                "repository_publication_authority_required",
+                "the repository has no authenticated FABPUB partition receipt",
+            )
+            result["handoff"] = _human_publication_handoff(
+                repo, next_step="probe_and_confirm_fabpub_authority"
+            )
+            return result
+
+        checkpoint_root.mkdir(parents=True, exist_ok=True)
+        authority = _human_publication_authority(
+            repo,
+            owned_paths,
+            plan_sha256=plan_sha256,
+            verification_artifact_sha256=verification_sha256,
+            branch=branch,
+            checkpoint_root=checkpoint_root,
+        )
+        broker_client = live.build_routing_broker_client()
+        result = publish_from_worktree(
+            repo,
+            owned_paths,
+            draft=draft,
+            pr_body=pr_body,
+            commit_message=commit_message,
+            topology=topology,
+            protected_branches=protected_branches,
+            prebuilt=prebuilt,
+            broker_client=broker_client,
+            base=base,
+            publish_authority=authority,
+            checkpoint_root=checkpoint_root,
+        )
+        if result.get("status") == "publication_blocked" and "handoff" not in result:
+            result["handoff"] = _human_publication_handoff(
+                repo, next_step="repair_publication_precheck_and_retry"
+            )
+            result["checkpoint_root"] = str(checkpoint_root)
+        return result
+    except (
+        live.FabpubConfigurationError,
+        live.LegacyCutoverConflict,
+        PermissionError,
+    ) as error:
+        result = _blocked("repository_publication_authority_refused", str(error))
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_fabpub_authority"
+        )
+        if checkpoint_root.exists():
+            result["checkpoint_root"] = str(checkpoint_root)
+        return result
+    finally:
+        if broker_client is not None and hasattr(broker_client, "close"):
+            broker_client.close()
+        if barrier_report is not None:
+            live.release_barrier_leases(barrier_report)
+
+
 def publish_from_worktree(
     repo: Path,
     owned_paths: Sequence[str],
