@@ -10923,6 +10923,59 @@
       "task_summary": "Model roster + job-slot tiers, plan 1 of 5 (Part A shipped roster, Part B call-time overrides) (agent-harness#1171)",
       "type": "detailed",
       "updated_at": "2026-09-30T00:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": 8,
+      "created_at": "2026-10-01T03:33:43Z",
+      "file": "plans/detailed-1117-explicit-bootstrap-binding-20261001-0330.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/1117-explicit-bootstrap-binding-plan.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-01T03:33:43Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "run_id": "1117-explicit-bootstrap-binding-plan"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-10-01T03:33:57Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan": "plans/detailed-1117-explicit-bootstrap-binding-20261001-0330.md",
+            "run_id": "1117-explicit-bootstrap-binding",
+            "scope": "local-only; no production authority or publication writes"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-10-01T03:46:53Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_status": "satisfied (bounded local repair)",
+            "dirty_path_classification": "three owned source/test/docs paths plus owned detailed plan and manifest; no pre-existing unrelated paths",
+            "doc_delta_decision": "docs_updated",
+            "limits": "No full repository suite, provider qualification or consumer history completeness attestation; production authority unchanged",
+            "publication": "not attempted; explicitly local-only task",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/54c25bdc37e7/codex-1117-explicit-bootstrap-binding/1117-explicit-bootstrap-binding.md",
+            "run_id": "1117-explicit-bootstrap-binding",
+            "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-1117-explicit-bootstrap-binding/.phase-loop/runs/1117-explicit-bootstrap-binding/final/verification.json",
+            "verification_summary": "env_refresh=0; bootstrap=32 passed; git diff --check=0; bounded FABPUB suite=166 passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/54c25bdc37e7/codex-1117-explicit-bootstrap-binding/1117-explicit-bootstrap-binding-plan.md",
+      "roadmap_ref": null,
+      "slug": "detailed-1117-explicit-bootstrap-binding",
+      "status": "completed",
+      "task_summary": "Retain authenticated bootstrap binding with explicit legacy roots (Consiliency/agent-harness#1117)",
+      "type": "detailed",
+      "updated_at": "2026-10-01T03:46:53Z"
     }
   ],
   "schema_version": 1
