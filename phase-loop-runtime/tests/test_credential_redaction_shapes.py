@@ -50,6 +50,7 @@ SHAPES = {
     "key_colon_space": ("password: {v}", "bare", _BARE),
     "glued_camel_key": ("dbPassword={v}", "bare", _BARE),
     "glued_lower_key": ("mysecret={v}", "bare", _BARE),
+    "key_split_by_colour": ("pass\x1b[1mword={v}", "bare", _BARE),
     "prefixed_env_key": ("GITHUB_TOKEN={v}", "bare", _BARE),
     "access_token_key": ("access_token={v}", "bare", _BARE),
     "client_secret_key": ("client_secret={v}", "bare", _BARE),
@@ -159,10 +160,12 @@ def test_ordinary_diagnostics_stay_readable(site, text):
     assert " ".join(output.split()) == " ".join(text.split()), (site, text, output)
 
 
-def test_key_names_stay_readable_and_a_lone_quoted_value_keeps_its_quotes():
-    output = credential_redaction.redact_text('{"password": "Plc3sHolder7s"} --api-key Plc3sHolder7s')
-    assert '"password": "<redacted>"}' in output and "--api-key <redacted>" in output
-    assert json.loads(credential_redaction.redact_text('{"token": "Qz7m,Xw4Rt9Kp"}')) == {"token": "<redacted>"}
+def test_flag_names_stay_readable():
+    # The value span starts after the flag name. (A key=value pair can also be matched whole by
+    # the closeout gate's forbidden shapes, which run as detectors, so key names there are not
+    # guaranteed to survive.)
+    output = credential_redaction.redact_text("--api-key Plc3s")
+    assert output == "--api-key <redacted>", output
 
 
 def test_every_site_uses_the_one_pipeline():
@@ -227,24 +230,37 @@ _TAILS = ["", " next", ",x", ";", " and more"]
 _SECRET = "".join(("Qz7mXw4R", "t9Kp2Lv8", "Hn3c"))
 
 
+_JOINS = [",", ";", " ", ", ", " & ", "|", "\n", ",\t"]
+
+
+def _one_pair(rng):
+    value = VALUES[rng.choice(sorted(_BARE - {"single_quote"}))]
+    key, quote = rng.choice(_KEYS), rng.choice(_KEY_QUOTES)
+    wrap = rng.choice(_WRAPS)
+    half = len(value) // 2
+    shown = {
+        "plain": value,
+        "truecolor": f"{_TRUECOLOR}{value}\x1b[0m",
+        "bold_truecolor": f"\x1b[1m{_TRUECOLOR}{value}\x1b[0m",
+        "dq_then_tail": f'"{value[:half]}"{value[half:]}',
+        "sq_then_tail": f"'{value[:half]}'{value[half:]}",
+        "colour_inside": f"{value[:half]}\x1b[0m{value[half:]}",
+    }[wrap]
+    text = (f"{quote}{key}{quote}{rng.choice(_SPACES)}{rng.choice(_SEPARATORS)}"
+            f"{rng.choice(_SPACES)}{shown}")
+    return text, value
+
+
 def _generated_cases(count: int = 1500, seed: int = 20261001):
+    """1 to 3 key/value pairs per line, joined by random punctuation, so a value grammar that
+    runs over a following key is caught."""
     rng = random.Random(seed)
     for _ in range(count):
-        value = VALUES[rng.choice(sorted(_BARE - {"single_quote"}))]
-        key, quote = rng.choice(_KEYS), rng.choice(_KEY_QUOTES)
-        wrap = rng.choice(_WRAPS)
-        half = len(value) // 2
-        shown = {
-            "plain": value,
-            "truecolor": f"{_TRUECOLOR}{value}\x1b[0m",
-            "bold_truecolor": f"\x1b[1m{_TRUECOLOR}{value}\x1b[0m",
-            "dq_then_tail": f'"{value[:half]}"{value[half:]}',
-            "sq_then_tail": f"'{value[:half]}'{value[half:]}",
-            "colour_inside": f"{value[:half]}\x1b[0m{value[half:]}",
-        }[wrap]
-        text = (f"{quote}{key}{quote}{rng.choice(_SPACES)}{rng.choice(_SEPARATORS)}"
-                f"{rng.choice(_SPACES)}{shown}{rng.choice(_TAILS)}")
-        yield text, value
+        pairs = [_one_pair(rng) for _ in range(rng.randint(1, 3))]
+        text = "".join(
+            (rng.choice(_JOINS) if i else "") + pair_text for i, (pair_text, _) in enumerate(pairs)
+        ) + rng.choice(_TAILS)
+        yield text, tuple(value for _, value in pairs)
 
 
 # Fixed cases from review probes: scheme words, escape codes next to scheme words, quoting
@@ -270,6 +286,16 @@ _FIXED_CASES = [
     (f'password="Qz7m",{_SECRET}', _SECRET),
     (f"error\x1b[0msk-{_SECRET}", _SECRET),
     ("-eyJabcdefgh.ijklmnop.signature", "eyJabcdefgh.ijklmnop.signature"),
+    ('{"token":"abc","password": "Pl4c3!h0ld"}', "Pl4c3!h0ld"),
+    ("token=abc,password = Pl4c3!h0ld", "Pl4c3!h0ld"),
+    ("{token: abc,password: Pl4c3!h0ld}", "Pl4c3!h0ld"),
+    ("TOKEN=abc;PASSWORD: Pl4c3!h0ld", "Pl4c3!h0ld"),
+    ("credentials:aws_secret : Pl4c3!h0ld", "Pl4c3!h0ld"),
+    ("x (token'::Token =Pl4c3!h0ld,x", "Pl4c3!h0ld"),
+    ('password=" ' + VALUES["alnum_with_s"], VALUES["alnum_with_s"]),
+    ("password=' " + VALUES["alnum_with_s"], VALUES["alnum_with_s"]),
+    ('password=" \n' + VALUES["alnum_with_s"] + '"', VALUES["alnum_with_s"]),
+    ('password=" ' + VALUES["alnum_with_s"] + "a" * 4096 + '"', VALUES["alnum_with_s"]),
     ("x-" + ".".join(("eyJ" + "SyntheticHdr0", "eyJ" + "SyntheticBody1", "SyntheticSig2")), "SyntheticSig2"),
 ]
 
@@ -302,14 +328,16 @@ def no_identity(monkeypatch):
 
 def _parity_failures(pairs, cases):
     failures = []
-    for text, value in cases:
+    for text, values in cases:
+        values = (values,) if isinstance(values, str) else values
         for site, (head_fn, main_fn) in pairs.items():
             head_out, main_out = head_fn(text), main_fn(text)
-            kept_by_head = set(_surviving(value, head_out))
-            removed_by_main = _fragments(value) - set(_surviving(value, main_out))
-            regressed = sorted(kept_by_head & removed_by_main)
-            if regressed:
-                failures.append((site, text[:80], regressed[:3]))
+            for value in values:
+                kept_by_head = set(_surviving(value, head_out))
+                removed_by_main = _fragments(value) - set(_surviving(value, main_out))
+                regressed = sorted(kept_by_head & removed_by_main)
+                if regressed:
+                    failures.append((site, text[:80], regressed[:3]))
     return failures
 
 
@@ -341,3 +369,24 @@ def test_redaction_runs_before_any_cut(site, offset):
     text = " " * offset + token + " tail"
     output = SITES[site](text)
     assert _surviving(token[4:], output) == [], (site, offset, output[:80])
+
+
+
+@pytest.mark.parametrize("site", sorted(SITES))
+def test_placeholder_rich_input_stays_linear(site):
+    # e-mail addresses and "~" both produce placeholders; the containment check must not be
+    # quadratic in their number
+    text = "a@b.co ~ " * (131_072 // 9)
+    started = time.perf_counter()
+    SITES[site](text)
+    assert time.perf_counter() - started < 2.0, site
+
+
+def test_placeholder_rich_stderr_excerpt_finishes_promptly():
+    import subprocess
+    import sys as _system
+
+    script = ("from phase_loop_runtime.runner import _redacted_stderr_excerpt; "
+              "_redacted_stderr_excerpt('password=x <redacted> ' * 50000)")
+    result = subprocess.run([_system.executable, "-c", script], capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr

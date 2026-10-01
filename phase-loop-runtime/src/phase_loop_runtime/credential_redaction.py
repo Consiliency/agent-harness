@@ -20,6 +20,7 @@ class with nothing after it that could force backtracking.
 """
 from __future__ import annotations
 
+import bisect
 import os
 import re
 from collections.abc import Sequence
@@ -117,6 +118,18 @@ def _jwt_spans(text: str) -> list[tuple[int, int]]:
             k = segment.find("eyJ", k + 1)
     return spans
 
+
+# The previous key/value detectors, verbatim, run on the same views they ran on before: the
+# leg-detail detector on the normalized text and the stderr-excerpt detector on the raw text.
+# The union therefore removes at least what they removed; the shapes above only add coverage.
+_PREVIOUS_LEG_KV_RE = re.compile(
+    r"(?i)[\"']?\b(?:api[_-]?key|authorization|proxy-authorization|access[_-]?token|"
+    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|token|secret|password|passwd)[\"']?"
+    r"\s*[:=]\s*(?P<value>[\"']?(?:(?:bearer|basic|token|digest)\s+)?[^\s\"',;]+[\"']?)"
+)
+_PREVIOUS_EXCERPT_KV_RE = re.compile(
+    r"(?i)(?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*(?P<value>\S+)"
+)
 
 _SGR_RE = re.compile(r"\x1b\[[0-9;:]*m")
 _ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
@@ -222,6 +235,14 @@ def _spans(
     identity: tuple[tuple[str, ...], tuple[str, ...]],
 ) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = [(s, e, "credential") for s, e in credential_spans(text)]
+    spans += [(m.start("value"), m.end("value"), "credential") for m in _PREVIOUS_LEG_KV_RE.finditer(text)]
+    spans += [(m.start("value"), m.end("value"), "credential") for m in _PREVIOUS_EXCERPT_KV_RE.finditer(raw)]
+    # The closeout gate's forbidden shapes also run as detectors over the unredacted normalized
+    # text, so a shape the final pass would have matched before any replacement still counts.
+    from .redaction import _FORBIDDEN_METADATA_PATTERNS
+
+    for _name, pattern in _FORBIDDEN_METADATA_PATTERNS:
+        spans += [(m.start(), m.end(), "credential") for m in pattern.finditer(text)]
     sgr_free, index = _without_sgr(raw)
     for view_start, view_end in credential_spans(sgr_free):
         spans.append((index[view_start], index[view_end - 1] + 1, "credential"))
@@ -236,11 +257,19 @@ def _spans(
         pattern = re.compile(rf"(?<![{w}]){re.escape(user)}(?![{w}])")
         spans += [(m.start(), m.end(), "user") for m in pattern.finditer(text)]
     # A match wholly inside a generated placeholder is the placeholder, not a new finding.
-    inside = [(m.start(), m.end()) for m in _PLACEHOLDER_RE.finditer(text)]
-    return [
-        (s, e, k) for s, e, k in spans
-        if e > s and not any(ps <= s and e <= pe for ps, pe in inside)
-    ]
+    # Placeholder matches do not overlap, so the only candidate is the last one starting at or
+    # before the span (bisect), which keeps this linear-logarithmic.
+    starts: list[int] = []
+    ends: list[int] = []
+    for m in _PLACEHOLDER_RE.finditer(text):
+        starts.append(m.start())
+        ends.append(m.end())
+
+    def inside(start: int, end: int) -> bool:
+        i = bisect.bisect_right(starts, start) - 1
+        return i >= 0 and end <= ends[i]
+
+    return [(s, e, k) for s, e, k in spans if e > s and not inside(s, e)]
 
 
 def redact_text(

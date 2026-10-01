@@ -35,6 +35,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   site redacts its whole input before any excerpt is cut. Whitespace around the separator is
   unbounded. JWT-shaped tokens are found by a linear scan of dotted token runs.
 - Pipeline branch-operation error messages now go through the same pipeline.
+- The previous key/value detectors and the closeout gate's forbidden shapes also run as span
+  detectors, each over the view it used before, so the pipeline removes at least what the
+  previous redaction removed; the newer shapes only add coverage. The placeholder containment
+  check is a bisect, so placeholder-rich input stays linear.
 - Tests compare every site against a frozen copy of the previous functions, end to end, and
   require the output to keep no value fragment the previous output had removed.
 - `redaction.STDERR_SECRET_KV_RE` and the panel's private detector copies are removed.
