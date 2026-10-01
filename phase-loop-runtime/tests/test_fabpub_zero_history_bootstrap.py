@@ -776,6 +776,156 @@ print('double-slash barrier refused without deadlock')
     assert not live.repository_namespace_root(fresh).exists()
 
 
+@pytest.mark.parametrize("layout", ["symlink", "double_slash"])
+def test_traditional_multi_root_resume_and_barrier_share_lock_order(
+    tmp_path: Path, monkeypatch, layout: str
+) -> None:
+    import fcntl
+    import time
+
+    from test_fabpub_shared_epoch import _manifest_row, _seed_legacy_root
+
+    migrated = _git_repo(tmp_path / "migrated")
+    if layout == "symlink":
+        real = tmp_path / "a-real"
+        real.mkdir()
+        linked = tmp_path / "zlink"
+        linked.symlink_to(real, target_is_directory=True)
+        ledgers = (tmp_path / "m-ledger", linked / "ledger")
+    else:
+        ledgers = (tmp_path / "a-ledger", Path("/" + str(tmp_path / "z-ledger")))
+    rows = []
+    for index, ledger in enumerate(ledgers):
+        train = tmp_path / f"train-{index}.md"
+        train.write_text("test train\n", encoding="utf-8")
+        _seed_legacy_root(ledger, train_path=train, serialized_repo=str(migrated))
+        rows.append(_manifest_row(ledger, train, migrated, str(migrated), tmp_path))
+    manifest = live.LegacyBrokerCutoverManifest(cutover_id="lock-order", rows=tuple(rows))
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"cutover_id": manifest.cutover_id, "rows": rows}), encoding="utf-8")
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
+    monkeypatch.delenv(live.FABPUB_CUTOVER_MANIFEST_ENV, raising=False)
+    env = {**os.environ, "PYTHONPATH": str(Path(live.__file__).resolve().parents[3])}
+    setup = subprocess.run(
+        [sys.executable, "-c", "import faulthandler,json,sys\n"
+         "from pathlib import Path\n"
+         "from phase_loop_runtime.convergence.broker import live\n"
+         "faulthandler.dump_traceback_later(12)\n"
+         "raw=json.loads(Path(sys.argv[1]).read_text())\n"
+         "live.run_legacy_broker_cutover(live.LegacyBrokerCutoverManifest(\n"
+         "    cutover_id=raw['cutover_id'],rows=tuple(raw['rows']))).activate()\n",
+         str(manifest_path)], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30,
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    snapshot = live.repository_snapshot(migrated)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert not receipt.zero_source
+    assert receipt.legacy_root_inventory == tuple(map(str, manifest.legacy_roots()))
+    authority = live._global_authority_dir(manifest.legacy_roots())
+    authenticated = [
+        snapshot.store_root / live.RECEIPT_FILENAME,
+        authority / "lock-order.inventory.json",
+        authority / "lock-order.journal.jsonl",
+        *(root / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
+          for root in manifest.legacy_roots()),
+    ]
+    sealed_bytes = {path: path.read_bytes() for path in authenticated}
+    primary = manifest.legacy_roots()[0]
+    primary_row = next(row for row in rows if Path(row["legacy_root"]) == primary)
+    leaf_lock = primary / "fabpub-global-cutover" / "leaf-locks" / (
+        f"{primary_row['expected_train_key']}__{primary_row['expected_repo_key']}.lock"
+    )
+    cutover_lock = authority / "cutover.lock"
+    other_lock = manifest.legacy_roots()[1] / "fabpub-global-cutover" / "root.lock"
+
+    def held(path):
+        with path.open("a+") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+
+    def wait_until(predicate):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return False
+
+    script = """
+import faulthandler, json, os, sys
+from pathlib import Path
+import phase_loop_runtime.convergence.fencing
+from phase_loop_runtime.convergence.broker import live
+role, work = sys.argv[1], Path(sys.argv[2])
+if role == 'B':
+    os.environ[live.FABPUB_CUTOVER_MANIFEST_ENV] = str(work / 'manifest.json')
+faulthandler.dump_traceback_later(12)
+report = live.fabpub_activation_barrier([work / 'migrated'])
+try:
+    assert len(report['leases']) == 1
+    if role == 'B':
+        assert report['cutover']['state'] == 'ACTIVE'
+finally:
+    live.release_barrier_leases(report)
+assert not live._LOCK_DEPTH
+faulthandler.cancel_dump_traceback_later()
+print(json.dumps({'role': role, 'completed': True}))
+"""
+    processes = []
+    try:
+        ready = tmp_path / "holder.ready"
+        release = tmp_path / "holder.release"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl,sys,time\n"
+             "from pathlib import Path\n"
+             "with open(sys.argv[1], 'a+') as handle:\n"
+             "    fcntl.flock(handle, fcntl.LOCK_EX)\n"
+             "    Path(sys.argv[2]).touch()\n"
+             "    while not Path(sys.argv[3]).exists(): time.sleep(0.02)\n",
+             str(leaf_lock), str(ready), str(release)],
+            cwd=tmp_path, env=env,
+        )
+        processes.append(holder)
+        assert wait_until(ready.exists), "leaf-lock holder did not start"
+        resumed = subprocess.Popen(
+            [sys.executable, "-c", script, "B", str(tmp_path)], cwd=tmp_path,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        processes.append(resumed)
+        assert wait_until(lambda: held(cutover_lock)), "cutover resume did not reach authority locks"
+        barrier = subprocess.Popen(
+            [sys.executable, "-c", script, "A", str(tmp_path)], cwd=tmp_path,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        processes.append(barrier)
+        assert wait_until(lambda: held(other_lock)), "competing root lock was not acquired"
+        release.touch()
+        holder.wait(timeout=15)
+        assert holder.returncode == 0
+        for process in (resumed, barrier):
+            try:
+                stdout, stderr = process.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                observed = {str(path): held(path) for path in (cutover_lock, other_lock)}
+                pytest.fail("concurrent barrier/cutover resume did not complete; held locks: " + repr(observed))
+            assert process.returncode == 0, stdout + stderr
+            assert json.loads(stdout)["completed"]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+    assert all(path.read_bytes() == value for path, value in sealed_bytes.items())
+    assert live.WriterGenerationLatch.open(migrated).held_leases() == ()
+    assert not live._LOCK_DEPTH
+
+
 def test_traditional_barrier_declared_alias_does_not_self_deadlock(
     tmp_path: Path, monkeypatch
 ) -> None:

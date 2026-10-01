@@ -1876,7 +1876,7 @@ def _snapshot_lock_paths(manifest: LegacyBrokerCutoverManifest) -> tuple[Path, .
         root = Path(row["legacy_root"])
         leaf_id = f"{row['expected_train_key']}__{row['expected_repo_key']}"
         paths.append(root / "fabpub-global-cutover" / "leaf-locks" / f"{leaf_id}.lock")
-    return tuple(sorted(set(paths), key=str))
+    return tuple(sorted({path.resolve() for path in paths}, key=str))
 
 
 def _target_store_lock_paths(partitions: dict) -> tuple[Path, ...]:
@@ -2314,7 +2314,7 @@ class LegacyBrokerCutoverTransaction:
 
     @property
     def authority_lock_path(self) -> Path:
-        return self.journal_path.parent / "cutover.lock"
+        return (self.journal_path.parent / "cutover.lock").resolve()
 
     @contextlib.contextmanager
     def authority(self):

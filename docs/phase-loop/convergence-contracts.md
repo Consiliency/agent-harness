@@ -83,8 +83,11 @@ absolute `..` spellings are resolved for scanning without rewriting the receipt.
 For zero-source receipts, both original and lexically normalized ancestors must
 be free of symlinks; validated roots remain fixed through the scan. Traditional
 non-zero-source receipts retain support for relative and symlinked recorded
-roots. Their lock identities are physically resolved independently of the
-authenticated receipt and pointer spellings, which are never rewritten.
+roots. Cutover writers, activation barriers, onboarding and bootstrap apply
+acquire legacy-root authority locks by physical identity in one sorted order.
+Nested cutover authority acquisition uses that same resolved identity for
+reentrancy. Authenticated receipt, pointer, inventory and journal spellings
+are never rewritten.
 When a receipt is missing, the barrier acquires the complete canonical lock union,
 including the bootstrap slot, before nested onboarding. It refuses a bootstrap
 selection that changed before acquiring that union. If no bootstrap was ACTIVE,
