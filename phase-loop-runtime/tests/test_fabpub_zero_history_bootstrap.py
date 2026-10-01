@@ -275,6 +275,79 @@ def test_relative_supplemental_root_in_historical_receipt_blocks_other_cwd(
     assert not (other / "history").exists()
 
 
+def test_historical_dotdot_receipt_scans_canonical_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    parent = tmp_path / "alias-parent"
+    parent.mkdir()
+    alias = parent / ".." / "history"
+    roots = (alias,)
+    locks = {*live._bootstrap_seal_lock_paths(inventory),
+             *live._zero_source_seal_lock_paths(roots, tmp_path / "authority")}
+    with live._hold_all(sorted(locks, key=str)):
+        receipt = live._onboard_zero_legacy_repository_under_seal(
+            fresh, cutover_id=inventory["cutover_id"], roots=roots,
+            authority_root=tmp_path / "authority",
+            bootstrap_inventory_sha256=inventory["inventory_sha256"],
+            bootstrap_authority_root=tmp_path / "authority",
+        )
+    assert receipt.legacy_root_inventory == (str(alias),)
+    receipt_path = live.repository_snapshot(fresh).store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    parent.rename(tmp_path / "moved-alias-parent")
+    leaf = tmp_path / "history" / "legacy-train" / "legacy-repository"
+    leaf.mkdir(parents=True)
+    (leaf / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
+    assert not alias.exists()
+    report = None
+    try:
+        with pytest.raises(live.LegacyCutoverConflict, match="live legacy source"):
+            report = live.fabpub_activation_barrier([fresh])
+    finally:
+        if report is not None:
+            live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    assert receipt_path.read_bytes() == sealed_receipt
+    assert not parent.exists()
+
+
+def test_barrier_bootstrap_appearance_refuses_before_namespace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, str(tmp_path / "legacy"))
+    original = live._active_bootstrap_inventory
+    checked = False
+
+    def activate_after_initial_read(authority_root=None):
+        nonlocal checked
+        observed = original(authority_root)
+        if not checked:
+            checked = True
+            assert observed is None
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+        return observed
+
+    monkeypatch.setattr(live, "_active_bootstrap_inventory", activate_after_initial_read)
+    report = None
+    try:
+        with pytest.raises(live.LegacyCutoverConflict, match="bootstrap changed"):
+            report = live.fabpub_activation_barrier([fresh])
+    finally:
+        if report is not None:
+            live.release_barrier_leases(report)
+    assert checked
+    assert not live.repository_namespace_root(fresh).exists()
+
+
 def test_absent_bootstrap_appearing_before_seal_refuses_before_namespace(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -336,6 +409,99 @@ def test_traditional_scan_guards_bootstrap_slot_when_absent(tmp_path: Path, monk
     assert boundaries
     assert live._receipt_bootstrap_claim(receipt) is None
     assert not (tmp_path / "authority" / "ACTIVE_BOOTSTRAP").exists()
+
+
+@pytest.mark.parametrize("authority_name", ["a-authority", "z-authority"])
+def test_traditional_barrier_guards_complete_lock_set_before_onboarding(
+    tmp_path: Path, monkeypatch, authority_name: str
+) -> None:
+    fresh = _git_repo(tmp_path / "fresh")
+    root = tmp_path / "m-traditional"
+    authority = root / "fabpub-global-cutover"
+    authority.mkdir(parents=True)
+    cutover_id = "traditional-only"
+    (authority / "ACTIVE_CUTOVER").write_text(json.dumps({
+        "cutover_id": cutover_id, "primary_authority": str(authority),
+        "root_set_sha256": live._root_set_digest((root,)),
+    }), encoding="utf-8")
+    (authority / f"{cutover_id}.journal.jsonl").write_text(
+        json.dumps({"cutover_id": cutover_id, "state": "ACTIVE"}) + "\n",
+        encoding="utf-8",
+    )
+    bootstrap_root = tmp_path / authority_name
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(bootstrap_root))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, str(root))
+    expected = live._zero_source_seal_lock_paths((root,), bootstrap_root)
+    original_onboard = live.onboard_zero_legacy_repository
+    original_lock = live._reentrant_flock
+    entered = []
+
+    @contextlib.contextmanager
+    def observe_lock(path):
+        with original_lock(path):
+            entered.append(path)
+            yield
+
+    def assert_initial_locks(worktree, **kwargs):
+        assert tuple(entered) == expected
+        result = subprocess.run(
+            [sys.executable, "-c", "import fcntl,sys\n"
+             "for path in sys.argv[1:]:\n"
+             "    with open(path, 'a') as handle:\n"
+             "        try: fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+             "        except BlockingIOError: pass\n"
+             "        else: sys.exit(1)\n", *map(str, expected)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        return original_onboard(worktree, **kwargs)
+
+    monkeypatch.setattr(live, "_reentrant_flock", observe_lock)
+    monkeypatch.setattr(live, "onboard_zero_legacy_repository", assert_initial_locks)
+    report = live.fabpub_activation_barrier([fresh])
+    try:
+        assert report["repositories"] == [str(fresh)]
+        assert live.WriterGenerationLatch.open(fresh).held_leases()
+    finally:
+        live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    assert not (bootstrap_root / "ACTIVE_BOOTSTRAP").exists()
+
+
+def test_traditional_barrier_declared_alias_does_not_self_deadlock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fresh = _git_repo(tmp_path / "fresh")
+    root = tmp_path / "traditional"
+    authority = root / "fabpub-global-cutover"
+    authority.mkdir(parents=True)
+    cutover_id = "traditional-only"
+    (authority / "ACTIVE_CUTOVER").write_text(cutover_id + "\n", encoding="utf-8")
+    (authority / f"{cutover_id}.journal.jsonl").write_text(
+        json.dumps({"cutover_id": cutover_id, "state": "ACTIVE"}) + "\n",
+        encoding="utf-8",
+    )
+    parent = tmp_path / "alias-parent"
+    parent.mkdir()
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, str(parent / ".." / "traditional"))
+    script = """
+import sys
+from phase_loop_runtime.convergence.broker import live
+report = live.fabpub_activation_barrier([sys.argv[1]])
+try:
+    assert report['repositories'] == [sys.argv[1]]
+    assert live.WriterGenerationLatch.open(sys.argv[1]).held_leases()
+finally:
+    live.release_barrier_leases(report)
+assert live.WriterGenerationLatch.open(sys.argv[1]).held_leases() == ()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(fresh)], cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path(live.__file__).resolve().parents[3])},
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_explicit_roots_reject_conflicting_bootstrap_cutover_before_mutation(

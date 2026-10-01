@@ -77,8 +77,12 @@ Retrying an interrupted or completed onboarding requires the same canonical
 history roots in the same order and bootstrap binding. A retry cannot silently
 replace either claim.
 
-Subsequent activation retains both lock sets and checks the zero-source
-receipt's recorded roots again before granting a generation lease. Newly
+Subsequent activation retains both lock sets and checks the same canonical
+receipt roots used for locking before granting a generation lease. Historical
+absolute `..` spellings are resolved for scanning without rewriting the receipt.
+When a receipt is missing, the barrier acquires the complete canonical lock union,
+including the bootstrap slot, before nested onboarding. It refuses a bootstrap
+selection that changed before acquiring that union. Newly
 discovered legacy evidence blocks activation and releases acquired leases.
 The rescan applies to all zero-source receipts, including traditional authority
 and rotated receipts' base coverage. Non-absolute or symlinked zero-source receipt

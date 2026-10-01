@@ -5367,17 +5367,24 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
             if receipt is not None
             for path in _receipt_seal_lock_paths(receipt)
         }
-        if any(receipt is None for _snapshot, receipt in snapshots):
+        needs_onboarding = any(receipt is None for _snapshot, receipt in snapshots)
+        if needs_onboarding:
             bootstrap = _active_bootstrap_inventory()
             if bootstrap is not None:
                 authority_lock_paths.update(_bootstrap_seal_lock_paths(bootstrap))
             else:
-                roots = declared_legacy_roots()
-                authority_lock_paths.update(_traditional_seal_lock_paths(roots))
+                roots = tuple(
+                    _canonical_input_path(root, label="legacy root")
+                    for root in declared_legacy_roots()
+                )
+                authority_lock_paths.update(_zero_source_seal_lock_paths(roots, None))
         authority_locks = contextlib.ExitStack()
         report["_authority_locks"] = authority_locks
         for path in sorted(authority_lock_paths, key=str):
             authority_locks.enter_context(_reentrant_flock(path))
+
+        if needs_onboarding and _active_bootstrap_inventory() != bootstrap:
+            raise LegacyCutoverConflict("active bootstrap changed while entering the barrier")
 
         for snapshot, prior_receipt in snapshots:
             receipt = load_partition_receipt(snapshot.store_root)
@@ -5418,7 +5425,10 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
             if base_receipt.zero_source:
                 _prove_zero_source(
                     snapshot,
-                    tuple(Path(root) for root in base_receipt.legacy_root_inventory),
+                    tuple(
+                        _canonical_input_path(root, label="receipt legacy root")
+                        for root in base_receipt.legacy_root_inventory
+                    ),
                     "before_generation_lease",
                 )
             latch = WriterGenerationLatch(snapshot.namespace_root)
