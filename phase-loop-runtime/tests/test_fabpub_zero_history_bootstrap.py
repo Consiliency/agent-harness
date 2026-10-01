@@ -254,7 +254,9 @@ def test_relative_supplemental_root_in_historical_receipt_blocks_other_cwd(
     monkeypatch.chdir(operator)
     roots = (Path("history"),)
     locks = {*live._bootstrap_seal_lock_paths(inventory),
-             *live._zero_source_seal_lock_paths(roots, tmp_path / "authority")}
+             *live._zero_source_seal_lock_paths(
+                 tuple(root.resolve() for root in roots), tmp_path / "authority"
+             )}
     with live._hold_all(sorted(locks, key=str)):
         receipt = live._onboard_zero_legacy_repository_under_seal(
             fresh, cutover_id=inventory["cutover_id"], roots=roots,
@@ -314,6 +316,84 @@ def test_historical_dotdot_receipt_scans_canonical_coverage(
     assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
     assert receipt_path.read_bytes() == sealed_receipt
     assert not parent.exists()
+
+
+def test_historical_dotdot_symlink_cannot_redirect_scan_after_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    parent = tmp_path / "alias-parent"
+    parent.mkdir()
+    alias = parent / ".." / "history"
+    locks = {*live._bootstrap_seal_lock_paths(inventory),
+             *live._zero_source_seal_lock_paths((alias,), tmp_path / "authority")}
+    with live._hold_all(sorted(locks, key=str)):
+        live._onboard_zero_legacy_repository_under_seal(
+            fresh, cutover_id=inventory["cutover_id"], roots=(alias,),
+            authority_root=tmp_path / "authority",
+            bootstrap_inventory_sha256=inventory["inventory_sha256"],
+            bootstrap_authority_root=tmp_path / "authority",
+        )
+    receipt_path = live.repository_snapshot(fresh).store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    locked = tmp_path / "locked-history"
+    history = tmp_path / "history"
+    history.rename(locked)
+    history.symlink_to(locked, target_is_directory=True)
+    parent.rename(tmp_path / "moved-alias-parent")
+    target = tmp_path / "new-target"
+    target.mkdir()
+    original_active = live._receipt_active_authority_exists
+    original_proof = live._prove_zero_source
+    writer = """
+import fcntl, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+lock = root / 'fabpub-global-cutover' / 'root.lock'
+lock.parent.mkdir(parents=True, exist_ok=True)
+with lock.open('a') as handle:
+    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    leaf = root / 'legacy-train' / 'legacy-repository'
+    leaf.mkdir(parents=True)
+    (leaf / 'admissions.jsonl').write_text('{}\\n', encoding='utf-8')
+"""
+
+    def switch_after_locks(receipt, **kwargs):
+        active = original_active(receipt, **kwargs)
+        assert (str(locked / "fabpub-global-cutover" / "root.lock"),
+                threading.get_ident()) in live._LOCK_DEPTH
+        history.unlink()
+        history.symlink_to(target, target_is_directory=True)
+        return active
+
+    def write_after_scan(snapshot, roots, boundary):
+        proof = original_proof(snapshot, roots, boundary)
+        assert boundary == "before_generation_lease"
+        assert roots == (target,)
+        result = subprocess.run(
+            [sys.executable, "-c", writer, str(target)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        with pytest.raises(live.LegacyCutoverConflict, match="live legacy source"):
+            original_proof(snapshot, roots, "control")
+        return proof
+
+    monkeypatch.setattr(live, "_receipt_active_authority_exists", switch_after_locks)
+    monkeypatch.setattr(live, "_prove_zero_source", write_after_scan)
+    report = None
+    try:
+        with pytest.raises(live.LegacyCutoverConflict, match="symlink"):
+            report = live.fabpub_activation_barrier([fresh])
+    finally:
+        if report is not None:
+            live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    assert receipt_path.read_bytes() == sealed_receipt
 
 
 def test_barrier_bootstrap_appearance_refuses_before_namespace(
@@ -462,10 +542,92 @@ def test_traditional_barrier_guards_complete_lock_set_before_onboarding(
     try:
         assert report["repositories"] == [str(fresh)]
         assert live.WriterGenerationLatch.open(fresh).held_leases()
+        result = subprocess.run(
+            [sys.executable, "-c", "import fcntl,sys\n"
+             "with open(sys.argv[1], 'a') as handle:\n"
+             "    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n",
+             str(bootstrap_root / "bootstrap.lock")],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
     finally:
         live.release_barrier_leases(report)
     assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
     assert not (bootstrap_root / "ACTIVE_BOOTSTRAP").exists()
+
+
+def test_deferred_barrier_releases_onboarding_slot_before_train(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fresh = _git_repo(tmp_path / "fresh")
+    authority = tmp_path / "authority"
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(authority))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, "")
+    report = live.fabpub_activation_barrier([fresh])
+    try:
+        assert report["deferred"] == [str(fresh)]
+        assert report["leases"] == []
+        result = subprocess.run(
+            [sys.executable, "-c", "import fcntl,sys\n"
+             "with open(sys.argv[1], 'a') as handle:\n"
+             "    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n",
+             str(authority / "bootstrap.lock")],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        live.release_barrier_leases(report)
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+def test_traditional_double_slash_root_mixed_barrier_refuses_without_deadlock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from test_fabpub_shared_epoch import _manifest_row, _seed_legacy_root
+
+    migrated = _git_repo(tmp_path / "migrated")
+    fresh = _git_repo(tmp_path / "fresh")
+    ledger = tmp_path / "ledger"
+    train = tmp_path / "train.md"
+    train.write_text("test train\n", encoding="utf-8")
+    _seed_legacy_root(ledger, train_path=train, serialized_repo=str(migrated))
+    row = _manifest_row(ledger, train, migrated, str(migrated), tmp_path)
+    row["legacy_root"] = "/" + row["legacy_root"]
+    transaction = live.run_legacy_broker_cutover(
+        live.LegacyBrokerCutoverManifest(cutover_id="double-slash", rows=(row,))
+    )
+    transaction.activate()
+    snapshot = live.repository_snapshot(migrated)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert receipt.legacy_root_inventory == (row["legacy_root"],)
+    receipt_path = snapshot.store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, row["legacy_root"])
+    script = """
+import sys
+from phase_loop_runtime.convergence.broker import live
+try:
+    report = live.fabpub_activation_barrier(sys.argv[1:])
+except live.LegacyCutoverConflict as error:
+    assert 'persistent global ACTIVE authority' in str(error), str(error)
+else:
+    live.release_barrier_leases(report)
+    raise AssertionError('noncanonical authority coverage must refuse')
+assert live.WriterGenerationLatch.open(sys.argv[1]).held_leases() == ()
+assert not live.repository_namespace_root(sys.argv[2]).exists()
+assert not live._LOCK_DEPTH
+print('double-slash barrier refused without deadlock')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(migrated), str(fresh)], cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path(live.__file__).resolve().parents[3])},
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "double-slash barrier refused without deadlock" in result.stdout
+    assert receipt_path.read_bytes() == sealed_receipt
+    assert not live.repository_namespace_root(fresh).exists()
 
 
 def test_traditional_barrier_declared_alias_does_not_self_deadlock(

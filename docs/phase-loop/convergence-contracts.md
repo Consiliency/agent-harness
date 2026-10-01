@@ -80,9 +80,14 @@ replace either claim.
 Subsequent activation retains both lock sets and checks the same canonical
 receipt roots used for locking before granting a generation lease. Historical
 absolute `..` spellings are resolved for scanning without rewriting the receipt.
+Both original and lexically normalized ancestors must be free of symlinks;
+validated roots remain fixed through the scan. Traditional lock identities are
+canonicalized independently of the authenticated receipt and pointer spellings.
 When a receipt is missing, the barrier acquires the complete canonical lock union,
 including the bootstrap slot, before nested onboarding. It refuses a bootstrap
-selection that changed before acquiring that union. Newly
+selection that changed before acquiring that union. If no bootstrap was ACTIVE,
+the onboarding-only slot guard is released before returning to train fencing;
+required receipt seals remain held until lease release. Newly
 discovered legacy evidence blocks activation and releases acquired leases.
 The rescan applies to all zero-source receipts, including traditional authority
 and rotated receipts' base coverage. Non-absolute or symlinked zero-source receipt
