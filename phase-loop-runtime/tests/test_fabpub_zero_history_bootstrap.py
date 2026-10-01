@@ -580,6 +580,46 @@ def test_deferred_barrier_releases_onboarding_slot_before_train(
     assert not live.repository_namespace_root(fresh).exists()
 
 
+def test_traditional_symlinked_ledger_receipt_remains_admitted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from test_fabpub_shared_epoch import _manifest_row, _seed_legacy_root
+
+    migrated = _git_repo(tmp_path / "migrated")
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    ledger = linked / "ledger"
+    train = tmp_path / "train.md"
+    train.write_text("test train\n", encoding="utf-8")
+    _seed_legacy_root(ledger, train_path=train, serialized_repo=str(migrated))
+    row = _manifest_row(ledger, train, migrated, str(migrated), tmp_path)
+    transaction = live.run_legacy_broker_cutover(
+        live.LegacyBrokerCutoverManifest(cutover_id="symlinked-ledger", rows=(row,))
+    )
+    transaction.activate()
+    snapshot = live.repository_snapshot(migrated)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert not receipt.zero_source
+    assert receipt.legacy_root_inventory == (row["legacy_root"],)
+    assert linked in Path(row["legacy_root"]).parents
+    receipt_path = snapshot.store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
+    report = live.fabpub_activation_barrier([migrated])
+    try:
+        assert report["repositories"] == [str(migrated)]
+        assert len(report["leases"]) == 1
+        assert receipt_path.read_bytes() == sealed_receipt
+    finally:
+        live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(migrated).held_leases() == ()
+    assert not live._LOCK_DEPTH
+    assert receipt_path.read_bytes() == sealed_receipt
+
+
 def test_traditional_double_slash_root_mixed_barrier_refuses_without_deadlock(
     tmp_path: Path, monkeypatch
 ) -> None:

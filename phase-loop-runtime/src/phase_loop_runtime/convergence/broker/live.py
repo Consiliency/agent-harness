@@ -3854,7 +3854,7 @@ def _traditional_seal_lock_paths(roots: tuple[Path, ...]) -> tuple[Path, ...]:
             primary = Path(claim.get("primary_authority", pointer.parent))
             paths.add(primary / "cutover.lock")
     return tuple(sorted(
-        {_canonical_input_path(path, label="authority lock") for path in paths}, key=str
+        {path.resolve() for path in paths}, key=str
     ))
 
 
@@ -5367,10 +5367,14 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 _active_bootstrap_inventory()
                 raise
             receipt = load_partition_receipt(store_root)
-            roots = None if receipt is None else tuple(
-                _canonical_input_path(root, label="receipt legacy root")
-                for root in _rotation_base_receipt(receipt).legacy_root_inventory
-            )
+            roots = None
+            if receipt is not None:
+                base_receipt = _rotation_base_receipt(receipt)
+                roots = tuple(
+                    _canonical_input_path(root, label="receipt legacy root")
+                    if base_receipt.zero_source else Path(root)
+                    for root in base_receipt.legacy_root_inventory
+                )
             snapshots.append((snapshot, receipt, roots))
 
         authority_lock_paths = {
@@ -5414,9 +5418,11 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                     f"repository {snapshot.identity} receipt changed while entering the barrier"
                 )
             if prior_receipt is None and receipt is not None:
+                base_receipt = _rotation_base_receipt(receipt)
                 roots = tuple(
                     _canonical_input_path(root, label="receipt legacy root")
-                    for root in _rotation_base_receipt(receipt).legacy_root_inventory
+                    if base_receipt.zero_source else Path(root)
+                    for root in base_receipt.legacy_root_inventory
                 )
                 required_locks = set(_receipt_seal_lock_paths(receipt, roots=roots))
                 if not required_locks.issubset(authority_lock_paths):
