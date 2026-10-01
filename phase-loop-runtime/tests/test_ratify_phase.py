@@ -310,6 +310,9 @@ def test_human_tiers_invalid_overrides():
         for override in (
             {"human_tier": "unknown"}, {"human_tier": None}, {"human_tier": []},
             {"human_tier": "always", "on_shortfall": "unknown"},
+            {"human_tier": "always", "required_vendors": "invalid"},
+            {"human_tier": "always", "required_lens_coverage": 0},
+            {"human_tier": "always", "required_consensus": "plurality"},
         ):
             manifest = {"ratification_policy_overrides": {"pre-merge-CR": override}}
             with pytest.raises(ValueError) as error:
@@ -387,6 +390,17 @@ def test_landed_guard_marker_removal(monkeypatch):
     monkeypatch.setattr(tdd, "capability", lambda lane: (_ for _ in ()).throw(tdd.MissingCapability("deleted marker")))
     with pytest.raises(tdd.MissingCapability, match="deleted marker"):
         landed.test_no_ratify_contract_skips_as_unimplemented()
+
+
+def test_guard_proof_fixture_control(tmp_path):
+    from test_ruling_ledger import _repo, _proof
+    from phase_loop_runtime.verification_evidence import validate_verification_artifact
+    repo, _head = _repo(tmp_path)
+    proof = _proof(repo)["test_guard.py::test_guard"]
+    assert validate_verification_artifact(Path(proof["verification_artifact_path"])).ok
+    cases = list(ElementTree.parse(proof["junit_path"]).getroot().iter("testcase"))
+    assert len(cases) == 1 and cases[0].get("name") == "test_guard"
+    assert cases[0].find("failure") is None and cases[0].find("skipped") is None
 
 
 def test_unknown_capability_strict_failure(monkeypatch):

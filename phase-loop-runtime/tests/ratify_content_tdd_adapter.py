@@ -44,6 +44,7 @@ CONTROL_CASES = (
     "rejected_recording_no_receipt", "verify_rescans_red_log",
     "receipt_binding_control",
     "landed_guard_marker_removal",
+    "guard_proof_fixture_control",
 )
 TEST_DIR = "phase-loop-runtime/tests"
 FROZEN_TEST_FILES = tuple(f"{TEST_DIR}/{name}" for name in (

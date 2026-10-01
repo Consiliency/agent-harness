@@ -69,7 +69,7 @@ def _check(repo, *, ref="HEAD", proofs=None, now=NOW):
 
 
 def _proof(repo):
-    from phase_loop_runtime.verification_evidence import run_verification, validate_verification_artifact
+    from phase_loop_runtime.verification_evidence import ARTIFACT_NAME, run_verification, validate_verification_artifact
     folder = repo / ".phase-loop" / "guard"
     junit = folder / "guard.xml"
     node = "test_guard.py::test_guard"
@@ -81,7 +81,7 @@ def _proof(repo):
             ["sha256sum", str(junit)],
         ], suite_command=None, env_refresh=None, timeout_s=None,
     )
-    artifact = Path(result.artifact_path)
+    artifact = folder / ARTIFACT_NAME
     assert validate_verification_artifact(artifact).ok
     assert all(command.exit_code == 0 for command in result.commands)
     return {node: {"verification_artifact_path": str(artifact), "junit_path": str(junit)}}
