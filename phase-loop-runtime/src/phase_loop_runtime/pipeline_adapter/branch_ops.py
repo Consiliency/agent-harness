@@ -270,7 +270,7 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _stderr_excerpt(result: subprocess.CompletedProcess[str]) -> str:
-    from ..credential_redaction import EXCERPT_INPUT_CAP, redact_text
+    from ..credential_redaction import redact_text
 
-    text = redact_text((result.stderr or result.stdout or "").strip()[:EXCERPT_INPUT_CAP])
+    text = redact_text((result.stderr or result.stdout or "").strip())
     return " ".join(text.split())[:300] or "git command failed"

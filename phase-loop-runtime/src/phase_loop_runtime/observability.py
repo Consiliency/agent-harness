@@ -1317,6 +1317,6 @@ def _slug(value: str) -> str:
 
 
 def _redact_hotfix_reason(reason: str) -> str:
-    from .credential_redaction import EXCERPT_INPUT_CAP, redact_text
+    from .credential_redaction import redact_text
 
-    return " ".join(redact_text(reason[:EXCERPT_INPUT_CAP]).split())[:200]
+    return " ".join(redact_text(reason).split())[:200]

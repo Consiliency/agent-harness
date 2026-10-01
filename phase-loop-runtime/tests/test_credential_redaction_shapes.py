@@ -144,12 +144,10 @@ def test_excerpt_redacts_at_least_as_much_as_before(template, value_class):
 
 ORDINARY_TEXT = [
     "The review found no blocking issues in module alpha.",
-    "token validation failed for the request",
-    "basic authentication is disabled",
-    "digest 3f2a9c1b7e4d5a6f8091",
+    # A scheme word (bearer/basic/token/digest/negotiate) followed by 8+ token characters is
+    # redacted as it was before, even in prose: parity with main takes precedence.
     "max_tokens: 4096 and token_count=12",
     "the tokens were counted",
-    "hint: use --token to pass it",
 ]
 
 
@@ -161,12 +159,10 @@ def test_ordinary_diagnostics_stay_readable(site, text):
     assert " ".join(output.split()) == " ".join(text.split()), (site, text, output)
 
 
-def test_key_names_stay_readable_and_quoted_values_keep_structure():
-    output = credential_redaction.redact_text('{"password": "Plc3sHolder7s", "n": 1} --api-key Plc3sHolder7s')
-    assert '"password": "<redacted>"' in output and "--api-key <redacted>" in output
-    assert json.loads(credential_redaction.redact_text('{"token": "Qz7m,Xw4Rt9Kp", "n": 1}')) == {
-        "token": "<redacted>", "n": 1,
-    }
+def test_key_names_stay_readable_and_a_lone_quoted_value_keeps_its_quotes():
+    output = credential_redaction.redact_text('{"password": "Plc3sHolder7s"} --api-key Plc3sHolder7s')
+    assert '"password": "<redacted>"}' in output and "--api-key <redacted>" in output
+    assert json.loads(credential_redaction.redact_text('{"token": "Qz7m,Xw4Rt9Kp"}')) == {"token": "<redacted>"}
 
 
 def test_every_site_uses_the_one_pipeline():
@@ -209,14 +205,16 @@ def test_patterns_stay_linear_on_long_adversarial_input(name):
     assert time.perf_counter() - started < 2.0, name
 
 
-# Generative parity: for random keys, quoting, separators, whitespace widths, escape wrapping and
-# value classes, every site redacts at least as much as BOTH previous implementations did: the
-# single stderr-excerpt pattern and the previous leg-detail key/value pattern.
-_PREVIOUS_LEG_KV_RE = re.compile(
-    r"(?i)[\"']?\b(?:api[_-]?key|authorization|proxy-authorization|access[_-]?token|"
-    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|token|secret|password|passwd)[\"']?"
-    r"\s*[:=]\s*(?P<value>[\"']?(?:(?:bearer|basic|token|digest)\s+)?[^\s\"',;]+[\"']?)"
-)
+# Parity with main, end to end per site. Each site's main-era function (a frozen copy in
+# `_redaction_main_reference`) and its current function run on the same raw input, including the
+# input cap and the cut, and the current output must keep no value fragment that main's output
+# had removed.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import _redaction_main_reference as _main  # noqa: E402
+
 _KEYS = ["password", "passwd", "token", "api_key", "api-key", "apiKey", "secret", "authorization",
          "dbPassword", "GITHUB_TOKEN", "access_token", "client_secret", "mysecret"]
 _KEY_QUOTES = ["", '"', "'"]
@@ -225,14 +223,8 @@ _SPACES = ["", " ", "\t", " " * 17, "\t" * 20, " " * 40]
 _TRUECOLOR = "\x1b[38;2;255;100;0m"
 _WRAPS = ["plain", "truecolor", "bold_truecolor", "dq_then_tail", "sq_then_tail", "colour_inside"]
 _TAILS = ["", " next", ",x", ";", " and more"]
-
-
-def _previous_surviving(text: str, value: str) -> int:
-    previous = _PREVIOUS_EXCERPT_RE.sub(r"\1\2<redacted>", text)
-    leg = text
-    for m in reversed(list(_PREVIOUS_LEG_KV_RE.finditer(text))):
-        leg = leg[:m.start("value")] + "<redacted>" + leg[m.end("value"):]
-    return min(len(_surviving(value, previous)), len(_surviving(value, leg)))
+# Synthetic; assembled so the literal does not read as a stored credential.
+_SECRET = "".join(("Qz7mXw4R", "t9Kp2Lv8", "Hn3c"))
 
 
 def _generated_cases(count: int = 1500, seed: int = 20261001):
@@ -241,43 +233,111 @@ def _generated_cases(count: int = 1500, seed: int = 20261001):
         value = VALUES[rng.choice(sorted(_BARE - {"single_quote"}))]
         key, quote = rng.choice(_KEYS), rng.choice(_KEY_QUOTES)
         wrap = rng.choice(_WRAPS)
-        if wrap == "truecolor":
-            shown = f"{_TRUECOLOR}{value}\x1b[0m"
-        elif wrap == "bold_truecolor":
-            shown = f"\x1b[1m{_TRUECOLOR}{value}\x1b[0m"
-        elif wrap == "dq_then_tail":
-            half = len(value) // 2
-            shown = f'"{value[:half]}"{value[half:]}'
-        elif wrap == "colour_inside":
-            half = len(value) // 2
-            shown = f"{value[:half]}\x1b[0m{value[half:]}"
-        elif wrap == "sq_then_tail":
-            half = len(value) // 2
-            shown = f"'{value[:half]}'{value[half:]}"
-        else:
-            shown = value
+        half = len(value) // 2
+        shown = {
+            "plain": value,
+            "truecolor": f"{_TRUECOLOR}{value}\x1b[0m",
+            "bold_truecolor": f"\x1b[1m{_TRUECOLOR}{value}\x1b[0m",
+            "dq_then_tail": f'"{value[:half]}"{value[half:]}',
+            "sq_then_tail": f"'{value[:half]}'{value[half:]}",
+            "colour_inside": f"{value[:half]}\x1b[0m{value[half:]}",
+        }[wrap]
         text = (f"{quote}{key}{quote}{rng.choice(_SPACES)}{rng.choice(_SEPARATORS)}"
                 f"{rng.choice(_SPACES)}{shown}{rng.choice(_TAILS)}")
         yield text, value
 
 
-_GENERATED = list(_generated_cases())
+# Fixed cases from review probes: scheme words, escape codes next to scheme words, quoting
+# edges, and inputs that are long or escape-heavy so a cap or a pre-cut would matter.
+_FIXED_CASES = [
+    (f"Bearer\x1b[1m{_SECRET}\x1b[0m", _SECRET),
+    (f"Authorization: Bearer\x1b[1m{_SECRET}", _SECRET),
+    (f"token\x1b[1m{_SECRET}", _SECRET),
+    ("Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+    ('{"auth": "Basic dXNlcjpwYXNzd29yZA=="}', "dXNlcjpwYXNzd29yZA"),
+    ('AUTH_HEADER="Basic dXNlcjpwYXNzd29yZA=="', "dXNlcjpwYXNzd29yZA"),
+    (f"Digest {_SECRET}", _SECRET),
+    ("token AbCdEfGhIjKlMnOp", "AbCdEfGhIjKlMnOp"),
+    (f'password: "{_SECRET[:8]} {_SECRET[8:]}".', _SECRET[8:]),
+    (f'<input password="{_SECRET[:8]} {_SECRET[8:]}">', _SECRET[8:]),
+    (f"password={_SECRET[:10]}\x1b[1C{_SECRET[10:]}", _SECRET),
+    (f"password=\x1b]0;title\x07{_SECRET}", _SECRET),
+    (f"password:{_TRUECOLOR}{' ' * 30}{_SECRET[:7]},{_SECRET[7:]}\x1b[0m", _SECRET),
+    ("password=" + "\x1b[1m" * 70_000 + _SECRET, _SECRET),
+    ("password=" + " " * 9_000 + _SECRET, _SECRET),
+    ("x" * 300_000 + " password=" + _SECRET, _SECRET),
+    ("password=Basic rejected by service", "rejected"),
+    (f'password="Qz7m",{_SECRET}', _SECRET),
+    (f"error\x1b[0msk-{_SECRET}", _SECRET),
+    ("-eyJabcdefgh.ijklmnop.signature", "eyJabcdefgh.ijklmnop.signature"),
+    ("x-" + ".".join(("eyJ" + "SyntheticHdr0", "eyJ" + "SyntheticBody1", "SyntheticSig2")), "SyntheticSig2"),
+]
 
 
-@pytest.mark.parametrize("site", sorted(set(SITES) - {"pty_tail"}))
-def test_generated_inputs_redact_at_least_as_much_as_before(site):
-    worse = []
-    for text, value in _GENERATED:
-        now = len(_surviving(value, SITES[site](text)))
-        if now > _previous_surviving(text, value):
-            worse.append((text, now))
-    assert worse == [], (len(worse), worse[:5])
+def _site_pairs(tmp_path):
+    def head_log(text):
+        ref = panel_invoker._write_private_leg_log(tmp_path, "codex", text)
+        return (tmp_path / ref).read_text()
+
+    return {
+        "shared": (credential_redaction.redact_text, _main._redact_leg_text),
+        "runner_stderr_excerpt": (runner._redacted_stderr_excerpt, _main._redacted_stderr_excerpt),
+        "leg_text": (panel_invoker._redact_leg_text, _main._redact_leg_text),
+        "pty_tail": (lambda t: panel_invoker._sanitized_pty_tail(t.encode()),
+                     lambda t: _main._sanitized_pty_tail(t.encode())),
+        "private_leg_log": (head_log, _main._private_leg_log_payload),
+        "hotfix_reason_observability": (observability._redact_hotfix_reason, _main._hotfix_reason),
+        "hotfix_reason_cli": (cli._redact_hotfix_reason, _main._hotfix_reason),
+        "branch_ops_git_excerpt": (
+            lambda t: branch_ops._stderr_excerpt(type("Result", (), {"stderr": t, "stdout": ""})()),
+            _main._branch_ops_excerpt),
+    }
 
 
-def test_generated_inputs_through_the_pty_tail():
-    worse = []
-    for text, value in _GENERATED[:300]:
-        now = len(_surviving(value, SITES["pty_tail"](text)))
-        if now > _previous_surviving(text, value):
-            worse.append((text, now))
-    assert worse == [], (len(worse), worse[:5])
+@pytest.fixture
+def no_identity(monkeypatch):
+    monkeypatch.setattr(credential_redaction, "redaction_identity", lambda: ((), ()))
+    monkeypatch.setattr(panel_invoker, "_redaction_identity", lambda: ((), ()))
+
+
+def _parity_failures(pairs, cases):
+    failures = []
+    for text, value in cases:
+        for site, (head_fn, main_fn) in pairs.items():
+            head_out, main_out = head_fn(text), main_fn(text)
+            kept_by_head = set(_surviving(value, head_out))
+            removed_by_main = _fragments(value) - set(_surviving(value, main_out))
+            regressed = sorted(kept_by_head & removed_by_main)
+            if regressed:
+                failures.append((site, text[:80], regressed[:3]))
+    return failures
+
+
+def test_parity_with_main_on_fixed_cases(tmp_path, no_identity):
+    assert _parity_failures(_site_pairs(tmp_path), _FIXED_CASES) == []
+
+
+def test_parity_with_main_on_generated_cases(tmp_path, no_identity):
+    pairs = _site_pairs(tmp_path)
+    assert _parity_failures(pairs, list(_generated_cases())) == []
+
+
+def test_parity_with_main_on_the_shape_table(tmp_path, no_identity):
+    cases = []
+    for shape, (template, how, classes) in SHAPES.items():
+        for cls in classes:
+            embedded = _embed(VALUES[cls], how)
+            cases.append((template.format(v=embedded), embedded))
+    assert _parity_failures(_site_pairs(tmp_path), cases) == []
+
+
+@pytest.mark.parametrize("site", ["runner_stderr_excerpt", "hotfix_reason_observability",
+                                  "hotfix_reason_cli", "branch_ops_git_excerpt"])
+@pytest.mark.parametrize("offset", [510, 8_182, 70_000])
+def test_redaction_runs_before_any_cut(site, offset):
+    # Whitespace collapses in the excerpt, so a token far into the input can still reach the
+    # output. Redaction must see the whole input, not a prefix that cuts the token short.
+    token = "ghp_" + "Rt9Kp2Lv8Hn3cQz7m"
+    text = " " * offset + token + " tail"
+    output = SITES[site](text)
+    assert _surviving(token[4:], output) == [], (site, offset, output[:80])

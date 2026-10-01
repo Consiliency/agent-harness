@@ -16,9 +16,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - run-metadata stderr excerpts;
   - the hotfix reasons recorded by `observability` and the CLI.
 - Value grammar:
-  - a quoted value runs to its matching close quote (escapes allowed) and is redacted inside
-    the quotes, so structured text stays valid;
-  - an unquoted value runs to whitespace.
+  - an unquoted value runs to whitespace, including an auth-scheme word before it;
+  - a quoted value (escapes allowed, may contain spaces) runs to its matching close quote plus
+    any non-space text glued after it. A lone quoted value followed only by structural
+    delimiters is redacted inside its quotes.
 - Key names are matched without a left word boundary, so glued and prefixed names
   (`dbPassword`, `mysecret`, `GITHUB_TOKEN`) are covered. `secret_key`, `private_key`,
   `access_key`, `passphrase`, `credential(s)` and `signature` are added.
@@ -28,16 +29,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - `Cookie`/`Set-Cookie` headers, including JSON and dict forms;
   - PEM and PGP private-key blocks;
   - `x-api-key`.
-- A scheme word followed by prose ("token validation", "basic authentication",
-  "digest <hex>") is no longer redacted as a credential.
 - Every pattern is linear in the input length, with bounded quantifiers after alternations.
-- Colour and attribute escape sequences are removed before detection, so a coloured value stays
-  one token next to its key; other escape sequences become one space. Whitespace around the
-  separator is unbounded. A quoted value counts as quoted only when a delimiter or the end of
-  the text follows its closing quote; otherwise the whole run to whitespace is redacted.
-- Inputs whose output is only an excerpt are capped before redaction
-  (`credential_redaction.EXCERPT_INPUT_CAP`), and the private leg log redacts only the tail it
-  keeps. Pipeline branch-operation error messages now go through the same pipeline.
+- Credential shapes are detected over the normalized text and over the raw text with colour codes
+  removed, and a span found in either is redacted, so normalization only adds coverage. Every
+  site redacts its whole input before any excerpt is cut. Whitespace around the separator is
+  unbounded. JWT-shaped tokens are found by a linear scan of dotted token runs.
+- Pipeline branch-operation error messages now go through the same pipeline.
+- Tests compare every site against a frozen copy of the previous functions, end to end, and
+  require the output to keep no value fragment the previous output had removed.
 - `redaction.STDERR_SECRET_KV_RE` and the panel's private detector copies are removed.
 - The BAML adapter's error sanitizer moves onto this module in a follow-up, after its
   in-flight change lands.

@@ -2511,9 +2511,7 @@ def _write_private_leg_log(run_dir: Path | str, seat_key: str, raw: str) -> str 
         )
         try:
             os.fchmod(fd, 0o600)
-            # Only the tail is kept, so only a bounded tail (4x the kept bytes) is redacted.
-            payload = _redact_leg_text(raw[-4 * _LEG_LOG_MAX_BYTES:]).encode(
-                "utf-8", errors="replace")[-_LEG_LOG_MAX_BYTES:]
+            payload = _redact_leg_text(raw).encode("utf-8", errors="replace")[-_LEG_LOG_MAX_BYTES:]
             view = memoryview(payload)
             while view:  # os.write may write short
                 view = view[os.write(fd, view):]

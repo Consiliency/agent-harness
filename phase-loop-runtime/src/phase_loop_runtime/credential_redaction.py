@@ -7,7 +7,9 @@ run-metadata stderr excerpts and hotfix reasons.
 The pipeline:
   1. Normalize without destroying separation. Every control character and every character of
      an escape sequence becomes ONE space, so offsets and word breaks survive.
-  2. Every detector runs over that same normalized text and reports spans.
+  2. Every detector runs over that normalized text and reports spans. Credential shapes also
+     run over the raw text with colour codes removed, and a span found in either view is
+     redacted, so normalization can only add coverage.
   3. Overlapping or adjacent spans merge, and each merged span is replaced ONCE, so a value
      is never half-substituted.
   4. The closeout metadata gate's forbidden shapes run last, over the redacted text.
@@ -23,9 +25,6 @@ import re
 from collections.abc import Sequence
 
 PLACEHOLDER = "<redacted>"
-# An excerpt keeps only a prefix of its input, so the input is capped at this many characters
-# before redaction (well beyond any excerpt length, so no value is cut at the excerpt edge).
-EXCERPT_INPUT_CAP = 8192
 _QUOTED_MAX = 4096
 
 # Names that mark the next value as a credential. Matched with no left word boundary, so glued
@@ -35,30 +34,23 @@ _SECRET_WORDS = (
     r"auth[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|access[_-]?key|"
     r"credentials?|signature|passphrase|password|passwd|token|secret"
 )
-# A value: a double- or single-quoted string (escapes allowed, bounded) that ends the token,
-# i.e. is followed by a delimiter or the end of the text; otherwise the whole unquoted run up
-# to whitespace (so `"A"B` is redacted whole).
-_QUOTED_END = r"(?=[\s,;:)\]}]|$)"
-_DQ = r'"(?:[^"\\\n]|\\.){0,' + str(_QUOTED_MAX) + r'}"' + _QUOTED_END
-_SQ = r"'(?:[^'\\\n]|\\.){0," + str(_QUOTED_MAX) + r"}'" + _QUOTED_END
+# A value: a double- or single-quoted string (escapes allowed, bounded, so a quoted value may
+# contain spaces) together with any non-space run glued after its closing quote; otherwise the
+# whole run up to whitespace. Never shorter than a whitespace-delimited run.
+_DQ = r'"(?:[^"\\\n]|\\.){0,' + str(_QUOTED_MAX) + r'}"\S*'
+_SQ = r"'(?:[^'\\\n]|\\.){0," + str(_QUOTED_MAX) + r"}'\S*"
 _VALUE = _DQ + "|" + _SQ + r"|\S+"
 
 # Shapes whose WHOLE match is the credential.
 CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # a bearer token, of any 8+ token characters
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
-    # a token/negotiate scheme and its token: here the token must contain a digit or token
-    # punctuation, so ordinary prose after those words ("token validation") is left alone
-    re.compile(
-        r"(?i)\b(?:token|negotiate)\s+(?=[A-Za-z]{0,64}[0-9._~+/=-])[A-Za-z0-9._~+/=-]{8,}"
-    ),
+    # an auth scheme and its token, across whitespace/newlines (as before)
+    re.compile(r"(?i)\b(?:bearer|basic|token|digest|negotiate)\s+[A-Za-z0-9._~+/=-]{8,}"),
     # prefixed API keys / tokens
     re.compile(
         r"\b(?:sk-(?:ant-)?|sk_live_|sess-|xai-|gh[pousr]_|github_pat_|glpat-|hf_|"
         r"xox[abceoprs]-|AIza|ya29\.|AKIA)[A-Za-z0-9_.-]{8,}"
     ),
     re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"),
-    re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"),
     # a PEM or PGP private-key block, to its END line (or to the end of the text when cut)
     re.compile(
         r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----.*?"
@@ -67,18 +59,18 @@ CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
-# Shapes whose named ``value`` group is the credential, so the key name stays readable. A
-# quoted value is narrowed to the inside of its quotes, which keeps structured text valid.
+# Shapes whose named ``value`` group is the credential, so the key name stays readable. A value
+# that is exactly one quoted string is narrowed to the inside of its quotes.
 VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # key=value / key: value, quoted or bare key, optional auth-scheme word before the value
     re.compile(
         r"(?i)(?:" + _SECRET_WORDS + r")[\"']?\s*[:=]\s*"
-        r"(?:(?:bearer|basic|token|digest|negotiate)\s+)?(?P<value>" + _VALUE + r")"
+        r"(?P<value>(?:(?:bearer|basic|token|digest|negotiate)\s+)?(?:" + _VALUE + r"))"
     ),
     # a command-line flag followed by its value: --api-key VALUE / -token 'VALUE' / --db-password=V
     re.compile(
         r"(?i)(?<![\w-])--?[A-Za-z0-9_-]{0,48}?(?:" + _SECRET_WORDS + r")(?:\s+|=)"
-        r"(?![a-z]{1,5}(?:\s|$))(?P<value>(?!-)(?:" + _VALUE + r"))"
+        r"(?P<value>(?!-)(?:" + _VALUE + r"))"
     ),
     # URL userinfo: scheme://user:VALUE@host or scheme://VALUE@host (the whole userinfo)
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]{0,31}://(?P<value>[^\s/@:]{1,256}(?::[^\s/@]{0,256})?)@"),
@@ -87,6 +79,44 @@ VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?i)\b(?:set-)?cookie[\"']?\s*:\s*(?P<value>" + _DQ + "|" + _SQ + r"|[^\r\n]+)"
     ),
 )
+
+# A JWT (header.payload[.signature]) is found by a linear scan of dotted token runs; a single
+# regex with a backtracking first segment is quadratic on long `eyJ-eyJ-…` runs.
+_TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9_.-]+")
+_JWT_SEGMENT_MIN = 8
+
+
+def _jwt_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for run in _TOKEN_RUN_RE.finditer(text):
+        segment = run.group()
+        if "eyJ" not in segment:
+            continue
+        base = run.start()
+        dots = [i for i, ch in enumerate(segment) if ch == "."]
+        next_dot = []  # next_dot[k]: index of the first "." at or after k, else len(segment)
+        pointer = 0
+        for k in range(len(segment) + 1):
+            while pointer < len(dots) and dots[pointer] < k:
+                pointer += 1
+            next_dot.append(dots[pointer] if pointer < len(dots) else len(segment))
+        k = segment.find("eyJ")
+        while k != -1:
+            # word boundary before "eyJ": start of the run, or a non-word character ("-" or ".")
+            if k == 0 or not (segment[k - 1].isalnum() or segment[k - 1] == "_"):
+                first_end = next_dot[k]
+                if first_end - (k + 3) >= _JWT_SEGMENT_MIN and first_end < len(segment):
+                    second_end = next_dot[first_end + 1]
+                    if second_end - (first_end + 1) >= _JWT_SEGMENT_MIN:
+                        end = second_end
+                        if second_end < len(segment):
+                            third_end = next_dot[second_end + 1]
+                            if third_end > second_end + 1:
+                                end = third_end
+                        spans.append((base + k, base + end))
+            k = segment.find("eyJ", k + 1)
+    return spans
+
 
 _SGR_RE = re.compile(r"\x1b\[[0-9;:]*m")
 _ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
@@ -134,18 +164,43 @@ def redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def normalize(text: str) -> str:
-    """Colour and attribute sequences (SGR) are removed, so a value wrapped in colour stays one
-    token next to its key. Every other escape sequence becomes ONE space, and every other
-    control character (newline kept) becomes one space, so `Bearer\\t<tok>` and
-    `Bearer\\x1b[1C<tok>` stay two words."""
-    text = _SGR_RE.sub("", text or "")
-    text = _ESCAPE_RE.sub(" ", text)
+    """Every escape-sequence byte and every control character (newline kept) becomes ONE
+    space, so offsets are preserved (the output has the input's length) and `Bearer\\t<tok>`
+    / `Bearer\\x1b[1C<tok>` stay two words."""
+    text = _ESCAPE_RE.sub(lambda m: " " * len(m.group(0)), text or "")
     return _CTRL_RE.sub(" ", text)
 
 
+def _without_sgr(text: str) -> tuple[str, list[int]]:
+    """``text`` with colour/attribute sequences removed, and each kept character's index in
+    ``text``, so a coloured value is one token next to its key and its spans map back."""
+    kept: list[str] = []
+    index: list[int] = []
+    cursor = 0
+    for m in _SGR_RE.finditer(text):
+        kept.append(text[cursor:m.start()])
+        index.extend(range(cursor, m.start()))
+        cursor = m.end()
+    kept.append(text[cursor:])
+    index.extend(range(cursor, len(text)))
+    return "".join(kept), index
+
+
 def _unquote(text: str, start: int, end: int) -> tuple[int, int]:
-    if end - start >= 2 and text[start] in "\"'" and text[end - 1] == text[start]:
-        return start + 1, end - 1
+    """Narrow a value that is one quoted string, optionally followed only by structural
+    delimiters (`",` / `"}` / `")`), to the inside of its quotes; otherwise keep it whole."""
+    if end - start < 2 or text[start] not in "\"'":
+        return start, end
+    quote, k = text[start], start + 1
+    while k < end:
+        if text[k] == "\\":
+            k += 2
+            continue
+        if text[k] == quote:
+            break
+        k += 1
+    if k < end and all(ch in ",;:)]}" for ch in text[k + 1:end]):
+        return start + 1, k
     return start, end
 
 
@@ -156,15 +211,20 @@ def credential_spans(text: str) -> list[tuple[int, int]]:
         spans += [(m.start(), m.end()) for m in pattern.finditer(text)]
     for pattern in VALUE_PATTERNS:
         spans += [_unquote(text, m.start("value"), m.end("value")) for m in pattern.finditer(text)]
+    spans += _jwt_spans(text)
     return [(s, e) for s, e in spans if e > s]
 
 
 def _spans(
+    raw: str,
     text: str,
     known: Sequence[str | os.PathLike[str]],
     identity: tuple[tuple[str, ...], tuple[str, ...]],
 ) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = [(s, e, "credential") for s, e in credential_spans(text)]
+    sgr_free, index = _without_sgr(raw)
+    for view_start, view_end in credential_spans(sgr_free):
+        spans.append((index[view_start], index[view_end - 1] + 1, "credential"))
     spans += [(m.start(), m.end(), "email") for m in _EMAIL_RE.finditer(text)]
     homes, users = identity
     seat = [str(p).rstrip("/") for p in known if str(p).rstrip("/") not in ("", "/")]
@@ -190,12 +250,18 @@ def redact_text(
     identity: tuple[tuple[str, ...], tuple[str, ...]] | None = None,
 ) -> str:
     """Span-union redaction of a WHOLE, UNCUT, multi-line text (line structure kept). Run
-    this BEFORE selecting or cutting an excerpt. ``known`` are extra paths to replace, and
+    this BEFORE selecting or cutting an excerpt, over the whole input (every pattern is
+    linear). ``known`` are extra paths to replace, and
     ``identity`` defaults to `redaction_identity()`."""
     from .redaction import _FORBIDDEN_METADATA_PATTERNS
 
-    normalized = normalize(text)
-    spans = sorted(_spans(normalized, known, redaction_identity() if identity is None else identity))
+    raw = text or ""
+    normalized = normalize(raw)
+    # Credential shapes are detected over the normalized text and over the raw text with colour
+    # codes removed (which keeps every other byte of the raw text); a span found in either view
+    # is redacted. Both views map to the raw offsets, so normalization only adds coverage.
+    spans = sorted(_spans(raw, normalized, known,
+                          redaction_identity() if identity is None else identity))
     merged: list[list[object]] = []
     for start, end, kind in spans:
         if merged and start <= merged[-1][1]:  # overlapping or adjacent
