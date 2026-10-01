@@ -5342,22 +5342,27 @@ class _TranscriptOutcome:
 def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict, dict]]]:
     """``(record_versions, last_line_parses, live_turn)`` for transcript ``lines``.
 
-    Claude Code re-journals records: a replay repeats an earlier record under its uuid, often
-    with changed ``parentUuid``/``promptId``/``usage``, and metadata records (``last-prompt``,
-    ``ai-title``, ``mode``...) are rewritten after every turn. Neither is provider progress,
-    and neither moves a record in the turn (agent-harness#1176 r1). So records are ordered by
-    IDENTITY: an assistant record by its uuid, a user record by its uuid and what it says (a
-    changed request under a reused uuid is a new request, as in the answer parser). Each
-    identity keeps the position where it first appeared, and its state only moves forward: a
-    replay of any earlier version, or an open version after a stop, never replaces a later
-    state (agent-harness#1194 r2). ``live_turn`` is the identity-ordered records after the last
-    genuine request (a user record that is not ``isMeta`` and carries no tool_result).
+    ``live_turn`` is the current request's records in APPEND order (agent-harness#1194 r4): the
+    records after the last genuine request (a user record that is not ``isMeta``, carries no
+    tool_result and is not a replay), minus only what is not provider evidence:
+      * an exact replay of a version already seen (same uuid, content, ``stop_reason`` and error
+        flag; Claude Code re-journals records with changed ``parentUuid``/``promptId``/
+        ``usage``), and a stale open copy of a stopped record whose content is unchanged --
+        the answer parser's own two replay rules (agent-harness#1002);
+      * sidechain records (``isSidechain``), which never decide the main turn's last record.
+    An ``isApiErrorMessage`` record is terminal EVENT evidence: it is never collapsed into an
+    earlier version of its uuid, whatever its ``stop_reason``. "Last" is the last record
+    appended, never an earlier position kept by identity.
+
+    ``record_versions`` counts the distinct user/assistant record versions: it grows only when
+    the provider writes something new, never on a replay or rewritten metadata
+    (``last-prompt``, ``ai-title``, ``mode``...), so a caller can use it as genuine progress.
     """
     lines = [line for line in lines if line.strip()]
-    order: list[object] = []
-    latest: dict[object, tuple[dict, dict]] = {}
-    seen: dict[object, set[str]] = {}
     versions: set[str] = set()
+    seen: set[str] = set()
+    stopped: dict[str, str] = {}  # uuid -> content of its stopped version
+    events: list[tuple[dict, dict]] = []
     complete = True
     for index, line in enumerate(lines):
         try:
@@ -5371,23 +5376,22 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
         uid = payload.get("uuid") if isinstance(payload.get("uuid"), str) and payload.get("uuid") else None
         said = json.dumps([message.get("id"), message.get("role"), message.get("content")], sort_keys=True,
                           default=str)
-        version = json.dumps([uid, said, message.get("stop_reason"),
-                              _claude_api_error_record(payload, message)], default=str)
+        error = _claude_api_error_record(payload, message)
+        # The state includes whether ``stop_reason`` is present at all, as in the answer parser.
+        version = json.dumps([uid, said, "stop_reason" in message, message.get("stop_reason"), error],
+                             default=str)
         versions.add(version)
-        if uid is None:
-            identity: object = ("uuid-less", index)
-        elif message.get("role") == "user":
-            identity = ("user", uid, said)
-        else:
-            identity = ("assistant", uid)
-        if identity not in latest:
-            order.append(identity)
-        elif version in seen[identity] or (
-                message.get("stop_reason") is None
-                and latest[identity][1].get("stop_reason") is not None):
+        if payload.get("isSidechain") is True:
             continue
-        seen.setdefault(identity, set()).add(version)
-        latest[identity] = (payload, message)
+        if uid is not None:
+            if version in seen:
+                continue  # an exact replay
+            if not error and message.get("stop_reason") is None and stopped.get(uid) == said:
+                continue  # a stale open copy of a stopped record
+            seen.add(version)
+            if message.get("stop_reason") is not None:
+                stopped[uid] = said
+        events.append((payload, message))
 
     def _genuine_request(payload: dict, message: dict) -> bool:
         content = message.get("content")
@@ -5395,9 +5399,8 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
                 and not (isinstance(content, list) and any(
                     isinstance(item, dict) and item.get("type") == "tool_result" for item in content)))
 
-    live = [latest[identity] for identity in order]
-    requests = [i for i, (payload, message) in enumerate(live) if _genuine_request(payload, message)]
-    return len(versions), complete, (live[requests[-1] + 1:] if requests else [])
+    requests = [i for i, (payload, message) in enumerate(events) if _genuine_request(payload, message)]
+    return len(versions), complete, (events[requests[-1] + 1:] if requests else [])
 
 
 def _claude_give_up_code(payload: dict) -> str:
@@ -5416,8 +5419,9 @@ def _claude_transcript_outcome(path: Path, *, require_terminal: bool = False) ->
       * ``answer``: the answer parser (``_claude_answer_from_lines``, the agent-harness#1002 /
         #1077 / #1017 rules; ``require_terminal`` is the president route) returns text. An
         accepted answer always wins, whatever follows it.
-      * otherwise, when the file's last line parses and the last live record after the current
-        request is terminal -- nothing more will be journaled -- the turn is over with nothing
+      * otherwise, when the file's last line parses and the current request's last live record
+        (``_claude_live_turn``: append order, replays and sidechains excluded) is terminal --
+        nothing more will be journaled -- the turn is over with nothing
         accepted: ``gave_up`` when that record is an ``isApiErrorMessage`` give-up (typed by
         ``error`` and ``quotaLimits``), ``rejected`` when it is a completed (``end_turn`` /
         ``stop_sequence``) answer the route's parser refuses;
@@ -5493,8 +5497,9 @@ def _claude_answer_from_lines(lines: Sequence[str], *, require_terminal: bool = 
 
     Without ``require_terminal``, an ``isApiErrorMessage`` record (``_claude_api_error_record``)
     is never answer text: it is dropped before any other rule, so a stray error journaled after a
-    completed review cannot replace that review (agent-harness#1194 r2). Callers reach this
-    parser only through ``_claude_transcript_outcome``.
+    completed review cannot replace that review (agent-harness#1194 r2). On both routes a
+    sidechain record (``isSidechain``, a subagent's own thread) is dropped too, as in the
+    give-up walk (r4). Callers reach this parser only through ``_claude_transcript_outcome``.
 
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
@@ -5521,6 +5526,8 @@ def _claude_answer_from_lines(lines: Sequence[str], *, require_terminal: bool = 
                 return ""
             if not require_terminal and _claude_api_error_record(payload, message):
                 continue
+            if payload.get("isSidechain") is True:
+                continue  # a subagent's own thread is never the main turn's answer (r4)
             records.append((payload, message))
 
     def _uuid(payload: dict) -> str | None:

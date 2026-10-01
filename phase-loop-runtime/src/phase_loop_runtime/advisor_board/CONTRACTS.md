@@ -706,11 +706,13 @@ give-up detector are views of it, so they cannot disagree:
   DEGRADED with `claude_seat_transcript_rejected`.
 - `pending`: anything else (an open or capped message, the CLI's resume prompt,
   a newer request, a writer mid-append). A `max_tokens` stop is never terminal.
-"Live" records are ordered by identity (an assistant record by uuid, a user
-record by uuid and content), so a re-journaled record or rewritten metadata is
-neither progress nor a new position in the turn, and record state only moves
-forward: a replay of any earlier version, or an open version after a stop,
-never replaces a later state. `provider_terminal_state` records the code that
+The "last live record" is decided in APPEND order within the current request.
+Only non-evidence is skipped: an exact replay of a version already seen (same
+uuid, content, `stop_reason` presence and value, and error flag), a stale open
+copy of a stopped record whose content is unchanged, and sidechain records
+(`isSidechain`), which the answer parser drops too. An `isApiErrorMessage`
+record is terminal event evidence and is never collapsed into an earlier
+version of its uuid. Replays and rewritten metadata are not progress. `provider_terminal_state` records the code that
 ended the leg. `isApiErrorMessage` matches JSON `true` or the string `"true"`,
 on the record or the message. Frozen
 broker request/response keys, status literals, and observer envelopes are unchanged.

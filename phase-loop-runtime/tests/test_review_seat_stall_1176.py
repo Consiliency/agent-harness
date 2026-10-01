@@ -946,9 +946,28 @@ def _generated_transcript(rng) -> tuple[list[dict], str, bool]:
             records.append(record)
             assistants.append(record)
             fresh_terminal = True
-        elif roll < .85 and assistants:
+        elif roll < .80 and assistants:
             earlier = rng.choice(assistants)
             records.append({**earlier, "parentUuid": f"replay-{n}"})
+        elif roll < .85 and assistants:
+            # r4 (codex F001): an API-error UPDATE under an earlier record's uuid and id, with
+            # a null, missing or ordinary stop_reason -- terminal evidence, never a replay.
+            earlier = rng.choice(assistants)
+            record = api_error(rng.choice(["max_output_tokens", "rate_limit", "server_error"]))
+            record["uuid"], record["message"]["id"] = earlier["uuid"], earlier["message"]["id"]
+            stop = rng.choice(["null", "missing", "kept"])
+            if stop == "null":
+                record["message"]["stop_reason"] = None
+            elif stop == "missing":
+                del record["message"]["stop_reason"]
+            records.append(record)
+            assistants.append(record)
+            fresh_terminal = record not in records[:-1]
+        elif roll < .88:
+            # r4 (codex F001): an open sidechain record interleaved anywhere
+            records.append({"type": "assistant", "uuid": f"side-{n}", "isSidechain": True,
+                            "message": {"id": f"ms-{n}", "role": "assistant", "stop_reason": None,
+                                        "content": []}})
         elif roll < .93 and assistants:
             earlier = rng.choice(assistants)
             records.append({**earlier, "message": {**earlier["message"], "stop_reason": None,
@@ -982,6 +1001,29 @@ def test_r3_property_views_agree_and_a_terminal_turn_is_never_pending(tmp_path):
                 terminal_cases += 1
                 assert outcome.kind != "pending", (president, records)
     assert terminal_cases > 500  # the property was exercised, not vacuously true
+
+
+def test_r4_property_a_sidechain_after_a_terminal_record_never_makes_it_pending(tmp_path):
+    """Sidechain records never decide the main turn's last record: appending open sidechain
+    records after any terminal journal leaves the outcome unchanged."""
+    import random
+
+    path = tmp_path / "t.jsonl"
+    rng = random.Random(4)
+    checked = 0
+    for _ in range(600):
+        records, tail, fresh_terminal = _generated_transcript(rng)
+        if not fresh_terminal:
+            continue
+        side = {"type": "assistant", "uuid": "side-x", "isSidechain": True,
+                "message": {"id": "side-m", "role": "assistant", "stop_reason": None, "content": []}}
+        for president in (False, True):
+            before = panel._claude_transcript_outcome(write(path, records), require_terminal=president)
+            after = panel._claude_transcript_outcome(write(path, [*records, side, side]),
+                                                     require_terminal=president)
+            assert (after.kind, after.code) == (before.kind, before.code) and after.kind != "pending"
+            checked += 1
+    assert checked > 200
 
 
 def test_r3_a_replayed_streaming_version_cannot_reopen_a_ended_turn(tmp_path):
@@ -1018,3 +1060,68 @@ def test_r3_president_session_ends_rejected_instead_of_waiting(tmp_path, monkeyp
         release.touch()
     assert (log, text) == ("claude_seat_transcript_rejected", "") and rc != 0
     assert monitor.record["provider_terminal_state"] == "claude_seat_transcript_rejected"
+
+
+
+# --- round 4 (codex F001): an API-error update is terminal evidence; "last" is append order -----
+
+@pytest.mark.parametrize("mode", ["review", "president"])
+@pytest.mark.parametrize("heartbeat_only", [False, True])
+@pytest.mark.parametrize("shape", ["null-stop", "missing-stop", "interleaved"])
+def test_codex_r4_f001_terminal_api_error_update_cannot_remain_pending(
+    tmp_path, monkeypatch, mode, heartbeat_only, shape,
+):
+    """codex r4 F001 falsifier, verbatim (12 cases)."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    cap = capped(1)
+    error = api_error("max_output_tokens")
+    error["uuid"], error["message"]["id"] = cap["uuid"], cap["message"]["id"]
+    records = [REQUEST, cap, error]
+    if shape == "null-stop":
+        error["message"]["stop_reason"] = None
+    elif shape == "missing-stop":
+        del error["message"]["stop_reason"]
+    else:
+        records.insert(2, {
+            "type": "assistant", "uuid": "side", "isSidechain": True,
+            "message": {"id": "side-msg", "role": "assistant",
+                        "stop_reason": None, "content": []},
+        })
+    monitor = panel._ReviewMonitor(
+        tmp_path / "monitor.json", "review", 0, threading.Event(),
+        stall_notice_s=3600,
+    )
+    guard = threading.Timer(2, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=_provider(transcript, records, release), cwd=tmp_path,
+            prompt="input", output_file=tmp_path / "absent", timeout_s=10,
+            backstop_s=10, stall_threshold_s=.4, env=os.environ, mode=mode,
+            review_monitor=monitor if heartbeat_only else None,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    outcome = panel._claude_transcript_outcome(
+        transcript, require_terminal=mode == "president",
+    )
+    assert log == "claude_seat_output_budget_exhausted", (rc, text, log, outcome)
+    assert rc != 0 and text == ""
+
+
+def test_r4_last_is_append_order_not_first_seen_position(tmp_path):
+    """A record updated later keeps no earlier position: an open block journaled first and
+    stopped AFTER an error record is the turn's last record (the turn went on), and an exact
+    replay of the error after it changes nothing."""
+    block = {"type": "assistant", "uuid": "b-1", "message": {
+        "id": "mb", "role": "assistant", "stop_reason": None, "content": [{"type": "text", "text": "x"}]}}
+    error = api_error("server_error")
+    stopped = {**block, "message": {**block["message"], "stop_reason": "max_tokens"}}
+    path = write(tmp_path / "t.jsonl", [REQUEST, block, error, stopped, {**error, "parentUuid": "re"}])
+    assert panel._claude_transcript_outcome(path).kind == "pending"  # capped: the CLI continues
