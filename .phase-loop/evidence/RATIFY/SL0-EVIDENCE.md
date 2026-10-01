@@ -8,8 +8,8 @@ RATIFY. Runtime sources, the roadmap, manifest and installed services are unchan
 ## Current RED receipt
 
 `content-tdd-receipt.json` binds the four frozen test/adapter blobs at input
-`d7f82a31a076d53cd1ff305f0a09031ab0ca0979`. Its retained stdout/stderr report
-27 declared missing-capability failures and 17 passing controls, with no errors,
+`9e1f2af7e464fdd81469b1c2ff86f55cddd10b2c`. Its retained stdout/stderr report
+29 declared missing-capability failures and 19 passing controls, with no errors,
 skips or unexpected passes. The adapter checks exact file, node and marker
 inventories and compares the frozen blobs against the requested landing ref.
 Adding this evidence does not change those blobs.
@@ -35,9 +35,9 @@ Recording is an expected-RED operation; it is not the final strict GREEN check.
 
 ## Regression evidence
 
-`sl0-verification/verification.json`, `verification.log` and `default-green.xml`
+`sl0-verification-round2/verification.json`, `verification.log` and `default-green.xml`
 retain the actual scoped runner command, exit status and JUnit inventory:
-112 passed, 28 skipped. Of those skips, 27 are this unimplemented RATIFY corpus;
+114 passed, 30 skipped. Of those skips, 29 are this unimplemented RATIFY corpus;
 one is module-level collection of `test_phase_loop_plan_manifest.py`, which
 requires a dotfiles tree. No skipped case is counted as a pass or acceptance.
 
@@ -59,6 +59,16 @@ runner command artifacts and JUnit, without executing commands from ledger rows.
 The landed-marker removal correction and guard-proof fixture correction each
 restarted the content boundary before production or board review. Historical
 receipts describe their historical blobs, not the current candidate.
+
+`pre-review-833c31c7/` retains the first reviewed candidate's 27-failure/17-control
+receipt and 112-pass/28-skip regression record. The original `sl0-verification/`
+also belongs to that historical candidate; the round-2 directory above is current.
+Astra and Sol both returned DISAGREE on that candidate. Their two coverage probes
+were reproduced, then killed by the bounded repair: real governed-gate
+changing/no-row and non-unanimous-DEFERRED holds, and well-formed stale binding
+identities. Two new controls demonstrate that these frozen cases kill the
+gate-bypass and format-only binding mutations while retaining their positive
+controls. See `REVIEW-REPAIR-833c31c7.md`. Those older votes and CI do not transfer.
 
 Normal exact-head board review, president disposition, required CI and guarded
 landing remain outstanding for SL-0. Production lanes must not start before this

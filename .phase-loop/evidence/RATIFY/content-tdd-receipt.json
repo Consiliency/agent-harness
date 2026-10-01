@@ -1,9 +1,9 @@
 {
-  "base_commit": "d7f82a31a076d53cd1ff305f0a09031ab0ca0979",
-  "base_tree_digest": "068d00561f4037cee8d62204ab1299376e82429c",
-  "landing_commit": "d7f82a31a076d53cd1ff305f0a09031ab0ca0979",
+  "base_commit": "9e1f2af7e464fdd81469b1c2ff86f55cddd10b2c",
+  "base_tree_digest": "a38d818e7b9ef260c130470ce2bb4d0b99447a7d",
+  "landing_commit": "9e1f2af7e464fdd81469b1c2ff86f55cddd10b2c",
   "landing_ref": "HEAD",
-  "landing_tree_digest": "068d00561f4037cee8d62204ab1299376e82429c",
+  "landing_tree_digest": "a38d818e7b9ef260c130470ce2bb4d0b99447a7d",
   "red_argv": [
     "env",
     "PHASE_LOOP_TDD_EXPECT_RATIFY=1",
@@ -29,6 +29,8 @@
   "red_nodeids": [
     "tests/test_ratify_phase.py::test_receipt_partition",
     "tests/test_ratify_phase.py::test_receipt_partition_scope_item_requires_ruling",
+    "tests/test_ratify_phase.py::test_receipt_partition_changing_without_row",
+    "tests/test_ratify_phase.py::test_receipt_partition_nonunanimous",
     "tests/test_ratify_phase.py::test_receipt_partition_bound_findings_excluded",
     "tests/test_ratify_phase.py::test_receipt_partition_missing_or_stale_ruling",
     "tests/test_ratify_phase.py::test_receipt_partition_native_deferral",
@@ -47,6 +49,8 @@
     "tests/test_ratify_phase.py::test_receipt_binding_control",
     "tests/test_ratify_phase.py::test_landed_guard_marker_removal",
     "tests/test_ratify_phase.py::test_guard_proof_fixture_control",
+    "tests/test_ratify_phase.py::test_governed_gate_bypass_control",
+    "tests/test_ratify_phase.py::test_shape_only_binding_control",
     "tests/test_ratify_phase.py::test_unknown_capability_strict_failure",
     "tests/test_ratify_phase.py::test_unexpected_pass_refused",
     "tests/test_ratify_phase.py::test_unrelated_exception_propagates",
@@ -75,12 +79,12 @@
   "red_stderr_path": "content-tdd-receipt.red.stderr.log",
   "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "red_stdout_path": "content-tdd-receipt.red.stdout.log",
-  "red_stdout_sha256": "499b22993369a5b0099d1ab967d31389413eb17f8004b9e2bf07120a1cc4c18c",
+  "red_stdout_sha256": "375229ed532a51a32188ecdd6a97bf653e7d6804484c386aa2e8a9720b1b426f",
   "schema": "content_tdd_receipt.v1",
   "test_files": [
     {
       "path": "phase-loop-runtime/tests/ratify_content_tdd_adapter.py",
-      "sha256": "e596a81802cb512a29965170b99d6ac7e62d0ce085900f4cdc13e9febe98c1a1"
+      "sha256": "3083a5652c30dc22374849782fcfafb0a20742856a9abe9c35b2b6e50160e427"
     },
     {
       "path": "phase-loop-runtime/tests/test_ratify_landed.py",
@@ -88,7 +92,7 @@
     },
     {
       "path": "phase-loop-runtime/tests/test_ratify_phase.py",
-      "sha256": "4ee822f21ac9ef37576d2a7c510fed406b47e9875dbebdf766eb9f27987e4096"
+      "sha256": "d6abf9d5451d9b2dd0d162e16a59e4e7ab944ba6e2b52677d507ddcb04fbc3cc"
     },
     {
       "path": "phase-loop-runtime/tests/test_ruling_ledger.py",

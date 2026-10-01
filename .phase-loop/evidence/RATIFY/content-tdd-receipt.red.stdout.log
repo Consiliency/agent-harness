@@ -1,32 +1,34 @@
-FFFFFFFFFFFFFFF.................FFFFFFFFFFFF                             [100%]
+FFFFFFFFFFFFFFFFF...................FFFFFFFFFFFF                         [100%]
 =================================== FAILURES ===================================
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_scope_item_requires_ruling
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_bound_findings_excluded
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_missing_or_stale_ruling
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_native_deferral
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_foreign_attachment
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_legacy_compatibility
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_changing_without_row
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_binding
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_real_consumers
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::human_tiers
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::human_tiers_universal_triggers
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::human_tiers_invalid_overrides
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::skill_reconciliation
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::closed_vocabulary
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::empty_ledger
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ancestor_prefix
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::second_parent_prefix
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::reviewed_sha_ancestry
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::duplicate_and_foreign_rows
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::pending_and_resolved_fold
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::unguarded_same_class
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::same_class_multirow
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::guard_provenance
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::unavailable_history
-/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:120: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::landed_no_skips
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_scope_item_requires_ruling
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_changing_without_row
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_nonunanimous
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_bound_findings_excluded
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_missing_or_stale_ruling
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_native_deferral
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::receipt_partition_foreign_attachment
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_legacy_compatibility
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_changing_without_row
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_binding
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ruling_classes_real_consumers
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::human_tiers
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::human_tiers_universal_triggers
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::human_tiers_invalid_overrides
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::skill_reconciliation
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::closed_vocabulary
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::empty_ledger
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::ancestor_prefix
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::second_parent_prefix
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::reviewed_sha_ancestry
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::duplicate_and_foreign_rows
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::pending_and_resolved_fold
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::unguarded_same_class
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::same_class_multirow
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::guard_provenance
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::unavailable_history
+/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/phase-loop-runtime/tests/ratify_content_tdd_adapter.py:122: AssertionError: GOVLEAN deliberate RED anchor RATIFY_RED::landed_no_skips
 ==================================== PASSES ====================================
 ______________________ test_rejected_recording_no_receipt ______________________
 ----------------------------- Captured stderr call -----------------------------
@@ -37,6 +39,8 @@ PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_old_policy_constructo
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_binding_control
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_landed_guard_marker_removal
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_guard_proof_fixture_control
+PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_governed_gate_bypass_control
+PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_shape_only_binding_control
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_unknown_capability_strict_failure
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_unexpected_pass_refused
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_unrelated_exception_propagates
@@ -51,6 +55,8 @@ PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_rejected_recording_no
 PASSED phase-loop-runtime/tests/test_ratify_phase.py::test_verify_rescans_red_log
 FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition
 FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition_scope_item_requires_ruling
+FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition_changing_without_row
+FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition_nonunanimous
 FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition_bound_findings_excluded
 FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition_missing_or_stale_ruling
 FAILED phase-loop-runtime/tests/test_ratify_phase.py::test_receipt_partition_native_deferral
@@ -76,4 +82,4 @@ FAILED phase-loop-runtime/tests/test_ruling_ledger.py::test_same_class_multirow
 FAILED phase-loop-runtime/tests/test_ruling_ledger.py::test_guard_provenance
 FAILED phase-loop-runtime/tests/test_ruling_ledger.py::test_unavailable_history
 FAILED phase-loop-runtime/tests/test_ratify_landed.py::test_no_ratify_contract_skips_as_unimplemented
-27 failed, 17 passed in 1.48s
+29 failed, 19 passed in 1.57s
