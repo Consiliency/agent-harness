@@ -41,6 +41,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   render (#10). A closeout integer beyond i64 now parses as `null` where v0 clamped it (#12). A
   serialized request over 4 MiB is refused with a plain `BamlValidationError` before anything
   is sent; the 17 MiB response cap is derived from it (#27).
+- **No runtime profiling.** The worker disables the v1 runtime's profiling (`BAML_PROFILE=0`,
+  forced), so no call data is written to disk.
 - **Message redaction.** Correct the redaction character class and replacement template used
   for BAML client messages. Values of secret-named environment variables are now redacted first,
   and bearer values and common token shapes are also covered. A reaped worker's fault-log entry

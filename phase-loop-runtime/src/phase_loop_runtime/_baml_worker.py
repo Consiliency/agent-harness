@@ -180,6 +180,11 @@ def main(argv: list[str]) -> int:
     for key in list(os.environ):
         if key not in allowlist:
             del os.environ[key]
+    # The v1 runtime keeps a profile store of call data under the working
+    # directory (``.baml/profiles-v1``) unless profiling is off.  Forced, not
+    # defaulted: no call data is ever written to disk, whatever was passed in.
+    os.environ["BAML_PROFILE"] = "0"
+    os.environ.pop("BAML_PROFILE_DIR", None)
 
     if os.name == "posix":
         if sys.platform.startswith("linux") and not no_pdeathsig:

@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -582,7 +583,9 @@ def test_environment_inside_the_worker_is_the_allowlist(client):
         closeout = m.build_baml_request("EmitPhaseCloseout", CLOSEOUT)
         allowlist = set(m._worker_env())
     assert outcome == "ok"
-    assert set(info["env"]) <= allowlist, set(info["env"]) - allowlist
+    # The allowlist, plus the one key the worker itself forces (profiling off).
+    assert set(info["env"]) <= allowlist | {"BAML_PROFILE"}, set(info["env"]) - allowlist
+    assert "BAML_PROFILE" in info["env"]
     assert "LC_CTYPE" not in info["env"] and "__PYVENV_LAUNCHER__" not in info["env"]
     assert Path(info["cwd"]).resolve() == PKG.resolve()
     golden = [entry["v0"] for entry in _baseline("evidence_requests.json")["requests"].values()]
@@ -725,6 +728,65 @@ def test_post_reply_processing_failures_are_typed_faults(client, seam):
         assert _raises(call) is interrupt
     # ... and the next call is healthy.
     call()
+
+
+
+# The v1 runtime keeps a profile store of call data under its working directory
+# (``.baml/profiles-v1``) unless profiling is off.  The worker forces it off, so
+# no call data is written to disk: in a checkout (cwd = src/phase_loop_runtime)
+# or an installed package (cwd = site-packages/phase_loop_runtime).  The real
+# installed wheel is also checked by the Gate A probe and the publish smoke.
+
+
+def _package_copy(root: Path, layout: str) -> Path:
+    base = root / ("src" if layout == "checkout" else f"lib/python{sys.version_info[0]}.{sys.version_info[1]}/site-packages")
+    target = base / "phase_loop_runtime"
+    shutil.copytree(PKG, target, ignore=shutil.ignore_patterns(".baml", "__pycache__"))
+    return target
+
+
+@pytest.mark.parametrize("layout", ["checkout", "installed"])
+def test_the_worker_writes_no_profile_data_into_its_working_directory(tmp_path, layout):
+    pkg = _package_copy(tmp_path, layout)
+    client = m._Client(test_mode=True, retries=0)
+    try:
+        with mock.patch.object(m, "_worker_script", lambda: str(pkg / "_baml_worker.py")), \
+                mock.patch.object(m, "_worker_cwd", lambda: str(pkg)), mock.patch.object(m, "_CLIENT", client):
+            assert m.parse_baml_response("EmitPhaseCloseout", OK).payload["terminal_status"] == "complete"
+            m.build_baml_request("EmitPhaseCloseout", CLOSEOUT)
+            m.build_baml_request("EvaluateSuspectedFakeEvidence", EVIDENCE)
+            assert client.gen is not None and str(pkg / "_baml_worker.py") in client.gen.proc.args  # this copy ran
+    finally:
+        client.stop(graceful=True, timeout=5)
+    assert not (pkg / ".baml").exists(), sorted(p.name for p in pkg.iterdir())
+
+
+def test_profiling_passed_in_by_the_parent_is_still_forced_off(tmp_path):
+    """Forced, not defaulted: even a worker started WITH profiling on (and a
+    profile directory) writes nothing."""
+    pkg = _package_copy(tmp_path, "checkout")
+    env = {**m._worker_env(), "BAML_PROFILE": "1", "BAML_PROFILE_DIR": str(tmp_path / "profiles")}
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-S", str(pkg / "_baml_worker.py"), str(os.getpid()), ",".join(sorted(env))],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, cwd=str(pkg),
+    )
+    try:
+        def send(obj):
+            proc.stdin.write((json.dumps(obj) + "\n").encode())
+            proc.stdin.flush()
+            return json.loads(proc.stdout.readline())
+
+        init = {"id": 1, "op": "init", "files": m._read_baml_files(), "sys_path": m._worker_sys_path(), "test_mode": True}
+        assert "ok" in send(init)
+        assert "ok" in send({"id": 2, "op": "parse_closeout", "args": {"raw": OK}})
+        assert "request" in send({"id": 3, "op": "evidence_request", "args": {
+            "tier2_signal_summary": "a", "sample_artifact_content": "b", "expected_artifact_characteristics": "c"}})
+        names = send({"id": 4, "op": "env", "args": {}})["ok"]["env"]
+        assert "BAML_PROFILE" in names and "BAML_PROFILE_DIR" not in names, names
+    finally:
+        proc.stdin.close()
+        proc.wait(10)
+    assert not (pkg / ".baml").exists() and not (tmp_path / "profiles").exists()
 
 
 def test_worker_protocol_rejects_ops_before_init_and_a_second_init():

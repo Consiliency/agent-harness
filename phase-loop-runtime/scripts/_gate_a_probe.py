@@ -199,6 +199,13 @@ def main() -> None:
         if "Traceback (most recent call last)" in r.stderr:
             fail(f"adoption-bundle status raised an unhandled exception:\n{r.stderr}")
 
+    # --- agent-harness#1135: the worker writes no runtime profile data ------
+    # (its cwd is the installed package directory)
+    import phase_loop_runtime as _plr
+
+    if (Path(_plr.__file__).resolve().parent / ".baml").exists():
+        fail("the BAML worker wrote a .baml directory into the installed package")
+
     print(f"GATE-A PROBE OK ({expect})")
     print(f"  package      : {pkg_file}")
     print(f"  baml_src     : {baml_dir}")

@@ -125,6 +125,8 @@ jobs:
           }))
           assert parsed.payload["terminal_status"] == "complete", parsed.payload
           assert "baml_bridge" not in sys.modules
+          import pathlib, phase_loop_runtime
+          assert not (pathlib.Path(phase_loop_runtime.__file__).parent / ".baml").exists(), "worker wrote .baml"
           PY
           for sub in agy-canary-probe agy-canary-clean-settings \
                      agy-canary-bootstrap-attest agy-canary-prepare \
