@@ -1,0 +1,172 @@
+{
+  "issue": "agent-harness#1204",
+  "head": "9c67475aaf3732b89af81506445868ca772bd9b4",
+  "receipts": [
+    {
+      "id": "P1-preflight-never-runs",
+      "file": "src/phase_loop_runtime/panel_invoker.py",
+      "file_sha256": "3a0e32f54210edba00e325e97313dbaa97e9582aae7efb2813b71b8752c49db9",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "P2-not-published-before-launch",
+      "file": "src/phase_loop_runtime/panel_invoker.py",
+      "file_sha256": "3a0e32f54210edba00e325e97313dbaa97e9582aae7efb2813b71b8752c49db9",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "P3-seats-never-marked",
+      "file": "src/phase_loop_runtime/panel_invoker.py",
+      "file_sha256": "3a0e32f54210edba00e325e97313dbaa97e9582aae7efb2813b71b8752c49db9",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "P4-route-capability-ignored",
+      "file": "src/phase_loop_runtime/seat_preflight.py",
+      "file_sha256": "b96d1d97275ff2d6cd470393a150aa1d4e5abb9bba68f743d7f61ba8b9991c64",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_brokered_seats_without_file_tools_are_warned_on_a_staged_tree"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "P5-native-fill-ignored",
+      "file": "src/phase_loop_runtime/seat_preflight.py",
+      "file_sha256": "b96d1d97275ff2d6cd470393a150aa1d4e5abb9bba68f743d7f61ba8b9991c64",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_a_native_fill_claude_seat_has_file_access"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "P6-staged-tree-ignored",
+      "file": "src/phase_loop_runtime/seat_preflight.py",
+      "file_sha256": "b96d1d97275ff2d6cd470393a150aa1d4e5abb9bba68f743d7f61ba8b9991c64",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_without_a_staged_tree_no_brokered_seat_can_open_the_files"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C1-governed-counts-ungrounded",
+      "file": "src/phase_loop_runtime/governed_review.py",
+      "file_sha256": "0324929337470f293e5f7fd6bd855b9ccc27a7d48ad6c78df9f8498cface77ca",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_governed_landing_needs_a_grounded_seat"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C2-governed-notice-finding-dropped",
+      "file": "src/phase_loop_runtime/governed_review.py",
+      "file_sha256": "0324929337470f293e5f7fd6bd855b9ccc27a7d48ad6c78df9f8498cface77ca",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_governed_notice_finding_is_rendered_from_literals_and_warns"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C3-president-counts-ungrounded",
+      "file": "src/phase_loop_runtime/panel_invoker.py",
+      "file_sha256": "3a0e32f54210edba00e325e97313dbaa97e9582aae7efb2813b71b8752c49db9",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_president_input_does_not_count_an_ungrounded_pass_but_keeps_its_disagree"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C4-ungrounded-disagree-dropped",
+      "file": "src/phase_loop_runtime/seat_preflight.py",
+      "file_sha256": "b96d1d97275ff2d6cd470393a150aa1d4e5abb9bba68f743d7f61ba8b9991c64",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_president_input_does_not_count_an_ungrounded_pass_but_keeps_its_disagree"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C5-cli-floor-counts-ungrounded",
+      "file": "src/phase_loop_runtime/cli.py",
+      "file_sha256": "75351fccca60dda23dfbdb13897394dbad40672326c8c10daccccf123c701c8c",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_cli_pointer_brief_prints_preflight_and_floors_on_grounded_seats"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C6-premerge-floor-counts-ungrounded",
+      "file": "src/phase_loop_runtime/governed_premerge.py",
+      "file_sha256": "af16fc35ce771e731089046d0e4b121c63212fae033ec2c2804d2a603bd4a4fe",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_premerge_reviewer_floor_does_not_count_an_ungrounded_seat"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C7-cli-flag-not-forwarded",
+      "file": "src/phase_loop_runtime/cli.py",
+      "file_sha256": "75351fccca60dda23dfbdb13897394dbad40672326c8c10daccccf123c701c8c",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_cli_pointer_brief_prints_preflight_and_floors_on_grounded_seats"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C8-payload-changed-without-flag",
+      "file": "src/phase_loop_runtime/cli.py",
+      "file_sha256": "75351fccca60dda23dfbdb13897394dbad40672326c8c10daccccf123c701c8c",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_cli_without_pointer_brief_keeps_the_payload_unchanged"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    },
+    {
+      "id": "C9-stream-record-not-atomic",
+      "file": "src/phase_loop_runtime/seat_preflight.py",
+      "file_sha256": "b96d1d97275ff2d6cd470393a150aa1d4e5abb9bba68f743d7f61ba8b9991c64",
+      "nodes": [
+        "tests/test_seat_preflight_1204.py::test_the_stream_record_is_published_atomically"
+      ],
+      "control": 0,
+      "mutated": 1,
+      "result": "red_as_required"
+    }
+  ],
+  "survived": []
+}
