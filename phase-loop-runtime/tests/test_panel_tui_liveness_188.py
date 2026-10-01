@@ -537,6 +537,72 @@ def test_pending_tool_detection_distinguishes_in_flight_from_completed(
     assert pi._latest_claude_pending_tool_uses(str(tmp_path), since=0) == ()
 
 
+@pytest.mark.parametrize("later_assistant", [False, True])
+def test_exact_tool_diagnostic_counts_only_matched_results(tmp_path, later_assistant):
+    transcript = tmp_path / "exact.jsonl"
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "completed", "input": {"secret": "never-retain"}},
+            {"type": "tool_use", "id": "pending"},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "completed", "content": "never-retain"},
+            {"type": "tool_result", "tool_use_id": "unmatched", "content": "never-retain"},
+        ]}},
+    ]
+    if later_assistant:
+        events.append({"type": "assistant", "message": {"content": []}})
+    transcript.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+    assert pi._claude_exact_tool_diagnostic(transcript) == (
+        "completed_tools=1 pending_tools=1 "
+        f"assistant_after_tools={str(later_assistant).lower()}"
+    )
+
+
+def test_exact_tool_diagnostic_does_not_scan_neighboring_sessions(tmp_path, monkeypatch):
+    (tmp_path / "neighbor.jsonl").write_text('{"type":"assistant"}\n')
+    def forbidden(*args, **kwargs):
+        raise AssertionError("diagnostic must not discover neighboring sessions")
+    monkeypatch.setattr(pi, "_claude_project_dir_for_cwd", forbidden)
+    assert pi._claude_exact_tool_diagnostic(None) == "tool_progress=unknown"
+    assert pi._claude_exact_tool_diagnostic(tmp_path / "missing.jsonl") == "tool_progress=unknown"
+
+
+def test_exact_tool_diagnostic_ignores_malformed_events(tmp_path):
+    transcript = tmp_path / "exact.jsonl"
+    transcript.write_text('broken\nnull\n[]\n{"message":{"content":"not blocks"}}\n')
+    assert pi._claude_exact_tool_diagnostic(transcript) == (
+        "completed_tools=0 pending_tools=0 assistant_after_tools=false"
+    )
+
+
+def test_completed_exact_tools_do_not_extend_stall_or_authorize_verdict(tmp_path, monkeypatch):
+    transcript = tmp_path / "exact.jsonl"
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "completed", "name": "Read"},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "completed", "content": "VERDICT: AGREE"},
+        ]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 999)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 0.05)
+    started = time.monotonic()
+    rc, text, status, tail = _run_claude_tui_session(
+        command=["sh", "-c", _WEDGE_SCRIPT], cwd=tmp_path, prompt="review this",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=10,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=10, stall_threshold_s=0.3,
+        allow_transcript_final=True, broker_transcript_path=transcript,
+    )
+    assert rc != 0
+    assert text == ""
+    assert status == "claude_tui_stalled"
+    assert time.monotonic() - started < 3
+    assert "completed_tools=1 pending_tools=0 assistant_after_tools=false" in tail
+
+
 def test_novel_line_split_across_read_boundaries_is_detected_whole():
     """(b cont., #188 CR) A novel review line delivered in TWO halves across two
     ``os.read`` boundaries must register as ONE progress event once the line completes

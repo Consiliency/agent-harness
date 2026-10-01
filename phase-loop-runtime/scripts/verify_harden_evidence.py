@@ -73,6 +73,8 @@ VISUAL_ASCII_FRAGMENTS = {
 }
 REVIEW_INPUT_MAX_BYTES = 512 * 1024
 GEMINI_STREAM_PROTOCOL = "agy_ndjson_same_session_ingestion_v1"
+# agent-harness#1175: a one-chunk sealed prompt is one user event, no acknowledgement turn.
+GEMINI_SINGLE_EVENT_PROTOCOL = "agy_ndjson_single_event_v1"
 GEMINI_STREAM_CHUNK_MAX_BYTES = 96 * 1024
 HARDEN_WORD = "HARDEN"
 GEMINI_STREAM_ACK_PREFIX = HARDEN_WORD + "-AGY-CHUNK-ACK"
@@ -1550,12 +1552,37 @@ def _utf8_stream_chunks(value: str) -> tuple[str, ...]:
     return tuple(chunks)
 
 
-def broker_gemini_stream_protocol(prompt: str) -> dict[str, Any]:
-    """Recompute the complete bounded same-session agy ingestion transcript."""
+def broker_gemini_stream_protocol(prompt: str, protocol: str = GEMINI_STREAM_PROTOCOL) -> dict[str, Any]:
+    """Recompute the complete agy stdin transcript for the recorded protocol.
+
+    Records made before agent-harness#1175 use ingestion v1 for every prompt; later
+    records use the single-event protocol exactly when the prompt is one chunk.
+    """
     sealed_prompt_parts(prompt)
     prompt_sha256 = sha256(prompt.encode("utf-8", errors="strict"))
     chunks = _utf8_stream_chunks(prompt)
     chunk_sha256 = tuple(sha256(chunk.encode("utf-8", errors="strict")) for chunk in chunks)
+    if protocol == GEMINI_SINGLE_EVENT_PROTOCOL:
+        if len(chunks) != 1:
+            fail("Gemini single-event transport requires a one-chunk prompt")
+        single_event = json.dumps({"event": "user", "message": {"content": "\n".join((
+            GEMINI_SINGLE_EVENT_PROTOCOL,
+            f"sealed_prompt_sha256={prompt_sha256}",
+            prompt,
+            "Analyze the input above as the complete intended-inference review input.",
+            "Do not use or request tools, commands, files, network, browser, MCP, agents, subagents, memory, provider routing, or another session.",
+            "Return the complete review and its required terminal verdict; do not mention truncation.",
+        ))}}, separators=(",", ":"), ensure_ascii=False)
+        return {
+            "protocol": GEMINI_SINGLE_EVENT_PROTOCOL,
+            "transport": single_event + "\n",
+            "chunk_sha256": chunk_sha256,
+            "chunk_bytes": (len(prompt.encode("utf-8", errors="strict")),),
+            "acknowledgements": (),
+            "final_event_sha256": sha256(single_event.encode("utf-8", errors="strict")),
+        }
+    if protocol != GEMINI_STREAM_PROTOCOL:
+        fail("Gemini broker stream protocol is unknown")
     acknowledgements = tuple(
         f"{GEMINI_STREAM_ACK_PREFIX} {prompt_sha256} {index}/{len(chunks)} {digest}"
         for index, digest in enumerate(chunk_sha256, start=1)
@@ -1591,6 +1618,7 @@ def broker_gemini_stream_protocol(prompt: str) -> dict[str, Any]:
     ))}}, separators=(",", ":"), ensure_ascii=False)
     transport = "\n".join((*events, final_event)) + "\n"
     return {
+        "protocol": GEMINI_STREAM_PROTOCOL,
         "transport": transport,
         "chunk_sha256": chunk_sha256,
         "chunk_bytes": tuple(len(chunk.encode("utf-8", errors="strict")) for chunk in chunks),
@@ -1599,8 +1627,8 @@ def broker_gemini_stream_protocol(prompt: str) -> dict[str, Any]:
     }
 
 
-def broker_gemini_stream_input(prompt: str) -> str:
-    return str(broker_gemini_stream_protocol(prompt)["transport"])
+def broker_gemini_stream_input(prompt: str, protocol: str = GEMINI_STREAM_PROTOCOL) -> str:
+    return str(broker_gemini_stream_protocol(prompt, protocol)["transport"])
 
 
 def parse_junit(data: bytes, label: str) -> list[dict[str, str]]:
@@ -2428,7 +2456,10 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("broker no-tool controls are incomplete")
     if broker["provider_prompt_transport"] != PROMPT_TRANSPORT[harness]:
         fail("broker provider prompt transport mismatch")
-    expected_transport = broker_gemini_stream_input(sealed_prompt) if harness == "gemini" else sealed_prompt
+    expected_transport = (
+        broker_gemini_stream_input(sealed_prompt, broker["provider_stream_protocol"])
+        if harness == "gemini" else sealed_prompt
+    )
     if has_task_request:
         request_bytes = CLAUDE_DIRECT_REVIEW_REQUEST.encode("utf-8")
         if (
@@ -2465,9 +2496,11 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
             or not {"HOME", "XDG_CONFIG_HOME"}.issubset(env_keys)
         ):
             fail("Gemini broker pre-effect isolation is incomplete")
-        protocol = broker_gemini_stream_protocol(sealed_prompt)
+        if broker["provider_stream_protocol"] not in (GEMINI_STREAM_PROTOCOL, GEMINI_SINGLE_EVENT_PROTOCOL):
+            fail("Gemini broker same-session ingestion provenance is incomplete")
+        protocol = broker_gemini_stream_protocol(sealed_prompt, broker["provider_stream_protocol"])
         if (
-            broker["provider_stream_protocol"] != GEMINI_STREAM_PROTOCOL
+            broker["provider_stream_protocol"] != protocol["protocol"]
             or broker["provider_stream_chunk_count"] != len(protocol["chunk_sha256"])
             or broker["provider_stream_chunk_sha256"] != list(protocol["chunk_sha256"])
             or broker["provider_stream_chunk_bytes"] != list(protocol["chunk_bytes"])

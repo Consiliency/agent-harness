@@ -48,7 +48,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - `0.7.21` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
@@ -81,8 +81,36 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     (agent-harness#1145, agent-harness#1148, agent-harness#1078); planning only;
   - the 0.7.20 published record (agent-harness#1128).
 - Release tracking: agent-harness#1154; the appended plan-authority rows cite it.
-- Tag: not yet created. The signed `v0.7.21` tag push, which publishes to PyPI, is
-  maintainer-gated.
+- Tag: signed `v0.7.21` (tag object `94e6955a2a91e6120801967b7b6947ad93ede6f0`, tagger date
+  2026-09-29T05:09:02Z; good ED25519 signature for the maintainer's display signing key
+  `SHA256:25nV6RW3xmliMA0E6yVLRQno3CPS+k1rX4alWxKpod0`, which is registered on the
+  maintainer's GitHub account; GitHub verification `valid`) →
+  `3c61b2707cdd5090b5c5328fa756c777962808e3` (agent-harness#1155's landing on `main`, whose
+  tree is identical to the reviewed head `dbd30b5a`).
+- Publication: trusted-publish workflow run `36524847790` (workflow `publish-pypi`, event
+  `push`, head branch `v0.7.21`, head SHA `3c61b2707cdd5090b5c5328fa756c777962808e3`; job
+  `109265501715` build + verify wheel + sdist, including Gate A; job `109280471850` publish to
+  PyPI, trusted publishing); both succeeded. PyPI reports exactly the run's `SHA256SUMS`
+  (downloaded and compared): wheel
+  `de814ecd9620b84c020b97aab10cb66c3f8ce1a26c439850848efc345844e30c`, sdist
+  `66859f087046b9ee71367a78e2de789b7640d91fba86b2cd97a344b771797913`, and the files fetched
+  from PyPI are byte-identical to the run's artifacts.
+- Content equivalence MEASURED: a local `uv build` (umask 022) of a `git archive v0.7.21`
+  export matches the published archives member by member: 476 wheel files and 981 sdist
+  regular files, none added, missing or different.
+- Fresh installs, each into a new Python 3.10 venv:
+  - The published wheel, fetched from its PyPI file URL and sha256-checked, imports `0.7.21`;
+    `advisor_board.DEFAULT_MODEL_REGISTRY.get("gpt-6-sol").default_lane` is `codex`;
+    `phase-loop --help` loads.
+  - `uv pip install --no-cache phase-loop-runtime==0.7.21` resolves `0.7.21` from the index
+    and imports it. (An attempt minutes after publication did not yet see 0.7.21 on the simple
+    index; it resolved once the index had propagated.)
+- GitHub release: https://github.com/Consiliency/agent-harness/releases/tag/v0.7.21, published
+  2026-09-29T06:11:28Z, neither a draft nor a prerelease; notes are the CHANGELOG `0.7.21`
+  section.
+- Known after publication: agy 1.2.13 is upstream-latest and not release-qualified
+  (agent-harness#1157); self-qualification outside a git working directory permanently fails
+  the image (agent-harness#1158).
 
 ### Previous release: 0.7.20 (published)
 
@@ -357,7 +385,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.21 (prepared)
+### This release: 0.7.21 (published)
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
