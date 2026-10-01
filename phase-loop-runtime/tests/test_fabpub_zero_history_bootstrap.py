@@ -428,6 +428,112 @@ def test_barrier_bootstrap_appearance_refuses_before_namespace(
     assert not live.repository_namespace_root(fresh).exists()
 
 
+def test_existing_receipt_guards_bootstrap_reappearance_before_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    history = tmp_path / "additional-history"
+    receipt = live.onboard_zero_legacy_repository(
+        fresh, roots=(history,), authority_root=tmp_path / "authority"
+    )
+    pointer = tmp_path / "authority" / "ACTIVE_BOOTSTRAP"
+    pointer_bytes = pointer.read_bytes()
+    pointer.unlink()
+    original_authority_check = live._receipt_active_authority_exists
+    writer_results = []
+
+    def restore_bootstrap_before_authority_check(value, authority_root=None):
+        script = (
+            "import fcntl,sys\n"
+            "from pathlib import Path\n"
+            "with open(sys.argv[1], 'a') as lock:\n"
+            "    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "    except BlockingIOError: raise SystemExit(2)\n"
+            "    Path(sys.argv[2]).write_bytes(bytes.fromhex(sys.argv[3]))\n"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(tmp_path / "authority" / "bootstrap.lock"),
+                str(pointer),
+                pointer_bytes.hex(),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        writer_results.append(result.returncode)
+        return original_authority_check(value, authority_root=authority_root)
+
+    monkeypatch.setattr(
+        live, "_receipt_active_authority_exists", restore_bootstrap_before_authority_check
+    )
+    report = None
+    try:
+        with pytest.raises(
+            live.LegacyCutoverConflict, match="no matching global ACTIVE authority"
+        ):
+            report = live.fabpub_activation_barrier([fresh])
+    finally:
+        if report is not None:
+            live.release_barrier_leases(report)
+
+    assert writer_results == [2]
+    assert set(live._receipt_seal_lock_paths(receipt)) == {
+        tmp_path / "authority" / "bootstrap.lock",
+        history / "fabpub-global-cutover" / "root.lock",
+    }
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+
+
+def test_existing_receipt_revalidates_bootstrap_lock_set_after_acquisition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    receipt = live.onboard_zero_legacy_repository(
+        fresh,
+        roots=(tmp_path / "additional-history",),
+        authority_root=tmp_path / "authority",
+    )
+    pointer = tmp_path / "authority" / "ACTIVE_BOOTSTRAP"
+    pointer_bytes = pointer.read_bytes()
+    pointer.unlink()
+    original_lock_paths = live._receipt_seal_lock_paths
+    reads = 0
+
+    def activate_after_initial_lock_discovery(value, *, roots=None):
+        nonlocal reads
+        paths = original_lock_paths(value, roots=roots)
+        reads += 1
+        if reads == 1:
+            with live._reentrant_flock(tmp_path / "authority" / "bootstrap.lock"):
+                pointer.write_bytes(pointer_bytes)
+        return paths
+
+    monkeypatch.setattr(live, "_receipt_seal_lock_paths", activate_after_initial_lock_discovery)
+    report = None
+    try:
+        with pytest.raises(
+            live.LegacyCutoverConflict, match="different authority while entering the barrier"
+        ):
+            report = live.fabpub_activation_barrier([fresh])
+    finally:
+        if report is not None:
+            live.release_barrier_leases(report)
+
+    assert reads == 2
+    assert live._receipt_active_authority_exists(receipt)
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+
+
 def test_absent_bootstrap_appearing_before_seal_refuses_before_namespace(
     tmp_path: Path, monkeypatch
 ) -> None:
