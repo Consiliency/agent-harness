@@ -1000,6 +1000,11 @@ class _Client:
         # never a duplicate (codex round 5).
         token = _Baton()
         self.baton_ref = weakref.ref(token)
+        # Reclaim tickets: minting a replacement is a compare-and-set on the
+        # monotonic ``baton_epoch`` (``dict.setdefault`` is one atomic step), so
+        # any number of reclaimers mint at most one baton per epoch (codex r6).
+        self.baton_epoch = 0
+        self.baton_mints: dict[int, object] = {}
         self.baton.put(token)
         del token
         self.spawns: queue.SimpleQueue = queue.SimpleQueue()
@@ -1378,13 +1383,29 @@ class _Client:
 
     def _reclaim_baton(self) -> None:
         """Replace a stranded baton: one that no queue and no thread references
-        any more.  Only the supervisor calls this, so there is exactly one
-        reclaimer, and a live token (queued or held) is never duplicated."""
+        any more.  Idempotent however many reclaimers run: a reclaimer mints
+        only if the epoch it observed is still unclaimed AND no live baton is
+        registered, and winning the epoch's ticket is a single atomic step.
+        Only the winner then registers the new baton and advances the epoch."""
+        epoch = self.baton_epoch
         if self.baton_ref() is not None:
             return
-        token = _Baton()
-        self.baton_ref = weakref.ref(token)
-        self.baton.put(token)
+        token = _Baton()  # a candidate; only the epoch's ticket holder registers one
+        mine = object()  # the ticket is never the token: a stored token would never strand
+        try:
+            if self.baton_mints.setdefault(epoch, mine) is not mine:
+                return  # another reclaimer owns this epoch (tickets are never released)
+            # Registered (alive: held here) BEFORE the epoch advances, so a
+            # reclaimer that reads the new epoch always sees it live.
+            self.baton_ref = weakref.ref(token)
+            self.baton_epoch = epoch + 1
+            self.baton.put(token)
+        finally:
+            if self.baton_mints.get(epoch) is mine and self.baton_epoch == epoch:
+                # This reclaimer won the epoch but was interrupted before
+                # registering: give the epoch up so the next one can mint
+                # (nothing was put, so nothing can duplicate).
+                self.baton_epoch = epoch + 1
         self.pending.append("BAML worker owner baton was stranded by an interrupted hand-back and was reclaimed")
 
     def _ensure_supervisor(self) -> None:
@@ -1392,8 +1413,11 @@ class _Client:
         if supervisor is not None and supervisor.is_alive():
             return
         supervisor = threading.Thread(target=self._supervise, name="phase-loop-baml-supervisor", daemon=True)
-        supervisor.start()
+        # Recorded BEFORE it starts: an interruption after start() can no longer
+        # leave a live supervisor nothing knows about (a second one would then
+        # be started).  Reclaiming stays correct with any number of them.
         self.supervisor = supervisor
+        supervisor.start()
 
     def _supervise(self) -> None:
         """Backstop: relaunch an exited owner while recovery or cleanup is

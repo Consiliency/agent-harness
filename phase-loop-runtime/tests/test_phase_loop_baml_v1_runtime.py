@@ -3166,6 +3166,148 @@ def test_async_exception_after_baton_put_does_not_duplicate_the_token():
     assert client.baton.qsize() == 1, "retrying the completed put duplicated the owner baton"
 
 
+
+# codex round 6 (F001): any number of reclaimers mint at most one baton.  The
+# mechanism is a compare-and-set on a monotonic baton epoch; recording the
+# supervisor before it starts only reduces how many reclaimers there are.
+
+
+def _strand_the_baton(client) -> None:
+    client.baton.get_nowait()  # dropped at once: no queue and no thread holds it
+    gc.collect()
+    assert client.baton_ref() is None and client.baton.empty()
+
+
+def _supervisors_of(client) -> list:
+    return [t for t in threading.enumerate() if getattr(getattr(t, "_target", None), "__self__", None) is client]
+
+
+@pytest.mark.parametrize("reclaimers", [2, 4, 8, 16])
+def test_concurrent_reclaimers_mint_exactly_one_baton(reclaimers):
+    """The sweep: N reclaimers against a stranded baton, every one of them past
+    its epoch read and live-baton check before any of them tries to mint."""
+    client = m._Client(test_mode=True)
+    real = m._Baton
+    for _round in range(25):
+        _strand_the_baton(client)
+        gate = threading.Barrier(reclaimers)
+
+        class GatedBaton(real):
+            __slots__ = ()
+
+            def __init__(self):
+                gate.wait(5)  # all N have observed the same epoch and a dead baton
+
+        with mock.patch.object(m, "_Baton", GatedBaton):
+            threads = [threading.Thread(target=client._reclaim_baton) for _ in range(reclaimers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        assert client.baton.qsize() == 1, (reclaimers, _round, client.baton.qsize())
+        assert client.baton_ref() is not None
+
+
+
+def test_an_interrupted_reclaim_never_strands_the_baton_for_good():
+    """A reclaimer interrupted at any line after it won its epoch must leave the
+    next reclaimer able to mint, and never leave two batons."""
+    real = m._Client._reclaim_baton
+    code = real.__code__
+    for line in _body_lines(real):
+        client = m._Client(test_mode=True)
+        _strand_the_baton(client)
+        fired: list = []
+
+        def trace(frame, event, arg, line=line, fired=fired):
+            if frame.f_code is code and event == "line" and frame.f_lineno == line and not fired:
+                fired.append(line)
+                raise SystemExit
+            return trace
+
+        sys.settrace(trace)
+        try:
+            client._reclaim_baton()
+        except SystemExit:
+            pass
+        finally:
+            sys.settrace(None)
+        gc.collect()
+        client._reclaim_baton()  # the next reclaimer
+        assert client.baton.qsize() == 1, (line - code.co_firstlineno, client.baton.qsize(), client.baton_epoch)
+
+
+def test_two_live_supervisors_reclaim_exactly_one_baton():
+    """codex's falsifier, adapted: it produced two live supervisors through an
+    interrupted start, which can no longer happen (the next test).  Here the
+    two are started directly, and both are held past the live-baton check and
+    then released into the mint together, as in codex's trace."""
+    client = m._Client(test_mode=True)
+    ready = threading.Event()
+    together = threading.Barrier(2)
+    check_line = _line_of(m._Client._reclaim_baton, "if self.baton_ref() is not None:")
+    mint_line = _line_of(m._Client._reclaim_baton, "token = _Baton()")
+    code = m._Client._reclaim_baton.__code__
+    previous = threading.gettrace()
+
+    def trace(frame, event, arg):
+        if frame.f_code is code and event == "line":
+            if frame.f_lineno == check_line:
+                ready.wait(5)
+            elif frame.f_lineno == mint_line:
+                try:
+                    together.wait(5)
+                except threading.BrokenBarrierError:
+                    pass
+        return trace
+
+    _strand_the_baton(client)
+    threading.settrace(trace)
+    try:
+        supervisors = [threading.Thread(target=client._supervise, daemon=True) for _ in range(2)]
+        for supervisor in supervisors:
+            supervisor.start()
+    finally:
+        threading.settrace(previous)
+    client.closed = True
+    ready.set()
+    for supervisor in supervisors:
+        supervisor.join(6)
+    assert all(not t.is_alive() for t in supervisors)
+    assert client.baton.qsize() == 1, "two supervisor reclaimers minted two owner batons"
+
+
+def test_an_interrupted_supervisor_start_leaves_at_most_one_supervisor():
+    """Recorded before it starts: an interruption at any line of
+    _ensure_supervisor cannot leave a live supervisor nothing knows about."""
+    real = m._Client._ensure_supervisor
+    code = real.__code__
+    for line in _body_lines(real):
+        client = m._Client(test_mode=True)
+        fired: list = []
+
+        def trace(frame, event, arg, line=line, fired=fired):
+            if frame.f_code is code and event == "line" and frame.f_lineno == line and not fired:
+                fired.append(line)
+                raise SystemExit
+            return trace
+
+        sys.settrace(trace)
+        try:
+            client._ensure_supervisor()
+        except SystemExit:
+            pass
+        finally:
+            sys.settrace(None)
+        client._ensure_supervisor()
+        try:
+            assert len([t for t in _supervisors_of(client) if t.is_alive()]) == 1, (line, fired)
+        finally:
+            client.closed = True
+            for t in _supervisors_of(client):
+                t.join(2)
+
+
 def test_a_disposal_keeps_a_sanitized_tail_of_the_workers_stderr():
     """Opus N7: a worker's own diagnostics survive into its fault-log entry."""
     peer = (
