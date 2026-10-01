@@ -1000,11 +1000,10 @@ class _Client:
         # never a duplicate (codex round 5).
         token = _Baton()
         self.baton_ref = weakref.ref(token)
-        # Reclaim tickets: minting a replacement is a compare-and-set on the
-        # monotonic ``baton_epoch`` (``dict.setdefault`` is one atomic step), so
-        # any number of reclaimers mint at most one baton per epoch (codex r6).
-        self.baton_epoch = 0
-        self.baton_mints: dict[int, object] = {}
+        # Reclaim tickets (see ``_reclaim_baton``): epoch -> weak reference to
+        # the claimant's candidate token.  The first baton is epoch 0's.
+        self.baton_epoch = 1
+        self.baton_mints: dict[int, weakref.ref] = {0: self.baton_ref}
         self.baton.put(token)
         del token
         self.spawns: queue.SimpleQueue = queue.SimpleQueue()
@@ -1383,29 +1382,40 @@ class _Client:
 
     def _reclaim_baton(self) -> None:
         """Replace a stranded baton: one that no queue and no thread references
-        any more.  Idempotent however many reclaimers run: a reclaimer mints
-        only if the epoch it observed is still unclaimed AND no live baton is
-        registered, and winning the epoch's ticket is a single atomic step.
-        Only the winner then registers the new baton and advances the epoch."""
+        any more.  Two properties, for any number of reclaimers and any
+        interruption at any point:
+
+        (a) at most one live baton: minting a baton for an epoch is claiming
+            that epoch's ticket with ``dict.setdefault`` (one atomic step), and
+            a reclaimer stops at the first epoch whose ticket is held LIVE;
+        (b) always recoverable: a ticket is a weak reference to its claimant's
+            candidate token, so a claimant that is interrupted before it puts
+            the token loses it when its frame unwinds, and the ticket goes dead
+            by construction -- no cleanup code has to run.  A later reclaimer
+            skips a dead ticket and claims the next epoch."""
+        # The scan start is read BEFORE the live-baton check: a winner registers
+        # its baton before it advances the hint, so a reclaimer that reads an
+        # advanced hint is certain to see that baton as live.
         epoch = self.baton_epoch
         if self.baton_ref() is not None:
             return
-        token = _Baton()  # a candidate; only the epoch's ticket holder registers one
-        mine = object()  # the ticket is never the token: a stored token would never strand
-        try:
-            if self.baton_mints.setdefault(epoch, mine) is not mine:
-                return  # another reclaimer owns this epoch (tickets are never released)
-            # Registered (alive: held here) BEFORE the epoch advances, so a
-            # reclaimer that reads the new epoch always sees it live.
-            self.baton_ref = weakref.ref(token)
-            self.baton_epoch = epoch + 1
-            self.baton.put(token)
-        finally:
-            if self.baton_mints.get(epoch) is mine and self.baton_epoch == epoch:
-                # This reclaimer won the epoch but was interrupted before
-                # registering: give the epoch up so the next one can mint
-                # (nothing was put, so nothing can duplicate).
-                self.baton_epoch = epoch + 1
+        token = _Baton()  # the candidate; it stays alive only while held or queued
+        ticket = weakref.ref(token)
+        while True:
+            held = self.baton_mints.setdefault(epoch, ticket)
+            if held is ticket:
+                break  # this reclaimer owns the epoch
+            if held() is not None:
+                return  # a live claimant (or the live baton itself) holds this epoch
+            epoch += 1  # a dead claim: skip it
+        # Registered (alive: held here) before it is queued, so a reclaimer that
+        # looks now sees a live baton and stops.  Interrupted anywhere from here
+        # until the put lands, this frame's token dies and both the ticket and
+        # the registration go dead with it.
+        self.baton_ref = weakref.ref(token)
+        self.baton.put(token)
+        if self.baton_epoch <= epoch:
+            self.baton_epoch = epoch + 1  # only a hint where the next scan starts
         self.pending.append("BAML worker owner baton was stranded by an interrupted hand-back and was reclaimed")
 
     def _ensure_supervisor(self) -> None:

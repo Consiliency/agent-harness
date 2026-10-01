@@ -3237,6 +3237,161 @@ def test_an_interrupted_reclaim_never_strands_the_baton_for_good():
         assert client.baton.qsize() == 1, (line - code.co_firstlineno, client.baton.qsize(), client.baton_epoch)
 
 
+
+# codex round 7 (F001): an interrupted claim must never pin its epoch, whatever
+# else is interrupted.  A ticket is a weak reference to the claimant's
+# candidate token, so it goes dead by construction when the claimant's frame
+# unwinds; there is no cleanup code left to interrupt.
+
+
+def _reclaim_events(client) -> list:
+    """Every point in _reclaim_baton's own frame where an interruption can land:
+    each line event and each return from a C call, in order."""
+    code = m._Client._reclaim_baton.__code__
+    events: list = []
+
+    def trace(frame, event, arg):
+        if frame.f_code is code and event == "line":
+            events.append(("line", frame.f_lineno))
+        return trace
+
+    def profile(frame, event, arg):
+        if frame.f_code is code and event == "c_return":
+            events.append(("c_return", getattr(arg, "__name__", repr(arg))))
+
+    sys.settrace(trace)
+    sys.setprofile(profile)
+    try:
+        client._reclaim_baton()
+    finally:
+        sys.settrace(None)
+        sys.setprofile(None)
+    return events
+
+
+def _interrupted_reclaim(client, index: int, then: int | None = None) -> list:
+    """Run one reclaim, interrupted at its index-th event, and again at its
+    then-th event if it gets that far (an interruption of whatever runs while
+    the first one unwinds).  A line event raises there; a C return gets an
+    asynchronous exception, as codex delivered it."""
+    import ctypes
+
+    code = m._Client._reclaim_baton.__code__
+    seen = [0]
+    fired: list = []
+
+    def hit(kind):
+        n = seen[0]
+        seen[0] += 1
+        if (n == index and not fired) or (then is not None and n == then and len(fired) == 1):
+            fired.append((kind, n))
+            return True
+        return False
+
+    def trace(frame, event, arg):
+        if frame.f_code is code and event == "line" and hit("line"):
+            raise SystemExit
+        return trace
+
+    def profile(frame, event, arg):
+        if frame.f_code is code and event == "c_return" and hit("c_return"):
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(threading.get_ident()), ctypes.py_object(KeyboardInterrupt))
+
+    sys.settrace(trace)
+    sys.setprofile(profile)
+    try:
+        client._reclaim_baton()
+    except (SystemExit, KeyboardInterrupt):
+        pass
+    finally:
+        sys.settrace(None)
+        sys.setprofile(None)
+    try:
+        time.sleep(0)  # deliver a still-pending asynchronous exception here, not later
+    except KeyboardInterrupt:
+        pass
+    gc.collect()
+    return fired
+
+
+def test_reclaim_interrupted_anywhere_once_or_twice_stays_one_baton_and_recoverable():
+    """(a) never more than one baton; (b) after any interruptions the next
+    uninterrupted reclaim restores exactly one.  Every interruption point of a
+    reclaim; for each, every later point of the SAME reclaim (a second
+    interruption of whatever runs while the first unwinds); and every point of
+    a second, separately interrupted reclaimer."""
+    probe = m._Client(test_mode=True)
+    _strand_the_baton(probe)
+    points = len(_reclaim_events(probe))
+    assert points >= 8, points
+    for first in range(points):
+        for later in range(first + 1, points + 8):  # +8: events only an unwinding path emits
+            client = m._Client(test_mode=True)
+            _strand_the_baton(client)
+            _interrupted_reclaim(client, first, then=later)
+            assert client.baton.qsize() <= 1, (first, later)
+            if client.baton.qsize() == 0:
+                client._reclaim_baton()
+            assert client.baton.qsize() == 1, ("same reclaim", first, later, client.baton_epoch)
+        for second in [None, *range(points)]:
+            client = m._Client(test_mode=True)
+            _strand_the_baton(client)
+            _interrupted_reclaim(client, first)
+            assert client.baton.qsize() <= 1, (first, second)
+            if second is not None and client.baton.qsize() == 0:
+                _interrupted_reclaim(client, second)
+                assert client.baton.qsize() <= 1, (first, second)
+            if client.baton.qsize() == 0:
+                client._reclaim_baton()
+            assert client.baton.qsize() == 1, (first, second, client.baton_epoch, dict(client.baton_mints))
+            client._reclaim_baton()  # a live baton: nothing more is minted
+            assert client.baton.qsize() == 1
+
+
+def test_second_interrupt_after_an_interrupted_claim_does_not_poison_the_epoch():
+    """codex's round-7 falsifier, adapted.  As filed, its second interruption
+    lands on the c_return of ``baton_mints.get`` inside the old cleanup
+    ``finally``; that cleanup no longer exists, so the hook could never fire.
+    Kept: the claimant is interrupted at registration, a second asynchronous
+    interruption lands on the next C return the reclaim frame makes, and 100
+    later reclaims must restore exactly one baton."""
+    import ctypes
+
+    client = m._Client(test_mode=True)
+    _strand_the_baton(client)
+    fn = m._Client._reclaim_baton
+    register = _line_of(fn, "self.baton_ref = weakref.ref(token)")
+    fired = []
+
+    def trace(frame, event, arg):
+        if frame.f_code is fn.__code__ and event == "line" and frame.f_lineno == register and not fired:
+            fired.append("registration")
+            raise SystemExit
+        return trace
+
+    def profile(frame, event, function):
+        if frame.f_code is fn.__code__ and event == "c_return" and fired == ["registration"]:
+            fired.append("second")
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(threading.get_ident()), ctypes.py_object(KeyboardInterrupt))
+
+    sys.settrace(trace)
+    sys.setprofile(profile)
+    try:
+        try:
+            client._reclaim_baton()
+        except (SystemExit, KeyboardInterrupt):
+            pass
+    finally:
+        sys.settrace(None)
+        sys.setprofile(None)
+    assert fired[0] == "registration"
+    gc.collect()
+    assert client.baton_ref() is None and client.baton.empty()
+    for _ in range(100):
+        client._reclaim_baton()
+    assert client.baton.qsize() == 1, "an interrupted claim left its epoch permanently claimed"
+
+
 def test_two_live_supervisors_reclaim_exactly_one_baton():
     """codex's falsifier, adapted: it produced two live supervisors through an
     interrupted start, which can no longer happen (the next test).  Here the
