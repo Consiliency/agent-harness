@@ -10923,6 +10923,48 @@
       "task_summary": "Model roster + job-slot tiers, plan 1 of 5 (Part A shipped roster, Part B call-time overrides) (agent-harness#1171)",
       "type": "detailed",
       "updated_at": "2026-09-30T00:00:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-09-30T07:00:00Z",
+      "file": "plans/phase-plan-v10-RATIFY.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/latest.md",
+      "if_gates_produced": [
+        "IF-0-RATIFY-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-09-30T07:00:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "execution_admitted": false,
+            "planning_artifact_only": true,
+            "review_status": "pending",
+            "source": "Consiliency/agent-harness#935"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "RATIFY",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v10-RATIFY",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-09-30T07:00:00Z"
     }
   ],
   "schema_version": 1
