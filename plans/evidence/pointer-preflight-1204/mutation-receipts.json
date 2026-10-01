@@ -1,6 +1,6 @@
 {
   "issue": "agent-harness#1204",
-  "head": "9c67475aaf3732b89af81506445868ca772bd9b4",
+  "head": "ff25da99c50aecc5117251a3de38765a5bf0d1d1",
   "receipts": [
     {
       "id": "P1-preflight-never-runs",
