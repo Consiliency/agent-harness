@@ -116,6 +116,7 @@ from . import review_stage as _review_stage
 from . import sandbox_egress as _sandbox_egress
 from . import sandbox_policy as _sandbox_policy
 from . import sandbox_retention as _sandbox_retention
+from . import seat_preflight as _seat_preflight
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
     ResearchLedger,
@@ -1143,6 +1144,11 @@ def president_findings_from_legs(
         from .agy_qualification import president_input_items  # agent-harness#1076 D1
         if (uncounted := president_input_items(leg)) is not None:
             items = uncounted
+        elif (ungrounded := _seat_preflight.uncounted_president_items(
+                leg, terminal_verdict)) is not None:
+            # agent-harness#1204 (ii): a seat that could not open the pointer brief's files
+            # never stands as a seat's review; its DISAGREE is still kept (None above).
+            items = ungrounded
         elif leg.usable:
             items = _president_finding_paragraphs(leg.text) or [
                 f"usable seat returned no findings body ({label})"
@@ -1410,6 +1416,18 @@ class PanelLegResult:
         return getattr(self, "_needs_native_agent", None)
 
     @property
+    def seat_preflight_notices(self) -> "tuple[_seat_preflight.SeatPreflightNotice, ...]":
+        """agent-harness#1204: the typed notices the board-level preflight raised for this
+        seat before launch (a non-field attribute, so golden serializers never see it)."""
+        return _seat_preflight.leg_notices(self)
+
+    @property
+    def source_grounded(self) -> bool:
+        """False when the seat could not open a pointer brief's files; such a verdict never
+        counts as a passing grounded seat (agent-harness#1204, policy (ii))."""
+        return _seat_preflight.source_grounded(self)
+
+    @property
     def finding_falsifiers(self) -> "FindingFalsifierAttachment | None":
         return getattr(self, "_finding_falsifiers", None)
 
@@ -1450,6 +1468,21 @@ class PanelLegResult:
     @property
     def review_monitoring(self) -> Mapping[str, object] | None:
         return getattr(self, "_review_monitoring", None)
+
+
+def attach_seat_preflight_notices(
+    legs: Sequence[PanelLegResult],
+    notices: "Sequence[_seat_preflight.SeatPreflightNotice]",
+) -> None:
+    """Attach each pre-launch seat notice to its seat's result, matched by seat key
+    (agent-harness#1204). Non-field, like ``_needs_native_agent``."""
+    by_seat: dict[str, list[_seat_preflight.SeatPreflightNotice]] = {}
+    for notice in notices:
+        by_seat.setdefault(notice.seat_key, []).append(notice)
+    for leg in legs:
+        mine = by_seat.get(str(leg.seat_key))
+        if mine:
+            object.__setattr__(leg, "_seat_preflight_notices", tuple(mine))
 
 
 def attach_native_agent_request(
@@ -1630,6 +1663,17 @@ class PanelResult:
     @property
     def usable_legs(self) -> tuple[PanelLegResult, ...]:
         return tuple(leg for leg in self.legs if leg.usable)
+
+    @property
+    def grounded_usable_legs(self) -> tuple[PanelLegResult, ...]:
+        """Usable legs that are also source-grounded: what a floor or a minimum-reviewer
+        count may count (agent-harness#1204). Equal to ``usable_legs`` unless a pointer-brief
+        preflight marked a seat."""
+        return tuple(leg for leg in self.legs if leg.usable and leg.source_grounded)
+
+    @property
+    def seat_preflight_notices(self) -> "tuple[_seat_preflight.SeatPreflightNotice, ...]":
+        return tuple(n for leg in self.legs for n in leg.seat_preflight_notices)
 
     @property
     def needs_native_president(self) -> Mapping[str, str] | None:
@@ -9916,8 +9960,17 @@ def invoke_board(
     cancel_event: threading.Event | None = None,
     native_leg_fills: Sequence[NativeLegFill] | None = None,
     native_president_fill: Mapping[str, str] | None = None,
+    pointer_brief: bool = False,
+    on_seat_preflight: "Callable[[tuple[_seat_preflight.SeatPreflightNotice, ...]], None] | None" = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
+
+    agent-harness#1204: ``pointer_brief=True`` declares that the brief points the reviewers
+    at files in the staged tree instead of inlining them. Before ANY seat launches, every
+    seat whose route cannot open those files gets a ``seat_pointer_brief_unreadable`` notice,
+    published first (``on_seat_preflight``, a warning log, and ``seat-preflight.json`` in
+    ``stream_dir``). The seat still runs, but its verdict is not source-grounded and never
+    counts as a passing grounded seat.
 
     REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): ``native_leg_fills`` are bound onto the seat
     the runtime deferred as ``under_claude_code`` AFTER every seat has returned and BEFORE the
@@ -10649,6 +10702,30 @@ def invoke_board(
         if _fill_refusal_common is not None:
             return review_exit(_fill_refusal_common)
 
+        # agent-harness#1204: the pointer-brief seat preflight, BEFORE the first seat is
+        # spawned. It reads the route facts the spawn will act on and changes none of them.
+        seat_preflight_notices: tuple[_seat_preflight.SeatPreflightNotice, ...] = ()
+        if pointer_brief:
+            # The PRODUCTION route each seat takes (an injected ``spawn`` is a hermetic
+            # stand-in for it, so it does not change the answer).
+            _brokered_route = mode == "review" and review_authorization is not None
+            seat_preflight_notices = _seat_preflight.pointer_brief_preflight(
+                board.seats,
+                staged_tree=(review_authorization is not None and getattr(
+                    review_authorization, "staged_tree_sha256", None) is not None),
+                brokered=lambda leg: (_brokered_route
+                                      and not _has_injected_review_execution_seam(leg=leg)),
+                native_fill=lambda seat, leg: (
+                    leg == "claude" and seat.model is not None and _under_claude_code(base_env)),
+                sandbox_usable_by=sandbox_usable_by,
+            )
+            for _notice in seat_preflight_notices:
+                logging.getLogger(__name__).warning("seat preflight: %s", _notice.render())
+            if stream_dir is not None:
+                _seat_preflight.write_preflight_record(Path(stream_dir), seat_preflight_notices)
+            if on_seat_preflight is not None:
+                on_seat_preflight(seat_preflight_notices)
+
         def _run_seat_body(item: Seat | tuple[int, Seat], monitor: _ReviewMonitor | None = None) -> PanelLegResult:
             # The full per-seat body — backing decision → skip / omnigent / homebrew →
             # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
@@ -10997,6 +11074,8 @@ def invoke_board(
             observer.board_completed(results)
         if native_leg_fills:
             results = apply_native_leg_fills(results, native_leg_fills)
+        # agent-harness#1204: mark the preflight's seats before any counting or ruling.
+        attach_seat_preflight_notices(results, seat_preflight_notices)
         panel_result = PanelResult(legs=tuple(results))
         if policy is not None and policy.requires_president:
             # ah#736: the president rules AFTER every seat has returned and BEFORE

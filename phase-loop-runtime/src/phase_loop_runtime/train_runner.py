@@ -3932,7 +3932,9 @@ def _run_train_unfenced(
         # regime for a forensic reader / the #375 migration (provenance, not a gate).
         _review_panel = review_result.panel
         if _review_panel is not None:
-            _usable_reviewers = len(_review_panel.usable_legs)
+            # agent-harness#1204 (ii): the same source-grounded count the floor enforces.
+            from .seat_preflight import grounded_usable_legs
+            _usable_reviewers = len(grounded_usable_legs(_review_panel))
             _review_policy_version = REVIEW_POLICY_VERSION
         else:
             _usable_reviewers = None

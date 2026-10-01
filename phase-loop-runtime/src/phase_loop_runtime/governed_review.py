@@ -221,6 +221,16 @@ def _findings_from_panel(
                 f"record_digest={digest}; president ruling required")
 
     for leg in panel.legs:
+        # agent-harness#1204: each pre-launch seat notice reaches the governed path as one
+        # non-gating finding, rendered only from the notice table's literals.
+        from .seat_preflight import leg_notices
+        for notice in leg_notices(leg):
+            findings.append(ReviewFinding(
+                code=notice.code,
+                reason=f"seat preflight: {notice.render()}",
+                severity="warn",
+                reviewed_sha=reviewed_sha,
+            ))
         if not leg.usable:
             # A leg with SUBSTANTIVE text but no conforming terminal verdict is a
             # review that violated the contract — we cannot confirm it approved, so
@@ -420,9 +430,12 @@ def _gate_result_from_panel(
         falsifier_policy=falsifier_policy,
     )
     # agent-harness#1076 D1: only a leg that counts toward landing is a review.
+    # agent-harness#1204 (ii): and a seat that could not open a pointer brief's files is
+    # not source-grounded, so it never counts either (its DISAGREE still blocks above).
     from .agy_qualification import counts_toward_landing, landing_findings
+    from .seat_preflight import counts_as_grounded_vote
     findings += landing_findings(panel.legs, artifact=artifact, reviewed_sha=reviewed_sha)
-    if not any(counts_toward_landing(leg) for leg in panel.legs):
+    if not any(counts_as_grounded_vote(leg, counts_toward_landing) for leg in panel.legs):
         # Pool existed but no leg produced a usable, conforming review → the review
         # did not actually happen. Fail closed, never silent-pass. The per-leg
         # findings ride along (agent-harness#906) so the hold names each refusal.
@@ -477,6 +490,7 @@ def governed_board_gate(
     native_fill_dir: "Path | str | None" = None,
     monitoring_policy: str = "bounded",
     falsifier_policy: str = "optional",
+    pointer_brief: bool = False,
 ) -> "GateResult | dict[str, object]":
     """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
 
@@ -739,6 +753,9 @@ def governed_board_gate(
             invoke_kwargs["max_concurrency"] = max_concurrency
         if native_leg_fills:
             invoke_kwargs["native_leg_fills"] = tuple(native_leg_fills)
+        if pointer_brief:
+            # agent-harness#1204: the invoker warns before any launch and marks the seats.
+            invoke_kwargs["pointer_brief"] = True
         panel = invoke_fn(board, staged_artifact, **invoke_kwargs)
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         return _block_result(

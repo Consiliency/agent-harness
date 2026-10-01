@@ -454,8 +454,11 @@ def run_governed_premerge_loop(
         # structural floor finding and terminate. Retrying cannot add a reviewer
         # (apply_fix re-dispatches the SAME board; per-leg transient retry is LEGLIFE,
         # held for #359), so this is a round-1 STRUCTURAL hold, not a spin to max_rounds.
-        if gate.panel is not None and len(gate.panel.usable_legs) < _MIN_USABLE_REVIEWERS:
-            usable_n = len(gate.panel.usable_legs)
+        # agent-harness#1204 (ii): a seat that could not open a pointer brief's files is
+        # not source-grounded and is not a reviewer for this floor.
+        from .seat_preflight import grounded_usable_legs
+        if gate.panel is not None and len(grounded_usable_legs(gate.panel)) < _MIN_USABLE_REVIEWERS:
+            usable_n = len(grounded_usable_legs(gate.panel))
             reviewed_sha = next((f.reviewed_sha for f in gate.findings if f.reviewed_sha), None)
             floor_finding = ReviewFinding(
                 code="governed_below_reviewer_floor",
