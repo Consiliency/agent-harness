@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +37,243 @@ def _probe(tmp_path: Path, repo: Path, *, history: Path | None = None) -> dict:
         historical_evidence_roots=(history,) if history else (),
         search_roots=(tmp_path,),
     )
+
+
+@pytest.mark.parametrize("empty_bootstrap_roots", [False, True])
+def test_explicit_roots_retain_authenticated_bootstrap_binding(
+    tmp_path: Path, empty_bootstrap_roots: bool
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = (
+        live.probe_zero_history_bootstrap(
+            cutover_id="bootstrap-test",
+            authority_root=tmp_path / "authority",
+            worktrees=(known,),
+        )
+        if empty_bootstrap_roots
+        else _probe(tmp_path, known)
+    )
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    sealed_path = tmp_path / "authority" / "bootstrap-test.bootstrap-inventory.json"
+    sealed_bytes = sealed_path.read_bytes()
+    roots = (tmp_path / "additional-history",)
+
+    receipt = live.onboard_zero_legacy_repository(
+        fresh, roots=roots, authority_root=tmp_path / "authority"
+    )
+
+    assert receipt.cutover_id == inventory["cutover_id"]
+    assert receipt.legacy_root_inventory == tuple(str(root) for root in roots)
+    assert live._receipt_bootstrap_claim(receipt) == {
+        "authority_root": tmp_path / "authority",
+        "inventory_sha256": inventory["inventory_sha256"],
+    }
+    assert live._receipt_active_authority_exists(
+        receipt, authority_root=tmp_path / "authority"
+    )
+    assert live.onboard_zero_legacy_repository(
+        fresh, roots=roots, authority_root=tmp_path / "authority"
+    ) == receipt
+    assert sealed_path.read_bytes() == sealed_bytes
+    report = live.fabpub_activation_barrier([fresh])
+    try:
+        assert report["repositories"] == [str(fresh)]
+        assert live.WriterGenerationLatch.open(fresh).held_leases()
+    finally:
+        live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+
+
+def test_explicit_roots_hold_bootstrap_and_history_locks_through_activation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    roots = (tmp_path / "additional-history", tmp_path / "legacy")
+    expected = {
+        *live._bootstrap_seal_lock_paths(inventory),
+        *(root / "fabpub-global-cutover" / "root.lock" for root in roots),
+    }
+    original_hold = live._hold_all
+    original_proof = live._prove_zero_source
+    held_sets = []
+    boundaries = []
+
+    @contextlib.contextmanager
+    def observe_hold(paths):
+        paths = tuple(paths)
+        assert paths == tuple(sorted(set(paths), key=str))
+        held_sets.append(set(paths))
+        with original_hold(paths):
+            yield
+
+    def observe_proof(snapshot, scanned_roots, boundary):
+        assert tuple(scanned_roots) == roots
+        boundaries.append(boundary)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import fcntl,sys\n"
+                "for path in sys.argv[1:]:\n"
+                "    with open(path, 'a') as handle:\n"
+                "        try: fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                "        except BlockingIOError: pass\n"
+                "        else: sys.exit(1)\n",
+                *map(str, sorted(expected, key=str)),
+            ],
+            check=False,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        return original_proof(snapshot, scanned_roots, boundary)
+
+    monkeypatch.setattr(live, "_hold_all", observe_hold)
+    monkeypatch.setattr(live, "_prove_zero_source", observe_proof)
+    live.onboard_zero_legacy_repository(
+        fresh, roots=roots, authority_root=tmp_path / "authority"
+    )
+    assert held_sets[-1] == expected
+    report = live.fabpub_activation_barrier([fresh])
+    try:
+        assert held_sets[-1] == expected
+        assert boundaries == [
+            "before_zero_source_proof",
+            "before_receipt_write",
+            "before_receipt_fsync",
+            "after_receipt_write",
+            "before_generation_lease",
+        ]
+    finally:
+        live.release_barrier_leases(report)
+    assert not any((str(path), threading.get_ident()) in live._LOCK_DEPTH for path in expected)
+
+
+def test_explicit_roots_reject_conflicting_bootstrap_cutover_before_mutation(
+    tmp_path: Path,
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="may not onboard receipt"):
+        live.onboard_zero_legacy_repository(
+            fresh,
+            cutover_id="different-cutover",
+            roots=(tmp_path / "additional-history",),
+            authority_root=tmp_path / "authority",
+        )
+
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+def test_explicit_roots_refuse_bootstrap_binding_drift_before_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    original_active = live._active_bootstrap_inventory
+    reads = 0
+
+    def drift_after_initial_read(authority_root=None):
+        nonlocal reads
+        active = original_active(authority_root)
+        reads += 1
+        if reads > 1 and active is not None:
+            return {**active, "inventory_sha256": "0" * 64}
+        return active
+
+    monkeypatch.setattr(live, "_active_bootstrap_inventory", drift_after_initial_read)
+    with pytest.raises(live.LegacyCutoverConflict, match="bootstrap changed"):
+        live.onboard_zero_legacy_repository(
+            fresh,
+            roots=(tmp_path / "additional-history",),
+            authority_root=tmp_path / "authority",
+        )
+
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_explicit_roots_refuse_changed_history_coverage_on_retry(
+    tmp_path: Path, monkeypatch, interrupted: bool
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    roots = (tmp_path / "additional-history",)
+    original_proof = live._prove_zero_source
+
+    def interrupt_before_receipt(snapshot, scanned_roots, boundary):
+        result = original_proof(snapshot, scanned_roots, boundary)
+        if boundary == "before_receipt_write":
+            raise live.LegacyCutoverConflict("interrupted before receipt")
+        return result
+
+    with monkeypatch.context() as patcher:
+        if interrupted:
+            patcher.setattr(live, "_prove_zero_source", interrupt_before_receipt)
+            with pytest.raises(live.LegacyCutoverConflict, match="interrupted"):
+                live.onboard_zero_legacy_repository(
+                    fresh, roots=roots, authority_root=tmp_path / "authority"
+                )
+        else:
+            live.onboard_zero_legacy_repository(
+                fresh, roots=roots, authority_root=tmp_path / "authority"
+            )
+    namespace = live.repository_namespace_root(fresh)
+    onboarding = namespace / "zero-legacy-onboarding"
+    before = {path.name: path.read_bytes() for path in onboarding.iterdir() if path.is_file()}
+
+    with pytest.raises(live.LegacyCutoverConflict, match="history coverage"):
+        live.onboard_zero_legacy_repository(
+            fresh,
+            roots=(tmp_path / "different-history",),
+            authority_root=tmp_path / "authority",
+        )
+
+    assert {path.name: path.read_bytes() for path in onboarding.iterdir() if path.is_file()} == before
+    if interrupted:
+        assert not (namespace / live.RECEIPT_FILENAME).exists()
+    else:
+        assert live.load_partition_receipt(live.repository_snapshot(fresh).store_root) is not None
+
+
+@pytest.mark.parametrize("after_onboarding", [False, True])
+def test_explicit_roots_refuse_real_supplemental_legacy_evidence(
+    tmp_path: Path, after_onboarding: bool
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    root = tmp_path / "additional-history"
+    if after_onboarding:
+        live.onboard_zero_legacy_repository(
+            fresh, roots=(root,), authority_root=tmp_path / "authority"
+        )
+    leaf = root / "legacy-train" / "legacy-repository"
+    leaf.mkdir(parents=True)
+    (leaf / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(live.LegacyCutoverConflict, match="live legacy source"):
+        if after_onboarding:
+            live.fabpub_activation_barrier([fresh])
+        else:
+            live.onboard_zero_legacy_repository(
+                fresh, roots=(root,), authority_root=tmp_path / "authority"
+            )
+
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    if not after_onboarding:
+        assert not (live.repository_namespace_root(fresh) / live.RECEIPT_FILENAME).exists()
 
 
 def test_zero_history_bootstrap_requires_confirmation_without_mutation(tmp_path: Path) -> None:

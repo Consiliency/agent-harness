@@ -54,6 +54,32 @@ and opens the requested draft posture
 without a recommit. `publishing.py` may stage and commit locally, but delegates push/PR work
 through `BrokerClient`.
 
+## Bootstrap binding for explicit history roots
+
+`onboard_zero_legacy_repository` authenticates the persistent ACTIVE bootstrap
+when one exists, including when the caller supplies explicit legacy roots. It
+retains that bootstrap's cutover ID, inventory digest and authority root in the
+sealed onboarding inventory. Explicit roots define the receipt's actual history
+coverage; they do not replace or modify the sealed global bootstrap inventory.
+Without a persistent bootstrap, the existing traditional ACTIVE route applies.
+
+Onboarding holds the deduplicated, sorted union of bootstrap seal locks and the
+declared history-root authority locks. It revalidates the bootstrap binding
+under those locks before changing the repository generation, and performs the
+actual repeated zero-source scans before activation. Retrying an interrupted
+or completed onboarding requires the same immutable history coverage and
+bootstrap binding. A retry cannot silently replace either claim.
+
+Subsequent activation retains both lock sets and checks the zero-source
+receipt's recorded roots again before granting a generation lease. Newly
+discovered legacy evidence blocks activation and releases acquired leases.
+
+The operator remains responsible for identifying all authoritative history
+locations. A successful scan of supplied roots does not establish that the
+list is complete. This binding repair neither attests a consumer's history nor
+authorizes production onboarding, global migration or publication. See
+Consiliency/agent-harness#1117 for the consumer recovery requirement.
+
 ## Publication confirmation observations
 
 The supported pair permits confirmation observations within one uninterrupted
