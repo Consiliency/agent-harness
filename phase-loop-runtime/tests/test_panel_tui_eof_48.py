@@ -19,6 +19,22 @@ from phase_loop_runtime.panel_invoker import _classify_leg, _run_claude_tui_sess
 pytestmark = pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh")
 
 
+@pytest.fixture(autouse=True)
+def _owned_review_network():
+    from phase_loop_runtime import panel_invoker, sandbox_egress
+    import os
+    if not sandbox_egress.egress_isolation_available():
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks filtered egress")
+        pytest.skip("filtered review egress unavailable")
+    with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
+        token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            yield
+        finally:
+            panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
 def test_claude_tui_leg_returns_promptly_on_pty_eof(tmp_path):
     # The child closes all three PTY fds (EOF fires immediately) but the process
     # lingers (sleep 60), so proc.poll() stays None — the exact wrapper-lingers

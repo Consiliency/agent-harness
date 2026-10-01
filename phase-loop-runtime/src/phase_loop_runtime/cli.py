@@ -1980,23 +1980,25 @@ def _advisory_review_authority(root: Path) -> Path:
     The review operation names a git repository as its authority, and the broker needs one
     tracked file to prove the seat cannot see it. A standalone document has no repository, so
     an advisory run mints its authority against this scratch repository instead of the
-    caller's: one tracked placeholder, no commit, and nothing of the caller's is staged or
-    exposed. ``GIT_*`` is dropped for the two writes here; the HARDEN authority probes that
-    later read this path use the inherited environment, as they do for any repository.
+    caller's: one committed placeholder, and nothing of the caller's is staged or exposed.
+    The trusted main commit supplies the empty governance layer for this operation.
     """
     authority = root / "authority"
     authority.mkdir(mode=0o700)
-    # An inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE (hooks, CI wrappers) would
-    # redirect these writes into the caller's repository.
-    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    subprocess.run(["git", "init", "-q", str(authority)], check=True, env=git_env,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    from .review_stage import host_git
+
+    host_git(authority, "init", "-q", "--initial-branch=main", check=True,
+             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     (authority / "ADVISORY-AUTHORITY").write_text(
         "Private review authority for one advisory advisor-board run. It holds no reviewed content.\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "-C", str(authority), "add", "-f", "ADVISORY-AUTHORITY"], check=True, env=git_env,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    host_git(authority, "add", "-f", "ADVISORY-AUTHORITY", check=True,
+             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    host_git(authority, "-c", "user.name=Advisory authority", "-c",
+             "user.email=authority@example.invalid", "-c", "commit.gpgsign=false",
+             "commit", "-qm", "Private advisory authority", check=True,
+             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return authority.resolve()
 
 
@@ -2157,9 +2159,12 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 assert _advisory_root is not None
                 canonical_repo_authority = _advisory_review_authority(_advisory_root)
             else:
-                canonical_repo_authority = Path(subprocess.check_output(
-                    ["git", "rev-parse", "--show-toplevel"], text=True, stderr=subprocess.DEVNULL
-                ).strip()).resolve()
+                from .review_stage import host_git
+
+                canonical_repo_authority = Path(host_git(
+                    Path.cwd(), "rev-parse", "--show-toplevel", check=True,
+                    capture_output=True, text=True,
+                ).stdout.strip()).resolve()
             prepare_review_composition_authorization()
         except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
             print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
@@ -2298,7 +2303,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             from .advisor_board.config import load_president_ladder as _load_president_ladder
 
             try:
-                president_ladder = _load_president_ladder(canonical_repo_authority)
+                president_ladder = _load_president_ladder(canonical_repo_authority, review_base=True)
             except _LadderConfigError as exc:
                 print(f"advisor-board: president ladder config: {exc}", file=sys.stderr)
                 return 2

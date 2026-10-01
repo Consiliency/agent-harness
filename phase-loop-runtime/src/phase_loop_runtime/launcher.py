@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import json
 import os
 import re
@@ -51,6 +52,7 @@ from .models import (
 from . import lease_supervisor as _lease_supervisor
 from .lease_supervisor import LeaseSupervisor  # noqa: F401 -- re-exported; the exec'd supervisor's reaper
 from .observability import heartbeat_path_for_log, run_heartbeat_summary, write_run_heartbeat
+from .review_stage import host_git
 
 
 STUB_EXECUTOR_REASONS = {
@@ -419,7 +421,8 @@ class LaunchResult:
 _LEASE_SUPERVISOR_SCRIPT = Path(_lease_supervisor.__file__).resolve()
 
 
-def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd: int) -> list[str]:
+def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd: int,
+                              seat_fds: tuple[int, ...] = ()) -> list[str]:
     """Wrap ``command`` in the exec'd lease supervisor (agent-harness#1140).
 
     The supervisor is a separate program, not a ``preexec_fn``: Python must not
@@ -437,6 +440,7 @@ def _lease_supervisor_command(command: list[str], lease_fd: int, exec_status_fd:
         str(lease_fd),
         "--exec-status-fd",
         str(exec_status_fd),
+        *(("--pass-fds", ",".join(str(fd) for fd in seat_fds)) if seat_fds else ()),
         "--",
         *command,
     ]
@@ -1955,8 +1959,9 @@ def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
 
     metadata: dict[str, Any] = {"executor": spec.executor, "probes": []}
     probe_outputs: dict[str, str] = {}
+    from .panel_invoker import run_provider
     for probe in spec.auth_preflight_probes:
-        completed = subprocess.run(probe, shell=True, text=True, capture_output=True, check=False)
+        completed = run_provider(shlex.split(probe), text=True, capture_output=True, check=False)
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
         probe_outputs[probe] = " ".join(part for part in (stdout, stderr) if part)
@@ -2107,6 +2112,10 @@ def launch_with_spec(
 ) -> LaunchResult:
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
+    action = spec.prompt_bundle.product_action or "execute"
+    if action == "review" and not dry_run and spec.claude_route in {"claude_channel", "claude_agent_view"}:
+        from .sandbox_egress import SeatIdentityUnverified
+        raise SeatIdentityUnverified("executor_review_route_unsupported")
     if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
         return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
@@ -2147,6 +2156,7 @@ def launch_with_spec(
             command = [*command[:2], "--output-last-message", str(final_path), *command[2:]]
         result = launch(
             command,
+            action=action,
             dry_run=dry_run,
             log_path=log_path,
             stdin_text=stdin_text,
@@ -2166,11 +2176,15 @@ def launch_with_spec(
         )
         if final_path is not None:
             final_message = ""
-            try:
-                if not final_path.is_symlink():
-                    final_message = final_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
-                pass
+            if action == "review":
+                from .panel_invoker import _read_seat_text
+                final_message = _read_seat_text(final_path)
+            else:
+                try:
+                    if not final_path.is_symlink():
+                        final_message = final_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    pass
             result = replace(result, codex_final_message=final_message, codex_turn_completion={
                 "source": "codex_output_last_message",
                 "completed": bool(final_message.strip()),
@@ -2578,12 +2592,16 @@ def _launch_with_lease_supervisor(
     quiet_warning_seconds: int,
     quiet_blocker_seconds: int,
     timeout_seconds: int | None,
+    action: str,
+    review_profile: object | None,
 ) -> LaunchResult:
     """Run an executor under a subreaping supervisor that retains a live lease."""
     lease_fd = int(getattr(lease_authority, "fileno")())
     generation = str(getattr(lease_authority, "generation", "unknown"))
     result = launch(
         command,
+        action=action,
+        _review_profile=review_profile,
         log_path=log_path,
         stdin_text=stdin_text,
         stream_output=stream_output,
@@ -2626,7 +2644,28 @@ def launch(
     caller_run_id: str | None = None,
     lease_authority: object | None = None,
     _supervisor_lease_fd: int | None = None,
+    action: str = "execute",
+    _review_profile: object | None = None,
 ) -> LaunchResult:
+    if action == "review" and _review_profile is None and not dry_run:
+        from . import panel_invoker, sandbox_egress
+        with contextlib.ExitStack() as stack:
+            prefix = stack.enter_context(sandbox_egress.isolated_network(required=True, timeout_s=None))
+            token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
+            stack.callback(panel_invoker._EGRESS_LAUNCH_PREFIX.reset, token)
+            owned_command, profile = stack.enter_context(panel_invoker._seat_command_profile(
+                command, env=env or os.environ, cwd=cwd or os.getcwd(),
+                readonly_paths=(cwd or os.getcwd(),),
+            ))
+            return launch(
+                owned_command, action=action, _review_profile=profile, log_path=log_path,
+                stdin_text=stdin_text, stream_output=stream_output, heartbeat_path=heartbeat_path,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                quiet_warning_seconds=quiet_warning_seconds, quiet_blocker_seconds=quiet_blocker_seconds,
+                timeout_seconds=None, cwd=cwd, env=env, ephemeral_monitor=True,
+                caller_run_id=caller_run_id, lease_authority=lease_authority,
+                _supervisor_lease_fd=_supervisor_lease_fd,
+            )
     # AUTOSEL (change #5): the CLI executor-child spawn path gets a scrubbed +
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
     # stamped — so a spawned child never mis-reads the host harness as its own run-from
@@ -2637,6 +2676,9 @@ def launch(
     # never auto-picks claude, so those routes don't need the run-from sentinel.
     # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
+    if action != "review" and not dry_run:
+        from .agy_integrity import trusted_command
+        command = trusted_command(command, child_env)
     if caller_run_id:
         child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
     if lease_authority is not None and not dry_run:
@@ -2653,6 +2695,8 @@ def launch(
             quiet_warning_seconds=quiet_warning_seconds,
             quiet_blocker_seconds=quiet_blocker_seconds,
             timeout_seconds=timeout_seconds,
+            action=action,
+            review_profile=_review_profile,
         )
     # #61/#86: an UNOBSERVED (--no-observe) executor child would otherwise fall to
     # the bare `subprocess.run` branch below, which has no heartbeat, no quiet-child
@@ -2712,7 +2756,24 @@ def launch(
             run_kwargs["stdin"] = subprocess.DEVNULL
         else:
             run_kwargs["input"] = stdin_text
-        completed = subprocess.run(command, **run_kwargs)
+        from . import panel_invoker
+        input_value = run_kwargs.pop("input", None)
+        run_kwargs.pop("check")
+        run_kwargs.pop("capture_output")
+        run_kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if input_value is not None:
+            run_kwargs["stdin"] = subprocess.PIPE
+        with panel_invoker.launch_owned(
+            command, role=panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED,
+            profile=panel_invoker.SeatProfile(env=child_env), **run_kwargs,
+        ) as process:
+            try:
+                stdout, stderr = process.communicate(input_value)
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         return _with_changed_paths(
             LaunchResult(command=command, returncode=completed.returncode, output=completed.stdout + completed.stderr),
             change_snapshot,
@@ -2748,7 +2809,21 @@ def launch(
                         close_fds=True,
                         pass_fds=(_supervisor_lease_fd, exec_status_write),
                     )
-                process = subprocess.Popen(popen_command, **popen_kwargs)
+                from . import panel_invoker
+                role = panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED
+                profile = panel_invoker.SeatProfile(env=child_env)
+                supervisor = None
+                if action == "review":
+                    role = panel_invoker.SeatLaunchRole.PROVIDER_REVIEW
+                    profile = _review_profile
+                    if exec_status_write is not None:
+                        popen_command = command
+                        supervisor = lambda owned, fds: _lease_supervisor_command(
+                            owned, _supervisor_lease_fd, exec_status_write, seat_fds=tuple(fds),
+                        )
+                process = panel_invoker.launch_owned(
+                    popen_command, role=role, profile=profile, supervisor=supervisor, **popen_kwargs,
+                )
             except BaseException:
                 if exec_status_read is not None:
                     os.close(exec_status_read)
@@ -2811,7 +2886,7 @@ def launch(
                                 flush=True,
                             )
                         last_heartbeat = now
-                        if heartbeat.get("stalled_suspect") and process.poll() is None:
+                        if action != "review" and heartbeat.get("stalled_suspect") and process.poll() is None:
                             stalled = True
                             salvage = _salvage_snapshot(
                                 command=command,
@@ -2824,7 +2899,7 @@ def launch(
                             )
                             cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
                             cleanup_evidence["salvage_snapshot"] = salvage
-                    if timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
+                    if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
                         timed_out = True
                         salvage = _salvage_snapshot(
                             command=command,
@@ -3247,16 +3322,16 @@ def _git_review_tree_paths(repo: Path) -> list[str] | None:
     not ignored. ``None`` when ``repo`` is not a git checkout or git is unavailable
     (the caller falls back to a full copy)."""
     try:
-        tracked = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-z"],
+        tracked = host_git(
+            repo, "ls-files", "-z",
             capture_output=True,
             text=True,
             check=False,
         )
         if tracked.returncode != 0:
             return None
-        untracked = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-z", "--others", "--exclude-standard"],
+        untracked = host_git(
+            repo, "ls-files", "-z", "--others", "--exclude-standard",
             capture_output=True,
             text=True,
             check=False,
@@ -3812,28 +3887,26 @@ def _worktree_change_snapshot(
     if cwd is None:
         return None
     root = Path(cwd)
-    status = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all", "-z"],
+    if not root.is_dir():
+        return None
+    from .review_stage import host_git
+    status = host_git(root, "status", "--porcelain=v1", "--untracked-files=all", "-z",
         capture_output=True,
         check=False,
     )
-    head = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
+    head = host_git(root, "rev-parse", "HEAD",
         capture_output=True,
         check=False,
     )
-    index_diff = subprocess.run(
-        ["git", "-C", str(root), "diff", "--cached", "--binary", "--full-index"],
+    index_diff = host_git(root, "diff", "--cached", "--binary", "--full-index",
         capture_output=True,
         check=False,
     )
-    worktree_diff = subprocess.run(
-        ["git", "-C", str(root), "diff", "--binary", "--full-index"],
+    worktree_diff = host_git(root, "diff", "--binary", "--full-index",
         capture_output=True,
         check=False,
     )
-    untracked = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z"],
+    untracked = host_git(root, "ls-files", "--others", "--exclude-standard", "-z",
         capture_output=True,
         check=False,
     )
@@ -3895,8 +3968,9 @@ def _with_changed_paths(
         return replace(result, changed_paths=())
     paths = set(before_paths) | set(after_paths)
     if before_head != after_head:
-        committed = subprocess.run(
-            ["git", "-C", str(cwd), "diff", "--name-only", f"{before_head}..{after_head}"],
+        from .review_stage import host_git
+        committed = host_git(
+            Path(cwd), "diff", "--name-only", f"{before_head}..{after_head}",
             capture_output=True,
             text=True,
             check=False,

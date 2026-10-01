@@ -268,7 +268,7 @@ def test_raw_unicode_separator_at_message_edge_survives(tmp_path, separator):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PTY")
+@pytest.mark.skipif(sys.platform != "linux", reason="needs the Linux owner and a PTY")
 @pytest.mark.parametrize(("mode", "first", "last"), [
     ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
     ("review", "REVIEW START\n1. Raw\u2028separator stays in text", "REVIEW END\nPARTIALLY AGREE"),
@@ -298,20 +298,35 @@ print("Claude Code ready for your message", flush=True)
 wire = b""
 while not wire.endswith(b"\x1bOM"):
     wire += os.read(0, 65536)
-Path("owned.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in json.loads(sys.argv[1])))
+import re
+slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+transcript = Path(os.environ["HOME"]) / ".claude/projects" / slug / "owned.jsonl"
+transcript.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in json.loads(sys.argv[1])))
 '''
-    rc, text, status, _ = pi._run_claude_tui_session(
-        command=[sys.executable, "-c", script, json.dumps(records)],
-        cwd=tmp_path,
-        prompt="Review the supplied synthetic example.",
-        output_file=tmp_path / "unused-review.txt",
-        timeout_s=15,
-        backstop_s=15,
-        env={"PATH": "/usr/bin:/bin"},
-        mode=mode,
-        allow_transcript_final=True,
-        broker_transcript_path=tmp_path / "owned.jsonl",
-    )
+    from phase_loop_runtime import sandbox_egress
+    try:
+        with sandbox_egress.isolated_network(required=True, timeout_s=None) as prefix:
+            token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
+            try:
+                rc, text, status, _ = pi._run_claude_tui_session(
+                    command=["/usr/bin/python3", "-I", "-S", "-c", script, json.dumps(records)],
+                    cwd=tmp_path,
+                    prompt="Review the supplied synthetic example.",
+                    output_file=tmp_path / "unused-review.txt",
+                    timeout_s=15,
+                    backstop_s=15,
+                    env={"PATH": "/usr/bin:/bin"},
+                    mode=mode,
+                    allow_transcript_final=True,
+                    broker_transcript_path=tmp_path / "owned.jsonl",
+                )
+            finally:
+                pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    except sandbox_egress.EgressUnavailable:
+        import os
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            raise
+        pytest.skip("kernel seat-owner support unavailable")
     assert rc == 0, (status, text)
     assert status == "claude_tui_broker_final_assistant"
     assert text == first + "\n" + last

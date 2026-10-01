@@ -25,6 +25,23 @@ from phase_loop_runtime import panel_invoker, president_adapter, sandbox_egress
 from phase_loop_runtime.advisor_board import backing
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
+@pytest.fixture(autouse=True)
+def _terminal_fixture_owner(monkeypatch, request):
+    from contextlib import contextmanager
+    command_profile = panel_invoker._seat_command_profile
+    if request.node.name.startswith(('test_terminal_nonconforming', 'test_cancel_wins')):
+        request.getfixturevalue('owned_review_network')
+
+    @contextmanager
+    def profile(command, *, cwd, outputs=(), **kwargs):
+        with command_profile(command, cwd=cwd,
+                             outputs=(*outputs, Path(cwd) / 'terminal-written', Path(cwd) / 'owned.jsonl'),
+                             **kwargs) as owned:
+            yield owned
+
+    monkeypatch.setattr(panel_invoker, '_seat_command_profile', profile)
+
+
 RULING = "FINDING F001: DEFERRED — ok\nFORCING DECISION: LAND"
 # fable = the Claude rung outside Claude Code (base_env={} here), brokered like the rest.
 PROVIDER_RUNGS = ("sol", "fable", "grok", "gemini")
@@ -33,9 +50,11 @@ PROVIDER_RUNGS = ("sol", "fable", "grok", "gemini")
 def _git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
     (repo / "README.md").write_text("repo\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture",
+                    "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], check=True)
     return repo
 
 
@@ -211,7 +230,7 @@ def test_invoke_board_binds_its_operation_cancel_to_the_president_seam(tmp_path)
         with pytest.raises(RuntimeError, match="stop after wiring"):
             panel_invoker.invoke_board(
                 DEFAULT_BOARD, "artifact", landing_tier="production_code",
-                base_env={"CLAUDECODE": "1"}, repo_dir=str(tmp_path), cancel_event=cancel,
+                base_env={"CLAUDECODE": "1"}, repo_dir=str(_git_repo(tmp_path)), cancel_event=cancel,
             )
     assert seen.get("cancel_event") is cancel
     assert real is president_adapter.build_president_invoke
@@ -270,13 +289,13 @@ while not wire.endswith(b"\x1bOM"):
 Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
     "message": {"id": "fixture-message", "role": "assistant", "stop_reason": None if sys.argv[1] == "null" else sys.argv[1],
                 "content": [{"type": "text", "text": "I think it is fine"}]}}) + "\n")
-Path("terminal-written").touch()
+Path("terminal-written").write_text("ready")
 while True: time.sleep(.1)
 '''
 
     def cancel_if_not_returned():
         until = time.monotonic() + 5  # synthetic fixture startup only
-        while not marker.exists() and time.monotonic() < until:
+        while (not marker.exists() or marker.stat().st_size == 0) and time.monotonic() < until:
             time.sleep(.01)
         if not cancel.wait(.5):
             controller_fired.set()
@@ -295,7 +314,7 @@ while True: time.sleep(.1)
     try:
         with patch.object(panel_invoker, "launch_provider", capture_launch):
             rc, text, log, _ = panel_invoker._run_claude_tui_session(
-                command=[sys.executable, "-c", script, "null" if stop_reason is None else stop_reason],
+                command=["/usr/bin/python3", "-c", script, "null" if stop_reason is None else stop_reason],
                 cwd=tmp_path, prompt="rule on F001", output_file=tmp_path / "president.txt",
                 timeout_s=1, env={"PATH": "/usr/bin:/bin"}, mode=mode, backstop_s=1,
                 review_monitor=monitor, allow_transcript_final=True,
@@ -422,7 +441,7 @@ while not wire.endswith(b"\x1bOM"):
 Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
     "message": {"id": "fixture-message", "role": "assistant", "stop_reason": "end_turn",
                 "content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
-Path("terminal-written").touch()
+Path("terminal-written").write_text("ready")
 if sys.argv[1] == "eof":
     sys.exit(0)  # the PTY hangs up; the read path sees EOF before the loop polls the process
 if sys.argv[1] == "late-exit":
@@ -466,7 +485,7 @@ def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_f
 
     def no_eof_after_terminal(readers, writers, errors, timeout):
         # Cap every real select at 10 ms; the "late-exit" child outlives that by 200 ms.
-        if marker.exists():
+        if marker.exists() and marker.stat().st_size:
             time.sleep(.01)
             return [], [], []
         return real_select(readers, writers, errors, min(timeout, .01) if timeout else timeout)
@@ -477,7 +496,7 @@ def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_f
         panel_invoker, "launch_provider", capture_launch,
     ):
         result = panel_invoker._run_claude_tui_session(
-            command=[sys.executable, "-c", _TERMINAL_CHILD, shape, text], cwd=tmp_path, prompt="rule on F001",
+            command=["/usr/bin/python3", "-c", _TERMINAL_CHILD, shape, text], cwd=tmp_path, prompt="rule on F001",
             output_file=tmp_path / "president.txt", timeout_s=10, env={"PATH": "/usr/bin:/bin"},
             mode="president", backstop_s=10, review_monitor=monitor,
             allow_transcript_final=True, broker_transcript_path=tmp_path / "owned.jsonl",

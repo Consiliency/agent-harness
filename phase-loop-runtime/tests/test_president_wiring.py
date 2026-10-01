@@ -548,7 +548,10 @@ def test_president_operation_refuses_a_review_authorization():
 
 # EC-PRESROUTE-2 (``-k launch_provider``): a non-native seated rung launches
 # through the single launch site ``launch_provider`` and nowhere else.
-def test_non_native_rung_launches_only_through_launch_provider(tmp_path):
+def test_non_native_rung_launches_only_through_launch_provider(tmp_path, monkeypatch):
+    # This control replaces the launch seam; owner facts use the real caller cells.
+    monkeypatch.setattr(panel_invoker, "_seat_provider_source", lambda *_: (None, "/usr/bin/true"))
+    monkeypatch.setattr(panel_invoker, "_filtered_holder_namespace", lambda: 1)
     def contract() -> None:
         class _Reached(Exception):
             pass
@@ -972,6 +975,10 @@ def _runner_fixture(tmp_path: Path, *, switched: bool = True):
     repo = make_repo(tmp_path)
     if switched:
         _switch_govlean_authority(repo)
+        from phase_loop_runtime.review_stage import host_git
+
+        host_git(repo, "add", "plans/manifest.json", check=True)
+        host_git(repo, "commit", "-qm", "Base review authority", check=True)
     run_dir = repo / ".phase-loop" / "runs" / "panel"
     run_dir.mkdir(parents=True)
     bundle = run_dir / "bundle.md"
@@ -1161,7 +1168,7 @@ def test_runner_pre_switch_repo_is_byte_neutral(tmp_path, monkeypatch):
 # codex and grok split on -- neither reading is decidable before the route exists, so
 # the node is made non-vacuous by construction). RED on base (nothing launches),
 # green only once the route is wired AND the adapter types the failure as ordinary.
-def test_adapter_route_failure_is_not_a_ladder_descent(tmp_path):
+def test_adapter_route_failure_is_not_a_ladder_descent(tmp_path, owned_review_network):
     def contract() -> None:
         launched: list[object] = []
 
@@ -1169,7 +1176,15 @@ def test_adapter_route_failure_is_not_a_ladder_descent(tmp_path):
             launched.append(args)
             raise RuntimeError("launch failed")
 
-        with patch.object(panel_invoker, "launch_provider", _boom):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def profile(command, **kwargs):
+            yield ['/usr/bin/true'], panel_invoker.SeatProfile(env={'PATH': '/usr/bin:/bin'})
+
+        with patch.object(panel_invoker, "launch_provider", _boom), patch.object(
+            panel_invoker, '_seat_command_profile', profile
+        ):
             seam = president_adapter.build_president_invoke(
                 DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={}
             )

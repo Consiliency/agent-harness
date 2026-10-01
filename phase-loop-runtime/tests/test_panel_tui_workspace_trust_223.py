@@ -22,7 +22,26 @@ import pytest
 import phase_loop_runtime.panel_invoker as pi
 from phase_loop_runtime.panel_invoker import _exec_claude_tui_leg, _run_claude_tui_session
 
-pytestmark = pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh")
+pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
+              pytest.mark.usefixtures("owned_review_network")]
+
+
+@pytest.fixture(autouse=True)
+def _declared_modal_answer(monkeypatch):
+    from pathlib import Path
+    from contextlib import contextmanager
+
+    command_profile = pi._seat_command_profile
+
+    @contextmanager
+    def profile(command, *, cwd, outputs=(), **kwargs):
+        with command_profile(command, cwd=cwd,
+                             outputs=(*outputs, Path(cwd) / "answer.txt", Path(cwd) / "wire.bin",
+                                      Path(cwd) / "owned.jsonl"),
+                             **kwargs) as owned:
+            yield owned
+
+    monkeypatch.setattr(pi, "_seat_command_profile", profile)
 
 
 @pytest.fixture(autouse=True)
@@ -201,7 +220,7 @@ def test_wrong_dir_modal_is_not_answered(tmp_path, monkeypatch, header):
     # the prompt into the y/n field. It fails CLOSED as trust_blocked (an uncleared gate),
     # NOT by pasting the review into a foreign modal. And no stray "y" was written.
     assert status == "claude_tui_workspace_trust_blocked", f"foreign-dir modal must fail closed; got {status!r}"
-    assert not (out / "answer.txt").exists(), "a stray y was written to a foreign-dir modal"
+    assert (out / "answer.txt").read_text() == "", "a stray y was written to a foreign-dir modal"
 
 
 def test_modal_answered_but_editor_never_ready_is_editor_not_ready(tmp_path, monkeypatch):
@@ -439,7 +458,7 @@ else:
     Path("panel-claude.txt").write_text(text)
 '''
     rc, text, status, _ = _run_claude_tui_session(
-        command=[sys.executable, "-c", script, str(brokered)],
+        command=["/usr/bin/python3", "-c", script, str(brokered)],
         cwd=tmp_path, prompt=prompt, output_file=tmp_path / "panel-claude.txt",
         timeout_s=15, backstop_s=15, env={"PATH": "/usr/bin:/bin"},
         allow_transcript_final=brokered,

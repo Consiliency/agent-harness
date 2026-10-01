@@ -34,7 +34,9 @@ def audit(event, args):
     if event == "subprocess.Popen":
         argv = list(args[1])
         effects.append({"event": event, "argv": argv})
-        if permitted_git is not None and argv == permitted_git:
+        if permitted_git is not None and Path(argv[0]).name == "git" and Path(argv[0]).is_absolute():
+            assert argv[1:] == ["--version"] or all(value in argv for value in (
+                "--no-replace-objects", "core.hooksPath=/dev/null", "core.fsmonitor=false"))
             return
         raise AssertionError("unexpected subprocess effect")
     if event.startswith("socket.") or event in {
@@ -158,9 +160,11 @@ try:
                        row["detail"] == "HARDEN review isolation requires a Linux review operation"
                        for row in rows)
         assert callbacks == [], callbacks
-    expected_effects = ([] if permitted_git is None else
-                        [{"event": "subprocess.Popen", "argv": permitted_git}])
-    assert effects == expected_effects, effects
+    if permitted_git is None:
+        assert effects == [], effects
+    else:
+        assert effects and all(row["event"] == "subprocess.Popen" for row in effects)
+        assert any("--show-toplevel" in row["argv"] for row in effects)
     record["passed"] = True
 finally:
     sys.setprofile(None)

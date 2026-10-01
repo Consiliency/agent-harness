@@ -1,6 +1,6 @@
 """agent-harness#1003: the heartbeat owner wrapper gives its PID namespace its OWN procfs.
 
-``_ReviewMonitor.owned_command`` runs the provider in a new PID namespace. With the host
+The common launch owner runs the provider in a new PID namespace. With the host
 /proc merely bind-mounted, a provider that starts its own bubblewrap sandbox (codex's
 ``workspace-write`` sandbox, ``--as-pid-1 --unshare-pid --proc /proc``) resolved
 ``/proc/<pid>/ns`` entries in the wrong PID namespace and failed before any command ran:
@@ -37,8 +37,9 @@ needs_bwrap = pytest.mark.skipif(
 def _run(monitor, *, prefix=()):
     token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
     try:
-        proc = panel_invoker.launch_provider(
-            PROBE, process_owner=monitor.owned_command(()),
+        proc = panel_invoker.launch_owned(
+            PROBE, role='PROVIDER_REVIEW' if prefix else 'PROVIDER_ADMIN',
+            profile=panel_invoker.SeatProfile(env={'PATH': '/usr/bin:/bin'}),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         out, err = proc.communicate(timeout=30)
@@ -58,7 +59,7 @@ def _assert_own_procfs(lines):
 
 def test_the_owner_argv_mounts_a_fresh_procfs(tmp_path):
     monitor = panel_invoker._ReviewMonitor(tmp_path / "m.json", "t", 0, threading.Event())
-    argv = monitor.owned_command(())
+    argv = panel_invoker._seat_owner(panel_invoker._seat_filesystem_view(tmp_path))
     assert argv[argv.index("--proc") + 1] == "/proc"
     assert argv.index("--unshare-pid") < argv.index("--proc") < argv.index("--")
 

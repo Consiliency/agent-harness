@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from functools import lru_cache
 import importlib.metadata
 import json
 import os
@@ -94,14 +95,12 @@ def review_tree_paths(repo: Path) -> list[str] | None:
     caller can fall back to a contained full copy.
     """
     try:
-        tracked = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-C", str(repo), "ls-files", "-z"],
+        tracked = host_git(repo, "ls-files", "-z",
             capture_output=True, text=True, check=False,
         )
         if tracked.returncode != 0:
             return None
-        untracked = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-C", str(repo), "ls-files", "-z", "--others", "--exclude-standard"],
+        untracked = host_git(repo, "ls-files", "-z", "--others", "--exclude-standard",
             capture_output=True, text=True, check=False,
         )
         if untracked.returncode != 0:
@@ -260,11 +259,8 @@ def revalidate_falsifier_staged_tree(*, staged: Path, reviewed_sha: str) -> None
     object_format = _git(staged, "rev-parse", "--show-object-format").strip()
     if object_format not in ("sha1", "sha256"):
         raise ValueError("unsupported falsifier Git object format")
-    tree = subprocess.run(
-        ["git", "--no-replace-objects", "-C", str(staged), "ls-tree", "-rz", "--full-tree", reviewed_sha],
+    tree = host_git(staged, "ls-tree", "-rz", "--full-tree", reviewed_sha,
         capture_output=True, check=True,
-        env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
-             "GIT_NO_REPLACE_OBJECTS": "1"},
     ).stdout
     expected: dict[str, tuple[str, str]] = {}
     for entry in tree.split(b"\0"):
@@ -862,13 +858,121 @@ def _run_bounded_falsifier_node(
 CLONE_DEPTH = 50
 
 
+_HOST_HELPER_PATH = os.environ.get("PATH", os.defpath)
+_HOST_HELPER_VERSIONS = {}
+
+
+def _trusted_helper_path(path: Path) -> bool:
+    try:
+        path = path.resolve(strict=True)
+        temporary = Path(tempfile.gettempdir()).resolve()
+        if path == temporary or temporary in path.parents:
+            return False
+        if any(part.startswith(REVIEW_STAGE_DIR_PREFIX) for part in path.parts):
+            return False
+        for entry in (path, *path.parents):
+            info = entry.stat()
+            if info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+                return False
+        return path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+@lru_cache(maxsize=None)
+def trusted_host_executable(name: str, *, require_conform=False) -> str:
+    candidates = []
+    for directory in (*_HOST_HELPER_PATH.split(os.pathsep), *os.defpath.split(os.pathsep)):
+        if not directory or not os.path.isabs(directory):
+            continue
+        candidate = Path(directory) / name
+        if not _trusted_helper_path(candidate):
+            continue
+        resolved = str(candidate.resolve() if name == "git" else candidate.parent.resolve() / candidate.name)
+        version = (0, 0, 0)
+        if name == "git":
+            probe = subprocess.run([resolved, "--version"], capture_output=True, text=True,
+                                   check=False, env=host_git_env())
+            match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", probe.stdout)
+            if probe.returncode or match is None:
+                continue
+            version = tuple(int(part) for part in match.groups())
+        candidates.append((version, resolved))
+        _HOST_HELPER_VERSIONS[resolved] = version
+    if not candidates:
+        raise ValueError("host_helper_unavailable")
+    version, executable = max(candidates) if name == "git" else candidates[0]
+    if require_conform and version < (2, 38, 0):
+        raise ValueError("host_git_version_unavailable")
+    return executable
+
+
+def host_git_env() -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_ATTR_NOSYSTEM="1", GIT_NO_REPLACE_OBJECTS="1")
+    return env
+
+
+def host_git(repo: Path, *args: str, **kwargs):
+    executable = trusted_host_executable(
+        "git", require_conform=bool(args and args[0] == "merge-tree" and "--write-tree" in args),
+    )
+    env = host_git_env()
+    options = ["--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
+               "-c", "core.fsmonitor=false", "-c", "safe.bareRepository=explicit",
+               "-c", "diff.external=", "-c", "core.attributesFile=" + os.devnull]
+    if _HOST_HELPER_VERSIONS.get(executable, ()) >= (2, 40, 0):
+        object_format = subprocess.run(
+            [executable, *options, "-C", str(repo), "rev-parse", "--show-object-format"],
+            capture_output=True, text=True, check=False, env=env,
+        ).stdout.strip()
+        empty_tree = (hashlib.sha256(b"tree 0\0").hexdigest() if object_format == "sha256"
+                      else "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+        options.insert(0, "--attr-source=" + empty_tree)
+    configured = subprocess.run(
+        [executable, *options, "-C", str(repo), "config", "--get-regexp", r"^(filter|diff|merge)\."],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    if configured.returncode not in (0, 1):
+        raise ValueError("host_git_config_unavailable")
+    for line in configured.stdout.splitlines():
+        key = line.split(None, 1)[0]
+        if key.rsplit(".", 1)[-1].lower() in {
+                "clean", "smudge", "process", "textconv", "command", "driver"}:
+            options += ["-c", key + "="]
+    command = list(args)
+    if command and command[0] in {"diff", "log", "show"}:
+        command[1:1] = ["--no-textconv", "--no-ext-diff"]
+    kwargs["env"] = env
+    return subprocess.run([executable, *options, "-C", str(repo), *command], **kwargs)
+
+
 def _git(repo: Path, *args: str, check: bool = True) -> str:
-    return subprocess.run(
-        ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
-        capture_output=True, text=True, check=check,
-        env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
-             "GIT_NO_REPLACE_OBJECTS": "1"},
-    ).stdout
+    return host_git(repo, *args, capture_output=True, text=True, check=check).stdout
+
+
+def trusted_review_control(repo: Path, relative: str) -> bytes | None:
+    """Read control data from the main commit, without opening candidate files."""
+    base = None
+    for reference in ("refs/remotes/origin/main", "refs/heads/main", "refs/heads/master"):
+        result = host_git(repo, "rev-parse", "--verify", reference + "^{commit}",
+                          capture_output=True, text=True, timeout=3)
+        if result.returncode == 0:
+            base = result.stdout.strip()
+            break
+    if base is None or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base) is None:
+        raise ValueError("review_base_unavailable")
+    entry = host_git(repo, "ls-tree", "-z", base, "--", relative,
+                     capture_output=True, check=True, timeout=3).stdout
+    if not entry:
+        return None
+    metadata, name = entry.rstrip(b"\0").split(b"\t", 1)
+    mode, kind, identity = metadata.split()
+    if name != relative.encode() or mode not in {b"100644", b"100755"} or kind != b"blob":
+        raise ValueError("review_control_invalid")
+    return host_git(repo, "cat-file", "blob", identity.decode("ascii"),
+                    capture_output=True, check=True, timeout=3).stdout
 
 
 def staged_source_commit(staged: Path) -> str | None:
@@ -926,27 +1030,21 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
 
     try:
         _refuse_escaping_symlinks(root, root)
-        head = _git(root, "rev-parse", "HEAD", check=False).strip()
+        resolved_head = host_git(root, "rev-parse", "--verify", "HEAD",
+                                 capture_output=True, text=True, check=False)
+        head = resolved_head.stdout.strip() if resolved_head.returncode == 0 else ""
         if not head:
             # Not a git checkout (or no commits yet): fall back to a contained copy so a
             # non-git tree is still reviewable, just without history.
             _copy_selected(root, staged)
             return staged
 
-        git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        git_env.update(
-            GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
-            GIT_NO_REPLACE_OBJECTS="1",
-        )
-        subprocess.run(
-            ["git", "--no-replace-objects", "clone", "--quiet", "--depth", str(CLONE_DEPTH), "--no-single-branch",
-             f"file://{root}", str(staged)],
-            capture_output=True, text=True, check=True, env=git_env,
-        )
-        subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(staged), "checkout", "--quiet", "--detach", head],
-            capture_output=True, text=True, check=False, env=git_env,
-        )
+        host_git(root, "clone", "--quiet", "--no-checkout", "--depth", str(CLONE_DEPTH),
+                 "--no-single-branch", f"file://{root}", str(staged),
+                 capture_output=True, text=True, check=True)
+        _git(staged, "read-tree", head)
+        _git(staged, "checkout-index", "-a")
+        _git(staged, "update-ref", "--no-deref", "HEAD", head)
         _overlay_working_tree(root, staged)
         # Inside `.git` on purpose: the marker describes the clone, and anything in the
         # tree itself would be hashed into the manifest and break source/stage equality.

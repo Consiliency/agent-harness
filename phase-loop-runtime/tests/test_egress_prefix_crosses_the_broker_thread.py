@@ -142,7 +142,7 @@ def test_the_prefix_is_not_silently_global():
     not (Path("/usr/bin/bwrap").is_file() and platform.system() == "Linux"),
     reason="the real brokered launch needs bwrap on Linux",
 )
-def test_END_TO_END_the_prefix_reaches_adapter_invoke_through_the_real_broker(tmp_path):
+def test_END_TO_END_the_prefix_reaches_adapter_invoke_through_the_real_broker(tmp_path, monkeypatch):
     """The whole chain: real `ParentUnixBroker`, real sealed authorization, real bwrap child.
 
     Adapted from the probe the claude seat wrote in board round 6 to demonstrate that the
@@ -183,6 +183,24 @@ def test_END_TO_END_the_prefix_reaches_adapter_invoke_through_the_real_broker(tm
         authorization, harness="codex", model="m", staged_dir=staged, canonical_repo=repo,
     )
 
+    neighbor = broker.root / "unrelated-file"
+    neighbor.write_text("synthetic broker neighbor")
+    original_popen = backing.subprocess.Popen
+    probed = []
+
+    def launch_client(argv, **kwargs):
+        if argv[0] == "/usr/bin/bwrap" and "-c" in argv:
+            argv = list(argv)
+            anchor = "root = Path('/run/phase-loop-review')"
+            assert anchor in argv[-1]
+            argv[-1] = argv[-1].replace(
+                anchor,
+                "assert not Path('/run/phase-loop-broker/unrelated-file').exists(), 'broker neighbor visible'\n" + anchor,
+            )
+            probed.append(True)
+        return original_popen(argv, **kwargs)
+
+    monkeypatch.setattr(backing.subprocess, "Popen", launch_client)
     seen: dict[str, tuple[str, ...]] = {}
 
     def invoke() -> tuple[str, str]:
@@ -201,6 +219,7 @@ def test_END_TO_END_the_prefix_reaches_adapter_invoke_through_the_real_broker(tm
         except Exception:
             pass
 
+    assert probed, "the real broker child did not execute the socket-view probe"
     assert "serve" in seen, "the broker never reached adapter.invoke; the probe proved nothing"
     assert seen["serve"] == PREFIX, (
         "the provider launches OUTSIDE the namespace: the prefix did not reach "

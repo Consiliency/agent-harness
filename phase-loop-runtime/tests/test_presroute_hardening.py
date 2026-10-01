@@ -327,21 +327,14 @@ def test_the_gemini_president_transport_asks_for_a_ruling_not_a_review():
     assert president.final_event_sha256 != review.final_event_sha256
 
 
-def test_the_gemini_rung_without_an_agy_credential_launches_into_an_empty_home(tmp_path, monkeypatch):
+def test_the_gemini_rung_without_an_agy_credential_refuses_before_launch(tmp_path, monkeypatch):
+    (tmp_path / "no-credential-home").mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "no-credential-home"))
-    launched: list[dict[str, str]] = []
-
-    def capture(argv, **kwargs):
-        launched.append(dict(kwargs.get("env") or {}))
-        raise RuntimeError("no agy here")
-
-    with patch.object(panel_invoker, "launch_provider", capture):
+    with patch.object(panel_invoker, "launch_provider", side_effect=AssertionError("unexpected launch")):
         seam = president_adapter.build_president_invoke(DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={})
         response = seam("gemini", "F001: [gemini] x")
-    assert len(launched) == 1
-    home = Path(launched[0]["HOME"])
-    assert home != tmp_path / "no-credential-home" and not any(home.rglob("*oauth*"))
     assert response["status"] == "failed" and response["code"] == "president_invocation_failed"
+    assert "seat_profile_unavailable" in response["detail"]
 
 
 @pytest.mark.parametrize("case", ("assume-unchanged", "skip-worktree", "head-drift", "index-drift"))
