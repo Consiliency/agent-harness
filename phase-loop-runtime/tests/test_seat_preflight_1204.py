@@ -192,9 +192,28 @@ def test_reviewer_floor_counts_grounded_seats_only():
 # The advisor-board CLI: stderr before launch, the floor, and the payload.
 # --------------------------------------------------------------------------------------
 
-def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True):
-    from phase_loop_runtime import cli
+_REAL_COMPOSE = None
 
+
+def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True):
+    """Drive ``advisor-board`` with composition, authorization and dispatch patched, so the
+    run does not depend on which vendor CLIs this host has installed."""
+    import os
+
+    from phase_loop_runtime import cli
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+    from phase_loop_runtime.advisor_board import composition as comp_mod
+
+    global _REAL_COMPOSE
+    if _REAL_COMPOSE is None:
+        _REAL_COMPOSE = comp_mod.compose_review_board
+    board = _REAL_COMPOSE(is_available=lambda vendor: True)
+    monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: board)
+    monkeypatch.setattr(backing_mod, "prepare_review_composition_authorization", lambda: None)
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization",
+                        lambda *a, **k: object())
+    for name in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(name)
     captured: dict[str, object] = {}
 
     def fake_invoke_board(board, artifact, **kwargs):
