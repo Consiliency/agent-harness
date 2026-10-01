@@ -210,7 +210,7 @@ from .governed_premerge import (
 from .governed_bundle import render_governed_bundle, staged_index_diff
 from .panel_invoker import available_panel_legs, invoke_board as _PRODUCTION_INVOKE_BOARD
 from .reconcile import reconcile
-from .credential_redaction import redact_credentials
+from .credential_redaction import redact_text
 from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
 from .route_log import with_route_log
@@ -12613,8 +12613,8 @@ def _commit_failure_closeout(
 
 
 def _redacted_stderr_excerpt(text: str, max_chars: int = 500) -> str:
-    # The shared credential redactor, the same one the review-leg details use.
-    redacted = redact_credentials(text or "")
+    # The shared redaction pipeline, the same one the review-leg details use.
+    redacted = redact_text(text or "")
     redacted = " ".join(redacted.split())
     if len(redacted) > max_chars:
         return redacted[: max_chars - 3] + "..."

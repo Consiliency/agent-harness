@@ -6,18 +6,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### One shared credential redactor with broader credential-shape coverage
+### One shared redaction pipeline with broader credential-shape coverage
 
-- New module `credential_redaction`. It holds every credential shape and a span-union
-  redactor. The review-leg details, PTY tails, private leg logs and run-metadata stderr excerpts
-  all use it, so a shape recognised at one site is recognised at all of them.
-- Newly recognised shapes: a secret command-line flag followed by its value
-  (`--api-key <v>`), URL userinfo, `Cookie`/`Set-Cookie` headers, PEM private-key blocks,
-  `x-api-key`, and key names with a prefix (`GITHUB_TOKEN=`, `db-password:`). The run-metadata
-  excerpt now also gets the auth-scheme, prefixed-token and quoted-key shapes the leg details
-  already had.
-- `redaction.STDERR_SECRET_KV_RE` is removed; `runner._redacted_stderr_excerpt` uses the
-  shared redactor.
+- New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
+  control characters, detects credential shapes, e-mail addresses and the running user's home
+  paths and names over the same text, merges the spans, and replaces each once. All of these
+  use it, so the same input gives the same output everywhere:
+  - review-leg details, PTY tails and private leg logs;
+  - run-metadata stderr excerpts;
+  - the hotfix reasons recorded by `observability` and the CLI.
+- Value grammar:
+  - a quoted value runs to its matching close quote (escapes allowed) and is redacted inside
+    the quotes, so structured text stays valid;
+  - an unquoted value runs to whitespace.
+- Key names are matched without a left word boundary, so glued and prefixed names
+  (`dbPassword`, `mysecret`, `GITHUB_TOKEN`) are covered. `secret_key`, `private_key`,
+  `access_key`, `passphrase`, `credential(s)` and `signature` are added.
+- Newly recognised shapes:
+  - a secret command-line flag followed by a bare or quoted value;
+  - URL userinfo, including a token-only userinfo;
+  - `Cookie`/`Set-Cookie` headers, including JSON and dict forms;
+  - PEM and PGP private-key blocks;
+  - `x-api-key`.
+- A scheme word followed by prose ("token validation", "basic authentication",
+  "digest <hex>") is no longer redacted as a credential.
+- Every pattern is linear in the input length, with bounded quantifiers after alternations.
+- `redaction.STDERR_SECRET_KV_RE` and the panel's private detector copies are removed.
 - The BAML adapter's error sanitizer moves onto this module in a follow-up, after its
   in-flight change lands.
 - No agy route-core file changes, so this needs no agy requalification.
