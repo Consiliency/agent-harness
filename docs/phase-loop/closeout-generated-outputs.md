@@ -61,11 +61,16 @@ Commit a file named `.phase-loop-generated-outputs.json` at the repository root:
 ```
 
 - **`name`**: a unique lowercase identifier.
-- **`command`**: the producer's argv, as a list or a shell-split string. It is not a
-  shell line: `&&`, `;`, `|` and redirections are rejected, so declare one producer per
-  command. `--record-outputs` runs it from the repository root. For the runner to
-  observe it, it must equal, token for token, a command in the phase plan's
-  `## Verification` list (or its `automation.suite_command`).
+- **`command`**: the producer's argv, given as a list or as a shell-split string.
+  Producers run without a shell, so shell syntax is rejected:
+  - in a string, any unquoted control or redirection operator, even without spaces
+    around it (`a&&b`, `build 2>/dev/null`, `x;y`), and any backtick or `$(...)`;
+  - in a list, any element that is nothing but such an operator (`"|"`, `"&&"`);
+  - in either form, a leading `NAME=value` assignment.
+
+  Declare one producer per command. `--record-outputs` runs it from the repository
+  root. For the runner to observe it, it must equal, token for token, a command in the
+  phase plan's `## Verification` list (or its `automation.suite_command`).
 - **`outputs`**: repo-relative globs. `*` matches within one path segment and `**`
   matches any number of whole segments. Each glob **must start with a literal path
   segment**, so `**`, `*` and `*.js` are rejected. Globs may not use `..`, and may not
@@ -88,48 +93,84 @@ acceptable.
 
 ## Evidence: the producer record
 
-A declaration alone accepts nothing. A declared file counts only when an **observed
-invocation of a producer whose globs cover it wrote it**, at the **current commit**, and
-it still has the **same content digest**. The record is written to
-`.phase-loop/generated-outputs/record.json`, which is runner state.
+A declaration alone accepts nothing. A declared file counts only when all of these
+hold:
+
+- an **observed invocation of a producer whose globs cover it created the file or
+  changed its content**;
+- that happened at the **current commit**, in the **current phase**;
+- the file **still has the recorded content digest**.
+
+The record is written to `.phase-loop/generated-outputs/record.json`, which is runner
+state.
 
 ### How evidence is recorded
 
 - **At closeout: every executor, every repo.** Run
-  `phase-loop-closeout-audit --repo . --record-outputs`. It runs each declared producer
-  in declaration order, observing each invocation separately. It records what each
-  invocation wrote and then audits. With no declaration it does nothing extra, so the
-  flag is safe to pass everywhere. The shipped execute-phase skills and runner prompt
-  prescribe this form.
+  `phase-loop-closeout-audit --repo . --record-outputs`.
+  - This is a **clean, observed rebuild**. First, every existing *ignored, untracked*
+    file under a declared glob is moved aside. Tracked files and untracked-but-not-
+    ignored files are never touched. Each declared producer then runs in declaration
+    order, observed one invocation at a time, and the record is written. Finally the
+    audit runs.
+  - Because every output is re-created, a deterministic producer that writes the same
+    bytes as last time earns provenance. A planted file, or an orphan the build no
+    longer emits, is not in the worktree afterwards to ride along.
+  - Nothing is deleted. Moved files go to a timestamped directory under
+    `.phase-loop/generated-outputs/displaced/`. Restore anything you meant to keep
+    from there, and clear the directory when you no longer need it.
+  - Each producer is bounded by `PHASE_LOOP_VERIFY_TIMEOUT_SECONDS` (default 1200),
+    the same limit the runner's verification uses. A producer that times out counts
+    as failed.
+  - With no declaration, the flag does nothing extra, so it is safe to pass
+    everywhere. The shipped execute-phase skills and runner prompt prescribe this
+    form.
+  - The flag executes the commands the committed declaration names. That is the same
+    trust level as the plan's verification commands. Don't pass it on a checkout you
+    don't trust. A producer can also write tracked files, so check `git status`
+    again after recording.
 - **The runner's verification.** When the runner's verification runs a command that
   equals a declared producer's `command`, it observes that invocation the same way.
-  A later audit at the same commit then passes without re-running anything. A
-  recording failure never changes the verification outcome. It is printed to stderr
-  and reported as `generated_outputs_record_error` in the runner's verification
-  summary.
+  It does **not** move anything aside. A later audit at the same commit and phase then
+  passes without re-running anything. A recording failure never changes the
+  verification outcome. It is printed to stderr and reported as
+  `generated_outputs_record_error` in the runner's verification summary.
 
 ### What counts as written
 
-- Each observed invocation is bracketed by a snapshot of the producer's own declared
-  outputs, taken just before and just after it runs. A file counts as written by that
-  producer if it is new, if its content changed, or if its mtime moved during the
-  invocation.
-- Nothing else is credited:
-  - a file an undeclared command wrote, even in the same verification run;
-  - a file that existed before and was only chmod-ed, linked or renamed;
-  - a file whose producer exited non-zero. A failed invocation also withdraws that
-    producer's earlier entries.
-- The one thing that still passes is an explicit `touch` of an existing file by the
-  producer itself, because that moves mtime.
+- **Before and after snapshots.** Each observed invocation is bracketed by a snapshot
+  of the producer's own declared outputs, taken just before and just after it runs.
+  A file counts as written by that producer only if:
+  - it is **new**, or
+  - its **content digest changed** during the invocation.
+- **Nothing else is credited:**
+  - timestamps: `touch` and `utime` on an existing file;
+  - mode, link or rename changes;
+  - files an undeclared command wrote, even in the same verification run.
+- **Failed producers.** A producer that exits non-zero gets no credit, and the failed
+  invocation withdraws that producer's earlier entries.
+- **Byte-identical regeneration.** On the runner path, a producer that rewrites
+  identical bytes over a file no record attributes earns nothing. Use
+  `--record-outputs`, whose clean rebuild re-creates the file.
 - **Overlapping globs.** When two producers' globs both cover a file, it belongs to
   whichever producer wrote it last, regardless of declaration order.
-- **Incremental and byte-identical producers.** An output the producer did not rewrite
-  this time carries forward from the previous record. That happens only when the same
-  producer ran successfully in this recording and the bytes are unchanged.
-- **Commit binding.** The record is bound to `HEAD`. At the same commit, a recording
-  extends the record, so a repair turn that re-runs one producer keeps the others'
-  evidence. After a commit, for example in the next phase, the old record no longer
-  counts until the producers run again.
+- **Incremental producers.** An output that the producer did not rewrite this time
+  carries forward from the previous record. That requires the same producer to have
+  run successfully in this recording and the bytes to be unchanged. A second
+  invocation of the same producer within one recording keeps the first one's writes.
+  On the runner path only, an output the producer has stopped producing, but that
+  nobody deleted, also carries forward. `--record-outputs` moves it aside instead.
+- **Binding to commit and phase.** Each invocation records the `HEAD` it ran at. If
+  `HEAD` moved during the invocation, or between it and the record being written,
+  nothing is recorded.
+  - The record is bound to that commit and to the phase. The phase is resolved the way
+    `verification.json` resolves it: `PHASE_LOOP_PHASE_ALIAS`, then the live run
+    alias, then `current_phase` in `.phase-loop/state.json`, otherwise `unknown`.
+  - The audit resolves the phase the same way. `--phase ALIAS` overrides it.
+  - At the same commit and phase, a recording extends the record, so a repair turn or
+    relaunch that re-runs one producer keeps the others' evidence.
+  - A different commit or phase starts empty. Another phase's evidence never
+    satisfies this one, even at the same commit.
 - **Symlinks.** A symlink, or any path reached through a symlinked directory, is never
   recorded and never accepted. Its content lives wherever the link points.
 
@@ -139,11 +180,9 @@ A declared file stays `unknown_ignored`, with a reason printed beside it, when:
 - it changed after the recording;
 - it is a symlink;
 - no record exists;
-- the record was taken at another commit;
-- the record was made against another committed declaration.
-
-Re-recording is always safe, because it re-runs the producers: an edited generated file
-is regenerated, not laundered.
+- the record was taken at another commit or in another phase;
+- the record was made against another committed declaration;
+- the record entry is malformed.
 
 **Caches.** Declare a tool cache only if its producer writes it. Its evidence then lasts
 until something else writes to it.

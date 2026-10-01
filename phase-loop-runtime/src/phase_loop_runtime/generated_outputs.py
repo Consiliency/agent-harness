@@ -17,16 +17,19 @@ execution left behind, never an inference from what else happened in the run:
 * A TRACKED declaration committed at ``HEAD`` covers the path with a bounded glob.
 * The recorder observes each declared producer invocation on its own. It digests
   that producer's declared outputs immediately before and after the invocation. A
-  file is attributed to the producer only if it was written during that
-  invocation: its content changed, or its mtime moved. A file that another
-  command wrote, or one that was planted and only chmod-ed or linked, is not
-  attributed.
+  file is attributed to the producer only if that invocation CREATED it or CHANGED
+  ITS CONTENT. A timestamp, mode or link change is not a write, and a file another
+  command wrote is never attributed.
 * An untouched output carries forward from an earlier record only when the same
   producer ran successfully again in this recording and the bytes are unchanged.
-  This is how an incremental or byte-identical producer keeps its evidence.
-* The record is bound to the commit (``HEAD``) it was taken at and to the
-  declaration's digest. A record from an earlier phase, meaning an earlier HEAD,
-  never satisfies a later audit.
+  This is how an incremental producer keeps its evidence. ``--record-outputs``
+  instead moves existing outputs aside first (a clean, observed rebuild), so
+  byte-identical regeneration earns provenance and nothing planted rides along.
+* Each invocation records the HEAD it ran at. The record is bound to that commit,
+  to the phase (resolved like ``verification.json``'s phase alias) and to the
+  declaration's digest. Evidence from another commit or another phase never
+  satisfies an audit. If HEAD moves before the record is persisted, nothing is
+  recorded.
 * Symlinks, and paths reached through a symlinked directory, are never recorded
   or accepted.
 * At audit time, the file's current digest must equal the recorded one.
@@ -73,7 +76,32 @@ _DECLARATION_KEYS = frozenset({"schema", "producers"})
 _PRODUCER_KEYS = frozenset({"name", "command", "outputs"})
 # `command` is an argv matched token for token, never a shell line: these tokens
 # would never match a verification argv, and they signal a misunderstanding.
-_SHELL_OPERATORS = frozenset({"&&", "||", ";", "|", "&", ">", ">>", "<", "2>", "2>&1"})
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_PUNCTUATION = re.compile(r"^[();<>|&]+$")
+
+
+def _shell_syntax_in(command_text: str) -> bool:
+    """True when a STRING command uses shell control or redirection syntax anywhere
+    (``a&&b``, ``build 2>/dev/null``, ``x;y``, backticks, ``$(...)``), outside quotes.
+
+    ``punctuation_chars`` makes shlex split operators out even with no surrounding
+    whitespace, while quoted arguments stay literal. Producers run without a shell, so
+    such a line would never do what it says. A LIST command is an explicit argv: only
+    an element that is NOTHING but shell punctuation is refused there
+    (``["python", "-c", "a; b"]`` is fine).
+    """
+
+    lexer = shlex.shlex(command_text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return True
+    return any(_SHELL_PUNCTUATION.match(token) for token in tokens) or any(
+        "`" in token or "$(" in token for token in tokens
+    )
+
+
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GLOB_CHARS = re.compile(r"[*?\[\]]")
 _MAX_SNAPSHOT_FILES = 200_000
@@ -148,6 +176,10 @@ def parse_declaration(text: str) -> Declaration:
             raise DeclarationError(f"{where}: name must be a unique lowercase identifier")
         seen.add(name)
         command = item.get("command")
+        if isinstance(command, str) and _shell_syntax_in(command):
+            raise DeclarationError(
+                f"{where}: command is an argv, not a shell line; declare one producer per command"
+            )
         if isinstance(command, str):
             try:
                 command = shlex.split(command)
@@ -155,9 +187,15 @@ def parse_declaration(text: str) -> Declaration:
                 raise DeclarationError(f"{where}: command does not parse ({exc})") from None
         if not isinstance(command, list) or not command or not all(isinstance(p, str) and p for p in command):
             raise DeclarationError(f"{where}: command must be a non-empty argv list or string")
-        if any(token in _SHELL_OPERATORS or token.endswith(";") for token in command):
+        if any(_SHELL_PUNCTUATION.match(token) for token in command):
+            # A bare `|`, `&&`, `;` or `>` element in an argv list is a shell line
+            # split on spaces, not an argument anyone means.
             raise DeclarationError(
                 f"{where}: command is an argv, not a shell line; declare one producer per command"
+            )
+        if _ENV_ASSIGNMENT.match(command[0]):
+            raise DeclarationError(
+                f"{where}: command starts with an environment assignment; producers run without a shell"
             )
         outputs = item.get("outputs")
         if not isinstance(outputs, list) or not outputs:
@@ -303,12 +341,28 @@ def output_identities(repo: Path, producer: Producer) -> dict[str, tuple[str, in
 # --- recording -----------------------------------------------------------------
 
 
+def current_phase(repo: Path, provided: str | None = None) -> str:
+    """The phase identity evidence is bound to.
+
+    The SAME resolver verification.json uses (``verification_evidence._phase_alias``):
+    an operator env override, then the live run alias, then ``current_phase`` from
+    ``.phase-loop/state.json``, else ``"unknown"``. Recording and auditing resolve it
+    identically, so a record made for one phase never satisfies another phase's audit,
+    even at the same commit.
+    """
+
+    from .verification_evidence import _phase_alias
+
+    return _phase_alias(Path(repo), provided)
+
+
 @dataclass
 class _Invocation:
     producer: Producer
     exit_code: int
-    written: dict[str, str]          # files written during THIS invocation -> digest
+    written: dict[str, str]          # files this invocation created or changed -> digest
     present: dict[str, str]          # every covered file after it -> digest
+    head: str | None                 # HEAD while it ran (before == after, else None)
 
 
 @dataclass
@@ -339,7 +393,7 @@ class ProducerRecorder:
         if producer is None:
             return None
         try:
-            return producer, output_identities(self.repo, producer)
+            return producer, output_identities(self.repo, producer), head_commit(self.repo)
         except Exception as exc:  # noqa: BLE001 - an unobserved producer records nothing (blocks)
             self.errors.append(f"{producer.name}: pre-run snapshot failed: {exc}")
             return None
@@ -347,19 +401,25 @@ class ProducerRecorder:
     def after(self, token, exit_code: int) -> None:
         if token is None:
             return
-        producer, pre = token
+        producer, pre, head_before = token
         try:
             post = output_identities(self.repo, producer)
         except Exception as exc:  # noqa: BLE001
             self.errors.append(f"{producer.name}: post-run snapshot failed: {exc}")
             post = {}
             exit_code = exit_code or 1  # an unobservable run taints, never credits
+        # HEAD is part of what was observed: an invocation that straddles a commit
+        # belongs to neither commit.
+        head_after = head_commit(self.repo)
+        head = head_before if head_before is not None and head_before == head_after else None
+        # Written = created, or its CONTENT changed. A timestamp, mode or link change is
+        # not a write: `touch`, `utime`, `chmod` and `ln` on a planted file credit nothing.
         written = {
-            rel: digest for rel, (digest, mtime) in post.items()
-            if rel not in pre or pre[rel] != (digest, mtime)
+            rel: digest for rel, (digest, _mtime) in post.items()
+            if rel not in pre or pre[rel][0] != digest
         }
         present = {rel: digest for rel, (digest, _mtime) in post.items()}
-        self.invocations.append(_Invocation(producer, int(exit_code), written, present))
+        self.invocations.append(_Invocation(producer, int(exit_code), written, present, head))
 
     def run(self, producer: Producer, timeout_s: float | None = None) -> int:
         token = self.before(producer.command)
@@ -381,26 +441,41 @@ class ProducerRecorder:
         if head is None:
             self.errors.append("no HEAD commit to bind the record to")
             return None
+        # Bind to the commit the producers were OBSERVED at, not the one current at
+        # persistence: a commit landing in between would relabel old outputs.
+        if any(inv.head != head for inv in self.invocations):
+            self.errors.append(
+                "HEAD moved while or after the producers ran; nothing recorded, re-record at the new commit"
+            )
+            return None
+        phase = current_phase(self.repo, phase_alias)
         previous = load_record(self.repo)
         if previous is not None and previous.get("declaration_sha256") != self.declaration.sha256:
             previous = None
-        prior_files: dict[str, Any] = dict(previous["files"]) if previous else {}
-        # Same commit and declaration: this recording EXTENDS the record, so a repair
-        # turn that re-runs one producer keeps the others' evidence. A different
-        # commit starts empty, so an earlier phase's evidence never satisfies this one.
-        same_epoch = previous is not None and previous.get("head") == head
+        prior_files: dict[str, dict[str, str]] = dict(previous["files"]) if previous else {}
+        # Same commit, declaration AND phase: this recording EXTENDS the record, so a
+        # repair turn or relaunch that re-runs one producer keeps the others' evidence.
+        # Anything else starts empty: another phase's evidence never satisfies this one.
+        same_epoch = (
+            previous is not None and previous.get("head") == head and previous.get("phase") == phase
+        )
         files: dict[str, dict[str, str]] = dict(prior_files) if same_epoch else {}
         history = list(previous.get("invocations", [])) if same_epoch else []
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         for inv in self.invocations:
             name = inv.producer.name
-            mine = {rel: e for rel, e in prior_files.items() if isinstance(e, dict) and e.get("producer") == name}
-            files = {rel: e for rel, e in files.items() if e.get("producer") != name}
+            # This producer's evidence so far: the earlier record, then anything an
+            # earlier invocation in THIS recording already credited to it.
+            mine = {rel: e for rel, e in prior_files.items() if e["producer"] == name}
+            mine.update({rel: e for rel, e in files.items() if e["producer"] == name})
+            files = {rel: e for rel, e in files.items() if e["producer"] != name}
             if inv.exit_code == 0:
                 # Carry forward only what this producer, having just run successfully,
-                # left byte-identical: incremental and deterministic producers.
+                # left byte-identical: incremental and deterministic producers. (An
+                # output the producer has STOPPED producing but that nobody deleted
+                # also passes this test; see the doc.)
                 for rel, entry in mine.items():
-                    if rel not in inv.written and inv.present.get(rel) == entry.get("digest") \
+                    if rel not in inv.written and inv.present.get(rel) == entry["digest"] \
                             and rel not in files:
                         files[rel] = {"producer": name, "digest": entry["digest"]}
                 # Last writer wins, whichever producer's glob also covers the file.
@@ -408,11 +483,12 @@ class ProducerRecorder:
                     files[rel] = {"producer": name, "digest": digest}
             history.append({
                 "producer": name, "command": list(inv.producer.command), "exit_code": inv.exit_code,
-                "source": source, "run_id": run_id, "phase_alias": phase_alias, "recorded_at": now,
+                "source": source, "run_id": run_id, "phase_alias": phase, "recorded_at": now,
             })
         record = {
             "schema": RECORD_SCHEMA,
             "head": head,
+            "phase": phase,
             "declaration_sha256": self.declaration.sha256,
             "invocations": history,
             "files": dict(sorted(files.items())),
@@ -428,7 +504,18 @@ class ProducerRecorder:
         return record
 
 
+def _valid_entry(entry: object) -> bool:
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("producer"), str)
+        and isinstance(entry.get("digest"), str)
+    )
+
+
 def load_record(repo: Path) -> dict[str, Any] | None:
+    """The persisted record, or None. Malformed entries are dropped (treated as
+    absent, so the file they name blocks) rather than crashing a reader."""
+
     try:
         data = json.loads((Path(repo) / RECORD_RELPATH).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -437,23 +524,103 @@ def load_record(repo: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data.get("files"), dict) or not isinstance(data.get("head"), str):
         return None
+    if not isinstance(data.get("phase"), str):
+        return None
+    data["files"] = {rel: e for rel, e in data["files"].items() if isinstance(rel, str) and _valid_entry(e)}
+    if not isinstance(data.get("invocations"), list):
+        data["invocations"] = []
     return data
 
 
-def run_declared_producers(repo: Path, timeout_s: float | None = None) -> dict[str, Any] | None:
-    """``--record-outputs``: run every declared producer under observation, then record.
+DEFAULT_PRODUCER_TIMEOUT_S = 1200.0
+DISPLACED_RELDIR = ".phase-loop/generated-outputs/displaced"
 
+
+def _ignored_declared_entries(repo: Path, producers: Sequence[Producer]) -> list[str] | None:
+    """Every IGNORED, untracked entry (file or symlink) the producers' globs cover.
+
+    Asked of git, so a tracked file, or an untracked-but-not-ignored one (which is
+    ownership-contract dirt, not generated output), is never moved. None means the
+    probe failed.
+    """
+
+    roots = sorted({_literal_root(glob) for p in producers for glob in p.outputs})
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "--literal-pathspecs", "ls-files", "-z", "--others",
+             "--ignored", "--exclude-standard", "--", *roots],
+            capture_output=True, check=False,
+        )
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        listed = [entry for entry in out.stdout.decode("utf-8").split("\0") if entry]
+    except UnicodeDecodeError:
+        return None
+    return sorted(
+        rel for rel in listed
+        if any(glob_matches(glob, rel) for p in producers for glob in p.outputs)
+    )
+
+
+def displace_declared_outputs(repo: Path, producers: Sequence[Producer]) -> Path | None:
+    """Move every existing declared output aside before a clean, observed rebuild.
+
+    After this, everything the producers leave under their globs was CREATED by an
+    observed invocation, so a byte-identical regeneration earns provenance and a
+    planted or orphaned file cannot ride along. Nothing is deleted: the files go to a
+    timestamped directory under ``.phase-loop/generated-outputs/displaced/`` (runner
+    state), from which an operator can restore anything they meant to keep.
+    """
+
+    entries = _ignored_declared_entries(repo, producers)
+    if entries is None:
+        raise DeclarationError("could not list the existing declared outputs to move aside")
+    if not entries:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target_root = repo / DISPLACED_RELDIR / stamp
+    for rel in entries:
+        target = target_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(repo / rel, target)
+    return target_root
+
+
+
+def run_declared_producers(
+    repo: Path, timeout_s: float | None = None, phase: str | None = None
+) -> dict[str, Any] | None:
+    """``--record-outputs``: a clean, observed rebuild of the declared outputs.
+
+    Existing declared outputs are first moved aside (``displace_declared_outputs``),
+    then every declared producer runs under observation, then the record is written.
     Returns None when HEAD declares nothing (a no-op, so the flag is safe to pass
-    in every repo).
+    in every repo). Each producer is bounded by ``timeout_s``, defaulting to
+    ``PHASE_LOOP_VERIFY_TIMEOUT_SECONDS`` like the runner's verification; a producer
+    that times out counts as failed.
     """
 
     recorder = ProducerRecorder.for_repo(repo)
     if recorder is None:
         return None
+    if timeout_s is None:
+        try:
+            timeout_s = float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", DEFAULT_PRODUCER_TIMEOUT_S))
+        except ValueError:
+            timeout_s = DEFAULT_PRODUCER_TIMEOUT_S
+    from .runtime_paths import ensure_phase_loop_excluded
+
+    ensure_phase_loop_excluded(repo)
+    displaced = displace_declared_outputs(repo, recorder.declaration.producers)  # raises: exit 2
+    if displaced is not None:
+        print(f"closeout-audit: moved existing declared outputs aside to {displaced}", flush=True)
     for producer in recorder.declaration.producers:
         print(f"closeout-audit: running producer {producer.name}: {shlex.join(producer.command)}", flush=True)
         recorder.run(producer, timeout_s)
-    record = recorder.write(source="closeout-audit", run_id=None)
+    record = recorder.write(source="closeout-audit", run_id=None, phase_alias=phase)
     for error in recorder.errors:
         print(f"closeout-audit: recording problem: {error}", flush=True)
     return record
@@ -462,9 +629,28 @@ def run_declared_producers(repo: Path, timeout_s: float | None = None) -> dict[s
 # --- verification of one ignored file ---------------------------------------
 
 
-def verify_declared_output(
-    repo: Path, relpath: str, declaration: Declaration | None, record: Mapping[str, Any] | None
-) -> tuple[bool, str]:
+@dataclass(frozen=True)
+class AuditContext:
+    """Facts resolved ONCE per audit, not once per file."""
+
+    declaration: Declaration | None
+    record: Mapping[str, Any] | None
+    head: str | None
+    phase: str
+
+    @classmethod
+    def for_repo(cls, repo: Path, phase: str | None = None) -> "AuditContext":
+        declaration = load_declaration(repo)
+        return cls(
+            declaration=declaration,
+            record=load_record(repo) if declaration is not None else None,
+            head=head_commit(repo),
+            phase=current_phase(repo, phase),
+        )
+
+
+def verify_declared_output(repo: Path, relpath: str, context: AuditContext) -> tuple[bool, str]:
+    declaration, record = context.declaration, context.record
     if declaration is None:
         return False, "no recognised producer"
     covering = {p.name for p in declaration.producers if p.covers(relpath)}
@@ -475,10 +661,14 @@ def verify_declared_output(
         return False, f"declared output with no producer record; {hint}"
     if record.get("declaration_sha256") != declaration.sha256:
         return False, f"producer record predates the committed declaration; {hint}"
-    if record.get("head") != head_commit(repo):
-        return False, f"producer record was taken at a different commit (an earlier phase); {hint}"
+    if context.head is None or record.get("head") != context.head:
+        return False, f"producer record was taken at a different commit; {hint}"
+    if record.get("phase") != context.phase:
+        return False, (
+            f"producer record belongs to phase {record.get('phase')!r}, not {context.phase!r}; {hint}"
+        )
     entry = record["files"].get(relpath)
-    if not isinstance(entry, dict) or entry.get("producer") not in covering:
+    if entry is None or entry["producer"] not in covering:
         return False, (
             "declared output no recorded producer invocation wrote; "
             "remove it, or re-record if a producer should have written it"
@@ -486,7 +676,7 @@ def verify_declared_output(
     identity = file_identity(repo, relpath)
     if identity is None:
         return False, "declared output is not a regular in-repo file (symlink or symlinked path)"
-    if identity[0] != entry.get("digest"):
+    if identity[0] != entry["digest"]:
         return False, f"declared output changed after the recorded producer run; {hint}"
     return True, f"declared output of producer {entry['producer']}"
 
@@ -548,7 +738,9 @@ def is_harness_handoff(repo: Path, relpath: str) -> tuple[bool, str]:
     except (OSError, RuntimeError):
         return False, "handoff `repo_root` does not resolve"
     # Read the raw scalar: YAML turns an all-digit short sha into an integer.
-    match = re.search(r"^commit:\s*['\"]?([0-9a-fA-F]{4,64})['\"]?\s*$", text, re.MULTILINE)
+    end = text.find("\n---", 4)
+    frontmatter = text[4:end] if text.startswith("---\n") and end != -1 else ""
+    match = re.search(r"^commit:\s*['\"]?([0-9a-fA-F]{4,64})['\"]?\s*$", frontmatter, re.MULTILINE)
     if match is None or not _commit_exists(repo, match.group(1)):
         return False, "handoff `commit` is not a commit in this repository"
     return True, f"harness handoff written by {skill}"

@@ -265,7 +265,7 @@ def _ignored_members(repo: Path, directory: str) -> list[str] | None:
         return None
 
 
-def _grade_by_provenance(repo: Path, path: str, declaration, record):
+def _grade_by_provenance(repo: Path, path: str, context):
     """Yield ``(provenance, member, reason)`` for one path the path rules left unknown."""
 
     if path.endswith("/"):
@@ -285,9 +285,7 @@ def _grade_by_provenance(repo: Path, path: str, declaration, record):
         if is_handoff:
             yield RUNNER_OWNED, member, handoff_reason
             continue
-        declared, declared_reason = generated_outputs.verify_declared_output(
-            repo, member, declaration, record
-        )
+        declared, declared_reason = generated_outputs.verify_declared_output(repo, member, context)
         if declared:
             yield DECLARED_OUTPUT, member, declared_reason
             continue
@@ -297,7 +295,7 @@ def _grade_by_provenance(repo: Path, path: str, declaration, record):
         yield UNKNOWN_IGNORED, member, reason
 
 
-def audit_ignored_outputs(repo: Path) -> dict:
+def audit_ignored_outputs(repo: Path, phase: str | None = None) -> dict:
     """Bucket a worktree's IGNORED paths by producer.
 
     Exists so the closeout audit is a field read rather than a judgement call.
@@ -336,7 +334,7 @@ def audit_ignored_outputs(repo: Path) -> dict:
     # declaration is a typed failure, never "no declaration": silently ignoring it would
     # turn the consumer's intent into a mystery block.
     try:
-        declaration = generated_outputs.load_declaration(repo)
+        context = generated_outputs.AuditContext.for_repo(repo, phase)
     except generated_outputs.DeclarationError as exc:
         return {
             "probe_failed": True,
@@ -344,7 +342,6 @@ def audit_ignored_outputs(repo: Path) -> dict:
             "reason": f"invalid generated-outputs declaration: {exc}",
             **{bucket: [] for bucket in _BUCKETS}, "unknown_reasons": {},
         }
-    record = generated_outputs.load_record(repo) if declaration is not None else None
 
     buckets: dict = {bucket: [] for bucket in _BUCKETS}
     unknown_reasons: dict[str, str] = {}
@@ -372,7 +369,7 @@ def audit_ignored_outputs(repo: Path) -> dict:
         # The path rules could not attribute it. Grade its FILES by provenance:
         # git renders a wholly-ignored directory collapsed (`!! dist/`), and a
         # directory is attributable only if every ignored file in it is.
-        for provenance, member, reason in _grade_by_provenance(repo, path, declaration, record):
+        for provenance, member, reason in _grade_by_provenance(repo, path, context):
             buckets[provenance].append(member)
             if provenance == UNKNOWN_IGNORED:
                 unknown_reasons[member] = reason
@@ -408,13 +405,16 @@ def main(argv: list[str]) -> int:
     """
 
     repo = Path(argv[argv.index("--repo") + 1]) if "--repo" in argv else Path.cwd()
+    # The phase the evidence must belong to; defaults to the runner's own resolution
+    # (env override, else `.phase-loop/state.json` current_phase).
+    phase = argv[argv.index("--phase") + 1] if "--phase" in argv else None
     if "--record-outputs" in argv:
         try:
-            generated_outputs.run_declared_producers(repo)
+            generated_outputs.run_declared_producers(repo, phase=phase)
         except generated_outputs.DeclarationError as exc:
             print(f"closeout-ignored-audit: CANNOT RECORD — {exc}")
             return 2
-    result = audit_ignored_outputs(repo)
+    result = audit_ignored_outputs(repo, phase)
     if result["probe_failed"]:
         print(f"closeout-ignored-audit: CANNOT EVALUATE — {result['reason']}")
         return 2

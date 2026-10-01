@@ -53,21 +53,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   This replaces the agent-harness#1084 rule, which trusted any path under
   `.dev-skills/handoffs/`.
 - **New `declared_output` bucket.** A project commits `.phase-loop-generated-outputs.json`
-  (a closed v1 format), naming each producer command (an argv, not a shell line) and
-  bounded output globs. A declared file passes only if all of these hold:
-  - an observed invocation of a producer that covers it wrote it. Each invocation is
-    snapshotted before and after, so writes by other commands are never credited;
-  - the evidence was recorded at the current commit, so an earlier phase's record
-    never counts;
+  (a closed v1 format), naming each producer command (an argv; shell syntax is
+  rejected) and bounded output globs. A declared file passes only if all of these hold:
+  - an observed invocation of a producer that covers it created the file or changed
+    its content. Timestamp-only, mode and link changes earn nothing, and writes by
+    other commands are never credited;
+  - the evidence was recorded at the current commit AND in the current phase;
   - its content digest is unchanged;
   - it is not a symlink.
-- **Recording.** `phase-loop-closeout-audit --repo . --record-outputs` records the
-  evidence. It is a no-op without a declaration, and the execute-phase skills and
-  runner prompt now prescribe it. The runner's verification also records when it runs a
-  declared producer command, and it reports recording failures.
-- **Still blocks:** undeclared, pre-placed, metadata-only-touched, later-edited and
-  symlinked files, plus anything recorded at a different commit. An invalid declaration
-  exits 2.
+- **Recording.**
+  - `phase-loop-closeout-audit --repo . --record-outputs` performs a clean, observed
+    rebuild. It first moves existing ignored declared outputs aside (never deleting
+    them), runs each producer under a timeout, records, and then audits.
+  - It is a no-op without a declaration. The execute-phase skills and runner prompt
+    now prescribe it.
+  - `--phase` overrides the phase the audit checks against.
+  - The runner's verification records when it runs a declared producer command, and
+    it reports recording failures.
+- **Still blocks:**
+  - files that are undeclared, pre-placed, timestamp- or metadata-only-touched,
+    later-edited or symlinked;
+  - anything recorded at another commit or phase, or while HEAD moved.
+
+  An invalid declaration exits 2.
 - See `docs/phase-loop/closeout-generated-outputs.md`.
 
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)

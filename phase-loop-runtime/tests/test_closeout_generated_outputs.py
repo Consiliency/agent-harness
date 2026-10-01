@@ -134,6 +134,14 @@ class NodeBamlPhaseFixture:
         if commit_declaration:
             paths.append(decl_path)
         commit_fixture_paths(repo, "seed", *paths)
+        # The runner keeps the live phase in its state file; recording and auditing
+        # both resolve the phase from it (agent-harness#1139 round 2).
+        self.set_phase("STATE")
+
+    def set_phase(self, alias: str) -> None:
+        state = self.repo / ".phase-loop" / "state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"current_phase": alias}))
 
     def verify(self) -> dict:
         run_dir = self.repo / ".phase-loop" / "runs" / "exec-state"
@@ -621,3 +629,221 @@ def test_a_partial_rerun_after_a_commit_does_not_inherit_the_old_phase(tmp_path)
     assert recorder.run(build) == 0
     recorder.write(source="closeout-audit", run_id=None)
     _audit_blocks_on(fx, "baml_sdk/index.js")
+
+
+# --- round-2 board falsifiers (agent-harness#1189 at 68c5abf8) ------------------------
+
+
+def test_touch_only_does_not_credit_a_planted_file(tmp_path):
+    """codex r2 F001 (verbatim): a producer that only moves a planted file's mtime
+    has not written it."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    planted = fx.repo / "dist/planted.js"
+    planted.parent.mkdir()
+    planted.write_text("never written by the producer\n")
+    before = planted.read_bytes()
+    script = fx.repo / "scripts/build.py"
+    script.write_text(
+        BUILD + "import os\n"
+        "p = root / 'dist/planted.js'\n"
+        "s = p.stat()\n"
+        "os.utime(p, ns=(s.st_atime_ns, s.st_mtime_ns + 1000000000))\n"
+    )
+    commit_fixture_paths(fx.repo, "producer normalizes output timestamps", script)
+    assert fx.verify()["ok"]
+    assert planted.read_bytes() == before
+    _audit_blocks_on(fx, "dist/planted.js")
+
+
+def test_next_phase_at_same_head_requires_its_own_producer_invocation(tmp_path):
+    """codex r2 F002, plus Claude N1. Adapted in one line: the runner advances
+    `current_phase` to CORE before CORE runs, as it does in production."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    fx.roadmap.write_text(fx.roadmap.read_text() + "\n### Phase 1 - Core (CORE)\n")
+    core = fx.repo / "scripts/core.py"
+    core.write_text("print('CORE checks passed')\n")
+    plan = write_phase_plan(
+        fx.repo, "CORE", fx.roadmap,
+        body=f"# CORE\n\n## Verification\n- `{sys.executable} scripts/core.py`\n",
+    )
+    commit_fixture_paths(fx.repo, "plan both phases in advance", core, plan, fx.roadmap)
+    assert fx.verify()["ok"]
+    head = generated_outputs.head_commit(fx.repo)
+    fx.set_phase("CORE")
+    run_dir = fx.repo / ".phase-loop/runs/exec-core"
+    run_dir.mkdir(parents=True)
+    summary = runner._run_execute_verification(
+        repo=fx.repo, roadmap=fx.roadmap, plan=plan,
+        artifacts={"root": run_dir}, phase_alias="CORE",
+    )
+    assert summary["ok"], summary
+    assert generated_outputs.head_commit(fx.repo) == head
+    result = _audit_blocks_on(fx, "dist/index.js")
+    assert "phase 'STATE', not 'CORE'" in result["unknown_reasons"]["dist/index.js"]
+    # ...and an explicit `--phase` is honoured the same way.
+    fx.set_phase("STATE")
+    assert main(["--repo", str(fx.repo), "--phase", "CORE"]) == 1
+    assert main(["--repo", str(fx.repo), "--phase", "STATE"]) == 0
+
+
+def test_record_cannot_rebind_old_invocations_to_a_new_head(tmp_path):
+    """codex r2 F003 (verbatim): a commit between observation and persistence."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
+    old_head = generated_outputs.head_commit(fx.repo)
+    for producer in recorder.declaration.producers:
+        assert recorder.run(producer) == 0
+    schema = fx.repo / "baml_src/main.baml"
+    schema.write_text("class Extract { changed string }\n")
+    commit_fixture_paths(fx.repo, "change producer input before evidence is persisted", schema)
+    assert generated_outputs.head_commit(fx.repo) != old_head
+    recorder.write(source="runner-verification", run_id="exec-state", phase_alias="STATE")
+    result = audit_ignored_outputs(fx.repo)
+    assert "dist/index.js" in result["unknown_ignored"], result
+    assert main(["--repo", str(fx.repo)]) == 1
+    assert any("HEAD moved" in error for error in recorder.errors)
+
+
+def test_record_outputs_rebuild_moves_planted_and_orphaned_files_aside(tmp_path):
+    """Claude N2 and the CLI half of F001: `--record-outputs` is a CLEAN observed
+    rebuild. Byte-identical regeneration earns provenance; a planted or orphaned file
+    is moved aside (never deleted) instead of riding along."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    orphan = fx.repo / "dist" / "old.js"           # a file the build no longer emits
+    orphan.write_text("left over from an earlier build\n")
+    assert main(["--repo", str(fx.repo)]) == 1
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert not orphan.exists()
+    displaced = sorted((fx.repo / generated_outputs.DISPLACED_RELDIR).glob("*/dist/old.js"))
+    assert displaced and displaced[-1].read_text() == "left over from an earlier build\n"
+
+
+def test_a_runner_rerun_of_byte_identical_outputs_is_not_credited_unless_recorded(tmp_path):
+    """The flip side of F001 on the runner path: deterministic regeneration over files
+    no record attributes earns nothing (only a record carries forward)."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    for script in ("scripts/gen_baml.py", "scripts/build.py"):
+        subprocess.run([sys.executable, script], cwd=fx.repo, check=True)   # by hand
+    assert fx.verify()["ok"]
+    _audit_blocks_on(fx, "dist/index.js")
+
+
+def test_same_producer_twice_in_one_recording_keeps_first_write(tmp_path):
+    """Claude N4: a second, incremental invocation keeps the first one's writes."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
+    baml, build = recorder.declaration.producers
+    assert recorder.run(baml) == 0
+    assert recorder.run(build) == 0
+    assert recorder.run(build) == 0                 # rewrites identical bytes: no new write
+    recorder.write(source="closeout-audit", run_id=None)
+    result = audit_ignored_outputs(fx.repo)
+    assert not result["blocks"], result
+    assert "dist/index.js" in result[DECLARED_OUTPUT]
+
+
+def test_shell_syntax_is_rejected_inside_tokens_too():
+    """Claude N5: `a&&b`, `2>/dev/null` and a leading `NAME=` assignment."""
+
+    for command in ("npm run build&&rm -rf x", "npm run build 2>/dev/null", "FOO=1 npm run build",
+                    "npm run build;x", "echo `id`", "echo $(id)"):
+        try:
+            generated_outputs.parse_declaration(json.dumps(_declaration(producers=[
+                {"name": "p", "command": command, "outputs": ["dist/**"]}])))
+        except generated_outputs.DeclarationError:
+            continue
+        raise AssertionError(command)
+
+
+def test_record_outputs_bounds_a_hanging_producer(tmp_path, monkeypatch):
+    """Claude N6 / grok N4: a producer that hangs is killed and counts as failed."""
+
+    decl = _declaration()
+    decl["producers"][1]["command"] = [sys.executable, "-c", "import time; time.sleep(30)"]
+    fx = NodeBamlPhaseFixture(tmp_path, declaration=decl)
+    monkeypatch.setenv("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1")
+    record = generated_outputs.run_declared_producers(fx.repo)
+    codes = {i["producer"]: i["exit_code"] for i in record["invocations"]}
+    assert codes == {"baml": 0, "build": 127}
+
+
+def test_the_handoff_commit_is_read_from_the_frontmatter_only(tmp_path):
+    """Claude N7 / grok N5: a valid `commit:` in the BODY cannot rescue a bad one."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    good = fx.handoff_text()
+    sha = good.split("commit: ")[1].split("\n")[0]
+    fx.write_handoff(good.replace(f"commit: {sha}", "commit: not-a-sha") + f"\ncommit: {sha}\n")
+    result = _audit_blocks_on(fx, ".dev-skills/handoffs/codex-execute-phase/latest.md")
+    assert "commit" in next(iter(result["unknown_reasons"].values()))
+
+
+def test_a_corrupt_record_entry_is_a_typed_refusal_not_a_crash(tmp_path):
+    """grok r2: a non-dict `files` entry is treated as absent (blocks), and
+    `--record-outputs` over it does not raise."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    record_path = fx.repo / generated_outputs.RECORD_RELPATH
+    record = json.loads(record_path.read_text())
+    record["files"]["dist/index.js"] = "garbage"
+    record_path.write_text(json.dumps(record))
+    result = _audit_blocks_on(fx, "dist/index.js")
+    assert "no recorded producer invocation wrote" in result["unknown_reasons"]["dist/index.js"]
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+
+
+def test_the_clean_rebuild_never_moves_tracked_or_unignored_files(tmp_path):
+    """Displacement is limited to IGNORED untracked entries: a tracked file, or an
+    untracked file the ownership contract grades, under a declared glob stays put."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    (fx.repo / ".gitignore").write_text(GITIGNORE.replace("dist/\n", "dist/*.js\n"))
+    tracked = fx.repo / "dist" / "README.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("tracked\n")
+    commit_fixture_paths(fx.repo, "track a file under dist", fx.repo / ".gitignore", tracked)
+    untracked = fx.repo / "dist" / "notes.md"
+    untracked.write_text("untracked, not ignored\n")
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert tracked.read_text() == "tracked\n" and untracked.exists()
+
+
+def test_a_partial_rerun_in_another_phase_at_the_same_head_starts_fresh(tmp_path):
+    """F002 through the merge path: CORE re-running only `build` at STATE's commit
+    must not inherit STATE's `baml` entries."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    fx.set_phase("CORE")
+    recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
+    build = next(p for p in recorder.declaration.producers if p.name == "build")
+    assert recorder.run(build) == 0
+    record = recorder.write(source="closeout-audit", run_id=None)
+    assert record["phase"] == "CORE"
+    assert "baml_sdk/index.js" not in record["files"]
+    _audit_blocks_on(fx, "baml_sdk/index.js")
+
+
+def test_an_invocation_that_straddles_a_commit_is_not_recorded(tmp_path):
+    """F003, the other half: HEAD must be the same before and after the invocation."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
+    baml, _build = recorder.declaration.producers
+    # Only ONE invocation, so nothing but its own straddle can refuse the write.
+    token = recorder.before(baml.command)
+    subprocess.run([sys.executable, "scripts/gen_baml.py"], cwd=fx.repo, check=True)
+    marker = fx.repo / "MID.md"
+    marker.write_text("landed mid-invocation\n")
+    commit_fixture_paths(fx.repo, "commit during the build", marker)
+    recorder.after(token, 0)
+    assert recorder.write(source="closeout-audit", run_id=None) is None
+    assert any("HEAD moved" in error for error in recorder.errors)

@@ -66,6 +66,23 @@ what an observed invocation of the producer itself wrote, at the current commit.
   contract with `from == dir` naming a shipped skill. Its `repo_root` must be this
   repo, its `commit` must exist here, and it must be a regular in-repo file.
 
+**Round-2 amendment (board review at 68c5abf8):**
+- **Written.** A file counts as written only if the invocation created it or changed
+  its content, never on mtime alone.
+- **Head per invocation.** Each invocation records its HEAD, before and after. `write`
+  refuses to persist if HEAD moved.
+- **Phase binding.** The record carries `phase`, resolved by
+  `verification_evidence._phase_alias`, and both the merge and the audit require the
+  same phase. The CLI gains `--phase`.
+- **Clean rebuild.** `--record-outputs` first moves existing ignored, untracked
+  declared outputs to `.phase-loop/generated-outputs/displaced/<stamp>/`. It never
+  deletes them, and it runs each producer under `PHASE_LOOP_VERIFY_TIMEOUT_SECONDS`.
+- **Shell syntax.** String commands are tokenised for shell syntax. In list commands,
+  bare operator elements and a leading `NAME=` are rejected.
+- **Handoff commit.** The handoff `commit` is read from the frontmatter only.
+- **Malformed record entries** are dropped on load, so the file they name blocks.
+- **AuditContext.** HEAD, phase, declaration and record are resolved once per audit.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
 - `observe_stages(observer)` / `_observed_stage` — add. A context-var seam brackets
   each command and suite stage of `run_verification`.
@@ -134,7 +151,8 @@ tests, and the docs.
   - silence the runner error;
   - stop passing the observer;
   - make `--record-outputs` fail without a declaration;
-  - credit a failed producer.
+  - credit a failed producer;
+  - round 2: mtime counts, no phase check, the epoch ignores phase, HEAD checked only at write, a straddle allowed, no displacement, displace tracked files, drop in-recording `mine`, allow string shell syntax, no default timeout, commit read from the whole file, corrupt entries kept, the CLI ignores `--phase`.
 
 ## Acceptance criteria
 - [ ] A marker-valid handoff under a collapsed `/.dev-skills/` entry is `runner_owned`; an unmarked file there is `unknown_ignored`.
