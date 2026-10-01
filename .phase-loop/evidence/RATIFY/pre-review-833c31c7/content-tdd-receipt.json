@@ -1,0 +1,98 @@
+{
+  "base_commit": "d7f82a31a076d53cd1ff305f0a09031ab0ca0979",
+  "base_tree_digest": "068d00561f4037cee8d62204ab1299376e82429c",
+  "landing_commit": "d7f82a31a076d53cd1ff305f0a09031ab0ca0979",
+  "landing_ref": "HEAD",
+  "landing_tree_digest": "068d00561f4037cee8d62204ab1299376e82429c",
+  "red_argv": [
+    "env",
+    "PHASE_LOOP_TDD_EXPECT_RATIFY=1",
+    "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests",
+    "python3",
+    "-m",
+    "pytest",
+    "-q",
+    "-rA",
+    "--tb=line",
+    "--color=no",
+    "-p",
+    "no:cacheprovider",
+    "phase-loop-runtime/tests/test_ratify_phase.py",
+    "phase-loop-runtime/tests/test_ruling_ledger.py",
+    "phase-loop-runtime/tests/test_ratify_landed.py"
+  ],
+  "red_command": "env PHASE_LOOP_TDD_EXPECT_RATIFY=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q -rA --tb=line --color=no -p no:cacheprovider phase-loop-runtime/tests/test_ratify_phase.py phase-loop-runtime/tests/test_ruling_ledger.py phase-loop-runtime/tests/test_ratify_landed.py",
+  "red_environment": {
+    "PHASE_LOOP_TDD_EXPECT_GOVLEAN": "1"
+  },
+  "red_exit_status": 1,
+  "red_nodeids": [
+    "tests/test_ratify_phase.py::test_receipt_partition",
+    "tests/test_ratify_phase.py::test_receipt_partition_scope_item_requires_ruling",
+    "tests/test_ratify_phase.py::test_receipt_partition_bound_findings_excluded",
+    "tests/test_ratify_phase.py::test_receipt_partition_missing_or_stale_ruling",
+    "tests/test_ratify_phase.py::test_receipt_partition_native_deferral",
+    "tests/test_ratify_phase.py::test_receipt_partition_foreign_attachment",
+    "tests/test_ratify_phase.py::test_ruling_classes",
+    "tests/test_ratify_phase.py::test_ruling_classes_legacy_compatibility",
+    "tests/test_ratify_phase.py::test_ruling_classes_changing_without_row",
+    "tests/test_ratify_phase.py::test_ruling_classes_binding",
+    "tests/test_ratify_phase.py::test_ruling_classes_real_consumers",
+    "tests/test_ratify_phase.py::test_human_tiers",
+    "tests/test_ratify_phase.py::test_human_tiers_universal_triggers",
+    "tests/test_ratify_phase.py::test_human_tiers_invalid_overrides",
+    "tests/test_ratify_phase.py::test_skill_reconciliation",
+    "tests/test_ratify_phase.py::test_legacy_grammar_control",
+    "tests/test_ratify_phase.py::test_old_policy_constructor_control",
+    "tests/test_ratify_phase.py::test_receipt_binding_control",
+    "tests/test_ratify_phase.py::test_landed_guard_marker_removal",
+    "tests/test_ratify_phase.py::test_guard_proof_fixture_control",
+    "tests/test_ratify_phase.py::test_unknown_capability_strict_failure",
+    "tests/test_ratify_phase.py::test_unexpected_pass_refused",
+    "tests/test_ratify_phase.py::test_unrelated_exception_propagates",
+    "tests/test_ratify_phase.py::test_importerror_not_capability_absence",
+    "tests/test_ratify_phase.py::test_red_inventory_exact",
+    "tests/test_ratify_phase.py::test_red_marker_exact",
+    "tests/test_ratify_phase.py::test_red_skips_refused",
+    "tests/test_ratify_phase.py::test_red_xpass_refused",
+    "tests/test_ratify_phase.py::test_landing_junit_zero_skips",
+    "tests/test_ratify_phase.py::test_touch_shape_owner_serialization",
+    "tests/test_ratify_phase.py::test_rejected_recording_no_receipt",
+    "tests/test_ratify_phase.py::test_verify_rescans_red_log",
+    "tests/test_ruling_ledger.py::test_closed_vocabulary",
+    "tests/test_ruling_ledger.py::test_empty_ledger",
+    "tests/test_ruling_ledger.py::test_ancestor_prefix",
+    "tests/test_ruling_ledger.py::test_second_parent_prefix",
+    "tests/test_ruling_ledger.py::test_reviewed_sha_ancestry",
+    "tests/test_ruling_ledger.py::test_duplicate_and_foreign_rows",
+    "tests/test_ruling_ledger.py::test_pending_and_resolved_fold",
+    "tests/test_ruling_ledger.py::test_unguarded_same_class",
+    "tests/test_ruling_ledger.py::test_same_class_multirow",
+    "tests/test_ruling_ledger.py::test_guard_provenance",
+    "tests/test_ruling_ledger.py::test_unavailable_history",
+    "tests/test_ratify_landed.py::test_no_ratify_contract_skips_as_unimplemented"
+  ],
+  "red_stderr_path": "content-tdd-receipt.red.stderr.log",
+  "red_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "red_stdout_path": "content-tdd-receipt.red.stdout.log",
+  "red_stdout_sha256": "499b22993369a5b0099d1ab967d31389413eb17f8004b9e2bf07120a1cc4c18c",
+  "schema": "content_tdd_receipt.v1",
+  "test_files": [
+    {
+      "path": "phase-loop-runtime/tests/ratify_content_tdd_adapter.py",
+      "sha256": "e596a81802cb512a29965170b99d6ac7e62d0ce085900f4cdc13e9febe98c1a1"
+    },
+    {
+      "path": "phase-loop-runtime/tests/test_ratify_landed.py",
+      "sha256": "3f8f00853ef63a3b2e08e781b6cb03cab22b2d33fc2d152abceb71abf40ecd40"
+    },
+    {
+      "path": "phase-loop-runtime/tests/test_ratify_phase.py",
+      "sha256": "4ee822f21ac9ef37576d2a7c510fed406b47e9875dbebdf766eb9f27987e4096"
+    },
+    {
+      "path": "phase-loop-runtime/tests/test_ruling_ledger.py",
+      "sha256": "f699316ad08e2e7a09388ce12d14ed0460bd7a177099649ec41a039b5c920e70"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "/mnt/workspace/venvs/ah-codex-ratify-20261001/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "phase-loop-runtime/tests/test_ratify_phase.py",
+        "phase-loop-runtime/tests/test_ruling_ledger.py",
+        "phase-loop-runtime/tests/test_ratify_landed.py",
+        "phase-loop-runtime/tests/test_president_wiring.py",
+        "phase-loop-runtime/tests/test_ratification_policy.py",
+        "phase-loop-runtime/tests/test_governed_review.py",
+        "phase-loop-runtime/tests/test_phase_loop_plan_manifest.py",
+        "phase-loop-runtime/tests/test_skills_canon_parity.py",
+        "phase-loop-runtime/tests/test_skills_bundle_drift.py",
+        "--junitxml=/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/.phase-loop/evidence/RATIFY/sl0-verification/default-green.xml"
+      ],
+      "cwd": ".",
+      "duration_s": 8.449393,
+      "exit_code": 0,
+      "log_end_offset": 410,
+      "log_offset": 58
+    }
+  ],
+  "env_refresh": null,
+  "finished_at": "2026-10-01T05:44:37Z",
+  "log_sha256": "805b996b1722c4f87c5b5b0261e777b9719f60e5d55f6d123c779a78588f0a87",
+  "phase_alias": "RATIFY",
+  "run_id": "sl0-verification",
+  "schema_version": 2,
+  "started_at": "2026-10-01T05:44:28Z",
+  "suite": null
+}
