@@ -684,26 +684,35 @@ seat. The record reaches the board: `advisor-board --json` legs carry it as
 `review_monitoring`, the text summary prints a `[seat_progress_stalled]` line
 per affected seat on stderr, each streamed per-leg verdict file carries it, and
 the governed record adds a `seat_progress_stalled` warn finding per seat.
-On the exact brokered Claude transcript, records are ordered by identity (an
-assistant record by uuid, a user record by uuid and content), so a re-journaled
-record or rewritten metadata is neither progress nor a new position in the turn.
-Record state only moves forward: a replay of any earlier version, or an open
-version after a stop, never replaces a later state, so a completion stays seen.
-`provider_terminal_state` records the one case that ends a seat: after the
-current request, the last record is an `isApiErrorMessage` give-up and no
-completed answer precedes it (on the president route, whose parser fails closed
-on any error record in the turn, a completed answer does not hold the leg open).
-An `isApiErrorMessage` record is never answer text: the answer parser drops it
-on the same predicate. The review file and the broker's final answer are
-checked first and always win. That leg ends at
-once as DEGRADED with detail `claude_seat_output_budget_exhausted`
-(`error: max_output_tokens`), `claude_seat_usage_limited` (`error: rate_limit`
-with `quotaLimits.status: rejected`, a subscription cap; followed by
-`: usage_limit (resets HH:MM, Mon D YYYY)` rendered in UTC from
-`quotaLimits.resetsAt` when present), `claude_seat_rate_limited` (any other
-`rate_limit`) or `claude_seat_provider_api_error`. `isApiErrorMessage` matches
-JSON `true` or the string `"true"`, on the record or the message. A `max_tokens` stop that the CLI continues is
-not a give-up. Frozen
+The exact brokered Claude transcript is classified once per change, by
+`_claude_transcript_outcome`, into one outcome; the answer parser and the
+give-up detector are views of it, so they cannot disagree:
+- `answer`: the route's answer parser (the agent-harness#1002/#1077/#1017
+  rules; the president route fails closed on any error record in the turn)
+  returns text. An accepted answer always wins, whatever follows it. An
+  `isApiErrorMessage` record is never answer text. If the text is not an
+  accepted verdict, the leg is handed it back as
+  `claude_tui_broker_terminal_nonconforming` instead of waiting.
+- `gave_up`: no answer, and the last live record after the current request is
+  an `isApiErrorMessage` give-up. The leg ends at once as DEGRADED with
+  `claude_seat_output_budget_exhausted` (`error: max_output_tokens`),
+  `claude_seat_usage_limited` (`error: rate_limit` with
+  `quotaLimits.status: rejected`, a subscription cap, followed by
+  `: usage_limit (resets HH:MM, Mon D YYYY)` rendered in UTC from
+  `quotaLimits.resetsAt` when present), `claude_seat_rate_limited` (any other
+  `rate_limit`) or `claude_seat_provider_api_error`.
+- `rejected`: no answer, and the turn ended in a completed (`end_turn` /
+  `stop_sequence`) answer the route's parser refuses. The leg ends at once as
+  DEGRADED with `claude_seat_transcript_rejected`.
+- `pending`: anything else (an open or capped message, the CLI's resume prompt,
+  a newer request, a writer mid-append). A `max_tokens` stop is never terminal.
+"Live" records are ordered by identity (an assistant record by uuid, a user
+record by uuid and content), so a re-journaled record or rewritten metadata is
+neither progress nor a new position in the turn, and record state only moves
+forward: a replay of any earlier version, or an open version after a stop,
+never replaces a later state. `provider_terminal_state` records the code that
+ended the leg. `isApiErrorMessage` matches JSON `true` or the string `"true"`,
+on the record or the message. Frozen
 broker request/response keys, status literals, and observer envelopes are unchanged.
 
 When staging requires egress isolation, acquisition follows staged-tree and operation

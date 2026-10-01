@@ -15,6 +15,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   subscription cap, with its reset time in UTC when the journal records one),
   `claude_seat_rate_limited` and `claude_seat_provider_api_error`. A review that completed
   always wins over a give-up, and an API-error record is never taken as a seat's answer text.
+  One classifier decides answer, give-up, rejected or pending, so every ended turn ends the
+  leg: a turn that ended in an answer the route refuses is `claude_seat_transcript_rejected`,
+  and a completed review without a verdict is handed back rather than left waiting.
   Re-journaled transcript records count neither as progress nor as a new turn position.
 - A heartbeat_only seat with no genuine progress for `PHASE_LOOP_REVIEW_STALL_NOTICE_S`
   (default 3600 s) is flagged `seat_progress_stalled`, not ended. The flag appears in the

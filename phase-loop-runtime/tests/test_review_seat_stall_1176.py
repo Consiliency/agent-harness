@@ -790,19 +790,231 @@ def test_codex_r2_f002_replayed_open_version_cannot_restore_give_up(tmp_path):
     assert after_give_up is None, "a stale open replay undid the completed answer"
 
 
-def test_r2_a_replayed_capped_version_cannot_undo_a_later_stop(tmp_path):
-    """The same rule for a stop-to-stop replay: an exact replay of an EARLIER stopped version is
-    not newer state either."""
+def test_r3_a_changed_record_after_a_stop_is_a_rejected_answer_and_the_give_up_ends_it(tmp_path):
+    """r3 (codex F001, Grok G3-1). The parser fails closed on a record whose content changes
+    after it stopped (agent-harness#1002), so no answer is accepted; the turn then ends in an
+    error record, so the outcome is the give-up. A replay of the earlier version changes
+    nothing. CHANGED from r2, which asserted the give-up was suppressed (``None``) here --
+    the detector/parser disagreement that left a heartbeat_only seat waiting."""
     early = {**ANSWER, "message": {**ANSWER["message"], "stop_reason": "max_tokens",
                                     "content": [{"type": "thinking", "thinking": "", "signature": "s"}]}}
     records = [REQUEST, early, ANSWER, api_error("server_error")]
     path = write(tmp_path / "t.jsonl", records)
-    assert panel._claude_transcript_provider_gave_up(path) is None
-    assert panel._claude_transcript_provider_gave_up(write(path, [*records, early])) is None
+    for shape in (records, [*records, early]):
+        write(path, shape)
+        assert panel._final_assistant_text_from_jsonl(path) == ""
+        assert panel._claude_transcript_provider_gave_up(path) == "claude_seat_provider_api_error"
 
 
-def test_r2_completion_is_sticky_against_an_unseen_open_version(tmp_path):
-    reopened = {**ANSWER, "message": {**ANSWER["message"], "stop_reason": None,
-                                       "content": [{"type": "text", "text": "partial"}]}}
+@pytest.mark.parametrize("variant", ["A1-changed-content", "A2-missing-stop-key"])
+def test_r3_grok_g3_1_unseen_open_version_then_error_ends_degraded(tmp_path, variant):
+    """Grok r3 G3-1, both shapes. CHANGED from r2's
+    ``test_r2_completion_is_sticky_against_an_unseen_open_version``, which asserted ``None``."""
+    if variant == "A1-changed-content":
+        reopened = {**ANSWER, "message": {**ANSWER["message"], "stop_reason": None,
+                                           "content": [{"type": "text", "text": "partial"}]}}
+    else:
+        reopened = {**ANSWER, "message": {k: v for k, v in ANSWER["message"].items() if k != "stop_reason"}}
     path = write(tmp_path / "t.jsonl", [REQUEST, ANSWER, reopened, api_error("server_error")])
-    assert panel._claude_transcript_provider_gave_up(path) is None
+    assert panel._final_assistant_text_from_jsonl(path) == ""
+    assert panel._claude_transcript_provider_gave_up(path) == "claude_seat_provider_api_error"
+
+
+def test_codex_r3_f001_unseen_open_replay_cannot_hold_a_give_up_open(tmp_path, monkeypatch):
+    """codex r3 F001 falsifier, verbatim."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    reopened = {**ANSWER, "message": {
+        **ANSWER["message"], "stop_reason": None,
+        "content": [{"type": "text", "text": "partial"}],
+    }}
+    monitor = panel._ReviewMonitor(
+        tmp_path / "monitor.json", "review", 0, threading.Event(),
+        stall_notice_s=3600,
+    )
+    guard = threading.Timer(3, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=_provider(transcript, [REQUEST, ANSWER, reopened,
+                api_error("server_error")], release),
+            cwd=tmp_path, prompt="input", output_file=tmp_path / "absent",
+            timeout_s=600, backstop_s=600, stall_threshold_s=600,
+            env=os.environ, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert log != "review_operation_cancelled", (rc, text, log)
+
+
+# --- round 3: one classifier; every terminal outcome ends the leg -------------------------------
+
+def test_r3_president_error_then_ruling_is_rejected_not_pending(tmp_path):
+    """Grok r3 N1: the president parser fails closed on any error record in the turn, and the
+    turn then ENDED (end_turn) -- terminal, so ``rejected``, never left pending."""
+    ruling = _answer("a-r", "m-r", "No blocking findings.\nFORCING DECISION: APPROVE")
+    path = write(tmp_path / "t.jsonl", [REQUEST, api_error("server_error"), ruling])
+    outcome = panel._claude_transcript_outcome(path, require_terminal=True)
+    assert (outcome.kind, outcome.code, outcome.text) == ("rejected", "claude_seat_transcript_rejected", "")
+    assert panel._claude_transcript_outcome(path).kind == "answer"  # the review route accepts it
+
+
+def test_r3_a_completed_review_without_a_verdict_is_handed_back_not_left_waiting(tmp_path, monkeypatch):
+    """Grok r3 N2: a completed answer the review route cannot accept as a verdict used to leave a
+    heartbeat_only seat waiting forever. It is a terminal outcome: handed back as it is."""
+    _fast_tui(monkeypatch)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                   stall_notice_s=3600)
+    guard = threading.Timer(15, lambda: (release.touch(), monitor.cancel.set()))
+    guard.start()
+    try:
+        rc, text, log, _tail = panel._run_claude_tui_session(
+            command=_provider(transcript, [REQUEST, _answer("a", "m", "Review complete")], release),
+            cwd=tmp_path, prompt="input", output_file=tmp_path / "absent", timeout_s=600,
+            backstop_s=600, stall_threshold_s=600, env=os.environ, review_monitor=monitor,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert (rc, text, log) == (0, "Review complete", "claude_tui_broker_terminal_nonconforming")
+    assert panel._classify_leg(rc, text, log) == "DEGRADED"
+
+
+def test_r3_rejected_reaches_the_leg_as_degraded_with_its_reason(monkeypatch, tmp_path):
+    monkeypatch.setattr(panel, "_run_claude_tui_session",
+                        lambda **kw: (1, "", panel._HarnessCode("claude_seat_transcript_rejected"), ""))
+    monkeypatch.setattr(panel, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(panel, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(panel, "_under_claude_code", lambda env=None: False)
+    (tmp_path / "review").mkdir()
+    (tmp_path / "out").mkdir()
+    sink: list = []
+    status, text = panel._exec_claude_tui_leg(
+        tmp_path / "review", tmp_path / "out", 30, "bundle", env={}, failure_detail_sink=sink)
+    assert (status, text, str(sink[-1].rendered())) == ("DEGRADED", "", "claude_seat_transcript_rejected")
+
+
+def _generated_transcript(rng) -> tuple[list[dict], str, bool]:
+    """A random journal from the measured record shapes, re-journaling included. Returns the
+    records, an optional damaged tail, and whether its LAST line is a fresh terminal record
+    (an API error, or a completed answer) journaled after a genuine request."""
+    records: list[dict] = [*META]
+    assistants: list[dict] = []
+    requested = False
+    fresh_terminal = False
+    for step in range(rng.randint(1, 9)):
+        roll = rng.random()
+        n = f"{step}-{rng.randrange(10**6)}"
+        fresh_terminal = False
+        if roll < .15 or not requested:
+            records.append({"type": "user", "uuid": f"u-{n}", "message": {"role": "user", "content": f"request {n}"}})
+            requested = True
+        elif roll < .25:
+            records.append(resume(int(step)))
+        elif roll < .35:
+            record = capped(int(step))
+            record["uuid"], record["message"]["id"] = f"c-{n}", f"mc-{n}"
+            records.append(record)
+            assistants.append(record)
+        elif roll < .45:
+            record = {"type": "assistant", "uuid": f"o-{n}", "message": {
+                "id": f"mo-{n}", "role": "assistant", "stop_reason": None,
+                "content": [{"type": "text", "text": "partial"}]}}
+            records.append(record)
+            assistants.append(record)
+        elif roll < .60:
+            text = rng.choice(["Review complete\nAGREE", "Review complete", "x\nDISAGREE"])
+            record = _answer(f"a-{n}", f"ma-{n}", text)
+            if rng.random() < .5:  # streamed: journaled open first, then stopped
+                streaming = {**record, "message": {**record["message"], "stop_reason": None}}
+                records.append(streaming)
+                assistants.append(streaming)
+            records.append(record)
+            assistants.append(record)
+            fresh_terminal = True
+        elif roll < .75:
+            record = api_error(rng.choice(["max_output_tokens", "rate_limit", "server_error"]))
+            record["uuid"], record["message"]["id"] = f"e-{n}", f"me-{n}"
+            records.append(record)
+            assistants.append(record)
+            fresh_terminal = True
+        elif roll < .85 and assistants:
+            earlier = rng.choice(assistants)
+            records.append({**earlier, "parentUuid": f"replay-{n}"})
+        elif roll < .93 and assistants:
+            earlier = rng.choice(assistants)
+            records.append({**earlier, "message": {**earlier["message"], "stop_reason": None,
+                                                    "content": [{"type": "text", "text": f"changed {n}"}]}})
+        else:
+            records.extend(META)
+    tail = '{"type": "assist' if rng.random() < .1 else ""
+    return records, tail, fresh_terminal and not tail
+
+
+def test_r3_property_views_agree_and_a_terminal_turn_is_never_pending(tmp_path):
+    """Over generated journals, on both routes: the parser view and the give-up view are views of
+    one outcome (they always agree), and a turn whose last line is a fresh terminal record
+    after a genuine request is never ``pending`` -- so it can never leave a seat waiting."""
+    import random
+
+    path = tmp_path / "t.jsonl"
+    rng = random.Random(1194)
+    terminal_cases = 0
+    for _ in range(1500):
+        records, tail, fresh_terminal = _generated_transcript(rng)
+        write(path, records, tail)
+        for president in (False, True):
+            outcome = panel._claude_transcript_outcome(path, require_terminal=president)
+            assert panel._final_assistant_text_from_jsonl(path, require_terminal=president) == outcome.text
+            assert panel._claude_transcript_state(path, require_terminal=president) == (
+                outcome.versions, outcome.code if outcome.kind in ("gave_up", "rejected") else None)
+            assert (outcome.kind == "answer") == bool(outcome.text)
+            assert (outcome.code is None) == (outcome.kind in ("answer", "pending"))
+            if fresh_terminal:
+                terminal_cases += 1
+                assert outcome.kind != "pending", (president, records)
+    assert terminal_cases > 500  # the property was exercised, not vacuously true
+
+
+def test_r3_a_replayed_streaming_version_cannot_reopen_a_ended_turn(tmp_path):
+    """The forward-only rule still decides between terminal and pending when there is no
+    answer: on the president route a turn holding an error and then an ended ruling is
+    ``rejected``; replaying the ruling's earlier open version must not make it ``pending``."""
+    ruling = _answer("a-r", "m-r", "No blocking findings.\nFORCING DECISION: APPROVE")
+    streaming = {**ruling, "message": {**ruling["message"], "stop_reason": None}}
+    records = [REQUEST, api_error("server_error"), streaming, ruling]
+    path = tmp_path / "t.jsonl"
+    for shape in (records, [*records, {**streaming, "parentUuid": "re-journaled"}]):
+        write(path, shape)
+        assert panel._claude_transcript_outcome(path, require_terminal=True).kind == "rejected"
+
+
+def test_r3_president_session_ends_rejected_instead_of_waiting(tmp_path, monkeypatch):
+    _fast_tui(monkeypatch)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    ruling = _answer("a-r", "m-r", "No blocking findings.\nFORCING DECISION: APPROVE")
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                   stall_notice_s=3600)
+    guard = threading.Timer(15, lambda: (release.touch(), monitor.cancel.set()))
+    guard.start()
+    try:
+        rc, text, log, _tail = panel._run_claude_tui_session(
+            command=_provider(transcript, [REQUEST, api_error("server_error"), ruling], release),
+            cwd=tmp_path, prompt="input", output_file=tmp_path / "absent", timeout_s=600,
+            backstop_s=600, stall_threshold_s=600, env=os.environ, mode="president",
+            review_monitor=monitor, allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert (log, text) == ("claude_seat_transcript_rejected", "") and rc != 0
+    assert monitor.record["provider_terminal_state"] == "claude_seat_transcript_rejected"
