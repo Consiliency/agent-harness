@@ -678,7 +678,16 @@ def _human_publish_artifacts(tmp_path: Path) -> tuple[Path, Path]:
     return plan, verification
 
 
-def test_human_publish_requires_plan_and_verification_context(tmp_path, monkeypatch):
+@pytest.fixture
+def human_gh_auth(monkeypatch):
+    from phase_loop_runtime import publishing
+
+    monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
+
+
+def test_human_publish_requires_plan_and_verification_context(
+    tmp_path, monkeypatch, human_gh_auth
+):
     from phase_loop_runtime.convergence.broker import live
 
     repo = _make_repo(tmp_path)
@@ -696,7 +705,7 @@ def test_human_publish_requires_plan_and_verification_context(tmp_path, monkeypa
 
 
 def test_human_publish_returns_typed_bootstrap_handoff_when_repo_is_deferred(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, human_gh_auth
 ):
     from phase_loop_runtime.convergence.broker import live
 
@@ -739,7 +748,7 @@ def test_human_publish_returns_typed_bootstrap_handoff_when_repo_is_deferred(
 
 
 def test_human_publish_builds_digest_bound_authority_and_releases_resources(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, human_gh_auth
 ):
     from phase_loop_runtime import publishing
     from phase_loop_runtime.convergence.broker import live
@@ -809,7 +818,9 @@ def test_human_publish_builds_digest_bound_authority_and_releases_resources(
     assert events == ["broker_closed", ("released", report)]
 
 
-def test_human_publish_converts_authority_refusal_to_typed_handoff(tmp_path, monkeypatch):
+def test_human_publish_converts_authority_refusal_to_typed_handoff(
+    tmp_path, monkeypatch, human_gh_auth
+):
     from phase_loop_runtime.convergence.broker import live
 
     repo = _make_repo(tmp_path)
@@ -835,7 +846,7 @@ def test_human_publish_converts_authority_refusal_to_typed_handoff(tmp_path, mon
 
 
 def test_human_publish_uses_real_activation_barrier_to_onboard_repository(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, human_gh_auth
 ):
     from phase_loop_runtime import publishing
     from phase_loop_runtime.convergence.broker import live
@@ -872,6 +883,49 @@ def test_human_publish_uses_real_activation_barrier_to_onboard_repository(
         plan.read_bytes()
     )
     assert live.WriterGenerationLatch.open(repo).held_leases() == ()
+
+
+def test_human_publish_auth_failure_precedes_provider_mutation(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    _git(repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    mutations = []
+    real_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "gh":
+            if argv[1:3] == ["pr", "create"]:
+                mutations.append("gh pr create")
+            return subprocess.CompletedProcess(argv, 1, "", "not authenticated")
+        if argv[0] == "git" and "push" in argv:
+            mutations.append("git push")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(publishing.subprocess, "run", run)
+    monkeypatch.setattr(
+        live,
+        "fabpub_activation_barrier",
+        lambda _worktrees: pytest.fail("authentication must precede the barrier"),
+    )
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "github_cli_authentication_required"
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["next_step"] == "authenticate_github_cli_and_retry"
+    assert mutations == []
 
 
 # ---------------------------------------------------------------------------

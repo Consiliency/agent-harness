@@ -1033,6 +1033,22 @@ def _blocked(reason: str, detail: str = "") -> dict[str, Any]:
     return result
 
 
+def _check_gh_auth() -> str | None:
+    """Return a non-secret diagnostic when the GitHub CLI cannot authenticate."""
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "status", "--active"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"gh auth status unavailable: {type(error).__name__}"
+    if completed.returncode:
+        return "gh auth status failed: not authenticated"
+    return None
+
+
 def _audit_staged_diff(repo: Path, owned_paths: Sequence[str], *, evidence: dict | None = None) -> dict[str, Any] | None:
     owned_set = {Path(path).as_posix() for path in owned_paths}
     parent = _git_output(repo, "rev-parse", "HEAD")
@@ -1307,6 +1323,14 @@ def publish_human_invoked_from_worktree(
         return _blocked("detached_head", "Cannot publish from detached HEAD state")
     if branch in protected_branches:
         return _blocked("branch_protected", f"Cannot publish from protected branch {branch!r}")
+
+    auth_error = _check_gh_auth()
+    if auth_error is not None:
+        result = _blocked("github_cli_authentication_required", auth_error)
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="authenticate_github_cli_and_retry"
+        )
+        return result
 
     try:
         plan_sha256 = _sha256(artifacts["plan_path"].read_bytes())
