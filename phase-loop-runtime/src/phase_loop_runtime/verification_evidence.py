@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -608,8 +610,10 @@ def run_verification(
     operational_exemptions: list[Mapping[str, Any]] | None = None,
     python_pin: str | None = None,
     phase_alias: str | None = None,
-    stage_observer: Any = None,
 ) -> VerificationResult:
+    # agent-harness#1139: an optional per-stage observer, installed by the runner via
+    # `observe_stages`. It is NOT a parameter: the public signature is frozen (LEGIBLE).
+    stage_observer = _STAGE_OBSERVER.get()
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
     run_path.mkdir(parents=True, exist_ok=True)
@@ -738,6 +742,24 @@ def run_verification(
     result = replace(unsealed, log_sha256=log_sha256)
     _write_artifact_atomic(artifact_path, _result_to_payload(result))
     return result
+
+
+_STAGE_OBSERVER: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "phase_loop_verification_stage_observer", default=None
+)
+
+
+@contextlib.contextmanager
+def observe_stages(observer: Any):
+    """Bracket every command/suite stage of ``run_verification`` calls made inside
+    this block with ``observer.before(argv)`` / ``observer.after(token, exit_code)``
+    (agent-harness#1139). Evidence-only; the artifact and outcome are unchanged."""
+
+    token = _STAGE_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _STAGE_OBSERVER.reset(token)
 
 
 def _observed_stage(observer: Any, argv: Sequence[str], run: Any) -> VerificationCommandEvidence:

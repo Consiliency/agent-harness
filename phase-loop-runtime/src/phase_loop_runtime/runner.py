@@ -127,6 +127,7 @@ from .lane_scheduler import select_ready_lane_wave, worktree_assignments_for_wav
 from .maintenance import MaintenanceOptions, active_loop, active_loop_blocker, run_maintenance
 from .closeout_classifier import classify_unowned_path
 from . import generated_outputs
+from .verification_evidence import observe_stages as observe_verification_stages
 from .models import (
     CLOSEOUT_EXCEPTIONS_METADATA_KEY,
     CLOSEOUT_MODES,
@@ -9474,18 +9475,18 @@ def _run_execute_verification_impl(
         output_recorder = generated_outputs.ProducerRecorder.for_repo(repo)
     except Exception as exc:  # noqa: BLE001 - an invalid declaration records nothing (audit exits 2)
         output_record_error = f"generated-outputs declaration unusable: {exc}"
-    result = run_verification(
-        repo,
-        run_dir,
-        commands,
-        suite_command,
-        env_refresh,
-        float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
-        operational_exemptions=operational_exemptions,
-        python_pin=resolve_python_pin(roadmap, plan),
-        phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
-        stage_observer=output_recorder,
-    )
+    with observe_verification_stages(output_recorder):
+        result = run_verification(
+            repo,
+            run_dir,
+            commands,
+            suite_command,
+            env_refresh,
+            float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+            operational_exemptions=operational_exemptions,
+            python_pin=resolve_python_pin(roadmap, plan),
+            phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
+        )
     if output_recorder is not None:
         try:
             output_recorder.write(

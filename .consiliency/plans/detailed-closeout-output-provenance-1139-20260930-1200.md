@@ -23,9 +23,99 @@ testable checks below.
   artifact`. `from` equals the skill directory, and the skill is one of the bundled
   `skills_bundle/` directories.
 - The runner's verification (`runner._run_execute_verification` → `run_verification`)
-  runs the plan's `## Verification
+  runs the plan's `## Verification` commands. `verification.json` is sealed and has a
+  closed field inventory (`verification_evidence.py`), so evidence goes into a sibling
+  record under `.phase-loop/` (already runner-owned), not into that artifact.
+- Frozen corpora: none of the classifier or runner verification tests are in the
+  EXECFIND, PANEL or PRESROUTE receipts, or in HARDEN `FROZEN_SL0_PATHS`.
+  `runner.py` and `verification_evidence.py` are HARDEN production paths, not frozen
+  test nodes. The agy qualification JSON pins `closeout_classifier.py`'s digest, which
+  matters only at a release cut.
+
+## Changes
+
+Amended after round 1 of the board review on agent-harness#1189. The original
+whole-run snapshot credited writes by any command, and it accepted symlinks and
+earlier phases' records. The design below replaces it with one rule: evidence is
+what an observed invocation of the producer itself wrote, at the current commit.
+
+### `phase-loop-runtime/src/phase_loop_runtime/generated_outputs.py` (create)
+- `parse_declaration` / `load_declaration(repo)` — add — the closed v1 declaration,
+  read from `HEAD` only. It rejects unknown keys, shell operators in `command`,
+  unbounded globs, and reserved roots (case-insensitively).
+- `ProducerRecorder` (`for_repo`, `before`, `after`, `run`, `write`) — add
+  - Only an argv equal to a declared producer's is observed.
+  - `before`/`after` snapshot that producer's own globs as `(digest, mtime_ns)`
+    around one invocation. A file counts as "written" if it is new or its digest or
+    mtime moved.
+  - `write` binds the record to `HEAD` and the declaration's sha. It merges at the
+    same HEAD and starts empty otherwise.
+  - An unchanged entry carries forward only when its producer re-ran successfully.
+  - On overlapping globs, the last writer wins.
+  - A failed invocation withdraws that producer's entries.
+- `file_identity` / `_regular_file_in_repo` — add — refuse symlinks and symlinked
+  path components, both when recording and when accepting.
+- `run_declared_producers(repo)` — add — implements `--record-outputs`. It is a no-op
+  without a declaration.
+- `verify_declared_output` — add. A file passes only if:
+  - a declared glob covers it;
+  - the record matches the declaration sha and HEAD;
+  - the entry's producer covers it;
+  - it is a regular file with an unchanged digest.
+- `is_harness_handoff(repo, relpath)` — add. The file must carry the frontmatter
+  contract with `from == dir` naming a shipped skill. Its `repo_root` must be this
+  repo, its `commit` must exist here, and it must be a regular in-repo file.
+
+### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
+- `observe_stages(observer)` / `_observed_stage` — add. A context-var seam brackets
+  each command and suite stage of `run_verification`.
+  - The public `run_verification` signature is unchanged, because LEGIBLE freezes it
+    (`test_legible_evidence.py::test_public_compatibility_run_verification_load_validate_and_cli_signatures`).
+  - The observer is evidence-only. Its exceptions are swallowed, and the artifact is
+    unchanged.
+
+### `phase-loop-runtime/src/phase_loop_runtime/closeout_classifier.py` (modify)
+- `classify_ignored_output` — modify — drop the by-name handoff rule (agent-harness#1084).
+- `audit_ignored_outputs` / `_grade_by_provenance` — modify
+  - Expand collapsed ignored directories via `git ls-files -o -i`.
+  - Grade each ignored file with the path rules, then the handoff contract, then the
+    declared-output check.
+  - Add the `declared_output` bucket and `unknown_reasons`.
+- `main` — modify — add `--record-outputs`.
+
+### `phase-loop-runtime/src/phase_loop_runtime/runner.py` (modify)
+- `_run_execute_verification` — modify — run `run_verification` inside
+  `observe_stages(ProducerRecorder)`, then write the record. A failure goes to stderr
+  and to `generated_outputs_record_error`, and it never changes the outcome.
+
+### Executor instructions (modify)
+- `skills-src/{codex,gemini,claude}/*-execute-phase/SKILL.md` and `prompts.py` —
+  modify — prescribe `phase-loop-closeout-audit --repo . --record-outputs` and update
+  what exit 0 means. Regenerate the bundles and the launchspec golden. The
+  `test_executor_exited_without_closeout_785.py` permitted-delta undo covers this
+  prose.
+
+### Tests
+- `phase-loop-runtime/tests/test_closeout_generated_outputs.py` (create) — the
+  Node/BAML regression through the real runner, plus every round-1 falsifier
+  (codex F001–F003, Claude C1–C6, grok F1–F3).
+- `phase-loop-runtime/tests/test_closeout_classifier.py` (modify, disclosed) — the
+  handoff fixtures carry the full contract, and a path-only handoff is untrusted.
+
+## Documentation impact
+- `docs/phase-loop/closeout-generated-outputs.md` — add — the consumer declaration
+  format, where the evidence comes from, the threat model, and the CLI.
+- `CHANGELOG.md` — add — an Unreleased entry for agent-harness#1139.
+- `phase-loop-runtime/README.md` — modify — one line pointing at the doc, near the
+  closeout-audit mention.
+
+## Dependencies & order
+The `generated_outputs` module comes first, then the classifier, the runner hook, the
+tests, and the docs.
+
+## Verification
 - `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_closeout_generated_outputs.py tests/test_closeout_classifier.py -q -p no:cacheprovider`
-- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_verification_evidence.py tests/test_hotfix_lane.py tests/test_launchspec_golden.py tests/test_skills_canon_parity.py tests/test_skills_bundle_drift.py -q -p no:cacheprovider`
+- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_verification_evidence.py tests/test_hotfix_lane.py tests/test_launchspec_golden.py tests/test_skills_canon_parity.py tests/test_skills_bundle_drift.py tests/test_executor_exited_without_closeout_785.py tests/test_legible_evidence.py -q -p no:cacheprovider`
 - `python -m pyflakes` on the changed modules.
 - Named mutations, each of which must turn a test red:
   - accept a symlink leaf;
