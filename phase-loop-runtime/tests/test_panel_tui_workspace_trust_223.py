@@ -13,7 +13,6 @@ constants are monkeypatched short so the flows resolve in seconds.
 from __future__ import annotations
 
 import shutil
-import sys
 import time
 from hashlib import sha256
 

@@ -8,7 +8,6 @@ now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
 
 from __future__ import annotations
 
-import types
 from unittest.mock import patch
 
 import phase_loop_runtime.panel_invoker as pi

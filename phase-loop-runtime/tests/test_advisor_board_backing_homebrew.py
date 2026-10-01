@@ -23,7 +23,6 @@ Plus the skip-with-warning fail-closed boundary for omnigent/breadth seats.
 from __future__ import annotations
 
 import os
-import subprocess
 import tempfile
 import unittest
 from contextlib import contextmanager

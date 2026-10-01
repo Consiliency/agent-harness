@@ -236,3 +236,45 @@ def test_non_repository_scratch_keeps_the_trusted_cwd_controls(tmp_path, monkeyp
     scratch.mkdir()
     monkeypatch.chdir(repo)
     assert govlean_check(scratch) is True
+
+
+def test_host_checkout_neutralizes_drivers_on_supported_older_git(tmp_path, monkeypatch):
+    git='/usr/bin/git'
+    repo=tmp_path/'repo'; repo.mkdir()
+    def run(*args):
+        return subprocess.run([git,'-C',str(repo),*args],check=True,capture_output=True,text=True)
+    run('init','-q')
+    run('config','user.name','Fixture');run('config','user.email','fixture@example.invalid')
+    (repo/'.gitattributes').write_text('a.txt filter=fixture\n')
+    (repo/'a.txt').write_text('declared source\n')
+    run('add','.');run('commit','-qm','fixture')
+    marker=tmp_path/'driver-ran'
+    run('config','filter.fixture.smudge',f'/bin/sh -c "printf called > {marker}; cat"')
+    (repo/'a.txt').unlink()
+    run('checkout-index','-af')
+    assert marker.read_text()=='called'
+    marker.unlink()
+    (repo/'a.txt').unlink()
+    monkeypatch.setattr(review_stage,'trusted_host_executable',lambda name,**kwargs:git)
+    monkeypatch.setitem(review_stage._HOST_HELPER_VERSIONS,git,(2,34,1))
+    result=review_stage.host_git(repo,'checkout-index','-af',capture_output=True,text=True,check=True)
+    assert result.returncode==0 and not marker.exists()
+    assert (repo/'a.txt').read_text()=='declared source\n'
+
+
+def test_governed_diff_does_not_run_repository_drivers(tmp_path):
+    from phase_loop_runtime import governed_bundle
+
+    repo=tmp_path/'repo';repo.mkdir()
+    def git(*args):
+        return subprocess.run(['/usr/bin/git','-C',str(repo),*args],check=True,capture_output=True,text=True)
+    git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
+    (repo/'a.txt').write_text('before\n');(repo/'.gitattributes').write_text('*.txt diff=fixture\n')
+    git('add','.');git('commit','-qm','fixture')
+    (repo/'a.txt').write_text('after\n');git('add','a.txt')
+    marker=tmp_path/'driver-ran'
+    git('config','diff.fixture.textconv',f'/bin/sh -c "printf called > {marker}; cat"')
+    git('diff','--cached')
+    assert marker.read_text()=='called';marker.unlink()
+    text=governed_bundle.staged_index_diff(repo,['a.txt'])
+    assert '+after' in text and not marker.exists()

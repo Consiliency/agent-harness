@@ -127,3 +127,30 @@ print(json.dumps({'opened':opened,'network':os.stat('/proc/self/ns/net').st_ino}
         assert facts['opened'] == []
         assert facts['network'] == holder_namespace
         assert holder_namespace != os.stat('/proc/self/ns/net').st_ino
+
+
+def test_review_repository_metadata_stays_readonly(tmp_path, owned_review_network):
+    pi = panel_invoker
+    stage=tmp_path/'context'; (stage/'.git').mkdir(parents=True)
+    config=stage/'.git/config'; config.write_text('[core]\n')
+    source='''import json,sys
+opened=False
+try:
+ with open(sys.argv[1],'a') as stream:stream.write('changed');opened=True
+except OSError:pass
+print(json.dumps({'writable':opened}))
+'''
+    argv=['/usr/bin/python3','-I','-S','-c',source,str(config)]
+    prefix = pi._EGRESS_LAUNCH_PREFIX.get()
+    with ExitStack():
+        token=pi._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            with pi._seat_command_profile(argv,env={'PATH':'/usr/bin:/bin'},cwd=tmp_path,readonly_paths=(stage,)) as (command,profile):
+                import subprocess
+                process=pi.launch_owned(command,role=pi.SeatLaunchRole.PROVIDER_REVIEW,profile=profile,cwd=tmp_path,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+                try: out,err=process.communicate(timeout=15)
+                finally: pi._terminate_process_group(process)
+            assert process.returncode==0,err
+            assert json.loads(out)=={'writable':False}
+        finally: pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert config.read_text()=='[core]\n'

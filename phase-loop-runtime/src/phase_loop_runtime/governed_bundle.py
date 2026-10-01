@@ -16,7 +16,6 @@ in-repo staging were the divergence + worktree-dirtying defects).
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from .review_stage import host_git

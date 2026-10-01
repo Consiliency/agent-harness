@@ -52,6 +52,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in-flight change lands.
 - No agy route-core file changes, so this needs no agy requalification.
 
+### Unified seat-launch owner: namespaces, private homes, allowlisted view, hardened host git and seat I/O
+
+Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.
+
 ### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204)
 
 - `invoke_board(pointer_brief=True)`, `advisor-board --pointer-brief` and the governed gate's `pointer_brief` declare that the brief points reviewers at files in the staged tree instead of inlining them. Nothing detects a pointer brief from its text.
