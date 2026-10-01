@@ -1,0 +1,7 @@
+suite interpreter: /home/viperjuice/.local/bin/python3.14
+sssssssssssssss.................ssssssssssss............................ [ 51%]
+...................................................................      [100%]
+- generated xml file: /mnt/HC_Volume_105438154/worktrees/agent-harness-v10-ratify-sl0-20261001/.phase-loop/evidence/RATIFY/sl0-verification/default-green.xml -
+112 passed, 28 skipped in 7.86s
+
+verification-artifact-sha256:dd20b147ab034fa4fe3a8de07cb5ec8df99d4f9c3b1b6224faa9a82cb84545f3
