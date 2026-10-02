@@ -184,6 +184,10 @@ class PublishCrashInjected(RuntimeError):
     pass
 
 
+class PublishTransactionConflict(RuntimeError):
+    pass
+
+
 @contextlib.contextmanager
 def crash_after(anchor: str):
     if anchor not in FABPUB_CRASH_ANCHORS:
@@ -396,7 +400,9 @@ class PublishTransactionStore:
         with self.exclusive():
             active = self.load_active()
             if active is not None and active.get("transaction_id") != transaction_id:
-                raise RuntimeError("transaction pointer belongs to another transaction")
+                raise PublishTransactionConflict(
+                    "transaction pointer belongs to another transaction"
+                )
             if self.active_pointer_path.exists():
                 self.active_pointer_path.unlink()
                 descriptor = os.open(str(self.active_pointer_path.parent), os.O_RDONLY)
@@ -438,24 +444,28 @@ class PublishTransaction:
         with self.store.exclusive():
             durable = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
             if durable.get("transaction_id") != self.transaction_id:
-                raise RuntimeError("durable checkpoint belongs to another transaction")
+                raise PublishTransactionConflict(
+                    "durable checkpoint belongs to another transaction"
+                )
             durable_state = durable.get("state")
             if durable_state == state:
                 self._load(durable)
                 return self
             if durable_state != self.state:
-                raise RuntimeError(
+                raise PublishTransactionConflict(
                     f"stale transaction projection {self.state} over durable {durable_state}"
                 )
             if self.state in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED):
-                raise RuntimeError("tombstoned transaction cannot advance")
+                raise PublishTransactionConflict("tombstoned transaction cannot advance")
             try:
                 current_index = PublishTransactionState.ORDERED.index(self.state)
                 requested_index = PublishTransactionState.ORDERED.index(state)
             except ValueError as error:
                 raise ValueError("unknown publish transaction state") from error
             if requested_index != current_index + 1:
-                raise RuntimeError(f"illegal transaction projection {self.state} -> {state}")
+                raise PublishTransactionConflict(
+                    f"illegal transaction projection {self.state} -> {state}"
+                )
             self.state = state
             self._write()
             return self
@@ -487,11 +497,11 @@ class PublishTransaction:
             self.clear_active_pointer()
             self.state = PublishTransactionState.CONFLICTED
             self._write()
-        raise RuntimeError(f"CONFLICTED: {detail}")
+        raise PublishTransactionConflict(f"CONFLICTED: {detail}")
 
     def resume(self) -> "PublishTransaction":
         if self.state in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED):
-            raise RuntimeError("tombstoned transaction cannot resume")
+            raise PublishTransactionConflict("tombstoned transaction cannot resume")
         _validate_transaction_source_audit(self.repo, self)
         if self.state == PublishTransactionState.PREPARED:
             validate_transaction_owned_workspace(self.repo, self)
@@ -741,7 +751,9 @@ def prepare_publish_transaction(
             )
             if existing is not None and existing.state not in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED, PublishTransactionState.TERMINAL_SEALED):
                 if existing.transaction_id != payload["transaction_id"]:
-                    raise RuntimeError("transaction conflict: active checkpoint has different pre-trailer identity")
+                    raise PublishTransactionConflict(
+                        "transaction conflict: active checkpoint has different pre-trailer identity"
+                    )
                 return existing
         transaction = PublishTransaction(Path(repo), store, payload)
         _validate_transaction_source_audit(Path(repo), transaction)
@@ -803,7 +815,9 @@ def prepare_prebuilt_transaction(
             )
             if existing is not None and existing.state not in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED, PublishTransactionState.TERMINAL_SEALED):
                 if existing.transaction_id != payload["transaction_id"]:
-                    raise RuntimeError("transaction conflict: active checkpoint has different pre-trailer identity")
+                    raise PublishTransactionConflict(
+                        "transaction conflict: active checkpoint has different pre-trailer identity"
+                    )
                 return existing
         transaction = PublishTransaction(Path(repo), store, payload)
         transaction._write()
@@ -1142,42 +1156,45 @@ def _human_publication_handoff(
         snapshot = repository_snapshot(repo)
     except Exception:
         return handoff
-    inventory = (
-        snapshot.common_dir
-        / "phase-loop-fabpub-bootstrap-v1"
-        / f"{snapshot.identity}.inventory.json"
-    )
     handoff.update(
         canonical_repository_identity=snapshot.identity,
         repository_common_dir=str(snapshot.common_dir),
-        probe_command=[
-            "phase-loop",
-            "fabpub-bootstrap",
-            "--probe",
-            "--inventory",
-            str(inventory),
-            "--worktree",
-            str(snapshot.worktree),
-        ],
-        operator_must_supply=[
-            "--legacy-root",
-            "--historical-evidence-root",
-            "--search-root",
-        ],
-        apply_command=[
-            "phase-loop",
-            "fabpub-bootstrap",
-            "--apply",
-            "--inventory",
-            str(inventory),
-            "--confirm-zero-history",
-        ],
-        apply_requires=(
-            "operator review that the inventory covers every authoritative legacy, "
-            "historical-evidence, and search root"
-        ),
         resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
     )
+    if next_step == "probe_and_confirm_fabpub_authority":
+        inventory = (
+            snapshot.common_dir
+            / "phase-loop-fabpub-bootstrap-v1"
+            / f"{snapshot.identity}.inventory.json"
+        )
+        handoff.update(
+            probe_command=[
+                "phase-loop",
+                "fabpub-bootstrap",
+                "--probe",
+                "--inventory",
+                str(inventory),
+                "--worktree",
+                str(snapshot.worktree),
+            ],
+            operator_must_supply=[
+                "--legacy-root",
+                "--historical-evidence-root",
+                "--search-root",
+            ],
+            apply_command=[
+                "phase-loop",
+                "fabpub-bootstrap",
+                "--apply",
+                "--inventory",
+                str(inventory),
+                "--confirm-zero-history",
+            ],
+            apply_requires=(
+                "operator review that the inventory covers every authoritative legacy, "
+                "historical-evidence, and search root"
+            ),
+        )
     return handoff
 
 
@@ -1416,6 +1433,13 @@ def publish_human_invoked_from_worktree(
             )
             result["checkpoint_root"] = str(checkpoint_root)
         return result
+    except PublishTransactionConflict as error:
+        result = _blocked("publication_transaction_conflicted", str(error))
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="resolve_publication_transaction_conflict"
+        )
+        result["checkpoint_root"] = str(checkpoint_root)
+        return result
     except (
         live.FabpubConfigurationError,
         live.LegacyCutoverConflict,
@@ -1428,11 +1452,34 @@ def publish_human_invoked_from_worktree(
         if checkpoint_root.exists():
             result["checkpoint_root"] = str(checkpoint_root)
         return result
+    except OSError as error:
+        result = _blocked("human_publication_environment_failed", str(error))
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_publication_environment"
+        )
+        if checkpoint_root.exists():
+            result["checkpoint_root"] = str(checkpoint_root)
+        return result
+    except PublishCrashInjected:
+        raise
+    except Exception as error:
+        result = _blocked(
+            "human_publication_execution_failed",
+            f"{type(error).__name__}: publication adapter failed",
+        )
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="inspect_publication_failure_and_retry"
+        )
+        if checkpoint_root.exists():
+            result["checkpoint_root"] = str(checkpoint_root)
+        return result
     finally:
-        if broker_client is not None and hasattr(broker_client, "close"):
-            broker_client.close()
-        if barrier_report is not None:
-            live.release_barrier_leases(barrier_report)
+        try:
+            if broker_client is not None and hasattr(broker_client, "close"):
+                broker_client.close()
+        finally:
+            if barrier_report is not None:
+                live.release_barrier_leases(barrier_report)
 
 
 def publish_from_worktree(
@@ -1522,14 +1569,16 @@ def publish_from_worktree(
             return _blocked("checkpoint_root_mismatch", "checkpoint_root must equal the authority handoff root")
         if candidate.transaction is not None and not sealed_prior:
             if candidate.state == PublishTransactionState.CONFLICTED:
-                raise RuntimeError("active publish transaction is conflicted")
+                raise PublishTransactionConflict("active publish transaction is conflicted")
             transaction = candidate.transaction
             if (
                 transaction.envelope_authority_preimage != authority
                 or transaction.branch != branch
                 or transaction.mode != ("prebuilt" if prebuilt else "normal")
             ):
-                raise RuntimeError("active publish transaction differs from the requested authority")
+                raise PublishTransactionConflict(
+                    "active publish transaction differs from the requested authority"
+                )
         else:
             transaction = (
                 prepare_prebuilt_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", node_id=node_id)

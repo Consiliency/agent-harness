@@ -925,6 +925,12 @@ def test_human_publish_auth_failure_precedes_provider_mutation(tmp_path, monkeyp
     assert result["reason"] == "github_cli_authentication_required"
     assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
     assert result["handoff"]["next_step"] == "authenticate_github_cli_and_retry"
+    assert "probe_command" not in result["handoff"]
+    assert "apply_command" not in result["handoff"]
+    checkpoint_parent = (
+        live.repository_snapshot(repo).common_dir / "phase-loop-human-publication-v1"
+    )
+    assert not checkpoint_parent.exists()
     assert mutations == []
 
 
@@ -968,6 +974,148 @@ def test_human_publish_topology_refusals_return_typed_handoff(
     assert result["reason"] == reason
     assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
     assert result["handoff"]["next_step"] == next_step
+
+
+def test_conflicted_human_publication_returns_typed_handoff(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    authority_root = tmp_path / "authority"
+    inventory = live.probe_zero_history_bootstrap(
+        cutover_id="human-refusal-review",
+        authority_root=authority_root,
+        worktrees=(repo,),
+    )
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(authority_root))
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
+
+    def no_provider(*_args, **_kwargs):
+        pytest.fail("a conflicted transaction must not reach the provider")
+
+    monkeypatch.setattr(live.GitHubBrokerAdapter, "execute", no_provider)
+    kwargs = {"plan_path": plan, "verification_artifact_path": verification}
+    with pytest.raises(publishing.PublishCrashInjected):
+        with publishing.crash_after(
+            "after_committed_checkpoint_before_broker_execute"
+        ):
+            publish_human_invoked_from_worktree(repo, ["owned.py"], **kwargs)
+    assert live.WriterGenerationLatch.open(repo).held_leases() == ()
+
+    (repo / "owned.py").write_text("value = 2\n", encoding="utf-8")
+    result = publish_human_invoked_from_worktree(repo, ["owned.py"], **kwargs)
+
+    assert live.WriterGenerationLatch.open(repo).held_leases() == ()
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "publication_transaction_conflicted"
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["next_step"] == "resolve_publication_transaction_conflict"
+
+
+def test_human_publish_operational_failure_returns_typed_handoff(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    report = {"repositories": [str(repo.resolve())], "leases": [object()]}
+    released = []
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _worktrees: report)
+    monkeypatch.setattr(live, "release_barrier_leases", released.append)
+    monkeypatch.setattr(
+        live,
+        "build_routing_broker_client",
+        lambda: (_ for _ in ()).throw(OSError("broker unavailable")),
+    )
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "human_publication_environment_failed"
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["next_step"] == "repair_publication_environment"
+    assert released == [report]
+
+
+def test_human_publish_unexpected_execution_failure_returns_typed_handoff(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    report = {"repositories": [str(repo.resolve())], "leases": [object()]}
+    released = []
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _worktrees: report)
+    monkeypatch.setattr(live, "release_barrier_leases", released.append)
+    monkeypatch.setattr(
+        live,
+        "build_routing_broker_client",
+        lambda: (_ for _ in ()).throw(RuntimeError("unexpected internal detail")),
+    )
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "human_publication_execution_failed"
+    assert result["detail"] == "RuntimeError: publication adapter failed"
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["next_step"] == "inspect_publication_failure_and_retry"
+    assert released == [report]
+
+
+def test_human_publish_releases_barrier_when_broker_close_raises(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    report = {"repositories": [str(repo.resolve())], "leases": [object()]}
+    released = []
+
+    class _FailingCloseBroker:
+        def close(self):
+            raise OSError("close failed")
+
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _worktrees: report)
+    monkeypatch.setattr(live, "release_barrier_leases", released.append)
+    monkeypatch.setattr(live, "build_routing_broker_client", _FailingCloseBroker)
+    monkeypatch.setattr(
+        publishing,
+        "publish_from_worktree",
+        lambda *_args, **_kwargs: {"status": "published"},
+    )
+
+    with pytest.raises(OSError, match="close failed"):
+        publish_human_invoked_from_worktree(
+            repo,
+            ["owned.py"],
+            plan_path=plan,
+            verification_artifact_path=verification,
+        )
+
+    assert released == [report]
 
 
 # ---------------------------------------------------------------------------
