@@ -1184,6 +1184,23 @@ class _Client:
             return None
 
     def _own(self) -> None:
+        # A thin frame with no nested ``try`` (see ``_supervise``): every way out
+        # of an owner candidate -- an owner, a no-op, or one interrupted
+        # anywhere in ``_run_owner`` -- passes the revive below.
+        try:
+            self._run_owner()
+        except BaseException:  # noqa: BLE001 - interrupted: dropped here, never retained
+            pass
+        finally:
+            # Revive a dead supervisor (once one has existed): no single
+            # thread's survival is what keeps recovery autonomous.
+            if self.supervisor is not None and not self.closed:
+                try:
+                    self._ensure_supervisor()
+                except Exception:  # noqa: BLE001 - the next exiting frame tries again
+                    pass
+
+    def _run_owner(self) -> None:
         baton = self._take_baton()
         if baton is None:
             return
@@ -1446,7 +1463,8 @@ class _Client:
 
     def _ensure_supervisor(self) -> None:
         supervisor = self.supervisor
-        if supervisor is not None and supervisor.is_alive():
+        # The calling supervisor itself counts as dead: it is exiting (its finally).
+        if supervisor is not None and supervisor.is_alive() and supervisor.ident != threading.get_ident():
             return
         supervisor = threading.Thread(target=self._supervise, name="phase-loop-baml-supervisor", daemon=True)
         # Recorded BEFORE it starts: an interruption after start() can no longer
@@ -1460,12 +1478,25 @@ class _Client:
         pending, or while the baton is stranded, so that none of it waits for a
         future API call.  It only reads owner state; the launch itself is the
         owner baton's compare-and-set, and the launched candidate reclaims a
-        stranded baton (``_take_baton``) on its own thread, so an interrupted
-        reclaim never ends this backstop."""
+        stranded baton (``_take_baton``) on its own thread.
+
+        A supervisor never just ends: unless it returns on purpose (fork, or
+        closed with nothing pending), its ``finally`` starts its successor, and
+        every exiting owner candidate revives a dead one too (``_own``).  The
+        one sequence this cannot survive is an interruption inside the
+        successor launch of the LAST live recovery frame (no candidate left
+        either); then the next ``call()`` or atexit's ``stop()`` -- both takers
+        -- still recover."""
+        # No nested ``try`` in this frame (``_backstop_launch`` holds it): CPython
+        # places a nested ``try:`` line's NOP outside the enclosing handler
+        # ranges, so an exception raised at that line event (by a tracer)
+        # would skip the ``finally`` below.
+        done = False
         try:
             while True:
                 time.sleep(_SUPERVISE_S)
                 if os.getpid() != self.owner_pid:
+                    done = True
                     return
                 if self._owner_live():
                     continue
@@ -1475,14 +1506,24 @@ class _Client:
                     or self.baton_ref() is None
                 )
                 if pending:
-                    try:
-                        self._launch_owner()
-                    except Exception:  # noqa: BLE001 - no thread available now; retried next tick
-                        pass
+                    self._backstop_launch()
                 elif self.closed:
+                    done = True
                     return  # closed, and nothing registered or able to publish
-        except BaseException:  # noqa: BLE001 - a dead supervisor is recreated by the next owner pass
-            return
+        except BaseException:  # noqa: BLE001 - interrupted: the finally starts the successor
+            pass
+        finally:
+            if not done and os.getpid() == self.owner_pid:
+                try:
+                    self._ensure_supervisor()  # this thread counts as dead: a successor starts
+                except Exception:  # noqa: BLE001 - e.g. interpreter shutdown; an exiting candidate retries
+                    pass
+
+    def _backstop_launch(self) -> None:
+        try:
+            self._launch_owner()
+        except Exception:  # noqa: BLE001 - no thread available now; retried next tick
+            pass
 
     def _ensure_spawner(self) -> None:
         # The supervisor exists before any worker can: it is started with the

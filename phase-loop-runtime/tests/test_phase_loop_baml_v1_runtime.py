@@ -3095,8 +3095,8 @@ def test_owner_death_in_its_final_statement_does_not_strand_the_baton():
     the put) strands the baton; the supervisor reclaims it -- exactly one."""
     client = m._Client(test_mode=True, retries=0, deadline_s=2.0)
     real_own = m._Client._own
-    code = real_own.__code__
-    line = _line_of(real_own, "self.baton.put(token)")
+    code = m._Client._run_owner.__code__
+    line = _line_of(m._Client._run_owner, "self.baton.put(token)")
     fired: list = []
 
     def local(frame, event, arg):
@@ -3139,7 +3139,7 @@ def test_async_exception_after_baton_put_does_not_duplicate_the_token():
 
     def profile(frame, event, function):
         if (
-            frame.f_code is m._Client._own.__code__
+            frame.f_code is m._Client._run_owner.__code__
             and event == "c_return"
             and getattr(function, "__self__", None) is client.baton
             and getattr(function, "__name__", None) == "put"
@@ -3704,7 +3704,7 @@ def test_a_waiting_caller_relaunches_past_a_dead_owners_running_flag():
     yet to help (none exists before the first spawn)."""
     client = m._Client(test_mode=True, retries=0, deadline_s=2.0, queue_budget_s=m._OWNER_STALE_S + 8.0)
     real_own = m._Client._own
-    after_flag = _line_of(real_own, "self.owner_running = True") + 1
+    after_flag = _line_of(m._Client._run_owner, "self.owner_running = True") + 1
     fired: list = []
 
     def trace(frame, event, arg):
@@ -3735,16 +3735,19 @@ def test_a_waiting_caller_relaunches_past_a_dead_owners_running_flag():
 
 
 def _take_path_point(frame, event) -> bool:
-    """A point of an owner candidate's take path: any event in ``_take_baton``
-    or ``_reclaim_baton``, and ``_own``'s lines before its owner loop."""
+    """A point of an owner candidate's take path: any event in ``_own`` (the
+    thin revive frame), ``_take_baton``, ``_reclaim_baton`` or
+    ``_ensure_supervisor``, and ``_run_owner``'s lines before its owner loop."""
     code = frame.f_code
-    if code is m._Client._take_baton.__code__ or code is m._Client._reclaim_baton.__code__:
+    if code in _TAKE_PATH_CODES:
         return True
     return code is _OWN_CODE and frame.f_lineno < _TAKE_PATH_END
 
 
-_OWN_CODE = m._Client._own.__code__  # the real one: tests below patch ``_own``
-_TAKE_PATH_END = _line_of(m._Client._own, "self.owner_ident = threading.get_ident()")
+_OWN_CODE = m._Client._run_owner.__code__  # the owner body (its hand-back put is here)
+_REVIVE_CODE = m._Client._own.__code__  # the real one: tests below patch ``_own``
+_TAKE_PATH_CODES = {_REVIVE_CODE, m._Client._take_baton.__code__, m._Client._reclaim_baton.__code__, m._Client._ensure_supervisor.__code__}
+_TAKE_PATH_END = _line_of(m._Client._run_owner, "self.owner_ident = threading.get_ident()")
 
 
 def _traced_candidates(client, plan: list, record: list | None = None):
@@ -3767,7 +3770,7 @@ def _traced_candidates(client, plan: list, record: list | None = None):
             if not _take_path_point(frame, event):
                 return False
             if record is not None and k == 0:
-                record.append((event, frame.f_lineno))
+                record.append((event, frame.f_lineno, frame.f_code))
             n = seen[0]
             seen[0] += 1
             return n == target
@@ -3847,11 +3850,440 @@ def test_the_take_path_interrupted_anywhere_by_supervisor_candidates_recovers_on
     with patches[0], patches[1], patches[2], patches[3]:
         assert _supervisor_recovers([None], record=points) == (True, True, True)
         assert len(points) >= 12, points
-        assert sum(1 for kind, _ in points if kind == "c_return") >= 3, points
+        assert sum(1 for kind, *_ in points if kind == "c_return") >= 3, points
         for first in range(len(points)):
             for second in [None, *range(len(points))]:
                 result = _supervisor_recovers([first, second])
                 assert result == (True, True, True), (first, second, points[first], result)
+
+
+# Round 9 (codex F001): with NO caller, an interrupted supervisor must not end
+# autonomous recovery.  A supervisor that exits for any reason but fork or a
+# completed close starts its successor in its ``finally``; every exiting owner
+# candidate revives a dead supervisor too.  The one unrecoverable sequence --
+# the last live recovery frame interrupted inside its successor launch -- is
+# pinned below, and the next taker still recovers.
+
+
+_SUPERVISE_CODE = m._Client._supervise.__code__
+_SUPERVISOR_FRAMES = {
+    _SUPERVISE_CODE: "_supervise",
+    m._Client._backstop_launch.__code__: "_backstop_launch",
+    m._Client._launch_owner.__code__: "_launch_owner",
+    m._Client._ensure_supervisor.__code__: "_ensure_supervisor",
+}
+_SUCCESSOR_LAUNCH_START = _line_of(m._Client._supervise, "except BaseException:  # noqa: BLE001 - interrupted: the finally")
+# An interruption delivered as an asynchronous exception when ``time.sleep``
+# returns.  A first interruption raised by a tracer would unset the tracer
+# (CPython does that to a tracer that raises), so a second one could not land.
+_TICK_RETURN = ("_supervise", "c_return", _line_of(m._Client._supervise, "time.sleep(_SUPERVISE_S)"))
+
+
+_SUPERVISE_ARMED = _line_of(m._Client._supervise, "while True:")  # the first line inside its ``try``
+
+
+def _is_supervisor_prelude(point) -> bool:
+    """``done = False`` and ``try:``: the supervisor's own first statements,
+    before its ``finally`` is in place.  Killed there, it leaves no successor;
+    its starter is what revives it (an owner pass), and a dying frame that
+    started it was the last recovery frame -- the pinned limit."""
+    name, _event, line = point
+    return name == "_supervise" and line < _SUPERVISE_ARMED
+
+
+def _is_successor_launch(point) -> bool:
+    """A point of the supervisor's successor launch: its handler, its
+    ``finally`` or the ``_ensure_supervisor`` it calls (reached only after an
+    interruption)."""
+    name, _event, line = point
+    return name == "_ensure_supervisor" or (name == "_supervise" and line >= _SUCCESSOR_LAUNCH_START)
+
+
+def _traced_supervisors(client, plan: list, record: list | None = None, died: list | None = None):
+    """A ``_supervise`` replacement: the k-th supervisor started for ``client``
+    is interrupted at the points ``plan[k]`` (a tuple, in order; None or past
+    the plan: never).  A point is (frame, event, line) in ``_supervise``,
+    ``_launch_owner`` or ``_ensure_supervisor`` on the supervisor's own thread,
+    hit at its first occurrence -- or (point, n) at its n-th.  With ``record``,
+    every supervisor appends each distinct point it reaches."""
+    real = m._Client._supervise
+    started = [0]
+
+    def supervise(self):
+        if self is not client:
+            return real(self)
+        k = started[0]
+        started[0] += 1
+        targets = [t if isinstance(t[0], tuple) else (t, 1) for t in plan[k]] if k < len(plan) and plan[k] is not None else []
+        counts: dict = {}
+
+        def hit(frame, event):
+            name = _SUPERVISOR_FRAMES.get(frame.f_code)
+            if name is None:
+                return False
+            point = (name, event, frame.f_lineno)
+            counts[point] = counts.get(point, 0) + 1
+            if record is not None and point not in record:
+                record.append(point)
+            if targets and targets[0] == (point, counts[point]):
+                targets.pop(0)
+                return True
+            return False
+
+        def trace(frame, event, arg):
+            if sys.getprofile() is None:
+                # An asynchronous exception is delivered inside the profiler
+                # that set it, and CPython unsets a profiler that raises: re-arm
+                # it, so C returns after a first interruption stay reachable.
+                sys.setprofile(profile)
+            if event == "line" and hit(frame, "line"):
+                raise SystemExit
+            return trace
+
+        def profile(frame, event, arg):
+            if event == "c_return" and hit(frame, "c_return"):
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(threading.get_ident()), ctypes.py_object(KeyboardInterrupt))
+
+        sys.settrace(trace)
+        sys.setprofile(profile)
+        try:
+            try:
+                real(self)
+            finally:
+                sys.settrace(None)
+                sys.setprofile(None)
+            time.sleep(0)  # deliver a still-pending asynchronous exception here
+        except (SystemExit, KeyboardInterrupt):
+            pass
+        finally:
+            if died is not None:
+                died.append(k)
+
+    return supervise
+
+
+def _pending_strand_client(batons):
+    """A client whose owner died: recovery pending, baton stranded, no worker."""
+    client = m._Client(test_mode=True)
+    client.baton.get_nowait()  # stranded: dropped at once, nothing else references it
+    assert client.baton_ref() is None
+    client.recover = True
+    return client
+
+
+def _recovered_without_a_caller(client, batons, timeout: float = 3.0) -> tuple:
+    """Nothing here launches an owner: (owner holds the baton, one baton,
+    a supervisor alive)."""
+    owned = _wait(lambda: client._owner_live() and client.baton_ref() is not None and client.baton.empty(), timeout, 0.001)
+    supervised = _wait(lambda: client.supervisor is not None and client.supervisor.is_alive(), 1.0, 0.001)
+    return owned, batons.one(), supervised
+
+
+def _supervisor_points() -> list:
+    """Every distinct point a supervisor reaches: a clean run's loop and
+    launch, and the successor launch an interruption at its first loop point
+    leads to."""
+    points: list = []
+    patches = _fast_backstop()
+    with patches[0], patches[1], patches[2], patches[3]:
+        for plan in ([None], [(_TICK_RETURN,)]):
+            with _CountedBatons() as batons:
+                client = _pending_strand_client(batons)
+                try:
+                    with mock.patch.object(m._Client, "_supervise", _traced_supervisors(client, plan, record=points)):
+                        client._ensure_supervisor()
+                        assert _recovered_without_a_caller(client, batons) == (True, True, True), plan
+                finally:
+                    client.stop(graceful=False, timeout=2)
+    return points
+
+
+def test_supervisor_and_candidate_interrupted_anywhere_recover_with_no_caller():
+    """The sweep, extended to the supervisor: the first supervisor interrupted
+    once at each of its points (loop, owner launch, and -- reached only after
+    an interruption -- its successor launch), crossed with the first candidate
+    it launches interrupted at each point of its take path or not at all.  No
+    caller: nothing in the test launches an owner.  Always: an owner holds the
+    one baton, and a supervisor is alive."""
+    sup_points = _supervisor_points()
+    assert sum(1 for p in sup_points if _is_successor_launch(p)) >= 3, sup_points
+    assert sum(1 for p in sup_points if p[0] == "_launch_owner") >= 3, sup_points
+    cand_points: list = []
+    patches = _fast_backstop()
+    with patches[0], patches[1], patches[2], patches[3]:
+        assert _supervisor_recovers([None], record=cand_points) == (True, True, True)
+        # A single interruption never reaches the successor launch (it runs only
+        # after one); those points are crossed with a second one further below.
+        prelude = [p for p in sup_points if _is_supervisor_prelude(p)]
+        assert [p[2] for p in prelude] == [_SUPERVISE_ARMED - 2, _SUPERVISE_ARMED - 1], prelude
+        for sup in [p for p in sup_points if not _is_successor_launch(p) and not _is_supervisor_prelude(p)]:
+            for cand in [None, *range(len(cand_points))]:
+                with _CountedBatons() as batons:
+                    client = _pending_strand_client(batons)
+                    try:
+                        with mock.patch.object(m._Client, "_supervise", _traced_supervisors(client, [(sup,)])), \
+                                mock.patch.object(m._Client, "_own", _traced_candidates(client, [cand])):
+                            client._ensure_supervisor()
+                            result = _recovered_without_a_caller(client, batons)
+                    finally:
+                        client.stop(graceful=False, timeout=2)
+                assert result == (True, True, True), (sup, cand, result)
+
+
+def _held_candidate(client, release: threading.Event, then: int | None):
+    """An ``_own`` replacement: the first candidate for ``client`` waits for
+    ``release`` before it takes anything, then runs traced (interrupted at take
+    point ``then``, or not); later candidates run as they are."""
+    traced = _traced_candidates(client, [then])
+    real_own = m._Client._own
+    first = [True]
+
+    def own(self):
+        if self is client and first[0]:
+            first[0] = False
+            release.wait(10)
+            return traced(self)
+        return real_own(self)
+
+    return own
+
+
+_REVIVE_TRY_LINE = _line_of(m._Client._own, "self._run_owner()") - 1  # ``try:``: before the revive is in place
+_REVIVE_FINALLY_START = _line_of(m._Client._own, "if self.supervisor is not None and not self.closed:")
+
+
+def _inside_the_revive(point) -> bool:
+    """A candidate point inside ``_own``'s ``try`` body: interrupted there, the
+    candidate still runs its revive.  (Outside: its ``try:`` line, and the
+    revive itself.)  Recorded as (event, line) of the take path's frames."""
+    event, line, code = point
+    if code is _REVIVE_CODE:
+        return line != _REVIVE_TRY_LINE and line < _REVIVE_FINALLY_START
+    return code is not m._Client._ensure_supervisor.__code__
+
+
+def _killed_twice_plan(k) -> list:
+    """Gen-1 launches a candidate on its first tick; its second tick is
+    interrupted as its sleep returns (before it can launch again), and then
+    again at point k of its successor launch."""
+    return [((_TICK_RETURN, 2), k)]
+
+
+def test_a_supervisor_killed_in_its_successor_launch_is_revived_by_an_exiting_candidate():
+    """The supervisor is interrupted, then interrupted again inside its
+    successor launch (at each of its points), while a candidate it launched is
+    still running.  That candidate -- whether it becomes the owner or is itself
+    interrupted at any take-path point inside ``_own``'s revive -- brings the
+    supervisor back, and recovery completes with no caller."""
+    successor_points = [p for p in _supervisor_points() if _is_successor_launch(p)]
+    cand_points: list = []
+    patches = _fast_backstop()
+    no_successor = 0
+    with patches[0], patches[1], patches[2], patches[3]:
+        assert _supervisor_recovers([None], record=cand_points) == (True, True, True)
+        inside = [j for j, point in enumerate(cand_points) if _inside_the_revive(point)]
+        assert len(cand_points) - len(inside) == 1, cand_points  # only the ``try:`` line (an owner never revives here)
+        cases = [(k, None) for k in successor_points] + [(k, j) for k in successor_points[:1] for j in inside]
+        for k, then in cases:
+            with _CountedBatons() as batons:
+                client = _pending_strand_client(batons)
+                release = threading.Event()
+                died: list = []
+                try:
+                    with mock.patch.object(m._Client, "_supervise", _traced_supervisors(client, _killed_twice_plan(k), died=died)), \
+                            mock.patch.object(m._Client, "_own", _held_candidate(client, release, then)):
+                        client._ensure_supervisor()
+                        assert _wait(lambda: died[:1] == [0], 3.0), (k, died)
+                        if not client.supervisor.is_alive():
+                            no_successor += 1  # only the held candidate is left
+                        release.set()
+                        result = _recovered_without_a_caller(client, batons)
+                finally:
+                    release.set()
+                    client.stop(graceful=False, timeout=2)
+            assert result == (True, True, True), (k, then, result)
+    assert no_successor >= len(inside), no_successor  # the cases are not vacuous
+
+
+def test_the_last_recovery_frame_killed_in_its_successor_launch_waits_for_the_next_taker():
+    """The pinned limit.  No recovery frame is left, so nothing recovers on
+    its own, when (1) the supervisor is interrupted before it launched any
+    candidate and again in its own successor launch (each point of its
+    ``finally`` and of ``_ensure_supervisor`` before the successor starts;
+    an interruption in its handler still reaches the ``finally``), or (2) it is interrupted in its
+    first statements, before its ``finally`` is in place, by a starter that
+    holds nothing (here the test; in production an owner pass revives it).
+    The next taker (a call, or atexit's stop) still recovers."""
+    points = _supervisor_points()
+    in_finally_start = _line_of(m._Client._supervise, "if not done and os.getpid() == self.owner_pid:")
+    in_finally = [p for p in points if _is_successor_launch(p) and not (p[0] == "_supervise" and p[2] < in_finally_start)]
+    assert len(in_finally) >= 8 and any(p[1] == "c_return" for p in in_finally), in_finally
+    plans = [(_TICK_RETURN, k) for k in in_finally] + [(p,) for p in points if _is_supervisor_prelude(p)]
+    patches = _fast_backstop()
+    with patches[0], patches[1], patches[2], patches[3]:
+        for plan in plans:
+            with _CountedBatons() as batons:
+                client = _pending_strand_client(batons)
+                died: list = []
+                try:
+                    with mock.patch.object(m._Client, "_supervise", _traced_supervisors(client, [plan], died=died)):
+                        client._ensure_supervisor()
+                        assert _wait(lambda: died == [0], 3.0), (plan, died)
+                        time.sleep(0.3)
+                        assert not client.supervisor.is_alive() and not client._owner_live(), plan
+                        assert client.baton_ref() is None, plan
+                        # The next taker, as a waiting caller launches it:
+                        assert _wait(lambda: client._ensure_owner() or (client._owner_live() and client.baton.empty()), 3.0, 0.001)
+                        assert batons.one()
+                finally:
+                    client.stop(graceful=False, timeout=2)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "codex r9 F001 falsifier, verbatim.  On e8a5886a it fails on recovery ('no live recovery "
+    "party').  Its precondition is that the interrupted supervisor stays dead: inside the "
+    "candidate's put it joins client.supervisor and asserts it is not alive.  Round 9 removes "
+    "exactly that -- the interrupted supervisor's finally records and starts a successor, so "
+    "client.supervisor names the successor and the join raises (RuntimeError: not yet started) "
+    "or the assert fails; the put never records 'reclaim', and the test fails at its "
+    "fired == ['handback', 'reclaim'] wait.  The adapted copy below keeps every other assertion."))
+def test_candidate_and_supervisor_interruptions_recover_without_a_caller():
+    import gc
+    import sys
+    import threading
+    from unittest.mock import patch
+
+    from phase_loop_runtime import baml_modular as m
+    from test_phase_loop_baml_v1_runtime import (
+        OK, _FaultyBatonQueue, _owner_gives_up_behind_a_strand,
+        _peer_spawn, _wait,
+    )
+
+    client = m._Client(test_mode=True, retries=0, deadline_s=30)
+    faulty = _FaultyBatonQueue(client)
+    candidate_entered = threading.Event()
+    supervisor_interrupted = threading.Event()
+    previous = threading.gettrace()
+    reclaim_code = m._Client._reclaim_baton.__code__
+    supervise_code = m._Client._supervise.__code__
+    gen = None
+
+    def put(token):
+        who = faulty.callers.get(sys._getframe(1).f_code)
+        if who is not None and faulty.arm[who]:
+            faulty.arm[who] -= 1
+            if sys._getframe(1).f_code is reclaim_code:
+                candidate_entered.set()
+                assert supervisor_interrupted.wait(3)
+                client.supervisor.join(3)
+                assert not client.supervisor.is_alive()
+            faulty.fired.append(who)
+            raise SystemExit
+        faulty.q.put(token)
+
+    def trace(frame, event, arg):
+        if (frame.f_code is supervise_code and event == "line"
+                and candidate_entered.is_set()
+                and not supervisor_interrupted.is_set()):
+            supervisor_interrupted.set()
+            raise SystemExit
+        return trace
+
+    faulty.put = put
+    threading.settrace(trace)
+    try:
+        with patch.object(m, "_spawn_popen", _peer_spawn("echo")):
+            client.call("parse_closeout", {"raw": OK})
+            gen = client.gen
+            assert gen is not None and gen.proc.poll() is None
+            state, patches = _owner_gives_up_behind_a_strand(client, faulty)
+            faulty.arm["reclaim"] = 1
+            with patches[0], patches[1]:
+                assert _wait(lambda: faulty.fired == ["handback", "reclaim"], 10), faulty.fired
+            assert supervisor_interrupted.is_set()
+            assert not client.supervisor.is_alive()
+            gc.collect()
+            assert client.baton_ref() is None and client.baton.empty()
+            assert client.recover and not client.owner_running
+            assert _wait(
+                lambda: gen.proc.poll() is not None and gen not in client.generations,
+                m._REAP_BOUND_S + m._OWNER_STALE_S + 1,
+            ), ("no live recovery party", client.owner_starts,
+                client.baton.qsize(), gen.proc.poll(), len(client.generations))
+    finally:
+        threading.settrace(previous)
+        faulty.arm.update(handback=0, reclaim=0)
+        client.stop(graceful=False, timeout=3)
+        if gen is not None and gen.proc.poll() is None:
+            gen.proc.kill()
+            gen.proc.wait(5)
+
+
+def test_candidate_and_supervisor_interruptions_recover_without_a_caller_adapted():
+    """codex r9 F001, adapted: the supervisor INTERRUPTED (the one whose
+    reclaiming candidate is held) is checked dead, not ``client.supervisor``,
+    which is now its successor.  The two state checks taken after it (stranded,
+    recovery pending) are dropped: the successor may already have recovered,
+    which is the point.  The rest is codex's: a live worker, the owner gone
+    behind a strand, the reclaiming candidate interrupted while the supervisor
+    is interrupted, no caller -- and the worker must be disposed of."""
+    client = m._Client(test_mode=True, retries=0, deadline_s=30)
+    faulty = _FaultyBatonQueue(client)
+    candidate_entered = threading.Event()
+    supervisor_interrupted = threading.Event()
+    previous = threading.gettrace()
+    reclaim_code = m._Client._reclaim_baton.__code__
+    supervise_code = m._Client._supervise.__code__
+    interrupted: list = []
+    gen = None
+
+    def put(token):
+        who = faulty.callers.get(sys._getframe(1).f_code)
+        if who is not None and faulty.arm[who]:
+            faulty.arm[who] -= 1
+            if sys._getframe(1).f_code is reclaim_code:
+                interrupted.append(client.supervisor)  # the supervisor about to be interrupted
+                candidate_entered.set()
+                if supervisor_interrupted.wait(3):
+                    interrupted[0].join(3)
+            faulty.fired.append(who)
+            raise SystemExit
+        faulty.q.put(token)
+
+    def trace(frame, event, arg):
+        if (frame.f_code is supervise_code and event == "line"
+                and candidate_entered.is_set()
+                and not supervisor_interrupted.is_set()):
+            supervisor_interrupted.set()
+            raise SystemExit
+        return trace
+
+    faulty.put = put
+    threading.settrace(trace)
+    try:
+        with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo")):
+            client.call("parse_closeout", {"raw": OK})
+            gen = client.gen
+            assert gen is not None and gen.proc.poll() is None
+            state, patches = _owner_gives_up_behind_a_strand(client, faulty)
+            faulty.arm["reclaim"] = 1
+            with patches[0], patches[1]:
+                assert _wait(lambda: faulty.fired == ["handback", "reclaim"], 10), faulty.fired
+            assert supervisor_interrupted.is_set()
+            assert not interrupted[0].is_alive(), "the interrupted supervisor is still running"
+            assert _wait(
+                lambda: gen.proc.poll() is not None and gen not in client.generations,
+                m._REAP_BOUND_S + m._OWNER_STALE_S + 1,
+            ), ("no live recovery party", client.owner_starts,
+                client.baton.qsize(), gen.proc.poll(), len(client.generations))
+            assert client.supervisor is not interrupted[0] and client.supervisor.is_alive()
+    finally:
+        threading.settrace(previous)
+        faulty.arm.update(handback=0, reclaim=0)
+        client.stop(graceful=False, timeout=3)
+        if gen is not None and gen.proc.poll() is None:
+            gen.proc.kill()
+            gen.proc.wait(5)
 
 
 # claude r8 N2: the two orderings in ``_reclaim_baton`` that are load-bearing
