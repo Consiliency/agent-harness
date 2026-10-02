@@ -162,8 +162,8 @@ def test_ordinary_diagnostics_stay_readable(site, text):
 
 def test_flag_names_stay_readable():
     # The value span starts after the flag name. (A key=value pair can also be matched whole by
-    # the closeout gate's forbidden shapes, which run as detectors, so key names there are not
-    # guaranteed to survive.)
+    # the closeout gate's forbidden shapes, which run over the previous redaction's output and
+    # over this one's, so key names there are not guaranteed to survive.)
     output = credential_redaction.redact_text("--api-key Plc3s")
     assert output == "--api-key <redacted>", output
 
@@ -221,7 +221,9 @@ import _redaction_main_reference as _main  # noqa: E402
 _KEYS = ["password", "passwd", "token", "api_key", "api-key", "apiKey", "secret", "authorization",
          "dbPassword", "GITHUB_TOKEN", "access_token", "client_secret", "mysecret"]
 _KEY_QUOTES = ["", '"', "'"]
-_SEPARATORS = [":", "="]
+# Escaped separators (`\=`, `\":`) are what the closeout gate's forbidden key=value shape
+# tolerates and the other detectors do not.
+_SEPARATORS = [":", "=", "\\=", '\\"=', "\\':", '"\\:']
 _SPACES = ["", " ", "\t", " " * 17, "\t" * 20, " " * 40]
 _TRUECOLOR = "\x1b[38;2;255;100;0m"
 _WRAPS = ["plain", "truecolor", "bold_truecolor", "dq_then_tail", "sq_then_tail", "colour_inside"]
@@ -230,7 +232,8 @@ _TAILS = ["", " next", ",x", ";", " and more"]
 _SECRET = "".join(("Qz7mXw4R", "t9Kp2Lv8", "Hn3c"))
 
 
-_JOINS = [",", ";", " ", ", ", " & ", "|", "\n", ",\t"]
+# "" and "_" glue a key onto the previous value (`token\=long_password\=…`).
+_JOINS = [",", ";", " ", ", ", " & ", "|", "\n", ",\t", "", "_"]
 
 
 def _one_pair(rng):
@@ -251,13 +254,18 @@ def _one_pair(rng):
     return text, value
 
 
+# Text glued in front of the first key: a scheme word whose token swallows that key, or a
+# private path the previous final pass ran on from.
+_LEADS = ["", "", "Bearer ABCD", "token ABCD", "open /home/u/", "x"]
+
+
 def _generated_cases(count: int = 1500, seed: int = 20261001):
     """1 to 3 key/value pairs per line, joined by random punctuation, so a value grammar that
     runs over a following key is caught."""
     rng = random.Random(seed)
     for _ in range(count):
         pairs = [_one_pair(rng) for _ in range(rng.randint(1, 3))]
-        text = "".join(
+        text = rng.choice(_LEADS) + "".join(
             (rng.choice(_JOINS) if i else "") + pair_text for i, (pair_text, _) in enumerate(pairs)
         ) + rng.choice(_TAILS)
         yield text, tuple(value for _, value in pairs)
@@ -297,6 +305,14 @@ _FIXED_CASES = [
     ('password=" \n' + VALUES["alnum_with_s"] + '"', VALUES["alnum_with_s"]),
     ('password=" ' + VALUES["alnum_with_s"] + "a" * 4096 + '"', VALUES["alnum_with_s"]),
     ("x-" + ".".join(("eyJ" + "SyntheticHdr0", "eyJ" + "SyntheticBody1", "SyntheticSig2")), "SyntheticSig2"),
+    # A shape the previous redaction caught only in its final forbidden-shape pass, after its
+    # own replacements: the earlier key must not be merged away before that pass sees it.
+    ("Bearer ABCDtoken\\=long_password\\=" + VALUES["alnum_with_s"], VALUES["alnum_with_s"]),
+    ('Bearer ABCDtoken\\"=long_password\\"=' + VALUES["alnum_with_s"], VALUES["alnum_with_s"]),
+    ("Bearer ABCDtoken\\=long_password\\=" + _SECRET + " eyJ" + "SyntheticHdr0.SyntheticBody1", _SECRET),
+    # The previous final pass's private-path shape ran on across a placeholder to the next space.
+    ("open /home/u/Bearer abcdefgh123:" + _SECRET, _SECRET),
+    ("credentials:/home/u/Bearer abcdefgh123:" + _SECRET, _SECRET),
 ]
 
 
@@ -390,3 +406,97 @@ def test_placeholder_rich_stderr_excerpt_finishes_promptly():
               "_redacted_stderr_excerpt('password=x <redacted> ' * 50000)")
     result = subprocess.run([_system.executable, "-c", script], capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("text", [
+    "Bearer ABCDtoken\\=long_password\\=" + VALUES["alnum_with_s"],
+    'Bearer ABCDtoken\\"=long_password\\"=' + VALUES["alnum_with_s"],
+])
+def test_previous_final_pass_matches_are_kept(tmp_path, no_identity, text):
+    secret = VALUES["alnum_with_s"]
+    assert secret not in _main._redact_leg_text(text)
+    assert secret not in _main._sanitized_pty_tail(text.encode())
+    assert secret not in _main._private_leg_log_payload(text)
+    ref = panel_invoker._write_private_leg_log(tmp_path, "codex", text)
+    outputs = {
+        "shared": credential_redaction.redact_text(text),
+        "leg": panel_invoker._redact_leg_text(text),
+        "pty": panel_invoker._sanitized_pty_tail(text.encode()),
+        "private_log": (tmp_path / ref).read_text(),
+    }
+    assert [site for site, output in outputs.items() if secret in output] == [], outputs
+
+
+# The previous leg-detail redaction is replayed exactly: its output, built by the replay, equals
+# the frozen main-era function's output. The guarantee that head never keeps what main removed
+# rests on this equality.
+_ADVERSARIAL_CASES = [
+    "process.env[" * 40,
+    "PROCESS.ENV[a] =x process.env[b]= process.env[] = process.env[[c]]=",
+    "process.env[a] = process.env[b]\n= local env value .ENV.LOCAL VALUE .env value",
+    "éeyJabcdefghij.klmnopqrst.uv x-eyJabcdefghij.klmnopqrst. _eyJabcdefghij.klmnopqrst",
+    "eyJaaaaaaaaa.bbbbbbbbb.eyJcccccccc.ddddtoken=" + _SECRET,
+    "eyJaaaaaaaaa.eyJbbbbbbbbb.eyJcccccccc.eyJdddddddd.eyJeeeeeeee",
+    "a@b.co ~ <redacted> <user> jane@example.invalid token: <email>",
+    "diff --git a/x b/x @@ -1,2 +3,4 @@ raw transcript /home/someone/x private key",
+    "api_key\\\\\\\" :  \\'" + _SECRET + " secret=short token=" + _SECRET,
+]
+
+
+def _replayed_previous_output(text: str) -> str:
+    normalized = credential_redaction.normalize(text)
+    spans = credential_redaction._previous_leg_spans(normalized, (), ((), ()))
+    return credential_redaction._previous_leg_redaction(normalized, spans)[0]
+
+
+def test_replay_of_the_previous_redaction_is_exact():
+    cases = [text for text, _ in _FIXED_CASES] + [text for text, _ in _generated_cases()]
+    cases += [template.format(v=_embed(VALUES[cls], how))
+              for template, how, classes in SHAPES.values() for cls in sorted(classes)]
+    cases += _ADVERSARIAL_CASES
+    different = [text[:80] for text in cases if _replayed_previous_output(text) != _main._redact_leg_text(text)]
+    assert different == []
+
+
+def _random_text(rng, alphabet, size):
+    return "".join(rng.choice(alphabet) for _ in range(size))
+
+
+def test_linear_matchers_return_the_regex_matches():
+    local_env = dict(redaction._FORBIDDEN_METADATA_PATTERNS)["local_env_value"]
+    jwt = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?")
+    rng = random.Random(20261002)
+    env_parts = ["process.env[", "PROCESS.ENV[", "]", "=", " ", " ", "\n", "a", "[",
+                 ".env value", ".env.local value", "local env value", "x"]
+    jwt_parts = ["eyJ", "abcdefgh", "a", ".", "-", "_", "é", " ", "x"]
+    env_cases = [_random_text(rng, env_parts, rng.randint(1, 30)) for _ in range(3000)] + _ADVERSARIAL_CASES
+    jwt_cases = [_random_text(rng, jwt_parts, rng.randint(1, 30)) for _ in range(3000)] + _ADVERSARIAL_CASES
+    for text in env_cases:
+        expected = [(m.start(), m.end()) for m in local_env.finditer(text)]
+        assert credential_redaction._local_env_matches(text) == expected, text
+    for text in jwt_cases:
+        expected = [(m.start(), m.end()) for m in jwt.finditer(text)]
+        assert credential_redaction._jwt_spans(text, overlapping=False) == expected, text
+
+
+def test_local_env_prefixes_redact_promptly():
+    import subprocess
+    import sys as _system
+
+    script = ("from phase_loop_runtime.runner import _redacted_stderr_excerpt; "
+              "_redacted_stderr_excerpt('process.env[' * 50000)")
+    result = subprocess.run([_system.executable, "-c", script], capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("unit", ["process.env[", "process.env[a] ", "eyJ-", "token\\=long_"])
+def test_runner_stderr_excerpt_time_grows_linearly(unit):
+    def seconds(count):
+        text = unit * count
+        started = time.perf_counter()
+        runner._redacted_stderr_excerpt(text)
+        return time.perf_counter() - started
+
+    small, large = seconds(16_000), seconds(64_000)
+    # four times the input: linear work takes about four times as long, quadratic about sixteen
+    assert large < max(10 * small, 0.5), (unit, small, large)
