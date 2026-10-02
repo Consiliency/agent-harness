@@ -80,9 +80,22 @@ replace either claim.
 Subsequent activation retains both lock sets and checks the same canonical
 receipt roots used for locking before granting a generation lease. Historical
 absolute `..` spellings are resolved for scanning without rewriting the receipt.
+For zero-source receipts, both original and lexically normalized ancestors must
+be free of symlinks; validated roots remain fixed through the scan. Traditional
+non-zero-source receipts retain support for relative and symlinked recorded
+roots. Cutover writers, activation barriers, onboarding and bootstrap apply
+acquire legacy-root authority locks by physical identity in one sorted order.
+Nested cutover authority acquisition uses that same resolved identity for
+reentrancy. Authenticated receipt, pointer, inventory and journal spellings
+are never rewritten.
 When a receipt is missing, the barrier acquires the complete canonical lock union,
 including the bootstrap slot, before nested onboarding. It refuses a bootstrap
-selection that changed before acquiring that union. Newly
+selection that changed before acquiring that union. If no bootstrap was ACTIVE,
+the onboarding-only slot guard is released before returning to train fencing;
+required receipt seals and declared-root locks for deferred repositories remain
+held until lease release. The inherited apply/fencing lock-order cycle is tracked
+in Consiliency/agent-harness#1218; this repair does not establish a general
+no-deadlock invariant. Newly
 discovered legacy evidence blocks activation and releases acquired leases.
 The rescan applies to all zero-source receipts, including traditional authority
 and rotated receipts' base coverage. Non-absolute or symlinked zero-source receipt
