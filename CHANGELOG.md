@@ -26,6 +26,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
   as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
 
+### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204)
+
+- `invoke_board(pointer_brief=True)`, `advisor-board --pointer-brief` and the governed gate's `pointer_brief` declare that the brief points reviewers at files in the staged tree instead of inlining them. Nothing detects a pointer brief from its text.
+- **Before any seat launches,** a board-level preflight (`seat_preflight.py`) decides, from each seat's production route, whether it can open those files. Every seat that cannot gets the typed notice `seat_pointer_brief_unreadable`. The notice is published before the first launch: through the `on_seat_preflight` callback (the CLI prints it on stderr), a warning log, and `seat-preflight.json` in `stream_dir`.
+- **Maintainer ruling, policy (ii).** The seat still runs, but its verdict is not source-grounded, so it never counts as a passing seat. That covers:
+  - the governed landing count;
+  - the CLI floor;
+  - the pre-merge minimum of usable reviewers;
+  - the train review record;
+  - president input, where it becomes a "not counted" item.
+
+  A `DISAGREE` from such a seat still blocks. The notice also reaches the JSON payload (`notices`, `legs[].notices`, `legs[].source_grounded`, `grounded_seats`), the text summary and the governed findings.
+- **Without the flag,** every board, payload and count is unchanged. Evidence: treesitter-chunker#114, reported on agent-harness#1132.
+
 ### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
 
 - `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and
