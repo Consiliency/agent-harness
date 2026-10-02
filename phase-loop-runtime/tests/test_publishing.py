@@ -15,6 +15,7 @@ Coverage:
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -683,6 +684,7 @@ def human_gh_auth(monkeypatch):
     from phase_loop_runtime import publishing
 
     monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
+    monkeypatch.setattr(publishing, "_check_publish_origin", lambda _repo: None)
 
 
 def test_human_publish_requires_plan_and_verification_context(
@@ -981,6 +983,7 @@ def test_conflicted_human_publication_returns_typed_handoff(tmp_path, monkeypatc
     from phase_loop_runtime.convergence.broker import live
 
     repo = _make_repo(tmp_path)
+    _git(repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
     plan, verification = _human_publish_artifacts(tmp_path)
     (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
     authority_root = tmp_path / "authority"
@@ -1025,6 +1028,7 @@ def test_human_publish_operational_failure_returns_typed_handoff(tmp_path, monke
     report = {"repositories": [str(repo.resolve())], "leases": [object()]}
     released = []
     monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_publish_origin", lambda _repo: None)
     monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
     monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _worktrees: report)
     monkeypatch.setattr(live, "release_barrier_leases", released.append)
@@ -1059,6 +1063,7 @@ def test_human_publish_unexpected_execution_failure_returns_typed_handoff(
     report = {"repositories": [str(repo.resolve())], "leases": [object()]}
     released = []
     monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_publish_origin", lambda _repo: None)
     monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
     monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _worktrees: report)
     monkeypatch.setattr(live, "release_barrier_leases", released.append)
@@ -1097,6 +1102,7 @@ def test_human_publish_releases_barrier_when_broker_close_raises(tmp_path, monke
             raise OSError("close failed")
 
     monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(publishing, "_check_publish_origin", lambda _repo: None)
     monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
     monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _worktrees: report)
     monkeypatch.setattr(live, "release_barrier_leases", released.append)
@@ -1116,6 +1122,58 @@ def test_human_publish_releases_barrier_when_broker_close_raises(tmp_path, monke
         )
 
     assert released == [report]
+
+
+@pytest.mark.parametrize(
+    "origin_url", [None, "https://example.com/owner/repo.git"]
+)
+def test_invalid_origin_does_not_poison_publication_epoch(
+    tmp_path, monkeypatch, origin_url
+):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    if origin_url is not None:
+        _git(repo, "remote", "add", "origin", origin_url)
+    (repo / "owned.py").write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(
+        publishing,
+        "_check_gh_auth",
+        lambda: pytest.fail("origin refusal must precede authentication"),
+    )
+    monkeypatch.setattr(
+        live,
+        "fabpub_activation_barrier",
+        lambda _worktrees: pytest.fail("origin refusal must precede the barrier"),
+    )
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == "publication_origin_required"
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["next_step"] == "configure_supported_publication_origin"
+    checkpoint_parent = (
+        live.repository_snapshot(repo).common_dir / "phase-loop-human-publication-v1"
+    )
+    assert not checkpoint_parent.exists()
+    journal = live.repository_snapshot(repo).store_root / "evidence.jsonl"
+    records = (
+        [json.loads(line) for line in journal.read_text().splitlines()]
+        if journal.exists()
+        else []
+    )
+    assert not any(
+        row.get("state") == "outcome_ambiguous_blocked" for row in records
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1063,6 +1063,21 @@ def _check_gh_auth() -> str | None:
     return None
 
 
+def _check_publish_origin(repo: Path) -> str | None:
+    """Validate the exact origin shape the GitHub broker will later consume."""
+    from .convergence.broker.credsep import (
+        resolve_git_origin_url,
+        resolve_host_qualified_repo_slug,
+    )
+
+    try:
+        origin_url = resolve_git_origin_url(repo)
+        resolve_host_qualified_repo_slug(origin_url)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return "origin is missing or is not a supported GitHub repository URL"
+    return None
+
+
 def _audit_staged_diff(repo: Path, owned_paths: Sequence[str], *, evidence: dict | None = None) -> dict[str, Any] | None:
     owned_set = {Path(path).as_posix() for path in owned_paths}
     parent = _git_output(repo, "rev-parse", "HEAD")
@@ -1352,6 +1367,14 @@ def publish_human_invoked_from_worktree(
         )
         result["handoff"] = _human_publication_handoff(
             repo, next_step="checkout_unprotected_branch"
+        )
+        return result
+
+    origin_error = _check_publish_origin(repo)
+    if origin_error is not None:
+        result = _blocked("publication_origin_required", origin_error)
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="configure_supported_publication_origin"
         )
         return result
 
