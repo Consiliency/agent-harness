@@ -139,12 +139,21 @@ def pytest_configure(config):
 
     audit_path = os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_PATH")
     if audit_path is None:
-        audit_path = config.cache.mkdir("seat-launch-audit") / f"launches-{os.getpid()}.jsonl"
-    install_launch_audit(
+        cache = getattr(config, "cache", None)
+        if cache is None:
+            import tempfile
+            temporary = tempfile.TemporaryDirectory(prefix="phase-loop-test-launch-")
+            config.add_cleanup(temporary.cleanup)
+            directory = Path(temporary.name)
+        else:
+            directory = cache.mkdir("seat-launch-audit")
+        audit_path = directory / f"launches-{os.getpid()}.jsonl"
+    close_audit = install_launch_audit(
         audit_path,
         fail=os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_FAIL") == "1",
         native_inference_hashes=_recorded_provider_hashes(),
     )
+    config.add_cleanup(close_audit)
 
     config.addinivalue_line(
         "markers",

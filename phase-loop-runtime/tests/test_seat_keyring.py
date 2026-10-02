@@ -267,7 +267,7 @@ print(json.dumps({'proc_keys_read':True,'completed':True,'serials':sorted(serial
             assert all(value == {'value': -1, 'errno': errno.EPERM} for value in facts['reads'].values())
         else:
             assert facts['own'] != parent_ring and facts['own_size'] == 0
-            assert facts['parent_read'] < 0
+            assert facts['reads']['possession']['value'] < 0
     finally:
         if descriptor is not None:
             os.close(descriptor)

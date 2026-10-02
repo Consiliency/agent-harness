@@ -3678,7 +3678,7 @@ def _seat_secret_values(value):
     if isinstance(value, dict):
         for key, item in value.items():
             if isinstance(item, str) and len(item) >= 8 and key.lower().replace("_", "") in {
-                    "token", "accesstoken", "refreshtoken", "idtoken", "apikey"}:
+                    "token", "accesstoken", "refreshtoken", "idtoken", "apikey", "openaiapikey"}:
                 yield item
             else:
                 yield from _seat_secret_values(item)

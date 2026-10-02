@@ -1,6 +1,9 @@
 """Classified launch references remain explicit across source changes."""
 
 from pathlib import Path
+import json
+import os
+import subprocess
 
 import pytest
 
@@ -41,3 +44,22 @@ def test_runtime_launch_references_match_the_classified_inventory():
         assert key not in expected
         expected[key] = row['count']
     assert actual == expected
+
+
+def test_review_launch_stays_owned_at_each_site(tmp_path,monkeypatch,request):
+    from phase_loop_runtime import panel_invoker as pi
+    from launch_audit_hook import install
+
+    provider=tmp_path/'codex'
+    provider.write_text('#!/usr/bin/python3\nimport json,os\nprint(json.dumps({"namespace":os.stat("/proc/self/ns/pid").st_ino}))\n')
+    provider.chmod(0o700)
+    monkeypatch.setenv('SEAT_TEST_ADDED_SITE','1')
+    close_audit = install(tmp_path/'audit.jsonl',fail=True)
+    request.addfinalizer(close_audit)
+    process=pi.launch_owned([str(provider)],role=pi.SeatLaunchRole.PROVIDER_ADMIN,
+         profile=pi.SeatProfile(env={'PATH':'/usr/bin:/bin'},readonly_paths=(provider,)),
+         cwd=tmp_path,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    try:out,err=process.communicate(timeout=15)
+    finally:pi._terminate_process_group(process)
+    assert process.returncode==0,err
+    assert json.loads(out)['namespace']!=os.stat('/proc/self/ns/pid').st_ino

@@ -278,3 +278,36 @@ def test_governed_diff_does_not_run_repository_drivers(tmp_path):
     assert marker.read_text()=='called';marker.unlink()
     text=governed_bundle.staged_index_diff(repo,['a.txt'])
     assert '+after' in text and not marker.exists()
+
+
+def test_host_diff_retains_explicit_conversion_settings(tmp_path,monkeypatch):
+    repo=tmp_path/'repo';repo.mkdir()
+    subprocess.run(['/usr/bin/git','-C',str(repo),'init','-q'],check=True)
+    observed=[];original=subprocess.run
+    def run(command,**kwargs):
+        observed.append(command)
+        return original(command,**kwargs)
+    monkeypatch.setattr(review_stage.subprocess,'run',run)
+    result=review_stage.host_git(repo,'diff',capture_output=True,text=True,check=True)
+    assert result.returncode==0
+    command=next(cmd for cmd in observed if 'diff' in cmd)
+    assert '--no-textconv' in command
+    assert 'core.attributesFile=/dev/null' in command
+
+
+def test_stage_materialization_uses_index_checkout(tmp_path,monkeypatch):
+    repo=tmp_path/'repo';repo.mkdir()
+    def git(*args):return subprocess.run(['/usr/bin/git','-C',str(repo),*args],check=True,capture_output=True,text=True)
+    git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
+    (repo/'a.txt').write_text('declared source\n');git('add','.');git('commit','-qm','fixture')
+    observed=[];original=subprocess.run
+    def run(command,**kwargs):
+        observed.append(command)
+        return original(command,**kwargs)
+    monkeypatch.setattr(review_stage.subprocess,'run',run)
+    stage=review_stage.stage_review_tree(repo,parent=tmp_path)
+    try:
+        assert (stage/'a.txt').read_text()=='declared source\n'
+        assert any('checkout-index' in command for command in observed)
+        assert not any('checkout' in command for command in observed)
+    finally:review_stage.remove_review_stage(stage)

@@ -136,6 +136,7 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
                     digest.update(block)
             hashes.add(digest.hexdigest())
     descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    closed = False
     native_inference_hashes = frozenset(native_inference_hashes)
     image_cache = {}
 
@@ -170,7 +171,7 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
         return False
 
     def observe(event, args):
-        if getattr(_local, "observing", False):
+        if closed or getattr(_local, "observing", False):
             return
         if event not in {"subprocess.Popen", "os.exec", "os.posix_spawn", "os.spawn",
                          "os.system", "seat_test.fork_exec", "seat_test.fork",
@@ -228,3 +229,11 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
     os.fork = wrap(os.fork, "seat_test.fork")
     os.forkpty = wrap(os.forkpty, "seat_test.forkpty")
     pty.fork = wrap(pty.fork, "seat_test.pty_fork")
+
+    def close():
+        nonlocal closed
+        if not closed:
+            closed = True
+            os.close(descriptor)
+
+    return close

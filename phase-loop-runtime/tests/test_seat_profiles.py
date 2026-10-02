@@ -31,7 +31,7 @@ def operator_home(tmp_path, monkeypatch):
     home.mkdir()
     for directory in (".codex", ".claude", ".grok", ".gemini/antigravity-cli"):
         (home / directory).mkdir(parents=True)
-    (home / ".codex/auth.json").write_text('{"tokens":{"access_token":"synthetic-access-token","refresh_token":"synthetic-refresh-token"}}')
+    (home / ".codex/auth.json").write_text('{"OPENAI_API_KEY":"synthetic-codex-api-key","tokens":{"access_token":"synthetic-access-token","refresh_token":"synthetic-refresh-token"}}')
     (home / ".claude/.credentials.json").write_text('{"claudeAiOauth":{"accessToken":"synthetic-access-token","refreshToken":"synthetic-refresh-token","expiresAt":9999999999999}}')
     (home / ".grok/auth.json").write_text('{"token":"synthetic-grok-token"}')
     (home / ".grok/agent_id").write_text("synthetic-agent")
@@ -132,7 +132,7 @@ import json,os,pathlib,sys
 if 'login' in sys.argv:
  print('Logged in');sys.exit(0)
 state=json.loads((pathlib.Path.home()/'.codex/auth.json').read_text())
-token=state['tokens']['access_token']
+token=state['tokens']['access_token']+' '+state['OPENAI_API_KEY']
 text='The declared candidate was reviewed successfully. '+token+'\\nAGREE\\n'
 pathlib.Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text(text)
 print(text,flush=True)
@@ -157,6 +157,7 @@ print(text,flush=True)
     assert rc == 0, detail
     for value in (text, detail, (output / 'panel-codex.txt').read_text()):
         assert 'synthetic-access-token' not in value
+        assert 'synthetic-codex-api-key' not in value
     assert '[credential redacted]' in text
     assert panel_invoker._SEAT_REDACTIONS.get() == ()
 

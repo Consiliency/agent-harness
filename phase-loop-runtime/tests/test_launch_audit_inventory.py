@@ -106,3 +106,16 @@ assert blocked == (kind in {'direct','owned-bind','owned-data'})
         capture_output=True, text=True,
     )
     assert done.returncode == 0, done.stderr
+
+
+def test_suite_guard_supports_a_disabled_cache_provider(tmp_path):
+    env = dict(os.environ)
+    env.pop('PHASE_LOOP_LAUNCH_AUDIT_PATH', None)
+    env['PYTHONPATH'] = os.pathsep.join(sys.path)
+    result = subprocess.run(
+        [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+         str(Path(__file__)) + '::test_provider_detection_accepts_known_names_and_content_hashes'],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '1 passed' in result.stdout

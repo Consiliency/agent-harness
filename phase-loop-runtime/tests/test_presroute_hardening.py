@@ -330,6 +330,8 @@ def test_the_gemini_president_transport_asks_for_a_ruling_not_a_review():
 def test_the_gemini_rung_without_an_agy_credential_refuses_before_launch(tmp_path, monkeypatch):
     (tmp_path / "no-credential-home").mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "no-credential-home"))
+    monkeypatch.setattr(panel_invoker, "_seat_provider_source",
+                        lambda *_: ("gemini", "/usr/bin/true"))
     with patch.object(panel_invoker, "launch_provider", side_effect=AssertionError("unexpected launch")):
         seam = president_adapter.build_president_invoke(DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={})
         response = seam("gemini", "F001: [gemini] x")
