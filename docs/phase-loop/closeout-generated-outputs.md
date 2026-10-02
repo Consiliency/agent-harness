@@ -107,7 +107,7 @@ state.
 ### How evidence is recorded
 
 - **At closeout: every executor, every repo.** Run
-  `phase-loop-closeout-audit --repo . --record-outputs`.
+  `phase-loop-closeout-audit --repo . --record-outputs --phase ALIAS`.
   - This is a **clean, observed rebuild**. First, every existing *ignored, untracked*
     file under a declared glob is moved aside. Tracked files and untracked-but-not-
     ignored files are never touched. Each declared producer then runs in declaration
@@ -170,32 +170,32 @@ state.
 - **Binding to commit and phase.** Each invocation records the `HEAD` it ran at. If
   `HEAD` moved during the invocation, or between it and the record being written,
   nothing is recorded.
-  - The record is bound to that commit and to the **phase identity**. That identity
-    is, in order:
-    1. an explicit alias: the runner's live alias for its own verification, or
-       `--phase ALIAS` on the command line;
-    2. `PHASE_LOOP_PHASE_ALIAS`, which the runner's launcher stamps on every executor
-       child with the phase it was dispatched for, overwriting any inherited value. A
-       launch with no dispatched phase removes an inherited value instead;
-    3. `PHASE_ALIAS`.
-  - The phase identity is **never** read from `.phase-loop/state.json`. The runner
-    writes that file only after a loop ends, so during a loop it names the previous
-    phase.
-  - With **no** phase identity, nothing is recorded and nothing is accepted: the audit
-    blocks with "no phase identity". A manual run outside the runner passes
-    `--phase ALIAS` to both the recording and the audit.
-  - The runner's execute prompt names the phase on the audit command it prescribes
-    (`--record-outputs --phase ALIAS`). That reaches Claude channel and agent-view
-    sessions, which are not launched as child processes and so get no launcher
-    environment. The execute-phase skills prescribe the command without `--phase`; an
-    executor following only a skill, outside a runner-launched child, gets the
-    fail-closed "no phase identity" block until it passes `--phase`.
+  - The record is bound to that commit and to the **phase identity**, which is ONLY
+    an explicit alias: `--phase ALIAS` on the command line, or the runner's live alias
+    when its own verification records in-process.
+  - Every runner prompt that closes out writes the audit command with the phase
+    literally: `phase-loop-closeout-audit --repo . --record-outputs --phase ALIAS`.
+    That covers execute, harness-lane (the assignment's phase), repair and delegated
+    child prompts, on every route, including Claude channel and agent-view sessions.
+    The execute-phase skills show `--phase <ALIAS>` and tell the executor to use the
+    alias its prompt names.
+  - The phase identity is **never** inferred: not from `PHASE_LOOP_PHASE_ALIAS` or
+    `PHASE_ALIAS` (an inherited value can name another phase, and routes that bypass
+    the launcher have none), and not from `.phase-loop/state.json` (the runner writes
+    it only after a loop ends, so during a loop it names the previous phase).
+  - With **no** `--phase`, `--record-outputs` exits 2 before moving anything aside or
+    running a producer, and the plain audit blocks every declared output with "no
+    phase identity". A value that is not shaped like an alias (`[A-Za-z][A-Za-z0-9._-]*`),
+    such as an unsubstituted `<ALIAS>`, counts as no `--phase`.
   - At the same commit and phase, a recording extends the record, so a repair turn or
     relaunch that re-runs one producer keeps the others' evidence.
   - A different commit or phase starts empty. When the phase identity is supplied,
     another phase's evidence does not satisfy this one, even at the same commit.
-  - The guarantee is only as good as the identity. An operator who sets the same
-    `PHASE_LOOP_PHASE_ALIAS` for two phases, or passes the wrong `--phase`, defeats it.
+  - The guarantee is only as good as the identity. An executor or operator who passes
+    the wrong `--phase` defeats it. The identity is the bare phase alias, not
+    qualified by roadmap: two roadmaps committed at the same `HEAD` that reuse an
+    alias share evidence. The outputs are still those of the declared producer at that
+    commit.
 - **Symlinks.** A symlink, or any path reached through a symlinked directory, is never
   recorded and never accepted. Its content lives wherever the link points.
 

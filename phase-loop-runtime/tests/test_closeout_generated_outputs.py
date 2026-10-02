@@ -108,11 +108,12 @@ def _declaration(**overrides) -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _phase_identity(monkeypatch):
-    """Each test runs as the executor child of a dispatched phase (STATE by default),
-    and never inherits a phase identity from the developer's or CI's environment."""
-    monkeypatch.delenv("PHASE_ALIAS", raising=False)
-    monkeypatch.setenv("PHASE_LOOP_PHASE_ALIAS", "STATE")
+def _poisoned_phase_environment(monkeypatch):
+    """The audit's phase identity is ONLY an explicit alias. Both environment keys name
+    a phase no test uses, so any resolver that consulted them would bind the wrong
+    phase and turn these tests red (agent-harness#1189 round 5)."""
+    monkeypatch.setenv("PHASE_LOOP_PHASE_ALIAS", "ENV-NOT-AN-IDENTITY")
+    monkeypatch.setenv("PHASE_ALIAS", "ENV-NOT-AN-IDENTITY")
 
 
 class NodeBamlPhaseFixture:
@@ -150,13 +151,12 @@ class NodeBamlPhaseFixture:
         state = self.repo / ".phase-loop" / "state.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"current_phase": "STALE"}))
-        # The default identity (STATE) comes from the autouse `_phase_identity` fixture,
-        # so constructing this from another module never leaks it into the session.
+        # The phase this executor was dispatched for; tests pass it explicitly.
+        self.phase = "STATE"
 
     def set_phase(self, alias: str) -> None:
-        """What `launcher.launch(phase_alias=...)` stamps on the executor child. The
-        autouse `_phase_identity` fixture restores the environment afterwards."""
-        os.environ["PHASE_LOOP_PHASE_ALIAS"] = alias
+        """The alias the runner's prompt names on the audit command (`--phase`)."""
+        self.phase = alias
 
     def verify(self) -> dict:
         run_dir = self.repo / ".phase-loop" / "runs" / "exec-state"
@@ -197,7 +197,7 @@ class ReportedScenarioTest(unittest.TestCase):
             for entry in ("!! .dev-skills/", "!! dist/", "!! baml_sdk/", "!! .cache/", "!! .baml/"):
                 self.assertIn(entry, porcelain.splitlines())
 
-            result = audit_ignored_outputs(fx.repo)
+            result = audit_ignored_outputs(fx.repo, fx.phase)
             self.assertFalse(result["blocks"], result)
             self.assertEqual(result[UNKNOWN_IGNORED], [])
             self.assertIn(".dev-skills/handoffs/codex-execute-phase/latest.md", result[RUNNER_OWNED])
@@ -207,7 +207,7 @@ class ReportedScenarioTest(unittest.TestCase):
                         "baml_sdk/index.js", "dist/index.js", "dist/index.js.map",
                         "generated/baml/types.ts"]),
             )
-            self.assertEqual(main(["--repo", str(fx.repo)]), 0)
+            self.assertEqual(main(["--repo", str(fx.repo), "--phase", fx.phase]), 0)
 
     def test_the_cli_records_for_a_skill_driven_phase(self):
         """No runner: `--record-outputs` runs the declared producers itself."""
@@ -217,8 +217,8 @@ class ReportedScenarioTest(unittest.TestCase):
             # The executor ran the producers by hand: outputs exist, evidence does not.
             for script in ("scripts/gen_baml.py", "scripts/build.py"):
                 subprocess.run([sys.executable, script], cwd=fx.repo, check=True)
-            self.assertEqual(main(["--repo", str(fx.repo)]), 1)
-            self.assertEqual(main(["--repo", str(fx.repo), "--record-outputs"]), 0)
+            self.assertEqual(main(["--repo", str(fx.repo), "--phase", fx.phase]), 1)
+            self.assertEqual(main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]), 0)
             record = generated_outputs.load_record(fx.repo)
             self.assertEqual({i["source"] for i in record["invocations"]}, {"closeout-audit"})
 
@@ -230,9 +230,9 @@ class StillFailClosedTest(unittest.TestCase):
         return fx
 
     def _unknown(self, fx: NodeBamlPhaseFixture) -> dict:
-        result = audit_ignored_outputs(fx.repo)
+        result = audit_ignored_outputs(fx.repo, fx.phase)
         self.assertTrue(result["blocks"], result)
-        self.assertEqual(main(["--repo", str(fx.repo)]), 1)
+        self.assertEqual(main(["--repo", str(fx.repo), "--phase", fx.phase]), 1)
         return result
 
     def test_a_hand_placed_file_inside_a_declared_directory_blocks(self):
@@ -265,7 +265,7 @@ class StillFailClosedTest(unittest.TestCase):
             self.assertNotIn("index.js.map", incremental)
             (fx.repo / "scripts" / "build.py").write_text(incremental)
             self.assertTrue(fx.verify().get("ok"))
-            result = audit_ignored_outputs(fx.repo)
+            result = audit_ignored_outputs(fx.repo, fx.phase)
             self.assertFalse(result["blocks"], result)
             self.assertIn("dist/index.js.map", result[DECLARED_OUTPUT])
 
@@ -338,7 +338,7 @@ class StillFailClosedTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fx = self._verified(td)
             with patch.object(closeout_classifier, "_ignored_members", return_value=None):
-                result = audit_ignored_outputs(fx.repo)
+                result = audit_ignored_outputs(fx.repo, fx.phase)
             self.assertTrue(result["blocks"])
             self.assertIn("dist/", result[UNKNOWN_IGNORED])
 
@@ -396,9 +396,9 @@ class DeclarationBoundsTest(unittest.TestCase):
             bad = _declaration()
             bad["producers"][0]["outputs"] = ["**"]
             fx = NodeBamlPhaseFixture(Path(td), declaration=bad)
-            result = audit_ignored_outputs(fx.repo)
+            result = audit_ignored_outputs(fx.repo, fx.phase)
             self.assertTrue(result["probe_failed"] and result["blocks"])
-            self.assertEqual(main(["--repo", str(fx.repo)]), 2)
+            self.assertEqual(main(["--repo", str(fx.repo), "--phase", fx.phase]), 2)
 
     def test_glob_matching_is_segment_wise(self):
         self.assertTrue(generated_outputs.glob_matches("dist/**", "dist/a/b.js"))
@@ -415,10 +415,10 @@ if __name__ == "__main__":
 
 
 def _audit_blocks_on(fx, path):
-    result = audit_ignored_outputs(fx.repo)
+    result = audit_ignored_outputs(fx.repo, fx.phase)
     assert result["blocks"], result
     assert path in result[UNKNOWN_IGNORED], result
-    assert main(["--repo", str(fx.repo)]) == 1
+    assert main(["--repo", str(fx.repo), "--phase", fx.phase]) == 1
     return result
 
 
@@ -511,8 +511,8 @@ def test_the_next_phase_passes_once_it_reruns_the_deterministic_producers(tmp_pa
     marker.write_text("next phase\n")
     commit_fixture_paths(fx.repo, "next phase", marker)
     fx.write_handoff()
-    assert main(["--repo", str(fx.repo)]) == 1          # stale evidence alone blocks
-    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert main(["--repo", str(fx.repo), "--phase", fx.phase]) == 1          # stale evidence alone blocks
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0
 
 
 def test_metadata_only_touch_launders_a_planted_file(tmp_path):
@@ -537,8 +537,8 @@ def test_a_partial_rerun_keeps_the_other_producers_evidence(tmp_path):
     recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
     build = next(p for p in recorder.declaration.producers if p.name == "build")
     assert recorder.run(build) == 0
-    recorder.write(source="closeout-audit", run_id=None)
-    result = audit_ignored_outputs(fx.repo)
+    recorder.write(source="closeout-audit", run_id=None, phase_alias=fx.phase)
+    result = audit_ignored_outputs(fx.repo, fx.phase)
     assert not result["blocks"], result
     assert "baml_sdk/index.js" in result[DECLARED_OUTPUT]
 
@@ -604,7 +604,7 @@ def test_a_handoff_for_another_repo_or_commit_blocks(tmp_path):
         result = _audit_blocks_on(fx, ".dev-skills/handoffs/codex-execute-phase/latest.md")
         assert why in next(iter(result["unknown_reasons"].values()))
     fx.write_handoff(good)
-    assert main(["--repo", str(fx.repo)]) == 0
+    assert main(["--repo", str(fx.repo), "--phase", fx.phase]) == 0
 
 
 def test_a_recording_failure_is_surfaced_not_swallowed(tmp_path):
@@ -642,7 +642,7 @@ def test_a_partial_rerun_after_a_commit_does_not_inherit_the_old_phase(tmp_path)
     recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
     build = next(p for p in recorder.declaration.producers if p.name == "build")
     assert recorder.run(build) == 0
-    recorder.write(source="closeout-audit", run_id=None)
+    recorder.write(source="closeout-audit", run_id=None, phase_alias=fx.phase)
     _audit_blocks_on(fx, "baml_sdk/index.js")
 
 
@@ -672,8 +672,8 @@ def test_touch_only_does_not_credit_a_planted_file(tmp_path):
 
 
 def test_next_phase_at_same_head_requires_its_own_producer_invocation(tmp_path):
-    """codex r2 F002, plus Claude N1, at the identity level: the CORE child carries
-    PHASE_LOOP_PHASE_ALIAS=CORE, which `launcher.launch(phase_alias=...)` stamps (see
+    """codex r2 F002, plus Claude N1, at the identity level: the CORE executor runs the
+    audit with `--phase CORE`, as its prompt prescribes (see
     `test_child_audit_uses_the_live_runner_phase` for the real run_loop path)."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
@@ -717,9 +717,9 @@ def test_record_cannot_rebind_old_invocations_to_a_new_head(tmp_path):
     commit_fixture_paths(fx.repo, "change producer input before evidence is persisted", schema)
     assert generated_outputs.head_commit(fx.repo) != old_head
     recorder.write(source="runner-verification", run_id="exec-state", phase_alias="STATE")
-    result = audit_ignored_outputs(fx.repo)
+    result = audit_ignored_outputs(fx.repo, fx.phase)
     assert "dist/index.js" in result["unknown_ignored"], result
-    assert main(["--repo", str(fx.repo)]) == 1
+    assert main(["--repo", str(fx.repo), "--phase", fx.phase]) == 1
     assert any("HEAD moved" in error for error in recorder.errors)
 
 
@@ -729,11 +729,11 @@ def test_record_outputs_rebuild_moves_planted_and_orphaned_files_aside(tmp_path)
     is moved aside (never deleted) instead of riding along."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
-    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0
     orphan = fx.repo / "dist" / "old.js"           # a file the build no longer emits
     orphan.write_text("left over from an earlier build\n")
-    assert main(["--repo", str(fx.repo)]) == 1
-    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert main(["--repo", str(fx.repo), "--phase", fx.phase]) == 1
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0
     assert not orphan.exists()
     displaced = sorted((fx.repo / generated_outputs.DISPLACED_RELDIR).glob("*/dist/old.js"))
     assert displaced and displaced[-1].read_text() == "left over from an earlier build\n"
@@ -759,8 +759,8 @@ def test_same_producer_twice_in_one_recording_keeps_first_write(tmp_path):
     assert recorder.run(baml) == 0
     assert recorder.run(build) == 0
     assert recorder.run(build) == 0                 # rewrites identical bytes: no new write
-    recorder.write(source="closeout-audit", run_id=None)
-    result = audit_ignored_outputs(fx.repo)
+    recorder.write(source="closeout-audit", run_id=None, phase_alias=fx.phase)
+    result = audit_ignored_outputs(fx.repo, fx.phase)
     assert not result["blocks"], result
     assert "dist/index.js" in result[DECLARED_OUTPUT]
 
@@ -785,7 +785,7 @@ def test_record_outputs_bounds_a_hanging_producer(tmp_path, monkeypatch):
     decl["producers"][1]["command"] = [sys.executable, "-c", "import time; time.sleep(30)"]
     fx = NodeBamlPhaseFixture(tmp_path, declaration=decl)
     monkeypatch.setenv("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1")
-    record = generated_outputs.run_declared_producers(fx.repo)
+    record = generated_outputs.run_declared_producers(fx.repo, phase=fx.phase)
     codes = {i["producer"]: i["exit_code"] for i in record["invocations"]}
     assert codes == {"baml": 0, "build": 124}
 
@@ -813,7 +813,7 @@ def test_a_corrupt_record_entry_is_a_typed_refusal_not_a_crash(tmp_path):
     record_path.write_text(json.dumps(record))
     result = _audit_blocks_on(fx, "dist/index.js")
     assert "no recorded producer invocation wrote" in result["unknown_reasons"]["dist/index.js"]
-    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0
 
 
 def test_the_clean_rebuild_never_moves_tracked_or_unignored_files(tmp_path):
@@ -828,7 +828,7 @@ def test_the_clean_rebuild_never_moves_tracked_or_unignored_files(tmp_path):
     commit_fixture_paths(fx.repo, "track a file under dist", fx.repo / ".gitignore", tracked)
     untracked = fx.repo / "dist" / "notes.md"
     untracked.write_text("untracked, not ignored\n")
-    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0
     assert tracked.read_text() == "tracked\n" and untracked.exists()
 
 
@@ -842,7 +842,7 @@ def test_a_partial_rerun_in_another_phase_at_the_same_head_starts_fresh(tmp_path
     recorder = generated_outputs.ProducerRecorder.for_repo(fx.repo)
     build = next(p for p in recorder.declaration.producers if p.name == "build")
     assert recorder.run(build) == 0
-    record = recorder.write(source="closeout-audit", run_id=None)
+    record = recorder.write(source="closeout-audit", run_id=None, phase_alias=fx.phase)
     assert record["phase"] == "CORE"
     assert "baml_sdk/index.js" not in record["files"]
     _audit_blocks_on(fx, "baml_sdk/index.js")
@@ -861,17 +861,21 @@ def test_an_invocation_that_straddles_a_commit_is_not_recorded(tmp_path):
     marker.write_text("landed mid-invocation\n")
     commit_fixture_paths(fx.repo, "commit during the build", marker)
     recorder.after(token, 0)
-    assert recorder.write(source="closeout-audit", run_id=None) is None
+    assert recorder.write(source="closeout-audit", run_id=None, phase_alias=fx.phase) is None
     assert any("HEAD moved" in error for error in recorder.errors)
 
 
-# --- round-3 board falsifiers (agent-harness#1189 at e797af15) ------------------------
+# --- rounds 3-5: the phase identity is EXPLICIT (agent-harness#1189) -------------------
+#
+# Round 5 replaced the launcher's environment stamp: every runner prompt that closes out
+# writes `--phase <alias>` literally (prompts.closeout_audit_instruction), and the audit
+# resolves its identity from that argument alone.
 
 
-def test_next_phase_at_same_head_verbatim_with_no_phase_identity(tmp_path, monkeypatch):
-    """codex r2 F002, verbatim body. The audit runs with NO phase identity in the
-    environment (as before this PR stamped one), so it must not borrow STATE's record.
-    With no identity the audit fails closed instead of falling back to state.json."""
+def test_next_phase_at_same_head_verbatim_with_no_phase_identity(tmp_path):
+    """codex r2 F002, verbatim body. The audit is given no `--phase`, the persisted state
+    still names the previous phase (as it does mid-loop) and the environment names
+    another, so it must not borrow STATE's record from any of them: it fails closed."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
     fx.roadmap.write_text(fx.roadmap.read_text() + "\n### Phase 1 - Core (CORE)\n")
@@ -884,10 +888,9 @@ def test_next_phase_at_same_head_verbatim_with_no_phase_identity(tmp_path, monke
     commit_fixture_paths(fx.repo, "plan both phases in advance", core, plan, fx.roadmap)
     assert fx.verify()["ok"]
     head = generated_outputs.head_commit(fx.repo)
-    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS")
-    # The persisted state still names the previous phase, as it does mid-loop: a
-    # fallback to it would wrongly match STATE's record.
     (fx.repo / ".phase-loop/state.json").write_text(json.dumps({"current_phase": "STATE"}))
+    os.environ["PHASE_LOOP_PHASE_ALIAS"] = "STATE"     # restored by the autouse fixture
+    os.environ["PHASE_ALIAS"] = "STATE"
     run_dir = fx.repo / ".phase-loop/runs/exec-core"
     run_dir.mkdir(parents=True)
     summary = runner._run_execute_verification(
@@ -898,13 +901,15 @@ def test_next_phase_at_same_head_verbatim_with_no_phase_identity(tmp_path, monke
     assert generated_outputs.head_commit(fx.repo) == head
     result = audit_ignored_outputs(fx.repo)
     assert "dist/index.js" in result["unknown_ignored"], result
+    assert result["unknown_reasons"]["dist/index.js"] == generated_outputs.NO_PHASE_IDENTITY
     assert main(["--repo", str(fx.repo)]) == 1
 
 
 def test_child_audit_uses_the_live_runner_phase(tmp_path, monkeypatch):
-    """codex r3 F001 (verbatim): a real `run_loop(phase="CORE")` launches a command
-    executor whose own audit must bind to CORE, not to STATE's record and not to the
-    stale persisted `current_phase`."""
+    """codex r3 F001 (verbatim body): a real `run_loop(phase="CORE")` launches a command
+    executor. Its phase-less audit must not credit STATE's record from the stale
+    persisted `current_phase` (or anything else); it refuses. The same child running
+    the audit with the `--phase` it was dispatched with binds to CORE."""
 
     from phase_loop_runtime.launcher import AuthPreflightResult
     from phase_loop_runtime.models import StateSnapshot
@@ -926,7 +931,8 @@ def test_child_audit_uses_the_live_runner_phase(tmp_path, monkeypatch):
     probe.write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "from phase_loop_runtime.closeout_classifier import audit_ignored_outputs\n"
-        "result = {'phase': sys.argv[1], 'audit': audit_ignored_outputs(Path.cwd())}\n"
+        "result = {'phase': sys.argv[1], 'audit': audit_ignored_outputs(Path.cwd()),\n"
+        "          'explicit': audit_ignored_outputs(Path.cwd(), sys.argv[1])}\n"
         "Path('.phase-loop/child-audit.json').write_text(json.dumps(result))\n"
         f"print({output!r})\n"
     )
@@ -936,8 +942,7 @@ def test_child_audit_uses_the_live_runner_phase(tmp_path, monkeypatch):
         timestamp="2026-10-01T00:00:00Z", repo=str(fx.repo), roadmap=str(fx.roadmap),
         phases={"STATE": "planned", "CORE": "planned"}, current_phase="STATE",
     ))
-    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS", raising=False)
-    monkeypatch.delenv("PHASE_ALIAS", raising=False)
+    monkeypatch.setenv("PHASE_LOOP_PHASE_ALIAS", "STATE")   # an inherited stale value
     monkeypatch.setenv("PYTHONPATH", str(Path(generated_outputs.__file__).parents[1]))
     monkeypatch.setattr(runner, "run_auth_preflight", lambda *a, **k: AuthPreflightResult(ok=True, metadata={}))
     monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
@@ -949,85 +954,212 @@ def test_child_audit_uses_the_live_runner_phase(tmp_path, monkeypatch):
     observed = json.loads((fx.repo / ".phase-loop/child-audit.json").read_text())
     assert observed["phase"] == "CORE"
     assert "dist/index.js" in observed["audit"]["unknown_ignored"], observed
-    assert "not 'CORE'" in observed["audit"]["unknown_reasons"]["dist/index.js"], observed
+    assert observed["audit"]["unknown_reasons"]["dist/index.js"] == generated_outputs.NO_PHASE_IDENTITY
+    assert "phase 'STATE', not 'CORE'" in observed["explicit"]["unknown_reasons"]["dist/index.js"], observed
 
 
-def test_the_launcher_stamps_the_live_phase_over_an_inherited_one(tmp_path):
-    """The positive half: the child sees exactly the dispatched alias, even when the
-    parent environment carries a stale one."""
+# One test per prompt route that closes out: each writes the audit with ITS alias.
 
-    from phase_loop_runtime.launcher import launch
-
-    out = tmp_path / "alias.txt"
-    script = f"import os; open({str(out)!r}, 'w').write(os.environ.get('PHASE_LOOP_PHASE_ALIAS', ''))"
-    launch([sys.executable, "-c", script], env={**os.environ, "PHASE_LOOP_PHASE_ALIAS": "STALE"},
-           phase_alias="CORE", timeout_seconds=60)
-    assert out.read_text() == "CORE"
-    # With no dispatched phase the inherited alias is a guess, so the child gets none.
-    launch([sys.executable, "-c", script], env={**os.environ, "PHASE_LOOP_PHASE_ALIAS": "STALE"},
-           timeout_seconds=60)
-    assert out.read_text() == ""
+AUDIT_FORMS = (
+    "phase-loop-closeout-audit --repo . --record-outputs --phase {alias}`",
+    "python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase {alias}`",
+)
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="lease supervision relies on prctl")
-def test_the_lease_supervised_launch_keeps_the_stamped_phase(tmp_path):
-    """Production run_loop launches under a lease authority, which re-enters `launch`
-    without `phase_alias`; the stamp must survive that re-entry."""
-
-    import fcntl
-
-    from phase_loop_runtime.launcher import launch
-
-    class _Lease:
-        generation = "closeout-phase-test"
-
-        def __init__(self, fd: int) -> None:
-            self._fd = fd
-
-        def fileno(self) -> int:
-            return self._fd
-
-    fd = os.open(tmp_path / "lease.lock", os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        out = tmp_path / "alias.txt"
-        script = f"import os; open({str(out)!r}, 'w').write(os.environ.get('PHASE_LOOP_PHASE_ALIAS', ''))"
-        result = launch([sys.executable, "-c", script], lease_authority=_Lease(fd),
-                        log_path=tmp_path / "executor.log", env={**os.environ, "PHASE_LOOP_PHASE_ALIAS": "STALE"},
-                        phase_alias="CORE")
-        assert not result.failed, result
-        assert out.read_text() == "CORE"
-    finally:
-        os.close(fd)
+def _prompt_text(bundle) -> str:
+    return f"{bundle.body}\n{bundle.context_body or ''}\n{bundle.render_context()}"
 
 
-def test_the_execute_prompt_passes_the_phase_to_the_audit(tmp_path, monkeypatch):
-    """Channel and agent-view sessions get no launcher env, so the prompt itself names
-    the phase on every audit command it prescribes."""
+def _assert_audit_names(bundle, alias: str) -> None:
+    text = _prompt_text(bundle)
+    for form in AUDIT_FORMS:
+        assert form.format(alias=alias) in text, (form, alias)
+    # ...and never a phase-less form an executor could follow instead.
+    assert "--repo . --record-outputs`" not in text
+    assert "--record-outputs --phase <" not in text
+
+
+@pytest.fixture
+def prompt_fx(tmp_path, monkeypatch):
+    monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+    return NodeBamlPhaseFixture(tmp_path)
+
+
+def test_the_execute_prompt_names_the_phase_on_the_audit(prompt_fx):
+    from phase_loop_runtime.prompts import build_prompt
+
+    _assert_audit_names(build_prompt("execute", prompt_fx.roadmap, phase="STATE", plan=prompt_fx.plan), "STATE")
+
+
+@pytest.mark.parametrize(("kind", "prompt_kind"), [
+    ("lane_execute", "implementation"), ("lane_review", "review"),
+    ("phase_reducer", "reducer"), ("phase_verify", "verify"),
+])
+def test_every_harness_lane_prompt_names_the_assignment_phase_on_the_audit(prompt_fx, kind, prompt_kind):
+    """codex r4 F001: the lane route returned before the audit instruction. Every
+    prompt kind the lane builder renders goes through the same wrapper."""
+
+    from phase_loop_runtime.models import HarnessLaneAssignment
+    from phase_loop_runtime.prompts import build_prompt
+
+    assignment = HarnessLaneAssignment(phase="LANEPH", lane_id="SL-0", work_unit_kind=kind,
+                                       prompt_kind=prompt_kind, owned_files=("scripts/build.py",))
+    bundle = build_prompt("execute", prompt_fx.roadmap, phase="OTHER", plan=prompt_fx.plan,
+                          harness_lane_assignment=assignment)
+    _assert_audit_names(bundle, "LANEPH")
+
+
+def test_the_repair_prompt_names_the_phase_on_the_audit(prompt_fx):
+    """codex r4 F001: the repair route was built without the audit instruction."""
 
     from phase_loop_runtime.prompts import build_prompt
 
-    monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+    _assert_audit_names(build_prompt("repair", prompt_fx.roadmap, phase="STATE", plan=prompt_fx.plan), "STATE")
+
+
+@pytest.mark.parametrize("action", ["execute", "repair"])
+def test_a_delegated_child_prompt_names_the_parent_phase_on_the_audit(prompt_fx, action):
+    """`launch_delegated_child` builds its child prompt through `build_prompt` with the
+    parent's phase; the delegation context must not drop the audit's identity."""
+
+    from phase_loop_runtime.prompts import build_prompt
+    from phase_loop_test_utils import build_fake_delegation_request
+
+    request = build_fake_delegation_request(request_id="r1", target_executor="claude", product_action=action)
+    bundle = build_prompt(action, prompt_fx.roadmap, phase="PARENT", plan=prompt_fx.plan,
+                          harness_target="claude", delegation_request=request)
+    _assert_audit_names(bundle, "PARENT")
+
+
+@pytest.mark.parametrize("action", ["lane", "repair"])
+def test_channel_closeout_receives_phase_on_every_prompt_route(tmp_path, monkeypatch, action):
+    """codex r4 F001 falsifier, verbatim body: a Claude CHANNEL session (no launcher
+    environment at all) follows the audit command its prompt gives it."""
+
+    import re
+    import shlex
+
+    from phase_loop_runtime import launcher
+    from phase_loop_runtime.models import HarnessLaneAssignment
+
     fx = NodeBamlPhaseFixture(tmp_path)
-    bundle = build_prompt("execute", fx.roadmap, phase="STATE", plan=fx.plan)
-    text = f"{bundle.body}\n{bundle.context_body or ''}"
-    assert "phase-loop-closeout-audit --repo . --record-outputs --phase STATE`" in text
-    assert "closeout_classifier --repo . --record-outputs --phase STATE`" in text
+    assert fx.verify()["ok"]
+    (fx.repo / ".phase-loop/state.json").unlink()
+    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS", raising=False)
+    monkeypatch.delenv("PHASE_ALIAS", raising=False)
+    monkeypatch.setenv("PHASE_LOOP_CLAUDE_ROUTE", "channel")
+    monkeypatch.setenv("PHASE_LOOP_CHANNEL_SESSION_ID", "test-session")
+    observed = {}
+    skill = Path(launcher.__file__).parent / "skills_bundle/claude-execute-phase/SKILL.md"
+    monkeypatch.setattr(
+        "phase_loop_runtime.injection._resolve_pack_skill_dirs",
+        lambda repo, harness, names: {name: skill.parent.parent / name for name in names},
+    )
+
+    class FakeChannel:
+        def __init__(self, **kwargs):
+            pass
+
+        def send_and_wait(self, text):
+            observed["text"] = text
+            pattern = r"`(phase-loop-closeout-audit --repo \. --record-outputs[^`]*)`"
+            match = re.search(pattern, text) or re.search(pattern, skill.read_text())
+            assert match is not None
+            args = shlex.split(match.group(1))[1:]
+            args[args.index("--repo") + 1] = str(fx.repo)
+            observed["exit"] = main(args)
+            observed["audit"] = audit_ignored_outputs(fx.repo)
+            return launcher.ClaudeRouteResult(
+                route="claude_channel", session_id="test-session",
+                event_id="test", status="done", text="finished",
+            )
+
+    monkeypatch.setattr(launcher, "ChannelSidecarClient", FakeChannel)
+    if action == "lane":
+        assignment = HarnessLaneAssignment(
+            phase="STATE", lane_id="SL-0", work_unit_kind="lane_execute",
+            prompt_kind="implementation", owned_files=("scripts/build.py",),
+        )
+        runner.launch_harness_lane_work_unit(
+            repo=fx.repo, roadmap=fx.roadmap, plan=fx.plan,
+            assignment=assignment, executor="claude", dry_run=False,
+        )
+    else:
+        from phase_loop_runtime.profiles import resolve_profile_for_executor
+        from phase_loop_runtime.prompts import build_prompt
+
+        request = launcher.build_launch_request(
+            executor="claude", action="repair", repo=fx.repo, roadmap=fx.roadmap,
+            phase="STATE", plan=fx.plan,
+            model_selection=resolve_profile_for_executor(action="repair", executor="claude"),
+            prompt_bundle=build_prompt("repair", fx.roadmap, phase="STATE",
+                                       plan=fx.plan, harness_target="claude"),
+            json_output=False, bypass_approvals=False,
+        )
+        launcher.launch_with_spec(launcher.build_launch_spec(request))
+    assert observed["exit"] == 0, observed["audit"]
 
 
-def test_record_outputs_without_a_phase_identity_records_nothing(tmp_path, monkeypatch):
-    """Claude R3_A: no live alias and no --phase -> no record, so nothing is accepted;
-    `--phase` restores the CLI path."""
+def test_record_outputs_without_a_phase_refuses_before_touching_anything(tmp_path):
+    """Claude R3_A / Grok r4 G-5: with a declaration and no `--phase`, `--record-outputs`
+    exits 2 BEFORE moving anything aside or running a producer; nothing is recorded,
+    and the environment is never consulted."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
-    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS")
-    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 1
-    assert not (fx.repo / generated_outputs.RECORD_RELPATH).exists()   # not even a null-phase file
-    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", "STATE"]) == 0
-    assert main(["--repo", str(fx.repo)]) == 1                     # still no identity
+    for _ in range(2):   # the second run moves the first build aside, so displaced/ exists
+        assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", "STATE"]) == 0
+    before = {p: p.read_bytes() for p in (fx.repo / "dist").rglob("*") if p.is_file()}
+    record_before = (fx.repo / generated_outputs.RECORD_RELPATH).read_bytes()
+    displaced = fx.repo / generated_outputs.DISPLACED_RELDIR
+    displaced_before = sorted(displaced.iterdir())
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 2
+    assert sorted(displaced.iterdir()) == displaced_before          # nothing moved aside
+    assert {p: p.read_bytes() for p in (fx.repo / "dist").rglob("*") if p.is_file()} == before
+    assert (fx.repo / generated_outputs.RECORD_RELPATH).read_bytes() == record_before
+    with pytest.raises(generated_outputs.PhaseIdentityError):
+        generated_outputs.run_declared_producers(fx.repo)
+    # The plain audit with no identity blocks, naming the remedy.
+    assert main(["--repo", str(fx.repo)]) == 1
     reason = audit_ignored_outputs(fx.repo)["unknown_reasons"]["dist/index.js"]
-    assert reason.startswith("no phase identity"), reason
+    assert reason == generated_outputs.NO_PHASE_IDENTITY and "--phase" in reason
     assert main(["--repo", str(fx.repo), "--phase", "STATE"]) == 0
+
+
+def test_an_unsubstituted_placeholder_is_not_a_phase_identity(tmp_path):
+    """A skill shows `--phase <ALIAS>`. Run literally without a shell, that would give
+    every phase the same identity, so a value that is not roadmap-alias-shaped is
+    refused exactly like a missing one."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    for bad in ("<ALIAS>", "<PHASE_ALIAS>", "", "  ", "A B", "'CORE'", "-CORE"):
+        assert generated_outputs.current_phase(bad) is None, bad
+    assert generated_outputs.current_phase(" CORE ") == "CORE"
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", "<ALIAS>"]) == 2
+    assert not (fx.repo / generated_outputs.RECORD_RELPATH).exists()
+
+
+def test_the_mismatch_hint_names_the_phase(tmp_path):
+    """Grok r4 G-2: the remedy an operator copies must carry `--phase`."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    reason = audit_ignored_outputs(fx.repo, "CORE")["unknown_reasons"]["dist/index.js"]
+    assert "--record-outputs --phase CORE`" in reason, reason
+
+
+def test_the_execute_phase_skills_prescribe_the_audit_with_a_phase():
+    """Grok r4 G-2: every shipped execute-phase skill writes `--phase <ALIAS>` on the
+    audit command, never the phase-less form."""
+
+    root = Path(generated_outputs.__file__).parent / "skills_bundle"
+    skills = sorted(root.glob("*-execute-phase/SKILL.md"))
+    assert skills
+    for skill in skills:
+        text = skill.read_text()
+        if "closeout-audit" not in text:
+            continue
+        assert "--record-outputs --phase <ALIAS>`" in text, skill
+        assert "--repo . --record-outputs`" not in text, skill
 
 
 def test_a_corrupt_record_at_top_level_is_typed(tmp_path):
@@ -1038,7 +1170,7 @@ def test_a_corrupt_record_at_top_level_is_typed(tmp_path):
     path = fx.repo / generated_outputs.RECORD_RELPATH
     for bad in ("[]", '"x"', "null", '{"schema": 1, "files": [], "head": 3}'):
         path.write_text(bad)
-        result = audit_ignored_outputs(fx.repo)
+        result = audit_ignored_outputs(fx.repo, fx.phase)
         assert result["blocks"] and not result["probe_failed"], (bad, result)
 
 
@@ -1070,10 +1202,19 @@ def test_a_timed_out_producer_takes_its_children_with_it(tmp_path):
 
 
 def test_displacement_directories_are_bounded(tmp_path):
-    """Claude r3 nit: only the newest DISPLACED_KEEP displacements are kept."""
+    """Claude r3 nit: only the newest DISPLACED_KEEP displacements are kept. Grok r4 G-1
+    (mutation K): pin the DIRECTION too, so the prune can never delete the
+    displacement it just made, or keep the oldest."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
+    root = fx.repo / generated_outputs.DISPLACED_RELDIR
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0  # first build
+    made = []
     for _ in range(generated_outputs.DISPLACED_KEEP + 2):
-        assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
-    kept = list((fx.repo / generated_outputs.DISPLACED_RELDIR).iterdir())
+        seen = {entry.name for entry in root.iterdir()} if root.exists() else set()
+        assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", fx.phase]) == 0
+        (new,) = {entry.name for entry in root.iterdir()} - seen
+        made.append(new)
+    kept = sorted(entry.name for entry in root.iterdir())
     assert len(kept) == generated_outputs.DISPLACED_KEEP
+    assert made[-1] in kept and made[0] not in kept and made[1] not in kept, (made, kept)

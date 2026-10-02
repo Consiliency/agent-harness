@@ -399,19 +399,21 @@ def main(argv: list[str]) -> int:
     ``--record-outputs`` (agent-harness#1139) first runs, one at a time and under
     observation, every producer the committed ``.phase-loop-generated-outputs.json``
     declares. It records what each invocation wrote, bound to HEAD, then audits.
-    With no declaration it is a no-op, so executors pass it in every repo. The
+    With no declaration it is a no-op, so executors pass it in every repo. With a
+    declaration it needs ``--phase ALIAS`` and exits 2, before touching anything,
+    without one. The
     runner's verification records the same evidence when it runs a declared
     producer command.
     """
 
     repo = Path(argv[argv.index("--repo") + 1]) if "--repo" in argv else Path.cwd()
-    # The phase the evidence must belong to; defaults to PHASE_LOOP_PHASE_ALIAS, which
-    # the launcher stamps on executor children. Never `.phase-loop/state.json`.
+    # The phase the evidence must belong to: ONLY this explicit argument (the runner's
+    # prompts write it literally). Never the environment or `.phase-loop/state.json`.
     phase = argv[argv.index("--phase") + 1] if "--phase" in argv else None
     if "--record-outputs" in argv:
         try:
             generated_outputs.run_declared_producers(repo, phase=phase)
-        except generated_outputs.DeclarationError as exc:
+        except (generated_outputs.DeclarationError, generated_outputs.PhaseIdentityError) as exc:
             print(f"closeout-ignored-audit: CANNOT RECORD — {exc}")
             return 2
     result = audit_ignored_outputs(repo, phase)

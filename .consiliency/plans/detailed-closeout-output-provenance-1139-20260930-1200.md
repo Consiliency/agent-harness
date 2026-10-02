@@ -100,6 +100,21 @@ what an observed invocation of the producer itself wrote, at the current commit.
   killed on timeout.
 - **`displaced/`** is pruned to the newest 5.
 
+**Round-5 amendment (board review at b694dcb5; supersedes the round-3 phase-identity
+bullets above):**
+- **Phase identity is explicit only.** Every route the environment stamp missed
+  (lane and repair prompts, channel and agent-view sessions) showed the stamp could not
+  be made complete, so it is removed: `launch`/`launch_with_spec` take no
+  `phase_alias`, and no launch site passes one. `current_phase` is the explicit alias
+  or `None`.
+- **`prompts.closeout_audit_instruction(phase)`** writes the audit command once, with
+  `--phase <alias>`. The execute prompt inlines it; lane and repair prompts append it
+  (`_with_closeout_audit`); delegated children are built through those branches.
+- **`--record-outputs` without `--phase`** raises `PhaseIdentityError` before
+  displacement (CLI exit 2).
+- **Skills and the mismatch hint** show `--phase <ALIAS>`.
+- `verification_evidence._phase_alias` is unchanged.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
 - `observe_stages(observer)` / `_observed_stage` — add. A context-var seam brackets
   each command and suite stage of `run_verification`.
@@ -169,6 +184,7 @@ tests, and the docs.
   - stop passing the observer;
   - make `--record-outputs` fail without a declaration;
   - credit a failed producer;
+  - round 5: read either environment key, a prompt route omits `--phase`, record without `--phase` after displacing, hint without `--phase`, prune keeps the oldest;
   - round 3: fall back to state.json, no launcher stamp, setdefault stamp, keep an inherited alias when none is dispatched, strip the stamp on lease re-entry, no `--phase` in the prompt, run_loop passes no alias, accept or record an unknown phase, unbounded timeout, kill the child only, no pruning;
   - round 2: mtime counts, no phase check, the epoch ignores phase, HEAD checked only at write, a straddle allowed, no displacement, displace tracked files, drop in-recording `mine`, allow string shell syntax, no default timeout, commit read from the whole file, corrupt entries kept, the CLI ignores `--phase`.
 

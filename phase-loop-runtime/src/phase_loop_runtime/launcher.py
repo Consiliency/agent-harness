@@ -2104,7 +2104,6 @@ def launch_with_spec(
     quiet_blocker_seconds: int = 1800,
     caller_run_id: str | None = None,
     lease_authority: object | None = None,
-    phase_alias: str | None = None,
 ) -> LaunchResult:
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
@@ -2161,7 +2160,6 @@ def launch_with_spec(
             cwd=spec.wrapped_cwd,
             caller_run_id=caller_run_id,
             lease_authority=lease_authority,
-            phase_alias=phase_alias,
             # #61/#86: even an unobserved (--no-observe) executor child must get
             # quiet-child / stall detection so it can't hang the parent silently.
             ephemeral_monitor=log_path is None,
@@ -2628,7 +2626,6 @@ def launch(
     caller_run_id: str | None = None,
     lease_authority: object | None = None,
     _supervisor_lease_fd: int | None = None,
-    phase_alias: str | None = None,
 ) -> LaunchResult:
     # AUTOSEL (change #5): the CLI executor-child spawn path gets a scrubbed +
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
@@ -2642,17 +2639,6 @@ def launch(
     child_env = child_executor_env(env) if env is not None else child_executor_env()
     if caller_run_id:
         child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
-    if phase_alias:
-        # agent-harness#1139: the child's identity for the phase it was dispatched to.
-        # Its closeout audit binds generated-output evidence to this alias, so it must
-        # be the LIVE alias, overwriting anything inherited: state.json is written
-        # only after the loop and would name the previous phase.
-        child_env["PHASE_LOOP_PHASE_ALIAS"] = phase_alias
-    elif _supervisor_lease_fd is None:
-        # No dispatched phase: an inherited alias would be a guess (some other phase's
-        # identity), so the child gets none. The lease-supervisor re-entry keeps the
-        # env its outer call already stamped.
-        child_env.pop("PHASE_LOOP_PHASE_ALIAS", None)
     if lease_authority is not None and not dry_run:
         return _launch_with_lease_supervisor(
             command,

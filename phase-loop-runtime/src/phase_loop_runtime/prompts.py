@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from dataclasses import replace
 import subprocess
 from pathlib import Path
 
@@ -27,14 +28,17 @@ def build_prompt(
     repo = _roadmap_repo_root(roadmap)
     if harness_lane_assignment is not None:
         return _with_delegation_guidance(
-            build_lane_prompt_bundle(
-                repo=repo,
-                harness_target=harness_target,
-                action=action,
-                roadmap=roadmap,
-                assignment=harness_lane_assignment,
-                plan=plan,
-                injection_mode_override=injection_mode_override,
+            _with_closeout_audit(
+                build_lane_prompt_bundle(
+                    repo=repo,
+                    harness_target=harness_target,
+                    action=action,
+                    roadmap=roadmap,
+                    assignment=harness_lane_assignment,
+                    plan=plan,
+                    injection_mode_override=injection_mode_override,
+                ),
+                harness_lane_assignment.phase,
             ),
             delegation_request=delegation_request,
             parent_child_metadata=parent_child_metadata,
@@ -61,10 +65,6 @@ def build_prompt(
             injection_mode_override=injection_mode_override,
         )
     if action == "execute":
-        # agent-harness#1139: the audit binds generated-output evidence to a phase. The
-        # prompt is the one channel that reaches every route (CLI children also get
-        # PHASE_LOOP_PHASE_ALIAS from the launcher; channel / agent-view sessions do not).
-        audit_phase = f" --phase {shlex.quote(phase)}" if phase else ""
         return _with_delegation_guidance(
             build_prompt_bundle(
             repo=repo,
@@ -78,7 +78,7 @@ def build_prompt(
                 "If this phase discovers steering that changes downstream work, amend the phase roadmap at the nearest downstream phase "
                 "that is not already executing. Do not treat an older downstream phase plan as authoritative after a roadmap amendment. "
                 "Treat ignored, private, raw-data, credential, and evidence-source files as read-protected unless the phase plan or source bundle explicitly allowlists the exact path or glob for read access. "
-                f"Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
+                f"Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. {closeout_audit_instruction(phase)}"
             ),
             ),
             delegation_request=delegation_request,
@@ -111,7 +111,7 @@ def build_prompt(
             else ""
         )
         return _with_delegation_guidance(
-            build_prompt_bundle(
+            _with_closeout_audit(build_prompt_bundle(
             repo=repo,
             harness_target=harness_target,
                 action="repair",
@@ -162,7 +162,7 @@ def build_prompt(
                 "separate phases. If the operator TUI is stale, point it back to the handoff file or commands above "
                 "instead of inventing a new recovery path."
             ),
-            ),
+            ), phase),
             delegation_request=delegation_request,
             parent_child_metadata=parent_child_metadata,
         )
@@ -284,6 +284,34 @@ def _expected_plan_artifact_path(roadmap: Path, phase: str | None) -> str:
     version = version_match.group(1) if version_match else "v1"
     alias = phase or "selected-phase"
     return f"plans/phase-plan-{version}-{alias}.md"
+
+
+def closeout_audit_instruction(phase: str | None) -> str:
+    """The closeout-audit instruction every runner prompt that closes out carries.
+
+    agent-harness#1139: the audit binds generated-output evidence to a phase, and its
+    ONLY source of that identity is an explicit ``--phase``. So the command is written
+    here, once, with the alias literal, and every closing-out prompt route (execute,
+    harness lane, repair, and delegated children built through them) embeds it. With
+    no alias the placeholder ``<PHASE_ALIAS>`` is a shell redirection, so a literal run
+    fails, which the instruction itself says blocks.
+    """
+
+    audit_phase = f" --phase {shlex.quote(phase)}" if phase else " --phase <PHASE_ALIAS>"
+    return (
+        f"For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
+    )
+
+
+def _with_closeout_audit(bundle: PromptBundle, phase: str | None) -> PromptBundle:
+    """Append the closeout-audit instruction to a prompt route that does not inline it."""
+
+    section = f"Closeout audit: {closeout_audit_instruction(phase)}"
+    return replace(
+        bundle,
+        body=f"{bundle.body.strip()}\n\n{section}".strip(),
+        context_body=(f"{bundle.context_body.strip()}\n\n{section}".strip() if bundle.context_body else None),
+    )
 
 
 def _with_delegation_guidance(

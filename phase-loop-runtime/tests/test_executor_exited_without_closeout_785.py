@@ -90,9 +90,15 @@ def test_golden_delta_is_only_final_schema_exclusion():
         "declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them"
     )
     for new, old in (
-        # The runner prompt also names the dispatched phase on the audit (agent-harness#1189
-        # round 3); the skill text does not.
+        # The runner prompt names the dispatched phase on the audit, and the skill text
+        # names the `<ALIAS>` placeholder and glosses it (agent-harness#1189 rounds 3-5).
         (f"{record} --phase ADAPTER`", f"{record}`"),
+        (f"{record} --phase <ALIAS>`", f"{record}`"),
+        (
+            "path), where `<ALIAS>` is the phase you are executing, exactly as the runner "
+            "prompt names it (without `--phase` the audit records and accepts nothing)",
+            "path)",
+        ),
         (f"closeout-audit --repo .{record}`", "closeout-audit --repo .`"),
         (f"closeout_classifier --repo .{record}`", "closeout_classifier --repo .`"),
         (f"the runner, its own toolchain, {declared} and ", "the runner and its own toolchain produced them and "),

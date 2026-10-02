@@ -26,12 +26,12 @@ execution left behind, never an inference from what else happened in the run:
   instead moves existing outputs aside first (a clean, observed rebuild), so
   byte-identical regeneration earns provenance and nothing planted rides along.
 * Each invocation records the HEAD it ran at. The record is bound to that commit,
-  to the declaration's digest and to the PHASE IDENTITY (``current_phase``: an
-  explicit alias, else ``PHASE_LOOP_PHASE_ALIAS``, which the launcher stamps on every
-  executor child; never ``state.json``). With a phase identity supplied, evidence
-  from another commit or another phase does not satisfy an audit; with none,
-  nothing is recorded or accepted. If HEAD moves before the record is persisted,
-  nothing is recorded.
+  to the declaration's digest and to the PHASE IDENTITY (``current_phase``): an
+  explicit alias only, i.e. ``--phase`` or the runner's live alias, never the
+  environment or ``state.json``. Evidence from another commit or another phase does
+  not satisfy an audit; with no identity nothing is recorded or accepted, and
+  ``--record-outputs`` refuses before touching the worktree. If HEAD moves before
+  the record is persisted, nothing is recorded.
 * Symlinks, and paths reached through a symlinked directory, are never recorded
   or accepted.
 * At audit time, the file's current digest must equal the recorded one.
@@ -346,29 +346,35 @@ def output_identities(repo: Path, producer: Producer) -> dict[str, tuple[str, in
 # --- recording -----------------------------------------------------------------
 
 
-PHASE_ENV_KEYS = ("PHASE_LOOP_PHASE_ALIAS", "PHASE_ALIAS")
+NO_PHASE_IDENTITY = (
+    "no phase identity: pass --phase ALIAS, the phase alias exactly as the roadmap "
+    "declares it (the runner's prompt names it on the audit command it prescribes)"
+)
+# An alias-shaped token (``discovery.PLAN_RE``'s alias shape, any case). Anything else,
+# notably an unsubstituted placeholder such as ``<ALIAS>`` copied from a skill, is not
+# an identity: every phase that copied it would share one.
+_PHASE_ALIAS_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+
+
+class PhaseIdentityError(ValueError):
+    """``--record-outputs`` was asked to record with no explicit phase."""
 
 
 def current_phase(provided: str | None = None) -> str | None:
     """The phase identity evidence is bound to, or None when it is UNKNOWN.
 
-    In order: an explicit alias (the runner's live alias, or ``--phase``), then
-    ``PHASE_LOOP_PHASE_ALIAS``, which the launcher stamps with the dispatched phase on
-    every executor child (``launcher.launch(phase_alias=...)``), then ``PHASE_ALIAS``.
-
-    There is deliberately NO fallback to ``.phase-loop/state.json``: the runner writes
-    it only after a loop ends, so mid-loop it names the PREVIOUS phase (or nothing),
-    and two phases would share one identity. Unknown identity is treated as no
-    evidence: nothing is recorded and nothing is accepted.
+    ONLY an explicit alias: ``--phase`` on the CLI, or the runner's live alias when it
+    records in-process. Every route the runner launches is told its phase literally
+    (``prompts.closeout_audit_instruction``), so nothing is inferred: not from the
+    environment (a value inherited from some other phase, or absent on routes that
+    bypass the launcher), and not from ``.phase-loop/state.json`` (written only after
+    a loop ends, so mid-loop it names the PREVIOUS phase). A value that is not a
+    roadmap-shaped alias (an unsubstituted ``<ALIAS>``) is no identity either. Unknown
+    identity is treated as no evidence: nothing is recorded and nothing is accepted.
     """
 
-    if provided and provided.strip():
-        return provided.strip()
-    for key in PHASE_ENV_KEYS:
-        value = os.environ.get(key, "").strip()
-        if value:
-            return value
-    return None
+    alias = (provided or "").strip()
+    return alias if _PHASE_ALIAS_RE.fullmatch(alias) else None
 
 
 @dataclass
@@ -458,10 +464,7 @@ class ProducerRecorder:
             return None
         phase = current_phase(phase_alias)
         if phase is None:
-            self.errors.append(
-                "no phase identity (no live runner alias, PHASE_LOOP_PHASE_ALIAS or --phase); "
-                "nothing recorded"
-            )
+            self.errors.append(f"{NO_PHASE_IDENTITY}; nothing recorded")
             return None
         previous = load_record(self.repo)
         if previous is not None and previous.get("declaration_sha256") != self.declaration.sha256:
@@ -676,12 +679,16 @@ def run_declared_producers(
     Returns None when HEAD declares nothing (a no-op, so the flag is safe to pass
     in every repo). Each producer is bounded by ``timeout_s``, defaulting to
     ``PHASE_LOOP_VERIFY_TIMEOUT_SECONDS`` like the runner's verification; a producer
-    that times out counts as failed.
+    that times out counts as failed. With a declaration but no explicit ``phase`` it
+    raises ``PhaseIdentityError`` BEFORE anything is moved aside or rebuilt: a record
+    it could not write is not worth the worktree churn.
     """
 
     recorder = ProducerRecorder.for_repo(repo)
     if recorder is None:
         return None
+    if current_phase(phase) is None:
+        raise PhaseIdentityError(NO_PHASE_IDENTITY)
     timeout_s = producer_timeout(timeout_s)
     from .runtime_paths import ensure_phase_loop_excluded
 
@@ -728,7 +735,7 @@ def verify_declared_output(repo: Path, relpath: str, context: AuditContext) -> t
     covering = {p.name for p in declaration.producers if p.covers(relpath)}
     if not covering:
         return False, "no recognised producer (not covered by a declared output glob)"
-    hint = "run `phase-loop-closeout-audit --repo . --record-outputs`"
+    hint = f"run `phase-loop-closeout-audit --repo . --record-outputs --phase {context.phase or 'ALIAS'}`"
     if record is None:
         return False, f"declared output with no producer record; {hint}"
     if record.get("declaration_sha256") != declaration.sha256:
@@ -736,10 +743,7 @@ def verify_declared_output(repo: Path, relpath: str, context: AuditContext) -> t
     if context.head is None or record.get("head") != context.head:
         return False, f"producer record was taken at a different commit; {hint}"
     if context.phase is None:
-        return False, (
-            "no phase identity to check the record against (run under the phase-loop runner, "
-            "or pass --phase ALIAS)"
-        )
+        return False, NO_PHASE_IDENTITY
     if record.get("phase") != context.phase:
         return False, (
             f"producer record belongs to phase {record.get('phase')!r}, not {context.phase!r}; {hint}"
