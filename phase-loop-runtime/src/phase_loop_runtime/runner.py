@@ -4716,6 +4716,7 @@ def run_loop(
                 quiet_blocker_seconds=quiet_blocker_seconds,
                 caller_run_id=caller_run_id,
                 lease_authority=lease_authority,
+                phase_alias=alias,
             )
             results.append(result)
             return _finalize_phase_launch(prep, result)
@@ -5378,6 +5379,7 @@ def launch_delegated_child(
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         quiet_warning_seconds=quiet_warning_seconds,
         quiet_blocker_seconds=quiet_blocker_seconds,
+        phase_alias=parent_phase,
     )
     terminal_status = "planned" if dry_run else ("unknown" if result.failed else "executed")
     terminal_summary = _persist_terminal_summary(
@@ -6025,7 +6027,9 @@ def launch_harness_lane_work_unit(
             "terminal_summary": blocked_summary,
             "artifacts": {key: str(value) for key, value in artifacts.items()},
         }
-    result = launch_with_spec(spec, dry_run=dry_run, log_path=artifacts.get("log"))
+    result = launch_with_spec(
+        spec, dry_run=dry_run, log_path=artifacts.get("log"), phase_alias=assignment.phase
+    )
     terminal_summary = build_terminal_summary(
         terminal_status="complete" if dry_run else "executing",
         terminal_blocker=None,

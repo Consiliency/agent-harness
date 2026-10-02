@@ -90,6 +90,9 @@ def test_golden_delta_is_only_final_schema_exclusion():
         "declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them"
     )
     for new, old in (
+        # The runner prompt also names the dispatched phase on the audit (agent-harness#1189
+        # round 3); the skill text does not.
+        (f"{record} --phase ADAPTER`", f"{record}`"),
         (f"closeout-audit --repo .{record}`", "closeout-audit --repo .`"),
         (f"closeout_classifier --repo .{record}`", "closeout_classifier --repo .`"),
         (f"the runner, its own toolchain, {declared} and ", "the runner and its own toolchain produced them and "),
@@ -101,7 +104,7 @@ def test_golden_delta_is_only_final_schema_exclusion():
             "`.venv`) -- ",
         ),
         (
-            "5531b07c6ad3bb5290d7a5c73cd4fb464f7637a77d9dcfc13721d478850e6f75",
+            "4f7771783e1c80f40fb52417ef732302bbcb24e9dc29e89390573093cc88aa4f",
             "dc7e4de7561b8bfcdad876382d2c53cf7de73e30c0ed7b95e75d1857dbdd397d",
         ),
     ):

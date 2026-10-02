@@ -405,8 +405,8 @@ def main(argv: list[str]) -> int:
     """
 
     repo = Path(argv[argv.index("--repo") + 1]) if "--repo" in argv else Path.cwd()
-    # The phase the evidence must belong to; defaults to the runner's own resolution
-    # (env override, else `.phase-loop/state.json` current_phase).
+    # The phase the evidence must belong to; defaults to PHASE_LOOP_PHASE_ALIAS, which
+    # the launcher stamps on executor children. Never `.phase-loop/state.json`.
     phase = argv[argv.index("--phase") + 1] if "--phase" in argv else None
     if "--record-outputs" in argv:
         try:

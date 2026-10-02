@@ -116,12 +116,19 @@ state.
   - Because every output is re-created, a deterministic producer that writes the same
     bytes as last time earns provenance. A planted file, or an orphan the build no
     longer emits, is not in the worktree afterwards to ride along.
-  - Nothing is deleted. Moved files go to a timestamped directory under
-    `.phase-loop/generated-outputs/displaced/`. Restore anything you meant to keep
-    from there, and clear the directory when you no longer need it.
+  - Moved files go to a timestamped directory under
+    `.phase-loop/generated-outputs/displaced/`, and you can restore anything you meant
+    to keep from there. Only the newest 5 such directories are kept; older ones are
+    removed.
+  - **Declare a producer's incremental state alongside its outputs.** That means
+    `.tsbuildinfo`, build stamps, and so on. If the state is undeclared, a producer that
+    skips work because its stamp says "up to date" emits nothing after the outputs
+    were moved aside. The rebuild then leaves those outputs in `displaced/`.
   - Each producer is bounded by `PHASE_LOOP_VERIFY_TIMEOUT_SECONDS` (default 1200),
-    the same limit the runner's verification uses. A producer that times out counts
-    as failed.
+    the same limit the runner's verification uses. Zero, a negative value, NaN,
+    infinity or an unparsable value is ignored in favour of the default. A producer
+    runs in its own process group, and on timeout the whole group is killed, so no
+    grandchild keeps writing. A producer that times out counts as failed.
   - With no declaration, the flag does nothing extra, so it is safe to pass
     everywhere. The shipped execute-phase skills and runner prompt prescribe this
     form.
@@ -163,14 +170,32 @@ state.
 - **Binding to commit and phase.** Each invocation records the `HEAD` it ran at. If
   `HEAD` moved during the invocation, or between it and the record being written,
   nothing is recorded.
-  - The record is bound to that commit and to the phase. The phase is resolved the way
-    `verification.json` resolves it: `PHASE_LOOP_PHASE_ALIAS`, then the live run
-    alias, then `current_phase` in `.phase-loop/state.json`, otherwise `unknown`.
-  - The audit resolves the phase the same way. `--phase ALIAS` overrides it.
+  - The record is bound to that commit and to the **phase identity**. That identity
+    is, in order:
+    1. an explicit alias: the runner's live alias for its own verification, or
+       `--phase ALIAS` on the command line;
+    2. `PHASE_LOOP_PHASE_ALIAS`, which the runner's launcher stamps on every executor
+       child with the phase it was dispatched for, overwriting any inherited value. A
+       launch with no dispatched phase removes an inherited value instead;
+    3. `PHASE_ALIAS`.
+  - The phase identity is **never** read from `.phase-loop/state.json`. The runner
+    writes that file only after a loop ends, so during a loop it names the previous
+    phase.
+  - With **no** phase identity, nothing is recorded and nothing is accepted: the audit
+    blocks with "no phase identity". A manual run outside the runner passes
+    `--phase ALIAS` to both the recording and the audit.
+  - The runner's execute prompt names the phase on the audit command it prescribes
+    (`--record-outputs --phase ALIAS`). That reaches Claude channel and agent-view
+    sessions, which are not launched as child processes and so get no launcher
+    environment. The execute-phase skills prescribe the command without `--phase`; an
+    executor following only a skill, outside a runner-launched child, gets the
+    fail-closed "no phase identity" block until it passes `--phase`.
   - At the same commit and phase, a recording extends the record, so a repair turn or
     relaunch that re-runs one producer keeps the others' evidence.
-  - A different commit or phase starts empty. Another phase's evidence never
-    satisfies this one, even at the same commit.
+  - A different commit or phase starts empty. When the phase identity is supplied,
+    another phase's evidence does not satisfy this one, even at the same commit.
+  - The guarantee is only as good as the identity. An operator who sets the same
+    `PHASE_LOOP_PHASE_ALIAS` for two phases, or passes the wrong `--phase`, defeats it.
 - **Symlinks.** A symlink, or any path reached through a symlinked directory, is never
   recorded and never accepted. Its content lives wherever the link points.
 
@@ -181,6 +206,7 @@ A declared file stays `unknown_ignored`, with a reason printed beside it, when:
 - it is a symlink;
 - no record exists;
 - the record was taken at another commit or in another phase;
+- the audit has no phase identity;
 - the record was made against another committed declaration;
 - the record entry is malformed.
 

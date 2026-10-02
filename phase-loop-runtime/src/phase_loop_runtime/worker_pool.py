@@ -108,6 +108,7 @@ def _run_one(repo: Path, roadmap: Path, job: PhaseWorkerJob) -> PhaseWorkerResul
         quiet_blocker_seconds=job.quiet_blocker_seconds,
         caller_run_id=job.caller_run_id,
         lease_authority=job.lease_authority,
+        phase_alias=job.phase,
     )
     summary = {
         "phase": job.phase,

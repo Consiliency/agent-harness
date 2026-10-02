@@ -83,6 +83,23 @@ what an observed invocation of the producer itself wrote, at the current commit.
 - **Malformed record entries** are dropped on load, so the file they name blocks.
 - **AuditContext.** HEAD, phase, declaration and record are resolved once per audit.
 
+**Round-3 amendment (board review at e797af15):**
+- **Phase identity is supplied, never inferred.**
+  - `launcher.launch` and `launch_with_spec` gain `phase_alias`, which stamps
+    `PHASE_LOOP_PHASE_ALIAS` on the child.
+  - Every runner and worker-pool launch site passes its live alias.
+  - `generated_outputs.current_phase` is explicit, then that variable, then
+    `PHASE_ALIAS`, then `None`, and it is never read from `state.json`. `None` means
+    nothing is recorded or accepted.
+  - A launch with no dispatched phase drops an inherited `PHASE_LOOP_PHASE_ALIAS`; the
+    lease-supervisor re-entry keeps the outer stamp.
+  - The execute prompt's audit command carries `--phase <alias>`, for the channel and
+    agent-view routes, which bypass the launcher.
+- **Producer timeouts** are validated: anything not finite and positive falls back to
+  the default. Producers run in their own session, and the whole process group is
+  killed on timeout.
+- **`displaced/`** is pruned to the newest 5.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
 - `observe_stages(observer)` / `_observed_stage` — add. A context-var seam brackets
   each command and suite stage of `run_verification`.
@@ -152,6 +169,7 @@ tests, and the docs.
   - stop passing the observer;
   - make `--record-outputs` fail without a declaration;
   - credit a failed producer;
+  - round 3: fall back to state.json, no launcher stamp, setdefault stamp, keep an inherited alias when none is dispatched, strip the stamp on lease re-entry, no `--phase` in the prompt, run_loop passes no alias, accept or record an unknown phase, unbounded timeout, kill the child only, no pruning;
   - round 2: mtime counts, no phase check, the epoch ignores phase, HEAD checked only at write, a straddle allowed, no displacement, displace tracked files, drop in-recording `mine`, allow string shell syntax, no default timeout, commit read from the whole file, corrupt entries kept, the CLI ignores `--phase`.
 
 ## Acceptance criteria

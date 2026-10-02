@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -60,6 +61,10 @@ def build_prompt(
             injection_mode_override=injection_mode_override,
         )
     if action == "execute":
+        # agent-harness#1139: the audit binds generated-output evidence to a phase. The
+        # prompt is the one channel that reaches every route (CLI children also get
+        # PHASE_LOOP_PHASE_ALIAS from the launcher; channel / agent-view sessions do not).
+        audit_phase = f" --phase {shlex.quote(phase)}" if phase else ""
         return _with_delegation_guidance(
             build_prompt_bundle(
             repo=repo,
@@ -73,7 +78,7 @@ def build_prompt(
                 "If this phase discovers steering that changes downstream work, amend the phase roadmap at the nearest downstream phase "
                 "that is not already executing. Do not treat an older downstream phase plan as authoritative after a roadmap amendment. "
                 "Treat ignored, private, raw-data, credential, and evidence-source files as read-protected unless the phase plan or source bundle explicitly allowlists the exact path or glob for read access. "
-                "Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
+                f"Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
             ),
             ),
             delegation_request=delegation_request,

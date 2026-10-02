@@ -17,11 +17,14 @@ tolerate.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import pytest
 
 from phase_loop_runtime import generated_outputs, runner
 from phase_loop_runtime.closeout_classifier import (
@@ -104,6 +107,14 @@ def _declaration(**overrides) -> dict:
     return data
 
 
+@pytest.fixture(autouse=True)
+def _phase_identity(monkeypatch):
+    """Each test runs as the executor child of a dispatched phase (STATE by default),
+    and never inherits a phase identity from the developer's or CI's environment."""
+    monkeypatch.delenv("PHASE_ALIAS", raising=False)
+    monkeypatch.setenv("PHASE_LOOP_PHASE_ALIAS", "STATE")
+
+
 class NodeBamlPhaseFixture:
     def __init__(self, tmp: Path, declaration: dict | None = None, commit_declaration: bool = True):
         self.repo = make_repo(tmp)
@@ -134,14 +145,18 @@ class NodeBamlPhaseFixture:
         if commit_declaration:
             paths.append(decl_path)
         commit_fixture_paths(repo, "seed", *paths)
-        # The runner keeps the live phase in its state file; recording and auditing
-        # both resolve the phase from it (agent-harness#1139 round 2).
-        self.set_phase("STATE")
-
-    def set_phase(self, alias: str) -> None:
+        # A STALE state file naming another phase: phase identity must never be read
+        # from it (the runner writes it only after a loop ends; agent-harness#1189 r3).
         state = self.repo / ".phase-loop" / "state.json"
         state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(json.dumps({"current_phase": alias}))
+        state.write_text(json.dumps({"current_phase": "STALE"}))
+        # The default identity (STATE) comes from the autouse `_phase_identity` fixture,
+        # so constructing this from another module never leaks it into the session.
+
+    def set_phase(self, alias: str) -> None:
+        """What `launcher.launch(phase_alias=...)` stamps on the executor child. The
+        autouse `_phase_identity` fixture restores the environment afterwards."""
+        os.environ["PHASE_LOOP_PHASE_ALIAS"] = alias
 
     def verify(self) -> dict:
         run_dir = self.repo / ".phase-loop" / "runs" / "exec-state"
@@ -657,8 +672,9 @@ def test_touch_only_does_not_credit_a_planted_file(tmp_path):
 
 
 def test_next_phase_at_same_head_requires_its_own_producer_invocation(tmp_path):
-    """codex r2 F002, plus Claude N1. Adapted in one line: the runner advances
-    `current_phase` to CORE before CORE runs, as it does in production."""
+    """codex r2 F002, plus Claude N1, at the identity level: the CORE child carries
+    PHASE_LOOP_PHASE_ALIAS=CORE, which `launcher.launch(phase_alias=...)` stamps (see
+    `test_child_audit_uses_the_live_runner_phase` for the real run_loop path)."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
     fx.roadmap.write_text(fx.roadmap.read_text() + "\n### Phase 1 - Core (CORE)\n")
@@ -771,7 +787,7 @@ def test_record_outputs_bounds_a_hanging_producer(tmp_path, monkeypatch):
     monkeypatch.setenv("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1")
     record = generated_outputs.run_declared_producers(fx.repo)
     codes = {i["producer"]: i["exit_code"] for i in record["invocations"]}
-    assert codes == {"baml": 0, "build": 127}
+    assert codes == {"baml": 0, "build": 124}
 
 
 def test_the_handoff_commit_is_read_from_the_frontmatter_only(tmp_path):
@@ -847,3 +863,217 @@ def test_an_invocation_that_straddles_a_commit_is_not_recorded(tmp_path):
     recorder.after(token, 0)
     assert recorder.write(source="closeout-audit", run_id=None) is None
     assert any("HEAD moved" in error for error in recorder.errors)
+
+
+# --- round-3 board falsifiers (agent-harness#1189 at e797af15) ------------------------
+
+
+def test_next_phase_at_same_head_verbatim_with_no_phase_identity(tmp_path, monkeypatch):
+    """codex r2 F002, verbatim body. The audit runs with NO phase identity in the
+    environment (as before this PR stamped one), so it must not borrow STATE's record.
+    With no identity the audit fails closed instead of falling back to state.json."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    fx.roadmap.write_text(fx.roadmap.read_text() + "\n### Phase 1 - Core (CORE)\n")
+    core = fx.repo / "scripts/core.py"
+    core.write_text("print('CORE checks passed')\n")
+    plan = write_phase_plan(
+        fx.repo, "CORE", fx.roadmap,
+        body=f"# CORE\n\n## Verification\n- `{sys.executable} scripts/core.py`\n",
+    )
+    commit_fixture_paths(fx.repo, "plan both phases in advance", core, plan, fx.roadmap)
+    assert fx.verify()["ok"]
+    head = generated_outputs.head_commit(fx.repo)
+    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS")
+    # The persisted state still names the previous phase, as it does mid-loop: a
+    # fallback to it would wrongly match STATE's record.
+    (fx.repo / ".phase-loop/state.json").write_text(json.dumps({"current_phase": "STATE"}))
+    run_dir = fx.repo / ".phase-loop/runs/exec-core"
+    run_dir.mkdir(parents=True)
+    summary = runner._run_execute_verification(
+        repo=fx.repo, roadmap=fx.roadmap, plan=plan,
+        artifacts={"root": run_dir}, phase_alias="CORE",
+    )
+    assert summary["ok"], summary
+    assert generated_outputs.head_commit(fx.repo) == head
+    result = audit_ignored_outputs(fx.repo)
+    assert "dist/index.js" in result["unknown_ignored"], result
+    assert main(["--repo", str(fx.repo)]) == 1
+
+
+def test_child_audit_uses_the_live_runner_phase(tmp_path, monkeypatch):
+    """codex r3 F001 (verbatim): a real `run_loop(phase="CORE")` launches a command
+    executor whose own audit must bind to CORE, not to STATE's record and not to the
+    stale persisted `current_phase`."""
+
+    from phase_loop_runtime.launcher import AuthPreflightResult
+    from phase_loop_runtime.models import StateSnapshot
+    from phase_loop_runtime.state import write_state
+    from phase_loop_test_utils import build_fake_automation_output
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    fx.roadmap.write_text(fx.roadmap.read_text() + "\n### Phase 1 - Core (CORE)\n")
+    core = fx.repo / "scripts/core.py"
+    core.write_text("print('CORE checks passed')\n")
+    plan = write_phase_plan(
+        fx.repo, "CORE", fx.roadmap,
+        body=f"# CORE\n\n## Verification\n- `{sys.executable} scripts/core.py`\n",
+    )
+    probe = fx.repo / "scripts/probe.py"
+    output = build_fake_automation_output(
+        status="complete", verification_status="passed", artifact=str(plan), artifact_state="tracked",
+    )
+    probe.write_text(
+        "import json, sys\nfrom pathlib import Path\n"
+        "from phase_loop_runtime.closeout_classifier import audit_ignored_outputs\n"
+        "result = {'phase': sys.argv[1], 'audit': audit_ignored_outputs(Path.cwd())}\n"
+        "Path('.phase-loop/child-audit.json').write_text(json.dumps(result))\n"
+        f"print({output!r})\n"
+    )
+    commit_fixture_paths(fx.repo, "plan both phases", core, probe, plan, fx.roadmap)
+    assert fx.verify()["ok"]
+    write_state(fx.repo, StateSnapshot(
+        timestamp="2026-10-01T00:00:00Z", repo=str(fx.repo), roadmap=str(fx.roadmap),
+        phases={"STATE": "planned", "CORE": "planned"}, current_phase="STATE",
+    ))
+    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS", raising=False)
+    monkeypatch.delenv("PHASE_ALIAS", raising=False)
+    monkeypatch.setenv("PYTHONPATH", str(Path(generated_outputs.__file__).parents[1]))
+    monkeypatch.setattr(runner, "run_auth_preflight", lambda *a, **k: AuthPreflightResult(ok=True, metadata={}))
+    monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+    runner.run_loop(
+        fx.repo, fx.roadmap, phase="CORE", executor="command", observe=True,
+        command_adapter_name="probe",
+        command_template=f"{sys.executable} scripts/probe.py {{phase}} {{context_file}}",
+    )
+    observed = json.loads((fx.repo / ".phase-loop/child-audit.json").read_text())
+    assert observed["phase"] == "CORE"
+    assert "dist/index.js" in observed["audit"]["unknown_ignored"], observed
+    assert "not 'CORE'" in observed["audit"]["unknown_reasons"]["dist/index.js"], observed
+
+
+def test_the_launcher_stamps_the_live_phase_over_an_inherited_one(tmp_path):
+    """The positive half: the child sees exactly the dispatched alias, even when the
+    parent environment carries a stale one."""
+
+    from phase_loop_runtime.launcher import launch
+
+    out = tmp_path / "alias.txt"
+    script = f"import os; open({str(out)!r}, 'w').write(os.environ.get('PHASE_LOOP_PHASE_ALIAS', ''))"
+    launch([sys.executable, "-c", script], env={**os.environ, "PHASE_LOOP_PHASE_ALIAS": "STALE"},
+           phase_alias="CORE", timeout_seconds=60)
+    assert out.read_text() == "CORE"
+    # With no dispatched phase the inherited alias is a guess, so the child gets none.
+    launch([sys.executable, "-c", script], env={**os.environ, "PHASE_LOOP_PHASE_ALIAS": "STALE"},
+           timeout_seconds=60)
+    assert out.read_text() == ""
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="lease supervision relies on prctl")
+def test_the_lease_supervised_launch_keeps_the_stamped_phase(tmp_path):
+    """Production run_loop launches under a lease authority, which re-enters `launch`
+    without `phase_alias`; the stamp must survive that re-entry."""
+
+    import fcntl
+
+    from phase_loop_runtime.launcher import launch
+
+    class _Lease:
+        generation = "closeout-phase-test"
+
+        def __init__(self, fd: int) -> None:
+            self._fd = fd
+
+        def fileno(self) -> int:
+            return self._fd
+
+    fd = os.open(tmp_path / "lease.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        out = tmp_path / "alias.txt"
+        script = f"import os; open({str(out)!r}, 'w').write(os.environ.get('PHASE_LOOP_PHASE_ALIAS', ''))"
+        result = launch([sys.executable, "-c", script], lease_authority=_Lease(fd),
+                        log_path=tmp_path / "executor.log", env={**os.environ, "PHASE_LOOP_PHASE_ALIAS": "STALE"},
+                        phase_alias="CORE")
+        assert not result.failed, result
+        assert out.read_text() == "CORE"
+    finally:
+        os.close(fd)
+
+
+def test_the_execute_prompt_passes_the_phase_to_the_audit(tmp_path, monkeypatch):
+    """Channel and agent-view sessions get no launcher env, so the prompt itself names
+    the phase on every audit command it prescribes."""
+
+    from phase_loop_runtime.prompts import build_prompt
+
+    monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+    fx = NodeBamlPhaseFixture(tmp_path)
+    bundle = build_prompt("execute", fx.roadmap, phase="STATE", plan=fx.plan)
+    text = f"{bundle.body}\n{bundle.context_body or ''}"
+    assert "phase-loop-closeout-audit --repo . --record-outputs --phase STATE`" in text
+    assert "closeout_classifier --repo . --record-outputs --phase STATE`" in text
+
+
+def test_record_outputs_without_a_phase_identity_records_nothing(tmp_path, monkeypatch):
+    """Claude R3_A: no live alias and no --phase -> no record, so nothing is accepted;
+    `--phase` restores the CLI path."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    monkeypatch.delenv("PHASE_LOOP_PHASE_ALIAS")
+    assert main(["--repo", str(fx.repo), "--record-outputs"]) == 1
+    assert not (fx.repo / generated_outputs.RECORD_RELPATH).exists()   # not even a null-phase file
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", "STATE"]) == 0
+    assert main(["--repo", str(fx.repo)]) == 1                     # still no identity
+    reason = audit_ignored_outputs(fx.repo)["unknown_reasons"]["dist/index.js"]
+    assert reason.startswith("no phase identity"), reason
+    assert main(["--repo", str(fx.repo), "--phase", "STATE"]) == 0
+
+
+def test_a_corrupt_record_at_top_level_is_typed(tmp_path):
+    """Claude R3_B."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    assert fx.verify()["ok"]
+    path = fx.repo / generated_outputs.RECORD_RELPATH
+    for bad in ("[]", '"x"', "null", '{"schema": 1, "files": [], "head": 3}'):
+        path.write_text(bad)
+        result = audit_ignored_outputs(fx.repo)
+        assert result["blocks"] and not result["probe_failed"], (bad, result)
+
+
+def test_invalid_producer_timeouts_fall_back_to_the_bound(capsys):
+    """Claude r3 nit: 0, negative, NaN, infinity and garbage never mean "unbounded"."""
+
+    for bad in (0, -5, "nan", "inf", "-inf", "soon"):
+        assert generated_outputs.producer_timeout(bad) == generated_outputs.DEFAULT_PRODUCER_TIMEOUT_S, bad
+    assert generated_outputs.producer_timeout("7") == 7.0
+
+
+def test_a_timed_out_producer_takes_its_children_with_it(tmp_path):
+    """Claude r3 nit: the whole process group is killed, so a grandchild cannot keep
+    writing after the post-run snapshot."""
+
+    marker = tmp_path / "grandchild-wrote"
+    grandchild = f"import time; time.sleep(2); open({str(marker)!r}, 'w').write('late')"
+    parent = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "time.sleep(30)\n"
+    )
+    code = generated_outputs._run_bounded([sys.executable, "-c", parent], tmp_path, 0.5, "p")
+    assert code == 124
+    import time
+
+    time.sleep(3)
+    assert not marker.exists()
+
+
+def test_displacement_directories_are_bounded(tmp_path):
+    """Claude r3 nit: only the newest DISPLACED_KEEP displacements are kept."""
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    for _ in range(generated_outputs.DISPLACED_KEEP + 2):
+        assert main(["--repo", str(fx.repo), "--record-outputs"]) == 0
+    kept = list((fx.repo / generated_outputs.DISPLACED_RELDIR).iterdir())
+    assert len(kept) == generated_outputs.DISPLACED_KEEP

@@ -26,10 +26,12 @@ execution left behind, never an inference from what else happened in the run:
   instead moves existing outputs aside first (a clean, observed rebuild), so
   byte-identical regeneration earns provenance and nothing planted rides along.
 * Each invocation records the HEAD it ran at. The record is bound to that commit,
-  to the phase (resolved like ``verification.json``'s phase alias) and to the
-  declaration's digest. Evidence from another commit or another phase never
-  satisfies an audit. If HEAD moves before the record is persisted, nothing is
-  recorded.
+  to the declaration's digest and to the PHASE IDENTITY (``current_phase``: an
+  explicit alias, else ``PHASE_LOOP_PHASE_ALIAS``, which the launcher stamps on every
+  executor child; never ``state.json``). With a phase identity supplied, evidence
+  from another commit or another phase does not satisfy an audit; with none,
+  nothing is recorded or accepted. If HEAD moves before the record is persisted,
+  nothing is recorded.
 * Symlinks, and paths reached through a symlinked directory, are never recorded
   or accepted.
 * At audit time, the file's current digest must equal the recorded one.
@@ -44,9 +46,12 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
+import shutil
+import signal
 import stat
 import subprocess
 from dataclasses import dataclass, field
@@ -341,19 +346,29 @@ def output_identities(repo: Path, producer: Producer) -> dict[str, tuple[str, in
 # --- recording -----------------------------------------------------------------
 
 
-def current_phase(repo: Path, provided: str | None = None) -> str:
-    """The phase identity evidence is bound to.
+PHASE_ENV_KEYS = ("PHASE_LOOP_PHASE_ALIAS", "PHASE_ALIAS")
 
-    The SAME resolver verification.json uses (``verification_evidence._phase_alias``):
-    an operator env override, then the live run alias, then ``current_phase`` from
-    ``.phase-loop/state.json``, else ``"unknown"``. Recording and auditing resolve it
-    identically, so a record made for one phase never satisfies another phase's audit,
-    even at the same commit.
+
+def current_phase(provided: str | None = None) -> str | None:
+    """The phase identity evidence is bound to, or None when it is UNKNOWN.
+
+    In order: an explicit alias (the runner's live alias, or ``--phase``), then
+    ``PHASE_LOOP_PHASE_ALIAS``, which the launcher stamps with the dispatched phase on
+    every executor child (``launcher.launch(phase_alias=...)``), then ``PHASE_ALIAS``.
+
+    There is deliberately NO fallback to ``.phase-loop/state.json``: the runner writes
+    it only after a loop ends, so mid-loop it names the PREVIOUS phase (or nothing),
+    and two phases would share one identity. Unknown identity is treated as no
+    evidence: nothing is recorded and nothing is accepted.
     """
 
-    from .verification_evidence import _phase_alias
-
-    return _phase_alias(Path(repo), provided)
+    if provided and provided.strip():
+        return provided.strip()
+    for key in PHASE_ENV_KEYS:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return None
 
 
 @dataclass
@@ -423,16 +438,9 @@ class ProducerRecorder:
 
     def run(self, producer: Producer, timeout_s: float | None = None) -> int:
         token = self.before(producer.command)
-        try:
-            code = subprocess.run(
-                list(producer.command), cwd=self.repo, check=False,
-                timeout=timeout_s if timeout_s and timeout_s > 0 else None,
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"closeout-audit: producer {producer.name} failed: {type(exc).__name__}", flush=True)
-            code = 127
-        self.after(token, int(code))
-        return int(code)
+        code = _run_bounded(list(producer.command), self.repo, timeout_s, producer.name)
+        self.after(token, code)
+        return code
 
     def write(self, *, source: str, run_id: str | None, phase_alias: str | None = None) -> dict[str, Any] | None:
         if not self.invocations:
@@ -448,7 +456,13 @@ class ProducerRecorder:
                 "HEAD moved while or after the producers ran; nothing recorded, re-record at the new commit"
             )
             return None
-        phase = current_phase(self.repo, phase_alias)
+        phase = current_phase(phase_alias)
+        if phase is None:
+            self.errors.append(
+                "no phase identity (no live runner alias, PHASE_LOOP_PHASE_ALIAS or --phase); "
+                "nothing recorded"
+            )
+            return None
         previous = load_record(self.repo)
         if previous is not None and previous.get("declaration_sha256") != self.declaration.sha256:
             previous = None
@@ -533,6 +547,66 @@ def load_record(repo: Path) -> dict[str, Any] | None:
 
 
 DEFAULT_PRODUCER_TIMEOUT_S = 1200.0
+DISPLACED_KEEP = 5
+
+
+def producer_timeout(value: object = None) -> float:
+    """A finite, positive per-producer timeout in seconds.
+
+    ``value`` (else ``PHASE_LOOP_VERIFY_TIMEOUT_SECONDS``, else 1200). Zero, a
+    negative number, NaN, infinity or garbage would mean "no bound" or "fail at
+    once", so it is refused in favour of the default, with a warning.
+    """
+
+    raw = os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS") if value is None else value
+    if raw is None or raw == "":
+        return DEFAULT_PRODUCER_TIMEOUT_S
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        seconds = float("nan")
+    if not math.isfinite(seconds) or seconds <= 0:
+        print(
+            f"closeout-audit: ignoring invalid producer timeout {raw!r}; "
+            f"using {DEFAULT_PRODUCER_TIMEOUT_S:g}s",
+            flush=True,
+        )
+        return DEFAULT_PRODUCER_TIMEOUT_S
+    return seconds
+
+
+def _run_bounded(argv: list[str], cwd: Path, timeout_s: float | None, name: str) -> int:
+    """Run one producer in its OWN process group; on timeout kill the whole group, so
+    a producer that forked (npm -> node -> workers) leaves nothing running."""
+
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, start_new_session=True)
+    except OSError as exc:
+        print(f"closeout-audit: producer {name} failed: {type(exc).__name__}", flush=True)
+        return 127
+    try:
+        return int(proc.wait(timeout=timeout_s))
+    except subprocess.TimeoutExpired:
+        print(f"closeout-audit: producer {name} timed out after {timeout_s:g}s; killed", flush=True)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        proc.wait()
+        return 124
+
+
+def _prune_displaced(repo: Path) -> None:
+    """Keep only the newest ``DISPLACED_KEEP`` displacement directories."""
+
+    root = repo / DISPLACED_RELDIR
+    try:
+        stamps = sorted(entry for entry in root.iterdir() if entry.is_dir() and not entry.is_symlink())
+    except OSError:
+        return
+    for old in stamps[:-DISPLACED_KEEP]:
+        shutil.rmtree(old, ignore_errors=True)
+
 DISPLACED_RELDIR = ".phase-loop/generated-outputs/displaced"
 
 
@@ -570,9 +644,10 @@ def displace_declared_outputs(repo: Path, producers: Sequence[Producer]) -> Path
 
     After this, everything the producers leave under their globs was CREATED by an
     observed invocation, so a byte-identical regeneration earns provenance and a
-    planted or orphaned file cannot ride along. Nothing is deleted: the files go to a
+    planted or orphaned file cannot ride along. The files are moved, not deleted, to a
     timestamped directory under ``.phase-loop/generated-outputs/displaced/`` (runner
-    state), from which an operator can restore anything they meant to keep.
+    state), from which an operator can restore anything they meant to keep. Only the
+    newest ``DISPLACED_KEEP`` such directories are kept.
     """
 
     entries = _ignored_declared_entries(repo, producers)
@@ -586,6 +661,7 @@ def displace_declared_outputs(repo: Path, producers: Sequence[Producer]) -> Path
         target = target_root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         os.rename(repo / rel, target)
+    _prune_displaced(repo)
     return target_root
 
 
@@ -606,11 +682,7 @@ def run_declared_producers(
     recorder = ProducerRecorder.for_repo(repo)
     if recorder is None:
         return None
-    if timeout_s is None:
-        try:
-            timeout_s = float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", DEFAULT_PRODUCER_TIMEOUT_S))
-        except ValueError:
-            timeout_s = DEFAULT_PRODUCER_TIMEOUT_S
+    timeout_s = producer_timeout(timeout_s)
     from .runtime_paths import ensure_phase_loop_excluded
 
     ensure_phase_loop_excluded(repo)
@@ -636,7 +708,7 @@ class AuditContext:
     declaration: Declaration | None
     record: Mapping[str, Any] | None
     head: str | None
-    phase: str
+    phase: str | None
 
     @classmethod
     def for_repo(cls, repo: Path, phase: str | None = None) -> "AuditContext":
@@ -645,7 +717,7 @@ class AuditContext:
             declaration=declaration,
             record=load_record(repo) if declaration is not None else None,
             head=head_commit(repo),
-            phase=current_phase(repo, phase),
+            phase=current_phase(phase),
         )
 
 
@@ -663,6 +735,11 @@ def verify_declared_output(repo: Path, relpath: str, context: AuditContext) -> t
         return False, f"producer record predates the committed declaration; {hint}"
     if context.head is None or record.get("head") != context.head:
         return False, f"producer record was taken at a different commit; {hint}"
+    if context.phase is None:
+        return False, (
+            "no phase identity to check the record against (run under the phase-loop runner, "
+            "or pass --phase ALIAS)"
+        )
     if record.get("phase") != context.phase:
         return False, (
             f"producer record belongs to phase {record.get('phase')!r}, not {context.phase!r}; {hint}"

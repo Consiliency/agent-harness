@@ -67,7 +67,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     them), runs each producer under a timeout, records, and then audits.
   - It is a no-op without a declaration. The execute-phase skills and runner prompt
     now prescribe it.
-  - `--phase` overrides the phase the audit checks against.
+  - Phase identity comes from the launcher, which stamps `PHASE_LOOP_PHASE_ALIAS` with
+    the dispatched phase on every executor child. `--phase ALIAS` can also supply it.
+    It is never read from `.phase-loop/state.json`. With no phase identity, nothing is
+    recorded or accepted. The execute prompt also passes `--phase` on the audit
+    command, which covers Claude channel and agent-view sessions.
+  - Producers are bounded by a validated timeout and killed by process group.
+  - Only the newest 5 directories of moved-aside outputs are kept.
   - The runner's verification records when it runs a declared producer command, and
     it reports recording failures.
 - **Still blocks:**
