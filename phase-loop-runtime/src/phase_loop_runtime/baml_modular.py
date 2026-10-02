@@ -995,7 +995,7 @@ class _Client:
         # The one baton is a weakly referenceable token.  It is referenced only
         # by this queue or by the thread holding it, so a token nobody
         # references any more was provably stranded (its holder died before
-        # putting it back) and is reclaimed by the supervisor (``_reclaim_baton``).
+        # putting it back) and is reclaimed by the next party to take it (``_take_baton``).
         # A hand-back is never retried, so the failure direction is a strand,
         # never a duplicate (codex round 5).
         token = _Baton()
@@ -1108,8 +1108,7 @@ class _Client:
             try:
                 outcome = get(True, _HEARTBEAT_S)
             except queue.Empty:
-                if not self.owner_running:
-                    self._ensure_owner()
+                self._ensure_owner()  # no live owner: launch one (it reclaims a stranded baton)
                 continue
             req.consumed = True
             status, value = outcome
@@ -1119,8 +1118,14 @@ class _Client:
                 raise BamlWorkerError("timeout", "request abandoned by the client backstop")
             raise value
 
+    def _owner_live(self) -> bool:
+        """An owner is running AND has beaten recently.  ``owner_running`` alone
+        is not trusted: an interruption can leave it set by a dead owner, and a
+        party that trusted it would never launch the owner that reclaims."""
+        return self.owner_running and time.monotonic() - self.owner_beat < _OWNER_STALE_S
+
     def _ensure_owner(self) -> None:
-        if self.owner_running and time.monotonic() - self.owner_beat < _OWNER_STALE_S:
+        if self._owner_live():
             return
         if self.closed:
             raise BamlWorkerError("shutdown", "BAML worker client is closed")
@@ -1161,10 +1166,26 @@ class _Client:
             _LOG.warning("%s", message)
 
     # -- owner thread --------------------------------------------------------
-    def _own(self) -> None:
+    def _take_baton(self) -> _Baton | None:
+        """Take the baton, or None while a live party holds it.  Whoever takes
+        the baton recovers a stranded one first (``_reclaim_baton`` is a no-op
+        while a live baton exists): every owner candidate -- launched by a
+        caller, a waiting caller or the supervisor -- and ``stop``.  So no single
+        thread owns recovery, and an interrupted reclaim costs only the party it
+        interrupted; the next taker reclaims."""
         try:
-            baton = self.baton.get_nowait()
+            return self.baton.get_nowait()
         except queue.Empty:
+            pass
+        self._reclaim_baton()
+        try:
+            return self.baton.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _own(self) -> None:
+        baton = self._take_baton()
+        if baton is None:
             return
         self.owner_starts += 1
         self.owner_beat = time.monotonic()
@@ -1388,11 +1409,16 @@ class _Client:
         (a) at most one live baton: minting a baton for an epoch is claiming
             that epoch's ticket with ``dict.setdefault`` (one atomic step), and
             a reclaimer stops at the first epoch whose ticket is held LIVE;
-        (b) always recoverable: a ticket is a weak reference to its claimant's
-            candidate token, so a claimant that is interrupted before it puts
-            the token loses it when its frame unwinds, and the ticket goes dead
-            by construction -- no cleanup code has to run.  A later reclaimer
-            skips a dead ticket and claims the next epoch."""
+        (b) an interrupted reclaim never blocks the next one: a ticket is a weak
+            reference to its claimant's candidate token, so a claimant that is
+            interrupted before it puts the token loses it when its frame
+            unwinds, and the ticket goes dead by construction -- no cleanup
+            code has to run.  A later reclaimer skips a dead ticket and claims
+            the next epoch.  (A caller that RETAINS the interrupting exception
+            keeps the claimant's frame, and so its ticket, alive until it lets
+            it go; no caller here retains one.)
+
+        Who runs the next reclaim is ``_take_baton``'s rule: every taker."""
         # The scan start is read BEFORE the live-baton check: a winner registers
         # its baton before it advances the hint, so a reclaimer that reads an
         # advanced hint is certain to see that baton as live.
@@ -1408,10 +1434,10 @@ class _Client:
             if held() is not None:
                 return  # a live claimant (or the live baton itself) holds this epoch
             epoch += 1  # a dead claim: skip it
-        # Registered (alive: held here) before it is queued, so a reclaimer that
-        # looks now sees a live baton and stops.  Interrupted anywhere from here
-        # until the put lands, this frame's token dies and both the ticket and
-        # the registration go dead with it.
+        # Registered before the hint advances (below): a reclaimer that reads the
+        # advanced hint must find this baton live.  Interrupted anywhere from
+        # here until the put lands, this frame's token dies and both the ticket
+        # and the registration go dead with it.
         self.baton_ref = weakref.ref(token)
         self.baton.put(token)
         if self.baton_epoch <= epoch:
@@ -1431,19 +1457,22 @@ class _Client:
 
     def _supervise(self) -> None:
         """Backstop: relaunch an exited owner while recovery or cleanup is
-        pending, so that none of it waits for a future API call.  It only reads
-        owner state; the launch itself is the owner baton's compare-and-set."""
+        pending, or while the baton is stranded, so that none of it waits for a
+        future API call.  It only reads owner state; the launch itself is the
+        owner baton's compare-and-set, and the launched candidate reclaims a
+        stranded baton (``_take_baton``) on its own thread, so an interrupted
+        reclaim never ends this backstop."""
         try:
             while True:
                 time.sleep(_SUPERVISE_S)
                 if os.getpid() != self.owner_pid:
                     return
-                self._reclaim_baton()
-                if self.owner_running:
+                if self._owner_live():
                     continue
                 pending = (
                     self.recover or self.generations or self.inflight or self.backlog
                     or self.spawn is not None or self.stop_acks or self._spawn_pending()
+                    or self.baton_ref() is None
                 )
                 if pending:
                     try:
@@ -1791,11 +1820,9 @@ class _Client:
         while True:
             if sent and not ack.empty():
                 return
-            try:
-                baton = self.baton.get_nowait()
+            baton = self._take_baton()
+            if baton is not None:
                 break
-            except queue.Empty:
-                pass
             # An owner is running (or starting): it does the work.  If it dies
             # before acknowledging, the baton comes back and this thread finishes.
             if not sent:
