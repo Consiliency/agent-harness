@@ -1317,12 +1317,26 @@ def publish_human_invoked_from_worktree(
 
     topology = collect_git_topology(repo)
     if not topology.get("available"):
-        return _blocked("not_a_git_worktree", "Repo is not a git worktree")
+        result = _blocked("not_a_git_worktree", "Repo is not a git worktree")
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_git_worktree"
+        )
+        return result
     branch = str(topology.get("branch", ""))
     if not branch or branch.startswith("detached@"):
-        return _blocked("detached_head", "Cannot publish from detached HEAD state")
+        result = _blocked("detached_head", "Cannot publish from detached HEAD state")
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="checkout_publish_branch"
+        )
+        return result
     if branch in protected_branches:
-        return _blocked("branch_protected", f"Cannot publish from protected branch {branch!r}")
+        result = _blocked(
+            "branch_protected", f"Cannot publish from protected branch {branch!r}"
+        )
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="checkout_unprotected_branch"
+        )
+        return result
 
     auth_error = _check_gh_auth()
     if auth_error is not None:

@@ -928,6 +928,48 @@ def test_human_publish_auth_failure_precedes_provider_mutation(tmp_path, monkeyp
     assert mutations == []
 
 
+@pytest.mark.parametrize(
+    ("topology", "reason", "next_step"),
+    [
+        ("not_git", "not_a_git_worktree", "repair_git_worktree"),
+        ("detached", "detached_head", "checkout_publish_branch"),
+        ("protected", "branch_protected", "checkout_unprotected_branch"),
+    ],
+)
+def test_human_publish_topology_refusals_return_typed_handoff(
+    tmp_path, monkeypatch, topology, reason, next_step
+):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = tmp_path / "not-a-repo" if topology == "not_git" else _make_repo(tmp_path)
+    if topology == "not_git":
+        repo.mkdir()
+    elif topology == "detached":
+        _git(repo, "checkout", "--detach")
+    else:
+        _git(repo, "branch", "-m", "main")
+    plan, verification = _human_publish_artifacts(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(
+        publishing,
+        "_check_gh_auth",
+        lambda: pytest.fail("topology refusal must precede authentication"),
+    )
+
+    result = publish_human_invoked_from_worktree(
+        repo,
+        ["owned.py"],
+        plan_path=plan,
+        verification_artifact_path=verification,
+    )
+
+    assert result["status"] == "publication_blocked"
+    assert result["reason"] == reason
+    assert result["handoff"]["schema"] == "HumanPublicationHandoff.v1"
+    assert result["handoff"]["next_step"] == next_step
+
+
 # ---------------------------------------------------------------------------
 # agent-harness#906: a SEALED prior transaction and a prebuilt refresh
 
