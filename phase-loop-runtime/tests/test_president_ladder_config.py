@@ -280,7 +280,7 @@ def test_the_resume_rung_check_honours_review_seat_aliases(tmp_path):
 # --- gemini rung follow-ups ---------------------------------------------------------
 
 
-def test_the_credential_less_gemini_home_carries_the_deny_all_profile(tmp_path, monkeypatch):
+def test_the_credential_less_gemini_rung_refuses_before_launch(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "no-credential-home"))
     seen: list[dict[str, object]] = []
 
@@ -297,12 +297,11 @@ def test_the_credential_less_gemini_home_carries_the_deny_all_profile(tmp_path, 
 
     with patch.object(panel_invoker, "launch_provider", capture):
         seam = president_adapter.build_president_invoke(DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={})
-        seam("gemini", "F001: [gemini] x")
-    assert len(seen) == 1
-    assert seen[0]["home"] != tmp_path / "no-credential-home"
-    assert seen[0]["files"] == [".gemini/antigravity-cli/settings.json"]  # no credential of any kind
-    assert seen[0]["settings"] == panel_invoker._broker_agy_settings_bytes()
-    assert not seen[0]["home"].exists()
+        response = seam("gemini", "F001: [gemini] x")
+    assert seen == []
+    assert response['status'] == 'failed'
+    assert response['code'] == 'president_invocation_failed'
+    assert not (tmp_path / "no-credential-home").exists()
 
 
 def test_a_gemini_ruling_is_read_through_the_acknowledged_stream_decoder(tmp_path):
@@ -334,7 +333,12 @@ def test_a_gemini_ruling_is_read_through_the_acknowledged_stream_decoder(tmp_pat
 
 def _git_repo(tmp_path: Path, body: str) -> Path:
     repo = _repo(tmp_path, body)
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    from phase_loop_runtime.review_stage import host_git
+
+    host_git(repo, "init", "-q", "--initial-branch=main", check=True)
+    host_git(repo, "add", "-A", check=True)
+    host_git(repo, "-c", "user.name=Review fixture", "-c", "user.email=fixture@example.invalid",
+             "-c", "commit.gpgsign=false", "commit", "-qm", "Base controls", check=True)
     return repo
 
 
@@ -422,6 +426,10 @@ def test_the_runner_seam_carries_the_repositorys_ladder(tmp_path, monkeypatch):
     (repo / ".agent-harness" / "advisor-boards.toml").write_text(
         '[president]\nladder = ["fable", "sol", "grok", "gemini"]\n', encoding="utf-8"
     )
+    from phase_loop_runtime.review_stage import host_git
+
+    host_git(repo, "add", ".agent-harness/advisor-boards.toml", check=True)
+    host_git(repo, "commit", "-qm", "Base ladder configuration", check=True)
     seen: dict[str, object] = {}
 
     def capture(*_a, **kw):

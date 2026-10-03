@@ -1173,7 +1173,7 @@ def test_delegated_channel_closeout_receives_its_phase(tmp_path, monkeypatch, ac
     assert main(["--repo", str(fx.repo), "--phase", "STATE"]) == 0
     monkeypatch.setenv("PHASE_LOOP_PHASE_ALIAS", "STATE")
     monkeypatch.setenv("PHASE_ALIAS", "STATE")
-    monkeypatch.setenv("PHASE_LOOP_CLAUDE_ROUTE", "channel")
+    monkeypatch.setenv("PHASE_LOOP_CLAUDE_ROUTE", "print" if action == "review" else "channel")
     monkeypatch.setenv("PHASE_LOOP_CHANNEL_SESSION_ID", "test-session")
     skill_root = Path(launcher.__file__).parent / "skills_bundle"
     monkeypatch.setattr(
@@ -1205,6 +1205,29 @@ def test_delegated_channel_closeout_receives_its_phase(tmp_path, monkeypatch, ac
             )
 
     monkeypatch.setattr(launcher, "ChannelSidecarClient", FakeChannel)
+
+    def fake_owned_launch(command, **kwargs):
+        prompt = command[-1] if command else ""
+        match = re.search(r"`([^`]+/context\.md)`", prompt)
+        assert match is not None, prompt
+        text = Path(match.group(1)).read_text()
+        pattern = r"`(phase-loop-closeout-audit --repo \. --record-outputs[^`]*)`"
+        skill = (skill_root / "claude-execute-phase/SKILL.md").read_text()
+        command_match = re.search(pattern, text) or re.search(pattern, skill)
+        assert command_match is not None
+        args = shlex.split(command_match.group(1))[1:]
+        args[args.index("--repo") + 1] = str(fx.repo)
+        observed["command"] = command_match.group(1)
+        observed["exit"] = main(args)
+        return launcher.LaunchResult(
+            command=list(command),
+            returncode=0,
+            output=build_fake_automation_output(status="executed"),
+        )
+
+    if action == "review":
+        monkeypatch.setattr(launcher, "launch", fake_owned_launch)
+
     request = build_fake_delegation_request(
         request_id="audit-review", target_executor="claude", product_action=action,
         owned_files=("scripts/build.py",),

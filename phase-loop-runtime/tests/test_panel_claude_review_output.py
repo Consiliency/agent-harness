@@ -268,7 +268,7 @@ def test_raw_unicode_separator_at_message_edge_survives(tmp_path, separator):
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PTY")
+@pytest.mark.skipif(sys.platform != "linux", reason="needs the Linux owner and a PTY")
 @pytest.mark.parametrize(("mode", "first", "last"), [
     ("review", "REVIEW START\n1. Must fix the first blocker", "REVIEW END\nPARTIALLY AGREE"),
     ("review", "REVIEW START\n1. Raw\u2028separator stays in text", "REVIEW END\nPARTIALLY AGREE"),
@@ -298,20 +298,36 @@ print("Claude Code ready for your message", flush=True)
 wire = b""
 while not wire.endswith(b"\x1bOM"):
     wire += os.read(0, 65536)
-Path("owned.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in json.loads(sys.argv[1])))
+import re
+session_id = sys.argv[sys.argv.index("--session-id") + 1]
+slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+transcript = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (session_id + ".jsonl")
+transcript.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in json.loads(sys.argv[1])))
 '''
-    rc, text, status, _ = pi._run_claude_tui_session(
-        command=[sys.executable, "-c", script, json.dumps(records)],
-        cwd=tmp_path,
-        prompt="Review the supplied synthetic example.",
-        output_file=tmp_path / "unused-review.txt",
-        timeout_s=15,
-        backstop_s=15,
-        env={"PATH": "/usr/bin:/bin"},
-        mode=mode,
-        allow_transcript_final=True,
-        broker_transcript_path=tmp_path / "owned.jsonl",
-    )
+    from phase_loop_runtime import sandbox_egress
+    try:
+        with sandbox_egress.isolated_network(required=True, timeout_s=None) as prefix:
+            token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
+            try:
+                rc, text, status, _ = pi._run_claude_tui_session(
+                    command=["/usr/bin/python3", "-I", "-S", "-c", script, json.dumps(records)],
+                    cwd=tmp_path,
+                    prompt="Review the supplied synthetic example.",
+                    output_file=tmp_path / "unused-review.txt",
+                    timeout_s=15,
+                    backstop_s=15,
+                    env={"PATH": "/usr/bin:/bin"},
+                    mode=mode,
+                    allow_transcript_final=True,
+                    broker_transcript_path=tmp_path / "owned.jsonl",
+                )
+            finally:
+                pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    except sandbox_egress.EgressUnavailable:
+        import os
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            raise
+        pytest.skip("kernel seat-owner support unavailable")
     assert rc == 0, (status, text)
     assert status == "claude_tui_broker_final_assistant"
     assert text == first + "\n" + last
@@ -320,6 +336,77 @@ Path("owned.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" 
     assert pi._cleanup_broker_claude_transcript(tmp_path / "owned.jsonl", evidence)
     assert evidence["claude_transcript_cleanup_verified"]
     assert not (tmp_path / "owned.jsonl").exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs the Linux owner and a PTY")
+@pytest.mark.parametrize("bad_shape", ["sibling", "symlink", "hardlink", "partial-json"])
+def test_brokered_tui_transcript_collection_fails_closed_on_unsafe_journal(
+    tmp_path, monkeypatch, bad_shape,
+):
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 0.1)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", 0.1)
+    record = _assistant("REVIEW END\nAGREE", uuid="answer", stop_reason="end_turn")
+    script = r'''
+import json, os, sys, tty
+from pathlib import Path
+tty.setraw(0)
+print("Claude Code ready for your message", flush=True)
+wire = b""
+while not wire.endswith(b"\x1bOM"):
+    wire += os.read(0, 65536)
+import re
+shape = sys.argv[1]
+session_id = sys.argv[sys.argv.index("--session-id") + 1]
+slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+project = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug
+project.mkdir(parents=True, exist_ok=True)
+transcript = project / (session_id + ".jsonl")
+if shape == "sibling":
+    transcript.write_text(json.dumps(json.loads(sys.argv[2])) + "\n")
+    (project / "unexpected.jsonl").write_text("{}\n")
+elif shape == "symlink":
+    target = project / "target.jsonl"
+    target.write_text(json.dumps(json.loads(sys.argv[2])) + "\n")
+    transcript.symlink_to(target)
+elif shape == "hardlink":
+    transcript.write_text(json.dumps(json.loads(sys.argv[2])) + "\n")
+    os.link(transcript, project / "linked.jsonl")
+elif shape == "partial-json":
+    transcript.write_text(json.dumps(json.loads(sys.argv[2])) + "\n{")
+else:
+    raise SystemExit(2)
+'''
+    from phase_loop_runtime import sandbox_egress
+    try:
+        with sandbox_egress.isolated_network(required=True, timeout_s=None) as prefix:
+            token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
+            try:
+                rc, text, status, _ = pi._run_claude_tui_session(
+                    command=[
+                        "/usr/bin/python3", "-I", "-S", "-c", script,
+                        bad_shape, json.dumps(record),
+                    ],
+                    cwd=tmp_path,
+                    prompt="Review the supplied synthetic example.",
+                    output_file=tmp_path / "unused-review.txt",
+                    timeout_s=15,
+                    backstop_s=15,
+                    env={"PATH": "/usr/bin:/bin"},
+                    mode="review",
+                    allow_transcript_final=True,
+                    broker_transcript_path=tmp_path / "owned.jsonl",
+                )
+            finally:
+                pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    except sandbox_egress.EgressUnavailable:
+        import os
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            raise
+        pytest.skip("kernel seat-owner support unavailable")
+    assert rc != 0
+    assert text == ""
+    assert status != "claude_tui_broker_final_assistant"
+    assert (tmp_path / "owned.jsonl").read_text(encoding="utf-8") == ""
 
 
 # agent-harness#1002 round 1 (codex, claude): replay and interleave sequences.

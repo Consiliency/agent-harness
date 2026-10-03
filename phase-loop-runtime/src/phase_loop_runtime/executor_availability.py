@@ -18,6 +18,7 @@ record only holds a thin closure, never mutable state.
 from __future__ import annotations
 
 import shutil
+import shlex
 import subprocess
 import time
 from typing import Callable
@@ -63,9 +64,9 @@ _auth_cache: dict[tuple[str, tuple[str, ...]], tuple[float, bool]] = {}
 
 
 def _run_probe(probe: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        probe,
-        shell=True,
+    from .panel_invoker import run_provider
+    return run_provider(
+        shlex.split(probe),
         text=True,
         capture_output=True,
         check=False,

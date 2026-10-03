@@ -19,14 +19,72 @@ from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime import panel_invoker as panel
 
 
+@pytest.fixture(autouse=True)
+def _direct_review_owner(request, tmp_path, monkeypatch):
+    broker = request.node.originalname in {
+        'test_public_board_real_broker_and_fixture_cli',
+        'test_bounded_broker_expiry_returns_leg_after_successful_cleanup',
+    }
+    direct = {
+        'test_silent_real_child_survives_old_deadline_and_stall',
+        'test_silent_real_child_cancellation_reaps_namespace',
+        'test_heartbeat_tui_survives_silence',
+        'test_virtual_clock_crosses_multiple_old_backstops',
+        'test_monitor_write_failure_is_reported_and_child_reaped',
+        'test_owner_wrapper_provides_native_runtime_random_device',
+        'test_real_output_is_observed_then_silence_is_unknown',
+        'test_tui_animation_does_not_keep_progress_observed',
+        'test_cpu_activity_is_not_reported_as_genuine_output',
+        'test_heartbeat_launch_executes_prefix_and_provider',
+    }
+    if request.node.originalname not in direct and not broker:
+        return
+    if not broker and request.node.originalname != 'test_heartbeat_launch_executes_prefix_and_provider':
+        request.getfixturevalue('owned_review_network')
+    if broker:
+        home = tmp_path / 'operator'
+        (home / '.codex').mkdir(parents=True)
+        (home / '.codex/auth.json').write_text('{"tokens":{"access_token":"synthetic-access-token"}}')
+        monkeypatch.setenv('HOME', str(home))
+        monkeypatch.setattr(panel, '_PROVIDER_SEARCH_PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
+    names = {
+        'test_heartbeat_tui_survives_silence': ('native-completed',),
+        'test_virtual_clock_crosses_multiple_old_backstops': ('release',),
+        'test_real_output_is_observed_then_silence_is_unknown': ('silence-observed',),
+        'test_tui_animation_does_not_keep_progress_observed': ('go', 'done', 'stage'),
+        'test_heartbeat_launch_executes_prefix_and_provider': ('provider-ran',),
+        'test_public_board_real_broker_and_fixture_cli': ('attempts',),
+        'test_bounded_broker_expiry_returns_leg_after_successful_cleanup': ('provider-pid',),
+    }.get(request.node.originalname, ())
+    outputs = tuple(panel._precreate_seat_output(tmp_path / name) for name in names)
+    original = panel._seat_command_profile
+
+    @contextmanager
+    def profile(command, **kwargs):
+        kwargs['outputs'] = (*kwargs.get('outputs', ()), *outputs)
+        with original(command, **kwargs) as result:
+            yield result
+
+    monkeypatch.setattr(panel, '_seat_command_profile', profile)
+
+
 def supported_board():
     return replace(DEFAULT_BOARD, seats=tuple(
         seat for seat in DEFAULT_BOARD.seats if seat.harness != "gemini"
     ))
 
 
+@contextmanager
+def owned_process(command, *, cwd, **kwargs):
+    with panel._seat_command_profile(command, cwd=cwd, env=os.environ) as (command, profile):
+        with panel.launch_owned(command, role=panel.SeatLaunchRole.PROVIDER_REVIEW,
+                                profile=profile, cwd=cwd, env=os.environ, **kwargs) as process:
+            yield process
+
+
 def test_heartbeat_default_board_refuses_before_effects(monkeypatch):
     monkeypatch.setenv("PATH", "/missing-gemini-capability")
+    monkeypatch.setattr(panel, '_PROVIDER_SEARCH_PATH', '/missing-gemini-capability')
     def forbidden(*args, **kwargs):
         pytest.fail("policy refusal reached an effect")
     monkeypatch.setattr(panel, "default_matrix", forbidden)
@@ -58,7 +116,7 @@ def test_silent_real_child_survives_old_deadline_and_stall(tmp_path, monkeypatch
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .02)
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
     result = panel._run_leg_with_liveness(
-        [sys.executable, "-c", "import time; time.sleep(.35); print('complete')"],
+        ["/usr/bin/python3", "-c", "import time; time.sleep(.35); print('complete')"],
         cwd=tmp_path, env=os.environ, deadline_s=.05, stall_threshold_s=.05,
         review_monitor=monitor,
     )
@@ -77,7 +135,7 @@ def test_silent_real_child_cancellation_reaps_namespace(tmp_path):
     timer.start()
     try:
         result = panel._run_leg_with_liveness(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
+            ["/usr/bin/python3", "-c", "import time; time.sleep(60)"],
             cwd=tmp_path, env=os.environ, deadline_s=.05, stall_threshold_s=.05,
             review_monitor=monitor,
         )
@@ -94,16 +152,17 @@ def test_heartbeat_tui_survives_silence(tmp_path, monkeypatch):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
     completed = tmp_path / "native-completed"
     result = panel._run_claude_tui_session(
-        command=[sys.executable, "-c", f"import time; from pathlib import Path; time.sleep(1.3); Path({str(completed)!r}).touch()"], cwd=tmp_path, prompt="input",
+        command=["/usr/bin/python3", "-c", f"import time; from pathlib import Path; time.sleep(1.3); Path({str(completed)!r}).write_text('ready')"], cwd=tmp_path, prompt="input",
         output_file=tmp_path / "absent", timeout_s=1, backstop_s=1,
         stall_threshold_s=.05, env=os.environ, review_monitor=monitor,
     )
     assert result[2] in ("claude_tui_missing_canonical_output", "claude_tui_pty_eof_no_output")
-    assert completed.exists(), "native child did not survive the old deadline and silence limits"
+    assert completed.read_text() == 'ready', "native child did not survive the old deadline and silence limits"
 
 
 def test_cli_default_board_refuses_before_composition(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("PATH", "/missing-gemini-capability")
+    monkeypatch.setattr(panel, '_PROVIDER_SEARCH_PATH', '/missing-gemini-capability')
     from phase_loop_runtime import cli
     from phase_loop_runtime.advisor_board import composition
     monkeypatch.setattr(composition, "compose_review_board", lambda: pytest.fail("auth composition"))
@@ -289,17 +348,22 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
                      f"pathlib.Path({str(leader_marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
                      f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)")
     owner_code = (
-        "import os,sys,threading; from pathlib import Path; "
-        "from phase_loop_runtime.panel_invoker import _ReviewMonitor,_run_leg_with_liveness; "
-        f"m=_ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}),'test',0,threading.Event()); "
-        f"_run_leg_with_liveness([sys.executable,'-c',{provider_code!r}],cwd='.',env=os.environ,deadline_s=1,review_monitor=m)"
+        "import os; from pathlib import Path; from phase_loop_runtime import panel_invoker as p; "
+        "from phase_loop_runtime.sandbox_egress import isolated_network\n"
+        "with isolated_network(timeout_s=None,required=True) as prefix:\n"
+        " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
+        " try:\n"
+        f"  with p._seat_command_profile(['/usr/bin/python3','-c',{provider_code!r}],"
+        f"cwd=Path({str(tmp_path)!r}),env=os.environ,outputs=(Path({str(marker)!r}),Path({str(leader_marker)!r}))) as (cmd,profile):\n"
+        f"   p.launch_owned(cmd,role=p.SeatLaunchRole.PROVIDER_REVIEW,profile=profile,cwd={str(tmp_path)!r},start_new_session=True).wait()\n"
+        " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
     )
     owner = subprocess.Popen([sys.executable, "-c", owner_code], start_new_session=True)
     descendant = None
     leader = None
     try:
-        deadline = time.monotonic() + 5
-        while not marker.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 15
+        while (not marker.exists() or not marker.stat().st_size) and time.monotonic() < deadline:
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
@@ -325,7 +389,7 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
             except ProcessLookupError: pass
 
 
-def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
+def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
     marker = tmp_path / "setfcap-descendant"
     death_signal = tmp_path / "setfcap-pdeathsig"
     child_code = (
@@ -340,23 +404,23 @@ def test_owned_setfcap_owner_death_reaps_detached_descendant(tmp_path):
         f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(60)"
     )
     owner_code = (
-        "import os,sys,threading; from pathlib import Path; "
+        "import os; from pathlib import Path; "
         "from phase_loop_runtime import panel_invoker as p; "
-        "from phase_loop_runtime.sandbox_egress import isolated_network; "
-        f"m=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}),'test-setfcap',0,threading.Event())\n"
-        "with isolated_network(timeout_s=None) as prefix:\n"
+        "from phase_loop_runtime.sandbox_egress import isolated_network\n"
+        "with isolated_network(timeout_s=None,required=True) as prefix:\n"
         " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
         " try:\n"
-        f"  p.launch_provider([sys.executable,'-c',{provider_code!r}],cwd='.',env=os.environ,"
-        "process_owner=m.owned_command(()),retain_caps=('setfcap',),start_new_session=True).wait()\n"
+        f"  with p._seat_command_profile(['/usr/bin/python3','-c',{provider_code!r}],"
+        f"cwd=Path({str(tmp_path)!r}),env=os.environ,outputs=(Path({str(marker)!r}),Path({str(death_signal)!r}))) as (cmd,profile):\n"
+        f"   p.launch_owned(cmd,role=p.SeatLaunchRole.PROVIDER_REVIEW,profile=profile,cwd={str(tmp_path)!r},start_new_session=True).wait()\n"
         " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
     )
     owner = subprocess.Popen([sys.executable, "-c", owner_code],
                              start_new_session=True)
     descendant = None
     try:
-        deadline = time.monotonic() + 5
-        while not marker.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 15
+        while (not marker.exists() or not marker.stat().st_size) and time.monotonic() < deadline:
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
@@ -395,10 +459,7 @@ def test_public_board_real_broker_and_fixture_cli(tmp_path, monkeypatch, empty, 
         "#!/usr/bin/python3\nimport sys,time\nfrom pathlib import Path\n"
         "if 'exec' not in sys.argv: raise SystemExit(0)\n"
         "caps = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('CapBnd:'))\n"
-        # agent-harness#1003: a SANDBOXED codex seat keeps exactly CAP_SETFCAP (bit 31) so
-        # codex's own bubblewrap can start; nothing else, and never NET_ADMIN (bit 12). The
-        # fixture board stages a tree, so this seat is sandboxed. An EMPTY set also passes.
-        "assert int(caps, 16) & ~(1 << 31) == 0, 'provider can regain firewall capabilities'\n"
+        "assert int(caps, 16) == 0, 'provider capability policy differs from the common owner'\n"
         f"with Path({str(count)!r}).open('a') as f: f.write('attempt\\n')\n"
         f"sys.stdin.read()\ntime.sleep({60 if cancelled else .2})\n"
         + ("" if empty else "Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('No blocking findings.\\nAGREE')\n")
@@ -459,15 +520,15 @@ def test_virtual_clock_crosses_multiple_old_backstops(tmp_path, monkeypatch):
         if not elapsed:
             # Advance the active leg, then let cleanup grace use real elapsed time.
             elapsed = 4 * 1800
-            release.touch()
+            release.write_text('ready')
         observe(*args, **kwargs)
 
     monkeypatch.setattr(monitor, "observe", advance_past_backstops)
     result = panel._run_leg_with_liveness(
-        [sys.executable, "-c",
+        ["/usr/bin/python3", "-c",
          "import sys,time; from pathlib import Path; "
          "release=Path(sys.argv[1]);\n"
-         "while not release.exists(): time.sleep(.01)\n"
+         "while not release.read_text(): time.sleep(.01)\n"
          "print('done')", str(release)],
         cwd=tmp_path, env=os.environ, deadline_s=1800, stall_threshold_s=180,
         review_monitor=monitor,
@@ -569,20 +630,31 @@ def test_signal_cancellation_joins_worker_and_child(tmp_path, signum):
 import os,sys,threading
 from pathlib import Path
 from phase_loop_runtime import panel_invoker as p
+from phase_loop_runtime.sandbox_egress import isolated_network
 event=threading.Event()
 monitor=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}), 'test', 0, event)
 def run(item):
-    result=p._run_leg_with_liveness(
-        [sys.executable, '-c', "from pathlib import Path; import time; Path({str(marker)!r}).touch(); time.sleep(60)"],
-        cwd='.', env=os.environ, deadline_s=1, review_monitor=monitor)
+    original=p._seat_command_profile
+    def declared(command, **kwargs):
+        kwargs['outputs']=(Path({str(marker)!r}),)
+        return original(command, **kwargs)
+    p._seat_command_profile=declared
+    with isolated_network(timeout_s=None,required=True) as prefix:
+        token=p._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            result=p._run_leg_with_liveness(
+                ['/usr/bin/python3', '-c', "from pathlib import Path; import time; Path({str(marker)!r}).write_text('ready'); time.sleep(60)"],
+                cwd=Path({str(tmp_path)!r}), env=os.environ, deadline_s=1, review_monitor=monitor)
+        finally:
+            p._EGRESS_LAUNCH_PREFIX.reset(token)
     return p.PanelLegResult('codex', 'DEGRADED', detail=result.stderr)
 result=p._run_legs_ordered([0], run, cancel_event=event)
 assert event.is_set() and result[0].detail == 'review_operation_cancelled'
 '''
     owner = subprocess.Popen([sys.executable, "-c", code])
     try:
-        deadline = time.monotonic() + 5
-        while not marker.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 15
+        while (not marker.exists() or not marker.stat().st_size) and time.monotonic() < deadline:
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
@@ -626,7 +698,7 @@ def test_monitor_write_failure_is_reported_and_child_reaped(tmp_path, monkeypatc
     latch = panel._ProviderQuiescenceLatch()
     with pytest.raises(OSError):
         panel._run_leg_with_liveness(
-            [sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path,
+            ["/usr/bin/python3", "-c", "import time; time.sleep(60)"], cwd=tmp_path,
             env=os.environ, deadline_s=1, review_monitor=monitor, quiescence_latch=latch,
         )
     assert monitor.write_failed
@@ -646,7 +718,7 @@ def test_pre_cancelled_monitor_never_launches(tmp_path, monkeypatch):
 def test_owner_wrapper_provides_native_runtime_random_device(tmp_path):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
     result = panel._run_leg_with_liveness(
-        [sys.executable, "-c", "assert len(open('/dev/urandom', 'rb').read(1)) == 1; print('ready')"],
+        ["/usr/bin/python3", "-c", "assert len(open('/dev/urandom', 'rb').read(1)) == 1; print('ready')"],
         cwd=tmp_path, env=os.environ, deadline_s=1, review_monitor=monitor,
     )
     assert result.returncode == 0
@@ -747,13 +819,13 @@ def test_real_output_is_observed_then_silence_is_unknown(tmp_path, monkeypatch, 
             progress_seen = True
         elif (progress_seen and row["last_genuine_progress_age_s"] is not None
               and row["last_genuine_progress_age_s"] > .05):
-            release.touch()
+            release.write_text('ready')
 
     monkeypatch.setattr(monitor, "observe", capture)
-    command = [sys.executable, "-c",
+    command = ["/usr/bin/python3", "-c",
                "import time\nfrom pathlib import Path\n"
                "print('Reviewing substantive section alpha', flush=True)\n"
-               f"while not Path({str(release)!r}).exists():\n"
+               f"while not Path({str(release)!r}).read_text():\n"
                " time.sleep(.01)\n"]
     # Keep the real child alive until both observations exist. A fixed sleep can
     # end before a loaded runner observes silence after draining the final output.
@@ -842,17 +914,17 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
             # The session's closing observation carries the PREVIOUS age forward; it must
             # never complete the handshake (agent-harness#1060 r3, claude).
             return
-        if not go.exists() and age is not None and age >= .1:
+        if not go.read_text() and age is not None and age >= .1:
             released.append((now, age))
-            go.touch()
-        elif (released and judged_last_repaint and not done.exists()
+            go.write_text('ready')
+        elif (released and judged_last_repaint and not done.read_text()
               and now - released[0][0] >= .3):
             marked.append((now, age))
-            done.touch()
+            done.write_text('ready')
 
     monkeypatch.setattr(monitor, "observe", capture)
     result = panel._run_claude_tui_session(
-        command=[sys.executable, "-c",
+        command=["/usr/bin/python3", "-c",
                  "import os, sys, time\n"
                  "line = '\\r\\x1b[2K* Herding... (%ss . esc to interrupt)\\r'\n"
                  "go, done = sys.argv[1], sys.argv[2]\n"
@@ -864,7 +936,7 @@ def test_tui_animation_does_not_keep_progress_observed(tmp_path, monkeypatch):
                  # The child records how it ended in `stage` (the session's rc is
                  # `proc.poll() or 1`, not the child's exit code).
                  "def wait(path, code):\n"
-                 " while not os.path.exists(path):\n"
+                 " while not os.path.getsize(path):\n"
                  "  if time.monotonic() > deadline:\n"
                  "   open(sys.argv[3], 'w').write('timed out waiting for %s' % path)\n"
                  "   sys.exit(code)\n"
@@ -908,7 +980,7 @@ def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .01)
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
     result = panel._run_leg_with_liveness(
-        [sys.executable, "-c", "import time; time.sleep(.2)"],
+        ["/usr/bin/python3", "-c", "import time; time.sleep(.2)"],
         cwd=tmp_path, env=os.environ, deadline_s=1, review_monitor=monitor,
     )
     assert result.returncode == 0
@@ -917,14 +989,14 @@ def test_cpu_activity_is_not_reported_as_genuine_output(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("tui", [False, True])
-def test_heartbeat_launch_executes_prefix_and_provider(tmp_path, tui):
+def test_heartbeat_launch_executes_prefix_and_provider(tmp_path, monkeypatch, tui):
+    from test_the_real_launch_carries_the_prefix import _filtered_marker
+
     marker = tmp_path / "prefix-ran"
     completed = tmp_path / "provider-ran"
-    prefix = ("/bin/sh", "-c", f'echo ran > {marker}; exec "$@"', "--")
-    command = [sys.executable, "-c", f"from pathlib import Path; Path({str(completed)!r}).touch()"]
+    command = ["/usr/bin/python3", "-c", f"from pathlib import Path; Path({str(completed)!r}).write_text('ready')"]
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "test", 0, threading.Event())
-    token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
-    try:
+    with _filtered_marker(marker, monkeypatch):
         if tui:
             panel._run_claude_tui_session(command=command, cwd=tmp_path, prompt="input",
                 output_file=tmp_path / "absent", timeout_s=1, backstop_s=1,
@@ -933,9 +1005,7 @@ def test_heartbeat_launch_executes_prefix_and_provider(tmp_path, tui):
             result = panel._run_leg_with_liveness(command, cwd=tmp_path, env=os.environ,
                                                   deadline_s=1, review_monitor=monitor)
             assert result.returncode == 0
-        assert marker.exists() and completed.exists()
-    finally:
-        panel._EGRESS_LAUNCH_PREFIX.reset(token)
+        assert marker.exists() and completed.read_text() == 'ready'
 
 
 @pytest.mark.parametrize("abrupt", [False, True])
@@ -1018,26 +1088,40 @@ def test_bounded_broker_expiry_returns_leg_after_successful_cleanup(tmp_path, mo
     marker = tmp_path / "provider-pid"
     # Expire only the aggregate clock, after the real fixture has launched.
     clock_origin = time.monotonic()
+    pinned = []
+
+    def expired_clock():
+        if marker.stat().st_size:
+            if not pinned:
+                pinned.append(os.pidfd_open(_host_pid(marker.read_text())))
+            return clock_origin + 4.0
+        return clock_origin
+
     monkeypatch.setattr(backing, "time", SimpleNamespace(
-        monotonic=lambda: clock_origin + (4.0 if marker.exists() else 0.0),
+        monotonic=expired_clock,
         monotonic_ns=time.monotonic_ns,
     ))
     script.write_text(
-        "#!/usr/bin/python3\nimport sys,time\nfrom pathlib import Path\n"
+        "#!/usr/bin/python3\nimport os,sys,time\nfrom pathlib import Path\n"
         "if 'exec' not in sys.argv: raise SystemExit(0)\n"
-        f"Path({str(marker)!r}).write_text(Path('/proc/self/stat').read_text().split()[0])\n"
+        f"Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid()))\n"
         "sys.stdin.read()\ntime.sleep(60)\n"
     )
     script.chmod(0o700)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
     seat = next(s for s in DEFAULT_BOARD.seats if s.harness == "codex")
     board = replace(DEFAULT_BOARD, seats=(seat,))
-    result = panel.invoke_board(board, "fixture bounded expiry", timeouts_by_leg={"codex": 1},
-        stream_dir=tmp_path / "records", review_policy=panel.ReviewLandingPolicy(("sol",), False))
-    assert marker.exists(), "fixture never reached provider launch"
+    try:
+        result = panel.invoke_board(board, "fixture bounded expiry", timeouts_by_leg={"codex": 1},
+            stream_dir=tmp_path / "records", review_policy=panel.ReviewLandingPolicy(("sol",), False))
+        import select
+        assert pinned and select.select(pinned, [], [], 0)[0] == pinned
+    finally:
+        for descriptor in pinned:
+            os.close(descriptor)
+    assert marker.stat().st_size, "fixture never reached provider launch"
     assert len(result.legs) == 1
     assert result.legs[0].status == "DEGRADED"
-    assert not Path("/proc/" + marker.read_text()).exists()
     assert len(receipts) == 1
     evidence = receipts[0]
     assert evidence["child_quiescent"] and evidence["broker_thread_quiescent"]
@@ -1059,12 +1143,11 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
 
     cwd = tmp_path / "seat with spaces"
     cwd.mkdir()
-    command = [sys.executable, "-c",
+    command = ["/usr/bin/python3", "-c",
         "import json,os; from pathlib import Path; "
         "print(json.dumps({'cwd':os.getcwd(),'caps':next(x.split()[1] "
         "for x in Path('/proc/self/status').read_text().splitlines() "
         "if x.startswith('CapBnd:'))}))"]
-    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "cwd-binding", 0, threading.Event())
     with isolated_network(timeout_s=None) as prefix:
         token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
@@ -1074,11 +1157,9 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
                 assert result.returncode == 0, result.stderr
                 output = result.stdout
             else:
-                proc = panel.launch_provider(command, cwd=cwd, env=os.environ,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    process_owner=monitor.owned_command(()) if route == "owned" else ())
-                output, error = proc.communicate(timeout=10)
-                assert proc.returncode == 0, error
+                with owned_process(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                    output, error = proc.communicate(timeout=10)
+                    assert proc.returncode == 0, error
             record = json.loads(output)
             assert record["cwd"] == str(cwd)
             assert int(record["caps"], 16) == 0
@@ -1089,48 +1170,42 @@ def test_real_namespace_launch_preserves_requested_cwd(tmp_path, route):
 def test_owned_namespace_cannot_flush_parent_firewall(tmp_path):
     from phase_loop_runtime.sandbox_egress import isolated_network
 
-    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "firewall-binding", 0, threading.Event())
-    command = [sys.executable, "-c",
-        "import subprocess; p=subprocess.run(['iptables','-F','OUTPUT'],capture_output=True); "
+    command = ["/usr/bin/python3", "-c",
+        "import subprocess; p=subprocess.run(['/usr/sbin/xtables-nft-multi','iptables','-F','OUTPUT'],capture_output=True); "
         "print(p.returncode)"]
     with isolated_network(timeout_s=None) as prefix:
         token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
-            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                process_owner=monitor.owned_command(()))
-            output, error = proc.communicate(timeout=10)
-            assert proc.returncode == 0, error
-            assert int(output) != 0
+            with owned_process(command, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                output, error = proc.communicate(timeout=10)
+                assert proc.returncode == 0, error
+                assert int(output) != 0
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
-def test_owned_setfcap_starts_nested_sandbox_without_firewall_access(tmp_path):
+def test_owned_review_starts_nested_sandbox_without_firewall_access(tmp_path):
     from phase_loop_runtime.sandbox_egress import isolated_network
 
-    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "setfcap-binding", 0, threading.Event())
-    command = [sys.executable, "-c",
+    command = ["/usr/bin/python3", "-c",
         "import json,subprocess; from pathlib import Path; "
         "caps=next(x.split()[1] for x in Path('/proc/self/status').read_text().splitlines() "
         "if x.startswith('CapBnd:')); "
         "inner=subprocess.run(['bwrap','--unshare-user','--ro-bind','/','/',"
         "'--dev','/dev','--proc','/proc','--','echo','NESTED-OK'],capture_output=True,text=True); "
-        "flush=subprocess.run(['iptables','-F','OUTPUT'],capture_output=True); "
+        "flush=subprocess.run(['/usr/sbin/xtables-nft-multi','iptables','-F','OUTPUT'],capture_output=True); "
         "print(json.dumps({'caps':caps,'inner_rc':inner.returncode,"
         "'inner_text':inner.stdout.strip(),'flush_rc':flush.returncode}))"]
     with isolated_network(timeout_s=None) as prefix:
         token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
-            proc = panel.launch_provider(command, cwd=tmp_path, env=os.environ,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                process_owner=monitor.owned_command(()), retain_caps=("setfcap",))
-            output, error = proc.communicate(timeout=10)
-            assert proc.returncode == 0, error
-            record = json.loads(output)
-            assert int(record["caps"], 16) == 1 << 31
-            assert record["inner_rc"] == 0 and record["inner_text"] == "NESTED-OK"
-            assert record["flush_rc"] != 0
+            with owned_process(command, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                output, error = proc.communicate(timeout=10)
+                assert proc.returncode == 0, error
+                record = json.loads(output)
+                assert int(record["caps"], 16) == 0
+                assert record["inner_rc"] == 0 and record["inner_text"] == "NESTED-OK"
+                assert record["flush_rc"] != 0
         finally:
             panel._EGRESS_LAUNCH_PREFIX.reset(token)
 

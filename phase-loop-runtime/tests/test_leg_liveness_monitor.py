@@ -32,6 +32,21 @@ from phase_loop_runtime import panel_invoker as pi
 _CPU_AVAILABLE = sys.platform.startswith("linux") and os.path.isdir("/proc")
 
 
+@pytest.fixture(autouse=True)
+def _owned_review_network():
+    from phase_loop_runtime import sandbox_egress
+    if not sandbox_egress.egress_isolation_available():
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks filtered egress")
+        pytest.skip("filtered review egress unavailable")
+    with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
+        token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            yield
+        finally:
+            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
 def _run(cmd, *, deadline_s, stall_threshold_s, input_text=None):
     return pi._run_leg_with_liveness(
         cmd,
@@ -60,7 +75,7 @@ def test_cpu_active_silent_leg_survives_stall_and_dies_at_deadline(monkeypatch):
     monkeypatch.setattr(pi, "_LEG_LIVENESS_CPU_SAMPLE_S", 0.3)
     t0 = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
-        _run([sys.executable, "-c", "while True: pass"], deadline_s=4, stall_threshold_s=1)
+        _run(["/usr/bin/python3", "-c", "while True: pass"], deadline_s=4, stall_threshold_s=1)
     elapsed = time.monotonic() - t0
     # survived WELL past the 1s stall window (CPU heartbeat), died at the ~4s deadline.
     assert elapsed >= 3.5, f"died at {elapsed:.1f}s — CPU heartbeat should have carried it to the deadline"
@@ -84,7 +99,7 @@ def test_deadline_backstop_fires_even_when_cpu_active(monkeypatch):
     monkeypatch.setattr(pi, "_LEG_LIVENESS_CPU_SAMPLE_S", 0.3)
     t0 = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
-        _run([sys.executable, "-c", "while True: pass"], deadline_s=2, stall_threshold_s=30)
+        _run(["/usr/bin/python3", "-c", "while True: pass"], deadline_s=2, stall_threshold_s=30)
     assert time.monotonic() - t0 < 6
 
 
@@ -92,7 +107,7 @@ def test_deadline_backstop_preserves_best_available_streams():
     with pytest.raises(subprocess.TimeoutExpired) as captured:
         _run(
             [
-                sys.executable, "-c",
+                "/usr/bin/python3", "-c",
                 "print('partial-output', flush=True);\nwhile True: pass",
             ],
             deadline_s=2,

@@ -26,6 +26,10 @@ from _dotfiles_tree import dotfiles_tree_present
 from _quarantine import deselect_quarantined
 
 
+if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+    os.environ.setdefault("PHASE_LOOP_LAUNCH_AUDIT_PATH", str(Path.cwd() / "seat-launch-audit.jsonl"))
+    os.environ["PHASE_LOOP_LAUNCH_AUDIT_FAIL"] = "1"
+
 _CONFORM_BODY_COUNTER_ENV = "PHASE_LOOP_CONFORM_BODY_COUNTER"
 
 # DECOUPLE SL-1: the dotfiles-domain CLI commands (adoption-bundle, sync-skills,
@@ -103,8 +107,25 @@ def _isolate_implicit_review_authority(monkeypatch):
     monkeypatch.setattr(
         panel_invoker,
         "_govlean_authority_switched",
-        lambda repo_dir: False if repo_dir is None else real_check(repo_dir),
+        lambda repo_dir: False if repo_dir is None or panel_invoker._outside_any_git_work_tree(repo_dir)
+        else real_check(repo_dir),
     )
+
+
+@pytest.fixture
+def owned_review_network():
+    from phase_loop_runtime import panel_invoker, sandbox_egress
+
+    if not sandbox_egress.egress_isolation_available():
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks filtered egress")
+        pytest.skip("filtered review egress unavailable")
+    with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
+        token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            yield
+        finally:
+            panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
 def pytest_configure(config):
@@ -113,6 +134,27 @@ def pytest_configure(config):
     and STANDALONE in the extracted agent-harness layout (where the wheel does not
     carry pyproject.toml, so the ini registration is absent and an unregistered
     marker would emit PytestUnknownMarkWarning)."""
+    from launch_audit_hook import install as install_launch_audit
+    from phase_loop_runtime.panel_invoker import _recorded_provider_hashes
+
+    audit_path = os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_PATH")
+    if audit_path is None:
+        cache = getattr(config, "cache", None)
+        if cache is None:
+            import tempfile
+            temporary = tempfile.TemporaryDirectory(prefix="phase-loop-test-launch-")
+            config.add_cleanup(temporary.cleanup)
+            directory = Path(temporary.name)
+        else:
+            directory = cache.mkdir("seat-launch-audit")
+        audit_path = directory / f"launches-{os.getpid()}.jsonl"
+    close_audit = install_launch_audit(
+        audit_path,
+        fail=os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_FAIL") == "1",
+        native_inference_hashes=_recorded_provider_hashes(),
+    )
+    config.add_cleanup(close_audit)
+
     config.addinivalue_line(
         "markers",
         "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",

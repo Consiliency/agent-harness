@@ -129,6 +129,79 @@ class AgyCanaryEvidenceError(RuntimeError):
     """Raised when evidence cannot be produced without weakening a gate."""
 
 
+def _seat_parent_descriptor(root_fd: int, relative: str) -> tuple[int, str]:
+    parts = relative.split("/")
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise AgyCanaryEvidenceError("seat path is not relative and normalized")
+    directory = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        return directory, parts[-1]
+    except BaseException:
+        os.close(directory)
+        raise
+
+
+def read_seat_output(root_fd: int, relative: str, *, max_bytes: int, expect_uid: int) -> bytes:
+    directory = descriptor = None
+    try:
+        directory, name = _seat_parent_descriptor(root_fd, relative)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                info.st_uid != expect_uid or info.st_size > max_bytes):
+            raise AgyCanaryEvidenceError("seat output is not a bounded private regular file")
+        chunks, size = [], 0
+        while size <= max_bytes:
+            chunk = os.read(descriptor, min(64 * 1024, max_bytes + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > max_bytes:
+            raise AgyCanaryEvidenceError("seat output exceeds its size limit")
+        return b"".join(chunks)
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("seat output could not be read safely") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+
+
+def write_seat_path(root_fd: int, relative: str, data: bytes, *, expected_inode=None) -> None:
+    directory = descriptor = None
+    try:
+        directory, name = _seat_parent_descriptor(root_fd, relative)
+        flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        if expected_inode is None:
+            flags |= os.O_CREAT | os.O_EXCL
+        descriptor = os.open(name, flags, 0o600, dir_fd=directory)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                info.st_uid != os.getuid() or (expected_inode is not None and
+                (info.st_dev, info.st_ino) != expected_inode)):
+            raise AgyCanaryEvidenceError("seat output identity changed")
+        os.ftruncate(descriptor, 0)
+        remaining = memoryview(data)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            remaining = remaining[written:]
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("seat output could not be written safely") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+
+
 def _account_home() -> Path:
     """Return the kernel account home, never the caller-controlled HOME value."""
     if pwd is None:
@@ -845,9 +918,18 @@ def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
                 not os.access(source, os.X_OK) or stat.S_IMODE(info.st_mode) & 0o022 or
                 info.st_uid not in {0, os.getuid()}):
             raise AgyCanaryEvidenceError(f"trusted {provider} executable is unsafe")
+        digest = _sha256(source.read_bytes())
+        if provider == "gemini":
+            from . import agy_integrity
+            image = agy_integrity.check(source)
+            try:
+                if image.sha256 != digest:
+                    raise agy_integrity.AgyImageUnqualified("agy_image_unqualified")
+            finally:
+                image.close()
         return _TrustedProviderRuntime(
             provider=provider, source=source, device=info.st_dev, inode=info.st_ino,
-            mode=stat.S_IMODE(info.st_mode), sha256=_sha256(source.read_bytes()),
+            mode=stat.S_IMODE(info.st_mode), sha256=digest,
         )
     raise AgyCanaryEvidenceError(f"trusted {provider} executable is unavailable")
 
@@ -2060,10 +2142,8 @@ class ProviderLaunchAuthority:
             entries = sorted(os.listdir(directory_fd))
             if entries != [name]:
                 raise AgyCanaryEvidenceError("provider output set is not exact")
-            data, info = _reopen_at(directory_fd, name)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise AgyCanaryEvidenceError("provider output is not one private regular file")
-            return data
+            return read_seat_output(directory_fd, name, max_bytes=32 * 1024 * 1024,
+                                    expect_uid=os.getuid())
         finally:
             os.close(directory_fd)
 

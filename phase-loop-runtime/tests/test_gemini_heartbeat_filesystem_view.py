@@ -2,13 +2,15 @@
 
 The owner wrapper for the Gemini heartbeat profile builds the sandbox from an empty root
 and exposes only an allowlist of host entries, read-only. The only writable places are
-the private HOME, a private /tmp, a private working directory and the subscription
+the private HOME, a private /tmp, a private working directory and a private copy of the subscription
 credential file. The live tests run a small synthetic probe through the real wrapper (no
 provider, synthetic credential) and compare what it saw with the host afterwards.
 """
 from __future__ import annotations
 
 import json
+import hashlib
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import shutil
@@ -62,6 +64,7 @@ print(json.dumps({
     "home_write": attempt_write(os.path.join(os.environ["HOME"], scratch)),
     "credential": attempt_read(credential),
     "linked_credential": attempt_read(os.path.join(os.environ["HOME"], ".gemini/antigravity-cli/antigravity-oauth-token")),
+    "host_credential": attempt_read(sys.argv[5]),
     "credential_write": attempt_write(credential, "synthetic-refreshed\n"),
     "top_level": sorted(os.listdir("/")),
     "listings": {d: sorted(os.listdir(d)) for d in ("/tmp", "/var/tmp", "/run", "/run/user", "/home", "/mnt", "/root", "/srv", "/media", "/opt")
@@ -84,13 +87,21 @@ def _profile(credential):
 def _layout(base):
     credential = base / "home/.gemini/antigravity-cli/antigravity-oauth-token"
     credential.parent.mkdir(parents=True)
-    credential.write_text("synthetic-token-only\n")
+    credential.write_text(json.dumps({"auth_method": "oauth", "token": {
+        "access_token": "synthetic-token-only", "refresh_token": "synthetic-refresh-only",
+        "expiry": "2099-01-01T00:00:00Z"}}))
     cwd = base / "out"
     cwd.mkdir()
     (cwd / "panel-other.txt").write_text("another seat's output\n")
     hidden = base / "host-file.txt"
     hidden.write_text("host content\n")
     return credential, cwd, hidden
+
+
+@pytest.fixture(autouse=True)
+def qualified_probe_image(monkeypatch):
+    monkeypatch.setitem(gh.QUALIFIED_IMAGES,
+                        hashlib.sha256(Path('/usr/bin/python3').read_bytes()).hexdigest(), 'synthetic-help')
 
 
 @pytest.fixture
@@ -117,21 +128,19 @@ def _pairs(argv, flag, width):
 
 def test_the_gemini_owner_exposes_only_an_allowlisted_read_only_view(tmp_path, layout):
     credential, cwd, _ = layout
-    monitor = panel._ReviewMonitor(tmp_path / "m.json", "view", 0, threading.Event())
-    profile = _profile(credential)
-    argv = monitor.owned_command(("fixture",), gemini_profile=profile, cwd=cwd)
-    assert argv[:3] == ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid"]
-    # No bind of the host root, and every read-only bind is an allowlisted entry.
-    allowed = set(panel._GEMINI_VIEW_SYSTEM) | set(panel._GEMINI_VIEW_FILES)
-    for source, destination in _pairs(argv, "--ro-bind", 2) + _pairs(argv, "--ro-bind-try", 2):
-        assert source == destination and source in allowed, source
-    # The only writable host bind is the credential file.
-    assert _pairs(argv, "--bind", 2) == [[os.path.realpath(credential), str(credential.absolute())]]
-    assert [str(cwd)] in _pairs(argv, "--tmpfs", 1) and ["/tmp"] in _pairs(argv, "--tmpfs", 1)
-    assert argv.index("--unshare-pid") < argv.index("--proc") < argv.index("--remount-ro") < argv.index("--")
-    # The HOME mounts come after the view, on its /dev.
-    assert argv.index("--dev") < argv.index(gh.PRIVATE_HOME)
-    assert argv[-2:] == ["--", "fixture"]
+    with panel.seat_profile(harness='gemini', executable='/usr/bin/python3',
+                            env={'HOME': str(credential.parents[2])}, cwd=cwd) as (_, profile):
+        view = panel._seat_filesystem_view(cwd, profile_mounts=profile.mount_args)
+        argv = panel._seat_owner(view, filtered_network=True)
+        assert '--unshare-pid' in argv and '--unshare-ipc' in argv
+        allowed = set(panel._GEMINI_VIEW_SYSTEM) | set(panel._GEMINI_VIEW_FILES)
+        for source, destination in _pairs(argv, '--ro-bind', 2) + _pairs(argv, '--ro-bind-try', 2):
+            assert source == destination and source in allowed
+        assert _pairs(argv, '--bind', 2) == []
+        assert str(credential) not in argv
+        assert [str(cwd)] in _pairs(argv, '--tmpfs', 1)
+        assert ['/tmp'] in _pairs(argv, '--tmpfs', 1)
+        assert argv.index('--unshare-pid') < argv.index('--proc') < argv.index('--remount-ro') < argv.index('--')
 
 
 @pytest.mark.parametrize("links", [0, 2])
@@ -142,39 +151,35 @@ def test_the_view_requires_exactly_one_credential_link(tmp_path, layout, links):
     del mount_args[-3:]
     mount_args += link * links
     with pytest.raises(ValueError):
-        panel._gemini_filesystem_view(cwd, mount_args)
+        panel._gemini_credential_target(mount_args)
 
 
-def test_the_probe_view_carries_its_marker_and_no_profile_descriptors(tmp_path, layout):
+def test_the_retired_monitor_owner_is_refused(tmp_path, layout):
     credential, cwd, _ = layout
-    monitor = panel._ReviewMonitor(tmp_path / "m.json", "view", 0, threading.Event())
-    profile = _profile(credential)
-    profile.mount_args = ["--info-fd", "13", *profile.mount_args]
-    probe = monitor.owned_command((), gemini_profile=profile, cwd=cwd, probe_marker="/tmp/marker")
-    launch = monitor.owned_command((), gemini_profile=profile, cwd=cwd)
-    assert "--info-fd" not in probe and "--info-fd" in launch
-    assert probe[-6:] == ["--ro-bind", "/tmp/marker", "/tmp/marker", "--remount-ro", "/", "--"]
-    assert probe[:-6] + probe[-3:-1] == launch[:-len(profile.mount_args) - 1]
+    monitor = panel._ReviewMonitor(tmp_path / 'm.json', 'view', 0, threading.Event())
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match='seat_launch_owner_required'):
+        monitor.owned_command((), gemini_profile=_profile(credential), cwd=cwd)
 
 
 def _run_view(tmp_path, layout, prefix=()):
     credential, cwd, hidden = layout
-    monitor = panel._ReviewMonitor(tmp_path / "m.json", "view", 0, threading.Event())
-    profile = _profile(credential)
-    scratch = f".pl-view-probe-{uuid.uuid4().hex}"
-    token = panel._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
-    try:
-        proc = panel.launch_provider(
-            ["/usr/bin/python3", "-I", "-c", VIEW_PROBE, str(cwd), str(credential), str(hidden), scratch],
-            process_owner=monitor.owned_command((), gemini_profile=profile, cwd=cwd),
-            probe_owner=lambda marker: monitor.owned_command(
-                (), gemini_profile=profile, cwd=cwd, probe_marker=marker),
-            cwd=str(cwd), env=profile.env,
+    scratch = f'.pl-view-probe-{uuid.uuid4().hex}'
+    with ExitStack() as stack:
+        if not prefix:
+            prefix = stack.enter_context(sandbox_egress.isolated_network(timeout_s=None, required=True))
+        token = panel._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+        stack.callback(panel._EGRESS_LAUNCH_PREFIX.reset, token)
+        provider, profile = stack.enter_context(panel.seat_profile(
+            harness='gemini', executable='/usr/bin/python3',
+            env={'HOME': str(credential.parents[2])}, cwd=cwd,
+        ))
+        private_credential = profile.env['HOME'] + '/.gemini/antigravity-cli/antigravity-oauth-token'
+        with panel.launch_owned(
+            [provider, '-I', '-c', VIEW_PROBE, str(cwd), private_credential, str(hidden), scratch, str(credential)],
+            role=panel.SeatLaunchRole.PROVIDER_REVIEW, profile=profile, cwd=str(cwd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        out, err = proc.communicate(timeout=60)
-    finally:
-        panel._EGRESS_LAUNCH_PREFIX.reset(token)
+        ) as proc:
+            out, err = proc.communicate(timeout=60)
     assert proc.returncode == 0, err.decode()
     return json.loads(out), scratch
 
@@ -193,19 +198,22 @@ def _assert_view(layout, seen, scratch):
     # Private scratch is writable and stays private.
     assert seen["tmp_write"] == "ok" and not (Path("/tmp") / scratch).exists()
     assert seen["home_write"] == "ok"
-    # The credential file is the one host path written through.
-    assert seen["credential"] == seen["linked_credential"] == "synthetic-token-only\n"
-    assert seen["credential_write"] == "ok"
-    assert credential.read_text() == "synthetic-refreshed\n"
+    assert seen['credential'] == seen['linked_credential']
+    copied = json.loads(seen['credential'])
+    assert copied['token']['access_token'] == 'synthetic-token-only'
+    assert 'refresh_token' not in copied['token']
+    assert seen['host_credential'] == 'ENOENT'
+    assert seen['credential_write'] == 'ok'
+    assert json.loads(credential.read_text())['token']['refresh_token'] == 'synthetic-refresh-only'
     assert not (Path("/etc") / scratch).exists() and not (Path("/usr") / scratch).exists()
     # The top level holds only the allowlist and the private mounts' ancestors.
-    ancestors = {Path(str(p)).parts[1] for p in (credential, cwd)}
+    ancestors = {Path(str(p)).parts[1] for p in (cwd, Path('/home/phase-loop-seat'), Path('/run/phase-loop-seat'))}
     allowed = {Path(e).parts[1] for e in (*panel._GEMINI_VIEW_SYSTEM, *panel._GEMINI_VIEW_FILES)}
     assert set(seen["top_level"]) <= allowed | ancestors | {"dev", "proc", "tmp"}, seen["top_level"]
     # Scratch and runtime directories show nothing of the host.
     for directory, entries in seen["listings"].items():
         on_path = {Path(str(p)).relative_to(directory).parts[0]
-                   for p in (credential, cwd) if str(p).startswith(directory + "/")}
+                   for p in (cwd, Path('/home/phase-loop-seat'), Path('/run/phase-loop-seat')) if str(p).startswith(directory + '/')}
         if directory == "/tmp":
             on_path.add(scratch)
         assert set(entries) <= on_path, (directory, entries)
@@ -227,27 +235,38 @@ def test_an_existing_cwd_outside_tmp_is_still_private_and_empty(tmp_path, outsid
 
 @needs_bwrap
 def test_a_second_mount_of_host_data_is_not_carried_into_the_view(tmp_path, layout):
-    """Data mounted at a second host path (here under /run) stays out of the view."""
-    if shutil.which("unshare") is None:
-        pytest.skip("util-linux unshare is not installed")
     credential, cwd, hidden = layout
-    alias = "/run/lock/pl-view-alias"
-    monitor = panel._ReviewMonitor(tmp_path / "m.json", "view", 0, threading.Event())
-    argv = monitor.owned_command(
-        ("/usr/bin/python3", "-I", "-c",
-         "import json,os,sys; print(json.dumps([os.path.exists(sys.argv[1]), os.path.exists('/run')]))",
-         alias + "/" + hidden.name),
-        gemini_profile=_profile(credential), cwd=cwd)
-    script = ('mount -t tmpfs none /run/lock && mkdir "$1" && mount --bind "$2" "$1" '
-              '&& test -r "$1/$3" && shift 3 && exec "$@"')
-    proc = subprocess.run(
-        ["unshare", "--user", "--map-root-user", "--mount", "/bin/sh", "-c", script, "sh",
-         alias, str(hidden.parent), hidden.name, *argv],
-        capture_output=True, text=True, timeout=60, env={"PATH": "/usr/bin:/bin"})
-    if proc.returncode != 0 and "mount" in proc.stderr:
-        pytest.skip(f"this host cannot build the alias layout: {proc.stderr.strip()}")
-    assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout) == [False, False]
+    alias = '/run/lock/pl-view-alias'
+    script = """
+import ctypes,os,sys
+libc=ctypes.CDLL(None,use_errno=True)
+assert libc.mount(b'none',b'/run/lock',b'tmpfs',0,None)==0,ctypes.get_errno()
+os.mkdir(sys.argv[1])
+assert libc.mount(os.fsencode(sys.argv[2]),os.fsencode(sys.argv[1]),None,4096,None)==0,ctypes.get_errno()
+assert os.path.isfile(sys.argv[1]+'/'+sys.argv[3])
+os.execv('/usr/bin/setpriv',['/usr/bin/setpriv','--inh-caps=-all','--ambient-caps=-all','--bounding-set=-all','--no-new-privs',*sys.argv[4:]])
+"""
+
+    def mount_alias(owned, descriptors):
+        return ['/usr/bin/unshare', '--user', '--map-current-user', '--keep-caps', '--mount',
+                '/usr/bin/python3', '-I', '-c', script, alias, str(hidden.parent), hidden.name, *owned]
+
+    token = panel._EGRESS_LAUNCH_PREFIX.set(())
+    try:
+        with panel.seat_profile(harness='gemini', executable='/usr/bin/python3',
+                                env={'HOME': str(credential.parents[2])}, cwd=cwd,
+                                role=panel.SeatLaunchRole.PROVIDER_ADMIN) as (provider, profile):
+            with panel.launch_owned(
+                [provider, '-I', '-c', 'import json,os,sys; print(json.dumps(os.path.exists(sys.argv[1])))',
+                 alias + '/' + hidden.name], role=panel.SeatLaunchRole.PROVIDER_ADMIN,
+                profile=profile, cwd=cwd, supervisor=mount_alias,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ) as proc:
+                stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        panel._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert proc.returncode == 0, stderr.decode()
+    assert json.loads(stdout) is False
 
 
 @needs_bwrap
@@ -259,4 +278,3 @@ def test_the_gemini_sandbox_view_holds_inside_the_egress_namespace(tmp_path, lay
     with sandbox_egress.isolated_network(timeout_s=None) as prefix:
         seen, scratch = _run_view(tmp_path, layout, prefix=prefix)
     _assert_view(layout, seen, scratch)
-

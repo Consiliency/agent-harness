@@ -29,7 +29,7 @@ def _stage(tmp_path):
 
 def test_auth_ok_when_logged_in(monkeypatch):
     monkeypatch.setattr(
-        pi.subprocess, "run",
+        pi, "run_provider",
         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="Logged in as x", stderr=""),
     )
     ok, detail = pi._leg_auth_ok("codex", {})
@@ -38,7 +38,7 @@ def test_auth_ok_when_logged_in(monkeypatch):
 
 def test_auth_fails_and_classifies_degraded_when_logged_out(monkeypatch):
     monkeypatch.setattr(
-        pi.subprocess, "run",
+        pi, "run_provider",
         lambda *a, **k: types.SimpleNamespace(returncode=1, stdout="", stderr="not logged in"),
     )
     ok, detail = pi._leg_auth_ok("codex", {})
@@ -49,7 +49,7 @@ def test_auth_fails_and_classifies_degraded_when_logged_out(monkeypatch):
 
 def test_auth_no_probe_fails_open_without_subprocess(monkeypatch):
     called = []
-    monkeypatch.setattr(pi.subprocess, "run", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(pi, "run_provider", lambda *a, **k: called.append(1))
     ok, detail = pi._leg_auth_ok("gemini", {})  # no probe registered
     assert ok and detail == "" and not called
 
@@ -57,7 +57,7 @@ def test_auth_no_probe_fails_open_without_subprocess(monkeypatch):
 def test_auth_probe_missing_cli_fails_open(monkeypatch):
     def boom(*a, **k):
         raise FileNotFoundError
-    monkeypatch.setattr(pi.subprocess, "run", boom)
+    monkeypatch.setattr(pi, "run_provider", boom)
     ok, _ = pi._leg_auth_ok("codex", {})
     assert ok  # a flaky/absent probe must never block the leg
 
@@ -80,8 +80,8 @@ def _claude_auth_payload(**overrides):
 
 def test_claude_subscription_auth_accepts_only_proven_first_party(monkeypatch):
     monkeypatch.setattr(
-        pi.subprocess,
-        "run",
+        pi,
+        "run_provider",
         lambda *a, **k: types.SimpleNamespace(
             returncode=0, stdout=_claude_auth_payload(), stderr=""
         ),
@@ -101,8 +101,8 @@ def test_claude_subscription_auth_rejects_every_unproven_shape(monkeypatch):
     )
     for raw in rejected:
         monkeypatch.setattr(
-            pi.subprocess,
-            "run",
+            pi,
+            "run_provider",
             lambda *a, _raw=raw, **k: types.SimpleNamespace(
                 returncode=0, stdout=_raw, stderr="private@example.invalid"
             ),
@@ -115,8 +115,8 @@ def test_claude_subscription_auth_rejects_every_unproven_shape(monkeypatch):
 
 def test_claude_subscription_auth_does_not_return_or_persist_identity(monkeypatch, caplog):
     monkeypatch.setattr(
-        pi.subprocess,
-        "run",
+        pi,
+        "run_provider",
         lambda *a, **k: types.SimpleNamespace(
             returncode=0, stdout=_claude_auth_payload(), stderr=""
         ),
@@ -156,7 +156,7 @@ def test_exec_leg_codex_blocks_when_preflight_fails(tmp_path, monkeypatch):
             return types.SimpleNamespace(returncode=1, stdout="", stderr="not logged in")
         raise AssertionError("codex exec must NOT run when the auth preflight fails")
 
-    monkeypatch.setattr(pi.subprocess, "run", fake_run)
+    monkeypatch.setattr(pi, "run_provider", fake_run)
     rc, review, log = pi._exec_leg("codex", review_dir, out_dir, timeout_s=60)
     assert rc != 0 and not review
     assert "not logged in" in log
@@ -168,9 +168,9 @@ def test_exec_leg_codex_retries_soft_empty_turn(tmp_path, monkeypatch):
     out_file = out_dir / "panel-codex.txt"
     calls = {"exec": 0}
 
-    # auth preflight still runs via subprocess.run — keep it logged-in.
+    # Auth preflight uses the owned administrative seam; keep it logged-in.
     monkeypatch.setattr(
-        pi.subprocess, "run",
+        pi, "run_provider",
         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="logged in", stderr=""),
     )
 
@@ -193,7 +193,7 @@ def test_exec_leg_codex_does_not_retry_hard_failure(tmp_path, monkeypatch):
     calls = {"exec": 0}
 
     monkeypatch.setattr(
-        pi.subprocess, "run",
+        pi, "run_provider",
         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="logged in", stderr=""),
     )
 

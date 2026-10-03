@@ -1,0 +1,110 @@
+{
+  "admission_class": "locally_qualified",
+  "command_summary": "holder-wrapped phase_loop_runtime.cli agy-qualification run from the PR checkout",
+  "created_at": "2026-10-03T04:42:18Z",
+  "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+  "host_class": "claw manual subscribed host",
+  "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
+  "notes": [
+    "No credential values, credential paths, host addresses, raw provider text, process IDs, or private filesystem paths are included.",
+    "The first unwrapped CLI attempt failed before provider execution because no filtered egress holder was installed; this record uses the same qualification path wrapped in the production holder context.",
+    "The committed evidence postdates the run; subject_runtime_head names the exact runtime bytes executed."
+  ],
+  "operations": [
+    {
+      "broker": {
+        "broker_thread_quiescent": true,
+        "canonical_repo_directory_denied": false,
+        "canonical_repo_file_denied": false,
+        "child_quiescent": true,
+        "child_timeout": false,
+        "cleanup_root_removed": true
+      },
+      "monitoring": {
+        "effective_policy": "heartbeat_only",
+        "model_deadline_s": null,
+        "observation_state": "progress_observed",
+        "silence_deadline_s": null,
+        "terminal_reason": "user_cancel"
+      },
+      "observer": {
+        "credential_home_source": "scrubbed_subscription_home",
+        "namespace_identity_changed": null,
+        "provider_help_sha256": null,
+        "provider_image_sha256": null,
+        "provider_profile_sha256": null,
+        "runtime_identity_changed": null
+      },
+      "operation": "cancel",
+      "raw_receipt_sha256": "291c27dd555cb0b7ac283055e79023ee5eadeef08e89e6a63ae8091e484c4b21",
+      "result_detail": "review_operation_cancelled",
+      "result_status": "UNAVAILABLE",
+      "schema": "gemini_heartbeat_qualification.v1"
+    },
+    {
+      "broker": {
+        "broker_thread_quiescent": true,
+        "canonical_repo_directory_denied": true,
+        "canonical_repo_file_denied": true,
+        "child_quiescent": true,
+        "child_timeout": false,
+        "cleanup_root_removed": true
+      },
+      "monitoring": {
+        "effective_policy": "heartbeat_only",
+        "model_deadline_s": null,
+        "observation_state": "progress_observed",
+        "silence_deadline_s": null,
+        "terminal_reason": "completed"
+      },
+      "observer": {
+        "credential_home_source": "scrubbed_subscription_home",
+        "namespace_identity_changed": null,
+        "provider_help_sha256": null,
+        "provider_image_sha256": null,
+        "provider_profile_sha256": null,
+        "runtime_identity_changed": null
+      },
+      "operation": "completion",
+      "raw_receipt_sha256": "d4ef11dcc58491a580fe140e2c25d6e4cb61096f6ae116709dfe6032832e3132",
+      "result_detail": null,
+      "result_status": "OK",
+      "schema": "gemini_heartbeat_qualification.v1"
+    },
+    {
+      "broker": null,
+      "monitoring": {
+        "effective_policy": "heartbeat_only",
+        "model_deadline_s": null,
+        "observation_state": "progress_unobserved",
+        "silence_deadline_s": null,
+        "terminal_reason": null
+      },
+      "observer": {
+        "credential_home_source": "scrubbed_subscription_home",
+        "namespace_identity_changed": null,
+        "provider_help_sha256": null,
+        "provider_image_sha256": null,
+        "provider_profile_sha256": null,
+        "runtime_identity_changed": null
+      },
+      "operation": "owner-loss",
+      "raw_receipt_sha256": "c69414a73d6009ba4b487e4610529e25ac50dce1fcda17ffd0a672f6161e103f",
+      "result_detail": null,
+      "result_status": null,
+      "schema": "gemini_heartbeat_qualification.v1"
+    }
+  ],
+  "pr": "agent-harness#1222",
+  "private_raw_receipt_root_sha256": "2e7b6d0489d1bf3ff66102f04851ff9a04cf9db294a4ee18a45973cfdfd0c2b1",
+  "provider": "agy",
+  "provider_version": "1.2.15",
+  "repository": "Consiliency/agent-harness",
+  "role": "redacted final-head live qualification evidence; raw receipts remain private",
+  "schema": "seat_owner_live_qualification_summary.v1",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_bytes": 226,
+  "stdout_sha256": "56233ada6bba2cb6105e362f9dbc1f6324a018595e8d53a12a5e0c6243547155",
+  "subject_runtime_head": "20a1def07d6146723ff12f994b936ffcdff43927"
+}

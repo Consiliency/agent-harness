@@ -525,7 +525,8 @@ def test_default_run_outside_a_repository_keeps_its_refusal_and_adds_a_hint(monk
     rc, _out, err = run(["advisor-board", str(bundle)])
     assert rc == 2 and run.compose_calls == []
     lines = err.splitlines()
-    assert lines[0].startswith("advisor-board: review isolation unavailable: Command '['git', 'rev-parse'")
+    assert lines[0].startswith("advisor-board: review isolation unavailable: Command '")
+    assert "rev-parse" in lines[0] and "--show-toplevel" in lines[0]
     assert lines[1].startswith("advisor-board: hint:") and "--advisory" in lines[1]
 
 

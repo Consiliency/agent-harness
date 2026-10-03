@@ -25,7 +25,6 @@ from __future__ import annotations
 import contextlib
 import io
 import re
-import sys
 import textwrap
 import time
 import types
@@ -41,12 +40,14 @@ _REAL_REDACTION_IDENTITY = pi._redaction_identity
 
 
 @pytest.fixture(autouse=True)
-def _fixed_identity(monkeypatch):
+def _fixed_identity(monkeypatch, request):
     """Host independence (agent-harness#1102 r5): the redactor substitutes the RUNNING
     user's home and name, so every test runs as one fixed fake identity — no assertion may
     pass or fail because of who runs the suite. The one test of the real lookup calls
     ``_REAL_REDACTION_IDENTITY`` directly."""
     monkeypatch.setattr(pi, "_redaction_identity", lambda: (("/home/pl-tester",), ("pl-tester",)))
+    if request.node.name.startswith("test_brokered_codex_"):
+        request.getfixturevalue("owned_review_network")
 
 
 CODEX_USAGE_BANNER = (
@@ -131,7 +132,8 @@ def _brokered_codex(monkeypatch, tmp_path, script: str):
     monkeypatch.setattr(pi, "_record_broker_provider_evidence", lambda *a, **k: None)
 
     def fake_command(*, out_file, **_kw):
-        return [sys.executable, "-c", textwrap.dedent(script), str(out_file)]
+        return ["/usr/bin/python3", "-c", textwrap.dedent(script), str(out_file),
+                "--output-last-message", str(out_file)]
 
     monkeypatch.setattr(pi, "_brokered_codex_command", fake_command)
     monkeypatch.setattr(_FakeBroker, "invoked", 0)
