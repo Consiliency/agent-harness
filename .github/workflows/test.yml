@@ -65,7 +65,7 @@ jobs:
           # Secrets are readable in a step context, never in a job-level `if:`.
           # GitHub also withholds secrets from fork-PR runs, so this is a second,
           # independent reason a fork can never reach the offload path.
-          TS_AUTHKEY_SET: ${{ secrets.TS_AUTHKEY != '' }}
+          TS_AUTHKEY_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}  # tailnet credential present (Tailscale OAuth client); name kept for the eligibility logic
           # The current rootless Dagger engine cannot provide /dev/net/tun to
           # nested exec containers. Use the complete hosted lanes until a
           # reviewed offload environment proves the real egress tests pass.
@@ -134,14 +134,15 @@ jobs:
           exit 1
       - name: Offload the suite to the tailnet host
         # Pinned to a full commit SHA, never a moving tag.
-        uses: Consiliency/ci-actions/dagger-offload@c9272a525486204a9d7333aef6e78297b3054de3
+        uses: Consiliency/ci-actions/dagger-offload@3929e18ce0cb14e0050f6b63f287d1cf98f5aaaf
         env:
           # Read by ci/offload-gate.sh; unset there means "retain" (fail closed).
           CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
         with:
           command: "bash ci/offload-gate.sh"
           eligible: ${{ needs.elig.outputs.eligible }}
-          ts-authkey: ${{ secrets.TS_AUTHKEY }}
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
       - name: Upload offloaded junit evidence
         if: always()
         uses: actions/upload-artifact@v4
