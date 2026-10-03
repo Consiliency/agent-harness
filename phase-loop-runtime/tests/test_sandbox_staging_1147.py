@@ -878,8 +878,8 @@ class TestEveryAgentLaunchIsRelocated:
     def test_a_component_owned_by_another_account_is_refused(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache"
         (cache / "phase-loop" / "tmp").mkdir(parents=True, mode=0o700)
-        real_uid = os.getuid()
-        monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+        assert sandbox_policy._private(cache / "phase-loop" / "tmp", cache)  # control
+        _owned_by_someone_else(monkeypatch, cache / "phase-loop")
         assert not sandbox_policy._private(cache / "phase-loop" / "tmp", cache)
 
     def test_the_staging_root_requires_real_directories_in_the_cache(self, tmp_path, monkeypatch):
@@ -1241,9 +1241,45 @@ def test_a_private_base_under_a_shared_parent_is_refused(tmp_path):
     assert sandbox_policy._private(base / "phase-loop" / "tmp", base)
 
 
+def _owned_by_someone_else(monkeypatch, target: Path) -> None:
+    """Report ``target`` as owned by an account that is neither this one nor root -- by
+    its stat result, so the check holds inside a user namespace too, where this account
+    is mapped to root and every file looks root-owned."""
+    import pathlib
+
+    target = Path(os.path.realpath(target))
+    other = os.getuid() + 4242
+    real_stat, real_lstat = pathlib.Path.stat, pathlib.Path.lstat
+
+    def _forge(result):
+        fields = list(result)
+        fields[4] = other  # st_uid
+        return os.stat_result(fields)
+
+    def _stat(self, *a, **k):
+        result = real_stat(self, *a, **k)
+        return _forge(result) if Path(os.path.realpath(self)) == target else result
+
+    def _lstat(self):
+        result = real_lstat(self)
+        return _forge(result) if Path(os.path.realpath(self)) == target else result
+
+    monkeypatch.setattr(pathlib.Path, "stat", _stat)
+    monkeypatch.setattr(pathlib.Path, "lstat", _lstat)
+
+
 def test_a_base_owned_by_another_account_is_refused(tmp_path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
-    real_uid = os.getuid()
-    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+    assert sandbox_policy._held_by_us_or_root(base)  # control
+    _owned_by_someone_else(monkeypatch, base)
     assert not sandbox_policy._held_by_us_or_root(base)
+
+
+def test_an_unreadable_owner_record_is_an_unknown_owner(tmp_path):
+    copy = tmp_path / "pl-review-stage-x"
+    copy.mkdir()
+    record = Path(str(copy) + sandbox_retention.OWNER_SUFFIX)
+    for text in ("garbage\n", "pid=notanumber start=\n", ""):
+        record.write_text(text, encoding="utf-8")
+        assert not sandbox_retention.scratch_owner_gone(copy), text
