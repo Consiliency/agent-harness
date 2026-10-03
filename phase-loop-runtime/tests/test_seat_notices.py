@@ -698,3 +698,20 @@ def test_seat_modes_are_published_before_launch(monkeypatch, tmp_path):
     record = json.loads((tmp_path / "stream" / "seat-modes.json").read_text())
     assert record["schema"] == "seat_modes.v1"
     assert [m["mode"] for m in record["modes"]] == ["jailed", "sealed", "unconfined", "unconfined"]
+
+
+@pytest.mark.parametrize("give_up, source, notice", [
+    ("claude_seat_usage_limited: usage_limit (resets 17:00, Oct 5 2026)", "login",
+     "claude_seat_login_rate_limited"),
+    ("claude_seat_rate_limited", "seat_token", "claude_seat_token_rate_limited"),
+])
+def test_a_session_give_up_on_a_limit_carries_the_credentials_notice(monkeypatch, tmp_path,
+                                                                    give_up, source, notice):
+    # agent-harness#1194's session give-up classes end a jailed leg with their own detail; the
+    # credential's rate-limit notice rides beside it (agent-harness#1132).
+    seat, status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="", log_text=pi._HarnessCode(give_up),
+        tail="", source=source, expires_at=time.time() + 3600)
+    assert status == "DEGRADED"
+    assert [f.template for f in sink] == [give_up]
+    assert seat.notices == [notice]

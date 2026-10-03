@@ -1,15 +1,64 @@
 from __future__ import annotations
 
 import re
+import shlex
+from dataclasses import replace
 import subprocess
 from pathlib import Path
 
 from .discovery import manifest_plan_artifact, roadmap_fingerprint, roadmap_repo_relative_path
+from .generated_outputs import ALIAS_PLACEHOLDER
 from .injection import build_lane_prompt_bundle, build_prompt_bundle
 from .models import DelegationRequest, HarnessLaneAssignment, ParentChildRunMetadata, PhaseSourceBundle, PromptBundle
 
 
+# Shipped skills that prescribe `phase-loop-closeout-audit` (agent-harness#1139). A test
+# keeps this equal to a scan of the packaged skills bundle.
+AUDIT_PRESCRIBING_SKILLS = frozenset({"claude-execute-phase", "codex-execute-phase", "gemini-execute-phase"})
+# Actions whose work closes out a phase (and so runs the audit) whatever their skill pack.
+CLOSING_OUT_ACTIONS = frozenset({"execute", "repair", "review"})
+
+
 def build_prompt(
+    action: str,
+    roadmap: Path,
+    phase: str | None = None,
+    plan: Path | None = None,
+    blocker_summary: str | None = None,
+    repair_context: dict[str, object] | None = None,
+    harness_target: str = "codex",
+    injection_mode_override: str | None = None,
+    harness_lane_assignment: HarnessLaneAssignment | None = None,
+    delegation_request: DelegationRequest | None = None,
+    parent_child_metadata: ParentChildRunMetadata | None = None,
+    planner_source_bundle_context: PhaseSourceBundle | None = None,
+) -> PromptBundle:
+    """Build the prompt for one route, then give it the phase-bearing closeout audit.
+
+    agent-harness#1139: the audit's phase identity is ONLY its explicit ``--phase``, so
+    every prompt that can lead to an audit must carry the command with the alias. That
+    is applied HERE, at the single exit, not per branch: a prompt whose action closes
+    out (execute, repair, review, and every harness lane) or whose skill pack includes
+    an audit-prescribing skill gets ``closeout_audit_instruction`` unless it already
+    inlines it. A new branch cannot skip it.
+    """
+
+    bundle = _build_prompt_route(
+        action, roadmap, phase=phase, plan=plan, blocker_summary=blocker_summary,
+        repair_context=repair_context, harness_target=harness_target,
+        injection_mode_override=injection_mode_override,
+        harness_lane_assignment=harness_lane_assignment, delegation_request=delegation_request,
+        parent_child_metadata=parent_child_metadata,
+        planner_source_bundle_context=planner_source_bundle_context,
+    )
+    audit_phase = harness_lane_assignment.phase if harness_lane_assignment is not None else phase
+    closes_out = harness_lane_assignment is not None or action in CLOSING_OUT_ACTIONS
+    if closes_out or AUDIT_PRESCRIBING_SKILLS.intersection(bundle.expected_skill_pack):
+        return _with_closeout_audit(bundle, audit_phase)
+    return bundle
+
+
+def _build_prompt_route(
     action: str,
     roadmap: Path,
     phase: str | None = None,
@@ -73,7 +122,7 @@ def build_prompt(
                 "If this phase discovers steering that changes downstream work, amend the phase roadmap at the nearest downstream phase "
                 "that is not already executing. Do not treat an older downstream phase plan as authoritative after a roadmap amendment. "
                 "Treat ignored, private, raw-data, credential, and evidence-source files as read-protected unless the phase plan or source bundle explicitly allowlists the exact path or glob for read access. "
-                "Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo .` (module form `python -m phase_loop_runtime.closeout_classifier --repo .` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner and its own toolchain produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
+                f"Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. {closeout_audit_instruction(phase)}"
             ),
             ),
             delegation_request=delegation_request,
@@ -279,6 +328,40 @@ def _expected_plan_artifact_path(roadmap: Path, phase: str | None) -> str:
     version = version_match.group(1) if version_match else "v1"
     alias = phase or "selected-phase"
     return f"plans/phase-plan-{version}-{alias}.md"
+
+
+def closeout_audit_instruction(phase: str | None) -> str:
+    """The closeout-audit instruction every runner prompt that can lead to an audit carries.
+
+    agent-harness#1139: the audit binds generated-output evidence to a phase, and its
+    ONLY source of that identity is an explicit ``--phase``. So the command is written
+    here, once, with the alias literal (``build_prompt`` applies it to every route).
+    With no alias (a roadmap prompt) it says so: the quoted placeholder ``"<ALIAS>"`` is
+    shell-safe and outside the alias grammar, so a literal run records nothing.
+    """
+
+    audit_phase = f" --phase {shlex.quote(phase)}" if phase else f" --phase {ALIAS_PLACEHOLDER}"
+    unbound = (
+        "" if phase else
+        "This launch is not bound to a phase: replace <ALIAS> with the alias of the phase you close out. "
+    )
+    return (
+        f"{unbound}For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
+    )
+
+
+def _with_closeout_audit(bundle: PromptBundle, phase: str | None) -> PromptBundle:
+    """Append the closeout-audit instruction unless the route already inlines it."""
+
+    instruction = closeout_audit_instruction(phase)
+    if instruction in bundle.body:
+        return bundle
+    section = f"Closeout audit: {instruction}"
+    return replace(
+        bundle,
+        body=f"{bundle.body.strip()}\n\n{section}".strip(),
+        context_body=(f"{bundle.context_body.strip()}\n\n{section}".strip() if bundle.context_body else None),
+    )
 
 
 def _with_delegation_guidance(

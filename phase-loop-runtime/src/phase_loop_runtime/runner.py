@@ -126,6 +126,8 @@ from .launcher import (
 from .lane_scheduler import select_ready_lane_wave, worktree_assignments_for_wave
 from .maintenance import MaintenanceOptions, active_loop, active_loop_blocker, run_maintenance
 from .closeout_classifier import classify_unowned_path
+from . import generated_outputs
+from .verification_evidence import observe_stages as observe_verification_stages
 from .models import (
     CLOSEOUT_EXCEPTIONS_METADATA_KEY,
     CLOSEOUT_MODES,
@@ -9464,17 +9466,40 @@ def _run_execute_verification_impl(
         if manifests and install_argv is None
         else ({"triggered": True, "manifests": manifests, "install_argv": install_argv} if manifests else None)
     )
-    result = run_verification(
-        repo,
-        run_dir,
-        commands,
-        suite_command,
-        env_refresh,
-        float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
-        operational_exemptions=operational_exemptions,
-        python_pin=resolve_python_pin(roadmap, plan),
-        phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
-    )
+    # agent-harness#1139: observe each declared producer invocation on its own, so the
+    # record credits a producer only with what IT wrote. Evidence only: nothing here can
+    # change the verification outcome, and nothing is written into run_dir or
+    # verification.json.
+    output_recorder = None
+    output_record_error: str | None = None
+    try:
+        output_recorder = generated_outputs.ProducerRecorder.for_repo(repo)
+    except Exception as exc:  # noqa: BLE001 - an invalid declaration records nothing (audit exits 2)
+        output_record_error = f"generated-outputs declaration unusable: {exc}"
+    with observe_verification_stages(output_recorder):
+        result = run_verification(
+            repo,
+            run_dir,
+            commands,
+            suite_command,
+            env_refresh,
+            float(os.environ.get("PHASE_LOOP_VERIFY_TIMEOUT_SECONDS", "1200")),
+            operational_exemptions=operational_exemptions,
+            python_pin=resolve_python_pin(roadmap, plan),
+            phase_alias=phase_alias,  # ah#85: record the LIVE run alias, not re-derived current_phase
+        )
+    if output_recorder is not None:
+        try:
+            output_recorder.write(
+                source="runner-verification", run_id=result.run_id, phase_alias=phase_alias
+            )
+        except Exception as exc:  # noqa: BLE001 - missing evidence leaves the outputs blocking
+            output_recorder.errors.append(f"record write failed: {exc}")
+        if output_recorder.errors:
+            output_record_error = "; ".join(output_recorder.errors)
+    if output_record_error:
+        # Visible, never silent: the audit would otherwise only say "no producer record".
+        print(f"phase-loop: generated-outputs recording problem: {output_record_error}", file=sys.stderr)
     artifact_path = run_dir / VERIFICATION_ARTIFACT_NAME
 
     # LEGIBLE (v10 SL-2, IF-0-LEGIBLE-2): narrowly scoped to the LEGIBLE plan's
@@ -9510,6 +9535,8 @@ def _run_execute_verification_impl(
     }
     if sidecar_error is not None:
         summary["legible_sidecar_error"] = sidecar_error
+    if output_record_error:
+        summary["generated_outputs_record_error"] = output_record_error
     # agent-harness#266 (source redaction) / agent-harness#243 CR recheck (whole-summary
     # redaction): this ``summary`` becomes ``runner_verification`` below, which is then merged
     # verbatim into ``launch.json`` (``merge_launch_metadata`` at the launch-action call site)

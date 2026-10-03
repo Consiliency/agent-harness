@@ -98,6 +98,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.
 
+### Heartbeat-only seats no longer stall silently (agent-harness#1176)
+
+- A brokered Claude seat that gives up on its turn now ends at once as DEGRADED with a typed
+  reason instead of waiting forever. This is the case where Claude Code journals an API-error
+  record after exhausting its output budget, hitting a rate or usage limit, or a server error.
+  The reasons are `claude_seat_output_budget_exhausted`, `claude_seat_usage_limited` (a
+  subscription cap, with its reset time in UTC when the journal records one),
+  `claude_seat_rate_limited` and `claude_seat_provider_api_error`. A review that completed
+  always wins over a give-up, and an API-error record is never taken as a seat's answer text.
+  One classifier decides answer, give-up, rejected or pending, so every ended turn ends the
+  leg: a turn that ended in an answer the route refuses is `claude_seat_transcript_rejected`,
+  and a completed review without a verdict is handed back rather than left waiting.
+  Re-journaled transcript records count neither as progress nor as a new turn position.
+  Only records first seen in the current request decide how its turn ended: a record of an
+  earlier request appended late, a replayed request (whatever its completion metadata) and a
+  subagent's sidechain record are never the turn's last record, and a sidechain answer is never
+  the seat's answer. A record first seen in the current request that is still open, even a
+  changed version after its own stop, reads as streaming, and a stopped thinking block is not
+  yet the answer until its text block arrives. The answer parser uses the same membership: a
+  record of an earlier request, a subagent's sidechain record included, is never taken as the
+  seat's answer.
+- A heartbeat_only seat with no genuine progress for `PHASE_LOOP_REVIEW_STALL_NOTICE_S`
+  (default 3600 s) is flagged `seat_progress_stalled`, not ended. The flag appears in the
+  seat's monitoring record, as one stderr warning, in `advisor-board --json` legs
+  (`review_monitoring`), in the text summary, in each streamed per-leg verdict file and as a
+  governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
+  as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
+
 ### One shared redaction pipeline with broader credential-shape coverage
 
 - New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
@@ -228,6 +256,57 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - No user-config route selects it for the production review boards yet (agent-harness#1171).
   It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
 - No agy route-core file changes, so this needs no agy requalification of its own.
+
+### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139)
+
+- `phase-loop-closeout-audit` now grades the files inside a collapsed ignored directory
+  (`!! .dev-skills/`, `!! dist/`) instead of blocking on the directory entry. The
+  `/.dev-skills/` entry written by `phase-loop init` previously made every harness handoff
+  `unknown_ignored`.
+- **Harness handoffs** are `runner_owned` only when the file carries the workflow-skill
+  handoff contract:
+  - the required frontmatter keys are present;
+  - `from` equals a shipped skill's directory;
+  - `repo_root` is this repository;
+  - `commit` exists in this repository.
+
+  This replaces the agent-harness#1084 rule, which trusted any path under
+  `.dev-skills/handoffs/`.
+- **New `declared_output` bucket.** A project commits `.phase-loop-generated-outputs.json`
+  (a closed v1 format), naming each producer command (an argv; shell syntax is
+  rejected) and bounded output globs. A declared file passes only if all of these hold:
+  - an observed invocation of a producer that covers it created the file or changed
+    its content. Timestamp-only, mode and link changes earn nothing, and writes by
+    other commands are never credited;
+  - the evidence was recorded at the current commit AND in the current phase;
+  - its content digest is unchanged;
+  - it is not a symlink.
+- **Recording.**
+  - `phase-loop-closeout-audit --repo . --record-outputs` performs a clean, observed
+    rebuild. It first moves existing ignored declared outputs aside (never deleting
+    them), runs each producer under a timeout, records, and then audits.
+  - It is a no-op without a declaration. The execute-phase skills and runner prompt
+    now prescribe it.
+  - Phase identity is ONLY an explicit `--phase <ALIAS>` (or the runner's live alias
+    in-process). Every runner prompt that can lead to an audit (execute, repair,
+    review, harness lane, delegated child, and any prompt whose skill pack prescribes
+    the audit) writes the command with `--phase <its alias>`. The skills, hint and
+    docs show the quoted, shell-safe placeholder `--phase "<ALIAS>"`. Only the
+    roadmap's alias grammar is accepted, so the placeholder is refused and every real
+    alias is not. The identity is never read from the
+    environment or `.phase-loop/state.json`. Without it, `--record-outputs` exits 2
+    before touching the worktree and the audit blocks.
+  - Producers are bounded by a validated timeout and killed by process group.
+  - Only the newest 5 directories of moved-aside outputs are kept.
+  - The runner's verification records when it runs a declared producer command, and
+    it reports recording failures.
+- **Still blocks:**
+  - files that are undeclared, pre-placed, timestamp- or metadata-only-touched,
+    later-edited or symlinked;
+  - anything recorded at another commit or phase, or while HEAD moved.
+
+  An invalid declaration exits 2.
+- See `docs/phase-loop/closeout-generated-outputs.md`.
 
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
