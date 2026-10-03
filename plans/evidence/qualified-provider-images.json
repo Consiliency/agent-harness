@@ -18,6 +18,18 @@
           "image_sha256": "ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca",
           "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
           "record": "agy-1.2.12-linux-x64-qualification.json"
+        },
+        {
+          "release_version": "1.2.14",
+          "image_sha256": "0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029",
+          "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
+          "record": "agy-1.2.14-linux-x64-qualification.json"
+        },
+        {
+          "release_version": "1.2.15",
+          "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
+          "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+          "record": "agy-1.2.15-linux-x64-qualification.json"
         }
       ]
     }

@@ -6,7 +6,94 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Heartbeat-only seats no longer stall silently (agent-harness#1176)
+## [0.7.22] - 2026-10-03
+
+### Qualified agy set is now 1.2.11, 1.2.12, 1.2.14 and 1.2.15 (agent-harness#1236; PR agent-harness#1238)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` admits two more agy entry images, each with its own
+  `--help` digest:
+  - agy 1.2.14, image `0d0d3eba…`, with the same help digest as 1.2.11 and 1.2.12
+    (`83e3a0c3…`);
+  - agy 1.2.15, image `5f9c16b2…`, with its own help digest `8fcf4022…`. The only help change
+    is that `--effort` lists `xhigh`.
+- 1.2.11 and 1.2.12 stay in the set. The match is by exact image hash, not by version.
+- Each member has its own redacted record under `plans/evidence/agy-<version>-linux-x64-qualification.json`
+  and an entry in `qualified-provider-images.json`. All four were qualified live on the release
+  tree.
+- agy 1.2.13 is not in the set. The 0.7.21 notes said it would be qualified in this release
+  (agent-harness#1157); 1.2.14 and 1.2.15 supersede it upstream. A host still running 1.2.13 is
+  admitted by first-use self-qualification (agent-harness#1076) as `locally_qualified`, as before.
+- **Caveat:** agy 1.2.16 has been the upstream-latest release since 2026-10-03T03:56Z, after
+  this cut was qualified, and it is not a qualified member in 0.7.22. So
+  `verify_qualified_agy_image.py --upstream-only` and the nightly upstream job fail until a later
+  release qualifies it. The tag build is unaffected, because publish-pypi runs `--source-only`.
+  Genuine upstream releases, 1.2.16 included, self-qualify on first use as `locally_qualified`
+  (agent-harness#1130).
+
+### Human-invoked FABPUB publication handoff (agent-harness#1117; PR agent-harness#1221)
+
+- New `publishing.publish_human_invoked_from_worktree(repo, owned_paths, plan_path=...,
+  verification_artifact_path=..., draft=...)` is the supported way for a human-invoked
+  detailed-plan run to publish. It checks the repository's authority receipt and ACTIVE
+  authority, binds the plan and verification-artifact digests into a publication checkpoint
+  outside the worktree, and then runs the existing broker-only publication flow.
+- Missing or drifted repository authority returns `publication_blocked` with a typed
+  `HumanPublicationHandoff.v1`, which lists the supported bootstrap probe, apply and resume
+  steps. Callers never build authority records, receipts or checkpoint roots themselves.
+- The four `execute-detailed` skills now call this adapter.
+
+### FABPUB bootstrap keeps its authority binding when history roots are supplied (agent-harness#1117, agent-harness#1213; PRs agent-harness#1211, agent-harness#1212, agent-harness#1219)
+
+- When a caller passes explicit history roots, the existing bootstrap cutover, inventory
+  digest and authority root are kept, not replaced. Supplied roots must be canonical absolute
+  paths and not symlinks. A retry whose coverage or binding drifted is refused.
+- A bootstrap receipt whose bootstrap is briefly absent and then restored is checked again
+  after its locks are taken, and is refused if the held locks are no longer sufficient.
+- The activation barrier and the cutover writer take their authority locks in the same
+  order, so the two can no longer wait on each other across two roots. The onboarding-only
+  slot is released before train fencing.
+- Public signatures, receipt schemas and recorded bytes are unchanged. Choosing complete
+  history roots is still the operator's responsibility; these changes do not attest it.
+
+### EXECFIND: isolated falsifier runner and per-finding receipts (PRs agent-harness#1163, agent-harness#1164, agent-harness#1188)
+
+- A review seat can attach a `falsifier` to a finding: a pytest node in a new
+  `tests/test_finding_<id>.py`, given as a diff. `run_finding_falsifier` runs that one node
+  against the exact reviewed head in its own staged tree, with no credentials, no network and
+  no live tree, and returns a metadata-only `finding_falsifier.v1` record. RED and GREEN are
+  observed outcomes; neither decides a finding on its own. See ABDFALSIFY in
+  `advisor_board/CONTRACTS.md`.
+- The governed gate parses the attachments, keeps a receipt per finding and takes a
+  `falsifier_policy` of `optional` (the default; an unresolved falsifier warns) or `required`
+  (it blocks). A leg that arrives already carrying an attachment is held as
+  `foreign_falsifier_attachment`, and every seat's findings still reach the gate.
+- agent-harness#1188 records the landed `sl0_repairs` entry for SL-2's authorized frozen-node
+  repair.
+
+### A refused native fill names the seat's real outcome (agent-harness#1183; PR agent-harness#1190)
+
+- When a claude seat degraded before it could defer, the native-fill refusal
+  `native_fill_seat_not_deferred` now says what happened instead: no leg for the seat, a
+  deferral for a different model, or the leg's status and detail (for example `DEGRADED
+  (env_failure: staging filesystem below its free-space floor)`). The typed reason is
+  unchanged.
+- `advisor-board` prints a binding refusal as `native fill refused [<reason>]: <detail>`
+  instead of `could not stage the artifact`.
+
+### Stalled Claude TUI seats report their tool progress (agent-harness#639; PR agent-harness#1193)
+
+- A stalled Claude TUI seat's diagnostic now adds content-free counts from its own session
+  transcript: `completed_tools`, `pending_tools` and `assistant_after_tools`. No timeout,
+  heartbeat, retry or verdict rule changes.
+
+### Plans: remote sandbox placement, model roster, PANEL amendment #3 (agent-harness#896, agent-harness#1171, agent-harness#1078; PRs agent-harness#1162, agent-harness#1165, agent-harness#1173, agent-harness#1169)
+
+- Planning only: no runtime change. agent-harness#1162 is the sandbox placement seam plan
+  (plan 1a of agent-harness#896), agent-harness#1165 the E2B cloud backend plan,
+  agent-harness#1173 the model roster and job-slot tiers plan (agent-harness#1171), and
+  agent-harness#1169 the third PANEL SL-1 amendment with its measured node grants.
+
+### Heartbeat-only seats no longer stall silently (agent-harness#1176; PR agent-harness#1194)
 
 - A brokered Claude seat that gives up on its turn now ends at once as DEGRADED with a typed
   reason instead of waiting forever. This is the case where Claude Code journals an API-error
@@ -34,7 +121,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
   as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
 
-### One shared redaction pipeline with broader credential-shape coverage
+### One shared redaction pipeline with broader credential-shape coverage (PR agent-harness#1202)
 
 - New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
   control characters, detects credential shapes, e-mail addresses and the running user's home
@@ -80,7 +167,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in-flight change lands.
 - No agy route-core file changes, so this needs no agy requalification.
 
-### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204)
+### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204; PR agent-harness#1205)
 
 - `invoke_board(pointer_brief=True)`, `advisor-board --pointer-brief` and the governed gate's `pointer_brief` declare that the brief points reviewers at files in the staged tree instead of inlining them. Nothing detects a pointer brief from its text.
 - **Before any seat launches,** a board-level preflight (`seat_preflight.py`) decides, from each seat's production route, whether it can open those files. Every seat that cannot gets the typed notice `seat_pointer_brief_unreadable`. The notice is published before the first launch: through the `on_seat_preflight` callback (the CLI prints it on stderr), a warning log, and `seat-preflight.json` in `stream_dir`.
@@ -94,7 +181,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   A `DISAGREE` from such a seat still blocks. The notice also reaches the JSON payload (`notices`, `legs[].notices`, `legs[].source_grounded`, `grounded_seats`), the text summary and the governed findings.
 - **Without the flag,** every board, payload and count is unchanged. Evidence: treesitter-chunker#114, reported on agent-harness#1132.
 
-### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
+### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174; PR agent-harness#1195)
 
 - `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and
   every writer re-serialized all rows with sorted keys. Rows on main are in neither
@@ -115,7 +202,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `plan_manifest.py` is part of the agy-qualified runtime source, so the next release
   cut's agy qualification covers this change.
 
-### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175)
+### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175; PR agent-harness#1177)
 
 - A sealed prompt of 96 KiB or less now goes to agy as one user event
   (`agy_ndjson_single_event_v1`) that ends with the review instruction. It no longer
@@ -134,7 +221,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The HARDEN evidence verifier recomputes whichever protocol a record names. It
   requires a one-chunk prompt for the single-event protocol.
 
-### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
+### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths; PR agent-harness#1181)
 
 - The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem
   view. It starts from an empty root and binds read-only only what the provider was
@@ -152,7 +239,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   file, so this needs no agy requalification of its own. The next release cut's full
   qualification covers it.
 
-### Register `claude-sonnet-5-5` as an explicit advisor-board seat (agent-harness#1178)
+### Register `claude-sonnet-5-5` as an explicit advisor-board seat (PR agent-harness#1178)
 
 - `claude-sonnet-5-5` (Claude Sonnet 5.5) is a registered model on the `claude` lane at effort
   `max`, answering to the `fable` review-seat alias, so a governed policy requiring `fable`
@@ -165,7 +252,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
 - No agy route-core file changes, so this needs no agy requalification of its own.
 
-### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139)
+### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139; PR agent-harness#1189)
 
 - `phase-loop-closeout-audit` now grades the files inside a collapsed ignored directory
   (`!! .dev-skills/`, `!! dist/`) instead of blocking on the directory entry. The
@@ -216,7 +303,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   An invalid declaration exits 2.
 - See `docs/phase-loop/closeout-generated-outputs.md`.
 
-### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
+### Register `gpt-6.1-sol` as an explicit advisor-board seat (PR agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
   `sol` review-seat alias, so a governed policy requiring `sol` accepts a board that seats it.
