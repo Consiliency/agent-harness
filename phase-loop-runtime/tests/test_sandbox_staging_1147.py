@@ -1226,3 +1226,24 @@ class TestPerRunScratchRecordsItsOwner:
             staged=tmp_path, nodeid="t::n", wall_clock_s=1, output_cap_bytes=1)
         assert seen["owned"]
         assert not Path(str(seen["deps"]) + sandbox_retention.OWNER_SUFFIX).exists()
+
+
+def test_a_private_base_under_a_shared_parent_is_refused(tmp_path):
+    """The base's ancestors count too: a parent others may write (not sticky) lets them
+    rename the whole base away after the check."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    base = shared / "cache"
+    base.mkdir(mode=0o700)
+    assert not sandbox_policy._private(base / "phase-loop" / "tmp", base)
+    shared.chmod(0o1777)
+    assert sandbox_policy._private(base / "phase-loop" / "tmp", base)
+
+
+def test_a_base_owned_by_another_account_is_refused(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    real_uid = os.getuid()
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+    assert not sandbox_policy._held_by_us_or_root(base)

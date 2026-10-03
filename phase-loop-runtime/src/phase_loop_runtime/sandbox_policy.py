@@ -422,13 +422,7 @@ def _private(path: Path, base: Path) -> bool:
         base_st = base.stat()
     except OSError:
         return False
-    if not stat.S_ISDIR(base_st.st_mode):
-        return False
-    # A base another account may write must be sticky, as a shared temp dir is. Group
-    # write counts only for a group other than this account's own (umask 002 is common).
-    shared_write = base_st.st_mode & 0o002 or (
-        base_st.st_mode & 0o020 and hasattr(os, "getgid") and base_st.st_gid != os.getgid())
-    if hasattr(os, "getuid") and shared_write and not base_st.st_mode & stat.S_ISVTX:
+    if not stat.S_ISDIR(base_st.st_mode) or not _held_by_us_or_root(base):
         return False
     current = base
     try:
@@ -448,6 +442,30 @@ def _private(path: Path, base: Path) -> bool:
     except OSError:
         return False
     return os.access(path, os.W_OK | os.X_OK)
+
+
+def _held_by_us_or_root(base: Path) -> bool:
+    """Can no other account replace ``base`` or anything above it? ``base`` must be owned
+    by this account or root, and neither it nor any ancestor may be writable by another
+    account unless sticky (as a shared temp dir is) -- otherwise that account could rename
+    the runtime's verified directories away and put its own in their place. Group write
+    counts only for a group other than this account's own (umask 002 is common)."""
+    if not hasattr(os, "getuid"):
+        return True
+    uid = os.getuid()
+    try:
+        resolved = Path(os.path.realpath(base))
+        if resolved.stat().st_uid not in (uid, 0):
+            return False
+        for directory in (resolved, *resolved.parents):
+            st = directory.stat()
+            shared_write = st.st_mode & 0o002 or (
+                st.st_mode & 0o020 and st.st_gid != os.getgid())
+            if shared_write and not st.st_mode & stat.S_ISVTX:
+                return False
+    except OSError:
+        return False
+    return True
 
 
 class SandboxRamBackedError(SandboxSpaceError):

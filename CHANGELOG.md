@@ -23,8 +23,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   per-user cache dir (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`, `%LOCALAPPDATA%`),
   and then to the temp dir, but only if it is not RAM-backed. The launcher's agy review copy
   and the falsifier's stage use the same root. Every directory the runtime creates below
-  the cache dir is created 0700 and must be a real directory owned by this account; a cache
-  dir that another account can write must be sticky.
+  the cache dir is created 0700 and must be a real directory owned by this account. The
+  cache dir itself must be owned by this account or root, and neither it nor any ancestor
+  may be writable by another account unless sticky.
 - **Persistent residue.** A killed run's launcher review copy, falsifier dependency snapshot
   and owned agy HOMEs now outlive a reboot. Each records its owner (pid and start time) in
   a sibling `<name>.owner` file, and the crash-residue sweep removes one only once that
