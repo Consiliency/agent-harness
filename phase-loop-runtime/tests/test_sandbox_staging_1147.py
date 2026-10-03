@@ -628,6 +628,35 @@ class TestChildCliScratch:
         env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
         assert "TMPDIR" not in env, "a symlinked scratch dir was handed to a child"
 
+    def test_every_component_below_the_shared_dir_is_private(self, tmp_path, monkeypatch):
+        """Under the shared temp dir, the per-user parent is held to the leaf's rule."""
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        shared.chmod(0o1777)
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("", encoding="utf-8")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(blocker))
+        monkeypatch.setattr(tempfile, "tempdir", str(shared))
+        _slash_tmp_is_ram(monkeypatch)
+        target = Path(sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})["TMPDIR"])
+        parent = target.parent
+        assert parent != shared and parent.parent == shared
+        assert parent.stat().st_mode & 0o777 == 0o700
+
+        parent.chmod(0o777)
+        sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        assert parent.stat().st_mode & 0o777 == 0o700
+
+        elsewhere = tmp_path / "elsewhere"
+        (elsewhere / "tmp").mkdir(parents=True, mode=0o700)
+        elsewhere.chmod(0o700)
+        target.rmdir()
+        parent.rmdir()
+        parent.symlink_to(elsewhere)
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", {"child scratch"})
+        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        assert "TMPDIR" not in env, "a scratch dir under a linked parent was handed to a child"
+
     def test_child_scratch_is_not_moved_onto_a_full_disk(self, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
         monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))

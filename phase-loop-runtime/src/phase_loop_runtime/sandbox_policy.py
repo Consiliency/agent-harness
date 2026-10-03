@@ -397,20 +397,32 @@ def _usable(path: Path) -> bool:
     return os.access(path, os.W_OK | os.X_OK)
 
 
-def _private(path: Path) -> bool:
+def _private(path: Path, base: Path | None = None) -> bool:
     """Create ``path`` as a directory only this account can use, or refuse it.
 
     Used for the child-scratch dir: it is handed to spawned CLIs, so it must be ours and
-    0700 -- never a shared, world-writable temp dir.
+    0700 -- never a shared, world-writable temp dir. With ``base`` (a shared dir such as
+    the system temp dir), every component from below ``base`` down to ``path`` must be a
+    real directory of ours, 0700, not just the leaf.
     """
     if not _usable(path):
         return False
-    try:
-        st = path.lstat()
-        if path.is_symlink() or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+    chain = [path]
+    if base is not None:
+        try:
+            parts = path.relative_to(base).parts
+        except ValueError:
             return False
-        if hasattr(os, "getuid") and st.st_mode & 0o077:
-            path.chmod(0o700)
+        chain = [base.joinpath(*parts[: i + 1]) for i in range(len(parts))]
+    try:
+        for component in chain:
+            st = component.lstat()
+            if component.is_symlink() or not component.is_dir():
+                return False
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                return False
+            if hasattr(os, "getuid") and st.st_mode & 0o077:
+                component.chmod(0o700)
     except OSError:
         return False
     return True
@@ -522,10 +534,11 @@ def _child_tmp_dir() -> ScratchLocation:
     """
     cache = _user_cache_dir()
     uid = os.getuid() if hasattr(os, "getuid") else "user"
-    candidates = [cache / "phase-loop" / "tmp"] if cache is not None else []
-    candidates.append(legacy_staging_root() / f"phase-loop-{uid}" / "tmp")
-    for candidate in candidates:
-        if is_ram_backed(candidate) or not _private(candidate):
+    shared = legacy_staging_root()
+    candidates = [(cache / "phase-loop" / "tmp", None)] if cache is not None else []
+    candidates.append((shared / f"phase-loop-{uid}" / "tmp", shared))
+    for candidate, base in candidates:
+        if is_ram_backed(candidate) or not _private(candidate, base):
             continue
         try:
             if _free_bytes(candidate) < effective_floor_bytes(candidate):
