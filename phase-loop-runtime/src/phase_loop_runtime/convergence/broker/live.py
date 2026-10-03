@@ -1876,7 +1876,7 @@ def _snapshot_lock_paths(manifest: LegacyBrokerCutoverManifest) -> tuple[Path, .
         root = Path(row["legacy_root"])
         leaf_id = f"{row['expected_train_key']}__{row['expected_repo_key']}"
         paths.append(root / "fabpub-global-cutover" / "leaf-locks" / f"{leaf_id}.lock")
-    return tuple(sorted(set(paths), key=str))
+    return tuple(sorted({path.resolve() for path in paths}, key=str))
 
 
 def _target_store_lock_paths(partitions: dict) -> tuple[Path, ...]:
@@ -2314,7 +2314,7 @@ class LegacyBrokerCutoverTransaction:
 
     @property
     def authority_lock_path(self) -> Path:
-        return self.journal_path.parent / "cutover.lock"
+        return (self.journal_path.parent / "cutover.lock").resolve()
 
     @contextlib.contextmanager
     def authority(self):
@@ -2685,6 +2685,8 @@ def _canonical_input_path(path: Path | str, *, label: str) -> Path:
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
         raise LegacyCutoverConflict(f"{label} must be an absolute path: {candidate}")
+    _require_no_ancestor_symlink(candidate)
+    candidate = Path(os.path.normpath(candidate))
     _require_no_ancestor_symlink(candidate)
     return candidate.resolve()
 
@@ -3851,7 +3853,9 @@ def _traditional_seal_lock_paths(roots: tuple[Path, ...]) -> tuple[Path, ...]:
             claim = _read_pointer_claim(pointer)
             primary = Path(claim.get("primary_authority", pointer.parent))
             paths.add(primary / "cutover.lock")
-    return tuple(sorted(paths, key=str))
+    return tuple(sorted(
+        {path.resolve() for path in paths}, key=str
+    ))
 
 
 def onboard_zero_legacy_repository(
@@ -5275,11 +5279,14 @@ def global_active_authority_exists(
 
 def _receipt_seal_lock_paths(
     receipt: LegacyRepositoryPartitionReceipt | RotatedPartitionReceipt,
+    *,
+    roots: tuple[Path, ...] | None = None,
 ) -> tuple[Path, ...]:
     receipt = _rotation_base_receipt(receipt)
-    roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
-    if receipt.zero_source:
-        roots = tuple(_canonical_input_path(root, label="receipt legacy root") for root in roots)
+    if roots is None:
+        roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
+        if receipt.zero_source:
+            roots = tuple(_canonical_input_path(root, label="receipt legacy root") for root in roots)
     root_locks = _traditional_seal_lock_paths(roots)
     bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
     if bootstrap_claim is not None:
@@ -5333,6 +5340,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
     """
     worktrees = tuple(worktrees)
     report: dict = {"cutover": None, "leases": [], "repositories": []}
+    onboarding_locks = contextlib.ExitStack()
     try:
         manifest_path = os.environ.get(FABPUB_CUTOVER_MANIFEST_ENV)
         if manifest_path:
@@ -5367,41 +5375,65 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 _active_bootstrap_inventory()
                 raise
             receipt = load_partition_receipt(store_root)
-            snapshots.append((snapshot, receipt))
+            roots = None
+            if receipt is not None:
+                base_receipt = _rotation_base_receipt(receipt)
+                roots = tuple(
+                    _canonical_input_path(root, label="receipt legacy root")
+                    if base_receipt.zero_source else Path(root)
+                    for root in base_receipt.legacy_root_inventory
+                )
+            snapshots.append((snapshot, receipt, roots))
 
         authority_lock_paths = {
             path
-            for _snapshot, receipt in snapshots
+            for _snapshot, receipt, roots in snapshots
             if receipt is not None
-            for path in _receipt_seal_lock_paths(receipt)
+            for path in _receipt_seal_lock_paths(receipt, roots=roots)
         }
-        needs_onboarding = any(receipt is None for _snapshot, receipt in snapshots)
+        onboarding_only_paths = set()
+        needs_onboarding = any(receipt is None for _snapshot, receipt, _roots in snapshots)
         if needs_onboarding:
             bootstrap = _active_bootstrap_inventory()
             if bootstrap is not None:
+                onboarding_roots = tuple(
+                    _canonical_input_path(row["path"], label="legacy root")
+                    for row in bootstrap["legacy_roots"]
+                )
                 authority_lock_paths.update(_bootstrap_seal_lock_paths(bootstrap))
             else:
-                roots = tuple(
+                onboarding_roots = tuple(
                     _canonical_input_path(root, label="legacy root")
                     for root in declared_legacy_roots()
                 )
-                authority_lock_paths.update(_zero_source_seal_lock_paths(roots, None))
+                slot = default_fabpub_authority_root() / "bootstrap.lock"
+                if slot not in authority_lock_paths:
+                    onboarding_only_paths.add(slot)
+                authority_lock_paths.update(_zero_source_seal_lock_paths(onboarding_roots, None))
         authority_locks = contextlib.ExitStack()
         report["_authority_locks"] = authority_locks
         for path in sorted(authority_lock_paths, key=str):
-            authority_locks.enter_context(_reentrant_flock(path))
+            stack = onboarding_locks if path in onboarding_only_paths else authority_locks
+            stack.enter_context(_reentrant_flock(path))
 
         if needs_onboarding and _active_bootstrap_inventory() != bootstrap:
             raise LegacyCutoverConflict("active bootstrap changed while entering the barrier")
 
-        for snapshot, prior_receipt in snapshots:
+        for snapshot, prior_receipt, roots in snapshots:
             receipt = load_partition_receipt(snapshot.store_root)
             if prior_receipt is not None and receipt != prior_receipt:
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} receipt changed while entering the barrier"
                 )
+            if prior_receipt is None and receipt is not None:
+                base_receipt = _rotation_base_receipt(receipt)
+                roots = tuple(
+                    _canonical_input_path(root, label="receipt legacy root")
+                    if base_receipt.zero_source else Path(root)
+                    for root in base_receipt.legacy_root_inventory
+                )
             if receipt is not None:
-                required_locks = set(_receipt_seal_lock_paths(receipt))
+                required_locks = set(_receipt_seal_lock_paths(receipt, roots=roots))
                 if not required_locks.issubset(authority_lock_paths):
                     raise LegacyCutoverConflict(
                         f"repository {snapshot.identity} appeared under a different authority "
@@ -5423,22 +5455,23 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 if not global_active_authority_exists():
                     report["deferred"] = report.get("deferred", []) + [str(snapshot.worktree)]
                     continue
-                onboard_zero_legacy_repository(snapshot.worktree)
+                onboard_zero_legacy_repository(snapshot.worktree, roots=onboarding_roots)
                 receipt = load_partition_receipt(snapshot.store_root)
                 if receipt is None or not _receipt_active_authority_exists(receipt):
                     raise LegacyCutoverConflict(
                         f"repository {snapshot.identity} could not be authenticated or onboarded"
                     )
+                roots = onboarding_roots
             base_receipt = _rotation_base_receipt(receipt)
             if base_receipt.zero_source:
-                _prove_zero_source(
-                    snapshot,
-                    tuple(
-                        _canonical_input_path(root, label="receipt legacy root")
-                        for root in base_receipt.legacy_root_inventory
-                    ),
-                    "before_generation_lease",
-                )
+                if tuple(
+                    _canonical_input_path(root, label="receipt legacy root")
+                    for root in base_receipt.legacy_root_inventory
+                ) != roots:
+                    raise LegacyCutoverConflict(
+                        f"repository {snapshot.identity} history roots changed after locking"
+                    )
+                _prove_zero_source(snapshot, roots, "before_generation_lease")
             latch = WriterGenerationLatch(snapshot.namespace_root)
             if latch.read().generation_state != "ACTIVE":
                 raise LegacyCutoverConflict(
@@ -5449,6 +5482,8 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
     except Exception:
         release_barrier_leases(report)
         raise
+    finally:
+        onboarding_locks.close()
     return report
 
 

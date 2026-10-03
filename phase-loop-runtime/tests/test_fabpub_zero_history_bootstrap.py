@@ -254,7 +254,9 @@ def test_relative_supplemental_root_in_historical_receipt_blocks_other_cwd(
     monkeypatch.chdir(operator)
     roots = (Path("history"),)
     locks = {*live._bootstrap_seal_lock_paths(inventory),
-             *live._zero_source_seal_lock_paths(roots, tmp_path / "authority")}
+             *live._zero_source_seal_lock_paths(
+                 tuple(root.resolve() for root in roots), tmp_path / "authority"
+             )}
     with live._hold_all(sorted(locks, key=str)):
         receipt = live._onboard_zero_legacy_repository_under_seal(
             fresh, cutover_id=inventory["cutover_id"], roots=roots,
@@ -314,6 +316,84 @@ def test_historical_dotdot_receipt_scans_canonical_coverage(
     assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
     assert receipt_path.read_bytes() == sealed_receipt
     assert not parent.exists()
+
+
+def test_historical_dotdot_symlink_cannot_redirect_scan_after_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    known = _git_repo(tmp_path / "known")
+    fresh = _git_repo(tmp_path / "fresh")
+    inventory = _probe(tmp_path, known)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    parent = tmp_path / "alias-parent"
+    parent.mkdir()
+    alias = parent / ".." / "history"
+    locks = {*live._bootstrap_seal_lock_paths(inventory),
+             *live._zero_source_seal_lock_paths((alias,), tmp_path / "authority")}
+    with live._hold_all(sorted(locks, key=str)):
+        live._onboard_zero_legacy_repository_under_seal(
+            fresh, cutover_id=inventory["cutover_id"], roots=(alias,),
+            authority_root=tmp_path / "authority",
+            bootstrap_inventory_sha256=inventory["inventory_sha256"],
+            bootstrap_authority_root=tmp_path / "authority",
+        )
+    receipt_path = live.repository_snapshot(fresh).store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    locked = tmp_path / "locked-history"
+    history = tmp_path / "history"
+    history.rename(locked)
+    history.symlink_to(locked, target_is_directory=True)
+    parent.rename(tmp_path / "moved-alias-parent")
+    target = tmp_path / "new-target"
+    target.mkdir()
+    original_active = live._receipt_active_authority_exists
+    original_proof = live._prove_zero_source
+    writer = """
+import fcntl, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+lock = root / 'fabpub-global-cutover' / 'root.lock'
+lock.parent.mkdir(parents=True, exist_ok=True)
+with lock.open('a') as handle:
+    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    leaf = root / 'legacy-train' / 'legacy-repository'
+    leaf.mkdir(parents=True)
+    (leaf / 'admissions.jsonl').write_text('{}\\n', encoding='utf-8')
+"""
+
+    def switch_after_locks(receipt, **kwargs):
+        active = original_active(receipt, **kwargs)
+        assert (str(locked / "fabpub-global-cutover" / "root.lock"),
+                threading.get_ident()) in live._LOCK_DEPTH
+        history.unlink()
+        history.symlink_to(target, target_is_directory=True)
+        return active
+
+    def write_after_scan(snapshot, roots, boundary):
+        proof = original_proof(snapshot, roots, boundary)
+        assert boundary == "before_generation_lease"
+        assert roots == (target,)
+        result = subprocess.run(
+            [sys.executable, "-c", writer, str(target)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        with pytest.raises(live.LegacyCutoverConflict, match="live legacy source"):
+            original_proof(snapshot, roots, "control")
+        return proof
+
+    monkeypatch.setattr(live, "_receipt_active_authority_exists", switch_after_locks)
+    monkeypatch.setattr(live, "_prove_zero_source", write_after_scan)
+    report = None
+    try:
+        with pytest.raises(live.LegacyCutoverConflict, match="symlink"):
+            report = live.fabpub_activation_barrier([fresh])
+    finally:
+        if report is not None:
+            live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
+    assert receipt_path.read_bytes() == sealed_receipt
 
 
 def test_barrier_bootstrap_appearance_refuses_before_namespace(
@@ -429,9 +509,9 @@ def test_existing_receipt_revalidates_bootstrap_lock_set_after_acquisition(
     original_lock_paths = live._receipt_seal_lock_paths
     reads = 0
 
-    def activate_after_initial_lock_discovery(value):
+    def activate_after_initial_lock_discovery(value, *, roots=None):
         nonlocal reads
-        paths = original_lock_paths(value)
+        paths = original_lock_paths(value, roots=roots)
         reads += 1
         if reads == 1:
             with live._reentrant_flock(tmp_path / "authority" / "bootstrap.lock"):
@@ -568,10 +648,282 @@ def test_traditional_barrier_guards_complete_lock_set_before_onboarding(
     try:
         assert report["repositories"] == [str(fresh)]
         assert live.WriterGenerationLatch.open(fresh).held_leases()
+        result = subprocess.run(
+            [sys.executable, "-c", "import fcntl,sys\n"
+             "with open(sys.argv[1], 'a') as handle:\n"
+             "    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n",
+             str(bootstrap_root / "bootstrap.lock")],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
     finally:
         live.release_barrier_leases(report)
     assert live.WriterGenerationLatch.open(fresh).held_leases() == ()
     assert not (bootstrap_root / "ACTIVE_BOOTSTRAP").exists()
+
+
+def test_deferred_barrier_releases_onboarding_slot_before_train(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fresh = _git_repo(tmp_path / "fresh")
+    authority = tmp_path / "authority"
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(authority))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, "")
+    report = live.fabpub_activation_barrier([fresh])
+    try:
+        assert report["deferred"] == [str(fresh)]
+        assert report["leases"] == []
+        result = subprocess.run(
+            [sys.executable, "-c", "import fcntl,sys\n"
+             "with open(sys.argv[1], 'a') as handle:\n"
+             "    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n",
+             str(authority / "bootstrap.lock")],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        live.release_barrier_leases(report)
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+def test_traditional_symlinked_ledger_receipt_remains_admitted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from test_fabpub_shared_epoch import _manifest_row, _seed_legacy_root
+
+    migrated = _git_repo(tmp_path / "migrated")
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    ledger = linked / "ledger"
+    train = tmp_path / "train.md"
+    train.write_text("test train\n", encoding="utf-8")
+    _seed_legacy_root(ledger, train_path=train, serialized_repo=str(migrated))
+    row = _manifest_row(ledger, train, migrated, str(migrated), tmp_path)
+    transaction = live.run_legacy_broker_cutover(
+        live.LegacyBrokerCutoverManifest(cutover_id="symlinked-ledger", rows=(row,))
+    )
+    transaction.activate()
+    snapshot = live.repository_snapshot(migrated)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert not receipt.zero_source
+    assert receipt.legacy_root_inventory == (row["legacy_root"],)
+    assert linked in Path(row["legacy_root"]).parents
+    receipt_path = snapshot.store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
+    report = live.fabpub_activation_barrier([migrated])
+    try:
+        assert report["repositories"] == [str(migrated)]
+        assert len(report["leases"]) == 1
+        assert receipt_path.read_bytes() == sealed_receipt
+    finally:
+        live.release_barrier_leases(report)
+    assert live.WriterGenerationLatch.open(migrated).held_leases() == ()
+    assert not live._LOCK_DEPTH
+    assert receipt_path.read_bytes() == sealed_receipt
+
+
+def test_traditional_double_slash_root_mixed_barrier_refuses_without_deadlock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from test_fabpub_shared_epoch import _manifest_row, _seed_legacy_root
+
+    migrated = _git_repo(tmp_path / "migrated")
+    fresh = _git_repo(tmp_path / "fresh")
+    ledger = tmp_path / "ledger"
+    train = tmp_path / "train.md"
+    train.write_text("test train\n", encoding="utf-8")
+    _seed_legacy_root(ledger, train_path=train, serialized_repo=str(migrated))
+    row = _manifest_row(ledger, train, migrated, str(migrated), tmp_path)
+    row["legacy_root"] = "/" + row["legacy_root"]
+    transaction = live.run_legacy_broker_cutover(
+        live.LegacyBrokerCutoverManifest(cutover_id="double-slash", rows=(row,))
+    )
+    transaction.activate()
+    snapshot = live.repository_snapshot(migrated)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert receipt.legacy_root_inventory == (row["legacy_root"],)
+    receipt_path = snapshot.store_root / live.RECEIPT_FILENAME
+    sealed_receipt = receipt_path.read_bytes()
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.setenv(live.FABPUB_LEGACY_ROOTS_ENV, row["legacy_root"])
+    script = """
+import sys
+from phase_loop_runtime.convergence.broker import live
+try:
+    report = live.fabpub_activation_barrier(sys.argv[1:])
+except live.LegacyCutoverConflict as error:
+    assert 'persistent global ACTIVE authority' in str(error), str(error)
+else:
+    live.release_barrier_leases(report)
+    raise AssertionError('noncanonical authority coverage must refuse')
+assert live.WriterGenerationLatch.open(sys.argv[1]).held_leases() == ()
+assert not live.repository_namespace_root(sys.argv[2]).exists()
+assert not live._LOCK_DEPTH
+print('double-slash barrier refused without deadlock')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(migrated), str(fresh)], cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path(live.__file__).resolve().parents[3])},
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "double-slash barrier refused without deadlock" in result.stdout
+    assert receipt_path.read_bytes() == sealed_receipt
+    assert not live.repository_namespace_root(fresh).exists()
+
+
+@pytest.mark.parametrize("layout", ["symlink", "double_slash"])
+def test_traditional_multi_root_resume_and_barrier_share_lock_order(
+    tmp_path: Path, monkeypatch, layout: str
+) -> None:
+    import fcntl
+    import time
+
+    from test_fabpub_shared_epoch import _manifest_row, _seed_legacy_root
+
+    migrated = _git_repo(tmp_path / "migrated")
+    if layout == "symlink":
+        real = tmp_path / "a-real"
+        real.mkdir()
+        linked = tmp_path / "zlink"
+        linked.symlink_to(real, target_is_directory=True)
+        ledgers = (tmp_path / "m-ledger", linked / "ledger")
+    else:
+        ledgers = (tmp_path / "a-ledger", Path("/" + str(tmp_path / "z-ledger")))
+    rows = []
+    for index, ledger in enumerate(ledgers):
+        train = tmp_path / f"train-{index}.md"
+        train.write_text("test train\n", encoding="utf-8")
+        _seed_legacy_root(ledger, train_path=train, serialized_repo=str(migrated))
+        rows.append(_manifest_row(ledger, train, migrated, str(migrated), tmp_path))
+    manifest = live.LegacyBrokerCutoverManifest(cutover_id="lock-order", rows=tuple(rows))
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"cutover_id": manifest.cutover_id, "rows": rows}), encoding="utf-8")
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
+    monkeypatch.delenv(live.FABPUB_CUTOVER_MANIFEST_ENV, raising=False)
+    env = {**os.environ, "PYTHONPATH": str(Path(live.__file__).resolve().parents[3])}
+    setup = subprocess.run(
+        [sys.executable, "-c", "import faulthandler,json,sys\n"
+         "from pathlib import Path\n"
+         "from phase_loop_runtime.convergence.broker import live\n"
+         "faulthandler.dump_traceback_later(12)\n"
+         "raw=json.loads(Path(sys.argv[1]).read_text())\n"
+         "live.run_legacy_broker_cutover(live.LegacyBrokerCutoverManifest(\n"
+         "    cutover_id=raw['cutover_id'],rows=tuple(raw['rows']))).activate()\n",
+         str(manifest_path)], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30,
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    snapshot = live.repository_snapshot(migrated)
+    receipt = live.load_partition_receipt(snapshot.store_root)
+    assert not receipt.zero_source
+    assert receipt.legacy_root_inventory == tuple(map(str, manifest.legacy_roots()))
+    authority = live._global_authority_dir(manifest.legacy_roots())
+    authenticated = [
+        snapshot.store_root / live.RECEIPT_FILENAME,
+        authority / "lock-order.inventory.json",
+        authority / "lock-order.journal.jsonl",
+        *(root / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
+          for root in manifest.legacy_roots()),
+    ]
+    sealed_bytes = {path: path.read_bytes() for path in authenticated}
+    primary = manifest.legacy_roots()[0]
+    primary_row = next(row for row in rows if Path(row["legacy_root"]) == primary)
+    leaf_lock = primary / "fabpub-global-cutover" / "leaf-locks" / (
+        f"{primary_row['expected_train_key']}__{primary_row['expected_repo_key']}.lock"
+    )
+    cutover_lock = authority / "cutover.lock"
+    other_lock = manifest.legacy_roots()[1] / "fabpub-global-cutover" / "root.lock"
+
+    def held(path):
+        with path.open("a+") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+
+    def wait_until(predicate):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return False
+
+    script = """
+import faulthandler, json, os, sys
+from pathlib import Path
+import phase_loop_runtime.convergence.fencing
+from phase_loop_runtime.convergence.broker import live
+role, work = sys.argv[1], Path(sys.argv[2])
+if role == 'B':
+    os.environ[live.FABPUB_CUTOVER_MANIFEST_ENV] = str(work / 'manifest.json')
+faulthandler.dump_traceback_later(12)
+report = live.fabpub_activation_barrier([work / 'migrated'])
+try:
+    assert len(report['leases']) == 1
+    if role == 'B':
+        assert report['cutover']['state'] == 'ACTIVE'
+finally:
+    live.release_barrier_leases(report)
+assert not live._LOCK_DEPTH
+faulthandler.cancel_dump_traceback_later()
+print(json.dumps({'role': role, 'completed': True}))
+"""
+    processes = []
+    try:
+        ready = tmp_path / "holder.ready"
+        release = tmp_path / "holder.release"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl,sys,time\n"
+             "from pathlib import Path\n"
+             "with open(sys.argv[1], 'a+') as handle:\n"
+             "    fcntl.flock(handle, fcntl.LOCK_EX)\n"
+             "    Path(sys.argv[2]).touch()\n"
+             "    while not Path(sys.argv[3]).exists(): time.sleep(0.02)\n",
+             str(leaf_lock), str(ready), str(release)],
+            cwd=tmp_path, env=env,
+        )
+        processes.append(holder)
+        assert wait_until(ready.exists), "leaf-lock holder did not start"
+        resumed = subprocess.Popen(
+            [sys.executable, "-c", script, "B", str(tmp_path)], cwd=tmp_path,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        processes.append(resumed)
+        assert wait_until(lambda: held(cutover_lock)), "cutover resume did not reach authority locks"
+        barrier = subprocess.Popen(
+            [sys.executable, "-c", script, "A", str(tmp_path)], cwd=tmp_path,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        processes.append(barrier)
+        assert wait_until(lambda: held(other_lock)), "competing root lock was not acquired"
+        release.touch()
+        holder.wait(timeout=15)
+        assert holder.returncode == 0
+        for process in (resumed, barrier):
+            try:
+                stdout, stderr = process.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                observed = {str(path): held(path) for path in (cutover_lock, other_lock)}
+                pytest.fail("concurrent barrier/cutover resume did not complete; held locks: " + repr(observed))
+            assert process.returncode == 0, stdout + stderr
+            assert json.loads(stdout)["completed"]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+    assert all(path.read_bytes() == value for path, value in sealed_bytes.items())
+    assert live.WriterGenerationLatch.open(migrated).held_leases() == ()
+    assert not live._LOCK_DEPTH
 
 
 def test_traditional_barrier_declared_alias_does_not_self_deadlock(
