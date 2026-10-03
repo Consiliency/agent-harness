@@ -1,7 +1,7 @@
 {
   "architecture": "x86_64",
-  "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
-  "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+  "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+  "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
   "isolation_profile": "agy_memfd_home_deny_all_v1",
   "platform": "linux",
   "provider": "gemini",
@@ -16,13 +16,13 @@
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": false,
-        "provider_image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "provider_image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_owned_fds_closed": true,
         "sandbox_network_filtered": true
       },
-      "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
-      "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+      "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+      "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -35,7 +35,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -46,16 +46,16 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "9585d9a35d38d9de677ef50a66c1eb3924fb265937d07b4ba84f0c5c26bfba84",
+      "profile_sha256": "35d0644ff287917ef801582667c9b5c2fc979d5c3074c68ba4ea6bf7edd9084d",
+      "raw_receipt_sha256": "ab362337f8e875f04afd98aab1176bda12d2ebbe7883337c50c1ceb2e9303ddf",
       "record_sha256": {
-        "broker": "730de94dd341cd34cc70d159b9c34ba54114e2b74daa0b71b57b388acb446c8e",
-        "monitoring": "0712f39fe4fbd2c1d1c34b2ac85102d6953d1cc11560b68c9f8eedea00f0037a",
-        "observer": "dfa8ae626ee8303231c7a542d3b3bbff19191878eeb65ad35b9371d54c0803ab",
-        "result": "ed53322c305b4c087ab8a24074a82e43aa5ba858f42287aef58f82b24e73b27d"
+        "broker": "f5e3b68de0bfcb22e4ce3868705a18fad4490b11c9a6abcaeb7b9cbbb9effa8c",
+        "monitoring": "6538a2cc0b8ad8acc176a06b237226c2804df45427e5c0292d1a9be803999e73",
+        "observer": "ed1c8579907d3876153dfa6972c8d0c856eb8050e6ad46b7d9f658446a3ba9eb",
+        "result": "351ee1056a4e01253415f212f3a9f9a8c8a572922bc0146eae23e689eae4ffa3"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -77,13 +77,13 @@
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": true,
-        "provider_image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "provider_image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_owned_fds_closed": true,
         "sandbox_network_filtered": true
       },
-      "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
-      "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+      "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+      "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -96,7 +96,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -107,15 +107,15 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "03f66aff629d8d30b8a145025e141d72b2c981417881e6350a005ac1b5cbbfea",
+      "profile_sha256": "35d0644ff287917ef801582667c9b5c2fc979d5c3074c68ba4ea6bf7edd9084d",
+      "raw_receipt_sha256": "301e5da001cc3924eb42c3a4f97e82ffd251e1dc3a8208e060026ec4bfb8a1c7",
       "record_sha256": {
-        "broker": "e1753dc411a2a2b15cd7fd13b7fcb0f8797d5c438b04128e515fd862f4c3e797",
-        "monitoring": "ddf9e1a5310a842afe198fc27b21ce71c59db238f4f07f220e495f79bec701ad",
-        "observer": "cf2fe99f6eba99980e6c264733a19a8099f8a92ab40c8b2ba45441a125cbc993",
+        "broker": "845ee7daf00c7c5e112c2fba672d4ea43dec11a876e78539dca20cca826dbbda",
+        "monitoring": "07a6366fab58239d41928dacdb2e5436940680784f5e7744120bd6e07a0ce207",
+        "observer": "8428bdcdab7aa449bbf751d46122bd1183faef155181a7db4e4b4f71d25b5e9e",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -143,8 +143,8 @@
         "provider_owned_fds_closed": null,
         "sandbox_network_filtered": null
       },
-      "help_sha256": "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755",
-      "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+      "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+      "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -157,7 +157,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -168,15 +168,15 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56",
+        "image_sha256": "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "9c8d67f3bea93ba21830d6cfdb1f7b4e499c52330896535972a290f30ebd8f75",
-      "raw_receipt_sha256": "a36f50275e90fa7456d289a6e9f67b7e7cf399e430cfcdfb3019538fe6a80822",
+      "profile_sha256": "35d0644ff287917ef801582667c9b5c2fc979d5c3074c68ba4ea6bf7edd9084d",
+      "raw_receipt_sha256": "fc03277265db2ad8b89c12ac96f181ae0a2876ce34dc58fc8ab98885933504e7",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "7dd58b43c3d9bf891a1a646404ff1c00bd4d73cafddaba8b600836e7f080066e",
-        "observer": "aedbfc0e9c66829c76cfeb68b97a05346a5f13035ddbfcbef83684813575dba7",
+        "monitoring": "e1ad8e0b5bf71b0dc06cd6dacf41c9a61ba288b72b55ecc44536a9e9cbe698b2",
+        "observer": "45e91a54f7fab3f0f0ebf30c4def5eaf3202c9066febfe194ef8aa8aa759dbf3",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -191,10 +191,10 @@
       }
     }
   ],
-  "release_version": "1.2.11",
+  "release_version": "1.2.15",
   "role": "redacted qualification evidence; runtime admission remains the checked executable digest",
   "route": "brokered_subscription_heartbeat_only",
-  "schema": "agy_1211_redacted_qualification_summary.v1",
+  "schema": "agy_1215_redacted_qualification_summary.v1",
   "source_sha256": {
     "__init__.py": "5efb40963c637174323fcbdceac629ffaa62b356ba1292a8b5e7a37a5b579aa4",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
@@ -421,8 +421,8 @@
     "worktree_index.py": "377002709d6b703a189b59e921bf118cd285f1735699524382bbe7c15c55b7ed"
   },
   "upstream_asset_name": "agy_cli_linux_x64.tar.gz",
-  "upstream_asset_sha256": "c91c62c5e6fa954f5a7e1d7b9ad417d749db4aa60a4ba0b3d604dec1b645d190",
-  "upstream_release_url": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.11",
+  "upstream_asset_sha256": "bbd4a4b29f0e9fe1fc2e1345b5d44fa08540e43014da46bc2c4bf70cf05745d8",
+  "upstream_release_url": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.15",
   "validator": {
     "operations": [
       "cancel",

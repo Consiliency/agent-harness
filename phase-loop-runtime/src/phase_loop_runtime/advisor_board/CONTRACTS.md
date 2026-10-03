@@ -809,8 +809,10 @@ review text and the exception in detail; sandbox facts describe actual enforceme
 
 The Linux x64 subscription `agy` entry image must match one member of the closed
 set `gemini_heartbeat.QUALIFIED_IMAGES`: 1.2.11 SHA256
-`ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56` or 1.2.12 SHA256
-`ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`. Each member
+`ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`, 1.2.12 SHA256
+`ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`, 1.2.14 SHA256
+`0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029` or 1.2.15 SHA256
+`5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164`. Each member
 carries its measured help digest and has its own qualification record; the
 evidence catalog and the runtime set must name exactly the same members.
 The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;
