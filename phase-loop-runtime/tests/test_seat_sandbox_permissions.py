@@ -873,6 +873,8 @@ def test_upg_every_other_group_writable_chain_refuses_with_the_chmod_notice(
     fix = aq.REASON_FIXES["store_unsafe"]
     assert "chmod go-w" in fix and "user-private group" in fix
     # The launch-time re-check keeps its own typed refusal for the same store.
+    assert panel_invoker._pass_refusal(seat_jail.jail_profile_digest("claude"))[0] == (
+        "seat_sandbox_refused:pass_store_unsafe")
     fix = seat_jail.NOTICES["seat_sandbox_refused:pass_store_unsafe"][2]
     assert "chmod go-w" in fix and "user-private group" in fix
 

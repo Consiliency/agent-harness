@@ -120,6 +120,17 @@ def test_a_qualification_that_cannot_run_falls_back_with_a_typed_reason(exc, rea
     assert aq.REASON_FIXES[reason]
 
 
+@pytest.mark.parametrize("why, reason", [("store_unsafe:group_writable:/s", "store_unsafe"),
+                                         ("error:ValueError", "error")])
+def test_a_store_a_run_cannot_fix_is_reported_without_a_run_or_a_cache(why, reason):
+    store = _Store()
+    store.verdict = lambda digest: (False, why)
+    assert _ensure(store) == aq.Outcome(aq.FAILED, reason)
+    assert store.runs == 0
+    digest = seat_jail.jail_profile_digest("claude")
+    assert aq.cached_failure(digest, now=time.time(), retry_after_s=3600) is None
+
+
 def test_a_held_lock_times_out_typed_and_uncached():
     import fcntl
 
