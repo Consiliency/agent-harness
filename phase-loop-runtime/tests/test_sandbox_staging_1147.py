@@ -1157,3 +1157,72 @@ class TestExceptionsAreDecidedAfterTheEnvIsBuilt:
                 agy_capture=object(), provider_authority=authority,
             )
         assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE
+
+
+class TestPerRunScratchRecordsItsOwner:
+    """Every per-run directory the residue sweep may remove records a live owner while in
+    use, and drops the record once removed (agent-harness#1161 round 4)."""
+
+    @staticmethod
+    def _owned_by_us(path: Path) -> bool:
+        return not sandbox_retention.scratch_owner_gone(path) and Path(
+            str(path) + sandbox_retention.OWNER_SUFFIX).is_file()
+
+    def test_the_launcher_review_copy(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import launcher
+
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "staging"))
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("x\n", encoding="utf-8")
+        staged = launcher._stage_review_tree(repo, None)
+        assert self._owned_by_us(staged)
+        launcher._cleanup_paths((str(staged),))
+        assert not Path(str(staged) + sandbox_retention.OWNER_SUFFIX).exists()
+
+    def test_the_owned_agy_home(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import panel_invoker
+
+        home = tmp_path / "home"
+        token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
+        token.parent.mkdir(parents=True)
+        token.write_text("reference", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        with panel_invoker._brokered_agy_environment({"TMPDIR": str(scratch)}, None) as env:
+            agy_home = Path(env["HOME"])
+            assert self._owned_by_us(agy_home)
+        assert not Path(str(agy_home) + sandbox_retention.OWNER_SUFFIX).exists()
+
+    def test_the_credentialless_president_home(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import president_adapter
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "no-home"))
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        with president_adapter._president_agy_environment({"TMPDIR": str(scratch)}) as env:
+            empty = Path(env["HOME"])
+            assert self._owned_by_us(empty)
+        assert not Path(str(empty) + sandbox_retention.OWNER_SUFFIX).exists()
+
+    def test_the_falsifier_dependency_snapshot(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import review_stage
+
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "staging"))
+        seen = {}
+        monkeypatch.setattr(review_stage, "_falsifier_interpreter_scope", lambda: ("py", (), "id"))
+        monkeypatch.setattr(review_stage, "_falsifier_interpreter_digest", lambda e, d: "digest")
+        monkeypatch.setattr(review_stage, "_snapshot_falsifier_dependencies",
+                            lambda stage, destination: seen.setdefault("deps", destination))
+        monkeypatch.setattr(review_stage, "_require_single_link_files", lambda roots: None)
+
+        def _run(**kwargs):
+            seen["owned"] = self._owned_by_us(kwargs["dependencies"])
+            return (0, b"", b"", None, None)
+
+        monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node", _run)
+        review_stage.run_bounded_falsifier_node(
+            staged=tmp_path, nodeid="t::n", wall_clock_s=1, output_cap_bytes=1)
+        assert seen["owned"]
+        assert not Path(str(seen["deps"]) + sandbox_retention.OWNER_SUFFIX).exists()
