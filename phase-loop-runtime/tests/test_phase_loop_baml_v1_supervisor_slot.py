@@ -10,6 +10,7 @@ other supervisor sweeps).
 """
 import _thread
 import ctypes
+import sys
 import threading
 import time
 
@@ -161,3 +162,119 @@ def test_concurrent_revivers_leave_at_most_one_supervisor(interrupt_first):
         client.closed = True
         for t in _supervisors_of(client):
             t.join(2)
+
+
+# --- round 11 (president F038): pin the claim's compare-and-set --------------
+#
+# The slot's one load-bearing step is that a claim is a single atomic
+# ``dict.setdefault``.  A check-then-set claim (membership test, then a store)
+# lets two claimants both win, and nothing above notices.  Adapted from the
+# codex stand-in's line sweep (pr1160-hb11natcodex/probes/test_claim_line_sweep.py):
+# the points are collected on the running interpreter, they include C returns,
+# and the sweep also runs over the scan path (a dead holder already at epoch 0),
+# not only the empty slot.
+
+_CLAIM_CODE = m._Client._claim_supervisor.__code__
+
+
+class _DeadHolder:
+    """A holder that has exited: the scan skips it."""
+
+    def is_alive(self) -> bool:
+        return False
+
+
+def _claim_client(dead_first: bool):
+    client = m._Client(test_mode=True)
+    if dead_first:
+        client.supervisor_claims[0] = _DeadHolder()
+    return client
+
+
+def _claim_points(dead_first: bool) -> list:
+    """Every (event, line) a lone claimant reaches in ``_claim_supervisor``."""
+    seen: list = []
+
+    def note(frame, event):
+        if frame.f_code is _CLAIM_CODE and (event, frame.f_lineno) not in seen:
+            seen.append((event, frame.f_lineno))
+
+    def trace(frame, event, arg):
+        if event == "line":
+            note(frame, "line")
+        return trace
+
+    def profile(frame, event, arg):
+        if event == "c_return":
+            note(frame, "c_return")
+
+    client = _claim_client(dead_first)
+
+    def body():
+        sys.settrace(trace)
+        sys.setprofile(profile)
+        try:
+            client._claim_supervisor(threading.current_thread())
+        finally:
+            sys.settrace(None)
+            sys.setprofile(None)
+
+    thread = threading.Thread(target=body)
+    thread.start()
+    thread.join(5)
+    return seen
+
+
+_CLAIM_CASES = [(dead_first, point) for dead_first in (False, True) for point in _claim_points(dead_first)]
+
+
+@pytest.mark.parametrize("dead_first,point", _CLAIM_CASES, ids=[f"{'scan' if d else 'empty'}-{e}-L+{ln - _CLAIM_CODE.co_firstlineno}" for d, (e, ln) in _CLAIM_CASES])
+def test_exactly_one_claimant_wins_with_one_paused_at_each_point(dead_first, point):
+    """Claimant a is paused at ``point`` of its claim while claimant b runs its
+    whole claim; then a resumes.  Exactly one of them may win, with both alive
+    (a live holder is never displaced, and no duplicate may also win)."""
+    client = _claim_client(dead_first)
+    paused, go, stay = threading.Event(), threading.Event(), threading.Event()
+    results: dict = {}
+
+    def hold(frame, event):
+        if frame.f_code is _CLAIM_CODE and (event, frame.f_lineno) == point and not paused.is_set():
+            paused.set()
+            go.wait(5)
+
+    def trace(frame, event, arg):
+        if event == "line":
+            hold(frame, "line")
+        return trace
+
+    def profile(frame, event, arg):
+        if event == "c_return":
+            hold(frame, "c_return")
+
+    def claimant(name, traced):
+        if traced:
+            sys.settrace(trace)
+            sys.setprofile(profile)
+        try:
+            results[name] = client._claim_supervisor(threading.current_thread())
+        finally:
+            sys.settrace(None)
+            sys.setprofile(None)
+        stay.wait(5)  # alive (a live holder) until the check below
+
+    a = threading.Thread(target=claimant, args=("a", True), daemon=True)
+    a.start()
+    try:
+        assert paused.wait(5), ("never reached", point)
+        b = threading.Thread(target=claimant, args=("b", False), daemon=True)
+        b.start()
+        while "b" not in results and b.is_alive():
+            b.join(0.01)
+        go.set()
+        while "a" not in results and a.is_alive():
+            a.join(0.01)
+        assert sorted(results.values()) == [False, True], (point, dead_first, results, dict(client.supervisor_claims))
+    finally:
+        go.set()
+        stay.set()
+        a.join(5)
