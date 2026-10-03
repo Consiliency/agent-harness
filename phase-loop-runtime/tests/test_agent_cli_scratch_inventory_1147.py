@@ -125,6 +125,45 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
 }
 
 
+#: The provider launch interface and its liveness wrapper. A call that passes no ``env``
+#: inherits this process's own environment and so takes no scratch decision; each such
+#: call must be listed here with the reason it is not an agent-CLI launch.
+PROVIDER_ENTRY_POINTS = frozenset({"launch_provider", "run_provider", "_run_leg_with_liveness"})
+PROVIDER_CALLS_WITHOUT_ENV: dict[tuple[str, str], str] = {
+    ("agy_qualification.py", "inspect_network"): "iptables inspection, not an agent CLI",
+    ("agy_qualification.py", "run_operation"): (
+        "the qualification worker (python); its agy runs in the frozen jail (agent-harness#1179)"),
+    ("sandbox_egress.py", "isolated_network"): "unshare / slirp4netns namespace holder",
+}
+
+
+def _provider_calls_without_env(package: Path) -> set[tuple[str, str]]:
+    found = set()
+    for path in sorted(package.rglob("*.py")):
+        rel = path.relative_to(package).as_posix()
+        stack: list[str] = []
+
+        class _Walker(ast.NodeVisitor):
+            def _scope(self, node):
+                stack.append(node.name)
+                self.generic_visit(node)
+                stack.pop()
+
+            visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _scope
+
+            def visit_Call(self, node):
+                func = node.func
+                name = (func.id if isinstance(func, ast.Name)
+                        else func.attr if isinstance(func, ast.Attribute) else None)
+                if name in PROVIDER_ENTRY_POINTS and not any(
+                        k.arg == "env" for k in node.keywords):
+                    found.add((rel, ".".join(stack) or "<module>"))
+                self.generic_visit(node)
+
+        _Walker().visit(ast.parse(path.read_text(encoding="utf-8")))
+    return found
+
+
 def _module_aliases(tree: ast.AST) -> tuple[dict[str, str], list[str]]:
     """``import subprocess as sp`` -> {"sp": "subprocess"}; and every ``from <launcher
     module> import <launch fn>``, which would hide a call from the attribute walk."""
@@ -210,6 +249,26 @@ def test_the_inventory_has_no_stale_entries():
     assert not stale, f"INVENTORY lists launch sites that no longer exist: {stale}"
 
 
+def test_every_provider_launch_without_an_env_is_accounted_for():
+    """The choke point decides on the ``env`` it is given; a provider call that passes none
+    would bypass it, so each one must be listed with its reason."""
+    found = _provider_calls_without_env(PACKAGE)
+    assert found == set(PROVIDER_CALLS_WITHOUT_ENV), (
+        f"unlisted: {sorted(found - set(PROVIDER_CALLS_WITHOUT_ENV))}; "
+        f"stale: {sorted(set(PROVIDER_CALLS_WITHOUT_ENV) - found)}")
+
+
+def test_the_scanner_sees_a_provider_call_without_an_env(tmp_path):
+    fake = tmp_path / "pkg"
+    fake.mkdir()
+    (fake / "m.py").write_text(
+        "def a(p):\n    p.launch_provider(['agy'], cwd='.')\n"
+        "def b(p, e):\n    p._run_leg_with_liveness(['agy'], cwd='.', env=e, deadline_s=1)\n"
+        "def c():\n    run_provider(['agy'], **{})\n",
+        encoding="utf-8")
+    assert _provider_calls_without_env(fake) == {("m.py", "a"), ("m.py", "c")}
+
+
 @pytest.mark.parametrize("key", sorted(k for k, v in INVENTORY.items()
                                        if v[0] in (RELOCATED, PROVIDER_INTERFACE)))
 def test_each_relocated_site_names_its_decision(key):
@@ -278,6 +337,14 @@ def test_an_unknown_decision_is_refused(tmp_path, monkeypatch):
         panel_invoker.run_provider(["true"], env={}, child_scratch="skip")
     with pytest.raises(ValueError, match="unknown child scratch decision"):
         panel_invoker.run_provider(["true"], child_scratch="skip")
+
+
+def test_a_launch_with_no_env_is_never_probed_or_refused(tmp_path, monkeypatch):
+    """No `env` means the child inherits this process's own environment: nothing to decide,
+    so nothing is probed -- not even under REFUSE_RAM with every candidate RAM-backed."""
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
+    monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs")
+    assert panel_invoker.run_provider(["true"]).returncode == 0
 
 
 def test_a_bounded_leg_is_relocated_at_the_launch(tmp_path, monkeypatch):

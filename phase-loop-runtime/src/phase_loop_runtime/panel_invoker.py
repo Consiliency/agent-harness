@@ -3619,10 +3619,10 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
 def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
     """Apply the provider's scratch decision to the ``env`` it is launched with. A launch
     with no ``env`` inherits this process's own environment unchanged."""
+    if decision not in _sandbox_policy.CHILD_SCRATCH_DECISIONS:
+        raise ValueError(f"unknown child scratch decision {decision!r}")
     if kwargs.get("env") is not None:
         kwargs["env"] = _sandbox_policy.child_scratch_env(kwargs["env"], decision)
-    else:
-        _sandbox_policy.child_scratch_env({}, decision)  # validates the decision
 
 
 def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,

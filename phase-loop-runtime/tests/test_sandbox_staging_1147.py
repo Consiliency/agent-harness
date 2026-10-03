@@ -882,7 +882,7 @@ class TestEveryAgentLaunchIsRelocated:
         monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
         assert not sandbox_policy._private(cache / "phase-loop" / "tmp", cache)
 
-    def test_a_planted_link_in_the_cache_is_not_a_staging_root(self, tmp_path, monkeypatch):
+    def test_the_staging_root_requires_real_directories_in_the_cache(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache"
         cache.mkdir()
         elsewhere = tmp_path / "elsewhere"
