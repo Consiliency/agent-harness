@@ -197,14 +197,14 @@
     {
       "assumption": 2,
       "expected": {
-        "agreed_value": "0.7.21",
+        "agreed_value": "0.7.22",
         "must_agree": true
       },
       "id": "LEGIBLE-A2-LOCAL-VERSION",
       "kind": "repo_constant",
       "mutation_id": "change-either-surface-alone",
       "positive_control_id": "current-equal-pair",
-      "source_anchor": "we ship 0.7.21",
+      "source_anchor": "we ship 0.7.22",
       "subject": {
         "surfaces": [
           {
@@ -453,6 +453,6 @@
     }
   ],
   "roadmap": "specs/phase-plans-v10.md",
-  "roadmap_sha256": "15960b11e91b369889841691a5b91ace6f39f4f1493697bcd0c0a373a0f7c113",
+  "roadmap_sha256": "e83ef8461e555430789a4418559f9e7991eb8af7da21a418185a350460b9cd80",
   "schema": "roadmap_assumption_probe.v1"
 }

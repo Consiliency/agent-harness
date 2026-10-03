@@ -672,7 +672,60 @@ The TUI timestamp is refreshed by novel output lines, review-file growth and
 transcript growth — a startup banner is novel output and refreshes it; only
 repeated cosmetic repaints do not, once the existing novelty detector has seen
 their text. The CPU-tick heartbeat never refreshes it.
-Neither state is a health attestation or permission to terminate. Frozen
+Neither state is a health attestation or permission to terminate.
+The record also carries a progress notice (agent-harness#1176). When no genuine
+progress has been seen for `stall_notice_s` (default 3600 s; override with
+`PHASE_LOOP_REVIEW_STALL_NOTICE_S`), and no progress at all counts from seat
+start, `progress_notice` is `seat_progress_stalled`, `progress_notice_count`
+counts crossings, and one operator warning with only that code and numbers is
+logged. Resumed progress and a terminal observation clear the active notice;
+`last_progress_notice` and the count stay as history. The notice never ends the
+seat. The record reaches the board: `advisor-board --json` legs carry it as
+`review_monitoring`, the text summary prints a `[seat_progress_stalled]` line
+per affected seat on stderr, each streamed per-leg verdict file carries it, and
+the governed record adds a `seat_progress_stalled` warn finding per seat.
+The exact brokered Claude transcript is classified once per change, by
+`_claude_transcript_outcome`, into one outcome; the answer parser and the
+give-up detector are views of it, so they cannot disagree:
+- `answer`: the route's answer parser (the agent-harness#1002/#1077/#1017
+  rules; the president route fails closed on any error record in the turn)
+  returns text. An accepted answer always wins, whatever follows it. An
+  `isApiErrorMessage` record is never answer text. Every record of the answer
+  must be a member of the current request (defined below; a sidechain sighting
+  counts), so a record that is not evidence for the request never answers it
+  either. If the text is not an
+  accepted verdict, the leg is handed it back as
+  `claude_tui_broker_terminal_nonconforming` instead of waiting.
+- `gave_up`: no answer, and the last live record after the current request is
+  an `isApiErrorMessage` give-up. The leg ends at once as DEGRADED with
+  `claude_seat_output_budget_exhausted` (`error: max_output_tokens`),
+  `claude_seat_usage_limited` (`error: rate_limit` with
+  `quotaLimits.status: rejected`, a subscription cap, followed by
+  `: usage_limit (resets HH:MM, Mon D YYYY)` rendered in UTC from
+  `quotaLimits.resetsAt` when present), `claude_seat_rate_limited` (any other
+  `rate_limit`) or `claude_seat_provider_api_error`.
+- `rejected`: no answer, and the turn ended in a completed (`end_turn` /
+  `stop_sequence`) answer carrying a text block that the route's parser refuses.
+  The leg ends at once as DEGRADED with `claude_seat_transcript_rejected`.
+- `pending`: anything else (an open or capped message, the CLI's resume prompt,
+  a newer request, a writer mid-append). A `max_tokens` stop is never terminal.
+The "last live record" is decided in APPEND order among the current request's
+records, chosen by membership, not position. The current request is the last
+user record that is not `isMeta`, carries no tool_result and is not a replay (its
+uuid and content recurring, whatever its completion metadata, as in the answer
+parser). A record is evidence for it only when it is a new version first seen in
+it: its uuid was first seen after the request (a record of an earlier request is
+never evidence, wherever it is appended, except an `isApiErrorMessage` record
+appended in the current request, which always is); it is not an exact replay of a
+version already seen (same uuid, content, `stop_reason` presence and value, and
+error flag) nor a stale open copy of a stopped record whose content is unchanged;
+and it is not a sidechain record (`isSidechain`), which the answer parser drops
+too. An open record first seen in the current request, even a changed version
+after its own stop, is still streaming and reads `pending`. An `isApiErrorMessage`
+record is terminal event evidence and is never collapsed into an earlier
+version of its uuid. Replays and rewritten metadata are not progress. `provider_terminal_state` records the code that
+ended the leg. `isApiErrorMessage` matches JSON `true` or the string `"true"`,
+on the record or the message. Frozen
 broker request/response keys, status literals, and observer envelopes are unchanged.
 
 When staging requires egress isolation, acquisition follows staged-tree and operation
@@ -687,8 +740,10 @@ review text and the exception in detail; sandbox facts describe actual enforceme
 
 The Linux x64 subscription `agy` entry image must match one member of the closed
 set `gemini_heartbeat.QUALIFIED_IMAGES`: 1.2.11 SHA256
-`ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56` or 1.2.12 SHA256
-`ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`. Each member
+`ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`, 1.2.12 SHA256
+`ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`, 1.2.14 SHA256
+`0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029` or 1.2.15 SHA256
+`5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164`. Each member
 carries its measured help digest and has its own qualification record; the
 evidence catalog and the runtime set must name exactly the same members.
 The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;
