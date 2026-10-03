@@ -4685,9 +4685,9 @@ def _broker_leg_env(
     the host and is relocated like every other leg.
     """
     env = _broker_subscription_env(base_env)
-    return _sandbox_policy.child_scratch_env(
-        env, _sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP if private_tmp
-        else _sandbox_policy.CHILD_SCRATCH_RELOCATE)
+    if private_tmp:
+        return env  # the exception is stamped where it is launched (`launch_provider`)
+    return _sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE)
 
 
 def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None, stream_dir=None):
@@ -5057,7 +5057,7 @@ def _leg_auth_ok(
             timeout=timeout_s,
             check=False,
             stdin=subprocess.DEVNULL,
-            env=dict(env),
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return True, ""  # probe unavailable/slow → don't block; the leg fail-closes
@@ -5087,7 +5087,7 @@ def _claude_subscription_auth_ok(
             timeout=timeout_s,
             check=False,
             stdin=subprocess.DEVNULL,
-            env=dict(env),
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False, "subscription_auth_unproven"
@@ -5124,6 +5124,8 @@ def _claude_code_support_status(claude_bin: str = "claude") -> tuple[bool, str]:
             timeout=15,
             check=False,
             stdin=subprocess.DEVNULL,
+            env=_sandbox_policy.child_scratch_env(
+                os.environ, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except FileNotFoundError:
         return False, "missing_claude_cli"
@@ -5302,7 +5304,7 @@ def _cleanup_claude_launch_timeout(
         list_proc = subprocess.run(
             adapter.list_command(),
             cwd=cwd,
-            env=env,
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
             capture_output=True,
             text=True,
             timeout=30,
@@ -7212,7 +7214,7 @@ def _stop_claude_agent(
         proc = subprocess.run(
             adapter.stop_command(session_id),
             cwd=cwd,
-            env=env,
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
             capture_output=True,
             text=True,
             timeout=_CLAUDE_STOP_TIMEOUT_S,

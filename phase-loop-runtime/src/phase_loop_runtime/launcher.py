@@ -32,6 +32,7 @@ from .claude_agent_view import (
 from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
 from .harness_env_signatures import child_executor_env
+from .sandbox_policy import CHILD_SCRATCH_RELOCATE, SandboxSpaceError, child_scratch_env
 from .injection import materialize_claude_plugin_bundle
 from .models import (
     ClaudeTeamPolicy,
@@ -1956,7 +1957,13 @@ def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
     metadata: dict[str, Any] = {"executor": spec.executor, "probes": []}
     probe_outputs: dict[str, str] = {}
     for probe in spec.auth_preflight_probes:
-        completed = subprocess.run(probe, shell=True, text=True, capture_output=True, check=False)
+        try:
+            probe_env = child_scratch_env(os.environ, CHILD_SCRATCH_RELOCATE)
+        except SandboxSpaceError as exc:  # refused under PHASE_LOOP_SANDBOX_REFUSE_RAM
+            completed = subprocess.CompletedProcess(probe, 1, "", str(exc))
+        else:
+            completed = subprocess.run(probe, shell=True, text=True, capture_output=True,
+                                       check=False, env=probe_env)
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
         probe_outputs[probe] = " ".join(part for part in (stdout, stderr) if part)
@@ -2643,6 +2650,8 @@ def launch(
     # claude, so those routes don't need the run-from sentinel.
     # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
+    # The executor's scratch decision, stamped like every agent-CLI launch's (agent-harness#1147).
+    child_env = child_scratch_env(child_env, CHILD_SCRATCH_RELOCATE)
     if caller_run_id:
         child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
     if lease_authority is not None and not dry_run:

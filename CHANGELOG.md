@@ -44,8 +44,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     HOME they run in. Convergence adapters are relocated too, and so is the Claude Agent
     View executor route: `ClaudeAgentViewAdapter`'s default runner is now the provider
     launch interface, so `claude --bg` is decided there.
-  - A test enumerates every process launch in the package and fails on one whose scratch
-    decision is not stated. It is conservative: any use of a launch-capable module it
+  - Completeness is enforced at RUNTIME: `child_scratch_env` stamps every env it decides
+    with `PHASE_LOOP_SCRATCH_DECIDED=<decision>` (the named exceptions included), and the
+    test suite's audit hook fails any test in which the runtime spawns an agent CLI --
+    through `subprocess`, `os.exec*`, `os.posix_spawn*`, `os.spawn*`, `os.system` or
+    `pty.spawn`, after `env` and `sh -c` parsing, in forked children too -- without it.
+  - A static inventory test remains as an early warning: it enumerates every process
+    launch in the package and fails on one whose scratch decision is not stated. It is
+    conservative: any use of a launch-capable module it
     cannot resolve (a computed `getattr`, `__dict__`, the module passed as a value, a
     dynamic import, `exec`/`eval`) also needs a stated decision, as does any use of a
     provider entry point that does not hand it a decided env.

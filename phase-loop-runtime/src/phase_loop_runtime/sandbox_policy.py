@@ -659,17 +659,27 @@ CHILD_SCRATCH_DECISIONS = (
 )
 
 
+#: Stamped into every env that :func:`child_scratch_env` decides, with the decision taken.
+#: The test suite's audit hook refuses any agent-CLI spawn whose env lacks it, so a launch
+#: path that skips the decision fails at RUNTIME however it is spelled (agent-harness#1147).
+CHILD_SCRATCH_MARKER = "PHASE_LOOP_SCRATCH_DECIDED"
+
+
 def child_scratch_env(env: Mapping[str, str], decision: str) -> dict[str, str]:
     """The env an agent CLI is launched with, after its scratch decision.
 
     ``CHILD_SCRATCH_RELOCATE`` applies :func:`fill_child_tmp_env`; the two named
     exceptions keep the env as built. Any other value is refused, so a launch site cannot
-    state a decision this module does not know. Returns a new dict.
+    state a decision this module does not know. Either way the env is stamped with
+    ``CHILD_SCRATCH_MARKER=<decision>``. Returns a new dict.
     """
     if decision not in CHILD_SCRATCH_DECISIONS:
         raise ValueError(f"unknown child scratch decision {decision!r}")
     out = dict(env)
-    return fill_child_tmp_env(out) if decision == CHILD_SCRATCH_RELOCATE else out
+    if decision == CHILD_SCRATCH_RELOCATE:
+        fill_child_tmp_env(out)
+    out[CHILD_SCRATCH_MARKER] = decision
+    return out
 
 
 def effective_max_total_bytes(path: str | os.PathLike[str]) -> int:
