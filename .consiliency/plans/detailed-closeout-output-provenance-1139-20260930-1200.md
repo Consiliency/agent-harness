@@ -123,6 +123,13 @@ bullets above):**
 - `current_phase` also refuses the bare placeholder words (`ALIAS`, `PHASE`, ...); the
   hint and docs print `<ALIAS>`; the skills print a shell-safe `--phase ALIAS`.
 
+**Round-7 amendment (board review at a1ff6622; supersedes the placeholder-word bullet
+above):** a word list cannot tell a placeholder from a real alias (`PHASE` is a valid
+roadmap alias). `current_phase` accepts exactly the roadmap alias grammar
+`[A-Z][A-Z0-9._-]*` and nothing else; the one placeholder printed everywhere is the
+quoted `"<ALIAS>"` (`generated_outputs.ALIAS_PLACEHOLDER`), which that grammar can never
+match and which is shell-safe pasted literally.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
 - `observe_stages(observer)` / `_observed_stage` — add. A context-var seam brackets
   each command and suite stage of `run_verification`.
@@ -192,6 +199,7 @@ tests, and the docs.
   - stop passing the observer;
   - make `--record-outputs` fail without a declaration;
   - credit a failed producer;
+  - round 7: placeholder word list restored, alias grammar loosened to any case;
   - round 6: review route unwrapped, the single-exit wrapper skipped, body not extended (codex delivery), placeholder words accepted;
   - round 5: read either environment key, a prompt route omits `--phase`, record without `--phase` after displacing, hint without `--phase`, prune keeps the oldest;
   - round 3: fall back to state.json, no launcher stamp, setdefault stamp, keep an inherited alias when none is dispatched, strip the stamp on lease re-entry, no `--phase` in the prompt, run_loop passes no alias, accept or record an unknown phase, unbounded timeout, kill the child only, no pruning;

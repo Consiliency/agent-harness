@@ -107,7 +107,8 @@ state.
 ### How evidence is recorded
 
 - **At closeout: every executor, every repo.** Run
-  `phase-loop-closeout-audit --repo . --record-outputs --phase <ALIAS>`.
+  `phase-loop-closeout-audit --repo . --record-outputs --phase "<ALIAS>"`, with `<ALIAS>`
+  replaced by the phase alias.
   - This is a **clean, observed rebuild**. First, every existing *ignored, untracked*
     file under a declared glob is moved aside. Tracked files and untracked-but-not-
     ignored files are never touched. Each declared producer then runs in declaration
@@ -171,27 +172,30 @@ state.
   `HEAD` moved during the invocation, or between it and the record being written,
   nothing is recorded.
   - The record is bound to that commit and to the **phase identity**, which is ONLY
-    an explicit alias: `--phase <ALIAS>` on the command line, or the runner's live alias
+    an explicit alias: `--phase "<ALIAS>"` on the command line, or the runner's live alias
     when its own verification records in-process.
   - Every runner prompt that closes out writes the audit command with the phase
-    literally: `phase-loop-closeout-audit --repo . --record-outputs --phase <ALIAS>`.
+    literally, for example `phase-loop-closeout-audit --repo . --record-outputs --phase CORE`.
     `build_prompt` applies it at its single exit to every prompt whose work closes out
     (execute, repair, review, every harness lane, and delegated children of each) or
     whose skill pack includes a skill that prescribes the audit (the Claude pack does
     for every action). A roadmap prompt has no phase and says to substitute one. This
     holds on every route, including Claude channel and agent-view sessions.
-  - The execute-phase skills write `--phase ALIAS` and tell the executor to replace it
-    with the plan's alias. The literal is safe to paste into a shell: with no
-    declaration the flag does nothing, and with one, `ALIAS` is refused as an identity.
+  - The execute-phase skills, the audit's hint and these docs write the quoted
+    placeholder `--phase "<ALIAS>"` and say to replace `<ALIAS>` with the plan's alias.
+    Pasted unchanged it is still valid shell: with no declaration the flag does
+    nothing, and with one, `<ALIAS>` is refused as an identity, because it can never
+    match the alias grammar.
   - The phase identity is **never** inferred: not from `PHASE_LOOP_PHASE_ALIAS` or
     `PHASE_ALIAS` (an inherited value can name another phase, and routes that bypass
     the launcher have none), and not from `.phase-loop/state.json` (the runner writes
     it only after a loop ends, so during a loop it names the previous phase).
   - With **no** `--phase`, `--record-outputs` exits 2 before moving anything aside or
     running a producer, and the plain audit blocks every declared output with "no
-    phase identity". A value that is not shaped like an alias (`[A-Za-z][A-Za-z0-9._-]*`),
-    such as an unsubstituted `<ALIAS>`, or that is a bare placeholder word (`ALIAS`,
-    `PHASE`, `PHASE_ALIAS`, any case), counts as no `--phase`.
+    phase identity". The accepted shape is exactly the roadmap's alias grammar,
+    `[A-Z][A-Z0-9._-]*`, so every alias a roadmap can declare (`PHASE` and `ALIAS`
+    included) is an identity, and anything else, such as an unsubstituted `<ALIAS>`,
+    counts as no `--phase`.
   - At the same commit and phase, a recording extends the record, so a repair turn or
     relaunch that re-runs one producer keeps the others' evidence.
   - A different commit or phase starts empty. When the phase identity is supplied,

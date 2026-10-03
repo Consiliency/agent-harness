@@ -400,7 +400,7 @@ def main(argv: list[str]) -> int:
     observation, every producer the committed ``.phase-loop-generated-outputs.json``
     declares. It records what each invocation wrote, bound to HEAD, then audits.
     With no declaration it is a no-op, so executors pass it in every repo. With a
-    declaration it needs ``--phase ALIAS`` and exits 2, before touching anything,
+    declaration it needs ``--phase "<ALIAS>"`` (substituted) and exits 2, before touching anything,
     without one. The
     runner's verification records the same evidence when it runs a declared
     producer command.

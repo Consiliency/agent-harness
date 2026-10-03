@@ -70,9 +70,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - Phase identity is ONLY an explicit `--phase <ALIAS>` (or the runner's live alias
     in-process). Every runner prompt that can lead to an audit (execute, repair,
     review, harness lane, delegated child, and any prompt whose skill pack prescribes
-    the audit) writes the command with `--phase <its alias>`. The execute-phase
-    skills show a shell-safe `--phase ALIAS` to substitute; placeholder values are
-    refused. The identity is never read from the
+    the audit) writes the command with `--phase <its alias>`. The skills, hint and
+    docs show the quoted, shell-safe placeholder `--phase "<ALIAS>"`. Only the
+    roadmap's alias grammar is accepted, so the placeholder is refused and every real
+    alias is not. The identity is never read from the
     environment or `.phase-loop/state.json`. Without it, `--record-outputs` exits 2
     before touching the worktree and the audit blocks.
   - Producers are bounded by a validated timeout and killed by process group.

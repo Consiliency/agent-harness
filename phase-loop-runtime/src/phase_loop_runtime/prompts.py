@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from .discovery import manifest_plan_artifact, roadmap_fingerprint, roadmap_repo_relative_path
+from .generated_outputs import ALIAS_PLACEHOLDER
 from .injection import build_lane_prompt_bundle, build_prompt_bundle
 from .models import DelegationRequest, HarnessLaneAssignment, ParentChildRunMetadata, PhaseSourceBundle, PromptBundle
 
@@ -335,14 +336,14 @@ def closeout_audit_instruction(phase: str | None) -> str:
     agent-harness#1139: the audit binds generated-output evidence to a phase, and its
     ONLY source of that identity is an explicit ``--phase``. So the command is written
     here, once, with the alias literal (``build_prompt`` applies it to every route).
-    With no alias (a roadmap prompt) it says so: the placeholder ``ALIAS`` is
-    shell-safe and refused as an identity, so a literal run records nothing.
+    With no alias (a roadmap prompt) it says so: the quoted placeholder ``"<ALIAS>"`` is
+    shell-safe and outside the alias grammar, so a literal run records nothing.
     """
 
-    audit_phase = f" --phase {shlex.quote(phase)}" if phase else " --phase ALIAS"
+    audit_phase = f" --phase {shlex.quote(phase)}" if phase else f" --phase {ALIAS_PLACEHOLDER}"
     unbound = (
         "" if phase else
-        "This launch is not bound to a phase: replace ALIAS with the alias of the phase you close out. "
+        "This launch is not bound to a phase: replace <ALIAS> with the alias of the phase you close out. "
     )
     return (
         f"{unbound}For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."

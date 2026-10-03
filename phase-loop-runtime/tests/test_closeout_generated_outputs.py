@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -995,8 +996,8 @@ def _assert_audit_names(bundle, alias: str) -> None:
     # ...and never a phase-less form an executor could follow instead.
     assert "--repo . --record-outputs`" not in text
     assert "--record-outputs --phase <" not in text
-    if alias != "ALIAS":
-        assert "--record-outputs --phase ALIAS`" not in text
+    if alias != generated_outputs.ALIAS_PLACEHOLDER:
+        assert f"--record-outputs --phase {generated_outputs.ALIAS_PLACEHOLDER}`" not in text
 
 
 @pytest.fixture(scope="module")
@@ -1030,7 +1031,7 @@ def test_every_prompt_route_that_can_audit_names_its_phase(prompt_fx, harness, a
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
-        kwargs, alias = {}, ("ALIAS" if action in UNBOUND_ACTIONS else "STATE")
+        kwargs, alias = {}, (generated_outputs.ALIAS_PLACEHOLDER if action in UNBOUND_ACTIONS else "STATE")
         phase = None if action in UNBOUND_ACTIONS else "STATE"
         if variant == "delegated":
             kwargs["delegation_request"] = build_fake_delegation_request(
@@ -1045,8 +1046,8 @@ def test_every_prompt_route_that_can_audit_names_its_phase(prompt_fx, harness, a
     closes_out = action in CLOSING_OUT or (variant or "").startswith("lane:")
     if closes_out or _shipped_audit_skills() & set(bundle.expected_skill_pack):
         _assert_audit_names(bundle, alias)
-        if alias == "ALIAS":
-            assert "not bound to a phase: replace ALIAS" in _prompt_text(bundle)
+        if alias == generated_outputs.ALIAS_PLACEHOLDER:
+            assert "not bound to a phase: replace <ALIAS>" in _prompt_text(bundle)
 
 
 @pytest.mark.parametrize("route", ["execute", "repair", "review", "lane"])
@@ -1242,18 +1243,88 @@ def test_record_outputs_without_a_phase_refuses_before_touching_anything(tmp_pat
 
 
 def test_an_unsubstituted_placeholder_is_not_a_phase_identity(tmp_path):
-    """A skill shows `--phase <ALIAS>`. Run literally without a shell, that would give
-    every phase the same identity, so a value that is not roadmap-alias-shaped is
-    refused exactly like a missing one."""
+    """The skills, hint and docs print `--phase "<ALIAS>"`. Pasted unchanged, the
+    shell passes `<ALIAS>`, which the alias grammar can never match, so it is refused
+    exactly like a missing phase (it would otherwise give every phase one identity)."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
-    for bad in ("<ALIAS>", "<PHASE_ALIAS>", "", "  ", "A B", "'CORE'", "-CORE",
-                "ALIAS", "alias", "PHASE", "PHASE_ALIAS", "phase-alias"):
+    placeholder = shlex.split(generated_outputs.ALIAS_PLACEHOLDER)
+    assert placeholder == ["<ALIAS>"]
+    for bad in (*placeholder, generated_outputs.ALIAS_PLACEHOLDER, "<PHASE_ALIAS>", "", "  ",
+                "A B", "'CORE'", "-CORE", "state"):
         assert generated_outputs.current_phase(bad) is None, bad
     assert generated_outputs.current_phase(" CORE ") == "CORE"
-    for placeholder in ("<ALIAS>", "ALIAS"):
-        assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", placeholder]) == 2
+    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", *placeholder]) == 2
     assert not (fx.repo / generated_outputs.RECORD_RELPATH).exists()
+
+
+def test_every_alias_the_roadmap_grammar_accepts_is_a_phase_identity(tmp_path):
+    """codex r6 F001: a word list cannot tell a placeholder from a real alias. Derive
+    the accepted set from the roadmap's OWN parser (`discovery.parse_roadmap_phases`)
+    over a generated candidate set, and require `current_phase` to agree with it
+    exactly: every alias a roadmap can declare is an identity, and nothing else is."""
+
+    import itertools
+    import random
+
+    from phase_loop_runtime.discovery import parse_roadmap_phases
+
+    alphabet = "AZQ09._-az<>\"'*"
+    candidates = {"".join(chars) for n in (1, 2, 3) for chars in itertools.product(alphabet, repeat=n)}
+    rng = random.Random(1139)
+    candidates |= {"".join(rng.choice(alphabet) for _ in range(rng.randint(4, 12))) for _ in range(400)}
+    candidates |= {"PHASE", "ALIAS", "PHASE_ALIAS", "PHASE-ALIAS", "PHASEALIAS", "CORE", "STATE",
+                   "ADAPTER", "V10.1", "<ALIAS>", generated_outputs.ALIAS_PLACEHOLDER}
+    ordered = sorted(candidates)
+    roadmap = tmp_path / "roadmap.md"
+    roadmap.write_text("# Roadmap\n\n" + "".join(
+        f"### Phase {i} - Candidate ({alias})\n" for i, alias in enumerate(ordered)))
+    accepted = set(parse_roadmap_phases(roadmap))
+    assert {"PHASE", "ALIAS", "PHASE_ALIAS", "CORE"} <= accepted   # the grammar admits them
+    assert "<ALIAS>" not in accepted and generated_outputs.ALIAS_PLACEHOLDER not in accepted
+    assert len(accepted) > 100 and len(candidates - accepted) > 1000   # both sides exercised
+    for alias in ordered:
+        assert (generated_outputs.current_phase(alias) == alias) == (alias in accepted), alias
+
+
+def test_declared_roadmap_phase_is_not_a_placeholder(tmp_path, monkeypatch):
+    """codex r6 F001 falsifier, verbatim body: a roadmap that declares the real alias
+    PHASE validates, verifies, and the runner's own literal audit command accepts it."""
+
+    import re
+
+    from phase_loop_runtime.discovery import parse_roadmap_phases, plan_artifact_diagnostic
+    from phase_loop_runtime.prompts import build_prompt
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    fx.roadmap.write_text("# Roadmap\n\n### Phase 0 - Implementation (PHASE)\n")
+    plan = write_phase_plan(
+        fx.repo, "PHASE", fx.roadmap,
+        body=("# PHASE\n\n## Verification\n"
+              f"- `{sys.executable} scripts/gen_baml.py`\n"
+              f"- `{sys.executable} scripts/build.py`\n"),
+    )
+    commit_fixture_paths(fx.repo, "declare the real PHASE alias", fx.roadmap, plan)
+    assert parse_roadmap_phases(fx.roadmap) == ["PHASE"]
+    assert plan_artifact_diagnostic(fx.repo, plan, fx.roadmap, "PHASE") is None
+    monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs",
+                        lambda *a, **k: {})
+    bundle = build_prompt("execute", fx.roadmap, phase="PHASE", plan=plan)
+    command = re.search(
+        r"`(phase-loop-closeout-audit --repo \. --record-outputs[^`]*)`",
+        bundle.render_prompt(),
+    ).group(1)
+    args = shlex.split(command)[1:]
+    args[args.index("--repo") + 1] = str(fx.repo)
+    root = fx.repo / ".phase-loop" / "runs" / "phase"
+    root.mkdir(parents=True)
+    verification = runner._run_execute_verification(
+        repo=fx.repo, roadmap=fx.roadmap, plan=plan,
+        artifacts={"root": root}, phase_alias="PHASE",
+    )
+    assert verification["ok"], verification
+    assert main(args) == 0, verification
+    assert generated_outputs.load_record(fx.repo)["phase"] == "PHASE"
 
 
 def test_the_mismatch_hint_names_the_phase(tmp_path):
@@ -1266,24 +1337,27 @@ def test_the_mismatch_hint_names_the_phase(tmp_path):
     # Claude N-R5-1: the tool never prints an ACCEPTED placeholder for an operator to copy.
     (fx.repo / generated_outputs.RECORD_RELPATH).unlink()
     reason = audit_ignored_outputs(fx.repo)["unknown_reasons"]["dist/index.js"]
-    assert "--record-outputs --phase <ALIAS>`" in reason, reason
-    assert "--phase <ALIAS>" in generated_outputs.NO_PHASE_IDENTITY
-    assert generated_outputs.current_phase("ALIAS") is None
+    assert '--record-outputs --phase "<ALIAS>"`' in reason, reason
+    assert '--phase "<ALIAS>"' in generated_outputs.NO_PHASE_IDENTITY
+    for printed in (generated_outputs.ALIAS_PLACEHOLDER, *shlex.split(generated_outputs.ALIAS_PLACEHOLDER)):
+        assert generated_outputs.current_phase(printed) is None
 
 
 def test_the_execute_phase_skills_prescribe_the_audit_with_a_phase():
     """Grok r4 G-2 / Claude N-R5-2: every shipped skill that prescribes the audit writes
-    `--phase ALIAS`, which is shell-safe to paste literally (a no-op without a
-    declaration, refused as an identity with one), and says to substitute it."""
+    the quoted placeholder `--phase "<ALIAS>"`, which is shell-safe to paste literally
+    (a no-op without a declaration, refused as an identity with one), and says to
+    substitute it."""
 
     root = Path(generated_outputs.__file__).parent / "skills_bundle"
     skills = sorted(root / name / "SKILL.md" for name in _shipped_audit_skills())
     assert skills
     for skill in skills:
         text = skill.read_text()
-        assert "--record-outputs --phase ALIAS`" in text, skill
-        assert "replace `ALIAS` with the alias of the phase you are executing" in text, skill
-        assert "--repo . --record-outputs`" not in text and "--phase <" not in text, skill
+        assert '--record-outputs --phase "<ALIAS>"`' in text, skill
+        assert "replace `<ALIAS>` with the alias of the phase you are executing" in text, skill
+        assert "--repo . --record-outputs`" not in text, skill
+        assert "--phase <" not in text and "--phase ALIAS" not in text, skill
 
 
 def test_a_corrupt_record_at_top_level_is_typed(tmp_path):
