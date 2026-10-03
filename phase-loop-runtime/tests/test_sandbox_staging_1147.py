@@ -405,7 +405,8 @@ class TestMarkerPublication:
     def test_a_half_written_marker_is_never_visible_to_a_concurrent_reap(self, tmp_path, monkeypatch):
         """The legal interleaving the board exercised: a reap runs after the marker file is
         created and before its owner line lands. Whatever the writer uses -- open(),
-        Path.write_text or os.open -- the reap is run at that point."""
+        Path.open, Path.write_text, Path.write_bytes or os.open -- the reap is run at
+        that point."""
         import builtins
         import pathlib
 
@@ -418,6 +419,13 @@ class TestMarkerPublication:
             )
 
         real_open, real_write_text, real_os_open = builtins.open, pathlib.Path.write_text, os.open
+        real_path_open = pathlib.Path.open
+
+        def _path_open(self, mode="r", *a, **k):
+            handle = real_path_open(self, mode, *a, **k)
+            if any(c in mode for c in "wax") and self.parent == box:
+                _reap_now()
+            return handle
 
         def _open(file, mode="r", *a, **k):
             handle = real_open(file, mode, *a, **k)
@@ -439,6 +447,7 @@ class TestMarkerPublication:
 
         monkeypatch.setattr(sandbox_retention, "open", _open, raising=False)
         monkeypatch.setattr(pathlib.Path, "write_text", _write_text)
+        monkeypatch.setattr(pathlib.Path, "open", _path_open)
         monkeypatch.setattr(sandbox_retention.os, "open", _os_open)
 
         try:
