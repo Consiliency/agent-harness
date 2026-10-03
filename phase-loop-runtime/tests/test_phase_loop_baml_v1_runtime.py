@@ -20,6 +20,7 @@ text (register #19).
 """
 from __future__ import annotations
 
+import _thread
 import ast
 import collections
 import ctypes
@@ -2985,8 +2986,8 @@ def test_late_spawn_after_shutdown_is_reaped_without_another_call():
             raised = _raises(client.call, "parse_closeout", {"raw": "{}"})
             assert type(raised) is BamlWorkerError and raised.kind == "spawn"
             client.stop(graceful=False, timeout=2)  # returns unacknowledged: a spawn can still publish
-            _wait(lambda: not client.owner_running and not client.supervisor.is_alive(), 2)
-            assert client.owner_running or client.supervisor.is_alive(), "nothing is left to watch the spawn"
+            _wait(lambda: not client.owner_running and not _supervisor_threads(client), 2)
+            assert client.owner_running or _supervisor_threads(client), "nothing is left to watch the spawn"
             # No API call after shutdown; only release the outstanding Popen.
             release_spawn.set()
             assert spawned.wait(2)
@@ -3004,11 +3005,11 @@ def test_late_spawn_after_shutdown_is_reaped_without_another_call():
 
             assert _wait(disposed, max(0, deadline - time.monotonic())), (
                 gen.state, gen.killed_at, gen.proc.returncode,
-                client.owner_running, client.supervisor.is_alive(),
+                client.owner_running, _supervisor_threads(client),
                 [t.is_alive() for t in gen.threads], gen.err_file.closed,
             )
             # With nothing left that can publish, the owner and supervisor retire.
-            assert _wait(lambda: not client.owner_running and not client.supervisor.is_alive(), 2.0)
+            assert _wait(lambda: not client.owner_running and not _supervisor_threads(client), 2.0)
     finally:
         release_spawn.set()
         for gen in generations:
@@ -3081,7 +3082,7 @@ def test_stop_during_a_spawn_ends_killed_reaped_released_without_another_call(de
             )
             assert _wait(lambda: not any(t.is_alive() for t in gen.threads) and gen.err_file.closed and gen not in client.generations, 0.5)
             assert [e["kind"] for e in client.fault_log if e["pid"] == gen.pid] == ["spawn_late"], client.fault_log
-            assert _wait(lambda: not client.owner_running and not client.supervisor.is_alive(), 2.0)
+            assert _wait(lambda: not client.owner_running and not _supervisor_threads(client), 2.0)
     finally:
         client.stop(graceful=False, timeout=2)
         for gen in gens:
@@ -3180,6 +3181,16 @@ def _strand_the_baton(client) -> None:
 
 def _supervisors_of(client) -> list:
     return [t for t in threading.enumerate() if getattr(getattr(t, "_target", None), "__self__", None) is client]
+
+
+def _supervisor_threads(client) -> int:
+    """Live supervisor threads of ``client``, holder or not."""
+    return sum(t.is_alive() for t in _supervisors_of(client))
+
+
+def _supervisor_up(client) -> bool:
+    """A live supervisor holds ``client``'s supervisor slot."""
+    return m._supervisor_live(client._supervisor_holder())
 
 
 @pytest.mark.parametrize("reclaimers", [2, 4, 8, 16])
@@ -3438,8 +3449,11 @@ def test_two_concurrent_takers_reclaim_exactly_one_baton():
 
 
 def test_an_interrupted_supervisor_start_leaves_at_most_one_supervisor():
-    """Recorded before it starts: an interruption at any line of
-    _ensure_supervisor cannot leave a live supervisor nothing knows about."""
+    """An interruption at any line of _ensure_supervisor cannot leave more than
+    one supervisor.  Since round 10 the slot, not the start, is exclusive: a
+    second start can race the first thread's claim, and the loser exits at once
+    -- so the bound holds at quiescence, not at the instant start() returns (a
+    free-threaded run caught the instant: 2 alive, one of them exiting)."""
     real = m._Client._ensure_supervisor
     code = real.__code__
     for line in _body_lines(real):
@@ -3461,7 +3475,7 @@ def test_an_interrupted_supervisor_start_leaves_at_most_one_supervisor():
             sys.settrace(None)
         client._ensure_supervisor()
         try:
-            assert len([t for t in _supervisors_of(client) if t.is_alive()]) == 1, (line, fired)
+            assert _wait(lambda: _supervisor_threads(client) == 1 and _supervisor_up(client), 2.0), (line, fired, _supervisor_threads(client))
         finally:
             client.closed = True
             for t in _supervisors_of(client):
@@ -3565,7 +3579,7 @@ def test_a_strand_and_interrupted_reclaims_do_not_wedge_later_calls(reclaim_faul
                 for _ in range(2):
                     box = _call_in_thread(lambda: client.call("parse_closeout", {"raw": OK}), 10)
                     assert "value" in box, box
-                assert client.supervisor.is_alive()
+                assert _supervisor_up(client)
             assert batons.one()
         finally:
             client.stop(graceful=False, timeout=3)
@@ -3616,10 +3630,10 @@ def test_with_no_caller_the_supervisor_recovers_a_strand_after_an_interrupted_re
                     assert _wait(lambda: faulty.fired == ["handback", "reclaim"], 10), faulty.fired
                     assert _wait(lambda: gen.proc.returncode is not None, REAP_BOUND + 10 * m._SUPERVISE_S + 1.0), (
                         "no owner after an interrupted reclaim: the worker waits for a future call",
-                        faulty.fired, client.owner_running, client.baton.qsize(), client.supervisor.is_alive(),
+                        faulty.fired, client.owner_running, client.baton.qsize(), _supervisor_up(client),
                     )
                 assert _wait(lambda: gen not in client.generations, 2.0)
-                assert client.supervisor.is_alive()
+                assert _supervisor_up(client)
             assert batons.one()
         finally:
             client.stop(graceful=False, timeout=3)
@@ -3657,11 +3671,11 @@ def test_a_killed_supervisor_and_a_strand_recover_on_the_next_call():
             finally:
                 threading.settrace(previous)
             try:
-                _wait(lambda: fired and not client.supervisor.is_alive(), 4 * m._SUPERVISE_S)
+                _wait(lambda: fired and not _supervisor_threads(client), 4 * m._SUPERVISE_S)
                 with mock.patch.object(m, "_spawn_popen", _peer_spawn("echo")):
                     box = _call_in_thread(lambda: client.call("parse_closeout", {"raw": OK}), 10)
                     assert "value" in box, (line - code.co_firstlineno, fired, box)
-                    assert _wait(lambda: client.supervisor.is_alive(), 2.0), (line - code.co_firstlineno, fired)
+                    assert _wait(lambda: _supervisor_up(client), 2.0), (line - code.co_firstlineno, fired)
                 assert batons.one(), (line - code.co_firstlineno, fired)
                 fired_lines.extend(fired)
             finally:
@@ -3833,8 +3847,7 @@ def _supervisor_recovers(plan: list, record: list | None = None) -> tuple:
                 return settled, owned, batons.one()
         finally:
             client.stop(graceful=False, timeout=2)
-            supervisor = client.supervisor
-            if supervisor is not None:
+            for supervisor in _supervisors_of(client):
                 supervisor.join(2)  # nothing of this case outlives it
 
 
@@ -3871,6 +3884,8 @@ _SUPERVISOR_FRAMES = {
     m._Client._backstop_launch.__code__: "_backstop_launch",
     m._Client._launch_owner.__code__: "_launch_owner",
     m._Client._ensure_supervisor.__code__: "_ensure_supervisor",
+    m._Client._supervisor_holder.__code__: "_supervisor_holder",
+    m._Client._claim_supervisor.__code__: "_claim_supervisor",
 }
 _SUCCESSOR_LAUNCH_START = _line_of(m._Client._supervise, "except BaseException:  # noqa: BLE001 - interrupted: the finally")
 # An interruption raised (by the profiler) as ``time.sleep`` returns.  A first
@@ -3883,11 +3898,11 @@ _SUCCESSOR_LAUNCH_START = _line_of(m._Client._supervise, "except BaseException: 
 _TICK_RETURN = ("_supervise", "c_return", _line_of(m._Client._supervise, "time.sleep(_SUPERVISE_S)"))
 
 
-_SUPERVISE_ARMED = _line_of(m._Client._supervise, "while True:")  # the first line inside its ``try``
+_SUPERVISE_ARMED = _line_of(m._Client._supervise, "if not self._claim_supervisor(me):")  # first inside its ``try``
 
 
 def _is_supervisor_prelude(point) -> bool:
-    """``done = False`` and ``try:``: the supervisor's own first statements,
+    """``me = ...``, ``done = False`` and ``try:``: the supervisor's own first statements,
     before its ``finally`` is in place.  Killed there, it leaves no successor;
     its starter is what revives it (an owner pass), and a dying frame that
     started it was the last recovery frame -- the pinned limit."""
@@ -3900,7 +3915,7 @@ def _is_successor_launch(point) -> bool:
     ``finally`` or the ``_ensure_supervisor`` it calls (reached only after an
     interruption)."""
     name, _event, line = point
-    return name == "_ensure_supervisor" or (name == "_supervise" and line >= _SUCCESSOR_LAUNCH_START)
+    return name in ("_ensure_supervisor", "_supervisor_holder") or (name == "_supervise" and line >= _SUCCESSOR_LAUNCH_START)
 
 
 def _traced_supervisors(client, plan: list, record: list | None = None, died: list | None = None):
@@ -3979,7 +3994,7 @@ def _recovered_without_a_caller(client, batons, timeout: float = 3.0) -> tuple:
     """Nothing here launches an owner: (owner holds the baton, one baton,
     a supervisor alive)."""
     owned = _wait(lambda: client._owner_live() and client.baton_ref() is not None and client.baton.empty(), timeout, 0.001)
-    supervised = _wait(lambda: client.supervisor is not None and client.supervisor.is_alive(), 1.0, 0.001)
+    supervised = _wait(lambda: _supervisor_up(client), 1.0, 0.001)
     return owned, batons.one(), supervised
 
 
@@ -4019,7 +4034,7 @@ def test_supervisor_and_candidate_interrupted_anywhere_recover_with_no_caller():
         # A single interruption never reaches the successor launch (it runs only
         # after one); those points are crossed with a second one further below.
         prelude = [p for p in sup_points if _is_supervisor_prelude(p)]
-        assert [p[2] for p in prelude] == [_SUPERVISE_ARMED - 2, _SUPERVISE_ARMED - 1], prelude
+        assert [p[2] for p in prelude] == [_SUPERVISE_ARMED - 3, _SUPERVISE_ARMED - 2, _SUPERVISE_ARMED - 1], prelude
         for sup in [p for p in sup_points if not _is_successor_launch(p) and not _is_supervisor_prelude(p)]:
             for cand in [None, *range(len(cand_points))]:
                 with _CountedBatons() as batons:
@@ -4098,7 +4113,7 @@ def test_a_supervisor_killed_in_its_successor_launch_is_revived_by_an_exiting_ca
                             mock.patch.object(m._Client, "_own", _held_candidate(client, release, then)):
                         client._ensure_supervisor()
                         assert _wait(lambda: died[:1] == [0], 3.0), (k, died)
-                        if not client.supervisor.is_alive():
+                        if not _supervisor_threads(client):
                             no_successor += 1  # only the held candidate is left
                         release.set()
                         result = _recovered_without_a_caller(client, batons)
@@ -4134,7 +4149,7 @@ def test_the_last_recovery_frame_killed_in_its_successor_launch_waits_for_the_ne
                         client._ensure_supervisor()
                         assert _wait(lambda: died == [0], 3.0), (plan, died)
                         time.sleep(0.3)
-                        assert not client.supervisor.is_alive() and not client._owner_live(), plan
+                        assert not _supervisor_threads(client) and not client._owner_live(), plan
                         assert client.baton_ref() is None, plan
                         # The next taker, as a waiting caller launches it:
                         assert _wait(lambda: client._ensure_owner() or (client._owner_live() and client.baton.empty()), 3.0, 0.001)
@@ -4280,7 +4295,7 @@ def test_candidate_and_supervisor_interruptions_recover_without_a_caller_adapted
                 m._REAP_BOUND_S + m._OWNER_STALE_S + 1,
             ), ("no live recovery party", client.owner_starts,
                 client.baton.qsize(), gen.proc.poll(), len(client.generations))
-            assert client.supervisor is not interrupted[0] and client.supervisor.is_alive()
+            assert client.supervisor is not interrupted[0] and _supervisor_up(client)
     finally:
         threading.settrace(previous)
         faulty.arm.update(handback=0, reclaim=0)
@@ -4288,6 +4303,230 @@ def test_candidate_and_supervisor_interruptions_recover_without_a_caller_adapted
         if gen is not None and gen.proc.poll() is None:
             gen.proc.kill()
             gen.proc.wait(5)
+
+
+# Round 10 (codex F001 / claude B1 / GROK G1): the supervisor role is an
+# exclusive slot.  Concurrent revivers -- an exiting supervisor's ``finally``
+# and an exiting owner candidate -- may each start a thread, but only one
+# claims the slot; the others exit at once, and a live holder is never
+# displaced.  So at quiescence there is at most one supervisor thread.
+
+
+_REVIVE_FRAMES = {
+    m._Client._own.__code__: "_own",
+    m._Client._ensure_supervisor.__code__: "_ensure_supervisor",
+    m._Client._supervisor_holder.__code__: "_supervisor_holder",
+}
+
+
+def _pausing_tracer(frames: dict, target, paused: threading.Event, go: threading.Event, record: list | None = None):
+    """(trace, profile) for the calling thread: record each distinct point
+    (frame, event, line) in ``frames``; at the first occurrence of ``target``
+    set ``paused`` and wait for ``go``.  Nothing raises: the thread runs on."""
+    armed = [target is not None]
+
+    def hit(frame, event):
+        name = frames.get(frame.f_code)
+        if name is None:
+            return
+        point = (name, event, frame.f_lineno)
+        if record is not None and point not in record:
+            record.append(point)
+        if armed[0] and point == target:
+            armed[0] = False
+            paused.set()
+            go.wait(10)
+
+    def trace(frame, event, arg):
+        if event == "line":
+            hit(frame, "line")
+        return trace
+
+    def profile(frame, event, arg):
+        if event == "c_return":
+            hit(frame, "c_return")
+
+    return trace, profile
+
+
+def _noop_candidate(client, target=None, paused=None, go=None, record=None) -> threading.Event:
+    """Run one owner candidate on a raw thread, as ``_launch_owner`` does.  The
+    test holds the baton, so it takes nothing: it only runs its revive."""
+    done = threading.Event()
+    paused = paused or threading.Event()
+    go = go or threading.Event()
+
+    def body():
+        trace, profile = _pausing_tracer(_REVIVE_FRAMES, target, paused, go, record)
+        sys.settrace(trace)
+        sys.setprofile(profile)
+        try:
+            m._Client._own(client)
+        finally:
+            sys.settrace(None)
+            sys.setprofile(None)
+            done.set()
+
+    _thread.start_new_thread(body, ())
+    return done
+
+
+class _SupervisorDriver:
+    """Global trace/profile for supervisor threads: interrupt a chosen holder
+    as its sleep returns (raised from the profiler: synchronous, and the
+    tracer stays on), and optionally pause it at a point of its successor
+    launch; every distinct point it reaches is recorded."""
+
+    def __init__(self):
+        self.victim: int | None = None
+        self.target = None
+        self.paused = threading.Event()
+        self.go = threading.Event()
+        self.record: list = []
+        self.sleep_line = _line_of(m._Client._supervise, "time.sleep(_SUPERVISE_S)")
+
+    def arm(self, victim: int, target=None) -> None:
+        self.paused.clear()
+        self.go.clear()
+        self.target = target
+        self.victim = victim
+
+    def _point(self, frame, event):
+        name = _SUPERVISOR_FRAMES.get(frame.f_code)
+        if name is None or threading.get_ident() != self.victim_seen:
+            return
+        point = (name, event, frame.f_lineno)
+        if point not in self.record:
+            self.record.append(point)
+        if self.target is not None and point == self.target:
+            self.target = None
+            self.paused.set()
+            self.go.wait(10)
+
+    victim_seen: int | None = None
+
+    def trace(self, frame, event, arg):
+        if sys.getprofile() is None:
+            sys.setprofile(self.profile)  # CPython unsets a profiler that raises: re-arm it
+        if event == "line":
+            self._point(frame, "line")
+        return self.trace
+
+    def profile(self, frame, event, arg):
+        if event != "c_return":
+            return
+        ident = threading.get_ident()
+        if (ident == self.victim and frame.f_code is _SUPERVISE_CODE
+                and frame.f_lineno == self.sleep_line and getattr(arg, "__name__", "") == "sleep"):
+            self.victim = None
+            self.victim_seen = ident  # from here, its points are recorded (and the pause armed)
+            raise KeyboardInterrupt
+        self._point(frame, "c_return")
+
+
+def _quiescent_one(client, timeout: float = 3.0) -> bool:
+    return _wait(lambda: _supervisor_threads(client) == 1 and _supervisor_up(client), timeout, 0.002)
+
+
+def _run_reviver_schedules(cycles: int, sup_target=None, cand_target=None, record_sup=None, record_cand=None,
+                           slot_released: bool = True, reached: list | None = None) -> list:
+    """``cycles`` times: interrupt the holder (its finally revives) while a no-op
+    candidate also revives -- the supervisor paused at ``sup_target`` of its
+    successor launch while the candidate runs, or the candidate paused at
+    ``cand_target`` of its revive while the supervisor's successor launch runs.
+    Returns the live supervisor-thread count at each quiescence; then checks
+    recovery with no caller."""
+    client = m._Client(test_mode=True)
+    held = client.baton.get_nowait()  # an "owner" holds the baton: candidates take nothing
+    driver = _SupervisorDriver()
+    released_point = ("_supervise", "line", _line_of(m._Client._supervise, "if not done and os.getpid() == self.owner_pid:"))
+    counts: list = []
+    previous_trace, previous_profile = threading.gettrace(), threading.getprofile()
+    threading.settrace(driver.trace)
+    threading.setprofile(driver.profile)
+    try:
+        client._ensure_supervisor()
+        assert _quiescent_one(client)
+        for _cycle in range(cycles):
+            victim = client._supervisor_holder()
+            if cand_target is not None:
+                # slot_released: the holder is interrupted and held just after it
+                # released the slot, then the candidate runs to its point.
+                # Otherwise the candidate reaches its point first, with the holder
+                # live.  Either way the candidate is held there while the
+                # supervisor's successor launch runs to the end, then finishes.
+                paused, go = threading.Event(), threading.Event()
+                if slot_released:
+                    driver.arm(victim.ident, released_point)
+                    assert driver.paused.wait(5), "supervisor never released the slot"
+                done = _noop_candidate(client, cand_target, paused, go, record_cand)
+                if not _wait(lambda: paused.is_set() or done.is_set(), 5):
+                    raise AssertionError(("candidate stuck", cand_target))
+                if reached is not None and paused.is_set():
+                    reached.append(cand_target)
+                if slot_released:
+                    driver.go.set()
+                else:
+                    driver.arm(victim.ident)
+                victim.join(5)
+                assert not victim.is_alive()
+                go.set()
+                assert done.wait(5)
+            else:
+                driver.arm(victim.ident, sup_target)
+                if sup_target is not None:
+                    assert driver.paused.wait(5), ("supervisor never reached", sup_target)
+                done = _noop_candidate(client, record=record_cand)
+                assert done.wait(5)
+                driver.go.set()
+                victim.join(5)
+                assert not victim.is_alive()
+            if record_sup is not None:
+                record_sup.extend(p for p in driver.record if p not in record_sup)
+            assert _quiescent_one(client), ("cycle", _cycle, _supervisor_threads(client), sup_target, cand_target)
+            time.sleep(4 * m._SUPERVISE_S)  # displaced or duplicate supervisors would still be here
+            counts.append(_supervisor_threads(client))
+        # Recovery with no caller: the owner "dies" behind a strand, with recovery pending.
+        client.recover = True
+        del held
+        assert _wait(lambda: client._owner_live() and client.baton.empty() and client.baton_ref() is not None, 3.0, 0.002), (
+            "no recovery with no caller", sup_target, cand_target)
+        return counts
+    finally:
+        threading.settrace(previous_trace)
+        threading.setprofile(previous_profile)
+        driver.go.set()
+        client.stop(graceful=False, timeout=2)
+        for thread in _supervisors_of(client):
+            thread.join(2)
+
+
+def test_concurrent_revivers_at_every_point_leave_exactly_one_supervisor():
+    """The sweep, extended to concurrent revivers.  Each schedule interrupts the
+    slot holder (its ``finally`` revives) while a no-op owner candidate revives
+    too: (a) the supervisor paused at each point of its successor launch while
+    the candidate's revive runs to the end; (b) with the slot released, the
+    candidate paused at each point of its revive (including starting a
+    thread) while the supervisor's successor launch runs to the end.  Repeated 3 times per point: exactly one supervisor thread at every
+    quiescence (no growth), and recovery with no caller afterwards."""
+    sup_points: list = []
+    cand_points: list = []
+    patches = _fast_backstop()
+    with patches[0], patches[1], patches[2], patches[3]:
+        assert _run_reviver_schedules(2, record_sup=sup_points, record_cand=cand_points) == [1, 1]
+        launch = [p for p in sup_points if _is_successor_launch(p)]
+        assert len(launch) >= 10 and any(p[1] == "c_return" for p in launch), launch
+        for point in launch:
+            # The candidates here also record their revive while the slot is free.
+            assert _run_reviver_schedules(3, sup_target=point, record_cand=cand_points) == [1, 1, 1], point
+        revive = [p for p in cand_points if p[0] != "_own" or p[2] >= _REVIVE_FINALLY_START]
+        start_line = _line_of(m._Client._ensure_supervisor, "supervisor.start()")
+        assert ("_ensure_supervisor", "line", start_line) in revive, revive  # a candidate that starts one
+        reached: list = []
+        for point in revive:
+            for slot_released in (True, False):
+                assert _run_reviver_schedules(3, cand_target=point, slot_released=slot_released, reached=reached) == [1, 1, 1], point
+        assert set(revive) <= set(reached), sorted(set(revive) - set(reached))  # every point held in some order
 
 
 # claude r8 N2: the two orderings in ``_reclaim_baton`` that are load-bearing

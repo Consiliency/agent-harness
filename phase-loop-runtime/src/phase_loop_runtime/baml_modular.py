@@ -974,6 +974,12 @@ class _WindowsJob:
             self._kernel32.CloseHandle(handle)
 
 
+def _supervisor_live(thread: threading.Thread | None) -> bool:
+    """A supervisor that holds its slot: running, and not yet released by its
+    own ``finally`` (a released holder is on its way out)."""
+    return thread is not None and thread.is_alive() and not getattr(thread, "baml_supervisor_released", False)
+
+
 class _Client:
     """Owner of the BAML worker for this process (one instance, ``_CLIENT``)."""
 
@@ -1019,7 +1025,14 @@ class _Client:
         self.owner_launches: dict[int, object] = {}
         self.owner_starts = 0
         self.owner_ident: int | None = None
+        # The supervisor role is an exclusive slot (see ``_claim_supervisor``):
+        # epoch -> the supervisor thread that claimed it; ``supervisor_epoch`` is
+        # only a hint where a scan starts.  ``supervisor`` is the latest thread
+        # started (recorded before it starts), which may be a duplicate that
+        # exits at once: liveness is always read from the slot.
         self.supervisor: threading.Thread | None = None
+        self.supervisor_claims: dict[int, threading.Thread] = {}
+        self.supervisor_epoch = 0
         # Owner-only state below (touched only by the thread holding the baton).
         self.recover = False
         self.backlog: collections.deque[_Request] = collections.deque()
@@ -1189,8 +1202,13 @@ class _Client:
         # anywhere in ``_run_owner`` -- passes the revive below.
         try:
             self._run_owner()
-        except BaseException:  # noqa: BLE001 - interrupted: dropped here, never retained
-            pass
+        except BaseException as exc:  # noqa: BLE001 - dropped here, never retained
+            # Named, not hidden (claude r10 N1); one note per kind, so a fault that
+            # repeats with no caller to drain ``pending`` cannot grow it.
+            note = f"BAML worker owner candidate ended by {type(exc).__name__}"
+            del exc
+            if note not in self.pending:
+                self.pending.append(note)
         finally:
             # Revive a dead supervisor (once one has existed): no single
             # thread's survival is what keeps recovery autonomous.
@@ -1375,8 +1393,10 @@ class _Client:
         self._reap(now)
         if self.stop_acks:
             self._continue_stop(now)
-        supervisor = self.supervisor
-        if supervisor is not None and not supervisor.is_alive() and (not self.closed or self._spawn_pending() or self.generations):
+        if (
+            self.supervisor is not None and not _supervisor_live(self._supervisor_holder())
+            and (not self.closed or self._spawn_pending() or self.generations)
+        ):
             try:
                 self._ensure_supervisor()  # a dead backstop is recreated by this (the next) owner pass
             except Exception:  # noqa: BLE001 - retried on the next pass
@@ -1462,16 +1482,45 @@ class _Client:
         self.pending.append("BAML worker owner baton was stranded by an interrupted hand-back and was reclaimed")
 
     def _ensure_supervisor(self) -> None:
-        supervisor = self.supervisor
-        # The calling supervisor itself counts as dead: it is exiting (its finally).
-        if supervisor is not None and supervisor.is_alive() and supervisor.ident != threading.get_ident():
+        """Start a supervisor unless a live one holds the slot.  Any number of
+        callers may start one at once; each started thread claims the slot
+        itself (``_claim_supervisor``) and all but one exit at once, so this
+        needs no exclusion of its own."""
+        if _supervisor_live(self._supervisor_holder()):
             return
         supervisor = threading.Thread(target=self._supervise, name="phase-loop-baml-supervisor", daemon=True)
-        # Recorded BEFORE it starts: an interruption after start() can no longer
-        # leave a live supervisor nothing knows about (a second one would then
-        # be started).  Reclaiming stays correct with any number of them.
         self.supervisor = supervisor
         supervisor.start()
+
+    def _supervisor_holder(self) -> threading.Thread | None:
+        """The latest claimant of the supervisor slot (claims are contiguous
+        from epoch 0, and nothing claims past a live holder)."""
+        claims = self.supervisor_claims
+        epoch = self.supervisor_epoch
+        while epoch + 1 in claims:
+            epoch += 1
+        return claims.get(epoch)
+
+    def _claim_supervisor(self, me: threading.Thread) -> bool:
+        """Claim the supervisor slot for ``me``, the calling supervisor thread:
+        the same compare-and-set scan as ``_reclaim_baton``.  A claim is
+        ``dict.setdefault`` on an epoch (one atomic step); the scan skips an
+        epoch whose holder is dead or released and stops at a live one.  So at
+        most one live, unreleased supervisor holds the slot, and a holder is
+        never displaced while it lives: no supervisor is ever left running
+        outside the slot."""
+        epoch = self.supervisor_epoch
+        claims = self.supervisor_claims
+        while True:
+            held = claims.setdefault(epoch, me)
+            if held is me:
+                break
+            if _supervisor_live(held):
+                return False  # a live supervisor holds the slot: ``me`` is a duplicate
+            epoch += 1
+        if self.supervisor_epoch < epoch:
+            self.supervisor_epoch = epoch  # only a hint where the next scan starts
+        return True
 
     def _supervise(self) -> None:
         """Backstop: relaunch an exited owner while recovery or cleanup is
@@ -1480,19 +1529,27 @@ class _Client:
         owner baton's compare-and-set, and the launched candidate reclaims a
         stranded baton (``_take_baton``) on its own thread.
 
-        A supervisor never just ends: unless it returns on purpose (fork, or
-        closed with nothing pending), its ``finally`` starts its successor, and
-        every exiting owner candidate revives a dead one too (``_own``).  The
-        one sequence this cannot survive is an interruption inside the
-        successor launch of the LAST live recovery frame (no candidate left
-        either); then the next ``call()`` or atexit's ``stop()`` -- both takers
-        -- still recover."""
-        # No nested ``try`` in this frame (``_backstop_launch`` holds it): CPython
-        # places a nested ``try:`` line's NOP outside the enclosing handler
-        # ranges, so an exception raised at that line event (by a tracer)
-        # would skip the ``finally`` below.
+        The role is an exclusive slot: a supervisor runs its loop only after it
+        claims the slot (``_claim_supervisor``), and a thread that finds a live
+        holder exits at once.  A holder never just ends: unless it returns on
+        purpose (fork, or closed with nothing pending), its ``finally`` releases
+        the slot and starts a successor, and every exiting owner candidate
+        revives a dead holder too (``_own``).  The sequences this cannot survive
+        are an interruption inside the successor launch of the LAST live
+        recovery frame (no candidate left either), or one in a starting
+        supervisor's first statements (before its ``try``) after its starter is
+        gone; then the next ``call()`` or atexit's ``stop()`` -- both takers --
+        still recover."""
+        # No nested ``try`` inside the protected body (``_backstop_launch`` holds
+        # it): CPython places a nested ``try:`` line's NOP outside the enclosing
+        # handler ranges, so an exception raised at that line event (by a
+        # tracer) would skip the ``finally`` below.
+        me = threading.current_thread()
         done = False
         try:
+            if not self._claim_supervisor(me):
+                done = True
+                return  # a live supervisor holds the slot
             while True:
                 time.sleep(_SUPERVISE_S)
                 if os.getpid() != self.owner_pid:
@@ -1513,9 +1570,10 @@ class _Client:
         except BaseException:  # noqa: BLE001 - interrupted: the finally starts the successor
             pass
         finally:
+            me.baml_supervisor_released = True  # first: the successor must find the slot free
             if not done and os.getpid() == self.owner_pid:
                 try:
-                    self._ensure_supervisor()  # this thread counts as dead: a successor starts
+                    self._ensure_supervisor()
                 except Exception:  # noqa: BLE001 - e.g. interpreter shutdown; an exiting candidate retries
                     pass
 
