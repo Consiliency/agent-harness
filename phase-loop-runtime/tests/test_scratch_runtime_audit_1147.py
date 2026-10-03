@@ -133,26 +133,51 @@ def test_the_marker_names_the_decision():
             sandbox_policy.CHILD_SCRATCH_MARKER] == decision
 
 
-@pytest.mark.parametrize("site", ["executor", "availability_probe", "auth_preflight"])
+@pytest.mark.parametrize("site", [
+    "executor", "availability_probe", "auth_preflight", "leg_auth", "claude_version",
+    "claude_auth", "claude_stop", "claude_timeout_cleanup",
+])
 def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monkeypatch, site):
-    """Launch sites the hook found at runtime: the executor, AUTOSEL's availability
-    probe and the launch auth preflight each spawn a NAMED agent CLI with the decision."""
-    from phase_loop_runtime import executor_availability, launcher
+    """Every launch site that starts a NAMED agent CLI outside the provider interface is
+    observed carrying the decision: the executor, AUTOSEL's availability probe, the launch
+    auth preflight, the leg and Claude auth / version probes, and the Claude stop and
+    timeout-cleanup calls."""
+    import subprocess
+
+    from phase_loop_runtime import executor_availability, launcher, panel_invoker
+    from phase_loop_runtime.claude_agent_view import ClaudeAgentViewAdapter
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     seen = tmp_path / "seen.txt"
-    claude = bin_dir / "claude"
-    claude.write_text(f'#!/bin/sh\nprintf "%s" "${{{sandbox_policy.CHILD_SCRATCH_MARKER}-unset}}" > {seen}\n',
-                      encoding="utf-8")
-    claude.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    for name in ("claude", "codex"):
+        cli = bin_dir / name
+        cli.write_text(
+            f'#!/bin/sh\nprintf "%s" "${{{sandbox_policy.CHILD_SCRATCH_MARKER}-unset}}" > {seen}\n',
+            encoding="utf-8")
+        cli.chmod(0o755)
+    path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+    monkeypatch.setenv("PATH", path)
+    env = {"PATH": path}
+    adapter = ClaudeAgentViewAdapter(claude_bin=str(bin_dir / "claude"))
     if site == "executor":
-        launcher.launch([str(claude)], env={"PATH": os.environ["PATH"]})
+        launcher.launch([str(bin_dir / "claude")], env=env)
     elif site == "availability_probe":
         executor_availability._run_probe("claude --version")
-    else:
+    elif site == "auth_preflight":
         spec = type("Spec", (), {"auth_preflight_mode": "metadata_only", "executor": "claude",
                                  "auth_preflight_probes": ("claude --version",)})()
         launcher.run_auth_preflight(spec)
+    elif site == "leg_auth":
+        panel_invoker._leg_auth_ok("codex", env)
+    elif site == "claude_version":
+        panel_invoker._claude_code_support_status(str(bin_dir / "claude"))
+    elif site == "claude_auth":
+        panel_invoker._claude_subscription_auth_ok(env)
+    elif site == "claude_stop":
+        panel_invoker._stop_claude_agent(adapter, "agent-1", str(tmp_path), env)
+    else:
+        panel_invoker._cleanup_claude_launch_timeout(
+            adapter, cwd=str(tmp_path), env=env,
+            exc=subprocess.TimeoutExpired(["claude"], 1, output=b"", stderr=b""))
     assert seen.read_text(encoding="utf-8") == sandbox_policy.CHILD_SCRATCH_RELOCATE
