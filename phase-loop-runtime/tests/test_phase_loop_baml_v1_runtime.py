@@ -3873,9 +3873,13 @@ _SUPERVISOR_FRAMES = {
     m._Client._ensure_supervisor.__code__: "_ensure_supervisor",
 }
 _SUCCESSOR_LAUNCH_START = _line_of(m._Client._supervise, "except BaseException:  # noqa: BLE001 - interrupted: the finally")
-# An interruption delivered as an asynchronous exception when ``time.sleep``
-# returns.  A first interruption raised by a tracer would unset the tracer
-# (CPython does that to a tracer that raises), so a second one could not land.
+# An interruption raised (by the profiler) as ``time.sleep`` returns.  A first
+# interruption raised by the tracer would unset the tracer (CPython unsets a
+# tracer that raises), so a second one could not land; one raised by the
+# profiler unsets only the profiler, which the tracer re-arms.  Raised, not
+# delivered asynchronously: an asynchronous exception lands at the target
+# thread's next eval-breaker check, which can be later -- on a slow runner,
+# after the next launch (macos-15-intel, platform run 37086311081).
 _TICK_RETURN = ("_supervise", "c_return", _line_of(m._Client._supervise, "time.sleep(_SUPERVISE_S)"))
 
 
@@ -3904,8 +3908,9 @@ def _traced_supervisors(client, plan: list, record: list | None = None, died: li
     is interrupted at the points ``plan[k]`` (a tuple, in order; None or past
     the plan: never).  A point is (frame, event, line) in ``_supervise``,
     ``_launch_owner`` or ``_ensure_supervisor`` on the supervisor's own thread,
-    hit at its first occurrence -- or (point, n) at its n-th.  With ``record``,
-    every supervisor appends each distinct point it reaches."""
+    hit at its first occurrence -- or (point, n) at its n-th.  A line event
+    raises from the tracer, a C return from the profiler: both synchronous.
+    With ``record``, every supervisor appends each distinct point it reaches."""
     real = m._Client._supervise
     started = [0]
 
@@ -3932,9 +3937,8 @@ def _traced_supervisors(client, plan: list, record: list | None = None, died: li
 
         def trace(frame, event, arg):
             if sys.getprofile() is None:
-                # An asynchronous exception is delivered inside the profiler
-                # that set it, and CPython unsets a profiler that raises: re-arm
-                # it, so C returns after a first interruption stay reachable.
+                # CPython unsets a profiler that raises: re-arm it, so C returns
+                # after a first interruption stay reachable.
                 sys.setprofile(profile)
             if event == "line" and hit(frame, "line"):
                 raise SystemExit
@@ -3942,7 +3946,7 @@ def _traced_supervisors(client, plan: list, record: list | None = None, died: li
 
         def profile(frame, event, arg):
             if event == "c_return" and hit(frame, "c_return"):
-                ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(threading.get_ident()), ctypes.py_object(KeyboardInterrupt))
+                raise KeyboardInterrupt  # synchronous: lands exactly as the C call returns
 
         sys.settrace(trace)
         sys.setprofile(profile)
