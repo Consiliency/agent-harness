@@ -1,0 +1,4 @@
+{
+  "_doc": "agent-harness#1135 structural handler tripwire: a try whose body directly calls a BAML-reaching function and has a handler catching BamlValidationError, ValueError, Exception or BaseException must put `except BamlWorkerError` first, or be listed here as {file, function, handler, reason}. Direct calls only; deeper chains are covered by the caller table and its tests.",
+  "entries": []
+}

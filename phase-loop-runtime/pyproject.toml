@@ -20,7 +20,8 @@ classifiers = [
 ]
 dependencies = [
     "detect-secrets==1.5.0",
-    "baml-py>=0.222,<0.223",
+    "baml-bridge==0.20.1",
+    "protobuf>=6.31.1,<8",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
     # PIN (spec-integration v0.3.0): floor at 0.6.3 -- ships the `gate_posture_registry`

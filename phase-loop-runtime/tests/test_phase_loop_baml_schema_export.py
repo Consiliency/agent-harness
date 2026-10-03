@@ -2,7 +2,12 @@ import json
 import unittest
 from unittest.mock import patch
 
-from phase_loop_runtime.baml_modular import BamlValidationError, export_function_schema, inject_schema_description
+from phase_loop_runtime.baml_modular import (
+    BamlValidationError,
+    _reset_worker_for_tests,
+    export_function_schema,
+    inject_schema_description,
+)
 
 
 UNSUPPORTED_SCHEMA_KEYS = {"allOf", "anyOf", "oneOf", "not", "if", "then"}
@@ -76,9 +81,15 @@ class PhaseLoopBamlSchemaExportTest(unittest.TestCase):
     def test_unknown_or_unavailable_baml_export_raises_validation_error(self):
         with self.assertRaises(BamlValidationError):
             export_function_schema("UnknownFunction")
-        with patch("phase_loop_runtime.baml_modular._read_baml_files", return_value={"broken.baml": "class X {\n  value int\n}\n"}):
-            with self.assertRaises(BamlValidationError):
-                export_function_schema("EmitPhaseCloseout")
+        # agent-harness#1135 (#29): the regex readers read a per-process snapshot,
+        # so a patched source reader only takes effect after a reset.
+        _reset_worker_for_tests()
+        try:
+            with patch("phase_loop_runtime.baml_modular._read_baml_files", return_value={"broken.baml": "class X {\n  value int\n}\n"}):
+                with self.assertRaises(BamlValidationError):
+                    export_function_schema("EmitPhaseCloseout")
+        finally:
+            _reset_worker_for_tests()
 
     def test_schema_description_is_deterministic_and_schema_derived(self):
         schema = export_function_schema("EmitPhaseCloseout")

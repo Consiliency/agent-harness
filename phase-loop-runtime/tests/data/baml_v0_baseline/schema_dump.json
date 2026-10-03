@@ -1,0 +1,2476 @@
+{
+ "provenance": {
+  "baml_py_version": "0.222.0",
+  "captured_by": "tests/data/baml_v0_baseline/capture_v0.py",
+  "env_sentinels": [
+   "ANTHROPIC_API_KEY",
+   "BAML_HOME",
+   "BAML_LOG",
+   "BAML_TRACE",
+   "BOUNDARY_API_KEY",
+   "BOUNDARY_PROJECT_ID",
+   "HOME",
+   "HTTPS_PROXY",
+   "OPENAI_API_KEY",
+   "OPENAI_BASE_URL"
+  ],
+  "main_sha": "56dce95a52625a58cd08911f8f623c637bf52e44",
+  "python": "3.12.12"
+ },
+ "schema": {
+  "class_fields": {
+   "DotfilesAdoptionManifest": [
+    [
+     "source_roots",
+     "DotfilesSourceRoot[]",
+     false
+    ],
+    [
+     "schema_refs",
+     "DotfilesSchemaRef[]",
+     false
+    ],
+    [
+     "plan_refs",
+     "DotfilesPlanRef[]",
+     false
+    ],
+    [
+     "c4_document_refs",
+     "DotfilesC4Ref[]",
+     false
+    ],
+    [
+     "task_catalog_refs",
+     "DotfilesTaskCatalogRef[]",
+     false
+    ],
+    [
+     "operating_mode",
+     "string",
+     false
+    ],
+    [
+     "redacted_metadata_ref",
+     "string",
+     false
+    ],
+    [
+     "visibility_contract_ref",
+     "string",
+     false
+    ],
+    [
+     "version",
+     "string",
+     false
+    ],
+    [
+     "generated_at",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesC4Anchor": [
+    [
+     "id",
+     "string",
+     false
+    ],
+    [
+     "title",
+     "string",
+     false
+    ],
+    [
+     "source_path",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesC4Document": [
+    [
+     "title",
+     "string",
+     false
+    ],
+    [
+     "mermaid_context_source",
+     "string",
+     false
+    ],
+    [
+     "mermaid_container_source",
+     "string",
+     false
+    ],
+    [
+     "mermaid_component_source",
+     "string",
+     false
+    ],
+    [
+     "anchors",
+     "DotfilesC4Anchor[]",
+     false
+    ],
+    [
+     "description",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesC4Ref": [
+    [
+     "title",
+     "string",
+     false
+    ],
+    [
+     "source_path",
+     "string",
+     false
+    ],
+    [
+     "anchor",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesPlanEntry": [
+    [
+     "slug",
+     "string",
+     false
+    ],
+    [
+     "file",
+     "string",
+     false
+    ],
+    [
+     "type",
+     "string",
+     false
+    ],
+    [
+     "status",
+     "string",
+     false
+    ],
+    [
+     "created_at",
+     "string",
+     false
+    ],
+    [
+     "updated_at",
+     "string",
+     false
+    ],
+    [
+     "owner_skill",
+     "string",
+     false
+    ],
+    [
+     "handoff_ref",
+     "string",
+     true
+    ],
+    [
+     "reflection_ref",
+     "string",
+     true
+    ],
+    [
+     "task_summary",
+     "string",
+     true
+    ],
+    [
+     "acceptance_criteria_count",
+     "int",
+     true
+    ],
+    [
+     "roadmap_ref",
+     "DotfilesPlanRef",
+     true
+    ],
+    [
+     "phase_alias",
+     "string",
+     true
+    ],
+    [
+     "if_gates_produced",
+     "string[]",
+     false
+    ],
+    [
+     "lanes",
+     "string[]",
+     false
+    ],
+    [
+     "lifecycle",
+     "DotfilesPlanLifecycleEvent[]",
+     false
+    ]
+   ],
+   "DotfilesPlanLifecycleEvent": [
+    [
+     "transition",
+     "string",
+     false
+    ],
+    [
+     "by",
+     "string",
+     false
+    ],
+    [
+     "at",
+     "string",
+     false
+    ],
+    [
+     "metadata",
+     "DotfilesPlanMetadata",
+     false
+    ]
+   ],
+   "DotfilesPlanManifest": [
+    [
+     "schema_version",
+     "int",
+     false
+    ],
+    [
+     "plans",
+     "DotfilesPlanEntry[]",
+     false
+    ]
+   ],
+   "DotfilesPlanMetadata": [
+    [
+     "entries",
+     "DotfilesPlanMetadataItem[]",
+     false
+    ]
+   ],
+   "DotfilesPlanMetadataItem": [
+    [
+     "key",
+     "string",
+     false
+    ],
+    [
+     "value",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesPlanRef": [
+    [
+     "slug",
+     "string",
+     false
+    ],
+    [
+     "file",
+     "string",
+     false
+    ],
+    [
+     "type",
+     "string",
+     false
+    ],
+    [
+     "digest",
+     "string",
+     true
+    ],
+    [
+     "status",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesRuntimeProjection": [
+    [
+     "runtime_version",
+     "string",
+     false
+    ],
+    [
+     "protocol_version",
+     "string",
+     false
+    ],
+    [
+     "harness",
+     "string",
+     false
+    ],
+    [
+     "source_bundle_digest",
+     "string",
+     false
+    ],
+    [
+     "closeout_status",
+     "string",
+     false
+    ],
+    [
+     "handoff_status",
+     "string",
+     false
+    ],
+    [
+     "current_phase_boundary",
+     "string",
+     false
+    ],
+    [
+     "last_event_iso",
+     "string",
+     false
+    ],
+    [
+     "plans_in_flight",
+     "int",
+     false
+    ],
+    [
+     "plans_executing",
+     "string[]",
+     false
+    ],
+    [
+     "last_plan_event_iso",
+     "string",
+     false
+    ],
+    [
+     "install_status",
+     "string",
+     false
+    ],
+    [
+     "gitignore_init_status",
+     "string",
+     false
+    ],
+    [
+     "operating_mode",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesSchemaRef": [
+    [
+     "class_name",
+     "string",
+     false
+    ],
+    [
+     "source_path",
+     "string",
+     false
+    ],
+    [
+     "digest",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesSourceRoot": [
+    [
+     "path_glob",
+     "string",
+     false
+    ],
+    [
+     "classification",
+     "string",
+     false
+    ],
+    [
+     "owner",
+     "string",
+     false
+    ],
+    [
+     "ingestion_policy",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesTask": [
+    [
+     "id",
+     "string",
+     false
+    ],
+    [
+     "title",
+     "string",
+     false
+    ],
+    [
+     "audience",
+     "string",
+     false
+    ],
+    [
+     "owner",
+     "string",
+     false
+    ],
+    [
+     "dependencies",
+     "string[]",
+     false
+    ],
+    [
+     "status",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesTaskCatalog": [
+    [
+     "tasks",
+     "DotfilesTask[]",
+     false
+    ],
+    [
+     "audiences",
+     "string[]",
+     false
+    ],
+    [
+     "references",
+     "DotfilesTaskReference[]",
+     false
+    ]
+   ],
+   "DotfilesTaskCatalogRef": [
+    [
+     "catalog_id",
+     "string",
+     false
+    ],
+    [
+     "source_path",
+     "string",
+     false
+    ],
+    [
+     "audience",
+     "string",
+     false
+    ]
+   ],
+   "DotfilesTaskReference": [
+    [
+     "title",
+     "string",
+     false
+    ],
+    [
+     "source_path",
+     "string",
+     false
+    ],
+    [
+     "anchor",
+     "string",
+     false
+    ]
+   ],
+   "EvidenceJudgment": [
+    [
+     "verdict",
+     "string",
+     false
+    ],
+    [
+     "confidence",
+     "float",
+     false
+    ],
+    [
+     "reasoning",
+     "string",
+     false
+    ],
+    [
+     "specific_concerns",
+     "string[]",
+     false
+    ]
+   ],
+   "PhaseLoopCloseoutV1": [
+    [
+     "terminal_status",
+     "string",
+     false
+    ],
+    [
+     "verification_status",
+     "string",
+     false
+    ],
+    [
+     "dirty_paths",
+     "string[]",
+     false
+    ],
+    [
+     "produced_if_gates",
+     "string[]",
+     false
+    ],
+    [
+     "next_action",
+     "string",
+     true
+    ],
+    [
+     "blocker_class",
+     "string",
+     true
+    ],
+    [
+     "blocker_summary",
+     "string",
+     true
+    ],
+    [
+     "human_required",
+     "bool",
+     true
+    ],
+    [
+     "required_human_inputs",
+     "string[]",
+     false
+    ],
+    [
+     "visual_evidence_path",
+     "string",
+     true
+    ],
+    [
+     "visual_evidence_non_black_pixels",
+     "int",
+     true
+    ],
+    [
+     "visual_evidence_pixel_min",
+     "int",
+     true
+    ],
+    [
+     "visual_evidence_pixel_max",
+     "int",
+     true
+    ],
+    [
+     "visual_evidence_opt_out",
+     "string",
+     true
+    ],
+    [
+     "visual_render_declared",
+     "bool",
+     true
+    ]
+   ],
+   "VerificationCommandEvidence": [
+    [
+     "argv",
+     "string[]",
+     false
+    ],
+    [
+     "cwd",
+     "string",
+     false
+    ],
+    [
+     "exit_code",
+     "int",
+     false
+    ],
+    [
+     "duration_s",
+     "float",
+     false
+    ],
+    [
+     "log_offset",
+     "int",
+     false
+    ]
+   ],
+   "VerificationEnvRefreshEvidence": [
+    [
+     "triggered",
+     "bool",
+     false
+    ],
+    [
+     "manifests",
+     "string[]",
+     false
+    ],
+    [
+     "install_argv",
+     "string[]",
+     false
+    ],
+    [
+     "exit_code",
+     "int",
+     false
+    ]
+   ],
+   "VerificationEvidence": [
+    [
+     "schema_version",
+     "int",
+     false
+    ],
+    [
+     "run_id",
+     "string",
+     false
+    ],
+    [
+     "phase_alias",
+     "string",
+     false
+    ],
+    [
+     "commands",
+     "VerificationCommandEvidence[]",
+     false
+    ],
+    [
+     "env_refresh",
+     "VerificationEnvRefreshEvidence",
+     true
+    ],
+    [
+     "suite",
+     "VerificationSuiteEvidence",
+     true
+    ],
+    [
+     "started_at",
+     "string",
+     false
+    ],
+    [
+     "finished_at",
+     "string",
+     false
+    ],
+    [
+     "log_sha256",
+     "string",
+     false
+    ]
+   ],
+   "VerificationSuiteEvidence": [
+    [
+     "argv",
+     "string[]",
+     false
+    ],
+    [
+     "exit_code",
+     "int",
+     false
+    ],
+    [
+     "duration_s",
+     "float",
+     false
+    ]
+   ],
+   "VerificationValidationFinding": [
+    [
+     "code",
+     "string",
+     false
+    ],
+    [
+     "message",
+     "string",
+     false
+    ],
+    [
+     "command_index",
+     "int",
+     false
+    ],
+    [
+     "argument_index",
+     "int",
+     true
+    ],
+    [
+     "value",
+     "string",
+     true
+    ]
+   ]
+  },
+  "enum_literal_map": {
+   "DotfilesPlanType": [
+    "phase",
+    "detailed"
+   ],
+   "blocker_class": [
+    "missing_secret",
+    "account_or_billing_setup",
+    "admin_approval",
+    "destructive_operation",
+    "ambiguous_roadmap_selection",
+    "product_decision_missing",
+    "dirty_worktree_conflict",
+    "branch_sync_conflict",
+    "stalled_child_observation",
+    "repeated_verification_failure",
+    "sandbox_command_restriction",
+    "upstream_phase_unmet",
+    "contract_bug",
+    "gold_record_amendment",
+    "closeout_evidence_drift",
+    "closeout_scope_violation",
+    "unretryable_external_outage",
+    "stuck_loop",
+    "merge_conflict",
+    "operator_override_missing_reason",
+    "concurrent_dispatch",
+    "verification_evidence_missing",
+    "review_gate_block",
+    "docs_freshness_stale",
+    "consiliency_gate_blocked",
+    "none"
+   ],
+   "terminal_status": [
+    "unplanned",
+    "planned",
+    "executing",
+    "executed",
+    "awaiting_phase_closeout",
+    "complete",
+    "blocked",
+    "unknown"
+   ],
+   "type": [
+    "phase",
+    "detailed"
+   ],
+   "verification_status": [
+    "not_run",
+    "passed",
+    "failed",
+    "blocked"
+   ]
+  },
+  "export_function_schema": {
+   "DotfilesAdoptionManifest": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "c4_document_refs": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "anchor": {
+         "type": "string"
+        },
+        "source_path": {
+         "type": "string"
+        },
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "title",
+        "source_path",
+        "anchor"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "generated_at": {
+      "type": "string"
+     },
+     "operating_mode": {
+      "type": "string"
+     },
+     "plan_refs": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "digest": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "file": {
+         "type": "string"
+        },
+        "slug": {
+         "type": "string"
+        },
+        "status": {
+         "type": "string"
+        },
+        "type": {
+         "enum": [
+          "phase",
+          "detailed"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "slug",
+        "file",
+        "type",
+        "status"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "redacted_metadata_ref": {
+      "type": "string"
+     },
+     "schema_refs": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "class_name": {
+         "type": "string"
+        },
+        "digest": {
+         "type": "string"
+        },
+        "source_path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "class_name",
+        "source_path",
+        "digest"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "source_roots": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "classification": {
+         "type": "string"
+        },
+        "ingestion_policy": {
+         "type": "string"
+        },
+        "owner": {
+         "type": "string"
+        },
+        "path_glob": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "path_glob",
+        "classification",
+        "owner",
+        "ingestion_policy"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "task_catalog_refs": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "audience": {
+         "type": "string"
+        },
+        "catalog_id": {
+         "type": "string"
+        },
+        "source_path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "catalog_id",
+        "source_path",
+        "audience"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "version": {
+      "type": "string"
+     },
+     "visibility_contract_ref": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "source_roots",
+     "schema_refs",
+     "plan_refs",
+     "c4_document_refs",
+     "task_catalog_refs",
+     "operating_mode",
+     "redacted_metadata_ref",
+     "visibility_contract_ref",
+     "version",
+     "generated_at"
+    ],
+    "title": "DotfilesAdoptionManifest",
+    "type": "object"
+   },
+   "DotfilesC4Anchor": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "source_path": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "title",
+     "source_path"
+    ],
+    "title": "DotfilesC4Anchor",
+    "type": "object"
+   },
+   "DotfilesC4Document": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "anchors": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "id": {
+         "type": "string"
+        },
+        "source_path": {
+         "type": "string"
+        },
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "title",
+        "source_path"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "description": {
+      "type": "string"
+     },
+     "mermaid_component_source": {
+      "type": "string"
+     },
+     "mermaid_container_source": {
+      "type": "string"
+     },
+     "mermaid_context_source": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "title",
+     "mermaid_context_source",
+     "mermaid_container_source",
+     "mermaid_component_source",
+     "anchors",
+     "description"
+    ],
+    "title": "DotfilesC4Document",
+    "type": "object"
+   },
+   "DotfilesC4Ref": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "anchor": {
+      "type": "string"
+     },
+     "source_path": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "title",
+     "source_path",
+     "anchor"
+    ],
+    "title": "DotfilesC4Ref",
+    "type": "object"
+   },
+   "DotfilesPlanEntry": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "acceptance_criteria_count": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "created_at": {
+      "type": "string"
+     },
+     "file": {
+      "type": "string"
+     },
+     "handoff_ref": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "if_gates_produced": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "lanes": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "lifecycle": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "at": {
+         "type": "string"
+        },
+        "by": {
+         "type": "string"
+        },
+        "metadata": {
+         "additionalProperties": false,
+         "properties": {
+          "entries": {
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "key": {
+              "type": "string"
+             },
+             "value": {
+              "type": "string"
+             }
+            },
+            "required": [
+             "key",
+             "value"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "entries"
+         ],
+         "type": "object"
+        },
+        "transition": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "transition",
+        "by",
+        "at",
+        "metadata"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "owner_skill": {
+      "type": "string"
+     },
+     "phase_alias": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "reflection_ref": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "roadmap_ref": {
+      "additionalProperties": false,
+      "properties": {
+       "digest": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "file": {
+        "type": "string"
+       },
+       "slug": {
+        "type": "string"
+       },
+       "status": {
+        "type": "string"
+       },
+       "type": {
+        "enum": [
+         "phase",
+         "detailed"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "slug",
+       "file",
+       "type",
+       "status"
+      ],
+      "type": [
+       "object",
+       "null"
+      ]
+     },
+     "slug": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "task_summary": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "type": {
+      "enum": [
+       "phase",
+       "detailed"
+      ],
+      "type": "string"
+     },
+     "updated_at": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "slug",
+     "file",
+     "type",
+     "status",
+     "created_at",
+     "updated_at",
+     "owner_skill",
+     "if_gates_produced",
+     "lanes",
+     "lifecycle"
+    ],
+    "title": "DotfilesPlanEntry",
+    "type": "object"
+   },
+   "DotfilesPlanLifecycleEvent": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "at": {
+      "type": "string"
+     },
+     "by": {
+      "type": "string"
+     },
+     "metadata": {
+      "additionalProperties": false,
+      "properties": {
+       "entries": {
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "key": {
+           "type": "string"
+          },
+          "value": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "key",
+          "value"
+         ],
+         "type": "object"
+        },
+        "type": "array"
+       }
+      },
+      "required": [
+       "entries"
+      ],
+      "type": "object"
+     },
+     "transition": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "transition",
+     "by",
+     "at",
+     "metadata"
+    ],
+    "title": "DotfilesPlanLifecycleEvent",
+    "type": "object"
+   },
+   "DotfilesPlanManifest": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "plans": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "acceptance_criteria_count": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "created_at": {
+         "type": "string"
+        },
+        "file": {
+         "type": "string"
+        },
+        "handoff_ref": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "if_gates_produced": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "lanes": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "lifecycle": {
+         "items": {
+          "additionalProperties": false,
+          "properties": {
+           "at": {
+            "type": "string"
+           },
+           "by": {
+            "type": "string"
+           },
+           "metadata": {
+            "additionalProperties": false,
+            "properties": {
+             "entries": {
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "key": {
+                 "type": "string"
+                },
+                "value": {
+                 "type": "string"
+                }
+               },
+               "required": [
+                "key",
+                "value"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             }
+            },
+            "required": [
+             "entries"
+            ],
+            "type": "object"
+           },
+           "transition": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "transition",
+           "by",
+           "at",
+           "metadata"
+          ],
+          "type": "object"
+         },
+         "type": "array"
+        },
+        "owner_skill": {
+         "type": "string"
+        },
+        "phase_alias": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "reflection_ref": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "roadmap_ref": {
+         "additionalProperties": false,
+         "properties": {
+          "digest": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "file": {
+           "type": "string"
+          },
+          "slug": {
+           "type": "string"
+          },
+          "status": {
+           "type": "string"
+          },
+          "type": {
+           "enum": [
+            "phase",
+            "detailed"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "slug",
+          "file",
+          "type",
+          "status"
+         ],
+         "type": [
+          "object",
+          "null"
+         ]
+        },
+        "slug": {
+         "type": "string"
+        },
+        "status": {
+         "type": "string"
+        },
+        "task_summary": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "type": {
+         "enum": [
+          "phase",
+          "detailed"
+         ],
+         "type": "string"
+        },
+        "updated_at": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "slug",
+        "file",
+        "type",
+        "status",
+        "created_at",
+        "updated_at",
+        "owner_skill",
+        "if_gates_produced",
+        "lanes",
+        "lifecycle"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "schema_version": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "schema_version",
+     "plans"
+    ],
+    "title": "DotfilesPlanManifest",
+    "type": "object"
+   },
+   "DotfilesPlanMetadata": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "entries": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "key": {
+         "type": "string"
+        },
+        "value": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "key",
+        "value"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "entries"
+    ],
+    "title": "DotfilesPlanMetadata",
+    "type": "object"
+   },
+   "DotfilesPlanMetadataItem": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "key": {
+      "type": "string"
+     },
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "key",
+     "value"
+    ],
+    "title": "DotfilesPlanMetadataItem",
+    "type": "object"
+   },
+   "DotfilesPlanRef": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "digest": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "file": {
+      "type": "string"
+     },
+     "slug": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "type": {
+      "enum": [
+       "phase",
+       "detailed"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "slug",
+     "file",
+     "type",
+     "status"
+    ],
+    "title": "DotfilesPlanRef",
+    "type": "object"
+   },
+   "DotfilesRuntimeProjection": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "closeout_status": {
+      "type": "string"
+     },
+     "current_phase_boundary": {
+      "type": "string"
+     },
+     "gitignore_init_status": {
+      "type": "string"
+     },
+     "handoff_status": {
+      "type": "string"
+     },
+     "harness": {
+      "type": "string"
+     },
+     "install_status": {
+      "type": "string"
+     },
+     "last_event_iso": {
+      "type": "string"
+     },
+     "last_plan_event_iso": {
+      "type": "string"
+     },
+     "operating_mode": {
+      "type": "string"
+     },
+     "plans_executing": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "plans_in_flight": {
+      "type": "integer"
+     },
+     "protocol_version": {
+      "type": "string"
+     },
+     "runtime_version": {
+      "type": "string"
+     },
+     "source_bundle_digest": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "runtime_version",
+     "protocol_version",
+     "harness",
+     "source_bundle_digest",
+     "closeout_status",
+     "handoff_status",
+     "current_phase_boundary",
+     "last_event_iso",
+     "plans_in_flight",
+     "plans_executing",
+     "last_plan_event_iso",
+     "install_status",
+     "gitignore_init_status",
+     "operating_mode"
+    ],
+    "title": "DotfilesRuntimeProjection",
+    "type": "object"
+   },
+   "DotfilesSchemaRef": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "class_name": {
+      "type": "string"
+     },
+     "digest": {
+      "type": "string"
+     },
+     "source_path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "class_name",
+     "source_path",
+     "digest"
+    ],
+    "title": "DotfilesSchemaRef",
+    "type": "object"
+   },
+   "DotfilesSourceRoot": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "classification": {
+      "type": "string"
+     },
+     "ingestion_policy": {
+      "type": "string"
+     },
+     "owner": {
+      "type": "string"
+     },
+     "path_glob": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "path_glob",
+     "classification",
+     "owner",
+     "ingestion_policy"
+    ],
+    "title": "DotfilesSourceRoot",
+    "type": "object"
+   },
+   "DotfilesTask": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "audience": {
+      "type": "string"
+     },
+     "dependencies": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "id": {
+      "type": "string"
+     },
+     "owner": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "title",
+     "audience",
+     "owner",
+     "dependencies",
+     "status"
+    ],
+    "title": "DotfilesTask",
+    "type": "object"
+   },
+   "DotfilesTaskCatalog": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "audiences": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "references": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "anchor": {
+         "type": "string"
+        },
+        "source_path": {
+         "type": "string"
+        },
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "title",
+        "source_path",
+        "anchor"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "tasks": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "audience": {
+         "type": "string"
+        },
+        "dependencies": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "id": {
+         "type": "string"
+        },
+        "owner": {
+         "type": "string"
+        },
+        "status": {
+         "type": "string"
+        },
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "title",
+        "audience",
+        "owner",
+        "dependencies",
+        "status"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "tasks",
+     "audiences",
+     "references"
+    ],
+    "title": "DotfilesTaskCatalog",
+    "type": "object"
+   },
+   "DotfilesTaskCatalogRef": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "audience": {
+      "type": "string"
+     },
+     "catalog_id": {
+      "type": "string"
+     },
+     "source_path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "catalog_id",
+     "source_path",
+     "audience"
+    ],
+    "title": "DotfilesTaskCatalogRef",
+    "type": "object"
+   },
+   "DotfilesTaskReference": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "anchor": {
+      "type": "string"
+     },
+     "source_path": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "title",
+     "source_path",
+     "anchor"
+    ],
+    "title": "DotfilesTaskReference",
+    "type": "object"
+   },
+   "EmitPhaseCloseout": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "blocker_class": {
+      "description": "Frozen blocker class when terminal_status is blocked. Null otherwise.",
+      "enum": [
+       "missing_secret",
+       "account_or_billing_setup",
+       "admin_approval",
+       "destructive_operation",
+       "ambiguous_roadmap_selection",
+       "product_decision_missing",
+       "dirty_worktree_conflict",
+       "branch_sync_conflict",
+       "stalled_child_observation",
+       "repeated_verification_failure",
+       "sandbox_command_restriction",
+       "upstream_phase_unmet",
+       "contract_bug",
+       "gold_record_amendment",
+       "closeout_evidence_drift",
+       "closeout_scope_violation",
+       "unretryable_external_outage",
+       "stuck_loop",
+       "merge_conflict",
+       "operator_override_missing_reason",
+       "concurrent_dispatch",
+       "verification_evidence_missing",
+       "review_gate_block",
+       "docs_freshness_stale",
+       "consiliency_gate_blocked",
+       "none",
+       null
+      ],
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "blocker_summary": {
+      "description": "Actionable non-secret blocker summary. Null when not blocked.",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "dirty_paths": {
+      "description": "Repo-relative dirty paths left after execution.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "human_required": {
+      "description": "Whether the blocker requires a human decision. Null when not blocked.",
+      "type": [
+       "boolean",
+       "null"
+      ]
+     },
+     "next_action": {
+      "description": "Concise next action for the operator or runner. May be null.",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "produced_if_gates": {
+      "description": "Interface-freeze gates actually produced by this closeout.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "required_human_inputs": {
+      "description": "Non-secret human inputs required to unblock execution. Empty when not blocked.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "terminal_status": {
+      "description": "Final phase status claimed by the executor closeout.",
+      "enum": [
+       "unplanned",
+       "planned",
+       "executing",
+       "executed",
+       "awaiting_phase_closeout",
+       "complete",
+       "blocked",
+       "unknown"
+      ],
+      "type": "string"
+     },
+     "verification_status": {
+      "description": "Verification outcome for the reported phase work.",
+      "enum": [
+       "not_run",
+       "passed",
+       "failed",
+       "blocked"
+      ],
+      "type": "string"
+     },
+     "visual_evidence_non_black_pixels": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "visual_evidence_opt_out": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "visual_evidence_path": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "visual_evidence_pixel_max": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "visual_evidence_pixel_min": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "visual_render_declared": {
+      "type": [
+       "boolean",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "terminal_status",
+     "verification_status",
+     "dirty_paths",
+     "produced_if_gates",
+     "next_action",
+     "blocker_class",
+     "blocker_summary",
+     "human_required",
+     "required_human_inputs",
+     "visual_evidence_path",
+     "visual_evidence_non_black_pixels",
+     "visual_evidence_pixel_min",
+     "visual_evidence_pixel_max",
+     "visual_evidence_opt_out",
+     "visual_render_declared"
+    ],
+    "title": "PhaseLoopNativeCloseout",
+    "type": "object"
+   },
+   "EvaluateSuspectedFakeEvidence": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "confidence": {
+      "type": "number"
+     },
+     "reasoning": {
+      "type": "string"
+     },
+     "specific_concerns": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "verdict": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "verdict",
+     "confidence",
+     "reasoning",
+     "specific_concerns"
+    ],
+    "title": "EvidenceJudgment",
+    "type": "object"
+   },
+   "EvidenceJudgment": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "confidence": {
+      "type": "number"
+     },
+     "reasoning": {
+      "type": "string"
+     },
+     "specific_concerns": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "verdict": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "verdict",
+     "confidence",
+     "reasoning",
+     "specific_concerns"
+    ],
+    "title": "EvidenceJudgment",
+    "type": "object"
+   },
+   "PhaseLoopCloseoutV1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "blocker_class": {
+      "description": "Frozen blocker class when terminal_status is blocked. Null otherwise.",
+      "enum": [
+       "missing_secret",
+       "account_or_billing_setup",
+       "admin_approval",
+       "destructive_operation",
+       "ambiguous_roadmap_selection",
+       "product_decision_missing",
+       "dirty_worktree_conflict",
+       "branch_sync_conflict",
+       "stalled_child_observation",
+       "repeated_verification_failure",
+       "sandbox_command_restriction",
+       "upstream_phase_unmet",
+       "contract_bug",
+       "gold_record_amendment",
+       "closeout_evidence_drift",
+       "closeout_scope_violation",
+       "unretryable_external_outage",
+       "stuck_loop",
+       "merge_conflict",
+       "operator_override_missing_reason",
+       "concurrent_dispatch",
+       "verification_evidence_missing",
+       "review_gate_block",
+       "docs_freshness_stale",
+       "consiliency_gate_blocked",
+       "none",
+       null
+      ],
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "blocker_summary": {
+      "description": "Actionable non-secret blocker summary. Null when not blocked.",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "dirty_paths": {
+      "description": "Repo-relative dirty paths left after execution.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "human_required": {
+      "description": "Whether the blocker requires a human decision. Null when not blocked.",
+      "type": [
+       "boolean",
+       "null"
+      ]
+     },
+     "next_action": {
+      "description": "Concise next action for the operator or runner. May be null.",
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "produced_if_gates": {
+      "description": "Interface-freeze gates actually produced by this closeout.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "required_human_inputs": {
+      "description": "Non-secret human inputs required to unblock execution. Empty when not blocked.",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "terminal_status": {
+      "description": "Final phase status claimed by the executor closeout.",
+      "enum": [
+       "unplanned",
+       "planned",
+       "executing",
+       "executed",
+       "awaiting_phase_closeout",
+       "complete",
+       "blocked",
+       "unknown"
+      ],
+      "type": "string"
+     },
+     "verification_status": {
+      "description": "Verification outcome for the reported phase work.",
+      "enum": [
+       "not_run",
+       "passed",
+       "failed",
+       "blocked"
+      ],
+      "type": "string"
+     },
+     "visual_evidence_non_black_pixels": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "visual_evidence_opt_out": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "visual_evidence_path": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "visual_evidence_pixel_max": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "visual_evidence_pixel_min": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "visual_render_declared": {
+      "type": [
+       "boolean",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "terminal_status",
+     "verification_status",
+     "dirty_paths",
+     "produced_if_gates",
+     "next_action",
+     "blocker_class",
+     "blocker_summary",
+     "human_required",
+     "required_human_inputs",
+     "visual_evidence_path",
+     "visual_evidence_non_black_pixels",
+     "visual_evidence_pixel_min",
+     "visual_evidence_pixel_max",
+     "visual_evidence_opt_out",
+     "visual_render_declared"
+    ],
+    "title": "PhaseLoopNativeCloseout",
+    "type": "object"
+   },
+   "VerificationCommandEvidence": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "argv": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "cwd": {
+      "type": "string"
+     },
+     "duration_s": {
+      "type": "number"
+     },
+     "exit_code": {
+      "type": "integer"
+     },
+     "log_offset": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "argv",
+     "cwd",
+     "exit_code",
+     "duration_s",
+     "log_offset"
+    ],
+    "title": "VerificationCommandEvidence",
+    "type": "object"
+   },
+   "VerificationEnvRefreshEvidence": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "exit_code": {
+      "type": "integer"
+     },
+     "install_argv": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "manifests": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "triggered": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "triggered",
+     "manifests",
+     "install_argv",
+     "exit_code"
+    ],
+    "title": "VerificationEnvRefreshEvidence",
+    "type": "object"
+   },
+   "VerificationEvidence": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "commands": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "argv": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "cwd": {
+         "type": "string"
+        },
+        "duration_s": {
+         "type": "number"
+        },
+        "exit_code": {
+         "type": "integer"
+        },
+        "log_offset": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "argv",
+        "cwd",
+        "exit_code",
+        "duration_s",
+        "log_offset"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "env_refresh": {
+      "additionalProperties": false,
+      "properties": {
+       "exit_code": {
+        "type": "integer"
+       },
+       "install_argv": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "manifests": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "triggered": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "triggered",
+       "manifests",
+       "install_argv",
+       "exit_code"
+      ],
+      "type": [
+       "object",
+       "null"
+      ]
+     },
+     "finished_at": {
+      "type": "string"
+     },
+     "log_sha256": {
+      "type": "string"
+     },
+     "phase_alias": {
+      "type": "string"
+     },
+     "run_id": {
+      "type": "string"
+     },
+     "schema_version": {
+      "type": "integer"
+     },
+     "started_at": {
+      "type": "string"
+     },
+     "suite": {
+      "additionalProperties": false,
+      "properties": {
+       "argv": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "duration_s": {
+        "type": "number"
+       },
+       "exit_code": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "argv",
+       "exit_code",
+       "duration_s"
+      ],
+      "type": [
+       "object",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "schema_version",
+     "run_id",
+     "phase_alias",
+     "commands",
+     "started_at",
+     "finished_at",
+     "log_sha256"
+    ],
+    "title": "VerificationEvidence",
+    "type": "object"
+   },
+   "VerificationSuiteEvidence": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "argv": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "duration_s": {
+      "type": "number"
+     },
+     "exit_code": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "argv",
+     "exit_code",
+     "duration_s"
+    ],
+    "title": "VerificationSuiteEvidence",
+    "type": "object"
+   },
+   "VerificationValidationFinding": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "argument_index": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "code": {
+      "type": "string"
+     },
+     "command_index": {
+      "type": "integer"
+     },
+     "message": {
+      "type": "string"
+     },
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "code",
+     "message",
+     "command_index"
+    ],
+    "title": "VerificationValidationFinding",
+    "type": "object"
+   }
+  }
+ }
+}
