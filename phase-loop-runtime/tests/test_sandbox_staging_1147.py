@@ -1075,7 +1075,9 @@ class TestRound3Coverage:
         base.chmod(0o1777)
         assert sandbox_policy._private(base / "phase-loop" / "tmp", base)
 
-    def test_a_killed_runs_persistent_residue_is_swept_after_the_ttl(self, tmp_path, monkeypatch):
+    def test_persistent_residue_is_swept_only_once_its_owner_is_gone(self, tmp_path, monkeypatch):
+        """Owner, never age: a dead owner's copy goes; a live owner's copy and a copy with
+        no owner record stay, however old; an orphaned owner record is dropped."""
         from phase_loop_runtime import panel_invoker
 
         staging = tmp_path / "staging"
@@ -1083,17 +1085,75 @@ class TestRound3Coverage:
         monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
         monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
         scratch = cache / "phase-loop" / "tmp"
-        old = time.time() - 2 * 24 * 3600
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        old = time.time() - 30 * 24 * 3600
         residue = [staging / "pl-review-stage-a", staging / "pl-falsifier-deps-b",
                    scratch / "phase-loop-broker-agy-c", scratch / "phase-loop-president-agy-d"]
         for path in residue:
             (path / "inner").mkdir(parents=True)
+            sandbox_retention.claim_scratch_dir(path, owner_pid=dead.pid)
             os.utime(path, (old, old))
-        fresh = scratch / "phase-loop-broker-agy-live"
-        fresh.mkdir()
-        unrelated = scratch / "someone-elses-file-dir"
-        unrelated.mkdir()
-        os.utime(unrelated, (old, old))
+        live = staging / "pl-review-stage-live"
+        (live / "inner").mkdir(parents=True)
+        sandbox_retention.claim_scratch_dir(live)
+        os.utime(live, (old, old))
+        unclaimed = scratch / "phase-loop-broker-agy-unclaimed"
+        unclaimed.mkdir(parents=True)
+        os.utime(unclaimed, (old, old))
+        orphan = staging / ("pl-review-stage-gone" + sandbox_retention.OWNER_SUFFIX)
+        orphan.write_text("pid=1 start=\n", encoding="utf-8")
         panel_invoker._gc_stale_panel_scratch()
         assert not any(p.exists() for p in residue)
-        assert fresh.exists() and unrelated.exists()
+        assert not any(p.with_name(p.name + sandbox_retention.OWNER_SUFFIX).exists()
+                       for p in residue)
+        assert live.exists() and unclaimed.exists() and not orphan.exists()
+
+
+class TestExceptionsAreDecidedAfterTheEnvIsBuilt:
+    """Round 4 (agent-harness#1161): an env builder takes no scratch decision, so a ruled
+    exception is never refused by a relocation it is exempt from."""
+
+    @pytest.fixture(autouse=True)
+    def _nothing_on_disk(self, monkeypatch):
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda path: "tmpfs")
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", set())
+
+    def test_the_shared_allowlist_builder_takes_no_decision(self, tmp_path):
+        from phase_loop_runtime import panel_invoker
+
+        base = {"PATH": "/usr/bin", "HOME": str(tmp_path)}
+        assert panel_invoker._broker_subscription_env(dict(base)) == base
+
+    def test_a_relocated_route_is_still_refused(self, tmp_path):
+        from phase_loop_runtime import panel_invoker
+
+        with pytest.raises(sandbox_policy.SandboxRamBackedError):
+            panel_invoker._broker_leg_env({"PATH": "/usr/bin", "HOME": str(tmp_path)}, "codex")
+
+    def test_the_capture_route_with_no_env_reaches_its_frozen_launch(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from phase_loop_runtime import panel_invoker
+
+        seen = {}
+
+        def _launch(command, **kwargs):
+            seen["decision"] = kwargs.get("child_scratch")
+            raise OSError("stop at the launch")
+
+        authority = SimpleNamespace(rewrite_provider_output_path=lambda p: "/run/out",
+                                    outer_environment=lambda: {"PATH": "/usr/bin"})
+        monkeypatch.setattr(panel_invoker, "_capture_provider_preflight", lambda a, c, l: c)
+        monkeypatch.setattr(panel_invoker, "_record_capture_review_attempt", lambda *a, **k: None)
+        monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", _launch)
+        review = tmp_path / "review"
+        review.mkdir()
+        (review / "review-bundle.md").write_text("x", encoding="utf-8")
+        with pytest.raises(OSError, match="stop at the launch"):
+            panel_invoker._exec_leg(
+                "codex", review, tmp_path / "out", 60, "x", "review", None, None, None,
+                agy_capture=object(), provider_authority=authority,
+            )
+        assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE

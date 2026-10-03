@@ -7,23 +7,28 @@ at a time. This file closes the class in two parts:
   ``run_provider`` apply :func:`sandbox_policy.child_scratch_env` to every ``env`` they
   launch with, and only the two named exceptions can opt out. The tests below OBSERVE a
   real child's environment through that interface.
-* An INVENTORY derived from the code. Every subprocess / os.exec* / os.spawn* / pty /
-  asyncio launch in the package is enumerated from the AST, however it is spelled: a
-  module alias (``import subprocess as sp``, ``sp = subprocess``), an attribute receiver
-  (``lib.subprocess.run``), and -- the shape round 3 found in the Agent View adapter -- a
-  launch function used as a VALUE (a default ``runner=subprocess.run``, an assignment, a
-  callback), which may then be called under any name. A call needs nothing only when its
-  program is a literal and no literal word of its argv names an agent CLI (so ``env
-  claude``, ``bwrap ... agy`` and ``sh -c "claude ..."`` all count). Everything else must
-  be listed in ``INVENTORY`` with its decision, with the number of such launches each
-  listed function holds; a new site, one more launch in a listed function, or a stale
-  entry fails here until someone states how its scratch is decided.
+* An INVENTORY derived from the code, CONSERVATIVE by construction: unknown means fail.
+  Every use of a launch-capable module (subprocess, os.exec*/spawn*/posix_spawn*/system/
+  popen, pty, asyncio and asyncio.subprocess, multiprocessing, event-loop
+  ``subprocess_exec``) is enumerated from the AST. A use resolves only when it is a known
+  attribute of a known binding (an import, an alias by assignment, an attribute receiver,
+  a literal ``getattr`` name). A launch whose program is a literal and whose literal
+  words, with shell quoting and metacharacters stripped and every positional argument
+  read, name no agent CLI and no wrapper of a computed word, needs nothing. Everything
+  else needs an ``INVENTORY`` entry with a reason: an opaque program, a launch function
+  used as a value, a computed ``getattr``, ``__dict__``, the module handed on as a value,
+  a dynamic import or ``exec``/``eval``, a literal agent argv passed to a listed
+  pass-through helper. Each
+  entry carries its launch count, and stale entries fail. Provider entry points are held
+  to the same rule: any use that does not hand them a decided ``env`` (a call without
+  one or with ``env=None``, a rename, a value use, a ``getattr``) must be listed.
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -41,10 +46,26 @@ LAUNCHERS = {
            "spawnl", "spawnle", "spawnlp", "spawnlpe", "system", "popen"},
     "pty": {"spawn"},
     "asyncio": {"create_subprocess_exec", "create_subprocess_shell"},
+    "asyncio.subprocess": {"create_subprocess_exec", "create_subprocess_shell"},
+    "multiprocessing": {"Process", "Pool"},
 }
+#: NOT_AGENT helpers that launch an argv their CALLERS supply. Their classification covers
+#: what they are called with today; a call that hands one a literal agent-CLI argv is a
+#: new agent launch and is recorded at the caller.
+PASS_THROUGH_HELPERS = frozenset({"_run_process", "_run_bounded", "_run_probe",
+                                  "run_notification_command", "_git_run", "_github_run"})
+#: Event-loop launch methods, whatever the receiver (``loop.subprocess_exec``).
+LOOP_LAUNCH_METHODS = frozenset({"subprocess_exec", "subprocess_shell"})
+#: Submodules reached as an attribute of a launch-capable module.
+SUBMODULES = {("asyncio", "subprocess"): "asyncio.subprocess"}
 
-#: Program names that are agent CLIs.
-AGENT_CLIS = frozenset({"claude", "codex", "agy", "gemini", "grok", "opencode", "cursor-agent"})
+#: Program names that are agent CLIs, including their npm package basenames.
+AGENT_CLIS = frozenset({"claude", "codex", "agy", "gemini", "grok", "opencode", "cursor-agent",
+                        "claude-code", "gemini-cli"})
+#: Programs that run another program named later in their argv.
+WRAPPERS = frozenset({"env", "sudo", "doas", "bwrap", "sh", "bash", "zsh", "dash", "nsenter",
+                      "unshare", "setpriv", "timeout", "nice", "ionice", "stdbuf", "xargs",
+                      "npx", "npm", "pnpm", "uvx", "runuser", "su", "script", "firejail"})
 
 RELOCATED = "relocated"          # the env passes child_scratch_env / fill_child_tmp_env
 PROVIDER_INTERFACE = "provider"  # the choke point itself
@@ -130,6 +151,29 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("convergence/broker/live.py", "build_github_broker_client"): (
         NOT_AGENT, "runner default for the GitHub adapter: gh / git"),
     ("train_runner.py", "_gh_repo_binding"): (NOT_AGENT, "runner handed to git origin resolution"),
+    ("train_runner.py", "_live_post_merge_prune"): (
+        NOT_AGENT, "bash running the generated post-merge git prune script"),
+    # Dynamic imports: a computed module name may be any module, so each is classified.
+    ("cli.py", "_profile_command_registrars"): (
+        NOT_AGENT, "dynamic import of a registered CLI profile module; launches nothing"),
+    ("closeout_validators.py", "_import_builtin_validator"): (
+        NOT_AGENT, "dynamic import of a built-in validator in this package"),
+    ("convergence/broker/live.py", "_module_digest"): (
+        NOT_AGENT, "dynamic import to hash a module's source file"),
+    ("convergence/broker/live.py", "fabpub_capability_active"): (
+        NOT_AGENT, "dynamic import of the FABPUB activation marker module"),
+    ("governed_premerge.py", "_fabreadmit_capability_active"): (
+        NOT_AGENT, "dynamic import of the FABREADMIT activation marker module"),
+    ("roadmap_assumptions.py", "_observe_repo_constant"): (
+        NOT_AGENT, "dynamic import of a roadmap-declared module to read a constant"),
+    ("roadmap_assumptions.py", "_observe_repo_digest"): (
+        NOT_AGENT, "dynamic import of a roadmap-declared module to hash it"),
+    ("roadmap_assumptions.py", "_read_surface_value"): (
+        NOT_AGENT, "dynamic import of a roadmap-declared module to read a value"),
+    ("skill_inventory.py", "_iter_skill_source_roots_cached"): (
+        NOT_AGENT, "dynamic import of a skill-bundle package to locate its files"),
+    ("publishing.py", "_source_path_evidence"): (
+        NOT_AGENT, "compile() of a parsed AST to validate publication source; never executed"),
     ("observability.py", "run_notification_command"): (
         NOT_AGENT, "the operator's notification hook"),
     ("repo_validation.py", "run_plan"): (NOT_AGENT, "the repository's validation commands"),
@@ -157,7 +201,7 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     ('agy_canary_evidence.py', 'probe_capability'): 3,
     ('launcher.py', 'launch'): 2,
     ('panel_invoker.py', '_exec_claude_agent_view_attempt'): 2,
-    ('sandbox_egress.py', 'isolated_network'): 2,
+    ('sandbox_egress.py', 'isolated_network'): 3,
     ('tdd_receipts.py', 'record_content_tdd_receipt'): 2,
     ('verification_evidence.py', 'execute_proofgate_mutation_manifest._execute_one._execute_worktree'): 2,
 }
@@ -176,9 +220,31 @@ PROVIDER_CALLS_WITHOUT_ENV: dict[tuple[str, str], str] = {
 
 
 def _provider_calls_without_env(package: Path) -> set[tuple[str, str]]:
+    """Every use of a provider entry point that does not hand it a decided env: a call
+    with no ``env=`` or a literal ``env=None``, and -- conservatively -- any other use (an
+    entry point used as a value, e.g. a runner default, or reached through ``getattr``),
+    which may later be called with no env. Entry points renamed on import or by
+    assignment are followed."""
     found = set()
     for path in sorted(package.rglob("*.py")):
         rel = path.relative_to(package).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = set(PROVIDER_ENTRY_POINTS)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names |= {a.asname for a in node.names
+                          if a.asname and a.name in PROVIDER_ENTRY_POINTS}
+        changed = True
+        while changed:
+            changed = False
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute))
+                        and _entry_name(node.value) in names):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id not in names:
+                            names.add(target.id)
+                            changed = True
+        parents = _parents(tree)
         stack: list[str] = []
 
         class _Walker(ast.NodeVisitor):
@@ -189,32 +255,63 @@ def _provider_calls_without_env(package: Path) -> set[tuple[str, str]]:
 
             visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _scope
 
+            def _use(self, node):
+                parent = parents.get(node)
+                if isinstance(parent, ast.Call) and parent.func is node:
+                    env = next((k.value for k in parent.keywords if k.arg == "env"), None)
+                    if env is None or (isinstance(env, ast.Constant) and env.value is None):
+                        found.add((rel, ".".join(stack) or "<module>"))
+                elif isinstance(parent, ast.Assign) and parent.value is node:
+                    pass  # a rename, followed above
+                elif isinstance(parent, ast.Compare):
+                    pass  # an identity check against the production seam, never a call
+                else:
+                    found.add((rel, ".".join(stack) or "<module>"))
+
+            def visit_Name(self, node):
+                if node.id in names and isinstance(node.ctx, ast.Load):
+                    self._use(node)
+
+            def visit_Attribute(self, node):
+                if node.attr in names and isinstance(node.ctx, ast.Load):
+                    self._use(node)
+                self.generic_visit(node)
+
             def visit_Call(self, node):
-                func = node.func
-                name = (func.id if isinstance(func, ast.Name)
-                        else func.attr if isinstance(func, ast.Attribute) else None)
-                if name in PROVIDER_ENTRY_POINTS and not any(
-                        k.arg == "env" for k in node.keywords):
+                if (_is_getattr_call(node) and isinstance(node.args[1], ast.Constant)
+                        and node.args[1].value in PROVIDER_ENTRY_POINTS):
                     found.add((rel, ".".join(stack) or "<module>"))
                 self.generic_visit(node)
 
-        _Walker().visit(ast.parse(path.read_text(encoding="utf-8")))
+        _Walker().visit(tree)
     return found
 
 
+def _entry_name(node: ast.AST) -> str | None:
+    return node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+
+
 def _module_aliases(tree: ast.AST) -> tuple[dict[str, str], list[str]]:
-    """Names bound to a launcher module -- ``import subprocess as sp``, and an assignment
-    ``sp = subprocess`` at any scope -- and every ``from <launcher module> import <launch
-    fn>``, which would hide a call from the attribute walk."""
-    aliases = {name: name for name in LAUNCHERS}
+    """Names bound to a launch-capable module -- ``import subprocess as sp``, ``from
+    asyncio import subprocess as asp``, and an assignment ``sp = subprocess`` at any
+    scope -- and every from-import that would hide a launch from the walk (a named launch
+    function, or ``*`` from a launch-capable module)."""
+    aliases = {name: name for name in LAUNCHERS if "." not in name}
     hidden = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in LAUNCHERS:
-                    aliases[alias.asname or alias.name] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module in LAUNCHERS:
-            hidden += [a.name for a in node.names if a.name in LAUNCHERS[node.module]]
+                    aliases[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                full = f"{node.module}.{alias.name}"
+                if full in LAUNCHERS:
+                    aliases[alias.asname or alias.name] = full
+                elif node.module in LAUNCHERS and (
+                        alias.name == "*" or alias.name in LAUNCHERS[node.module]):
+                    hidden.append(f"{node.module}.{alias.name}")
     changed = True
     while changed:  # `a = subprocess; b = a` -- to a fixed point
         changed = False
@@ -228,45 +325,99 @@ def _module_aliases(tree: ast.AST) -> tuple[dict[str, str], list[str]]:
     return aliases, hidden
 
 
+def _module_of(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    """The launch-capable module an expression denotes: an alias, ``x.subprocess``, or a
+    submodule attribute (``asyncio.subprocess``)."""
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    if isinstance(node, ast.Attribute):
+        parent = _module_of(node.value, aliases)
+        if parent is not None:
+            return SUBMODULES.get((parent, node.attr))
+        if node.attr in LAUNCHERS:
+            return node.attr  # an attribute receiver: `lib.subprocess`
+    return None
+
+
 def _launch_fn(node: ast.AST, aliases: dict[str, str]) -> str | None:
-    """``subprocess.run`` / ``sp.run`` / ``anything.subprocess.run`` -> "subprocess.run"."""
+    """``subprocess.run`` / ``sp.run`` / ``x.subprocess.run`` / ``asyncio.subprocess.
+    create_subprocess_exec`` / ``loop.subprocess_exec`` -> its name; else ``None``."""
     if not isinstance(node, ast.Attribute):
         return None
-    value = node.value
-    module = (aliases.get(value.id) if isinstance(value, ast.Name)
-              else value.attr if isinstance(value, ast.Attribute) else None)
+    module = _module_of(node.value, aliases)
     if module in LAUNCHERS and node.attr in LAUNCHERS[module]:
         return f"{module}.{node.attr}"
+    if node.attr in LOOP_LAUNCH_METHODS:
+        return f"loop.{node.attr}"
     return None
 
 
 #: What a launch site records: the literal program, ``None`` when the AST cannot see it,
 #: ``REFERENCE`` when a launch function is used as a VALUE (a default argument, an
-#: assignment, a callback) and so may be called anywhere under another name.
+#: assignment, a callback) and so may be called anywhere under another name, and
+#: ``UNRESOLVED`` for a use of a launch-capable module the scanner cannot resolve to a
+#: known attribute (``getattr(subprocess, name)``, ``vars(os)``, the module passed as a
+#: value, ``subprocess.__dict__``, a dynamic import). Unknown is never assumed safe.
 REFERENCE = "<launch function used as a value>"
+UNRESOLVED = "<unresolved use of a launch-capable module>"
+_SHELL_META = re.compile(r"""[;&|()<>`'"$={}\\]""")
 
 
-def _argv_facts(first: ast.AST | None) -> tuple[object, bool]:
-    """(the program, does any literal word of the argv name an agent CLI)."""
-    if isinstance(first, (ast.List, ast.Tuple)):
-        words = [w for e in first.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                 for w in e.value.split()]
-        head = first.elts[0] if first.elts else None
-        program = head.value if isinstance(head, ast.Constant) else None
-    elif isinstance(first, ast.Constant) and isinstance(first.value, str):
-        words = first.value.split()
-        program = words[0] if words else None
-    else:
+def _words(text: str) -> list[str]:
+    """A literal's words, with shell quoting and metacharacters removed (``sh -c
+    "claude -p"``, ``x;claude``, ``(claude)`` all yield ``claude``)."""
+    return [os.path.basename(w) for w in _SHELL_META.sub(" ", text).split()]
+
+
+def _argv_facts(args: list[ast.AST]) -> tuple[object, bool]:
+    """(the program, may this launch start an agent CLI). Every positional argument is
+    read (``os.exec*`` / ``posix_spawn*`` carry the program in the second). An argv whose
+    program is a WRAPPER and that holds any non-literal word may run anything."""
+    literals: list[str] = []
+    opaque = False
+    program = None
+    for index, arg in enumerate(args[:2]):
+        elements = arg.elts if isinstance(arg, (ast.List, ast.Tuple)) else [arg]
+        for position, element in enumerate(elements):
+            if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                literals.append(element.value)
+                if index == 0 and position == 0:
+                    program = element.value
+            elif isinstance(element, ast.Starred) or not isinstance(element, ast.Constant):
+                opaque = True
+    if program is None:
         return None, False
-    return program, any(os.path.basename(w) in AGENT_CLIS for w in words)
+    words = [w for text in literals for w in _words(text)]
+    head = os.path.basename(program.split()[0]) if program.split() else ""
+    if any(w in AGENT_CLIS for w in words):
+        return program, True
+    return program, head in WRAPPERS and opaque
+
+
+def _parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    return {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _is_dynamic_import(node: ast.Call) -> bool:
+    """A computed import, or code compiled from a string (``exec``/``eval``/``compile``),
+    may reach any module, so it is never assumed safe."""
+    func = node.func
+    if isinstance(func, ast.Name) and func.id in ("exec", "eval", "compile"):
+        return True
+    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+    if name not in ("__import__", "import_module"):
+        return False
+    first = node.args[0] if node.args else None
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value.split(".")[0] in LAUNCHERS or first.value in LAUNCHERS
+    return True  # a computed module name may be any module
 
 
 def _launch_sites(package: Path | None = None) -> tuple[dict[tuple[str, str], list[object]], list[str]]:
-    """(module, enclosing function) -> one entry per launch there: the literal program
-    (``None`` when the AST cannot see it; ``REFERENCE`` for a launch function used as a
-    value; ``"agent:<program>"`` when any literal word of the argv names an agent CLI,
-    e.g. behind ``env`` / ``bwrap`` / ``sh -c``); and the hidden-import violations.
-    Annotations are not launches and are not walked."""
+    """(module, enclosing function) -> one entry per launch or unresolved use there: the
+    literal program, ``None``, ``REFERENCE``, ``UNRESOLVED``, or ``"agent:<program>"``
+    when the argv may start an agent CLI; and the hidden-import violations. Annotations
+    are not launches and are not walked."""
     package = PACKAGE if package is None else package
     sites: dict[tuple[str, str], list[object]] = {}
     hidden_imports: list[str] = []
@@ -275,6 +426,7 @@ def _launch_sites(package: Path | None = None) -> tuple[dict[tuple[str, str], li
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases, hidden = _module_aliases(tree)
         hidden_imports += [f"{rel}: from-import of {name}" for name in hidden]
+        parents = _parents(tree)
         stack: list[str] = []
 
         def _record(entry):
@@ -308,12 +460,20 @@ def _launch_sites(package: Path | None = None) -> tuple[dict[tuple[str, str], li
                     self.visit(node.value)
 
             def visit_Call(self, node):
-                if _launch_fn(node.func, aliases):
-                    program, names_agent = _argv_facts(node.args[0] if node.args else None)
-                    _record(f"agent:{program}" if names_agent else program)
-                    self.visit(node.func.value)
+                func = node.func
+                getattr_target = _getattr_target(func)
+                if _launch_fn(func, aliases) or getattr_target == "launch":
+                    program, may_be_agent = _argv_facts(node.args)
+                    _record(f"may-start-an-agent:{program}" if may_be_agent else program)
+                    self.visit(func.value if isinstance(func, ast.Attribute) else func)
                 else:
-                    self.visit(node.func)
+                    if _is_dynamic_import(node):
+                        _record(UNRESOLVED)
+                    if _entry_name(func) in PASS_THROUGH_HELPERS:
+                        program, may_be_agent = _argv_facts(node.args)
+                        if may_be_agent:
+                            _record(f"may-start-an-agent:{program} via {_entry_name(func)}")
+                    self.visit(func)
                 for item in [*node.args, *node.keywords]:
                     self.visit(item)
 
@@ -322,8 +482,57 @@ def _launch_sites(package: Path | None = None) -> tuple[dict[tuple[str, str], li
                     _record(REFERENCE)
                 self.generic_visit(node)
 
+            def visit_Name(self, node):
+                if node.id in aliases and isinstance(node.ctx, ast.Load):
+                    parent = parents.get(node)
+                    if isinstance(parent, ast.Attribute) and parent.value is node:
+                        if parent.attr.startswith("__"):
+                            _record(UNRESOLVED)  # subprocess.__dict__ and the like
+                    elif _is_getattr_of(parent, node):
+                        verdict = _getattr_verdict(parent, aliases[node.id])
+                        if verdict == "unresolved":
+                            _record(UNRESOLVED)
+                        elif verdict == "launch" and not isinstance(parents.get(parent), ast.Call):
+                            _record(REFERENCE)
+                    elif isinstance(parent, ast.Call) and parent.func is not node and (
+                            isinstance(parent.func, ast.Name) and parent.func.id == "hasattr"):
+                        pass  # `hasattr(os, "getuid")` touches nothing
+                    elif isinstance(parent, ast.Assign) and parent.value is node:
+                        pass  # an alias, modelled by `_module_aliases`
+                    elif isinstance(parent, ast.Compare):
+                        pass  # `pty is None`: an optional import, compared, never called
+                    else:
+                        _record(UNRESOLVED)  # the module itself handed on as a value
+
+        def _getattr_target(func):
+            if isinstance(func, ast.Call) and _is_getattr_call(func):
+                module = _module_of(func.args[0], aliases)
+                if module is not None:
+                    return "launch" if _getattr_verdict(func, module) == "launch" else None
+            return None
+
         _Walker().visit(tree)
     return sites, hidden_imports
+
+
+def _is_getattr_call(node: ast.AST) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr" and len(node.args) >= 2)
+
+
+def _is_getattr_of(parent: ast.AST | None, node: ast.AST) -> bool:
+    return _is_getattr_call(parent) and parent.args[0] is node
+
+
+def _getattr_verdict(call: ast.Call, module: str) -> str:
+    """``getattr(<module>, name)``: "launch" when the name is a launch function, "ok" for
+    another literal name, "unresolved" when the name is computed."""
+    name = call.args[1]
+    if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+        return "unresolved"
+    if name.value in LAUNCHERS.get(module, ()):
+        return "launch"
+    return "unresolved" if name.value.startswith("__") else "ok"
 
 
 def _needs_a_decision(programs: list[object]) -> bool:
@@ -331,8 +540,10 @@ def _needs_a_decision(programs: list[object]) -> bool:
 
 
 def _one_needs_a_decision(program: object) -> bool:
-    return (program is None or program == REFERENCE or str(program).startswith("agent:")
-            or os.path.basename(str(program)) in AGENT_CLIS)
+    return (program is None or program in (REFERENCE, UNRESOLVED)
+            or str(program).startswith("may-start-an-agent:")
+            or os.path.basename(str(program).split()[0] if str(program).split() else "")
+            in AGENT_CLIS)
 
 
 def _function_source(module: str, qualname: str) -> str:
@@ -380,17 +591,6 @@ def test_every_provider_launch_without_an_env_is_accounted_for():
         f"stale: {sorted(set(PROVIDER_CALLS_WITHOUT_ENV) - found)}")
 
 
-def test_the_scanner_sees_a_provider_call_without_an_env(tmp_path):
-    fake = tmp_path / "pkg"
-    fake.mkdir()
-    (fake / "m.py").write_text(
-        "def a(p):\n    p.launch_provider(['agy'], cwd='.')\n"
-        "def b(p, e):\n    p._run_leg_with_liveness(['agy'], cwd='.', env=e, deadline_s=1)\n"
-        "def c():\n    run_provider(['agy'], **{})\n",
-        encoding="utf-8")
-    assert _provider_calls_without_env(fake) == {("m.py", "a"), ("m.py", "c")}
-
-
 @pytest.mark.parametrize("key", sorted(k for k, v in INVENTORY.items()
                                        if v[0] in (RELOCATED, PROVIDER_INTERFACE)))
 def test_each_relocated_site_names_its_decision(key):
@@ -431,6 +631,74 @@ def test_the_scanner_sees_every_spelling_of_a_launch(tmp_path):
     assert _undecided(fake) == {("m.py", name) for name in (
         "opaque", "named", "wrapped", "jailed", "shell", "injected", "assigned", "by_alias",
         "by_attribute", "by_exec", "by_pty", "by_asyncio")}
+
+
+def test_unknown_is_never_assumed_safe(tmp_path):
+    """Round 4 (agent-harness#1161): spellings that escaped a scanner which only modelled
+    the spellings it knew. Every use of a launch-capable module the scanner cannot resolve
+    to a known attribute now needs a decision; the controls at the end do not."""
+    fake = tmp_path / "pkg"
+    fake.mkdir()
+    (fake / "m.py").write_text(
+        "import asyncio, importlib, multiprocessing, os, pty, subprocess\n"
+        "from asyncio import subprocess as asp\n"
+        "_CLI = 'claude'\n"
+        "def by_getattr():\n    getattr(subprocess, 'run')(['claude', '-p', 'hi'])\n"
+        "def by_computed_getattr(name):\n    getattr(subprocess, name)\n"
+        "def by_dunder_dict():\n    subprocess.__dict__['run'](['claude'])\n"
+        "def by_module_value(f):\n    f(subprocess)\n"
+        "def by_dunder_import():\n    __import__('subprocess')\n"
+        "def by_import_module(name):\n    importlib.import_module(name)\n"
+        "def by_quoted_shell():\n    subprocess.run('sh -c \"claude -p x\"', shell=True)\n"
+        "def by_semicolon():\n    subprocess.run('cd /r;claude', shell=True)\n"
+        "def by_and():\n    subprocess.run('true&&claude', shell=True)\n"
+        "def by_subshell():\n    subprocess.run(['sh', '-c', '(claude -p)'])\n"
+        "def by_wrapper_variable():\n    subprocess.run(['env', _CLI])\n"
+        "def by_exec_argv():\n    os.execv('/usr/bin/env', ['env', 'claude'])\n"
+        "def by_asyncio_submodule():\n    asyncio.subprocess.create_subprocess_exec('codex')\n"
+        "def by_asyncio_alias():\n    asp.create_subprocess_exec('codex')\n"
+        "def by_loop(loop, proto):\n    loop.subprocess_exec(proto, 'codex')\n"
+        "def by_multiprocessing(target):\n    multiprocessing.Process(target=target)\n"
+        "def by_npx():\n    subprocess.run(['npx', '@anthropic-ai/claude-code', '-p'])\n"
+        "def by_helper(ev):\n    ev._run_process(['claude', '-p'])\n"
+        "def by_exec_string():\n    exec('import subprocess')\n"
+        "def control_helper(ev):\n    ev._run_process(['pytest', '-q'])\n"
+        "def control_attributes():\n"
+        "    return (subprocess.PIPE, os.path.join('a', 'b'), hasattr(os, 'getuid'),\n"
+        "            getattr(os, 'O_NOFOLLOW', None), pty is None)\n"
+        "def control_git(repo):\n    subprocess.run(['git', '-C', str(repo), 'status'])\n",
+        encoding="utf-8")
+    assert _undecided(fake) == {("m.py", name) for name in (
+        "by_getattr", "by_computed_getattr", "by_dunder_dict", "by_module_value",
+        "by_dunder_import", "by_import_module", "by_quoted_shell", "by_semicolon", "by_and",
+        "by_subshell", "by_wrapper_variable", "by_exec_argv", "by_asyncio_submodule",
+        "by_asyncio_alias", "by_loop", "by_multiprocessing", "by_npx", "by_helper",
+        "by_exec_string")}
+
+
+def test_a_star_import_of_a_launch_module_is_refused(tmp_path):
+    fake = tmp_path / "pkg"
+    fake.mkdir()
+    (fake / "m.py").write_text("from subprocess import *\n", encoding="utf-8")
+    assert _launch_sites(fake)[1] == ["m.py: from-import of subprocess.*"]
+
+
+def test_every_use_of_a_provider_entry_point_without_a_decided_env_is_found(tmp_path):
+    fake = tmp_path / "pkg"
+    fake.mkdir()
+    (fake / "m.py").write_text(
+        "from .panel_invoker import run_provider as rp, launch_provider\n"
+        "from . import panel_invoker\n"
+        "def renamed():\n    rp(['claude'])\n"
+        "def none_env():\n    launch_provider(['claude'], env=None)\n"
+        "def as_runner(adapter):\n    adapter(runner=panel_invoker.run_provider)\n"
+        "def by_getattr():\n    getattr(panel_invoker, 'run_provider')\n"
+        "def assigned():\n    run = rp\n    run(['claude'])\n"
+        "def identity():\n    return launch_provider is not None\n"
+        "def decided(env):\n    rp(['claude'], env=env)\n",
+        encoding="utf-8")
+    assert _provider_calls_without_env(fake) == {("m.py", name) for name in (
+        "renamed", "none_env", "as_runner", "by_getattr", "assigned")}
 
 
 def test_an_unlisted_injected_runner_launch_in_the_real_package_fails_the_inventory(tmp_path):
