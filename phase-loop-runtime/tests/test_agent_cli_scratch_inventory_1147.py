@@ -104,6 +104,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "git"),
     ("conformance/outside_agent_conform_evidence.py", "_validate_chronology._git_blob_bytes"): (
         NOT_AGENT, "git"),
+    ("generated_outputs.py", "_run_bounded"): (
+        NOT_AGENT, "the repository's declared build-output producers (closeout audit)"),
     ("observability.py", "run_notification_command"): (
         NOT_AGENT, "the operator's notification hook"),
     ("repo_validation.py", "run_plan"): (NOT_AGENT, "the repository's validation commands"),
