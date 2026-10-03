@@ -6,6 +6,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Heartbeat-only seats no longer stall silently (agent-harness#1176)
+
+- A brokered Claude seat that gives up on its turn now ends at once as DEGRADED with a typed
+  reason instead of waiting forever. This is the case where Claude Code journals an API-error
+  record after exhausting its output budget, hitting a rate or usage limit, or a server error.
+  The reasons are `claude_seat_output_budget_exhausted`, `claude_seat_usage_limited` (a
+  subscription cap, with its reset time in UTC when the journal records one),
+  `claude_seat_rate_limited` and `claude_seat_provider_api_error`. A review that completed
+  always wins over a give-up, and an API-error record is never taken as a seat's answer text.
+  One classifier decides answer, give-up, rejected or pending, so every ended turn ends the
+  leg: a turn that ended in an answer the route refuses is `claude_seat_transcript_rejected`,
+  and a completed review without a verdict is handed back rather than left waiting.
+  Re-journaled transcript records count neither as progress nor as a new turn position.
+  Only records first seen in the current request decide how its turn ended: a record of an
+  earlier request appended late, a replayed request (whatever its completion metadata) and a
+  subagent's sidechain record are never the turn's last record, and a sidechain answer is never
+  the seat's answer. A record first seen in the current request that is still open, even a
+  changed version after its own stop, reads as streaming, and a stopped thinking block is not
+  yet the answer until its text block arrives. The answer parser uses the same membership: a
+  record of an earlier request, a subagent's sidechain record included, is never taken as the
+  seat's answer.
+- A heartbeat_only seat with no genuine progress for `PHASE_LOOP_REVIEW_STALL_NOTICE_S`
+  (default 3600 s) is flagged `seat_progress_stalled`, not ended. The flag appears in the
+  seat's monitoring record, as one stderr warning, in `advisor-board --json` legs
+  (`review_monitoring`), in the text summary, in each streamed per-leg verdict file and as a
+  governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
+  as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
+
 ### One shared redaction pipeline with broader credential-shape coverage
 
 - New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
