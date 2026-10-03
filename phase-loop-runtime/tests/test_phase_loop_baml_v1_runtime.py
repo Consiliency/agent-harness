@@ -4102,7 +4102,15 @@ def test_a_supervisor_killed_in_its_successor_launch_is_revived_by_an_exiting_ca
         assert _supervisor_recovers([None], record=cand_points) == (True, True, True)
         inside = [j for j, point in enumerate(cand_points) if _inside_the_revive(point)]
         assert len(cand_points) - len(inside) == 1, cand_points  # only the ``try:`` line (an owner never revives here)
-        cases = [(k, None) for k in successor_points] + [(k, j) for k in successor_points[:1] for j in inside]
+        # Crossed with every candidate point: the successor launch interrupted at
+        # the ``finally``'s launch check, which always leaves no successor.  Not
+        # ``successor_points[0]``: the record order is timing-dependent (it comes
+        # from whichever run reaches the ``finally`` first), and an interruption at
+        # the handler line still runs the ``finally``, which starts a successor.
+        # That made 33 of the cases vacuous on CI runs 37096183641 / 37096271534.
+        no_launch = ("_supervise", "line", _line_of(m._Client._supervise, "if not done and os.getpid() == self.owner_pid:"))
+        assert no_launch in successor_points, successor_points
+        cases = [(k, None) for k in successor_points] + [(no_launch, j) for j in inside]
         for k, then in cases:
             with _CountedBatons() as batons:
                 client = _pending_strand_client(batons)
