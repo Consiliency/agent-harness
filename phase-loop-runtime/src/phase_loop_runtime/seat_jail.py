@@ -188,6 +188,12 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "claude_seat_login_token_expired": (
         "leg ended", "the Claude login's access token expired during the run",
         "re-run the seat: each launch reads a fresh token"),
+    # Plan amendment A2: the first-use qualification failed or could not run.
+    "seat_jail_qualification_failed": (
+        "inline fallback",
+        "this host's seat jail is not qualified: the automatic first-use qualification "
+        "failed or could not run (the mode line names the reason)",
+        "run `phase-loop seat-sandbox qualify` to see why"),
     "claude_seat_login_token_expiring": (
         "leg refused",
         "the Claude login's access token expires before the seat's deadline, and the CLI did "
@@ -273,7 +279,7 @@ SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
     "seat_sandbox_unavailable_host", "seat_sandbox_unavailable_tiocsti",
     "seat_sandbox_unavailable_seat_uid",
     "claude_seat_token_missing", "gemini_seat_credential_missing",
-    "gemini_seat_profile_unqualified",
+    "gemini_seat_profile_unqualified", "seat_jail_qualification_failed",
 })
 
 

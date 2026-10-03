@@ -144,19 +144,33 @@ def test_sealed_claude_seat_carries_its_notice_through_the_spawn(monkeypatch, tm
     assert spawned.seat_notices == ("seat_sandbox_not_staged",)
 
 
-def test_jailed_route_without_an_execfind_pass_is_refused_with_zero_launches(monkeypatch, tmp_path):
-    # Isolated from this host's own store: a qualified host would otherwise admit the route.
+def test_a_jail_whose_first_use_qualification_fails_runs_sealed_never_refused(monkeypatch,
+                                                                             tmp_path):
+    # Plan amendment A2: no pass recorded -> the first-use qualification runs; when it fails
+    # the seat launches on the sealed route with its notice, and the board is not refused.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "empty-state"))
     monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
                         lambda leg, **k: seat_jail.SeatRoute(True))
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
+                        lambda leg: aq.Outcome(aq.FAILED, "falsifiers_failed"))
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
-    assert _FakeBroker.invoked == 0
-    assert tuple(spawned)[0] == "DEGRADED"
-    assert pi._finalize_leg_detail(tuple(spawned)[-1]) == "seat_sandbox_refused:jail_unqualified"
-    assert spawned.seat_notices == ("seat_sandbox_refused:jail_unqualified",)
-    notice = seat_jail.render_notice("seat_sandbox_refused:jail_unqualified", "claude:a")
-    assert "per-host EC-EXECFIND-2 jail qualification" in notice.fix
-    assert "seat-jail-passes" in notice.fix
+    assert _FakeBroker.invoked == 1
+    assert spawned.seat_notices == ("seat_jail_qualification_failed",)
+    assert "seat_jail_qualification_failed" in seat_jail.SEALED_FALLBACK_CODES
+    notice = seat_jail.render_notice("seat_jail_qualification_failed", "claude:a")
+    assert notice.what == "inline fallback" and "phase-loop seat-sandbox qualify" in notice.fix
+
+
+def test_a_jail_qualified_on_first_use_stays_jailed():
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
+    route, notices, refusal = pi._seat_route_for_spawn(
+        "claude", types.SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True,
+        decide=lambda leg, **k: seat_jail.SeatRoute(True),
+        qualify_on_first_use=lambda leg: aq.Outcome(aq.QUALIFIED_NOW))
+    assert (route, notices, refusal) == (seat_jail.SeatRoute(True), [], None)
 
 
 def test_gemini_seat_stays_sealed_with_one_notice(monkeypatch, tmp_path):
@@ -591,10 +605,18 @@ def _route(leg, **_k):
 
 def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=None):
     from phase_loop_runtime import seat_credentials
+    from phase_loop_runtime import seat_jail_autoqualify as aq
 
     monkeypatch.setattr(pi._seat_jail, "decide_seat_route", route)
-    monkeypatch.setattr(pi._seat_jail, "pass_record_verdict",
-                        lambda digest: (qualified, "pass" if qualified else "no_record"))
+    # `qualified`: True (a pass is recorded), "now" (qualified on first use), or False (the
+    # first-use qualification failed).
+    outcome = {True: aq.Outcome(aq.QUALIFIED), "now": aq.Outcome(aq.QUALIFIED_NOW),
+               False: aq.Outcome(aq.FAILED, "prerequisite_missing")}[qualified]
+
+    def _ensure(leg):
+        return aq._remember(seat_jail.jail_profile_digest(leg), outcome)
+
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", _ensure)
 
     def _resolve(margin_s, **_k):
         if isinstance(credential, str):
@@ -621,17 +643,33 @@ def test_seat_modes_name_every_route_before_launch(monkeypatch):
     }
 
 
-@pytest.mark.parametrize("qualified, credential, expected", [
-    (False, None, ("degraded", "seat_sandbox_refused:jail_unqualified", None)),
-    (True, "claude_seat_login_token_expiring",
-     ("degraded", "claude_seat_login_token_expiring", None)),
-])
-def test_a_seat_that_will_be_refused_is_degraded_with_its_fix(monkeypatch, qualified,
-                                                             credential, expected):
-    modes = _modes(monkeypatch, qualified=qualified, credential=credential)
+def test_a_seat_that_will_be_refused_is_degraded_with_its_fix(monkeypatch):
+    modes = _modes(monkeypatch, credential="claude_seat_login_token_expiring")
     claude = next(m for m in modes if m.leg == "claude")
-    assert (claude.mode, claude.code, claude.credential) == expected
-    assert claude.fix == seat_jail.NOTICES[expected[1]][2] and claude.fix
+    assert (claude.mode, claude.code, claude.credential) == (
+        "degraded", "claude_seat_login_token_expiring", None)
+    assert claude.fix == seat_jail.NOTICES["claude_seat_login_token_expiring"][2] and claude.fix
+
+
+def test_a_failed_first_use_qualification_is_a_loud_sealed_mode(monkeypatch):
+    # Plan amendment A2: sealed, never degraded or refused, naming the reason and its fix.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
+    claude = next(m for m in _modes(monkeypatch, qualified=False) if m.leg == "claude")
+    assert (claude.mode, claude.code) == ("sealed", "seat_jail_qualification_failed")
+    assert claude.why.endswith("reason: prerequisite_missing")
+    assert claude.fix == aq.REASON_FIXES["prerequisite_missing"]
+
+
+def test_a_jail_qualified_now_says_so_on_every_seat_of_the_board(monkeypatch):
+    board = types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness="claude", seat_key=f"claude:{n}", model="m") for n in "ab"])
+    _modes(monkeypatch, qualified="now")
+    modes = pi._seat_launch_modes(
+        board, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64), base_env={})
+    assert [(m.mode, m.qualified_now) for m in modes] == [("jailed", True), ("jailed", True)]
+    assert "jailed (qualified now)" in modes[0].render()
 
 
 def test_no_login_and_no_override_is_a_sealed_seat_that_says_so(monkeypatch):

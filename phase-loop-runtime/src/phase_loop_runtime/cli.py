@@ -2599,12 +2599,18 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
     from . import seat_uid
 
     if args.seat_sandbox_action == "qualify":
-        from . import seat_jail_qualification
+        from . import seat_jail_autoqualify, seat_jail_qualification
 
         try:
-            return seat_jail_qualification.main([])
+            # The same host lock as a first-use run, so the two never race the store.
+            with seat_jail_autoqualify.qualification_lock():
+                return seat_jail_qualification.main([])
         except seat_jail_qualification.QualificationError as exc:
             print(f"seat-sandbox qualify: cannot run: {exc}", file=sys.stderr)
+            return 1
+        except TimeoutError:
+            print("seat-sandbox qualify: cannot run: another qualification holds the lock",
+                  file=sys.stderr)
             return 1
     if not args.seat_sandbox_path:
         print("seat-sandbox reap: PATH is required", file=sys.stderr)

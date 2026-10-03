@@ -119,6 +119,7 @@ from . import sandbox_policy as _sandbox_policy
 from . import sandbox_retention as _sandbox_retention
 from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
+from . import seat_jail_autoqualify as _seat_jail_autoqualify
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
 from .advisor_board.research import (
@@ -1565,6 +1566,8 @@ def _seat_launch_modes(
     staged = (review_authorization is not None
               and getattr(review_authorization, "staged_tree_sha256", None) is not None)
     credential: dict[str, object] = {}
+    # Per board: whether a leg's jail was qualified just now (the first seat's outcome).
+    qualified_now: dict[str, bool] = {}
 
     def _claude_credential() -> "_seat_credentials.SeatCredential | str":
         # Once per board: the override, or the login with the default margin (each launch
@@ -1607,17 +1610,29 @@ def _seat_launch_modes(
                                          "this route has no file tools", "", None, position))
         elif refusal is not None:
             modes.append(_coded(sp.MODE_DEGRADED, refusal))
+        elif route.code == "seat_jail_qualification_failed":
+            # Plan amendment A2: sealed, loudly, with the typed reason and its fix.
+            outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
+            reason = outcome.reason if outcome is not None and outcome.reason else "error"
+            _what, why, _fix = _seat_jail.NOTICES[route.code]
+            modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, route.code,
+                                     f"{why}; reason: {reason}",
+                                     _seat_jail_autoqualify.REASON_FIXES[reason], None, position))
         elif not route.jailed:
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
             found = _claude_credential() if leg == "claude" else None
+            if leg not in qualified_now:
+                outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
+                qualified_now[leg] = (outcome is not None
+                                      and outcome.state == _seat_jail_autoqualify.QUALIFIED_NOW)
             if isinstance(found, str):
                 modes.append(_coded(sp.MODE_DEGRADED, found))
             else:
                 modes.append(sp.SeatMode(
                     key, leg, sp.MODE_JAILED, None,
                     "full tools inside its per-seat jail", "",
-                    getattr(found, "source", None), position))
+                    getattr(found, "source", None), position, qualified_now[leg]))
     return tuple(modes)
 
 
@@ -2539,6 +2554,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_seat_token_rate_limited", "claude_seat_bypass_ack_blocked",
     "claude_seat_login_rate_limited", "claude_seat_login_rejected",
     "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
+    "seat_jail_qualification_failed",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
     "gemini_seat_token_scope_excess", "gemini_seat_stream_split_unavailable",
     "gemini_seat_profile_unqualified", "gemini_seat_token_expired", "gemini_seat_token_in_output",
@@ -9254,13 +9270,18 @@ def _seat_route_for_spawn(
     leg: str, review_authorization: "ReviewIsolationAuthorization | None", *, eligible: bool,
     decide: "Callable[..., _seat_jail.SeatRoute | None] | None" = None,
     pass_recorded: "Callable[[str], bool] | None" = None,
+    qualify_on_first_use: "Callable[[str], _seat_jail_autoqualify.Outcome] | None" = None,
 ) -> "tuple[_seat_jail.SeatRoute | None, list[str], str | None]":
     """J7 steps 0-4 for one production brokered launch, plus the EC-EXECFIND-2 gate.
 
-    Returns ``(route, notices, refusal)``. A sealed route carries its one notice code; a
-    jailed route whose jail digest has no recorded EC-EXECFIND-2 falsifier pass is REFUSED
-    (``seat_sandbox_refused:jail_unqualified``) before any effect -- it is never put on the jailed
-    route and never silently sent sealed (plan "EC-EXECFIND-2 obligations on the jail")."""
+    Returns ``(route, notices, refusal)``. A sealed route carries its one notice code.
+
+    A jailed route whose jail digest has no recorded EC-EXECFIND-2 pass is qualified on
+    first use (plan amendment A2): the host's jail qualification runs once, serialized, and
+    on a pass the seat stays jailed. If it fails or cannot run, the seat falls back to the
+    sealed route with ``seat_jail_qualification_failed``. It is never refused for this,
+    and never jailed without a recorded pass. An injected ``pass_recorded`` is the gate
+    alone: no recorded pass is refused with ``seat_sandbox_refused:jail_unqualified``."""
     if not eligible:
         return None, [], None
     route = (decide or _seat_jail.decide_seat_route)(
@@ -9271,10 +9292,17 @@ def _seat_route_for_spawn(
         return None, [], None
     if not route.jailed:
         return route, [str(route.code)], None
-    refusal = _pass_refusal(_seat_jail.jail_profile_digest(leg), pass_recorded)
-    if refusal is not None:
-        return route, [], refusal[0]
-    return route, [], None
+    if pass_recorded is not None:
+        refusal = _pass_refusal(_seat_jail.jail_profile_digest(leg), pass_recorded)
+        return (route, [], refusal[0]) if refusal is not None else (route, [], None)
+    outcome = (qualify_on_first_use or _seat_jail_autoqualify.ensure_qualified)(leg)
+    if outcome.qualified:
+        return route, [], None
+    logging.getLogger(__name__).warning(
+        "seat jail not qualified on this host (%s); %s takes the sealed route",
+        outcome.reason, leg)
+    sealed = "seat_jail_qualification_failed"
+    return _seat_jail.SeatRoute(False, sealed), [sealed], None
 
 
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
@@ -11206,14 +11234,15 @@ def invoke_board(
                     return review_refusal(str(exc))
                 # agent-harness#1204: this path launches nothing, but a pointer-brief caller
                 # still gets its preflight (every seat here is native, so it warns none).
+                # Modes first: on first use they qualify the jail (plan amendment A2).
+                _publish_seat_modes(
+                    board, mode=mode, review_authorization=review_authorization,
+                    base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
+                )
                 early_preflight = _publish_seat_preflight(
                     board, pointer_brief=pointer_brief, mode=mode,
                     review_authorization=review_authorization, base_env=base_env,
                     stream_dir=stream_dir, on_seat_preflight=on_seat_preflight,
-                )
-                _publish_seat_modes(
-                    board, mode=mode, review_authorization=review_authorization,
-                    base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
                 )
                 deferred: list[PanelLegResult] = []
                 for seat in board.seats:
@@ -11480,14 +11509,15 @@ def invoke_board(
 
         # agent-harness#1204: the pointer-brief seat preflight, BEFORE the first seat is
         # spawned. It reads the route facts the spawn will act on and changes none of them.
+        # Modes first: on first use they qualify the jail (plan amendment A2).
+        _publish_seat_modes(
+            board, mode=mode, review_authorization=review_authorization,
+            base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
+        )
         seat_preflight_notices = _publish_seat_preflight(
             board, pointer_brief=pointer_brief, mode=mode,
             review_authorization=review_authorization, base_env=base_env,
             stream_dir=stream_dir, on_seat_preflight=on_seat_preflight,
-        )
-        _publish_seat_modes(
-            board, mode=mode, review_authorization=review_authorization,
-            base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
         )
 
         def _run_seat_body(item: Seat | tuple[int, Seat], monitor: _ReviewMonitor | None = None) -> PanelLegResult:

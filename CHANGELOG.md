@@ -85,6 +85,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **The login's own notices:** rate-limit and rejection have their own login notices.
   - **Seat modes:** before any seat launches, every board prints and publishes each seat's
     mode (`seat_modes` in `advisor-board --json`).
+- Plan amendment A2 (maintainer ruling 2026-10-03): a Claude seat is never refused because
+  this host's jail has no recorded qualification. The harness qualifies the jail on first
+  use, once per host, serialized by a lock, and records the pass.
+  - **On a pass**, the mode line reads `jailed (qualified now)`.
+  - **On a failure**, the seat runs sealed with `seat_jail_qualification_failed`, its reason
+    and its fix.
+  - **Failures are cached** per host, digest and layout, and retried after an hour or on a
+    change.
+  - This folds in agent-harness#1186's first-use self-check.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

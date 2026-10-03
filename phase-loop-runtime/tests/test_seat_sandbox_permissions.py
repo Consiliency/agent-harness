@@ -765,9 +765,16 @@ def test_codex_r5_hostile_records_refuse_typed_through_the_gate(tmp_path, monkey
     record_path.write_text(raw if raw is not None else json.dumps(record))
     record_path.chmod(0o600)
     assert seat_jail.pass_record_verdict(digest) == (False, R5_REASONS[shape])
+    # Plan amendment A2: a hostile record is no pass, so the first-use qualification runs
+    # (here: a failing fake); the seat is never jailed and falls back sealed.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
-        "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True))
-    assert refusal == "seat_sandbox_refused:jail_unqualified" and notices == []
+        "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True),
+        qualify_on_first_use=lambda leg: aq.ensure_qualified(
+            leg, qualify=lambda _leg: {"result": "fail"}))
+    assert route == seat_jail.SeatRoute(False, "seat_jail_qualification_failed")
+    assert refusal is None and notices == ["seat_jail_qualification_failed"]
 
 
 def test_codex_r5_the_exception_class_reaches_the_launch_refusal_and_the_log(
@@ -847,10 +854,25 @@ def test_upg_every_other_group_writable_chain_refuses_with_the_chmod_notice(
     passed, reason = seat_jail.pass_record_verdict(digest, layout=LAYOUT, host=HOST)
     problem = "other_writable" if shape == "other-writable" else "group_writable"
     assert not passed and reason == f"store_unsafe:{problem}:{tmp_path / 'state'}"
+    # Plan amendment A2: the first-use qualification runs; on a pass it records through the
+    # real recorder, which refuses this store, so the seat falls back sealed, with the fix.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    def _qualify_and_record(leg):
+        q._record_pass({"profile_digest": seat_jail.jail_profile_digest(leg),
+                        "host_identity": HOST, "falsifier_layout": LAYOUT, "result": "pass"})
+        return {"result": "pass"}
+
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True),
-        pass_recorded=None)
-    assert refusal == "seat_sandbox_refused:pass_store_unsafe" and notices == []
+        qualify_on_first_use=lambda leg: aq.ensure_qualified(leg, qualify=_qualify_and_record))
+    assert route == seat_jail.SeatRoute(False, "seat_jail_qualification_failed")
+    assert refusal is None and notices == ["seat_jail_qualification_failed"]
+    assert aq.recent_outcome(seat_jail.jail_profile_digest("claude")).reason == "store_unsafe"
+    fix = aq.REASON_FIXES["store_unsafe"]
+    assert "chmod go-w" in fix and "user-private group" in fix
+    # The launch-time re-check keeps its own typed refusal for the same store.
     fix = seat_jail.NOTICES["seat_sandbox_refused:pass_store_unsafe"][2]
     assert "chmod go-w" in fix and "user-private group" in fix
 

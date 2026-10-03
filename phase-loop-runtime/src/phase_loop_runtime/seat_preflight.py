@@ -198,6 +198,8 @@ class SeatMode:
     #: For a jailed Claude seat: ``login`` or ``seat_token``.
     credential: str | None = None
     position: int = -1
+    #: Plan amendment A2: the jail was qualified on this host just before this board.
+    qualified_now: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in SEAT_MODES:
@@ -206,12 +208,13 @@ class SeatMode:
     def as_json(self) -> dict[str, object]:
         return {"seat_key": self.seat_key, "leg": self.leg, "mode": self.mode,
                 "code": self.code, "why": self.why, "fix": self.fix,
-                "credential": self.credential}
+                "credential": self.credential, "qualified_now": self.qualified_now}
 
     def render(self) -> str:
         code = f" [{self.code}]" if self.code else ""
         fix = f"; fix: {self.fix}" if self.fix else ""
-        return f"seat {self.seat_key} ({self.leg}): {self.mode}{code} -- {self.why}{fix}"
+        mode = f"{self.mode} (qualified now)" if self.qualified_now else self.mode
+        return f"seat {self.seat_key} ({self.leg}): {mode}{code} -- {self.why}{fix}"
 
 
 def write_modes_record(stream_dir: Path, modes: Sequence[SeatMode]) -> Path:

@@ -971,6 +971,18 @@ are recorded on agent-harness#1132.
   `claude_seat_login_rejected`. A login token at or past its launch-time expiry fails as
   `claude_seat_login_token_expired`, in both the detail and the notice, and is safe to
   relaunch. None of these is a `seat_sandbox_refused:*` code.
+- **First-use qualification (plan amendment A2; folds in agent-harness#1186 option C).** A
+  jailed route with no recorded pass for this host, digest and layout runs the host's jail
+  qualification once, before launch. It is serialized by an exclusive lock in the per-user
+  state directory, and on a pass it records the pass.
+  - **On a pass:** the seat stays jailed, and its mode reports `qualified_now`.
+  - **On a failure, or a run that cannot happen:** the seat takes the sealed route with
+    `seat_jail_qualification_failed` and a typed reason (`prerequisite_missing`,
+    `store_unsafe`, `falsifiers_failed`, `timeout` or `error`), each with a literal fix. It
+    is never refused for this.
+  - **The failure cache:** failures are cached per host, digest and layout for
+    `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default 3600 s). A lock timeout is not cached.
+  - **The launch-time re-check** against the built jail still refuses an unrecorded digest.
 - **Seat modes (plan amendment A1).** Before any seat launches, every board publishes one
   mode per seat: `jailed`, `unconfined`, `sealed`, `degraded` or `native`. Each mode carries
   its notice code, reason and fix, and the modes are delivered through `on_seat_modes`, the

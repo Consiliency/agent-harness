@@ -532,14 +532,21 @@ Cloud APIs answer from inside the jail, because the egress namespace filters by 
 and Google API hosts share front-end addresses. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
-**Warning: where the host supports the jail, Claude seats are jailed by default.** The
-seat's credential is your Claude login, which is normally present (see below). So on a host
-that has the prerequisite below, every brokered Claude seat with a staged tree takes the
-jailed route. Until an EC-EXECFIND-2 pass is recorded for this jail's profile digest, that
-route is refused. The seat's pre-launch mode line shows `degraded` with
-`seat_sandbox_refused:jail_unqualified`, and the seat returns DEGRADED. It does not fall
-back to the sealed route. This includes board rounds, which run the reviewed PR's own
-runtime. Record the pass first, with `phase-loop seat-sandbox qualify`.
+**Where the host supports the jail, Claude seats are jailed by default, and the jail is
+qualified on first use.** The seat's credential is your Claude login, which is normally
+present (see below). So on a host that has the prerequisite below, every brokered Claude
+seat with a staged tree takes the jailed route.
+- **No recorded pass:** if no EC-EXECFIND-2 pass is recorded for this host and jail, the
+  harness runs the host's jail qualification itself, once, before launching. This is the
+  same as `phase-loop seat-sandbox qualify`. Concurrent seats and boards wait for that one
+  run.
+- **On a pass:** the pass is recorded, and the seat runs jailed. Its mode line reads
+  `jailed (qualified now)`.
+- **On a failure, or if the run cannot happen:** the seat runs sealed, without tools, and
+  its mode line names `seat_jail_qualification_failed`, the reason and the fix.
+- **Retrying:** a failure is not retried on every seat. It is retried after
+  `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default one hour), or as soon as the jail or the
+  host layout changes.
 
 **Seat modes.** Before any seat launches, the board prints one line per seat
 (`advisor-board: seat mode: ...`), and the `--json` payload carries `seat_modes`. The modes

@@ -97,10 +97,13 @@ def _chunker114_board(tmp_path, *, pointer_brief=True, verdict="PARTIALLY AGREE"
 @pytest.fixture
 def staged_tree(monkeypatch, tmp_path):
     """The review stages an exact-head tree (the production default). The chunker#114 seats
-    have no seat token, so this host's own seat token and jail passes are not read: with
-    them, the preflight would put a Claude seat on the jailed route (agent-harness#1132)."""
+    have no seat credential, so this host's own seat token, Claude login and jail passes are
+    not read: with them, the preflight would put a Claude seat on the jailed route
+    (agent-harness#1132)."""
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "no-seat-state"))
+    # ... nor this host's Claude login (plan amendment A1): these seats have no credential.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-claude-login"))
 
 
 def test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run(
@@ -499,12 +502,15 @@ def _jailed_route(leg, **_k):
 
 @pytest.mark.parametrize("qualified, unreadable", [
     (True, ["gemini"]),               # the jailed Claude seat reads its brief
-    (False, ["claude", "gemini"]),    # an unqualified jail does not launch: no file access
+    (False, ["claude", "gemini"]),    # a jail that cannot be qualified: the seat runs sealed
 ])
 def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
     monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _jailed_route)
-    monkeypatch.setattr(pi._seat_jail, "pass_record_verdict",
-                        lambda digest: (qualified, "pass" if qualified else "no_record"))
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
+                        lambda leg: aq.Outcome(aq.QUALIFIED) if qualified
+                        else aq.Outcome(aq.FAILED, "falsifiers_failed"))
     board = types.SimpleNamespace(seats=[_seat("claude"), _seat("gemini"), _seat("codex")])
     notices = pi._publish_seat_preflight(
         board, pointer_brief=True, mode="review",
