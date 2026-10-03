@@ -1358,3 +1358,75 @@ def test_r5_the_walk_and_the_parser_agree_on_which_user_record_is_the_request(tm
     changed = {**REQUEST, "message": {**REQUEST["message"], "content": "A changed request."}}
     write(path, [REQUEST, capped(1), api_error("max_output_tokens"), changed])
     assert panel._claude_transcript_outcome(path, require_terminal=president).kind == "pending"
+
+
+# --- round 6 (codex F001): the answer parser accepts only a member of the current request ------
+
+@pytest.mark.parametrize("mode", ["review", "president"])
+@pytest.mark.parametrize("heartbeat_only", [False, True])
+@pytest.mark.parametrize("terminal_error", [False, True])
+def test_an_earlier_sidechain_record_cannot_answer_the_current_request(
+    tmp_path, monkeypatch, mode, heartbeat_only, terminal_error,
+):
+    """codex r6 F001 falsifier, verbatim (8 cases)."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    answer = _answer("a-side", "m-side", "Review complete\nAGREE" if mode == "review"
+                     else "No blocking findings.\nFORCING DECISION: APPROVE")
+    records = [{**answer, "isSidechain": True}, REQUEST]
+    if terminal_error:
+        records.append(api_error("server_error"))
+    records.append({**answer, "parentUuid": REQUEST["uuid"]})
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "review", 0,
+                                   threading.Event(), stall_notice_s=.2)
+    guard = threading.Timer(2, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=_provider(transcript, records, release), cwd=tmp_path,
+            prompt="input", output_file=tmp_path / "absent", timeout_s=10,
+            backstop_s=10, stall_threshold_s=.8, env=os.environ, mode=mode,
+            review_monitor=monitor if heartbeat_only else None,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    outcome = panel._claude_transcript_outcome(transcript, require_terminal=mode == "president")
+    _, _, turn = panel._claude_live_turn(transcript.read_text().split("\n"))
+    assert not any(payload.get("uuid") == answer["uuid"] for payload, _ in turn)
+    assert rc != 0 and text == "", (rc, text, log, outcome)
+    assert outcome.kind == ("gave_up" if terminal_error else "pending")
+    if terminal_error:
+        assert log == "claude_seat_provider_api_error"
+
+
+@pytest.mark.parametrize("president", [False, True])
+def test_r6_parser_and_walk_share_one_member_set(tmp_path, president):
+    """One membership for both views: a record of an earlier request (main line or sidechain)
+    never answers the current request, while the same answer first seen in it does. With no
+    request journaled every record is a member, as before."""
+    text = "Review complete\nAGREE" if not president else "No blocking findings.\nFORCING DECISION: APPROVE"
+    answer = _answer("a-m", "m-m", text)
+    req2 = {**REQUEST, "uuid": "u-2", "message": {"role": "user", "content": "Second request."}}
+    for earlier in ([REQUEST, answer, req2], [{**answer, "isSidechain": True}, req2]):
+        path = write(tmp_path / "t.jsonl", [*earlier, {**answer, "parentUuid": "u-2"}])
+        assert panel._claude_transcript_outcome(path, require_terminal=president).kind == "pending"
+    write(path, [REQUEST, answer])
+    assert panel._claude_transcript_outcome(path, require_terminal=president).text == text
+    write(path, [answer])
+    assert panel._claude_transcript_outcome(path, require_terminal=president).text == text
+
+
+def test_r6_a_uuid_less_record_counts_by_position(tmp_path):
+    """Disclosed design (b), pinned (mutation MC): a record without a uuid has no identity to be
+    first seen by, so after the current request it is that request's record. An open one after
+    a give-up therefore reads as streaming."""
+    req2 = {**REQUEST, "uuid": "u-2", "message": {"role": "user", "content": "Second request."}}
+    open_anon = {"type": "assistant", "message": {"id": "m-anon", "role": "assistant",
+                                                  "stop_reason": None, "content": []}}
+    path = write(tmp_path / "t.jsonl", [REQUEST, ANSWER, req2, api_error("server_error"), open_anon])
+    assert panel._claude_transcript_outcome(path).kind == "pending"

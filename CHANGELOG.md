@@ -24,7 +24,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   subagent's sidechain record are never the turn's last record, and a sidechain answer is never
   the seat's answer. A record first seen in the current request that is still open, even a
   changed version after its own stop, reads as streaming, and a stopped thinking block is not
-  yet the answer until its text block arrives.
+  yet the answer until its text block arrives. The answer parser uses the same membership: a
+  record of an earlier request, a subagent's sidechain record included, is never taken as the
+  seat's answer.
 - A heartbeat_only seat with no genuine progress for `PHASE_LOOP_REVIEW_STALL_NOTICE_S`
   (default 3600 s) is flagged `seat_progress_stalled`, not ended. The flag appears in the
   seat's monitoring record, as one stderr warning, in `advisor-board --json` legs

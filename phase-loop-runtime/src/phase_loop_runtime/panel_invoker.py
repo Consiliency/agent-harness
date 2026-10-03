@@ -5325,7 +5325,19 @@ class _TranscriptOutcome:
 
 
 def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict, dict]]]:
-    """``(record_versions, last_line_parses, live_turn)`` for transcript ``lines``.
+    """``(record_versions, last_line_parses, live_turn)`` for transcript ``lines``: the first
+    three fields of ``_claude_request_walk``."""
+    versions, complete, turn, _ = _claude_request_walk(lines)
+    return versions, complete, turn
+
+
+def _claude_request_walk(
+    lines: Sequence[str],
+) -> tuple[int, bool, list[tuple[dict, dict]], frozenset[str]]:
+    """``(record_versions, last_line_parses, live_turn, members)`` for transcript ``lines``.
+
+    ``members`` is the uuids first seen in the current request (a sidechain sighting counts): the
+    only uuids that can be evidence for it, here and in the answer parser alike (r6).
 
     ``live_turn`` is the current request's records in APPEND order (agent-harness#1194 r4). The
     current request is the last genuine request: a user record that is not ``isMeta``, carries no
@@ -5397,16 +5409,17 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
                     isinstance(item, dict) and item.get("type") == "tool_result" for item in content)))
 
     requests = [i for i, (_, payload, message) in enumerate(events) if _genuine_request(payload, message)]
-    if not requests:
-        return len(versions), complete, []
-    start = events[requests[-1]][0]
+    # With no request journaled every record is a member, as in the answer parser, but nothing is
+    # terminal: a give-up or a rejection needs the request it ends.
+    start = events[requests[-1]][0] if requests else -1
 
     def _member(payload: dict, message: dict) -> bool:
         uid = payload.get("uuid") if isinstance(payload.get("uuid"), str) and payload.get("uuid") else None
         return uid is None or first_seen[uid] > start or _claude_api_error_record(payload, message)
 
-    return len(versions), complete, [(payload, message) for _, payload, message in events[requests[-1] + 1:]
-                                     if _member(payload, message)]
+    return len(versions), complete, [(payload, message) for _, payload, message in events[
+        requests[-1] + 1 if requests else len(events):] if _member(payload, message)], \
+        frozenset(uid for uid, position in first_seen.items() if position > start)
 
 
 def _claude_give_up_code(payload: dict) -> str:
@@ -5509,12 +5522,16 @@ def _claude_answer_from_lines(lines: Sequence[str], *, require_terminal: bool = 
     is never answer text: it is dropped before any other rule, so a stray error journaled after a
     completed review cannot replace that review (agent-harness#1194 r2). On both routes a
     sidechain record (``isSidechain``, a subagent's own thread) is dropped too, as in the
-    give-up walk (r4). Callers reach this parser only through ``_claude_transcript_outcome``.
+    give-up walk (r4). Every record of the answer must be a member of the current request
+    (``_claude_request_walk``: its uuid first seen in that request, a sidechain sighting
+    included), so a record the give-up walk does not count as evidence never answers either
+    (r6). Callers reach this parser only through ``_claude_transcript_outcome``.
 
     Measured on real Claude Code 2.1.282 journals: every record has a uuid, 9 of 28,960 turns
     hold more than one message id and none an A-B-A.
     """
     last_line = max((i for i, text in enumerate(lines) if text.strip()), default=-1)
+    members = _claude_request_walk(lines)[3]
     records: list[tuple[dict, dict]] = []
     for index, line in enumerate(lines):
         if not line.strip():
@@ -5703,6 +5720,8 @@ def _claude_answer_from_lines(lines: Sequence[str], *, require_terminal: bool = 
             group = [(p, m) for p, m in turn if m.get("id") == message_id]
         if not group:
             return None
+        if any(_uuid(p) is not None and _uuid(p) not in members for p, _ in group):
+            return None  # not evidence for the current request: its uuid was seen before it (r6)
         if any(_uuid(p) in history_uuids or _said(m) in history_said
                or (m.get("id") is not None and m.get("id") in history_ids)
                for p, m in group):

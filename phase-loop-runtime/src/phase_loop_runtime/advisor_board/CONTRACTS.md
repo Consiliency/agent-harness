@@ -690,7 +690,10 @@ give-up detector are views of it, so they cannot disagree:
 - `answer`: the route's answer parser (the agent-harness#1002/#1077/#1017
   rules; the president route fails closed on any error record in the turn)
   returns text. An accepted answer always wins, whatever follows it. An
-  `isApiErrorMessage` record is never answer text. If the text is not an
+  `isApiErrorMessage` record is never answer text. Every record of the answer
+  must be a member of the current request (defined below; a sidechain sighting
+  counts), so a record that is not evidence for the request never answers it
+  either. If the text is not an
   accepted verdict, the leg is handed it back as
   `claude_tui_broker_terminal_nonconforming` instead of waiting.
 - `gave_up`: no answer, and the last live record after the current request is
