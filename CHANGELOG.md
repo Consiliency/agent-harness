@@ -32,6 +32,52 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
   as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
 
+### One shared redaction pipeline with broader credential-shape coverage
+
+- New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
+  control characters, detects credential shapes, e-mail addresses and the running user's home
+  paths and names over the same text, merges the spans, and replaces each once. All of these
+  use it, so the same input gives the same output everywhere:
+  - review-leg details, PTY tails and private leg logs;
+  - run-metadata stderr excerpts;
+  - the hotfix reasons recorded by `observability` and the CLI.
+- Value grammar:
+  - an unquoted value runs to whitespace, including an auth-scheme word before it;
+  - a quoted value (escapes allowed, may contain spaces) runs to its matching close quote plus
+    any non-space text glued after it. A lone quoted value followed only by structural
+    delimiters is redacted inside its quotes.
+- Key names are matched without a left word boundary, so glued and prefixed names
+  (`dbPassword`, `mysecret`, `GITHUB_TOKEN`) are covered. `secret_key`, `private_key`,
+  `access_key`, `passphrase`, `credential(s)` and `signature` are added.
+- Newly recognised shapes:
+  - a secret command-line flag followed by a bare or quoted value;
+  - URL userinfo, including a token-only userinfo;
+  - `Cookie`/`Set-Cookie` headers, including JSON and dict forms;
+  - PEM and PGP private-key blocks;
+  - `x-api-key`.
+- Every pattern is linear in the input length, with bounded quantifiers after alternations.
+- Credential shapes are detected over the normalized text and over the raw text with colour codes
+  removed, and a span found in either is redacted, so normalization only adds coverage. Every
+  site redacts its whole input before any excerpt is cut. Whitespace around the separator is
+  unbounded. JWT-shaped tokens are found by a linear scan of dotted token runs.
+- Pipeline branch-operation error messages now go through the same pipeline.
+- The previous leg-detail redaction is replayed exactly inside the pipeline (its detectors, its
+  merge, then the closeout gate's forbidden shapes over its own output), and every offset it
+  replaced is always replaced, so the pipeline removes at least what the previous redaction
+  removed whatever the newer shapes add. Tests require the replay's output to equal the frozen
+  previous function's output. The previous stderr-excerpt detector also runs, over the raw text.
+- Every step is linear in the input length, at every site. The closeout gate's
+  `process.env[...] =` shape and the JWT shape are found by linear scans that return exactly the
+  regex's matches (tested against the regexes); the gate itself still uses the regex. The
+  placeholder containment check is a bisect, and the colour-free view maps back to raw offsets
+  through its run starts, so memory stays proportional to the input.
+- Tests compare every site against a frozen copy of the previous functions, end to end, and
+  require the output to keep no value fragment the previous output had removed.
+- `redaction.STDERR_SECRET_KV_RE` and the panel's private detector copies are removed.
+- The BAML adapter's error sanitizer moves onto this module in a follow-up, after its
+  in-flight change lands.
+- No agy route-core file changes, so this needs no agy requalification.
+
 ### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204)
 
 - `invoke_board(pointer_brief=True)`, `advisor-board --pointer-brief` and the governed gate's `pointer_brief` declare that the brief points reviewers at files in the staged tree instead of inlining them. Nothing detects a pointer brief from its text.

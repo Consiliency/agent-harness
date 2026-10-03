@@ -73,6 +73,7 @@ from .agy_canary_evidence import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
+from . import credential_redaction as _credential_redaction
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
@@ -2258,130 +2259,19 @@ _LEG_FAILURE_LOG_TAIL_LINES = 20
 # Idempotent by construction: detectors ignore matches wholly inside a generated placeholder,
 # a known path matches only at a path START (never after `~` or `/`), and `_finalize_leg_detail`
 # iterates redact+cap to its fixed point.
-_LEG_DETAIL_PLACEHOLDERS = ("<redacted>", "<user>", "<email>", "<path>", "~")
-_LEG_DETAIL_PLACEHOLDER_RE = re.compile(r"<redacted>|<user>|<email>|<path>|~")
-_LEG_DETAIL_ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
-_LEG_DETAIL_CTRL_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
-# Credential SHAPES (values we cannot know in advance).
-_LEG_DETAIL_CREDENTIAL_RES: tuple[re.Pattern[str], ...] = (
-    # an auth scheme and its token, across whitespace/newlines
-    re.compile(r"(?i)\b(?:bearer|basic|token|digest|negotiate)\s+[A-Za-z0-9._~+/=-]{8,}"),
-    # prefixed API keys / tokens
-    re.compile(
-        r"\b(?:sk-(?:ant-)?|sk_live_|sess-|xai-|gh[pousr]_|github_pat_|glpat-|hf_|"
-        r"xox[abceoprs]-|AIza|ya29\.|AKIA)[A-Za-z0-9_.-]{8,}"
-    ),
-    re.compile(r"(?<![\w/])1//[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"),
-)
-# key=value / key: value secrets: the VALUE (with an optional scheme word) is the span, so
-# the key name stays readable. Quoted keys and values are allowed.
-_LEG_DETAIL_KV_RE = re.compile(
-    r"(?i)[\"']?\b(?:api[_-]?key|authorization|proxy-authorization|access[_-]?token|"
-    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|token|secret|password|passwd)[\"']?"
-    r"\s*[:=]\s*(?P<value>[\"']?(?:(?:bearer|basic|token|digest)\s+)?[^\s\"',;]+[\"']?)"
-)
-_LEG_DETAIL_EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-# A known path starts at the text start, after whitespace, a quote, `=`, `:`, `(`, or right
-# after a `file://` scheme — never after `~` or `/` (so `~/app` is not re-matched for
-# HOME=/app). It ends at a path boundary: anything but a name character, and a `.` only
-# when no name character follows it ("… /Users/Jane Doe." ends the path).
-_PATH_START = r"(?:(?<=^)|(?<=[\s\"'=:(])|(?<=file://))"
-_PATH_END = r"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])"
-_USERNAME_WORD = "A-Za-z0-9_"
+# Detectors, placeholders and the redaction pipeline live in the shared
+# `credential_redaction` module.
 
 
 def _redaction_identity() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The running user's real home directories and names — the KNOWN values a detail must
-    not carry. Both the environment's view and the password database's, since they can
-    differ (a seat's rebuilt environment, a mapped uid)."""
-    homes: set[str] = set()
-    users: set[str] = set()
-    home = os.path.expanduser("~")
-    if home and home != "~":
-        homes.add(home)
-    try:
-        import pwd
-
-        entry = pwd.getpwuid(os.getuid())
-        homes.add(entry.pw_dir)
-        users.add(entry.pw_name)
-    except (ImportError, KeyError, AttributeError, OSError):
-        pass
-    for key in ("USER", "LOGNAME"):
-        if os.environ.get(key):
-            users.add(os.environ[key])
-    return (
-        tuple(h.rstrip("/") for h in homes if h and h.rstrip("/") not in ("", "/")),
-        tuple(u for u in users if u),
-    )
-
-
-def _normalize_leg_text(text: str) -> str:
-    """Every escape-sequence and control character (newline kept) becomes ONE space, so
-    offsets are preserved and `Bearer\\t<tok>` / `Bearer\\x1b[1C<tok>` stay two words."""
-    text = _LEG_DETAIL_ESCAPE_RE.sub(lambda m: " " * len(m.group(0)), text or "")
-    return _LEG_DETAIL_CTRL_RE.sub(" ", text)
-
-
-def _leg_detail_spans(
-    text: str, known: Sequence[str | os.PathLike[str]] = ()
-) -> list[tuple[int, int, str]]:
-    """Every detector's spans over the SAME normalized text: (start, end, kind)."""
-    spans: list[tuple[int, int, str]] = []
-    for pattern in _LEG_DETAIL_CREDENTIAL_RES:
-        spans += [(m.start(), m.end(), "credential") for m in pattern.finditer(text)]
-    spans += [(m.start("value"), m.end("value"), "credential") for m in _LEG_DETAIL_KV_RE.finditer(text)]
-    spans += [(m.start(), m.end(), "email") for m in _LEG_DETAIL_EMAIL_RE.finditer(text)]
-    homes, users = _redaction_identity()
-    seat = [str(p).rstrip("/") for p in known if str(p).rstrip("/") not in ("", "/")]
-    for value, kind in [(p, "path") for p in seat] + [(h, "home") for h in homes]:
-        pattern = re.compile(_PATH_START + re.escape(value) + _PATH_END)
-        spans += [(m.start(), m.end(), kind) for m in pattern.finditer(text)]
-    for user in users:
-        w = _USERNAME_WORD
-        pattern = re.compile(rf"(?<![{w}]){re.escape(user)}(?![{w}])")
-        spans += [(m.start(), m.end(), "user") for m in pattern.finditer(text)]
-    # A match wholly inside a generated placeholder is the placeholder, not a new finding.
-    inside = [(m.start(), m.end()) for m in _LEG_DETAIL_PLACEHOLDER_RE.finditer(text)]
-    return [
-        (s, e, k) for s, e, k in spans
-        if e > s and not any(ps <= s and e <= pe for ps, pe in inside)
-    ]
-
-
-_LEG_DETAIL_PLACEHOLDER_FOR = (
-    ("credential", "<redacted>"), ("email", "<email>"), ("path", "<path>"),
-    ("home", "~"), ("user", "<user>"),
-)
+    """The running user's real home directories and names (the shared module's view)."""
+    return _credential_redaction.redaction_identity()
 
 
 def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) -> str:
-    """Span-union redaction of a WHOLE, UNCUT, multi-line text (line structure kept). Run
-    this BEFORE selecting or cutting an excerpt. The closeout metadata gate's forbidden
-    shapes run last, over the redacted text: they can only remove more, and they check the
-    same output string the gate itself will check."""
-    from .redaction import _FORBIDDEN_METADATA_PATTERNS
-
-    normalized = _normalize_leg_text(text)
-    spans = sorted(_leg_detail_spans(normalized, known))
-    merged: list[list[object]] = []
-    for start, end, kind in spans:
-        if merged and start <= merged[-1][1]:  # overlapping or adjacent
-            merged[-1][1] = max(merged[-1][1], end)
-            merged[-1][2].add(kind)
-        else:
-            merged.append([start, end, {kind}])
-    out: list[str] = []
-    cursor = 0
-    for start, end, kinds in merged:
-        placeholder = next(p for k, p in _LEG_DETAIL_PLACEHOLDER_FOR if k in kinds)
-        out += [normalized[cursor:start], placeholder]
-        cursor = end
-    redacted = "".join(out) + normalized[cursor:]
-    for _name, pattern in _FORBIDDEN_METADATA_PATTERNS:
-        redacted = pattern.sub("<redacted>", redacted)
-    return redacted
+    """Span-union redaction of a WHOLE, UNCUT, multi-line text through the shared pipeline.
+    Run this BEFORE selecting or cutting an excerpt."""
+    return _credential_redaction.redact_text(text, known, identity=_redaction_identity())
 
 
 # ----------------------------------------------------------------------------------------

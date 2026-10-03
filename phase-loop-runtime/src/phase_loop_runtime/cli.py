@@ -3205,7 +3205,9 @@ def _hotfix_verification_commands(plan_stub: Path) -> list[list[str]]:
 
 
 def _redact_hotfix_reason(reason: str) -> str:
-    return " ".join(reason.split())[:200]
+    from .credential_redaction import redact_text
+
+    return " ".join(redact_text(reason).split())[:200]
 
 
 def _migrate_events_command(*, repo: Path, dry_run: bool, backup_suffix: str) -> int:
