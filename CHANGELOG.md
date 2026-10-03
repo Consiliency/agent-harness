@@ -67,6 +67,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   agent-harness#361) on every tooled or pointer seat record.
 - New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;
   it accepts only a recorded, contained, subuid-owned path.
+- The seat token is read at every jailed launch, so an operator can replace it between legs
+  (an atomic rename) and the next leg uses the new one; it is bound by no jail digest or
+  qualification record. A jailed leg whose provider reports a rate or usage limit ends with
+  the classifier's `usage_limit` detail (reset time included when given) and the new notice
+  `claude_seat_token_rate_limited`, never a jail refusal. The jailed leg now runs the shared
+  leg-failure classifier over its PTY tail, after scanning the tail for the seat token.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

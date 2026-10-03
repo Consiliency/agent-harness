@@ -568,6 +568,15 @@ it** from your Claude account settings if a leg reports `claude_seat_token_in_ou
 can read its own token and use it for the token's lifetime; that residual is recorded
 under agent-harness#361 (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
 
+**Replacing the seat token.** The runtime reads the token file at every jailed launch, so
+you can swap it between legs or rounds, for example to move to another subscription. Write
+the new token beside the file and rename it over the old one, so no launch reads half a
+file. A leg that is already running keeps its own token. Replacing the token does not
+change the jail's digest or invalidate its recorded qualification. If a leg reports
+`claude_seat_token_rate_limited`, the token's subscription hit a rate or usage limit; the
+leg's detail names the reset time when the provider gives one. Rotate or replace the token,
+or wait for the reset. The jail itself is fine.
+
 **Notices.** Each seat's notices are `{code, seat_key, what, why, fix}` in the
 `advisor-board --json` payload (`notices`, `legs[].notices`) and in the text summary. The
 full vocabulary is in `advisor_board/CONTRACTS.md` ("SEATJAIL").

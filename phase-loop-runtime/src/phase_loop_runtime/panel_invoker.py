@@ -2435,7 +2435,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_sandbox_egress_opt_out", "seat_sandbox_root_fell_back", "seat_sandbox_root_unapplied",
     "seat_staging_below_floor", "seat_filesystem_unconfined", "seat_tool_denied",
     "claude_seat_token_missing", "claude_seat_token_rejected", "claude_seat_token_in_output",
-    "claude_seat_bypass_ack_blocked",
+    "claude_seat_token_rate_limited", "claude_seat_bypass_ack_blocked",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
     "gemini_seat_token_scope_excess", "gemini_seat_stream_split_unavailable",
     "gemini_seat_profile_unqualified", "gemini_seat_token_expired", "gemini_seat_token_in_output",
@@ -8178,7 +8178,7 @@ def _exec_jailed_claude_leg(
             "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
         })
     try:
-        rc, review_text, log_text, _tail = _run_claude_tui_session(
+        rc, review_text, log_text, pty_tail = _run_claude_tui_session(
             command=command, cwd=Path(_seat_jail.SEAT_TREE), prompt=prompt,
             output_file=output_snapshot, timeout_s=timeout_s, env=dict(jail.env),
             mode="review", backstop_s=backstop_s,
@@ -8207,8 +8207,12 @@ def _exec_jailed_claude_leg(
         shutil.rmtree(snapshots, ignore_errors=True)
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
+    pty_tail = str(pty_tail or "")
+    # The PTY tail labels the failure below, and an unlabelled one goes to the private leg
+    # log, so it is scanned like everything else the parent keeps.
     if (token_seen or _seat_jail.contains_secret(review_text.encode("utf-8", errors="replace"), seat.token)
-            or _seat_jail.contains_secret(kept, seat.token)):
+            or _seat_jail.contains_secret(kept, seat.token)
+            or _seat_jail.contains_secret(pty_tail.encode("utf-8", errors="replace"), seat.token)):
         return _jailed_failure("claude_seat_token_in_output", failure_detail_sink)
     if broker_evidence is not None:
         broker_evidence.update({
@@ -8217,10 +8221,27 @@ def _exec_jailed_claude_leg(
             "claude_transcript_bytes": len(kept),
         })
     if log_text and rc != 0 and not review_text.strip():
-        if failure_detail_sink is not None and str(log_text) in _HARNESS_DETAIL_CODES:
-            failure_detail_sink.append(_LegFailure(template=str(log_text)))
-        return "DEGRADED", ""
-    return _classify_leg(rc, review_text, str(log_text), "review"), review_text
+        status, text = "DEGRADED", ""
+    else:
+        status, text = _classify_leg(rc, review_text, str(log_text), "review"), review_text
+        # As on the sealed route: a labelled provider failure turns only ERROR / EMPTY into
+        # DEGRADED.
+        if status in ("ERROR", "EMPTY") and _leg_failure_kind(rc, review_text, pty_tail) in (
+                "auth", "usage_limit", "env_failure"):
+            status = "DEGRADED"
+    if status != "OK" and failure_detail_sink is not None:
+        # The shared tail classifier labels the failure; our own session code stands when
+        # the tail names nothing.
+        failure = _leg_failure_detail(status, rc, review_text, pty_tail)
+        if (failure is None or failure.unknown) and log_text and _is_harness_code(str(log_text)):
+            failure = _LegFailure(template=str(log_text))
+        if failure is not None:
+            failure_detail_sink.append(failure)
+            # A capped subscription is not a broken jail: the seat token's own notice says
+            # so, beside the detail that carries the reset time.
+            if _seat_jail.is_limit_detail(failure.template):
+                seat.notices.append("claude_seat_token_rate_limited")
+    return status, text
 
 
 def _jailed_failure(code: str, sink: list[_LegFailure] | None) -> tuple[str, str]:

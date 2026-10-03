@@ -873,3 +873,64 @@ def test_upg_the_recorder_accepts_the_private_group_and_refuses_a_shared_one(
     q._record_pass(evidence)
     assert state.stat().st_mode & 0o777 == 0o775                 # never re-permissioned
     assert (seat_jail.jail_pass_dir() / f"{'0' * 64}.json").is_file()
+
+
+# --------------------------------------------------------------------------------------
+# Seat-token rotation: the operator may swap the token file between legs (atomic rename in
+# the same 0700 directory). Each launch reads it afresh; a running leg keeps its own.
+# --------------------------------------------------------------------------------------
+
+def _store_token(path: Path, token: bytes) -> None:
+    staged = path.with_name(path.name + ".new")
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(token + b"\n")
+    os.replace(staged, path)
+
+
+def test_the_seat_token_is_read_afresh_after_an_atomic_replace(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    path = seat_jail.claude_seat_token_path()
+    path.parent.mkdir(parents=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    _store_token(path, b"TOKEN-SUBSCRIPTION-A")
+    assert seat_jail.read_claude_seat_token() == b"TOKEN-SUBSCRIPTION-A"
+    _store_token(path, b"TOKEN-SUBSCRIPTION-B")
+    assert seat_jail.read_claude_seat_token() == b"TOKEN-SUBSCRIPTION-B"
+
+
+def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypatch, tmp_path):
+    import types
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    path = seat_jail.claude_seat_token_path()
+    path.parent.mkdir(parents=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    delivered: list[bytes] = []
+
+    def _build(leg, seat_dir, executable, *, token_fd, **_kw):
+        token = os.read(token_fd, 4096)
+        os.close(token_fd)
+        if token != b"probe":
+            delivered.append(token)   # what the seat's CLI would drain from its pipe
+        return types.SimpleNamespace(leg=leg)
+
+    monkeypatch.setattr(panel_invoker._seat_jail, "build_seat_jail", _build)
+    monkeypatch.setattr(panel_invoker._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
+    monkeypatch.setattr(panel_invoker._seat_jail, "CLAUDE_PRESEED", {})
+    monkeypatch.setattr(panel_invoker, "_resolve_claude_executable", lambda: Path("/usr/bin/true"))
+    auth = types.SimpleNamespace(staged_tree_sha256="a" * 64)
+
+    def _launch(name: str):
+        review = tmp_path / name / "review"
+        (review / seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
+        return panel_invoker._prepare_jailed_claude(review, tmp_path / name / "seat", auth, 1, 1,
+                                         ("bundle", "instructions"))
+
+    _store_token(path, b"TOKEN-SUBSCRIPTION-A")
+    first = _launch("leg-1")
+    _store_token(path, b"TOKEN-SUBSCRIPTION-B")    # rotation between two legs
+    second = _launch("leg-2")
+    assert delivered == [b"TOKEN-SUBSCRIPTION-A", b"TOKEN-SUBSCRIPTION-B"]
+    # The running leg keeps its own token (its output scan uses it), whatever the file holds now.
+    assert first.token == b"TOKEN-SUBSCRIPTION-A" and second.token == b"TOKEN-SUBSCRIPTION-B"

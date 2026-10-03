@@ -168,6 +168,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg ended", "revoked or expired", "re-run setup"),
     "claude_seat_token_in_output": (
         "leg rejected", "seat tried to publish its credential", "revoke the token"),
+    # Not a jail fault: the jail ran, and the provider refused the seat token's subscription.
+    "claude_seat_token_rate_limited": (
+        "leg ended",
+        "the seat token's subscription is rate- or usage-limited (the leg detail names the "
+        "provider's reset time when it gives one)",
+        "rotate or replace the seat token with one for another subscription, or wait for the "
+        "reset"),
     "claude_seat_bypass_ack_blocked": (
         "leg refused", "pre-seed stale for this CLI", "upgrade runtime"),
     "claude_tui_workspace_trust_blocked": (
@@ -215,6 +222,29 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
 }
 
 NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
+
+# The leg details that mean the provider refused the seat token's subscription for a rate
+# or usage limit. ``usage_limit`` and ``usage_limit (resets ...)`` are the shared tail
+# classifier's (``panel_invoker._leg_failure_detail``). The ``claude_seat_*_limited`` codes
+# are the Claude session give-up classes of agent-harness#1194 (still open when this was
+# written); a test holds every limit code in the closed detail vocabulary to this list.
+LIMIT_DETAIL_CODES: frozenset[str] = frozenset({
+    "usage_limit", "claude_seat_rate_limited", "claude_seat_usage_limited",
+})
+
+
+def is_limit_detail(detail: object) -> bool:
+    """Does this leg detail say the provider refused the seat token for a rate/usage limit?
+
+    A detail may carry a rendered reset (``usage_limit (resets 17:00)``) or a route prefix
+    (``claude_tui_pty_eof_no_output: usage_limit``); each part is compared exactly."""
+    if not isinstance(detail, str):
+        return False
+    for part in str.__str__(detail).split(": "):
+        head = part.split(" (resets ", 1)[0]
+        if head in LIMIT_DETAIL_CODES:
+            return True
+    return False
 
 # Codes that send a seat to the sealed route (J7 steps 0-4) rather than refusing it.
 SEALED_FALLBACK_CODES: frozenset[str] = frozenset({

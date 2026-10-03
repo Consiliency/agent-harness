@@ -711,3 +711,22 @@ def test_keyring_shim_joins_a_fresh_session_keyring():
     unshimmed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                                env=env).stdout.strip()
     assert unshimmed == parent
+
+
+# --------------------------------------------------------------------------------------
+# Seat-token rotation: the token is per-launch input, never part of the jail's identity.
+# --------------------------------------------------------------------------------------
+
+def test_a_replaced_seat_token_changes_no_jail_digest(tmp_path):
+    """The qualification gate's input at launch is the built jail's actual digest, so a token
+    swapped between two launches must leave it, and the canonical digest, unchanged."""
+    digests = []
+    for name, token in (("one", b"SEAT-TOKEN-SUBSCRIPTION-A"), ("two", b"SEAT-TOKEN-B-" * 7)):
+        (tmp_path / name).mkdir()
+        jail = _jail(tmp_path / name, token=token)
+        try:
+            digests.append((jail.profile_digest, seat_jail.actual_profile_digest(jail)))
+        finally:
+            seat_jail.close_jail_fds(jail)
+    canonical = seat_jail.jail_profile_digest("claude")
+    assert digests == [(canonical, canonical), (canonical, canonical)]

@@ -416,3 +416,94 @@ def test_codex_r1_panel_invoker_imports_without_posix_open_flags():
     env = {**os.environ, "PYTHONPATH": str(Path(pi.__file__).resolve().parent.parent)}
     done = sp.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
     assert done.stdout.strip() == "imported", done.stderr[-800:]
+
+
+# --------------------------------------------------------------------------------------
+# A capped seat-token subscription: the leg ends with the token's own notice, never a jail
+# refusal, and the detail carries the provider's reset time.
+# --------------------------------------------------------------------------------------
+
+def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text, tail):
+    seat = _FakeSeat(tmp_path)
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda jail: None)
+    monkeypatch.setattr(pi, "_broker_claude_tui_command", lambda **k: ["/seat/bin/claude"])
+    monkeypatch.setattr(pi, "_run_claude_tui_session",
+                        lambda **k: (rc, review_text, log_text, tail))
+    sink: list = []
+    status, text = pi._exec_jailed_claude_leg(
+        seat, timeout_s=5, backstop_s=5, model=None, effort=None, prompt="p",
+        broker_evidence={}, failure_detail_sink=sink)
+    return seat, status, text, sink
+
+
+@pytest.mark.parametrize("tail, detail", [
+    ("Usage limit reached. Try again at 5:00 PM", "usage_limit (resets 17:00)"),
+    ("Usage limit reached ∙ resets at Oct 5, 2026 5:00 PM", "usage_limit (resets 17:00, Oct 5 2026)"),
+    ("Usage limit reached", "usage_limit"),
+])
+def test_a_rate_limited_seat_token_ends_the_leg_with_its_own_notice(monkeypatch, tmp_path,
+                                                                    tail, detail):
+    seat, status, text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail=tail)
+    assert status == "DEGRADED" and text == ""
+    assert [f.template for f in sink] == [detail]
+    assert seat.notices == ["claude_seat_token_rate_limited"]
+    # Distinct from every jail refusal and from the sealed fallbacks: a capped token is
+    # never reported as a broken jail.
+    assert not any(code.startswith("seat_sandbox_") for code in seat.notices)
+    assert "claude_seat_token_rate_limited" not in seat_jail.SEALED_FALLBACK_CODES
+    what, why, fix = seat_jail.NOTICES["claude_seat_token_rate_limited"]
+    assert "seat token's subscription" in why and "rotate or replace the seat token" in fix
+
+
+def test_a_leg_whose_tail_names_no_limit_carries_no_token_notice(monkeypatch, tmp_path):
+    seat, status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail="something else broke")
+    assert status == "DEGRADED"
+    assert [f.template for f in sink] == ["claude_tui_pty_eof_no_output"]
+    assert seat.notices == []
+
+
+def test_the_pty_tail_is_scanned_for_the_seat_token(monkeypatch, tmp_path):
+    seat = _FakeSeat(tmp_path)
+    _seat, status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"),
+        tail="Usage limit reached " + seat.token.decode())
+    assert status == "DEGRADED"
+    assert [f.template for f in sink] == ["claude_seat_token_in_output"]
+
+
+@pytest.mark.parametrize("detail, limited", [
+    ("usage_limit", True),
+    ("usage_limit (resets 17:00, Oct 5 2026)", True),
+    ("claude_tui_pty_eof_no_output: usage_limit (resets 17:00)", True),
+    # agent-harness#1194's Claude session give-up classes.
+    ("claude_seat_rate_limited", True),
+    ("claude_seat_usage_limited", True),
+    ("claude_seat_usage_limited: usage_limit (resets 17:00, Oct 5 2026)", True),
+    ("seat_sandbox_refused:jail_unqualified", False),
+    ("claude_seat_token_rate_limited", False),
+    ("auth_failure", False),
+    ("omnigent rate_limit: HTTP 429", False),
+    ("usage_limited", False),
+    (None, False),
+])
+def test_limit_details_are_recognised_exactly(detail, limited):
+    assert seat_jail.is_limit_detail(detail) is limited
+
+
+def test_every_limit_code_in_the_detail_vocabulary_raises_the_token_notice():
+    """Completeness guard: a rate/usage-limit code added to the closed detail vocabulary
+    (e.g. when agent-harness#1194 lands, or under a new name) must be recognised, so a
+    capped seat token can never end a leg without its notice."""
+    import re
+
+    vocabulary = (pi._HARNESS_DETAIL_CODES | pi._PARAMETER_FREE_FAILURES) - seat_jail.NOTICE_CODES
+    limits = sorted(c for c in vocabulary if re.search(r"(?:rate|usage)_limit", c))
+    assert limits, "the guard found nothing to check"
+    assert [c for c in limits if not seat_jail.is_limit_detail(c)] == []

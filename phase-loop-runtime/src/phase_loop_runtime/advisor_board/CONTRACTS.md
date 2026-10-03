@@ -950,6 +950,16 @@ are recorded on agent-harness#1132.
   No token is in any argv, environment value, evidence or log; seat output is scanned for
   its bytes and standard/URL-safe/hex encodings (`claude_seat_token_in_output`). Gemini: the
   D7 access-token-only copy (builder only; the tooled Gemini route is gated on P4 then P3).
+- **Seat-token rotation.** The token file is read at each jailed launch and never cached
+  across legs or rounds. A token replaced between legs (atomic rename in the same 0700
+  directory) is used by the next launch; a running leg keeps the token it was launched with.
+  The token is per-launch input only: neither the jail profile digest nor an EC-EXECFIND-2
+  pass binds it, so replacing it trips no qualification check.
+- **A rate-limited seat token is not a jail fault.** When the provider refuses the seat
+  token's subscription for a rate or usage limit (the shared leg-failure classifier's
+  `usage_limit` class, with the provider's reset time when it gives one), the leg ends with
+  that detail and the notice `claude_seat_token_rate_limited`: rotate or replace the seat
+  token, or wait for the reset. It is never a `seat_sandbox_refused:*` code.
 - **Pointer mode.** A jailed seat gets a pointer brief: jail-path preamble, the
   AUTHORITATIVE INSTRUCTIONS inline, and POINTER frames naming the bundle (path, sha256,
   size) and the tree (path, source commit, approved digest). Evidence records
