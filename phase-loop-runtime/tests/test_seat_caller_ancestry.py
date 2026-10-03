@@ -112,7 +112,9 @@ else: print(text,flush=True)
             time.sleep(.02)
         assert not errors, errors
         facts = json.loads(facts_path.read_text())
-        assert facts == {'pid': 2, 'ppid': 1, 'cgroup_mount': False,
+        expected_pid = 3 if route in ('tui', 'president') else 2
+        expected_ppid = 2 if route in ('tui', 'president') else 1
+        assert facts == {'pid': expected_pid, 'ppid': expected_ppid, 'cgroup_mount': False,
                          'bounding': '0000000000000000', 'no_new_privs': '1'}
         assert len(roots) == 1
         pending, providers = roots.copy(), []
@@ -131,7 +133,8 @@ else: print(text,flush=True)
             status = Path(f'/proc/{parent}/status').read_text().splitlines()
             parent = int(next(line.split()[1] for line in status if line.startswith('PPid:')))
             assert parent > 1 and len(ancestry) <= 8
-        assert len(ancestry) == (3 if route == 'supervised' else 2), (route, ancestry)
+        expected_ancestry = 3 if route in ('supervised', 'tui', 'president') else 2
+        assert len(ancestry) == expected_ancestry, (route, ancestry)
     finally:
         panel_invoker._write_seat_text(release, 'released')
         thread.join(timeout=30)

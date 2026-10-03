@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -349,9 +350,11 @@ SEAT = textwrap.dedent("""
 """)
 
 DRIVER = textwrap.dedent("""
-    import os, subprocess, sys, tempfile, threading
+    import json, os, subprocess, sys, tempfile, threading
     from pathlib import Path
     from phase_loop_runtime import panel_invoker, sandbox_egress
+    helpers = json.loads(sys.argv[4])
+    sandbox_egress.trusted_host_executable = lambda name: helpers[name]
     if sys.argv[1] == "main":
         # main's seat identity: the holder's root, locked down, and no probe.
         panel_invoker._seat_identity_switch = lambda caps=(): [
@@ -410,17 +413,23 @@ _SCENARIOS = {
 
 
 def _run_as_a_second_account(mode: str, route: str, scenario: str) -> subprocess.CompletedProcess[str]:
+    from phase_loop_runtime import review_stage
     src = str(Path(panel_invoker.__file__).resolve().parents[1])
+    helper_names = (
+        "bash", "getent", "ip", "ip6tables", "iptables", "mount", "nsenter",
+        "setpriv", "sleep", "slirp4netns", "touch", "true", "unshare",
+    )
+    helpers = {name: review_stage.trusted_host_executable(name) for name in helper_names}
     env, foreign = _SCENARIOS[scenario]
     binds = "".join(f"mkdir -p {d}; mount --bind /usr/share {d}; " for d in foreign)
     outer = (
         "set -e; mount -t tmpfs -o mode=1777 t1098 /tmp; mount -t tmpfs -o mode=1777 t1098 /var/tmp; "
         f"mkdir -p /tmp/shared /var/tmp/shared; {binds}echo OUTER-READY >&2; "
-        f'exec unshare --user --map-user={ACCOUNT} --map-group={ACCOUNT} "$0" -c "$1" "$2" "$3" "$4"'
+        f'exec unshare --user --map-user={ACCOUNT} --map-group={ACCOUNT} "$0" -c "$1" "$2" "$3" "$4" "$5"'
     )
     return subprocess.run(
         ["unshare", "--user", "--map-root-user", "--mount", "bash", "-c", outer,
-         sys.executable, DRIVER, mode, route, SEAT],
+         sys.executable, DRIVER, mode, route, SEAT, json.dumps(helpers)],
         capture_output=True, text=True, timeout=180,
         env={**os.environ, **env, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")},
     )

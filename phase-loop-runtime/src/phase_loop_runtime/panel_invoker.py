@@ -311,6 +311,84 @@ def _seat_fd_closer(keep=(), terminal_fd=None) -> list[str]:
             str(terminal_fd if terminal_fd is not None else -1)]
 
 
+_CLAUDE_JOURNAL_COLLECTOR = (
+    "import json,os,stat,subprocess,sys,time\n"
+    "journal=sys.argv[1]\n"
+    "output=sys.argv[2]\n"
+    "command=sys.argv[3:]\n"
+    "def _write(data):\n"
+    " fd=os.open(output,os.O_WRONLY|os.O_NOFOLLOW|os.O_CLOEXEC)\n"
+    " try:\n"
+    "  out=os.fstat(fd)\n"
+    "  if (not stat.S_ISREG(out.st_mode)) or out.st_nlink != 1 or out.st_uid != os.getuid():\n"
+    "   sys.exit(129)\n"
+    "  os.ftruncate(fd,0)\n"
+    "  if data:\n"
+    "   os.write(fd,data)\n"
+    " finally:\n"
+    "  os.close(fd)\n"
+    "def _clear():\n"
+    " try:\n"
+    "  _write(b'')\n"
+    " except Exception:\n"
+    "  pass\n"
+    "def _snapshot(final):\n"
+    " if not os.path.exists(journal):\n"
+    "  return None\n"
+    " parent=os.path.dirname(journal)\n"
+    " name=os.path.basename(journal)\n"
+    " if sorted(os.listdir(parent)) != [name]:\n"
+    "  sys.exit(126)\n"
+    " info=os.lstat(journal)\n"
+    " if (not stat.S_ISREG(info.st_mode)) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_size > 32*1024*1024:\n"
+    "  sys.exit(127)\n"
+    " with open(journal,'rb') as source:\n"
+    "  data=source.read()\n"
+    " if not final and data and not data.endswith(b'\\n'):\n"
+    "  return None\n"
+    " for line in data.splitlines():\n"
+    "  if line.strip():\n"
+    "   json.loads(line)\n"
+    " return data\n"
+    "if os.path.exists(journal):\n"
+    " sys.exit(125)\n"
+    "proc=subprocess.Popen(command)\n"
+    "for _fd in (0,1,2):\n"
+    " try:\n"
+    "  os.close(_fd)\n"
+    " except OSError:\n"
+    "  pass\n"
+    "rc=None\n"
+    "try:\n"
+    " while True:\n"
+    "  rc=proc.poll()\n"
+    "  if rc is not None:\n"
+    "   break\n"
+    "  data=_snapshot(False)\n"
+    "  if data is not None:\n"
+    "   _write(data)\n"
+    "  time.sleep(0.05)\n"
+    " data=_snapshot(True)\n"
+    " if data is None:\n"
+    "  sys.exit(125)\n"
+    " _write(data)\n"
+    "except json.JSONDecodeError:\n"
+    " _clear()\n"
+    " sys.exit(128)\n"
+    "except SystemExit:\n"
+    " _clear()\n"
+    " raise\n"
+    "except Exception:\n"
+    " _clear()\n"
+    " sys.exit(130)\n"
+    "sys.exit(rc)\n"
+)
+
+def _claude_journal_collector_command(command, *, expected_journal: str, output: Path) -> list[str]:
+    return ["/usr/bin/python3", "-I", "-S", "-c", _CLAUDE_JOURNAL_COLLECTOR,
+            expected_journal, os.path.abspath(output), *command]
+
+
 class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
     """A provider process group could not be proven absent after termination."""
 
@@ -3940,14 +4018,19 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
         if item == "--output-last-message":
             path = Path(command[index + 1])
             outputs = (*outputs, path if path.is_absolute() else cwd / path)
+    transcript = _precreate_seat_output(transcript_path) if transcript_path is not None else None
+    outputs = (*outputs, *((transcript,) if transcript is not None else ()))
     outputs = tuple(_precreate_seat_output(path) for path in outputs)
     with seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
                       readonly_paths=readonly, outputs=outputs,
                       gemini_profile=gemini_profile, role=role) as (provider, profile):
+        owned_command = [provider, *command[1:]]
         if transcript_path is not None:
-            transcript = _precreate_seat_output(transcript_path)
             slug = re.sub(r"[^A-Za-z0-9.-]", "-", str(cwd))
-            config_dir = profile.env.get("CLAUDE_CONFIG_DIR", profile.env["HOME"] + "/.claude")
+            profile_env = dict(profile.env)
+            profile_env.setdefault("CLAUDE_CONFIG_DIR", profile_env["HOME"] + "/.claude")
+            profile = replace(profile, env=profile_env)
+            config_dir = profile.env["CLAUDE_CONFIG_DIR"]
             project = config_dir + "/projects/" + slug
             transcript_name = (
                 command[command.index("--session-id") + 1] + ".jsonl"
@@ -3955,10 +4038,13 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             )
             profile = replace(profile, mount_args=(*profile.mount_args,
                               "--dir", config_dir + "/projects",
-                              "--dir", project, "--bind", _seat_bind_source(transcript, output=True),
-                              project + "/" + transcript_name))
+                              "--dir", project))
+            owned_command = _claude_journal_collector_command(
+                owned_command, expected_journal=project + "/" + transcript_name,
+                output=transcript,
+            )
         try:
-            yield [provider, *command[1:]], profile
+            yield owned_command, profile
         finally:
             if _SEAT_REDACTIONS.get():
                 retained = (*outputs, *((transcript,) if transcript_path is not None else ()))
@@ -6956,11 +7042,11 @@ def _run_claude_tui_session(
         return rc, _redact_seat_credentials(text), _HarnessCode(log) if log else log, tail
 
     try:
+        command = list(command)
+        if "--session-id" not in command:
+            command.extend(("--session-id", str(uuid.uuid4())))
         if session_transcript_path is None:
             directory = profile_stack.enter_context(tempfile.TemporaryDirectory(prefix="seat-journal-"))
-            command = list(command)
-            if "--session-id" not in command:
-                command.extend(("--session-id", str(uuid.uuid4())))
             session_id = command[command.index("--session-id") + 1]
             session_transcript_path = Path(directory) / (str(uuid.UUID(session_id)) + ".jsonl")
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
@@ -7079,6 +7165,11 @@ def _run_claude_tui_session(
                         # (`proc.poll() or 1`) so _classify_leg fails closed — matching
                         # the proc.poll()/deadline sibling paths. Promoting a transcript
                         # verdict to OK here would be a race-dependent false-green.
+                        if proc is not None and proc.poll() is None:
+                            try:
+                                proc.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                pass
                         review_text = _current_output()
                         if _completion_ok(review_text, mode):
                             return _finish(0, review_text, "claude_tui_file_output")

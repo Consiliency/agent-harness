@@ -411,7 +411,7 @@ def test_tool_only_transcript_growth_keeps_active_tui_leg_alive(tmp_path, monkey
     """
     transcript = tmp_path / "owned.jsonl"
     slug = pi.re.sub(r"[^A-Za-z0-9.-]", "-", str(tmp_path))
-    journal = '"$HOME/.claude/projects/' + slug + '/owned.jsonl"'
+    journal = '"$CLAUDE_CONFIG_DIR/projects/' + slug + '/$1.jsonl"'
     script = _FINITE_ANIMATION_SCRIPT.replace(
         "sleep 0.1;", "printf '%s\\n' '{\"type\":\"progress\"}' >> " + journal + "; sleep 0.1;",
     )
@@ -447,7 +447,7 @@ def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
     monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 0.05)
     transcript = tmp_path / "owned.jsonl"
     slug = pi.re.sub(r"[^A-Za-z0-9.-]", "-", str(tmp_path))
-    journal = '"$HOME/.claude/projects/' + slug + '/owned.jsonl"'
+    journal = '"$CLAUDE_CONFIG_DIR/projects/' + slug + '/$1.jsonl"'
     event = json.dumps({"message": {"content": [{"type": "tool_use", "id": "toolu-long-read"}]}})
     script = "printf '%s\\n' '" + event + "' > " + journal + "; " + _WEDGE_SCRIPT
     observed = []
