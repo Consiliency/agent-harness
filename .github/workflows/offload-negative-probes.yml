@@ -46,12 +46,13 @@ jobs:
       - name: Offload to a deliberately unreachable host
         id: offload
         continue-on-error: true
-        uses: Consiliency/ci-actions/dagger-offload@c9272a525486204a9d7333aef6e78297b3054de3
+        uses: Consiliency/ci-actions/dagger-offload@3929e18ce0cb14e0050f6b63f287d1cf98f5aaaf
         with:
           command: "bash ci/offload-gate.sh"
           eligible: "true"
           remote-host: "offload-probe-nonexistent.invalid"
-          ts-authkey: ${{ secrets.TS_AUTHKEY }}
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
 
       - name: Assert the offload FAILED (fail-closed)
         env:
