@@ -337,6 +337,8 @@ def test_an_unknown_decision_is_refused(tmp_path, monkeypatch):
         panel_invoker.run_provider(["true"], env={}, child_scratch="skip")
     with pytest.raises(ValueError, match="unknown child scratch decision"):
         panel_invoker.run_provider(["true"], child_scratch="skip")
+    with pytest.raises(ValueError, match="unknown child scratch decision"):
+        sandbox_policy.child_scratch_env({}, "skip")
 
 
 def test_a_launch_with_no_env_is_never_probed_or_refused(tmp_path, monkeypatch):
