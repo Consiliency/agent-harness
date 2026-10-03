@@ -443,7 +443,10 @@ def run_bounded_falsifier_node(
     # launches the exact resolved executable the digest measures.
     executable, entries, identity = _falsifier_interpreter_scope()
     interpreter = _falsifier_interpreter_digest(executable, entries)
-    with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-") as temporary:
+    from .sandbox_policy import staging_root
+
+    with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-",
+                                     dir=str(staging_root())) as temporary:
         dependencies = Path(temporary)
         _snapshot_falsifier_dependencies(stage, dependencies)
         _require_single_link_files((stage, dependencies))
@@ -920,7 +923,13 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
     if not root.is_dir():
         raise ValueError(f"review root is not a directory: {repo}")
 
-    parent = Path(parent) if parent is not None else Path(tempfile.gettempdir())
+    if parent is None:
+        # The sandbox staging root: never a RAM-backed temp dir while a disk one is
+        # usable (agent-harness#1147).
+        from .sandbox_policy import staging_root
+
+        parent = staging_root()
+    parent = Path(parent)
     parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=REVIEW_STAGE_DIR_PREFIX, dir=str(parent)))
 

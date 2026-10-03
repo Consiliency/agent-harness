@@ -17,9 +17,10 @@ mode (:class:`ScratchLocation`, one warning, hard-clamped retention), or are ref
 a small disk as well as a tmpfs. "RAM-backed" is a Linux tmpfs/ramfs, identified by the
 device serving the path in the mount table; macOS and Windows temp dirs count as disk.
 
-One named exception: the agy QUALIFICATION jails in ``agy_canary_evidence`` keep their tmpfs
-``/tmp`` because it is frozen qualification evidence (follow-up agent-harness#1179). They run
-only to qualify agy, never for review seats or executors.
+Two named exceptions, each a typed :func:`child_scratch_env` decision: the agy
+QUALIFICATION and capture jails keep their tmpfs ``/tmp`` and frozen env, because they are
+qualification evidence (follow-up agent-harness#1179); and the Gemini HEARTBEAT seat's jail
+mounts its own private ``/tmp`` (agent-harness#1181). Neither covers a bounded Gemini leg.
 
 Environment overrides (all optional):
 
@@ -41,8 +42,8 @@ Without an override the stage goes to the platform's per-user cache dir (``$XDG_
 or ``~/.cache`` on Linux, ``~/Library/Caches`` on macOS, ``%LOCALAPPDATA%`` on Windows) under
 ``phase-loop/sandboxes``, then to the system temp dir if that is not RAM-backed.
 
-Spawned agent CLIs (board legs, advisory seats, the Claude president, executors; not the
-Gemini heartbeat seat, whose sandbox has its own private ``/tmp``) get ``TMPDIR`` and
+Spawned agent CLIs (board legs, advisory seats, the president, executors, convergence
+adapters; not the two exceptions above) get ``TMPDIR`` and
 ``CLAUDE_CODE_TMPDIR`` pointed at a private (0700) disk-backed per-user dir with room --
 ``phase-loop/tmp`` in the cache dir -- for each variable that is unset and whose own default
 destination is RAM-backed (:func:`fill_child_tmp_env`). Setting a variable yourself opts
@@ -67,6 +68,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -397,35 +399,45 @@ def _usable(path: Path) -> bool:
     return os.access(path, os.W_OK | os.X_OK)
 
 
-def _private(path: Path, base: Path | None = None) -> bool:
-    """Create ``path`` as a directory only this account can use, or refuse it.
+def _private(path: Path, base: Path) -> bool:
+    """Create ``path`` below ``base`` as a directory only this account can use, or refuse it.
 
-    Used for the child-scratch dir: it is handed to spawned CLIs, so it must be ours and
-    0700 -- never a shared, world-writable temp dir. With ``base`` (a shared dir such as
-    the system temp dir), every component from below ``base`` down to ``path`` must be a
-    real directory of ours, 0700, not just the leaf.
+    ``base`` is a directory the runtime does not own (the user's cache dir, or the shared
+    system temp dir); every component from below it down to ``path`` is the runtime's. Each
+    such component is created on its own at 0700 and must then be a real directory (not a
+    link) owned by this account, tightened to 0700 if it is looser. Used wherever a
+    directory is handed to spawned CLIs or holds a staged tree.
     """
-    if not _usable(path):
-        return False
-    chain = [path]
-    if base is not None:
-        try:
-            parts = path.relative_to(base).parts
-        except ValueError:
-            return False
-        chain = [base.joinpath(*parts[: i + 1]) for i in range(len(parts))]
     try:
-        for component in chain:
-            st = component.lstat()
-            if component.is_symlink() or not component.is_dir():
-                return False
+        parts = path.relative_to(base).parts
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    if not base.is_dir():
+        return False
+    current = base
+    try:
+        for part in parts:
+            current = current / part
+            try:
+                current.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            st = current.lstat()
+            if not stat.S_ISDIR(st.st_mode):
+                return False  # a link (to anything) or a non-directory
             if hasattr(os, "getuid") and st.st_uid != os.getuid():
                 return False
             if hasattr(os, "getuid") and st.st_mode & 0o077:
-                component.chmod(0o700)
+                current.chmod(0o700)
     except OSError:
         return False
-    return True
+    return os.access(path, os.W_OK | os.X_OK)
 
 
 class SandboxRamBackedError(SandboxSpaceError):
@@ -469,11 +481,18 @@ def _degraded(leaf: str, fallback: Path, reason: str) -> ScratchLocation:
     return ScratchLocation(fallback, True, reason)
 
 
-def _staging_candidates() -> list[Path]:
+def _staging_candidates() -> list[tuple[Path, Path | None]]:
+    """``(directory, base)``: the cache candidate is the runtime's own below ``base`` and
+    must be private (:func:`_private`); the temp dir is used as found (``base`` None), as
+    before -- each round's scratch in it is a fresh ``mkdtemp``."""
     cache = _user_cache_dir()
-    candidates = [cache / "phase-loop" / "sandboxes"] if cache is not None else []
-    candidates.append(legacy_staging_root())
+    candidates = [(cache / "phase-loop" / "sandboxes", cache)] if cache is not None else []
+    candidates.append((legacy_staging_root(), None))
     return candidates
+
+
+def _staging_usable(candidate: Path, base: Path | None) -> bool:
+    return _usable(candidate) if base is None else _private(candidate, base)
 
 
 def legacy_staging_root() -> Path:
@@ -512,10 +531,11 @@ def resolve_staging() -> ScratchLocation:
             return ScratchLocation(path, True, "explicit override is RAM-backed")
         return ScratchLocation(path, False)
     candidates = _staging_candidates()
-    for candidate in candidates:
-        if not is_ram_backed(candidate) and _usable(candidate):
+    for candidate, base in candidates:
+        if not is_ram_backed(candidate) and _staging_usable(candidate, base):
             return ScratchLocation(candidate, False)
-    fallback = next((c for c in candidates if _usable(c)), legacy_staging_root())
+    fallback = next(
+        (c for c, base in candidates if _staging_usable(c, base)), legacy_staging_root())
     return _degraded("sandboxes", fallback, "every candidate is RAM-backed or unwritable")
 
 
@@ -535,7 +555,7 @@ def _child_tmp_dir() -> ScratchLocation:
     cache = _user_cache_dir()
     uid = os.getuid() if hasattr(os, "getuid") else "user"
     shared = legacy_staging_root()
-    candidates = [(cache / "phase-loop" / "tmp", None)] if cache is not None else []
+    candidates = [(cache / "phase-loop" / "tmp", cache)] if cache is not None else []
     candidates.append((shared / f"phase-loop-{uid}" / "tmp", shared))
     for candidate, base in candidates:
         if is_ram_backed(candidate) or not _private(candidate, base):
@@ -579,14 +599,40 @@ def fill_child_tmp_env(env: dict[str, str]) -> dict[str, str]:
         if not needed:
             return env
         location = _child_tmp_dir()
-    except Exception:
-        return env
+    except Exception as exc:  # never silent: degraded (one warning) or refused, as below
+        location = ScratchLocation(legacy_staging_root(), True,
+                                   f"scratch probe failed: {type(exc).__name__}")
     if location.degraded:
         _degraded("child scratch", location.path, location.reason)  # warns or refuses
         return env
     for name in needed:
         env[name] = str(location.path)
     return env
+
+
+#: The scratch decision every agent-CLI launch makes (:func:`child_scratch_env`).
+CHILD_SCRATCH_RELOCATE = "relocate"
+#: The child is jailed with its own private ``/tmp`` (the Gemini heartbeat seat,
+#: agent-harness#1181); a host directory would not exist inside it.
+CHILD_SCRATCH_PRIVATE_TMP = "private_tmp"
+#: The agy capture/qualification jails' frozen env (named exception, agent-harness#1179).
+CHILD_SCRATCH_FROZEN_CAPTURE = "frozen_capture"
+CHILD_SCRATCH_DECISIONS = (
+    CHILD_SCRATCH_RELOCATE, CHILD_SCRATCH_PRIVATE_TMP, CHILD_SCRATCH_FROZEN_CAPTURE,
+)
+
+
+def child_scratch_env(env: Mapping[str, str], decision: str) -> dict[str, str]:
+    """The env an agent CLI is launched with, after its scratch decision.
+
+    ``CHILD_SCRATCH_RELOCATE`` applies :func:`fill_child_tmp_env`; the two named
+    exceptions keep the env as built. Any other value is refused, so a launch site cannot
+    state a decision this module does not know. Returns a new dict.
+    """
+    if decision not in CHILD_SCRATCH_DECISIONS:
+        raise ValueError(f"unknown child scratch decision {decision!r}")
+    out = dict(env)
+    return fill_child_tmp_env(out) if decision == CHILD_SCRATCH_RELOCATE else out
 
 
 def effective_max_total_bytes(path: str | os.PathLike[str]) -> int:

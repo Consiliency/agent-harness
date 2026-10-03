@@ -3175,11 +3175,17 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
     recursive copy for a non-git tree.
 
     The copy roots under the run dir when a ``log_path`` exists (reclaimed with the
-    run/worktree on SIGKILL) and under the system temp dir otherwise; either way it
+    run/worktree on SIGKILL) and under the sandbox staging root otherwise (never a
+    RAM-backed temp dir while a disk one is usable, agent-harness#1147); either way it
     is removed in ``launch_with_spec``'s ``finally`` (detected by the
     ``_REVIEW_STAGE_DIR_PREFIX`` dir name). Only reached inside that try/finally.
     """
-    parent = log_path.parent if log_path is not None else Path(tempfile.gettempdir())
+    if log_path is not None:
+        parent = log_path.parent
+    else:
+        from .sandbox_policy import staging_root
+
+        parent = staging_root()
     parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=_REVIEW_STAGE_DIR_PREFIX, dir=str(parent)))
     # Self-clean on any copy failure: the mkdtemp dir is already on disk, so a partial

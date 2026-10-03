@@ -349,14 +349,19 @@ the caller passes a PATH and the runtime reads it.
   - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
     (`st_dev` matched against `/proc/self/mountinfo`), so overmounts and moved mounts are
     judged correctly. macOS and Windows temp dirs count as disk.
-  - **Named exception:** the agy qualification jails in `agy_canary_evidence` keep a
-    tmpfs `/tmp`, because it is frozen qualification evidence. They run only for
-    qualification, never for seats or executors (follow-up agent-harness#1179).
+  - **Named exceptions**, each a typed scratch decision (`child_scratch_env`): the agy
+    qualification and capture jails keep a tmpfs `/tmp` and their frozen env, because they
+    are qualification evidence (follow-up agent-harness#1179); and the Gemini HEARTBEAT
+    seat's jail mounts its own private `/tmp` (agent-harness#1181). Neither covers a
+    bounded Gemini leg or the bounded Gemini president, which run on the host.
   - **Staging root.** Each round's `pl-panel-*` scratch, and the sandbox clone inside it,
     is created under `staging_root()`. That is `PHASE_LOOP_SANDBOX_STAGING_DIR` when set;
     otherwise `phase-loop/sandboxes` in the platform's per-user cache dir (`$XDG_CACHE_HOME`
     or `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows); else
-    the system temp dir when it is not RAM-backed. `TMPDIR` is not the override.
+    the system temp dir when it is not RAM-backed. `TMPDIR` is not the override. The
+    launcher's agy review copy (without a run log) and the falsifier's stage and
+    dependency snapshot use the same root. Every directory the runtime creates below the
+    cache dir is created 0700 and must be a real directory owned by this account.
   - **Capacity.** Filesystem size comes from `shutil.disk_usage`, which works on every
     platform.
     - Retention ceiling: `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES (40 GiB), 25% of the
@@ -378,12 +383,16 @@ the caller passes a PATH and the runtime reads it.
     RAM-backed, the variable is set to a private (0700, ours) disk-backed per-user dir that
     is above its free-space floor: `phase-loop/tmp` in the cache dir, else
     `phase-loop-<uid>/tmp` under the temp dir.
-  - **Where it applies.** Board legs and advisory seats with a caller-built env
-    (`_subscription_env`, and the `_exec_leg` explicit-env route), brokered legs and the
-    Claude president (`_broker_leg_env`), and executors (`child_executor_env`). It is not
-    applied to the brokered Gemini heartbeat seat, whose sandbox shows a read-only view with
-    its own private `/tmp`, nor to the shared `_broker_subscription_env` allowlist that agy
-    qualification uses.
+  - **Where it applies.** Every review-provider launch: `panel_invoker.launch_provider` /
+    `run_provider` apply `child_scratch_env` to the env they launch with, and only the
+    named exceptions can opt out (`child_scratch=`). The env builders fill too, so the
+    recorded provider evidence matches the launch: board legs and advisory seats
+    (`_subscription_env`, the `_exec_leg` explicit-env route), brokered legs including
+    bounded Gemini, and both presidents (`_broker_leg_env`). Outside the provider
+    interface: executors (`child_executor_env`) and convergence adapters
+    (`_child_environment`). A bounded brokered agy leg's owned HOME is created in the
+    relocated dir as well. `tests/test_agent_cli_scratch_inventory_1147.py` enumerates
+    every process launch in the package and fails on one with no stated decision.
   - **Overrides.** A value the caller set is never overridden. The brokered allowlist
     still drops ambient values, so there only the runtime's own dir can appear.
 - **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical

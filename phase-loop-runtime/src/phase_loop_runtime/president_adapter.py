@@ -412,7 +412,11 @@ class PresidentInvoke:
                     quiescence_latch=latch, review_monitor=monitor, gemini_profile=profile,
                 )
         else:
-            with _president_agy_environment(subscription_env) as env:
+            # Bounded: agy runs on the host, so its scratch is relocated like a leg's
+            # (agent-harness#1147); only the heartbeat jail above has a private /tmp.
+            with _president_agy_environment(
+                panel_invoker._broker_leg_env(self.base_env, "gemini"),
+            ) as env:
                 try:
                     proc = panel_invoker._run_leg_with_liveness(
                         command, cwd=out_dir, env=env, deadline_s=deadline_s,
@@ -533,7 +537,8 @@ def _president_agy_environment(env: Mapping[str, str]):
         finally:
             profile.__exit__(None, None, None)
         return
-    with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-") as empty_home:
+    with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-",
+                                     dir=env.get("TMPDIR") or None) as empty_home:
         # Same fixed deny-all action profile the broker profile carries, so an agy that
         # runs at all under the credential-less HOME still cannot act.
         config_dir = Path(empty_home) / ".gemini" / "antigravity-cli"

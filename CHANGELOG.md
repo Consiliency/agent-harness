@@ -15,12 +15,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
     in `/proc/self/mountinfo`, so overmounts and moved mounts are judged correctly. macOS
     and Windows temp dirs count as disk.
-  - **Named exception:** the agy qualification jails keep their tmpfs `/tmp`, because it is
-    frozen evidence (follow-up agent-harness#1179).
+  - **Named exceptions:** the agy qualification and capture jails keep their tmpfs `/tmp`
+    and frozen env, because they are evidence (follow-up agent-harness#1179); the Gemini
+    heartbeat seat's jail has its own private `/tmp` (agent-harness#1181).
 - **Staging root.** Review scratch (`pl-panel-*`) and its sandbox clone go to
   `PHASE_LOOP_SANDBOX_STAGING_DIR` if set. Otherwise they go to `phase-loop/sandboxes` in the
   per-user cache dir (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`, `%LOCALAPPDATA%`),
-  and then to the temp dir, but only if it is not RAM-backed.
+  and then to the temp dir, but only if it is not RAM-backed. The launcher's agy review copy
+  and the falsifier's stage use the same root. Every directory the runtime creates below
+  the cache dir is created 0700 and must be a real directory owned by this account.
 - **Spawned agent CLIs** (board legs, advisory seats, brokered legs, the president,
   executors):
   - Each unset `TMPDIR` / `CLAUDE_CODE_TMPDIR` whose own default destination is RAM-backed
@@ -28,8 +31,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     `/tmp/claude-<uid>` alone reached 6 GB of a 15 GB RAM `/tmp`.
   - Values you set are never overridden; set either variable to opt out. The brokered
     route's allowlist still drops ambient values.
-  - Not applied to the brokered Gemini heartbeat seat (its sandbox has its own private
-    `/tmp`) or to agy qualification's env.
+  - Decided at one place for review providers: `launch_provider` / `run_provider` apply the
+    scratch decision to every env they launch with, and only the named exceptions opt out.
+    Bounded Gemini legs and the bounded Gemini president are relocated, including the agy
+    HOME they run in. Convergence adapters are relocated too.
+  - A test enumerates every process launch in the package and fails on one whose scratch
+    decision is not stated.
 - **Caps and floor.**
   - Filesystem size comes from `shutil.disk_usage`, so it now works on Windows.
   - The retention ceiling is `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging

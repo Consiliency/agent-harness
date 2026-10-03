@@ -3616,7 +3616,18 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
         )
 
 
-def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, **kwargs) -> "subprocess.Popen[bytes]":
+def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
+    """Apply the provider's scratch decision to the ``env`` it is launched with. A launch
+    with no ``env`` inherits this process's own environment unchanged."""
+    if kwargs.get("env") is not None:
+        kwargs["env"] = _sandbox_policy.child_scratch_env(kwargs["env"], decision)
+    else:
+        _sandbox_policy.child_scratch_env({}, decision)  # validates the decision
+
+
+def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
+                    child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                    **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -3642,7 +3653,13 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     on, sealed image data it reads once), so its probe uses the same wrapper without them.
     A callable ``probe_owner`` receives the probe's marker path, for an owner whose
     filesystem view must include that one file.
+
+    It is also where a provider's own scratch is decided (agent-harness#1147): an ``env``
+    handed to the child passes :func:`sandbox_policy.child_scratch_env` with
+    ``child_scratch``, so a new seam cannot skip the decision. The only other value is
+    ``CHILD_SCRATCH_PRIVATE_TMP``, for a child jailed with its own private ``/tmp``.
     """
+    _child_scratch_kwargs(kwargs, child_scratch)
     cwd = kwargs.get("cwd")
     prefix = _compose_launch_prefix(cwd, process_owner, retain_caps)
     if _probes_seat(prefix, process_owner):
@@ -3657,8 +3674,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
-def run_provider(argv, **kwargs) -> "subprocess.CompletedProcess[str]":
+def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                 **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`."""
+    _child_scratch_kwargs(kwargs, child_scratch)
     prefix = _provider_launch_prefix(kwargs.get("cwd"))
     if _probes_seat(prefix):
         _require_seat_identity(prefix)
@@ -4563,19 +4582,24 @@ def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[
     return {key: value for key, value in env.items() if key in allowed}
 
 
-def _broker_leg_env(base_env: Mapping[str, str] | None, leg: str) -> dict[str, str]:
+def _broker_leg_env(
+    base_env: Mapping[str, str] | None, leg: str, *, private_tmp: bool = False,
+) -> dict[str, str]:
     """A brokered LEG's env: the broker allowlist, plus CLI scratch moved off RAM.
 
     The ambient TMPDIR stays filtered out. What may be added back is only the runtime's
     OWN private disk-backed dir, and only when the child's temp dir is RAM-backed
     (agent-harness#1147) -- a path this runtime created, never a caller-supplied value.
     Kept out of ``_broker_subscription_env`` itself so agy qualification, which shares
-    that allowlist, keeps its frozen env. Not for the Gemini heartbeat seat: its sandbox
-    shows a read-only allowlisted view with its own private ``/tmp``, where a host
-    directory would not exist.
+    that allowlist, keeps its frozen env. ``private_tmp`` is for the Gemini HEARTBEAT seat
+    only (agent-harness#1181): its sandbox shows a read-only allowlisted view with its own
+    private ``/tmp``, where a host directory would not exist. A bounded Gemini leg runs on
+    the host and is relocated like every other leg.
     """
     env = _broker_subscription_env(base_env)
-    return env if leg == "gemini" else _sandbox_policy.fill_child_tmp_env(env)
+    return _sandbox_policy.child_scratch_env(
+        env, _sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP if private_tmp
+        else _sandbox_policy.CHILD_SCRATCH_RELOCATE)
 
 
 def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None, stream_dir=None):
@@ -4615,7 +4639,10 @@ def _brokered_agy_environment(
         raise ValueError("brokered Gemini subscription credential reference is unavailable") from exc
     if not stat.S_ISREG(token_stat.st_mode):
         raise ValueError("brokered Gemini subscription credential reference is invalid")
-    holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-")
+    # The owned HOME holds agy's working state; on the relocated scratch dir when the
+    # leg's env carries one (only the runtime's own dir survives the broker allowlist).
+    holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-",
+                                         dir=base_env.get("TMPDIR") or None)
     root = Path(holder.name)
     root.chmod(0o700)
     config_dir = root / ".gemini" / "antigravity-cli"
@@ -5951,6 +5978,7 @@ def _run_leg_with_liveness(
     review_monitor: _ReviewMonitor | None = None,
     gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
     retain_caps: "Sequence[str]" = (),
+    child_scratch: str | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -5986,6 +6014,12 @@ def _run_leg_with_liveness(
                 lambda marker: review_monitor.owned_command(
                     (), gemini_profile=gemini_profile, cwd=cwd, probe_marker=marker)),
             retain_caps=retain_caps,
+            # The heartbeat jail mounts its own private /tmp (agent-harness#1181); a host
+            # scratch dir would not exist inside it. Every other leg is relocated unless
+            # the caller names its decision (the frozen capture route).
+            child_scratch=child_scratch or (
+                _sandbox_policy.CHILD_SCRATCH_RELOCATE if gemini_profile is None
+                else _sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP),
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -7384,6 +7418,7 @@ def _capture_provider_preflight(
             deadline_s=float(timeout_s),
             stall_threshold_s=float(timeout_s),
             quiescence_latch=quiescence_latch,
+            child_scratch=_sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE,
         )
         return result.returncode
 
@@ -7943,9 +7978,15 @@ def _exec_leg(
             return 1, "", _HarnessCode("review_operation_cancelled")
     if brokered and not broker_prompt:
         return 1, "", _HarnessCode("brokered route rejects empty prompt")
-    env = _broker_leg_env(env, leg) if brokered else (
+    env = _broker_leg_env(
+        env, leg, private_tmp=leg == "gemini" and review_monitor is not None,
+    ) if brokered else (
         _subscription_env() if env is None else dict(env)
     )
+    # The capture route runs in its own jail with a frozen env (agent-harness#1179); the
+    # launch keeps it as built. Every other leg's scratch is relocated at the launch.
+    leg_scratch = (_sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE if agy_capture is not None
+                   else None)
     if not brokered and agy_capture is None:
         # A caller-built env (an advisory seat's `resolve_seat_env`) gets the same CLI
         # scratch relocation as the default one (agent-harness#1147); values it set win.
@@ -8097,6 +8138,7 @@ def _exec_leg(
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
                     retain_caps=codex_retain_caps,
+                    child_scratch=leg_scratch,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
@@ -8342,6 +8384,7 @@ def _exec_leg(
                     proc = _run_leg_with_liveness(
                         cmd, cwd=provider_cwd, env=env, deadline_s=deadline_s,
                         input_text=None, quiescence_latch=quiescence_latch,
+                        child_scratch=leg_scratch,
                     )
             except subprocess.TimeoutExpired as exc:
                 if quiescence_latch is not None:
@@ -8568,6 +8611,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt if brokered else None,
                     quiescence_latch=quiescence_latch,
+                    child_scratch=leg_scratch,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
