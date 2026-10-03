@@ -113,6 +113,60 @@ def _owner_alive(path: Path) -> bool:
         text = (path / SANDBOX_MARKER).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
+    return _recorded_owner_alive(text)
+
+
+#: A per-run scratch directory that is not a sandbox (the launcher's review copy, the
+#: falsifier's dependency snapshot, an owned agy HOME) records its owner in a SIBLING file
+#: ``<name>.owner``, so the directory's own content is untouched.
+OWNER_SUFFIX = ".owner"
+
+
+def _publish_atomically(target: Path, body: bytes) -> None:
+    staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, body)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(staging, target)
+
+
+def claim_scratch_dir(path: Path, *, owner_pid: int | None = None) -> None:
+    """Record the process that owns per-run scratch ``path`` (agent-harness#1147). The
+    crash-residue sweep removes the directory only once this owner is provably gone."""
+    path = Path(path)
+    pid = os.getpid() if owner_pid is None else owner_pid
+    body = f"pid={pid} start={_process_start(pid) or ''}\n".encode("utf-8")
+    _publish_atomically(path.with_name(path.name + OWNER_SUFFIX), body)
+
+
+def release_scratch_dir(path: Path) -> None:
+    """Drop ``path``'s owner record once the directory itself is gone. Never raises."""
+    try:
+        Path(path).with_name(Path(path).name + OWNER_SUFFIX).unlink()
+    except OSError:
+        pass
+
+
+def scratch_owner_gone(path: Path) -> bool:
+    """Is the recorded owner of per-run scratch ``path`` PROVABLY gone? Only a readable
+    record naming a process that no longer runs (or whose pid was reused) says yes. No
+    record, or an unreadable one, is an unknown owner -- and an unknown owner is never
+    gone: deciding by age alone deleted a running child's files (agent-harness#1161)."""
+    try:
+        text = Path(path).with_name(Path(path).name + OWNER_SUFFIX).read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    fields = dict(part.split("=", 1) for part in text.split() if "=" in part)
+    if not fields.get("pid", "").isdigit():
+        return False
+    return not _recorded_owner_alive(text)
+
+
+def _recorded_owner_alive(text: str) -> bool:
     fields = dict(
         part.split("=", 1) for line in text.splitlines() for part in line.split() if "=" in part
     )

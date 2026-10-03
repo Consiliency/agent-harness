@@ -394,9 +394,12 @@ the caller passes a PATH and the runtime reads it.
     interface: `ClaudeAgentViewAdapter`'s default runner calls `run_provider` with an
     explicit env. A bounded brokered agy leg's owned HOME is created in the
     relocated dir as well. `tests/test_agent_cli_scratch_inventory_1147.py` enumerates
-    every process launch in the package, however it is spelled (a launch function passed
-    as a value, module aliases, an agent CLI anywhere in a literal argv), and fails on
-    one with no stated decision.
+    every process launch in the package and fails on one with no stated decision. It is
+    conservative: an unresolvable use of a launch-capable module (a computed `getattr`,
+    `__dict__`, the module as a value, a dynamic import, `exec`/`eval`) needs a stated
+    decision too. Env builders (`_broker_subscription_env`, `scrub_subscription_env`)
+    take no decision; each route decides after building, so a named exception is never
+    refused by a relocation it is exempt from.
   - **Overrides.** A value the caller set is never overridden. The brokered allowlist
     still drops ambient values, so there only the runtime's own dir can appear.
 - **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical

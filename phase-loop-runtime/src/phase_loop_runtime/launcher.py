@@ -2478,6 +2478,10 @@ def _cleanup_paths(paths: tuple[str, ...]) -> dict[str, Any] | None:
                 # the codex schema / context temps are files. Handle both.
                 shutil.rmtree(path)
                 removed.append(str(path))
+                if path.name.startswith(_REVIEW_STAGE_DIR_PREFIX):
+                    from .sandbox_retention import release_scratch_dir
+
+                    release_scratch_dir(path)
             elif path.exists() or path.is_symlink():
                 path.unlink()
                 removed.append(str(path))
@@ -3190,6 +3194,11 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
         parent = staging_root()
     parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=_REVIEW_STAGE_DIR_PREFIX, dir=str(parent)))
+    # The copy lives on persistent disk (agent-harness#1147): record its owner, so the
+    # crash-residue sweep removes it only once this process is provably gone.
+    from .sandbox_retention import claim_scratch_dir
+
+    claim_scratch_dir(staged)
     # Self-clean on any copy failure: the mkdtemp dir is already on disk, so a partial
     # (or complete) tree snapshot would otherwise leak if copying raises — the caller
     # only records paths for cleanup that this function successfully RETURNS (#177 CR-F3).
@@ -3247,6 +3256,9 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
         return staged
     except BaseException:
         shutil.rmtree(staged, ignore_errors=True)
+        from .sandbox_retention import release_scratch_dir
+
+        release_scratch_dir(staged)
         raise
 
 

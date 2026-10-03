@@ -445,9 +445,12 @@ def run_bounded_falsifier_node(
     interpreter = _falsifier_interpreter_digest(executable, entries)
     from .sandbox_policy import staging_root
 
+    from .sandbox_retention import claim_scratch_dir, release_scratch_dir
+
     with tempfile.TemporaryDirectory(prefix="pl-falsifier-deps-",
                                      dir=str(staging_root())) as temporary:
         dependencies = Path(temporary)
+        claim_scratch_dir(dependencies)  # swept only once this process is gone
         _snapshot_falsifier_dependencies(stage, dependencies)
         _require_single_link_files((stage, dependencies))
         result = _run_bounded_falsifier_node(
@@ -456,6 +459,7 @@ def run_bounded_falsifier_node(
             interpreter=executable,
         )
         _require_single_link_files((stage, dependencies))
+    release_scratch_dir(dependencies)
     if (_falsifier_interpreter_scope() != (executable, entries, identity)
             or _falsifier_interpreter_digest(executable, entries) != interpreter):
         raise ValueError("falsifier system interpreter changed during the run")

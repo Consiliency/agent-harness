@@ -537,19 +537,28 @@ def _president_agy_environment(env: Mapping[str, str]):
         finally:
             profile.__exit__(None, None, None)
         return
-    with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-",
-                                     dir=env.get("TMPDIR") or None) as empty_home:
-        # Same fixed deny-all action profile the broker profile carries, so an agy that
-        # runs at all under the credential-less HOME still cannot act.
-        config_dir = Path(empty_home) / ".gemini" / "antigravity-cli"
-        config_dir.mkdir(parents=True, mode=0o700)
-        settings_path = config_dir / "settings.json"
-        settings_path.write_bytes(panel_invoker._broker_agy_settings_bytes())
-        settings_path.chmod(0o400)
-        bare = dict(env)
-        bare["HOME"] = empty_home
-        bare["XDG_CONFIG_HOME"] = str(Path(empty_home) / ".config")
-        yield bare
+    from . import sandbox_retention
+
+    claimed: Path | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-",
+                                         dir=env.get("TMPDIR") or None) as empty_home:
+            claimed = Path(empty_home)  # swept only once this process is gone
+            sandbox_retention.claim_scratch_dir(claimed)
+            # Same fixed deny-all action profile the broker profile carries, so an agy that
+            # runs at all under the credential-less HOME still cannot act.
+            config_dir = Path(empty_home) / ".gemini" / "antigravity-cli"
+            config_dir.mkdir(parents=True, mode=0o700)
+            settings_path = config_dir / "settings.json"
+            settings_path.write_bytes(panel_invoker._broker_agy_settings_bytes())
+            settings_path.chmod(0o400)
+            bare = dict(env)
+            bare["HOME"] = empty_home
+            bare["XDG_CONFIG_HOME"] = str(Path(empty_home) / ".config")
+            yield bare
+    finally:
+        if claimed is not None:
+            sandbox_retention.release_scratch_dir(claimed)
 
 
 def build_president_invoke(

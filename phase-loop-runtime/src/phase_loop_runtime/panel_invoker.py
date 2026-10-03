@@ -3215,33 +3215,40 @@ def _gc_stale_panel_scratch(
             seen.add(key)
             _gc_panel_scratch_root(base, max_age_s)
     # Since agent-harness#1147 these live on persistent disk rather than a /tmp a reboot
-    # clears, so a killed run's copy would otherwise stay forever: the launcher's review
-    # copy and the falsifier's dependency snapshot under the staging root, and the owned
-    # agy HOMEs under the relocated CLI scratch dir. Each is a per-run directory removed by
-    # its own `finally`; only what a killed run left behind is old enough to sweep.
+    # clears: the launcher's review copy and the falsifier's dependency snapshot under the
+    # staging root, and the owned agy HOMEs under the relocated CLI scratch dir. Each
+    # records its owner (`sandbox_retention.claim_scratch_dir`) and is removed by its own
+    # `finally`; the sweep removes one only once that owner is PROVABLY gone. Never by
+    # age: a copy's own mtime does not move while a child works inside it.
     try:
-        _gc_unmarked_residue(
+        _gc_ownerless_residue(
             [(base, ("pl-review-stage-*", "pl-falsifier-deps-*")) for base in bases]
             + [(Path(d), ("phase-loop-broker-agy-*", "phase-loop-president-agy-*"))
                for d in _sandbox_policy.child_scratch_candidates()],
-            max_age_s,
         )
     except Exception:
         pass
 
 
-def _gc_unmarked_residue(roots, max_age_s: int) -> None:
-    cutoff = time.time() - max_age_s
+def _gc_ownerless_residue(roots) -> None:
+    suffix = _sandbox_retention.OWNER_SUFFIX
     for root, patterns in roots:
         for pattern in patterns:
             for path in Path(root).glob(pattern):
                 try:
+                    if path.name.endswith(suffix):
+                        # An owner record whose directory is already gone.
+                        if not path.with_name(path.name[: -len(suffix)]).exists():
+                            path.unlink()
+                        continue
                     st = path.lstat()
                     if (path.is_symlink() or not stat.S_ISDIR(st.st_mode)
                             or (hasattr(os, "getuid") and st.st_uid != os.getuid())
-                            or st.st_mtime >= cutoff):
+                            or not _sandbox_retention.scratch_owner_gone(path)):
                         continue
                     _review_stage.remove_review_stage(path)
+                    if not path.exists():
+                        _sandbox_retention.release_scratch_dir(path)
                 except Exception:
                     continue
 
@@ -4650,8 +4657,13 @@ def _broker_gemini_stream_result(
 
 
 def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Pass only runtime and subscription-login ambient state to a broker parent."""
-    env = _subscription_env(base_env)
+    """Pass only runtime and subscription-login ambient state to a broker parent.
+
+    Builds the env only: no scratch decision is taken here (agent-harness#1147). Each
+    route applies its own afterwards -- `_broker_leg_env` for a leg, the named exceptions
+    (the heartbeat seat, agy qualification) keep it as built -- so an exception is never
+    refused by a relocation it is exempt from."""
+    env = scrub_subscription_env(os.environ if base_env is None else base_env)
     allowed = {
         "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
     }
@@ -4720,6 +4732,7 @@ def _brokered_agy_environment(
     holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-",
                                          dir=base_env.get("TMPDIR") or None)
     root = Path(holder.name)
+    _sandbox_retention.claim_scratch_dir(root)  # swept only once this process is gone
     root.chmod(0o700)
     config_dir = root / ".gemini" / "antigravity-cli"
     config_dir.mkdir(parents=True, mode=0o700)
@@ -4746,6 +4759,7 @@ def _brokered_agy_environment(
         yield env
     finally:
         holder.cleanup()
+        _sandbox_retention.release_scratch_dir(root)
         if evidence is not None:
             evidence["provider_agy_home_cleanup_verified"] = not root.exists()
 
@@ -8347,10 +8361,12 @@ def _exec_leg(
             return 1, "", _HarnessCode("review_operation_cancelled")
     if brokered and not broker_prompt:
         return 1, "", _HarnessCode("brokered route rejects empty prompt")
+    # Build first, then decide: the capture route is a named exception (agent-harness#1179)
+    # and must never be refused by a relocation it is exempt from.
     env = _broker_leg_env(
         env, leg, private_tmp=leg == "gemini" and review_monitor is not None,
     ) if brokered else (
-        _subscription_env() if env is None else dict(env)
+        scrub_subscription_env(os.environ) if env is None else dict(env)
     )
     # The capture route runs in its own jail with a frozen env (agent-harness#1179); the
     # launch keeps it as built. Every other leg's scratch is relocated at the launch.
