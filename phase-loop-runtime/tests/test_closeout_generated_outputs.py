@@ -958,12 +958,30 @@ def test_child_audit_uses_the_live_runner_phase(tmp_path, monkeypatch):
     assert "phase 'STATE', not 'CORE'" in observed["explicit"]["unknown_reasons"]["dist/index.js"], observed
 
 
-# One test per prompt route that closes out: each writes the audit with ITS alias.
+# Every prompt route, ENUMERATED from the runtime's own tables (not hand-picked): each
+# route that can lead to an audit writes it with ITS alias (codex r4 F001, r5 F001).
+
+from phase_loop_runtime.injection import HARNESS_ACTION_SKILLS  # noqa: E402
+from phase_loop_runtime.models import HARNESS_WORK_UNIT_PROMPT_KINDS, PRODUCT_LOOP_ACTIONS  # noqa: E402
 
 AUDIT_FORMS = (
     "phase-loop-closeout-audit --repo . --record-outputs --phase {alias}`",
     "python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase {alias}`",
 )
+# Work that closes out a phase, so runs the audit whatever skills it is given.
+CLOSING_OUT = {"execute", "repair", "review"}
+DELEGATABLE = {"execute", "repair", "review"}
+PROMPT_ACTIONS = tuple(PRODUCT_LOOP_ACTIONS) + ("skill-maintenance",)
+UNBOUND_ACTIONS = {"roadmap", "maintain-skills", "skill-maintenance"}
+
+
+def _shipped_audit_skills() -> set[str]:
+    """Scan, not a list: every packaged skill whose text prescribes the audit."""
+    root = Path(generated_outputs.__file__).parent / "skills_bundle"
+    return {
+        skill.parent.name for skill in root.glob("*/SKILL.md")
+        if "phase-loop-closeout-audit --repo" in skill.read_text()
+    }
 
 
 def _prompt_text(bundle) -> str:
@@ -977,58 +995,90 @@ def _assert_audit_names(bundle, alias: str) -> None:
     # ...and never a phase-less form an executor could follow instead.
     assert "--repo . --record-outputs`" not in text
     assert "--record-outputs --phase <" not in text
+    if alias != "ALIAS":
+        assert "--record-outputs --phase ALIAS`" not in text
 
 
-@pytest.fixture
-def prompt_fx(tmp_path, monkeypatch):
-    monkeypatch.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
-    return NodeBamlPhaseFixture(tmp_path)
+@pytest.fixture(scope="module")
+def prompt_fx(tmp_path_factory):
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+        yield NodeBamlPhaseFixture(tmp_path_factory.mktemp("prompts"))
 
 
-def test_the_execute_prompt_names_the_phase_on_the_audit(prompt_fx):
-    from phase_loop_runtime.prompts import build_prompt
+def test_the_audit_skill_constant_matches_the_shipped_skills():
+    from phase_loop_runtime.prompts import AUDIT_PRESCRIBING_SKILLS
 
-    _assert_audit_names(build_prompt("execute", prompt_fx.roadmap, phase="STATE", plan=prompt_fx.plan), "STATE")
+    assert set(AUDIT_PRESCRIBING_SKILLS) == _shipped_audit_skills()
 
 
-@pytest.mark.parametrize(("kind", "prompt_kind"), [
-    ("lane_execute", "implementation"), ("lane_review", "review"),
-    ("phase_reducer", "reducer"), ("phase_verify", "verify"),
-])
-def test_every_harness_lane_prompt_names_the_assignment_phase_on_the_audit(prompt_fx, kind, prompt_kind):
-    """codex r4 F001: the lane route returned before the audit instruction. Every
-    prompt kind the lane builder renders goes through the same wrapper."""
+def _routes():
+    for harness in sorted(HARNESS_ACTION_SKILLS):
+        for action in PROMPT_ACTIONS:
+            yield pytest.param(harness, action, None, id=f"{harness}-{action}")
+            if action in DELEGATABLE and harness in {"codex", "claude"}:
+                yield pytest.param(harness, action, "delegated", id=f"{harness}-{action}-delegated")
+        for kind in HARNESS_WORK_UNIT_PROMPT_KINDS:
+            yield pytest.param(harness, "execute", f"lane:{kind}", id=f"{harness}-lane-{kind}")
 
+
+@pytest.mark.parametrize(("harness", "action", "variant"), list(_routes()))
+def test_every_prompt_route_that_can_audit_names_its_phase(prompt_fx, harness, action, variant):
     from phase_loop_runtime.models import HarnessLaneAssignment
-    from phase_loop_runtime.prompts import build_prompt
-
-    assignment = HarnessLaneAssignment(phase="LANEPH", lane_id="SL-0", work_unit_kind=kind,
-                                       prompt_kind=prompt_kind, owned_files=("scripts/build.py",))
-    bundle = build_prompt("execute", prompt_fx.roadmap, phase="OTHER", plan=prompt_fx.plan,
-                          harness_lane_assignment=assignment)
-    _assert_audit_names(bundle, "LANEPH")
-
-
-def test_the_repair_prompt_names_the_phase_on_the_audit(prompt_fx):
-    """codex r4 F001: the repair route was built without the audit instruction."""
-
-    from phase_loop_runtime.prompts import build_prompt
-
-    _assert_audit_names(build_prompt("repair", prompt_fx.roadmap, phase="STATE", plan=prompt_fx.plan), "STATE")
-
-
-@pytest.mark.parametrize("action", ["execute", "repair"])
-def test_a_delegated_child_prompt_names_the_parent_phase_on_the_audit(prompt_fx, action):
-    """`launch_delegated_child` builds its child prompt through `build_prompt` with the
-    parent's phase; the delegation context must not drop the audit's identity."""
-
     from phase_loop_runtime.prompts import build_prompt
     from phase_loop_test_utils import build_fake_delegation_request
 
-    request = build_fake_delegation_request(request_id="r1", target_executor="claude", product_action=action)
-    bundle = build_prompt(action, prompt_fx.roadmap, phase="PARENT", plan=prompt_fx.plan,
-                          harness_target="claude", delegation_request=request)
-    _assert_audit_names(bundle, "PARENT")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+        kwargs, alias = {}, ("ALIAS" if action in UNBOUND_ACTIONS else "STATE")
+        phase = None if action in UNBOUND_ACTIONS else "STATE"
+        if variant == "delegated":
+            kwargs["delegation_request"] = build_fake_delegation_request(
+                request_id="r1", target_executor=harness, product_action=action)
+        elif variant and variant.startswith("lane:"):
+            kwargs["harness_lane_assignment"] = HarnessLaneAssignment(
+                phase="LANEPH", lane_id="SL-0", work_unit_kind="lane_execute",
+                prompt_kind=variant.split(":", 1)[1], owned_files=("scripts/build.py",))
+            alias, phase = "LANEPH", "OTHER"
+        bundle = build_prompt(action, prompt_fx.roadmap, phase=phase, plan=prompt_fx.plan,
+                              harness_target=harness, **kwargs)
+    closes_out = action in CLOSING_OUT or (variant or "").startswith("lane:")
+    if closes_out or _shipped_audit_skills() & set(bundle.expected_skill_pack):
+        _assert_audit_names(bundle, alias)
+        if alias == "ALIAS":
+            assert "not bound to a phase: replace ALIAS" in _prompt_text(bundle)
+
+
+@pytest.mark.parametrize("route", ["execute", "repair", "review", "lane"])
+def test_what_a_codex_prompt_only_child_receives_names_the_phase(prompt_fx, route):
+    """Claude N-R5-4 (mutation mC): assert the DELIVERED prompt, not the bundle. A codex
+    child gets `render_prompt()` (argv / stdin), which reads the bundle's body."""
+
+    from phase_loop_runtime import launcher
+    from phase_loop_runtime.models import HarnessLaneAssignment
+    from phase_loop_runtime.profiles import resolve_profile_for_executor
+    from phase_loop_runtime.prompts import build_prompt
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("phase_loop_runtime.injection._resolve_pack_skill_dirs", lambda *a, **k: {})
+        kwargs, action = {}, route
+        if route == "lane":
+            kwargs["harness_lane_assignment"] = HarnessLaneAssignment(
+                phase="STATE", lane_id="SL-0", work_unit_kind="lane_execute",
+                prompt_kind="implementation", owned_files=("scripts/build.py",))
+            action = "execute"
+        bundle = build_prompt(action, prompt_fx.roadmap, phase="STATE", plan=prompt_fx.plan,
+                              harness_target="codex", **kwargs)
+        request = launcher.build_launch_request(
+            executor="codex", action=action, repo=prompt_fx.repo, roadmap=prompt_fx.roadmap,
+            phase="STATE", plan=prompt_fx.plan,
+            model_selection=resolve_profile_for_executor(action=action, executor="codex"),
+            prompt_bundle=bundle, json_output=False, bypass_approvals=False)
+        spec = launcher.build_launch_spec(request)
+    delivered = " ".join(spec.command) + "\n" + (spec.delivery_payload() or "")
+    for form in AUDIT_FORMS:
+        assert form.format(alias="STATE") in delivered, (route, form)
+    assert "--record-outputs --phase STATE`" in bundle.render_prompt()
 
 
 @pytest.mark.parametrize("action", ["lane", "repair"])
@@ -1100,6 +1150,72 @@ def test_channel_closeout_receives_phase_on_every_prompt_route(tmp_path, monkeyp
     assert observed["exit"] == 0, observed["audit"]
 
 
+@pytest.mark.parametrize("action", ["execute", "repair", "review"])
+def test_delegated_channel_closeout_receives_its_phase(tmp_path, monkeypatch, action):
+    """codex r5 F001 falsifier, verbatim body: a delegated CLAUDE child (execute,
+    repair and REVIEW) on the channel route follows the audit its prompt gives it;
+    the environment names STATE too, and must not be what makes it pass."""
+
+    import re
+    import shlex
+
+    from phase_loop_runtime import launcher
+    from phase_loop_test_utils import build_fake_automation_output, build_fake_delegation_request
+
+    fx = NodeBamlPhaseFixture(tmp_path)
+    fx.plan.write_text(
+        fx.plan.read_text()
+        + "\n## Lanes\n\n### SL-0 - Build\n- **Owned files**: `scripts/build.py`\n"
+    )
+    commit_fixture_paths(fx.repo, "declare delegation ownership", fx.plan)
+    assert fx.verify()["ok"]
+    assert main(["--repo", str(fx.repo), "--phase", "STATE"]) == 0
+    monkeypatch.setenv("PHASE_LOOP_PHASE_ALIAS", "STATE")
+    monkeypatch.setenv("PHASE_ALIAS", "STATE")
+    monkeypatch.setenv("PHASE_LOOP_CLAUDE_ROUTE", "channel")
+    monkeypatch.setenv("PHASE_LOOP_CHANNEL_SESSION_ID", "test-session")
+    skill_root = Path(launcher.__file__).parent / "skills_bundle"
+    monkeypatch.setattr(
+        "phase_loop_runtime.injection._resolve_pack_skill_dirs",
+        lambda repo, harness, names: {name: skill_root / name for name in names},
+    )
+    monkeypatch.setattr(
+        runner, "run_auth_preflight",
+        lambda *a, **k: launcher.AuthPreflightResult(ok=True, metadata={}),
+    )
+    observed = {}
+
+    class FakeChannel:
+        def __init__(self, **kwargs):
+            pass
+
+        def send_and_wait(self, text):
+            pattern = r"`(phase-loop-closeout-audit --repo \. --record-outputs[^`]*)`"
+            skill = (skill_root / "claude-execute-phase/SKILL.md").read_text()
+            match = re.search(pattern, text) or re.search(pattern, skill)
+            assert match is not None
+            args = shlex.split(match.group(1))[1:]
+            args[args.index("--repo") + 1] = str(fx.repo)
+            observed["command"] = match.group(1)
+            observed["exit"] = main(args)
+            return launcher.ClaudeRouteResult(
+                route="claude_channel", session_id="test-session", event_id="test",
+                status="done", text=build_fake_automation_output(status="executed"),
+            )
+
+    monkeypatch.setattr(launcher, "ChannelSidecarClient", FakeChannel)
+    request = build_fake_delegation_request(
+        request_id="audit-review", target_executor="claude", product_action=action,
+        owned_files=("scripts/build.py",),
+    )
+    outcome = runner.launch_delegated_child(
+        repo=fx.repo, roadmap=fx.roadmap, parent_phase="STATE", parent_action="execute",
+        plan=fx.plan, request=request, parent_executor="codex", dry_run=False,
+    )
+    assert outcome["decision"]["status"] == "approved", outcome
+    assert observed["exit"] == 0, observed
+
+
 def test_record_outputs_without_a_phase_refuses_before_touching_anything(tmp_path):
     """Claude R3_A / Grok r4 G-5: with a declaration and no `--phase`, `--record-outputs`
     exits 2 BEFORE moving anything aside or running a producer; nothing is recorded,
@@ -1131,10 +1247,12 @@ def test_an_unsubstituted_placeholder_is_not_a_phase_identity(tmp_path):
     refused exactly like a missing one."""
 
     fx = NodeBamlPhaseFixture(tmp_path)
-    for bad in ("<ALIAS>", "<PHASE_ALIAS>", "", "  ", "A B", "'CORE'", "-CORE"):
+    for bad in ("<ALIAS>", "<PHASE_ALIAS>", "", "  ", "A B", "'CORE'", "-CORE",
+                "ALIAS", "alias", "PHASE", "PHASE_ALIAS", "phase-alias"):
         assert generated_outputs.current_phase(bad) is None, bad
     assert generated_outputs.current_phase(" CORE ") == "CORE"
-    assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", "<ALIAS>"]) == 2
+    for placeholder in ("<ALIAS>", "ALIAS"):
+        assert main(["--repo", str(fx.repo), "--record-outputs", "--phase", placeholder]) == 2
     assert not (fx.repo / generated_outputs.RECORD_RELPATH).exists()
 
 
@@ -1145,21 +1263,27 @@ def test_the_mismatch_hint_names_the_phase(tmp_path):
     assert fx.verify()["ok"]
     reason = audit_ignored_outputs(fx.repo, "CORE")["unknown_reasons"]["dist/index.js"]
     assert "--record-outputs --phase CORE`" in reason, reason
+    # Claude N-R5-1: the tool never prints an ACCEPTED placeholder for an operator to copy.
+    (fx.repo / generated_outputs.RECORD_RELPATH).unlink()
+    reason = audit_ignored_outputs(fx.repo)["unknown_reasons"]["dist/index.js"]
+    assert "--record-outputs --phase <ALIAS>`" in reason, reason
+    assert "--phase <ALIAS>" in generated_outputs.NO_PHASE_IDENTITY
+    assert generated_outputs.current_phase("ALIAS") is None
 
 
 def test_the_execute_phase_skills_prescribe_the_audit_with_a_phase():
-    """Grok r4 G-2: every shipped execute-phase skill writes `--phase <ALIAS>` on the
-    audit command, never the phase-less form."""
+    """Grok r4 G-2 / Claude N-R5-2: every shipped skill that prescribes the audit writes
+    `--phase ALIAS`, which is shell-safe to paste literally (a no-op without a
+    declaration, refused as an identity with one), and says to substitute it."""
 
     root = Path(generated_outputs.__file__).parent / "skills_bundle"
-    skills = sorted(root.glob("*-execute-phase/SKILL.md"))
+    skills = sorted(root / name / "SKILL.md" for name in _shipped_audit_skills())
     assert skills
     for skill in skills:
         text = skill.read_text()
-        if "closeout-audit" not in text:
-            continue
-        assert "--record-outputs --phase <ALIAS>`" in text, skill
-        assert "--repo . --record-outputs`" not in text, skill
+        assert "--record-outputs --phase ALIAS`" in text, skill
+        assert "replace `ALIAS` with the alias of the phase you are executing" in text, skill
+        assert "--repo . --record-outputs`" not in text and "--phase <" not in text, skill
 
 
 def test_a_corrupt_record_at_top_level_is_typed(tmp_path):

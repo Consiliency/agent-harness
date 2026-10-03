@@ -67,10 +67,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     them), runs each producer under a timeout, records, and then audits.
   - It is a no-op without a declaration. The execute-phase skills and runner prompt
     now prescribe it.
-  - Phase identity is ONLY an explicit `--phase ALIAS` (or the runner's live alias
-    in-process). Every runner prompt that closes out (execute, harness lane, repair,
-    delegated child) writes the audit command with `--phase <its alias>`, and the
-    execute-phase skills show `--phase <ALIAS>`. The identity is never read from the
+  - Phase identity is ONLY an explicit `--phase <ALIAS>` (or the runner's live alias
+    in-process). Every runner prompt that can lead to an audit (execute, repair,
+    review, harness lane, delegated child, and any prompt whose skill pack prescribes
+    the audit) writes the command with `--phase <its alias>`. The execute-phase
+    skills show a shell-safe `--phase ALIAS` to substitute; placeholder values are
+    refused. The identity is never read from the
     environment or `.phase-loop/state.json`. Without it, `--record-outputs` exits 2
     before touching the worktree and the audit blocks.
   - Producers are bounded by a validated timeout and killed by process group.

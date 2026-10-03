@@ -11,7 +11,53 @@ from .injection import build_lane_prompt_bundle, build_prompt_bundle
 from .models import DelegationRequest, HarnessLaneAssignment, ParentChildRunMetadata, PhaseSourceBundle, PromptBundle
 
 
+# Shipped skills that prescribe `phase-loop-closeout-audit` (agent-harness#1139). A test
+# keeps this equal to a scan of the packaged skills bundle.
+AUDIT_PRESCRIBING_SKILLS = frozenset({"claude-execute-phase", "codex-execute-phase", "gemini-execute-phase"})
+# Actions whose work closes out a phase (and so runs the audit) whatever their skill pack.
+CLOSING_OUT_ACTIONS = frozenset({"execute", "repair", "review"})
+
+
 def build_prompt(
+    action: str,
+    roadmap: Path,
+    phase: str | None = None,
+    plan: Path | None = None,
+    blocker_summary: str | None = None,
+    repair_context: dict[str, object] | None = None,
+    harness_target: str = "codex",
+    injection_mode_override: str | None = None,
+    harness_lane_assignment: HarnessLaneAssignment | None = None,
+    delegation_request: DelegationRequest | None = None,
+    parent_child_metadata: ParentChildRunMetadata | None = None,
+    planner_source_bundle_context: PhaseSourceBundle | None = None,
+) -> PromptBundle:
+    """Build the prompt for one route, then give it the phase-bearing closeout audit.
+
+    agent-harness#1139: the audit's phase identity is ONLY its explicit ``--phase``, so
+    every prompt that can lead to an audit must carry the command with the alias. That
+    is applied HERE, at the single exit, not per branch: a prompt whose action closes
+    out (execute, repair, review, and every harness lane) or whose skill pack includes
+    an audit-prescribing skill gets ``closeout_audit_instruction`` unless it already
+    inlines it. A new branch cannot skip it.
+    """
+
+    bundle = _build_prompt_route(
+        action, roadmap, phase=phase, plan=plan, blocker_summary=blocker_summary,
+        repair_context=repair_context, harness_target=harness_target,
+        injection_mode_override=injection_mode_override,
+        harness_lane_assignment=harness_lane_assignment, delegation_request=delegation_request,
+        parent_child_metadata=parent_child_metadata,
+        planner_source_bundle_context=planner_source_bundle_context,
+    )
+    audit_phase = harness_lane_assignment.phase if harness_lane_assignment is not None else phase
+    closes_out = harness_lane_assignment is not None or action in CLOSING_OUT_ACTIONS
+    if closes_out or AUDIT_PRESCRIBING_SKILLS.intersection(bundle.expected_skill_pack):
+        return _with_closeout_audit(bundle, audit_phase)
+    return bundle
+
+
+def _build_prompt_route(
     action: str,
     roadmap: Path,
     phase: str | None = None,
@@ -28,17 +74,14 @@ def build_prompt(
     repo = _roadmap_repo_root(roadmap)
     if harness_lane_assignment is not None:
         return _with_delegation_guidance(
-            _with_closeout_audit(
-                build_lane_prompt_bundle(
-                    repo=repo,
-                    harness_target=harness_target,
-                    action=action,
-                    roadmap=roadmap,
-                    assignment=harness_lane_assignment,
-                    plan=plan,
-                    injection_mode_override=injection_mode_override,
-                ),
-                harness_lane_assignment.phase,
+            build_lane_prompt_bundle(
+                repo=repo,
+                harness_target=harness_target,
+                action=action,
+                roadmap=roadmap,
+                assignment=harness_lane_assignment,
+                plan=plan,
+                injection_mode_override=injection_mode_override,
             ),
             delegation_request=delegation_request,
             parent_child_metadata=parent_child_metadata,
@@ -111,7 +154,7 @@ def build_prompt(
             else ""
         )
         return _with_delegation_guidance(
-            _with_closeout_audit(build_prompt_bundle(
+            build_prompt_bundle(
             repo=repo,
             harness_target=harness_target,
                 action="repair",
@@ -162,7 +205,7 @@ def build_prompt(
                 "separate phases. If the operator TUI is stale, point it back to the handoff file or commands above "
                 "instead of inventing a new recovery path."
             ),
-            ), phase),
+            ),
             delegation_request=delegation_request,
             parent_child_metadata=parent_child_metadata,
         )
@@ -287,26 +330,32 @@ def _expected_plan_artifact_path(roadmap: Path, phase: str | None) -> str:
 
 
 def closeout_audit_instruction(phase: str | None) -> str:
-    """The closeout-audit instruction every runner prompt that closes out carries.
+    """The closeout-audit instruction every runner prompt that can lead to an audit carries.
 
     agent-harness#1139: the audit binds generated-output evidence to a phase, and its
     ONLY source of that identity is an explicit ``--phase``. So the command is written
-    here, once, with the alias literal, and every closing-out prompt route (execute,
-    harness lane, repair, and delegated children built through them) embeds it. With
-    no alias the placeholder ``<PHASE_ALIAS>`` is a shell redirection, so a literal run
-    fails, which the instruction itself says blocks.
+    here, once, with the alias literal (``build_prompt`` applies it to every route).
+    With no alias (a roadmap prompt) it says so: the placeholder ``ALIAS`` is
+    shell-safe and refused as an identity, so a literal run records nothing.
     """
 
-    audit_phase = f" --phase {shlex.quote(phase)}" if phase else " --phase <PHASE_ALIAS>"
+    audit_phase = f" --phase {shlex.quote(phase)}" if phase else " --phase ALIAS"
+    unbound = (
+        "" if phase else
+        "This launch is not bound to a phase: replace ALIAS with the alias of the phase you close out. "
+    )
     return (
-        f"For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
+        f"{unbound}For IGNORED paths do not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs{audit_phase}` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs{audit_phase}` only when the package is on the ACTIVE python's path) and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner, its own toolchain, a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks, and so does ANY failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason) -- inability to measure is never evidence of a clean tree."
     )
 
 
 def _with_closeout_audit(bundle: PromptBundle, phase: str | None) -> PromptBundle:
-    """Append the closeout-audit instruction to a prompt route that does not inline it."""
+    """Append the closeout-audit instruction unless the route already inlines it."""
 
-    section = f"Closeout audit: {closeout_audit_instruction(phase)}"
+    instruction = closeout_audit_instruction(phase)
+    if instruction in bundle.body:
+        return bundle
+    section = f"Closeout audit: {instruction}"
     return replace(
         bundle,
         body=f"{bundle.body.strip()}\n\n{section}".strip(),

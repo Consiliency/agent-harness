@@ -115,6 +115,14 @@ bullets above):**
 - **Skills and the mismatch hint** show `--phase <ALIAS>`.
 - `verification_evidence._phase_alias` is unchanged.
 
+**Round-6 amendment (board review at 62e096ea):**
+- `build_prompt` applies `_with_closeout_audit` at its single exit (no per-branch
+  wraps): to every closing-out action (execute, repair, review), every harness lane,
+  and every prompt whose skill pack holds an audit-prescribing skill
+  (`AUDIT_PRESCRIBING_SKILLS`, pinned to a scan of the packaged skills).
+- `current_phase` also refuses the bare placeholder words (`ALIAS`, `PHASE`, ...); the
+  hint and docs print `<ALIAS>`; the skills print a shell-safe `--phase ALIAS`.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
 - `observe_stages(observer)` / `_observed_stage` — add. A context-var seam brackets
   each command and suite stage of `run_verification`.
@@ -184,6 +192,7 @@ tests, and the docs.
   - stop passing the observer;
   - make `--record-outputs` fail without a declaration;
   - credit a failed producer;
+  - round 6: review route unwrapped, the single-exit wrapper skipped, body not extended (codex delivery), placeholder words accepted;
   - round 5: read either environment key, a prompt route omits `--phase`, record without `--phase` after displacing, hint without `--phase`, prune keeps the oldest;
   - round 3: fall back to state.json, no launcher stamp, setdefault stamp, keep an inherited alias when none is dispatched, strip the stamp on lease re-entry, no `--phase` in the prompt, run_loop passes no alias, accept or record an unknown phase, unbounded timeout, kill the child only, no pruning;
   - round 2: mtime counts, no phase check, the epoch ignores phase, HEAD checked only at write, a straddle allowed, no displacement, displace tracked files, drop in-recording `mine`, allow string shell syntax, no default timeout, commit read from the whole file, corrupt entries kept, the CLI ignores `--phase`.

@@ -91,12 +91,16 @@ def test_golden_delta_is_only_final_schema_exclusion():
     )
     for new, old in (
         # The runner prompt names the dispatched phase on the audit, and the skill text
-        # names the `<ALIAS>` placeholder and glosses it (agent-harness#1189 rounds 3-5).
+        # names the shell-safe `ALIAS` placeholder and glosses it (agent-harness#1189
+        # rounds 3-6).
         (f"{record} --phase ADAPTER`", f"{record}`"),
-        (f"{record} --phase <ALIAS>`", f"{record}`"),
+        (f"{record} --phase ALIAS`", f"{record}`"),
         (
-            "path), where `<ALIAS>` is the phase you are executing, exactly as the runner "
-            "prompt names it (without `--phase` the audit records and accepts nothing)",
+            "path); replace `ALIAS` with the alias of the phase you are executing, exactly "
+            "as your plan and runner prompt name it. `--phase` matters only in a repo that "
+            "commits `.phase-loop-generated-outputs.json`: there, a missing or unsubstituted "
+            "alias (the literal `ALIAS` included) records and accepts nothing, so the audit "
+            "blocks",
             "path)",
         ),
         (f"closeout-audit --repo .{record}`", "closeout-audit --repo .`"),

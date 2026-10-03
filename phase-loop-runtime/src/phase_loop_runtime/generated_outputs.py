@@ -347,13 +347,15 @@ def output_identities(repo: Path, producer: Producer) -> dict[str, tuple[str, in
 
 
 NO_PHASE_IDENTITY = (
-    "no phase identity: pass --phase ALIAS, the phase alias exactly as the roadmap "
+    "no phase identity: pass --phase <ALIAS>, the phase alias exactly as the roadmap "
     "declares it (the runner's prompt names it on the audit command it prescribes)"
 )
 # An alias-shaped token (``discovery.PLAN_RE``'s alias shape, any case). Anything else,
 # notably an unsubstituted placeholder such as ``<ALIAS>`` copied from a skill, is not
-# an identity: every phase that copied it would share one.
+# an identity: every phase that copied it would share one. The bare placeholder words
+# the skills, prompts and docs print are refused for the same reason.
 _PHASE_ALIAS_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
+_PLACEHOLDER_ALIASES = frozenset({"ALIAS", "PHASE", "PHASE_ALIAS", "PHASE-ALIAS", "PHASEALIAS"})
 
 
 class PhaseIdentityError(ValueError):
@@ -368,13 +370,16 @@ def current_phase(provided: str | None = None) -> str | None:
     (``prompts.closeout_audit_instruction``), so nothing is inferred: not from the
     environment (a value inherited from some other phase, or absent on routes that
     bypass the launcher), and not from ``.phase-loop/state.json`` (written only after
-    a loop ends, so mid-loop it names the PREVIOUS phase). A value that is not a
-    roadmap-shaped alias (an unsubstituted ``<ALIAS>``) is no identity either. Unknown
-    identity is treated as no evidence: nothing is recorded and nothing is accepted.
+    a loop ends, so mid-loop it names the PREVIOUS phase). A value that is not
+    alias-shaped (``<ALIAS>``), or is a bare placeholder word (``ALIAS``, ``PHASE``), is
+    no identity either. Unknown identity is treated as no evidence: nothing is
+    recorded and nothing is accepted.
     """
 
     alias = (provided or "").strip()
-    return alias if _PHASE_ALIAS_RE.fullmatch(alias) else None
+    if not _PHASE_ALIAS_RE.fullmatch(alias) or alias.upper() in _PLACEHOLDER_ALIASES:
+        return None
+    return alias
 
 
 @dataclass
@@ -735,7 +740,7 @@ def verify_declared_output(repo: Path, relpath: str, context: AuditContext) -> t
     covering = {p.name for p in declaration.producers if p.covers(relpath)}
     if not covering:
         return False, "no recognised producer (not covered by a declared output glob)"
-    hint = f"run `phase-loop-closeout-audit --repo . --record-outputs --phase {context.phase or 'ALIAS'}`"
+    hint = f"run `phase-loop-closeout-audit --repo . --record-outputs --phase {context.phase or '<ALIAS>'}`"
     if record is None:
         return False, f"declared output with no producer record; {hint}"
     if record.get("declaration_sha256") != declaration.sha256:
