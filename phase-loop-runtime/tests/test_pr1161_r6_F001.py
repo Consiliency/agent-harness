@@ -1,3 +1,4 @@
+# ruff: noqa: F401, F811 -- the body below is codex's round-6 falsifier verbatim; it imports a pytest fixture by name.
 import pytest
 
 import _scratch_audit_hook as hook
