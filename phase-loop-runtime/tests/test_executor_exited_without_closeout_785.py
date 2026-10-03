@@ -79,8 +79,48 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # Historical INPUT, not regenerated candidate output: the normalized golden
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
-    canonical = json.dumps(golden, sort_keys=True, separators=(",", ":")).encode()
-    assert hashlib.sha256(canonical).hexdigest() == "4026eb47167dcb4b495ae273f82f77f0ba20085508abf702aa89d5dbd3483ecc"
+    canonical = json.dumps(golden, sort_keys=True, separators=(",", ":"))
+    # The third permitted delta (agent-harness#1139): the closeout-audit instruction in
+    # the runner prompt and the execute-phase skill prescribes `--record-outputs` and
+    # names the new producers behind exit 0. Undo exactly that prose, and the redacted
+    # prompt digest it moves, and nothing else.
+    record = " --record-outputs"
+    declared = (
+        "a harness handoff, or a producer the committed `.phase-loop-generated-outputs.json` "
+        "declares (re-run and recorded by `--record-outputs`, agent-harness#1139) produced them"
+    )
+    for new, old in (
+        # The runner prompt names the dispatched phase on the audit, and the skill text
+        # names the quoted, shell-safe `"<ALIAS>"` placeholder (JSON-escaped here) and
+        # glosses it (agent-harness#1189 rounds 3-7).
+        (f"{record} --phase ADAPTER`", f"{record}`"),
+        (f'{record} --phase \\"<ALIAS>\\"`', f"{record}`"),
+        (
+            "path); replace `<ALIAS>` with the alias of the phase you are executing, exactly "
+            "as your plan and runner prompt name it. Pasted unchanged it is still valid shell; "
+            "`--phase` matters only in a repo that commits `.phase-loop-generated-outputs.json`, "
+            "and there an unsubstituted `<ALIAS>` records and accepts nothing, so the audit "
+            "blocks",
+            "path)",
+        ),
+        (f"closeout-audit --repo .{record}`", "closeout-audit --repo .`"),
+        (f"closeout_classifier --repo .{record}`", "closeout_classifier --repo .`"),
+        (f"the runner, its own toolchain, {declared} and ", "the runner and its own toolchain produced them and "),
+        (f"the runner, its own toolchain, {declared} (", "the runner or its own toolchain produced them ("),
+        (
+            "`.venv`), is a harness handoff, or was written by a producer the committed "
+            "`.phase-loop-generated-outputs.json` declares, re-run and recorded by "
+            "`--record-outputs` (agent-harness#1139) -- ",
+            "`.venv`) -- ",
+        ),
+        (
+            "4f7771783e1c80f40fb52417ef732302bbcb24e9dc29e89390573093cc88aa4f",
+            "dc7e4de7561b8bfcdad876382d2c53cf7de73e30c0ed7b95e75d1857dbdd397d",
+        ),
+    ):
+        assert new in canonical, new
+        canonical = canonical.replace(new, old)
+    assert hashlib.sha256(canonical.encode()).hexdigest() == "4026eb47167dcb4b495ae273f82f77f0ba20085508abf702aa89d5dbd3483ecc"
 
 
 @pytest.mark.parametrize("stream", [False, True])
