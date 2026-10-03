@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI offload authenticates with a Tailscale OAuth client (agent-harness#1237)
+
+- The offloaded gate (`test.yml`) and the fail-closed negative probe
+  (`offload-negative-probes.yml`) now join the tailnet through the org's Tailscale OAuth
+  client (`TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET`, scope `auth_keys`, tag `tag:ci-gp`)
+  instead of the `TS_AUTHKEY` auth key. Auth keys expire after at most 90 days; the org key
+  lapsed on 2026-10-01 and every offloaded gate failed with `invalid key`. The OAuth client
+  never expires, and `dagger-offload` (pinned to Consiliency/ci-actions@3929e18, from
+  Consiliency/ci-actions#5) mints a fresh ephemeral, pre-approved key per run. Offload
+  eligibility now keys on `TS_OAUTH_SECRET`; fork PRs still never receive it.
+
+### Heartbeat-only seats no longer stall silently (agent-harness#1176)
+
 ## [0.7.22] - 2026-10-03
 
 ### Qualified agy set is now 1.2.11, 1.2.12, 1.2.14 and 1.2.15 (agent-harness#1236; PR agent-harness#1238)
