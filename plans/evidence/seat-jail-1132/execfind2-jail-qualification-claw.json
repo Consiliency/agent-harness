@@ -1,0 +1,41 @@
+{
+  "checks": {
+    "falsifier_run_green_on_head": true,
+    "no_probe_entry_in_protected_dirs": true,
+    "no_seat_descriptor_resolves_to_protected_object": true,
+    "no_seat_mount_resolves_to_protected_object_or_ancestor": true,
+    "no_signal_or_connection_observed_by_run": true,
+    "probe_resolved_no_protected_path": true,
+    "protected_files_single_link": true,
+    "sentinels_intact": true
+  },
+  "evidence_sha256": "2a407120833537e29619af854b0871a5c61cd66afcab00f8a8c49ce4c577d0e1",
+  "falsifier_layout": "execfind-falsifier-layout.v1:175589eeea9b793f1fe2529e5f768b95a65f484896999e08514cd57b9bb066c9",
+  "issue": "agent-harness#1132",
+  "note": "public summary; the full evidence (host-bound) lives in the operator's per-host store",
+  "probe_attempts": {
+    "create": {
+      "ENOENT": 52
+    },
+    "sentinel": {
+      "ENOENT": 156
+    },
+    "signal": {
+      "ESRCH": 3
+    }
+  },
+  "probe_connect": {
+    "tcp": "None",
+    "udp": "EPERM",
+    "unix-abstract": "ECONNREFUSED",
+    "unix-path": "ENOENT"
+  },
+  "probe_resolved_protected_paths": 0,
+  "profile_digest": "aad69a4d159bed2e2279ce617b82e986e46305a1d3a6b50f23399f1e7cd9f5a9",
+  "protected_dir_count": 52,
+  "recorded_at": "2026-09-30T04:29:16+00:00",
+  "result": "pass",
+  "run_outcome": "green_on_head",
+  "schema": "seat_jail_execfind2_qualification_summary.v1",
+  "sentinel_count": 52
+}

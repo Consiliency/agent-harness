@@ -493,3 +493,140 @@ exit or owner death closes them. The provider ownership namespace is created
 after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
+
+## Jailed review seats (agent-harness#1132)
+
+A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
+staged clone and the review bundle through tools instead of receiving the bundle inline.
+The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
+changes: the seat keeps the sealed inline route and reports why in a typed notice.
+
+**Status in this release: inert.** A jailed launch also needs an EC-EXECFIND-2 falsifier
+pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
+at `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`, and uses
+agent-harness#1071's falsifier-run layout. The digest binds this host's layout, so a pass
+does not carry over from another host, and an OS upgrade that changes `/lib*` or the `/etc`
+subset needs a new pass. Until a pass is recorded, a seat that would be jailed is refused
+with `seat_sandbox_refused:jail_unqualified`, whose notice names that per-host
+qualification as the fix. Run the qualification with `phase-loop seat-sandbox qualify`,
+which runs EC-EXECFIND-2's jail falsifiers against a real falsifier run and records the pass.
+A pass record binds this host, the falsifier-run layout and the
+run's evidence, which is re-hashed on every check. A copied, stale or hand-written record
+does not qualify another host or another run. The operator's own account can still forge
+one, and that is accepted, because the operator is trusted.
+
+**The pass store's directories must be private to you.** This applies to
+`$XDG_STATE_HOME` (usually `~/.local/state`), its `phase-loop` directory and
+`phase-loop/seat-jail-passes`. Each must be a directory you own, must not be a link, and
+must not be writable by others. A group-writable directory is accepted only when its group
+is your own user-private group. That is the usual umask-002 layout, where your primary
+group is named after you and has no other members, and no other account uses it as its
+primary group. Anything else is refused with `seat_sandbox_refused:pass_store_unsafe`. Its
+notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
+qualification nor the gate ever changes these permissions for you. The store defends against the
+seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
+`gemini_seat_egress_unconfined`: the agy access token carries `cloud-platform` and other
+scopes beyond inference, and under the maintainer's "prove then enable" ruling the seat
+gets tools only once jail egress is limited to agy's inference hosts. Today other Google
+Cloud APIs answer from inside the jail, because the egress namespace filters by address
+and Google API hosts share front-end addresses. Codex and grok are
+not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+
+**Where the host supports the jail, Claude seats are jailed by default, and the jail is
+qualified on first use.** The seat's credential is your Claude login, which is normally
+present (see below). So on a host that has the prerequisite below, every brokered Claude
+seat with a staged tree takes the jailed route.
+- **No recorded pass:** if no EC-EXECFIND-2 pass is recorded for this host and jail, the
+  harness runs the host's jail qualification itself, once, before launching. This is the
+  same as `phase-loop seat-sandbox qualify`. Concurrent seats and boards wait for that one
+  run.
+- **On a pass:** the pass is recorded, and the seat runs jailed. Its mode line reads
+  `jailed (qualified now)`.
+- **On a failure, or if the run cannot happen:** the seat runs sealed, without tools, and
+  its mode line names `seat_jail_qualification_failed`, the reason and the fix.
+- **Retrying:** a failure is not retried on every seat. It is retried after
+  `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default one hour), or as soon as the jail or the
+  host layout changes.
+
+**Seat modes.** Before any seat launches, the board prints one line per seat
+(`advisor-board: seat mode: ...`), and the `--json` payload carries `seat_modes`. The modes
+are:
+- `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
+- `unconfined`: tools on the staged tree without a jail (codex, grok).
+- `sealed`: no tools; the bundle is inlined.
+- `degraded`: refused before launch.
+- `native`: filled by the driving session.
+
+Every mode other than `jailed` names its notice code, its reason and a one-line fix. The
+same modes are written to `seat-modes.json` in the stream directory.
+
+**Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
+`usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
+conventional). The runtime never runs these. Without them the seat stays sealed with
+`seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
+
+**Claude seat credential.** By default, the seat uses the subscription you are logged in
+with.
+- **What is read, and when:** at every jailed launch, the runtime reads only the current
+  login's access token from the Claude CLI's own store. That is
+  `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`, and the login
+  Keychain on macOS. It never reads or uses the refresh token.
+- **A short token:** if the token has less lifetime left than the seat's deadline, the
+  runtime asks the CLI to bring the login up to date (`claude auth status`) and reads it
+  again. Set `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` (seconds) to override the deadline as the
+  margin.
+  - If the token is still too short, the leg is refused with
+    `claude_seat_login_token_expiring` (fix: `claude login`).
+  - A token that expires during a run ends the leg with `claude_seat_login_token_expired`.
+    Re-running it reads a fresh token.
+- **Switching subscriptions:** `claude login` to another subscription takes effect at the
+  next launch.
+- **No credential:** with no login and no override, the seat stays sealed with
+  `claude_seat_token_missing` (fix: `claude login`).
+
+**Optional override: a dedicated seat token.** To bill a different subscription, store a
+long-lived `claude setup-token` token. When the file exists, it takes precedence over the
+login. The override carries no expiry information, so it should be a long-lived token, not
+a copied login token.
+
+```bash
+claude setup-token          # mint a long-lived subscription token
+install -d -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/phase-loop/seat-credentials"
+( umask 077; cat > "${XDG_STATE_HOME:-$HOME/.local/state}/phase-loop/seat-credentials/claude" )
+```
+
+The file must be 0600 in a 0700 directory owned by you, or the leg is refused with
+`seat_sandbox_refused:token_file_unsafe`.
+
+Either credential reaches the seat only through one drained pipe. It never appears in an
+argv, an environment value, a log or an evidence record, and the seat's output is scanned
+for it.
+- **The residual:** a jailed seat can read the credential it was given and use it for that
+  credential's remaining lifetime. That is hours for a login access token, or the setup
+  token's lifetime for an override. This residual is recorded under agent-harness#361
+  (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
+- **If a leg reports `claude_seat_token_in_output`**, or `seat_sandbox_retained_after_teardown`
+  on a suspect leg:
+  - **With the login:** log out and back in (`claude logout`, then `claude login`). The
+    access token also expires on its own within hours.
+  - **With an override:** revoke it from your Claude account settings, and mint a new one.
+
+**Replacing the seat token override.** The runtime reads the override at every jailed
+launch, so you can swap it between legs or rounds, for example to move to another
+subscription. Write
+the new token beside the file and rename it over the old one, so no launch reads half a
+file. A leg that is already running keeps its own token. Replacing the token does not
+change the jail's digest or invalidate its recorded qualification. If a leg reports
+`claude_seat_token_rate_limited`, the override's subscription hit a rate or usage limit. With
+the login, the same outcome is `claude_seat_login_rate_limited`. The leg's detail names the
+reset time when the provider gives one. Rotate or replace the credential, or wait for the
+reset. The jail itself is fine.
+
+**Notices.** Each seat's notices are `{code, seat_key, what, why, fix}` in the
+`advisor-board --json` payload (`notices`, `legs[].notices`) and in the text summary. The
+full vocabulary is in `advisor_board/CONTRACTS.md` ("SEATJAIL").
+
+**Retained directories.** If teardown cannot remove a seat's directories, they are kept
+under the leg's private 0700 scratch directory and the leg carries
+`seat_sandbox_retained_after_teardown`. Remove them with
+`phase-loop seat-sandbox reap PATH`; it accepts only a path recorded by that notice.

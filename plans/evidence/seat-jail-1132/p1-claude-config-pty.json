@@ -1,0 +1,102 @@
+{
+  "bypass_refused_for_uid0": true,
+  "claude_version": "2.1.284 (Claude Code)",
+  "issue": "agent-harness#1132",
+  "pinned_preseed": {
+    "bypassPermissionsModeAccepted": true,
+    "hasCompletedOnboarding": true,
+    "lastOnboardingVersion": "2.1.284",
+    "projects": {
+      "/seat/tree": {
+        "hasTrustDialogAccepted": true
+      }
+    }
+  },
+  "recorded_at": "2026-09-29T17:02:10+00:00",
+  "result": "pass",
+  "runs": {
+    "empty_config": {
+      "editor_ready": false,
+      "exited_before_deadline": false,
+      "modals": [
+        "onboarding_theme"
+      ],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qWelcome to Claude Code v2.1.284\r\nLet's get started.\r\nChoose the text style that looks best with your terminal\r\nTo change this later, run /theme\r\n1. Auto (match terminal)\r\n2. (selected) Dark mode\r\n3. Light mode\r\n4. Dark mode (colorblind-friendly)\r\n5. Light mode (colorblind-friendly)\r\n6. Dark mode (ANSI colors only)\r\n7. Light mode (ANSI colors only)\r\nSelect with numbers [1-7]. Then Enter to submit or Escape to cancel:\r\n Syntax theme: Monokai Extended (ctrl+t to disable)",
+      "typed_echoed": false
+    },
+    "full_preseed_as_uid0": {
+      "editor_ready": false,
+      "exited_before_deadline": true,
+      "modals": [],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons\r\n",
+      "typed_echoed": false
+    },
+    "full_preseed_planted_workspace": {
+      "editor_ready": true,
+      "exited_before_deadline": false,
+      "modals": [],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qClaude Code v2.1.284\r\nOpus 5.5 with high effort \u00b7 Claude API\r\n/seat/tree\r\nwarning: Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more)\r\nRestart without --safe-mode to re-enable\r\nwarning: Remote managed settings failed to load (authentication rejected (401)) \u00b7 no remote policy applied \u00b7 /status for details\r\nbypass permissions on (shift+tab to cycle)\r\neffort: high \u00b7 /effort\r\n$$",
+      "typed_echoed": false
+    },
+    "full_preseed_types_input": {
+      "editor_ready": true,
+      "exited_before_deadline": false,
+      "modals": [],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qClaude Code v2.1.284\r\nOpus 5.5 with high effort \u00b7 Claude API\r\n/seat/tree\r\nwarning: Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more)\r\nRestart without --safe-mode to re-enable\r\nwarning: Remote managed settings failed to load (authentication rejected (401)) \u00b7 no remote policy applied \u00b7 /status for details\r\nbypass permissions on (shift+tab to cycle)\r\neffort: high \u00b7 /effort\r\n$\u00a0 p1 probe input$\u00a0 p1 probe input",
+      "typed_echoed": true
+    },
+    "without_bypassPermissionsModeAccepted": {
+      "editor_ready": false,
+      "exited_before_deadline": false,
+      "modals": [
+        "bypass_ack"
+      ],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qWARNING: Claude Code running in Bypass Permissions mode\r\nIn Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\r\nThis mode should only be used in a sandboxed container/VM that has restricted internet access and can easily be restored if damaged.\r\nBy proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.\r\nhttps://code.claude.com/docs/en/security\r\ny. Yes, I accept\r\nn. No, exit\r\nEnter y/n:\r\nEnter to confirm \u00b7 Esc to cancel",
+      "typed_echoed": false
+    },
+    "without_hasCompletedOnboarding": {
+      "editor_ready": false,
+      "exited_before_deadline": false,
+      "modals": [
+        "onboarding_theme"
+      ],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qWelcome to Claude Code v2.1.284\r\nLet's get started.\r\nChoose the text style that looks best with your terminal\r\nTo change this later, run /theme\r\n1. Auto (match terminal)\r\n2. (selected) Dark mode\r\n3. Light mode\r\n4. Dark mode (colorblind-friendly)\r\n5. Light mode (colorblind-friendly)\r\n6. Dark mode (ANSI colors only)\r\n7. Light mode (ANSI colors only)\r\nSelect with numbers [1-7]. Then Enter to submit or Escape to cancel:\r\n Syntax theme: Monokai Extended (ctrl+t to disable)",
+      "typed_echoed": false
+    },
+    "without_lastOnboardingVersion": {
+      "editor_ready": true,
+      "exited_before_deadline": false,
+      "modals": [],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qClaude Code v2.1.284\r\nOpus 5.5 with high effort \u00b7 Claude API\r\n/seat/tree\r\nwarning: Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more)\r\nRestart without --safe-mode to re-enable\r\nwarning: Remote managed settings failed to load (authentication rejected (401)) \u00b7 no remote policy applied \u00b7 /status for details\r\nbypass permissions on (shift+tab to cycle)\r\neffort: high \u00b7 /effort\r\n$$",
+      "typed_echoed": false
+    },
+    "without_projects": {
+      "editor_ready": false,
+      "exited_before_deadline": false,
+      "modals": [
+        "workspace_trust"
+      ],
+      "plant_files_written": [],
+      "plant_sentinel_on_screen": false,
+      "screen_tail": "[Screen Reader Mode: on via flag]\r\n\u001b7\u001b8\u001b[>0qPermission Required: Accessing workspace:\r\n/seat/tree\r\nQuick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this\r\nfolder first.\r\nClaude Code'll be able to read, edit, and execute files here.\r\nSecurity guide\r\ny. Yes, I trust this folder\r\nn. No, exit\r\nEnter y/n:\r\nEnter to confirm \u00b7 Esc to cancel",
+      "typed_echoed": false
+    }
+  },
+  "schema": "seat_jail_probe_p1.v1",
+  "stops": [],
+  "token": "dummy on the production fd channel (P2 pending)"
+}

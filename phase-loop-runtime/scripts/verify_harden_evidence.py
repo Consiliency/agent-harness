@@ -2359,7 +2359,25 @@ def verify_ci(store: ArtifactStore, data: Any, repo: Path, candidate: str, main:
         query_ci(store, ci, query, expected_event)
 
 
+HARDEN5_UNMET_RESIDUAL = "agent-harness#361"
+
+
+def harden5_unmet(value: Any) -> bool:
+    """A tooled or pointer seat record (agent-harness#1132, J8): EC-HARDEN-5 is UNMET for it,
+    an accepted residual under agent-harness#361 (maintainer decision D3). A jailed seat
+    holds its own credential and full tools, so the credentialed-side-effect clause cannot
+    be met; the record is reported, never accepted as MET."""
+    return isinstance(value, dict) and (
+        value.get("provider_input_mode") == "pointer"
+        or value.get("provider_input_inline") is False
+        or value.get("sandbox_filesystem_confined") is True
+        or "seat_jail_profile_digest" in value
+    )
+
+
 def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str, report: str) -> None:
+    if harden5_unmet(value):
+        fail(f"EC-HARDEN-5 UNMET: tooled or pointer seat record (accepted residual {HARDEN5_UNMET_RESIDUAL})")
     common = {
         "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls", "provider_response_status", "provider_response_sha256", "provider_response_bytes",
     }

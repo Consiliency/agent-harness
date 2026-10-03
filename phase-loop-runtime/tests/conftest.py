@@ -96,6 +96,21 @@ def _isolate_host_state(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_first_use_jail_qualification(monkeypatch):
+    """agent-harness#1132 (plan amendment A2): a Claude seat whose jail has no recorded
+    EC-EXECFIND-2 pass on this host qualifies it on first use -- a REAL falsifier run on
+    the seat-uid chain. A test that reaches that path without injecting a qualifier fails
+    here instead of running one. Tests of the first-use path inject ``qualify=``; the live
+    qualification tests call ``seat_jail_qualification`` directly."""
+    from phase_loop_runtime import seat_jail_autoqualify
+
+    def _refuse(leg):
+        pytest.fail("a test reached a REAL first-use jail qualification; inject qualify=")
+
+    monkeypatch.setattr(seat_jail_autoqualify, "_default_qualify", _refuse)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_implicit_review_authority(monkeypatch):
     from phase_loop_runtime import panel_invoker
 

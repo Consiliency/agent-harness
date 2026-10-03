@@ -1,0 +1,453 @@
+"""Live D8 falsifiers (agent-harness#1132): J4, J6, J15, the hand-off and reap, on the real
+seat-uid chain.
+
+These run the PRODUCTION pieces end to end, with nothing faked:
+- `sandbox_egress.isolated_network(seat_uid_map=True)`, whose holder is mapped by the real
+  `newuidmap`/`newgidmap`;
+- the `flock` seat-id lease;
+- `seat_jail.build_seat_jail`;
+- `panel_invoker._compose_seat_jail_prefix`, with the keyring shim, `nsenter`, the hand-off,
+  bwrap and `setpriv`;
+- `panel_invoker._require_jailed_seat_identity`.
+
+They need the maintainer's host prerequisite. Without it they skip, and the skip reason
+names that prerequisite.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from phase_loop_runtime import panel_invoker as pi
+from phase_loop_runtime import sandbox_egress, seat_jail, seat_uid
+
+from ._seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
+
+pytestmark = [
+    pytest.mark.skipif(not seat_uid_ready(), reason=SEAT_UID_PREREQUISITE),
+    pytest.mark.skipif(not sandbox_egress.egress_isolation_available(),
+                       reason="needs unshare + slirp4netns + iptables"),
+]
+
+
+@contextlib.contextmanager
+def live_seat(tmp_path: Path, name: str = "a", *, extra_owner: list[str] | None = None):
+    """One jailed seat on the real D8 chain. Yields (jail, prefix, holder pid, dirs)."""
+    base = Path(tempfile.mkdtemp(prefix=f"pl-live-{name}-", dir=tmp_path))
+    review = base / "review"
+    tree = review / seat_jail.HOST_TREE_DIRNAME
+    tree.mkdir(parents=True)
+    (tree / "src.py").write_text("value = 1\n")
+    seat_dir = base / "seat"
+    seat_dir.mkdir(mode=0o700)
+    uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
+    gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
+    with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+            sandbox_egress.isolated_network(timeout_s=600, required=True, seat_uid_map=True) as egress:
+        token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
+        holder = seat_uid.holder_pid_from_prefix(egress)
+        jail = seat_jail.build_seat_jail(
+            "claude", seat_dir, Path("/usr/bin/true"), tree=tree,
+            bundle_memfd=seat_jail.memfd_with("b", b"BUNDLE"),
+            instructions_memfd=seat_jail.memfd_with("i", b"INSTRUCTIONS"),
+            token_fd=seat_jail.token_pipe(b"SEAT-JAIL-SENTINEL-live"), seat_ids=(n, n))
+        if extra_owner:
+            owner = list(jail.process_owner)
+            at = owner.index("--remount-ro")
+            owner[at:at] = extra_owner
+            object.__setattr__(jail, "process_owner", tuple(owner))
+        try:
+            yield jail, pi._compose_seat_jail_prefix(jail), holder, {
+                "base": base, "review": review, "tree": tree, "seat": seat_dir, "n": n}
+        finally:
+            seat_jail.close_jail_fds(jail)
+            for parent in (review, seat_dir):
+                seat_uid.teardown_in_h(holder, str(parent))
+            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+def _run(prefix, jail, script, *args, timeout=60):
+    return subprocess.run([*prefix, "/bin/sh", "-c", script, "sh", *args], capture_output=True,
+                          text=True, timeout=timeout, pass_fds=jail.pass_fds,
+                          env=seat_uid._pythonpath_env())
+
+
+# --------------------------------------------------------------------------------------
+# J6 / J15: the seat is its subordinate uid, with nothing left.
+# --------------------------------------------------------------------------------------
+
+def test_j6_live_identity_probe_passes_through_the_production_prefix(tmp_path):
+    with live_seat(tmp_path) as (jail, prefix, _holder, _dirs):
+        pi._require_jailed_seat_identity(prefix, jail, jail.pass_fds)
+
+
+def test_j6_live_setuid_and_uid_map_writes_fail(tmp_path):
+    script = ('python3 -c "import os\ntry:\n os.setuid(0); print(\'SETUID-OK\')\nexcept OSError: print(\'setuid-refused\')"; '
+              'echo "0 0 1" > /proc/self/uid_map 2>/dev/null && echo MAP-OK || echo map-refused')
+    with live_seat(tmp_path) as (jail, prefix, _h, _d):
+        done = _run(prefix, jail, script)
+    assert "setuid-refused" in done.stdout and "map-refused" in done.stdout, done
+
+
+def test_j6_live_mutation_skipping_the_bounding_drop_shows_capbnd(tmp_path):
+    """Mutation: omit `--bounding-set=-all` -- the probe's CapBnd is no longer 0."""
+    with live_seat(tmp_path) as (jail, prefix, _h, _d):
+        mutated = list(prefix)
+        mutated.remove("--bounding-set=-all")
+        done = _run(mutated, jail, 'grep CapBnd /proc/self/status')
+        with pytest.raises(seat_jail.SeatSandboxRefused):
+            pi._require_jailed_seat_identity(mutated, jail, jail.pass_fds)
+    assert "0000000000000000" not in done.stdout
+
+
+def test_j6_live_mutation_skipping_setpriv_leaves_h_root_with_three_caps(tmp_path):
+    with live_seat(tmp_path) as (jail, prefix, _h, _d):
+        drop = prefix.index("/usr/bin/setpriv")
+        mutated = prefix[:drop] + prefix[prefix.index("/usr/bin/env", drop):]
+        done = _run(mutated, jail, 'id -u; grep CapEff /proc/self/status')
+    lines = done.stdout.split()
+    assert lines[0] == "0" and "00000000000001c0" in done.stdout
+
+
+def test_j15_dac_is_a_second_layer_under_the_mounts(tmp_path):
+    """A test-only READ-WRITE bind of operator-owned objects: DAC alone refuses the seat."""
+    canary_dir = tmp_path / "operator-dir"
+    canary_dir.mkdir(mode=0o755)
+    canary = canary_dir / "file"
+    canary.write_text("operator\n")
+    canary.chmod(0o644)
+    extra = ["--bind", str(canary_dir), "/seat/operator"]
+    with live_seat(tmp_path, extra_owner=extra) as (jail, prefix, _h, _d):
+        done = _run(prefix, jail, 'echo x >> /seat/operator/file 2>/dev/null && echo WROTE-FILE; '
+                                  'touch /seat/operator/new 2>/dev/null && echo WROTE-DIR; cat /seat/operator/file')
+    assert "WROTE" not in done.stdout and "operator" in done.stdout
+    assert canary.read_text() == "operator\n" and not (canary_dir / "new").exists()
+
+
+def test_j15_nothing_operator_owned_is_writable_in_the_host_backed_mounts(tmp_path):
+    with live_seat(tmp_path) as (jail, prefix, holder, dirs):
+        _run(prefix, jail, "touch /seat/tree/new /seat/home/new /seat/out/new")
+        found = subprocess.run(
+            ["/usr/bin/nsenter", "-t", str(holder), "-U", "-m", "--preserve-credentials",
+             "/usr/bin/find", str(dirs["tree"]), str(dirs["seat"] / "seat-home"),
+               str(dirs["seat"] / "seat-out"), "!", "-uid", str(dirs["n"]), "-print"],
+            capture_output=True, text=True)
+    assert found.returncode == 0 and found.stdout.strip() == "", found
+
+
+# --------------------------------------------------------------------------------------
+# The hand-off (private inodes) on the real chain.
+# --------------------------------------------------------------------------------------
+
+def test_handoff_live_refuses_a_hard_link_and_leaves_the_outside_file_alone(tmp_path):
+    outside = tmp_path / "operator-secret"
+    outside.write_text("secret")
+    outside.chmod(0o600)
+    with live_seat(tmp_path) as (jail, prefix, _h, dirs):
+        os.link(outside, dirs["tree"] / "planted")
+        done = _run(prefix, jail, "echo RAN")
+    assert "RAN" not in done.stdout
+    assert "seat_sandbox_refused:stage_not_private" in done.stderr
+    info = outside.stat()
+    assert info.st_uid == os.getuid() and info.st_mode & 0o777 == 0o600
+
+
+# --------------------------------------------------------------------------------------
+# J4: concurrent seats cannot reach each other.
+# --------------------------------------------------------------------------------------
+
+def test_j4_live_concurrent_seats_are_isolated(tmp_path):
+    with live_seat(tmp_path, "a") as (jail_a, prefix_a, holder_a, dirs_a), \
+            live_seat(tmp_path, "b") as (jail_b, prefix_b, _hb, dirs_b):
+        assert dirs_a["n"] != dirs_b["n"], "concurrent seats must lease distinct uids"
+        sleeper = subprocess.Popen(
+            [*prefix_a, "/bin/sh", "-c", "echo A-SECRET > /seat/out/sentinel; exec sleep 61.4321"],
+            pass_fds=jail_a.pass_fds, env=seat_uid._pythonpath_env(),
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            deadline = 50
+            a_pids = []
+            while deadline and not a_pids:
+                a_pids = [p for p in os.listdir("/proc") if p.isdigit()
+                          and _cmdline(p) == "sleep\x0061.4321\x00"]
+                deadline -= 1
+                subprocess.run(["sleep", "0.1"])
+            assert a_pids, ("seat A's sleeper was not found on the host",
+                            sleeper.poll(), sleeper.stderr.read() if sleeper.poll() is not None else "")
+            pid = a_pids[0]
+            out_a = dirs_a["seat"] / "seat-out"
+            done = _run(prefix_b, jail_b, (
+                f'cat "{out_a}/sentinel" 2>/dev/null && echo READ-HOST-PATH; '
+                f'ls /proc/{pid} >/dev/null 2>&1 && echo SAW-PID; '
+                f'cat /proc/{pid}/environ 2>/dev/null && echo READ-ENVIRON; '
+                f'kill -0 {pid} 2>/dev/null && echo SIGNALLED; '
+                'cat /seat/out/sentinel 2>/dev/null && echo READ-OWN-ALIAS; echo done'))
+        finally:
+            sleeper.kill()
+            sleeper.wait()
+    assert done.stdout.strip().endswith("done"), done
+    for leak in ("READ-HOST-PATH", "SAW-PID", "READ-ENVIRON", "SIGNALLED", "READ-OWN-ALIAS", "A-SECRET"):
+        assert leak not in done.stdout, done.stdout
+
+
+def _cmdline(pid: str) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_text()
+    except OSError:
+        return ""
+
+
+# --------------------------------------------------------------------------------------
+# Retention and reap (F022) on a real seat-owned directory.
+# --------------------------------------------------------------------------------------
+
+def test_live_reap_removes_a_recorded_seat_owned_directory(tmp_path, monkeypatch):
+    records = tmp_path / "records"
+    monkeypatch.setattr(seat_uid, "retention_dir", lambda: records)
+    monkeypatch.setattr(seat_uid, "stage_root", lambda: tmp_path.resolve())
+    with live_seat(tmp_path) as (jail, prefix, holder, dirs):
+        _run(prefix, jail, "mkdir -p /seat/home/deep && umask 077 && echo x > /seat/home/deep/f")
+        target = dirs["seat"] / "seat-home"
+        assert os.stat(target).st_uid == seat_uid.subordinate_host_uid(dirs["n"])
+        seat_uid.record_retention(target, directory=records)
+        seat_uid.reap(str(target))
+        assert not target.exists()
+
+
+# --------------------------------------------------------------------------------------
+# P5/P1 findings folded into the production jail, each proven on the live chain.
+# --------------------------------------------------------------------------------------
+
+def test_live_seat_can_use_tmp_etc_and_its_tree(tmp_path):
+    """The seat uid can write its sticky tmpfs, traverse /etc and /seat, and starts in its
+    tree. Each broke on the plan's literal argv (P5 and P1)."""
+    script = ('pwd; touch /tmp/t /dev/shm/t && echo tmp-ok; cat /etc/ssl/openssl.cnf >/dev/null && '
+              'echo etc-ok; test -x /seat/bin/claude && echo seat-ok')
+    with live_seat(tmp_path) as (jail, prefix, _h, _d):
+        done = _run(prefix, jail, script)
+    assert done.stdout.split() == ["/seat/tree", "tmp-ok", "etc-ok", "seat-ok"], done
+
+
+def test_live_pre_drop_set_is_exactly_the_three_capabilities(tmp_path):
+    """P5: bwrap as H-root keeps every capability unless `--cap-drop ALL` comes first."""
+    with live_seat(tmp_path) as (jail, prefix, _h, _d):
+        drop = prefix.index("/usr/bin/setpriv")
+        done = subprocess.run([*prefix[:drop], "/bin/sh", "-c", "grep CapEff /proc/self/status"],
+                              capture_output=True, text=True, pass_fds=jail.pass_fds,
+                              env=seat_uid._pythonpath_env(), timeout=60)
+    assert done.stdout.split() == ["CapEff:", "00000000000001c0"], done
+
+
+# --------------------------------------------------------------------------------------
+# Tool use (plan "Tests": a jailed Claude seat runs a command and quotes its output).
+# Runs for real once the maintainer's seat token is in place (P2); the EC-EXECFIND-2 gate
+# sits above `_prepare_jailed_claude`, so this drives the jailed leg directly.
+# --------------------------------------------------------------------------------------
+
+def test_live_jailed_claude_runs_a_tool_and_quotes_it(tmp_path):
+    import hashlib
+    import types
+
+    from phase_loop_runtime import review_stage
+
+    from ._seat_prereq import require_seat_token
+
+    require_seat_token()
+    subject = "seat-jail-tool-use-" + hashlib.sha256(os.urandom(8)).hexdigest()[:12]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@e.st"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", subject],
+                   check=True)
+    base = Path(tempfile.mkdtemp(prefix="pl-live-tool-", dir=tmp_path))
+    review = base / "review"
+    review.mkdir()
+    staged = review_stage.stage_review_tree(repo, review)
+    staged.rename(review / seat_jail.HOST_TREE_DIRNAME)
+    auth = types.SimpleNamespace(staged_tree_sha256=review_stage.review_tree_manifest_sha256(
+        review / seat_jail.HOST_TREE_DIRNAME))
+    instructions = ("Run `git log -1 --format=%s` in /seat/tree and reply with its exact output "
+                    "on one line, then the verdict AGREE.")
+    uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
+    gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
+    with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
+            sandbox_egress.isolated_network(timeout_s=1200, required=True, seat_uid_map=True) as egress:
+        token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
+        try:
+            seat = pi._prepare_jailed_claude(review, base / "seat", auth, n,
+                                             seat_uid.holder_pid_from_prefix(egress),
+                                             ("BUNDLE: see the tree.", instructions))
+            prompt = pi._render_broker_pointer_prompt(
+                "BUNDLE: see the tree.", instructions,
+                source_commit=(review / seat_jail.HOST_TREE_DIRNAME / ".git"
+                               / "phase-loop-source-commit").read_text().strip(),
+                staged_tree_sha256=auth.staged_tree_sha256)
+            status, text = pi._exec_jailed_claude_leg(
+                seat, timeout_s=600, backstop_s=900, model=None, effort="low", prompt=prompt,
+                broker_evidence={})
+        finally:
+            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert status == "OK", (status, text)
+    assert subject in text
+
+
+# --------------------------------------------------------------------------------------
+# Board round 2: the identity probe's filter checks, each layer on its own. The canonical
+# argv/filter digest (a separate layer) is bypassed so the PROBE alone must refuse a jail
+# whose own seccomp filter is missing -- including under an inherited outer filter, where
+# `Seccomp: 2` alone would lie (codex round 1).
+# --------------------------------------------------------------------------------------
+
+def _install_allow_all_filter_on_this_thread() -> None:
+    import ctypes
+    import struct
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    assert libc.prctl(38, 1, 0, 0, 0) == 0  # PR_SET_NO_NEW_PRIVS
+    program = ctypes.create_string_buffer(struct.pack("HBBI", 0x06, 0, 0, 0x7FFF0000))
+
+    class SockFprog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_void_p)]
+
+    fprog = SockFprog(1, ctypes.addressof(program))
+    assert libc.prctl(22, 2, ctypes.byref(fprog), 0, 0) == 0  # PR_SET_SECCOMP, FILTER
+
+
+def _probe_without_jail_filter(tmp_path, name, *, outer_filter: bool) -> str:
+    """Run the identity probe (canonical check bypassed) against a jail with NO seccomp
+    filter of its own, in a worker thread so any outer filter stays thread-local."""
+    import threading
+
+    result: dict[str, str] = {}
+
+    def worker():
+        with live_seat(tmp_path, name) as (jail, _prefix, _h, _d):
+            if outer_filter:
+                _install_allow_all_filter_on_this_thread()
+            owner = list(jail.process_owner)
+            at = owner.index("--seccomp")
+            del owner[at:at + 2]
+            object.__setattr__(jail, "process_owner", tuple(owner))
+            object.__setattr__(jail, "pass_fds",
+                               tuple(fd for fd in jail.pass_fds if fd != jail.seccomp_fd))
+            try:
+                pi._require_jailed_seat_identity(pi._compose_seat_jail_prefix(jail), jail,
+                                                 jail.pass_fds)
+                result["r"] = "accepted"
+            except seat_jail.SeatSandboxRefused:
+                result["r"] = "refused"
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    return result.get("r", "error")
+
+
+def test_r2_behavioural_check_refuses_a_filterless_jail_under_an_outer_filter(tmp_path, monkeypatch):
+    """Isolates the BEHAVIOURAL layer: the filter-count layer is neutralised (expected count
+    made to match what a filterless jail shows), so only `nested-userns-denied` can refuse."""
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda jail: None)
+    monkeypatch.setattr(seat_jail, "_own_seccomp_filters", lambda: 0)  # outer filter = 1 = "own + 1"
+    assert _probe_without_jail_filter(tmp_path, "beh", outer_filter=True) == "refused"
+
+
+def test_r2_filter_count_refuses_a_filterless_jail(tmp_path, monkeypatch):
+    """Isolates the COUNT layer: an outer filter supplies `Seccomp: 2`, and the behavioural
+    check is neutralised (the probe always prints `nested-userns-denied`), so only
+    `Seccomp_filters = own + 1` -- counted on the calling thread -- can refuse."""
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda jail: None)
+    monkeypatch.setattr(seat_jail, "JAIL_PROBE", seat_jail.JAIL_PROBE.replace(
+        "/usr/bin/unshare -U /bin/true 2>/dev/null && echo nested-userns-allowed "
+        "|| echo nested-userns-denied; ", "echo nested-userns-denied; "))
+    assert _probe_without_jail_filter(tmp_path, "cnt", outer_filter=True) == "refused"
+
+
+def test_r2_seccomp_descriptor_must_be_at_offset_zero(tmp_path):
+    """bwrap loads the program from the descriptor's current offset; a moved offset would
+    load a suffix while a digest over offset 0 still matched."""
+    import os as _os
+
+    with live_seat(tmp_path, "off") as (jail, _prefix, _h, _d):
+        pi._require_canonical_jail(jail)
+        _os.lseek(jail.seccomp_fd, 8, _os.SEEK_SET)
+        with pytest.raises(seat_jail.SeatSandboxRefused):
+            pi._require_canonical_jail(jail)
+
+
+def test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass(tmp_path):
+    """Round 4 threat model, the seat uid: a pass record (and its evidence) chowned to a real
+    subordinate seat uid is refused by owner, even though its content is valid."""
+    from .test_seat_sandbox_permissions import HOST, LAYOUT, _write_pass
+
+    digest = seat_jail.jail_profile_digest("claude")
+    store = tmp_path / "passes"
+    _write_pass(store, digest)
+    assert seat_jail.execfind_pass_recorded(digest, root=store, layout=LAYOUT, host=HOST)
+    with seat_uid.mapped_namespace() as pid:
+        # World-readable (0644), so the operator CAN read it: only the owner check refuses.
+        (store / f"{digest}.json").chmod(0o644)
+        done = subprocess.run(["/usr/bin/nsenter", "-t", str(pid), "-U", "-m",
+                               "--preserve-credentials", "/bin/chown", "3:3",
+                               str(store / f"{digest}.json")], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert os.stat(store / f"{digest}.json").st_uid == seat_uid.subordinate_host_uid(3)
+    assert seat_jail.execfind_pass_recorded(digest, root=store, layout=LAYOUT, host=HOST) is False
+
+
+# --------------------------------------------------------------------------------------
+# EC-EXECFIND-2 jail falsifiers (seat_jail_qualification), live, with a real falsifier run.
+# --------------------------------------------------------------------------------------
+
+def test_execfind2_jail_falsifiers_pass_on_the_production_jail(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    evidence = q.qualify(record=True)
+    assert evidence["result"] == "pass", evidence.get("checks")
+    assert evidence["run_outcome"] == "green_on_head"
+    assert seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
+
+
+def _leak_host_tmp(jail):
+    owner = list(jail.process_owner)
+    at = owner.index("--remount-ro")
+    owner[at:at] = ["--bind", tempfile.gettempdir(), "/seat/leak"]
+    object.__setattr__(jail, "process_owner", tuple(owner))
+
+
+def test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run(tmp_path, monkeypatch):
+    """Mutation: the jail binds the host temp dir (where the falsifier run's staged tree and
+    dependency root live). The qualification FAILS: a seat mount resolves to an ancestor of
+    the protected set. (The probe still cannot traverse the operator's 0700 stage or write
+    into it -- the seat uid is not the operator -- which is a separate, DAC, layer.)"""
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    evidence = q.qualify(record=True, _mutate_jail=_leak_host_tmp)
+    assert evidence["result"] == "fail"
+    assert not evidence["checks"]["no_seat_mount_resolves_to_protected_object_or_ancestor"]
+    assert not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
+
+
+def test_recording_never_repermissions_an_existing_state_directory(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o775)
+    state.chmod(0o775)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    # Hermetic: the account database says this group is shared (not a user-private group).
+    monkeypatch.setattr(seat_jail, "_account_db", lambda: None)
+    with pytest.raises(q.QualificationError, match="not other-writable"):
+        q._record_pass({"profile_digest": "0" * 64, "host_identity": "h",
+                        "falsifier_layout": "l", "result": "pass"})
+    assert state.stat().st_mode & 0o777 == 0o775
