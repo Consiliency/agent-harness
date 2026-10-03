@@ -6908,6 +6908,7 @@ def _sanitized_pty_tail(
     # Bounded input for the redactor (a session buffer can be large); the cut is far from
     # the 600-character tail, so nothing it strands can reach the tail.
     text = terminal_bytes[-(_LEG_LOG_MAX_BYTES):].decode("utf-8", errors="replace")
+    text = _redact_seat_credentials(text)
     redacted = " ".join(_redact_leg_text(text, known).split())
     return redacted[-max_chars:].strip()
 

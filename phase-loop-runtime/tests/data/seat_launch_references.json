@@ -953,5 +953,17 @@
   {"count": 1, "function": "read_worker_summary", "module": "worker_pool", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "read_worker_summary", "module": "worker_pool", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_git", "module": "worktree_index", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
-  {"count": 1, "function": "_is_ancestor", "module": "worktree_index", "primitive": "subprocess.run", "role": "operator-out-of-scope"}
+  {"count": 1, "function": "_is_ancestor", "module": "worktree_index", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "_ignored_members", "module": "closeout_classifier", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "_commit_exists", "module": "generated_outputs", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "_ignored_declared_entries", "module": "generated_outputs", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "_regular_file_in_repo", "module": "generated_outputs", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 1, "function": "_run_bounded", "module": "generated_outputs", "primitive": "subprocess.Popen", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "file_identity", "module": "generated_outputs", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "head_commit", "module": "generated_outputs", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "is_harness_handoff", "module": "generated_outputs", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "load_declaration", "module": "generated_outputs", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "load_record", "module": "generated_outputs", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_check_gh_auth", "module": "publishing", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 2, "function": "publish_human_invoked_from_worktree", "module": "publishing", "primitive": "io.read_bytes", "role": "host-io"}
 ]

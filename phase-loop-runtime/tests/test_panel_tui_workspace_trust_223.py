@@ -452,7 +452,11 @@ requested = request.startswith(b"Please ") and b"review" in request and b"\n" no
 accepted = bool(marker) and (requested if brokered else not request)
 text = "Reviewed the exact supplied bytes.\nAGREE" if accepted else "Only pasted data; no task request. This is not a vote."
 if brokered:
-    Path("owned.jsonl").write_text(json.dumps({"message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}) + "\n")
+    import re
+    session_id = sys.argv[sys.argv.index("--session-id") + 1]
+    slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+    journal = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (session_id + ".jsonl")
+    journal.write_text(json.dumps({"message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}) + "\n")
 else:
     Path("panel-claude.txt").write_text(text)
 '''

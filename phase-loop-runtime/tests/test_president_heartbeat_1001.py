@@ -437,7 +437,11 @@ print("Claude Code ready for your message", flush=True)
 wire = b""
 while not wire.endswith(b"\x1bOM"):
     wire += os.read(0, 65536)
-Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
+import re
+session_id = sys.argv[sys.argv.index("--session-id") + 1]
+slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+journal = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (session_id + ".jsonl")
+journal.write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
     "message": {"id": "fixture-message", "role": "assistant", "stop_reason": "end_turn",
                 "content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
 Path("terminal-written").write_text("ready")
