@@ -264,7 +264,7 @@ print(p._mount_fstype(sys.argv[1] + "/a/sub"), p._mount_fstype(sys.argv[1] + "/m
 """
 
 
-def test_real_overmount_layouts_in_a_mount_namespace(tmp_path):
+def test_real_overmount_layouts_in_a_mount_namespace(tmp_path, monkeypatch):
     """The two layouts the board reproduced, built for real, not as ordered fixtures."""
     import shutil as _shutil
 
@@ -272,6 +272,7 @@ def test_real_overmount_layouts_in_a_mount_namespace(tmp_path):
         pytest.skip("needs unshare(1) on Linux")
     if subprocess.run(["unshare", "-rm", "true"], capture_output=True).returncode != 0:
         pytest.skip("unprivileged user+mount namespaces are unavailable here")
+    monkeypatch.setattr(sandbox_policy, "_MOUNTINFO", Path("/proc/self/mountinfo"))
     if sandbox_policy.is_ram_backed(tmp_path):
         pytest.skip("tmp_path is itself tmpfs, so the 'disk' side would be RAM too")
     src = Path(sandbox_policy.__file__).resolve().parents[1]
@@ -532,10 +533,12 @@ class TestChildCliScratch:
         assert set(on_ram) == {"PATH", "HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR"}, on_ram
         assert on_ram["TMPDIR"] == on_ram["CLAUDE_CODE_TMPDIR"] == str(cache / "phase-loop" / "tmp")
 
-        # Not the Gemini heartbeat seat (its sandbox shows a read-only view with its own
-        # /tmp), and not the shared allowlist agy qualification uses: both stay exactly
-        # the allowlist.
-        assert set(panel_invoker._broker_leg_env(dict(base), "gemini")) == {"PATH", "HOME"}
+        # A bounded Gemini leg runs on the host and is relocated like any leg. Only the
+        # heartbeat seat (its jail has its own private /tmp) and the shared allowlist agy
+        # qualification uses stay exactly the allowlist.
+        assert panel_invoker._broker_leg_env(dict(base), "gemini")["TMPDIR"] == on_ram["TMPDIR"]
+        assert set(panel_invoker._broker_leg_env(dict(base), "gemini", private_tmp=True)) == {
+            "PATH", "HOME"}
         assert set(panel_invoker._broker_subscription_env(dict(base))) == {"PATH", "HOME"}
 
     def test_the_brokered_exec_route_fills_by_leg(self, tmp_path, monkeypatch):
@@ -561,7 +564,8 @@ class TestChildCliScratch:
                 {"PATH": "/usr/bin", "HOME": str(tmp_path)}, broker_prompt="p",
             )
         assert seen["codex"].get("TMPDIR") == str(cache / "phase-loop" / "tmp"), seen
-        assert "TMPDIR" not in seen["gemini"] and "CLAUDE_CODE_TMPDIR" not in seen["gemini"], seen
+        # Bounded (no review monitor): the Gemini leg runs on the host, so it is relocated.
+        assert seen["gemini"].get("TMPDIR") == str(cache / "phase-loop" / "tmp"), seen
 
     def test_no_disk_backed_dir_leaves_the_env_alone_and_says_so_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs", raising=False)
@@ -732,6 +736,28 @@ class TestReapBeforeRefusing:
         assert "base" in seen, f"refused while a reclaimable sandbox existed: {seen.get('result')!r}"
         assert not leftover.exists()
 
+    def test_the_reap_before_refusing_archives_first(self, tmp_path, monkeypatch):
+        """The production reap-before-refuse call keeps archive-before-reap."""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_FLOOR_BYTES", str(2 * GiB))
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_ARCHIVE_DEST", str(archive))
+        leftover = _marked(staging, "pl-panel-leftover", age_s=3600)
+
+        def _free(path):
+            return 3 * GiB if not leftover.exists() else 1 * GiB
+
+        monkeypatch.setattr(sandbox_policy, "_free_bytes", _free)
+        monkeypatch.setattr(sandbox_policy, "_free_bytes_at", lambda loc, t=0: _free(loc.path))
+
+        seen = _run_a_sandboxed_leg(tmp_path, monkeypatch)
+
+        assert "base" in seen and not leftover.exists()
+        assert any(archive.iterdir()), "reaped without archiving"
+
     def test_it_still_refuses_when_nothing_can_be_reclaimed(self, tmp_path, monkeypatch):
         staging = tmp_path / "staging"
         staging.mkdir()
@@ -794,3 +820,129 @@ class TestClaudeSeatObservesItsTranscript:
         assert panel_invoker._claude_project_dir_for_cwd(cwd) == project
         assert panel_invoker._latest_claude_transcript_activity(cwd, since=0) > 0
         assert "REVIEW BODY" in panel_invoker._latest_claude_transcript_text(cwd, since=0)
+
+
+class TestEveryAgentLaunchIsRelocated:
+    """Round 2 (agent-harness#1161): bounded Gemini, the president, privacy of the whole
+    runtime-created chain, and the remaining staging defaults."""
+
+    def test_a_ram_backed_cache_is_not_where_child_scratch_goes(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        disk_tmp = tmp_path / "disk-tmp"
+        disk_tmp.mkdir()
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        monkeypatch.setattr(tempfile, "tempdir", str(disk_tmp))
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs" if (
+            os.path.realpath(p) == "/tmp" or Path(os.path.realpath(p)).is_relative_to(cache)
+        ) else "ext4")
+        # Room everywhere, so only the RAM check can rule the cache out (not this host's disk).
+        monkeypatch.setattr(sandbox_policy, "_free_bytes", lambda p: 1 << 50)
+        env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+        assert Path(env["TMPDIR"]).is_relative_to(disk_tmp), env
+
+    def test_a_bounded_agy_home_is_created_in_the_relocated_dir(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import panel_invoker
+
+        home = tmp_path / "home"
+        token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
+        token.parent.mkdir(parents=True)
+        token.write_text("reference", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        with panel_invoker._brokered_agy_environment({"TMPDIR": str(scratch)}, None) as env:
+            assert Path(env["HOME"]).parent == scratch, env
+
+    def test_the_bounded_gemini_president_is_relocated(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from phase_loop_runtime import panel_invoker, president_adapter
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        seen = {}
+
+        def _launch(command, **kwargs):
+            seen.update(kwargs["env"])
+            raise OSError("stop at the launch")
+
+        monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", _launch)
+        fake_self = SimpleNamespace(base_env={"PATH": "/usr/bin", "HOME": str(tmp_path)})
+        with pytest.raises(OSError):
+            president_adapter.PresidentInvoke._launch_gemini(
+                fake_self, "gemini-3.8-flash-high", "prompt", tmp_path)
+        assert seen.get("TMPDIR") == str(cache / "phase-loop" / "tmp"), seen
+        assert Path(seen["HOME"]).parent == cache / "phase-loop" / "tmp", seen
+
+    def test_a_component_owned_by_another_account_is_refused(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        (cache / "phase-loop" / "tmp").mkdir(parents=True, mode=0o700)
+        real_uid = os.getuid()
+        monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+        assert not sandbox_policy._private(cache / "phase-loop" / "tmp", cache)
+
+    def test_a_planted_link_in_the_cache_is_not_a_staging_root(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        (elsewhere / "sandboxes").mkdir(parents=True, mode=0o700)
+        (cache / "phase-loop").symlink_to(elsewhere, target_is_directory=True)
+        disk_tmp = tmp_path / "disk-tmp"
+        disk_tmp.mkdir()
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_STAGING_DIR", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        monkeypatch.setattr(tempfile, "tempdir", str(disk_tmp))
+        assert sandbox_policy.resolve_staging().path == disk_tmp
+
+    def test_a_review_stage_with_no_parent_uses_the_staging_root(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import review_stage
+
+        root = tmp_path / "staging-root"
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(root))
+        staged = review_stage.stage_review_tree(_repo(tmp_path))
+        assert staged.parent == root, staged
+
+    def test_the_capture_route_keeps_its_frozen_env(self, tmp_path, monkeypatch):
+        """The agy capture jail (agent-harness#1179) is launched with the frozen decision."""
+        from types import SimpleNamespace
+
+        from phase_loop_runtime import panel_invoker
+
+        _slash_tmp_is_ram(monkeypatch)
+        seen = {}
+
+        def _launch(command, **kwargs):
+            seen["decision"] = kwargs.get("child_scratch")
+            raise OSError("stop at the launch")
+
+        authority = SimpleNamespace(
+            rewrite_provider_output_path=lambda p: "/run/out",
+            outer_environment=lambda: {"PATH": "/usr/bin"},
+        )
+        monkeypatch.setattr(panel_invoker, "_capture_provider_preflight", lambda a, c, l: c)
+        monkeypatch.setattr(panel_invoker, "_record_capture_review_attempt", lambda *a, **k: None)
+        monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", _launch)
+        review = tmp_path / "review"
+        review.mkdir()
+        (review / "review-bundle.md").write_text("x", encoding="utf-8")
+        with pytest.raises(OSError):
+            panel_invoker._exec_leg(
+                "codex", review, tmp_path / "out", 60, "x", "review", None, None,
+                {"PATH": "/usr/bin"}, agy_capture=object(), provider_authority=authority,
+            )
+        assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE
+
+    def test_a_failing_scratch_probe_is_never_silent(self, tmp_path, monkeypatch):
+        _slash_tmp_is_ram(monkeypatch)
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", set())
+
+        def _boom():
+            raise RuntimeError("probe broke")
+
+        monkeypatch.setattr(sandbox_policy, "_child_tmp_dir", _boom)
+        with pytest.warns(RuntimeWarning, match="scratch probe failed"):
+            assert sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
+        with pytest.raises(sandbox_policy.SandboxRamBackedError):
+            sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
