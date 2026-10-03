@@ -2138,6 +2138,10 @@ def test_live_thread_count_sees_threads_that_threading_cannot(tmp_path):
 
     before = evidence._live_thread_count()
     assert before is not None and before >= 1
+    # Relative, not == 1: an earlier test in the same process can leave daemon
+    # threads running (the BAML v1 worker client keeps its lifecycle threads,
+    # agent-harness#1135), and they are not what this test is about.
+    visible = threading.active_count()
     started = threading.Event()
     release = threading.Event()
 
@@ -2149,7 +2153,7 @@ def test_live_thread_count_sees_threads_that_threading_cannot(tmp_path):
     try:
         assert started.wait(10)
         # `threading` is blind to it; only the kernel inventory grows.
-        assert threading.active_count() == 1
+        assert threading.active_count() == visible
         after = evidence._live_thread_count()
         assert after is not None and after > before
     finally:
