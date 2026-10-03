@@ -1,7 +1,12 @@
 """Every process launch in the runtime has a stated scratch decision (agent-harness#1147).
 
-Two board rounds found agent-CLI launches that skipped the scratch relocation, one site
-at a time. This file closes the class in two parts:
+Board rounds found agent-CLI launches that skipped the scratch relocation, one site at a
+time. The COMPLETENESS check is not in this file: it is the runtime audit hook
+(``tests/_scratch_audit_hook.py``, installed by ``conftest.py``), which fails any test in
+which the runtime spawns an agent CLI, by any API, without the scratch decision's marker
+in the env. A static scan of Python cannot be complete, so this file is an EARLY WARNING:
+it flags new launch sites at review time, before any test exercises them. It has two
+parts:
 
 * ONE choke point for review providers. ``panel_invoker.launch_provider`` /
   ``run_provider`` apply :func:`sandbox_policy.child_scratch_env` to every ``env`` they
@@ -261,8 +266,9 @@ def _provider_calls_without_env(package: Path) -> set[tuple[str, str]]:
                     env = next((k.value for k in parent.keywords if k.arg == "env"), None)
                     if env is None or (isinstance(env, ast.Constant) and env.value is None):
                         found.add((rel, ".".join(stack) or "<module>"))
-                elif isinstance(parent, ast.Assign) and parent.value is node:
-                    pass  # a rename, followed above
+                elif (isinstance(parent, ast.Assign) and parent.value is node
+                      and all(isinstance(t, ast.Name) for t in parent.targets)):
+                    pass  # a plain-name rename, followed above
                 elif isinstance(parent, ast.Compare):
                     pass  # an identity check against the production seam, never a call
                 else:
@@ -371,12 +377,13 @@ def _words(text: str) -> list[str]:
 
 def _argv_facts(args: list[ast.AST]) -> tuple[object, bool]:
     """(the program, may this launch start an agent CLI). Every positional argument is
-    read (``os.exec*`` / ``posix_spawn*`` carry the program in the second). An argv whose
+    read (``os.exec*`` / ``posix_spawn*`` carry the program after the path, and
+    ``os.execl*`` spreads the whole argv over its arguments). An argv whose
     program is a WRAPPER and that holds any non-literal word may run anything."""
     literals: list[str] = []
     opaque = False
     program = None
-    for index, arg in enumerate(args[:2]):
+    for index, arg in enumerate(args):  # the whole argv: os.execl spreads it over args
         elements = arg.elts if isinstance(arg, (ast.List, ast.Tuple)) else [arg]
         for position, element in enumerate(elements):
             if isinstance(element, ast.Constant) and isinstance(element.value, str):
@@ -488,17 +495,25 @@ def _launch_sites(package: Path | None = None) -> tuple[dict[tuple[str, str], li
                     if isinstance(parent, ast.Attribute) and parent.value is node:
                         if parent.attr.startswith("__"):
                             _record(UNRESOLVED)  # subprocess.__dict__ and the like
+                        elif (aliases[node.id] == "multiprocessing"
+                              and parent.attr not in LAUNCHERS["multiprocessing"]):
+                            _record(UNRESOLVED)  # get_context(...).Process and the like
                     elif _is_getattr_of(parent, node):
                         verdict = _getattr_verdict(parent, aliases[node.id])
                         if verdict == "unresolved":
                             _record(UNRESOLVED)
-                        elif verdict == "launch" and not isinstance(parents.get(parent), ast.Call):
+                        elif verdict == "launch" and not (
+                                isinstance(parents.get(parent), ast.Call)
+                                and parents[parent].func is parent):
+                            # Called on the spot it is the launch `visit_Call` records;
+                            # anywhere else (`functools.partial(getattr(...))`) a value.
                             _record(REFERENCE)
                     elif isinstance(parent, ast.Call) and parent.func is not node and (
                             isinstance(parent.func, ast.Name) and parent.func.id == "hasattr"):
                         pass  # `hasattr(os, "getuid")` touches nothing
-                    elif isinstance(parent, ast.Assign) and parent.value is node:
-                        pass  # an alias, modelled by `_module_aliases`
+                    elif (isinstance(parent, ast.Assign) and parent.value is node
+                          and all(isinstance(t, ast.Name) for t in parent.targets)):
+                        pass  # a plain-name alias, modelled by `_module_aliases`
                     elif isinstance(parent, ast.Compare):
                         pass  # `pty is None`: an optional import, compared, never called
                     else:
@@ -640,7 +655,7 @@ def test_unknown_is_never_assumed_safe(tmp_path):
     fake = tmp_path / "pkg"
     fake.mkdir()
     (fake / "m.py").write_text(
-        "import asyncio, importlib, multiprocessing, os, pty, subprocess\n"
+        "import asyncio, functools, importlib, multiprocessing, os, pty, subprocess\n"
         "from asyncio import subprocess as asp\n"
         "_CLI = 'claude'\n"
         "def by_getattr():\n    getattr(subprocess, 'run')(['claude', '-p', 'hi'])\n"
@@ -662,6 +677,12 @@ def test_unknown_is_never_assumed_safe(tmp_path):
         "def by_npx():\n    subprocess.run(['npx', '@anthropic-ai/claude-code', '-p'])\n"
         "def by_helper(ev):\n    ev._run_process(['claude', '-p'])\n"
         "def by_exec_string():\n    exec('import subprocess')\n"
+        "def by_partial_getattr():\n"
+        "    functools.partial(getattr(subprocess, 'run'), ['claude'])()\n"
+        "def by_attribute_alias(holder):\n    holder.sp = subprocess\n    holder.sp.run(['claude'])\n"
+        "def by_subscript_alias(table):\n    table['sp'] = subprocess\n"
+        "def by_execl():\n    os.execl('/usr/bin/env', 'env', 'claude', '-p')\n"
+        "def by_mp_context(target):\n    multiprocessing.get_context('fork').Process(target=target)\n"
         "def control_helper(ev):\n    ev._run_process(['pytest', '-q'])\n"
         "def control_attributes():\n"
         "    return (subprocess.PIPE, os.path.join('a', 'b'), hasattr(os, 'getuid'),\n"
@@ -673,7 +694,8 @@ def test_unknown_is_never_assumed_safe(tmp_path):
         "by_dunder_import", "by_import_module", "by_quoted_shell", "by_semicolon", "by_and",
         "by_subshell", "by_wrapper_variable", "by_exec_argv", "by_asyncio_submodule",
         "by_asyncio_alias", "by_loop", "by_multiprocessing", "by_npx", "by_helper",
-        "by_exec_string")}
+        "by_exec_string", "by_partial_getattr", "by_attribute_alias", "by_subscript_alias",
+        "by_execl", "by_mp_context")}
 
 
 def test_a_star_import_of_a_launch_module_is_refused(tmp_path):
@@ -695,10 +717,11 @@ def test_every_use_of_a_provider_entry_point_without_a_decided_env_is_found(tmp_
         "def by_getattr():\n    getattr(panel_invoker, 'run_provider')\n"
         "def assigned():\n    run = rp\n    run(['claude'])\n"
         "def identity():\n    return launch_provider is not None\n"
+        "def attribute_store(holder):\n    holder.run = rp\n"
         "def decided(env):\n    rp(['claude'], env=env)\n",
         encoding="utf-8")
     assert _provider_calls_without_env(fake) == {("m.py", name) for name in (
-        "renamed", "none_env", "as_runner", "by_getattr", "assigned")}
+        "renamed", "none_env", "as_runner", "by_getattr", "assigned", "attribute_store")}
 
 
 def test_an_unlisted_injected_runner_launch_in_the_real_package_fails_the_inventory(tmp_path):

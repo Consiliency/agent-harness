@@ -526,17 +526,19 @@ class TestChildCliScratch:
 
         monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "ext4", raising=False)
         on_disk = panel_invoker._broker_leg_env(dict(base), "claude")
-        assert set(on_disk) == {"PATH", "HOME"}, on_disk
+        marker = sandbox_policy.CHILD_SCRATCH_MARKER  # every decided env is stamped
+        assert set(on_disk) == {"PATH", "HOME", marker}, on_disk
 
         _slash_tmp_is_ram(monkeypatch)
         on_ram = panel_invoker._broker_leg_env(dict(base), "codex")
-        assert set(on_ram) == {"PATH", "HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR"}, on_ram
+        assert set(on_ram) == {"PATH", "HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR", marker}, on_ram
         assert on_ram["TMPDIR"] == on_ram["CLAUDE_CODE_TMPDIR"] == str(cache / "phase-loop" / "tmp")
 
         # A bounded Gemini leg runs on the host and is relocated like any leg. Only the
         # heartbeat seat (its jail has its own private /tmp) and the shared allowlist agy
         # qualification uses stay exactly the allowlist.
         assert panel_invoker._broker_leg_env(dict(base), "gemini")["TMPDIR"] == on_ram["TMPDIR"]
+        # The heartbeat env is returned as built; its exception is stamped at the launch.
         assert set(panel_invoker._broker_leg_env(dict(base), "gemini", private_tmp=True)) == {
             "PATH", "HOME"}
         assert set(panel_invoker._broker_subscription_env(dict(base))) == {"PATH", "HOME"}

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,6 +25,24 @@ from _outside_agent_canonical import (
 )
 from _dotfiles_tree import dotfiles_tree_present
 from _quarantine import deselect_quarantined
+
+
+import _scratch_audit_hook
+
+# agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
+# scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
+_scratch_audit_hook.install()
+_scratch_audit_hook.enabled = True
+_scratch_audit_hook.log_path = os.path.join(
+    tempfile.mkdtemp(prefix="pl-scratch-audit-"), "violations.log")
+
+
+@pytest.fixture(autouse=True)
+def _every_agent_spawn_has_a_scratch_decision():
+    _scratch_audit_hook.drain()
+    yield
+    found = _scratch_audit_hook.drain()
+    assert not found, "agent-CLI spawn without a scratch decision:\n" + "\n".join(found)
 
 
 #: The developer's real home, captured before any test patches HOME (agent-harness#1147).
