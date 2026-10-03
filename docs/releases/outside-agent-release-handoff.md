@@ -63,7 +63,13 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     `bbd4a4b29f0e9fe1fc2e1345b5d44fa08540e43014da46bc2c4bf70cf05745d8`. Each series ran from a saved copy of its
     member's official release archive member, never from the `agy` on `PATH`, and every
     preregistration names the intended image. 1.2.13 is not a member: 1.2.14 and 1.2.15
-    supersede it upstream, and first-use self-qualification still admits it per host;
+    supersede it upstream, and first-use self-qualification still admits it per host.
+    **Caveat:** agy 1.2.16 has been upstream-latest since 2026-10-03T03:56Z, after this cut
+    was qualified, and it is not a release-qualified member in 0.7.22, so
+    `verify_qualified_agy_image.py --upstream-only` and the nightly upstream job fail until a
+    later release qualifies it. The tag build is unaffected (publish-pypi runs `--source-only`).
+    Genuine upstream releases, 1.2.16 included, self-qualify on first use as
+    `locally_qualified` (agent-harness#1130);
   - heartbeat-only seats no longer stall silently (agent-harness#1194, agent-harness#1176);
   - the closeout audit attributes handoffs and declared build outputs by provenance
     (agent-harness#1189, agent-harness#1139);

@@ -8,7 +8,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [0.7.22] - 2026-10-03
 
-### Qualified agy set is now 1.2.11, 1.2.12, 1.2.14 and 1.2.15 (release cut agent-harness#1236)
+### Qualified agy set is now 1.2.11, 1.2.12, 1.2.14 and 1.2.15 (agent-harness#1236; PR agent-harness#1238)
 
 - `gemini_heartbeat.QUALIFIED_IMAGES` admits two more agy entry images, each with its own
   `--help` digest:
@@ -20,9 +20,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Each member has its own redacted record under `plans/evidence/agy-<version>-linux-x64-qualification.json`
   and an entry in `qualified-provider-images.json`. All four were qualified live on the release
   tree.
-- agy 1.2.13 is not in the set. The 0.7.21 notes said it would be qualified in this release;
-  1.2.14 and 1.2.15 supersede it upstream. A host still running 1.2.13 is admitted by first-use
-  self-qualification (agent-harness#1076) as `locally_qualified`, as before.
+- agy 1.2.13 is not in the set. The 0.7.21 notes said it would be qualified in this release
+  (agent-harness#1157); 1.2.14 and 1.2.15 supersede it upstream. A host still running 1.2.13 is
+  admitted by first-use self-qualification (agent-harness#1076) as `locally_qualified`, as before.
+- **Caveat:** agy 1.2.16 has been the upstream-latest release since 2026-10-03T03:56Z, after
+  this cut was qualified, and it is not a qualified member in 0.7.22. So
+  `verify_qualified_agy_image.py --upstream-only` and the nightly upstream job fail until a later
+  release qualifies it. The tag build is unaffected, because publish-pypi runs `--source-only`.
+  Genuine upstream releases, 1.2.16 included, self-qualify on first use as `locally_qualified`
+  (agent-harness#1130).
 
 ### Human-invoked FABPUB publication handoff (agent-harness#1117; PR agent-harness#1221)
 
