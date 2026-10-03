@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .models import SAFE_SENSITIVITY_CLASSES
+from . import generated_outputs
 from .runtime_paths import EXCLUDE_ENTRIES
 
 
@@ -140,6 +141,10 @@ def classify_unowned_path(repo_relpath: str) -> SensitivityVerdict:
 RUNNER_OWNED = "runner_owned"
 TOOL_CACHE = "tool_cache"
 UNKNOWN_IGNORED = "unknown_ignored"
+# agent-harness#1139: an ignored build output a committed declaration covers AND a
+# recorded producer run left behind with the same content digest.
+DECLARED_OUTPUT = "declared_output"
+_BUCKETS = (RUNNER_OWNED, TOOL_CACHE, DECLARED_OUTPUT, UNKNOWN_IGNORED)
 
 
 @dataclass(frozen=True)
@@ -173,18 +178,6 @@ _TOOL_CACHE_DIR_NAMES = frozenset(
     }
 )
 _TOOL_CACHE_DIR_SUFFIXES = (".egg-info",)
-
-def _handoff_root_relpath() -> str:
-    # Taken from the resolver itself rather than restated, so the audit cannot drift from
-    # where the skills are told to write (phase_loop_runtime.skill_paths).
-    from .skill_paths import resolve_handoff_root
-
-    anchor = Path("/")
-    return resolve_handoff_root(anchor).relative_to(anchor.resolve()).as_posix()
-
-
-_HANDOFF_ROOT = _handoff_root_relpath()
-
 
 def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
     """Grade one gitignored path by WHO produced it.
@@ -221,14 +214,10 @@ def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
                 RUNNER_OWNED, False, f"runner lifecycle state under {entry}"
             )
 
-    # agent-harness#1084: the repo-local skill handoff root is lifecycle state the skills
-    # are REQUIRED to write and to keep ignored. Only the exact root the resolver returns
-    # (repo root, directory form or a path under it) earns this; the same name nested
-    # anywhere else, or a bare file of that name, still blocks.
-    if norm == _HANDOFF_ROOT + "/" or norm.startswith(_HANDOFF_ROOT + "/"):
-        return IgnoredOutputVerdict(
-            RUNNER_OWNED, False, f"required skill handoff under {_HANDOFF_ROOT}/"
-        )
+    # agent-harness#1139: the skill handoff root (agent-harness#1084) is NOT trusted by
+    # name here. A path string cannot show who wrote the file, so a handoff is graded in
+    # `audit_ignored_outputs` against the handoff contract the file itself carries
+    # (generated_outputs.is_harness_handoff).
 
     # A cache name only earns trust as a DIRECTORY. Git renders a collapsed
     # directory with a trailing slash and a file without one, so a bare `.venv`
@@ -251,7 +240,62 @@ def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
     )
 
 
-def audit_ignored_outputs(repo: Path) -> dict:
+def _ignored_members(repo: Path, directory: str) -> list[str] | None:
+    """The ignored, untracked FILES under a collapsed directory entry.
+
+    `git ls-files` rather than a filesystem walk, so a tracked file or a negated
+    (un-ignored) file inside the directory is never graded as ignored output.
+    None means the probe failed.
+    """
+
+    try:
+        out = subprocess.run(
+            # Literal pathspec, defence in depth: the directory name is data, never a glob.
+            ["git", "-C", str(repo), "--literal-pathspecs", "ls-files", "-z", "--others", "--ignored",
+             "--exclude-standard", "--", directory],
+            capture_output=True, check=False,
+        )
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        return [entry for entry in out.stdout.decode("utf-8").split("\0") if entry]
+    except UnicodeDecodeError:
+        return None
+
+
+def _grade_by_provenance(repo: Path, path: str, context):
+    """Yield ``(provenance, member, reason)`` for one path the path rules left unknown."""
+
+    if path.endswith("/"):
+        members = _ignored_members(repo, path)
+        if not members:
+            # A failed probe, or nothing to attribute: fail closed on the directory.
+            yield UNKNOWN_IGNORED, path, "could not enumerate the ignored directory's files"
+            return
+    else:
+        members = [path]
+    for member in members:
+        verdict = classify_ignored_output(member)
+        if not verdict.blocks:
+            yield verdict.provenance, member, verdict.reason
+            continue
+        is_handoff, handoff_reason = generated_outputs.is_harness_handoff(repo, member)
+        if is_handoff:
+            yield RUNNER_OWNED, member, handoff_reason
+            continue
+        declared, declared_reason = generated_outputs.verify_declared_output(repo, member, context)
+        if declared:
+            yield DECLARED_OUTPUT, member, declared_reason
+            continue
+        # A path under the handoff root reports why the MARKER failed, which is the
+        # actionable fact there; anything else reports the declaration verdict.
+        reason = handoff_reason if handoff_reason != "not a handoff file path" else declared_reason
+        yield UNKNOWN_IGNORED, member, reason
+
+
+def audit_ignored_outputs(repo: Path, phase: str | None = None) -> dict:
     """Bucket a worktree's IGNORED paths by producer.
 
     Exists so the closeout audit is a field read rather than a judgement call.
@@ -277,16 +321,30 @@ def audit_ignored_outputs(repo: Path) -> dict:
             "probe_failed": True,
             "blocks": True,
             "reason": f"git unavailable: {type(exc).__name__}",
-            RUNNER_OWNED: [], TOOL_CACHE: [], UNKNOWN_IGNORED: [],
+            **{bucket: [] for bucket in _BUCKETS}, "unknown_reasons": {},
         }
     if out.returncode != 0:
         return {
             "probe_failed": True,
             "blocks": True,
             "reason": f"git status failed: {out.stderr.strip()[:120]}",
-            RUNNER_OWNED: [], TOOL_CACHE: [], UNKNOWN_IGNORED: [],
+            **{bucket: [] for bucket in _BUCKETS}, "unknown_reasons": {},
         }
-    buckets: dict = {RUNNER_OWNED: [], TOOL_CACHE: [], UNKNOWN_IGNORED: []}
+    # agent-harness#1139: provenance beyond the path rules. A malformed committed
+    # declaration is a typed failure, never "no declaration": silently ignoring it would
+    # turn the consumer's intent into a mystery block.
+    try:
+        context = generated_outputs.AuditContext.for_repo(repo, phase)
+    except generated_outputs.DeclarationError as exc:
+        return {
+            "probe_failed": True,
+            "blocks": True,
+            "reason": f"invalid generated-outputs declaration: {exc}",
+            **{bucket: [] for bucket in _BUCKETS}, "unknown_reasons": {},
+        }
+
+    buckets: dict = {bucket: [] for bucket in _BUCKETS}
+    unknown_reasons: dict[str, str] = {}
     blocking = False
     for line in out.stdout.splitlines():
         # Only `!!` entries are ignored; tracked/untracked dirt is graded by the
@@ -305,11 +363,19 @@ def audit_ignored_outputs(repo: Path) -> dict:
         if not path:
             continue
         verdict = classify_ignored_output(path)
-        buckets[verdict.provenance].append(path)
-        # Consume the verdict's own `blocks` rather than re-deriving it from
-        # bucket membership: two seams for one fact drift the moment a new
-        # provenance is added.
-        blocking = blocking or verdict.blocks
+        if not verdict.blocks:
+            buckets[verdict.provenance].append(path)
+            continue
+        # The path rules could not attribute it. Grade its FILES by provenance:
+        # git renders a wholly-ignored directory collapsed (`!! dist/`), and a
+        # directory is attributable only if every ignored file in it is.
+        for provenance, member, reason in _grade_by_provenance(repo, path, context):
+            buckets[provenance].append(member)
+            if provenance == UNKNOWN_IGNORED:
+                unknown_reasons[member] = reason
+                # One seam for the blocking fact: only unknown blocks here.
+                blocking = True
+    buckets["unknown_reasons"] = unknown_reasons
     buckets["probe_failed"] = False
     buckets["blocks"] = blocking
     # `reason` reads the SAME seam as `blocks`, not the UNKNOWN bucket: deriving
@@ -317,7 +383,7 @@ def audit_ignored_outputs(repo: Path) -> dict:
     buckets["reason"] = (
         f"{len(buckets[UNKNOWN_IGNORED])} ignored output(s) with no recognised producer"
         if blocking
-        else "every ignored path was produced by the runner or its toolchain"
+        else "every ignored path was produced by the runner, its toolchain or a declared producer"
     )
     return buckets
 
@@ -327,20 +393,41 @@ def main(argv: list[str]) -> int:
 
     Exit 0 = no unknown ignored outputs, so ignored dirt is NOT a closeout
     blocker. Exit 1 = unknown ignored outputs present, which still blocks.
-    Exit 2 = the probe itself failed.
+    Exit 2 = the probe itself failed (including an invalid committed
+    generated-outputs declaration).
+
+    ``--record-outputs`` (agent-harness#1139) first runs, one at a time and under
+    observation, every producer the committed ``.phase-loop-generated-outputs.json``
+    declares. It records what each invocation wrote, bound to HEAD, then audits.
+    With no declaration it is a no-op, so executors pass it in every repo. With a
+    declaration it needs ``--phase "<ALIAS>"`` (substituted) and exits 2, before touching anything,
+    without one. The
+    runner's verification records the same evidence when it runs a declared
+    producer command.
     """
 
     repo = Path(argv[argv.index("--repo") + 1]) if "--repo" in argv else Path.cwd()
-    result = audit_ignored_outputs(repo)
+    # The phase the evidence must belong to: ONLY this explicit argument (the runner's
+    # prompts write it literally). Never the environment or `.phase-loop/state.json`.
+    phase = argv[argv.index("--phase") + 1] if "--phase" in argv else None
+    if "--record-outputs" in argv:
+        try:
+            generated_outputs.run_declared_producers(repo, phase=phase)
+        except (generated_outputs.DeclarationError, generated_outputs.PhaseIdentityError) as exc:
+            print(f"closeout-ignored-audit: CANNOT RECORD — {exc}")
+            return 2
+    result = audit_ignored_outputs(repo, phase)
     if result["probe_failed"]:
         print(f"closeout-ignored-audit: CANNOT EVALUATE — {result['reason']}")
         return 2
-    for bucket in (RUNNER_OWNED, TOOL_CACHE, UNKNOWN_IGNORED):
+    reasons = result.get("unknown_reasons", {})
+    for bucket in _BUCKETS:
         paths = result[bucket]
         if paths:
             print(f"{bucket} ({len(paths)}):")
             for p in paths[:20]:
-                print(f"    {p}")
+                suffix = f"  -- {reasons[p]}" if p in reasons else ""
+                print(f"    {p}{suffix}")
     print(f"\nverdict: {result['reason']}")
     return 1 if result["blocks"] else 0
 

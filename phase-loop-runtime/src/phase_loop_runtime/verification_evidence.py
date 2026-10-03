@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -609,6 +611,9 @@ def run_verification(
     python_pin: str | None = None,
     phase_alias: str | None = None,
 ) -> VerificationResult:
+    # agent-harness#1139: an optional per-stage observer, installed by the runner via
+    # `observe_stages`. It is NOT a parameter: the public signature is frozen (LEGIBLE).
+    stage_observer = _STAGE_OBSERVER.get()
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
     run_path.mkdir(parents=True, exist_ok=True)
@@ -684,11 +689,18 @@ def run_verification(
                 suite_interpreter=interpreter.interpreter,
             )
             command_results = [
-                _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir) for argv in commands
+                _observed_stage(
+                    stage_observer, argv,
+                    lambda argv=argv: _run_process(repo_path, log_file, argv, timeout_s, path_prepend=shim_dir),
+                )
+                for argv in commands
             ]
             suite_result = None
             if suite_command is not None:
-                suite_evidence = _run_process(repo_path, log_file, suite_command, timeout_s, path_prepend=shim_dir)
+                suite_evidence = _observed_stage(
+                    stage_observer, suite_command,
+                    lambda: _run_process(repo_path, log_file, suite_command, timeout_s, path_prepend=shim_dir),
+                )
                 suite_result = VerificationSuiteEvidence(
                     argv=suite_evidence.argv,
                     exit_code=suite_evidence.exit_code,
@@ -730,6 +742,44 @@ def run_verification(
     result = replace(unsealed, log_sha256=log_sha256)
     _write_artifact_atomic(artifact_path, _result_to_payload(result))
     return result
+
+
+_STAGE_OBSERVER: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "phase_loop_verification_stage_observer", default=None
+)
+
+
+@contextlib.contextmanager
+def observe_stages(observer: Any):
+    """Bracket every command/suite stage of ``run_verification`` calls made inside
+    this block with ``observer.before(argv)`` / ``observer.after(token, exit_code)``
+    (agent-harness#1139). Evidence-only; the artifact and outcome are unchanged."""
+
+    token = _STAGE_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _STAGE_OBSERVER.reset(token)
+
+
+def _observed_stage(observer: Any, argv: Sequence[str], run: Any) -> VerificationCommandEvidence:
+    """Run one stage, bracketed by an optional ``before(argv)``/``after(token, exit)``
+    observer (agent-harness#1139: producer provenance per invocation). The observer is
+    evidence-only: nothing it raises can change or abort the verification."""
+
+    token = None
+    if observer is not None:
+        try:
+            token = observer.before(list(argv))
+        except Exception:  # noqa: BLE001
+            token = None
+    evidence = run()
+    if observer is not None:
+        try:
+            observer.after(token, evidence.exit_code)
+        except Exception:  # noqa: BLE001
+            pass
+    return evidence
 
 
 def _append_verification_command(
