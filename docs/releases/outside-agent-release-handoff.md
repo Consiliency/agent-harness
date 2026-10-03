@@ -429,14 +429,14 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`) from an export of the release commit's tree. They are a
+`Consiliency/agent-harness#519`) from a `git archive` export of `10c04f68` (the release tree after the agent-harness#1233 rebase; later commits touch no packaged file). They are a
 preparation measurement, not a publication record: the publishing workflow rebuilds from the
 tagged commit and verifies `SHA256SUMS`, and the published digests are recorded here after the
 tag push. As for `0.7.15`–`0.7.21`, the published digests are expected to differ, because
 archive bytes are timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `6c0ab5239f929c9c707d41e13aec5bd0929b79d617aaa6a75e8d1c32387f26d4`
-- prepared direct-sdist sha256: `9774ccd6a83521335b569766c9a9523c889935e197afc69fe4889c35578f80df`
+- prepared direct-wheel sha256: `3f39ae117a7aca87f8f9d3a3edd19a8642d54581770e64af023e5e7fceeca65e`
+- prepared direct-sdist sha256: `c1dda82a95ead797273bf5a41e2eee7b8f50428fecfeeb1654d25e1d2582f0a8`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.21 (published)
