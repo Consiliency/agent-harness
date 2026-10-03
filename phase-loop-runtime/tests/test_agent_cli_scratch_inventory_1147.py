@@ -7,20 +7,23 @@ at a time. This file closes the class in two parts:
   ``run_provider`` apply :func:`sandbox_policy.child_scratch_env` to every ``env`` they
   launch with, and only the two named exceptions can opt out. The tests below OBSERVE a
   real child's environment through that interface.
-* An INVENTORY derived from the code. Every subprocess / exec / spawn call in the package
-  is enumerated from the AST. A call whose program is a literal that is not an agent CLI
-  (``git``, ``bwrap``, ``sys.executable`` ...) needs nothing. Every other call -- an agent
-  CLI by name, or a program the AST cannot see -- must be listed in ``INVENTORY`` with its
-  decision. A new launch site therefore fails here until someone states whether it starts
-  an agent CLI and, if so, how its scratch is decided. A listed site that disappears fails
-  too, so the table cannot drift.
+* An INVENTORY derived from the code. Every subprocess / os.exec* / os.spawn* / pty /
+  asyncio launch in the package is enumerated from the AST, however it is spelled: a
+  module alias (``import subprocess as sp``, ``sp = subprocess``), an attribute receiver
+  (``lib.subprocess.run``), and -- the shape round 3 found in the Agent View adapter -- a
+  launch function used as a VALUE (a default ``runner=subprocess.run``, an assignment, a
+  callback), which may then be called under any name. A call needs nothing only when its
+  program is a literal and no literal word of its argv names an agent CLI (so ``env
+  claude``, ``bwrap ... agy`` and ``sh -c "claude ..."`` all count). Everything else must
+  be listed in ``INVENTORY`` with its decision, with the number of such launches each
+  listed function holds; a new site, one more launch in a listed function, or a stale
+  entry fails here until someone states how its scratch is decided.
 """
 
 from __future__ import annotations
 
 import ast
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -106,6 +109,27 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "git"),
     ("generated_outputs.py", "_run_bounded"): (
         NOT_AGENT, "the repository's declared build-output producers (closeout audit)"),
+    # Launch functions passed as values (injectable runners); each one's callers launch
+    # only what is named here.
+    ("advisor_board/research.py", "probe_research_capability"): (
+        NOT_AGENT, "runner default: the pmcp capability probe"),
+    ("advisor_board/research.py", "materialize_research_run"): (
+        NOT_AGENT, "runner default, handed to probe_research_capability"),
+    ("agy_watch.py", "main"): (NOT_AGENT, "runner default: gh / git and the qualification script"),
+    ("convergence/broker/credsep.py", "resolve_git_origin_url"): (NOT_AGENT, "runner default: git"),
+    ("convergence/broker/credsep.py", "resolve_broker_repo_identity"): (
+        NOT_AGENT, "runner default: git"),
+    ("convergence/broker/credsep.py", "GitHubBrokerAdapter.__init__"): (
+        NOT_AGENT, "runner default: gh / git"),
+    ("convergence/broker/live.py", "<module>"): (
+        NOT_AGENT, "identity of the canonical gh / git runner, compared, never called"),
+    ("convergence/broker/live.py", "_test_only_repository_broker_client"): (
+        NOT_AGENT, "runner default for the GitHub adapter: gh / git"),
+    ("convergence/broker/live.py", "build_routing_broker_client"): (
+        NOT_AGENT, "runner default for the GitHub adapter: gh / git"),
+    ("convergence/broker/live.py", "build_github_broker_client"): (
+        NOT_AGENT, "runner default for the GitHub adapter: gh / git"),
+    ("train_runner.py", "_gh_repo_binding"): (NOT_AGENT, "runner handed to git origin resolution"),
     ("observability.py", "run_notification_command"): (
         NOT_AGENT, "the operator's notification hook"),
     ("repo_validation.py", "run_plan"): (NOT_AGENT, "the repository's validation commands"),
@@ -122,6 +146,20 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "pytest in a mutation worktree"),
     ("verification_evidence.py", "detect_changed_dependency_manifests"): (NOT_AGENT, "git"),
     ("verification_evidence.py", "_run_process"): (NOT_AGENT, "verification commands"),
+}
+
+
+#: How many launches that need a decision each INVENTORY function holds (1 unless listed).
+#: A classification covers the launches it was made for: one more launch in a listed
+#: function -- say a `claude` call added to a NOT_AGENT helper -- fails until reviewed.
+LAUNCH_COUNTS: dict[tuple[str, str], int] = {
+    ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
+    ('agy_canary_evidence.py', 'probe_capability'): 3,
+    ('launcher.py', 'launch'): 2,
+    ('panel_invoker.py', '_exec_claude_agent_view_attempt'): 2,
+    ('sandbox_egress.py', 'isolated_network'): 2,
+    ('tdd_receipts.py', 'record_content_tdd_receipt'): 2,
+    ('verification_evidence.py', 'execute_proofgate_mutation_manifest._execute_one._execute_worktree'): 2,
 }
 
 
@@ -165,8 +203,9 @@ def _provider_calls_without_env(package: Path) -> set[tuple[str, str]]:
 
 
 def _module_aliases(tree: ast.AST) -> tuple[dict[str, str], list[str]]:
-    """``import subprocess as sp`` -> {"sp": "subprocess"}; and every ``from <launcher
-    module> import <launch fn>``, which would hide a call from the attribute walk."""
+    """Names bound to a launcher module -- ``import subprocess as sp``, and an assignment
+    ``sp = subprocess`` at any scope -- and every ``from <launcher module> import <launch
+    fn>``, which would hide a call from the attribute walk."""
     aliases = {name: name for name in LAUNCHERS}
     hidden = []
     for node in ast.walk(tree):
@@ -176,41 +215,111 @@ def _module_aliases(tree: ast.AST) -> tuple[dict[str, str], list[str]]:
                     aliases[alias.asname or alias.name] = alias.name
         elif isinstance(node, ast.ImportFrom) and node.module in LAUNCHERS:
             hidden += [a.name for a in node.names if a.name in LAUNCHERS[node.module]]
+    changed = True
+    while changed:  # `a = subprocess; b = a` -- to a fixed point
+        changed = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Name)
+                    and node.value.id in aliases):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id not in aliases:
+                        aliases[target.id] = aliases[node.value.id]
+                        changed = True
     return aliases, hidden
 
 
-def _launch_sites() -> tuple[dict[tuple[str, str], list[object]], list[str]]:
-    """(module, enclosing function) -> the literal program of each launch call there
-    (``None`` when the AST cannot see it); and the hidden-import violations."""
+def _launch_fn(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    """``subprocess.run`` / ``sp.run`` / ``anything.subprocess.run`` -> "subprocess.run"."""
+    if not isinstance(node, ast.Attribute):
+        return None
+    value = node.value
+    module = (aliases.get(value.id) if isinstance(value, ast.Name)
+              else value.attr if isinstance(value, ast.Attribute) else None)
+    if module in LAUNCHERS and node.attr in LAUNCHERS[module]:
+        return f"{module}.{node.attr}"
+    return None
+
+
+#: What a launch site records: the literal program, ``None`` when the AST cannot see it,
+#: ``REFERENCE`` when a launch function is used as a VALUE (a default argument, an
+#: assignment, a callback) and so may be called anywhere under another name.
+REFERENCE = "<launch function used as a value>"
+
+
+def _argv_facts(first: ast.AST | None) -> tuple[object, bool]:
+    """(the program, does any literal word of the argv name an agent CLI)."""
+    if isinstance(first, (ast.List, ast.Tuple)):
+        words = [w for e in first.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                 for w in e.value.split()]
+        head = first.elts[0] if first.elts else None
+        program = head.value if isinstance(head, ast.Constant) else None
+    elif isinstance(first, ast.Constant) and isinstance(first.value, str):
+        words = first.value.split()
+        program = words[0] if words else None
+    else:
+        return None, False
+    return program, any(os.path.basename(w) in AGENT_CLIS for w in words)
+
+
+def _launch_sites(package: Path | None = None) -> tuple[dict[tuple[str, str], list[object]], list[str]]:
+    """(module, enclosing function) -> one entry per launch there: the literal program
+    (``None`` when the AST cannot see it; ``REFERENCE`` for a launch function used as a
+    value; ``"agent:<program>"`` when any literal word of the argv names an agent CLI,
+    e.g. behind ``env`` / ``bwrap`` / ``sh -c``); and the hidden-import violations.
+    Annotations are not launches and are not walked."""
+    package = PACKAGE if package is None else package
     sites: dict[tuple[str, str], list[object]] = {}
     hidden_imports: list[str] = []
-    for path in sorted(PACKAGE.rglob("*.py")):
-        rel = path.relative_to(PACKAGE).as_posix()
+    for path in sorted(package.rglob("*.py")):
+        rel = path.relative_to(package).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases, hidden = _module_aliases(tree)
         hidden_imports += [f"{rel}: from-import of {name}" for name in hidden]
         stack: list[str] = []
 
+        def _record(entry):
+            sites.setdefault((rel, ".".join(stack) or "<module>"), []).append(entry)
+
         class _Walker(ast.NodeVisitor):
-            def _scope(self, node):
+            def _function(self, node):
+                for item in node.decorator_list:
+                    self.visit(item)
+                stack.append(node.name)  # a default argument belongs to its function
+                for item in [*node.args.defaults,
+                             *[d for d in node.args.kw_defaults if d is not None], *node.body]:
+                    self.visit(item)
+                stack.pop()
+
+            visit_FunctionDef = visit_AsyncFunctionDef = _function
+
+            def visit_Lambda(self, node):
+                for item in [*node.args.defaults,
+                             *[d for d in node.args.kw_defaults if d is not None]]:
+                    self.visit(item)
+                self.visit(node.body)
+
+            def visit_ClassDef(self, node):
                 stack.append(node.name)
                 self.generic_visit(node)
                 stack.pop()
 
-            visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _scope
+            def visit_AnnAssign(self, node):
+                if node.value is not None:
+                    self.visit(node.value)
 
             def visit_Call(self, node):
-                func = node.func
-                if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
-                        and func.attr in LAUNCHERS.get(aliases.get(func.value.id, ""), ())):
-                    first = node.args[0] if node.args else None
-                    program = None
-                    if (isinstance(first, (ast.List, ast.Tuple)) and first.elts
-                            and isinstance(first.elts[0], ast.Constant)):
-                        program = first.elts[0].value
-                    elif isinstance(first, ast.Constant) and isinstance(first.value, str):
-                        program = first.value.split()[0] if first.value.split() else None
-                    sites.setdefault((rel, ".".join(stack) or "<module>"), []).append(program)
+                if _launch_fn(node.func, aliases):
+                    program, names_agent = _argv_facts(node.args[0] if node.args else None)
+                    _record(f"agent:{program}" if names_agent else program)
+                    self.visit(node.func.value)
+                else:
+                    self.visit(node.func)
+                for item in [*node.args, *node.keywords]:
+                    self.visit(item)
+
+            def visit_Attribute(self, node):
+                if _launch_fn(node, aliases):
+                    _record(REFERENCE)
                 self.generic_visit(node)
 
         _Walker().visit(tree)
@@ -218,7 +327,12 @@ def _launch_sites() -> tuple[dict[tuple[str, str], list[object]], list[str]]:
 
 
 def _needs_a_decision(programs: list[object]) -> bool:
-    return any(p is None or os.path.basename(str(p)) in AGENT_CLIS for p in programs)
+    return any(_one_needs_a_decision(p) for p in programs)
+
+
+def _one_needs_a_decision(program: object) -> bool:
+    return (program is None or program == REFERENCE or str(program).startswith("agent:")
+            or os.path.basename(str(program)) in AGENT_CLIS)
 
 
 def _function_source(module: str, qualname: str) -> str:
@@ -241,6 +355,14 @@ def test_every_launch_that_may_start_an_agent_cli_has_a_stated_decision():
     assert not undecided, (
         "launch sites with no scratch decision -- add each to INVENTORY: relocated through "
         f"sandbox_policy.child_scratch_env, a named exception, or not an agent CLI: {undecided}")
+
+
+def test_each_listed_function_holds_exactly_its_counted_launches():
+    sites, _ = _launch_sites()
+    wrong = {key: n for key in INVENTORY
+             if key in sites
+             and (n := sum(map(_one_needs_a_decision, sites[key]))) != LAUNCH_COUNTS.get(key, 1)}
+    assert not wrong, f"launch count changed in a listed function -- re-review it: {wrong}"
 
 
 def test_the_inventory_has_no_stale_entries():
@@ -276,20 +398,55 @@ def test_each_relocated_site_names_its_decision(key):
     assert token in _function_source(module, function.split(".")[-1]), INVENTORY[key]
 
 
-def test_the_scanner_sees_a_hidden_launch(tmp_path, monkeypatch):
-    """The inventory is only as good as its scanner: a launch of an unseen program, and an
-    aliased module, must both be found."""
+def _undecided(package: Path) -> set[tuple[str, str]]:
+    sites, _ = _launch_sites(package)
+    return {k for k, v in sites.items() if _needs_a_decision(v)}
+
+
+def test_the_scanner_sees_every_spelling_of_a_launch(tmp_path):
+    """The inventory is only as good as its scanner. Every spelling below starts (or may
+    start) an agent CLI and must be found, whatever API spawns it; the plain `git` call
+    must not be."""
     fake = tmp_path / "pkg"
     fake.mkdir()
     (fake / "m.py").write_text(
+        "import asyncio, os, pty, subprocess\n"
         "import subprocess as sp\n"
-        "def go(argv):\n    sp.Popen(argv)\n"
-        "def named():\n    sp.run(['claude', '-p'])\n"
-        "def plain():\n    sp.run(['git', 'status'])\n",
+        "alias = subprocess\n"
+        "def opaque(argv):\n    sp.Popen(argv)\n"
+        "def named():\n    subprocess.run(['claude', '-p'])\n"
+        "def wrapped():\n    subprocess.run(['env', 'X=1', 'claude', '-p'])\n"
+        "def jailed():\n    subprocess.run(['bwrap', '--ro-bind', '/', '/', 'agy'])\n"
+        "def shell():\n    subprocess.run(['sh', '-c', 'claude -p hi'])\n"
+        "def injected(run=subprocess.run):\n    run(['claude', '--bg'])\n"
+        "def assigned():\n    runner = subprocess.Popen\n    runner(['codex'])\n"
+        "def by_alias():\n    alias.run(['claude'])\n"
+        "def by_attribute(lib):\n    lib.subprocess.run(['claude'])\n"
+        "def by_exec():\n    os.execvp('claude', ['claude'])\n"
+        "def by_pty():\n    pty.spawn(['claude'])\n"
+        "async def by_asyncio():\n    await asyncio.create_subprocess_exec('codex', 'exec')\n"
+        "def annotated(p: subprocess.Popen) -> subprocess.CompletedProcess:\n    return p\n"
+        "def plain():\n    subprocess.run(['git', 'status'])\n",
         encoding="utf-8")
-    monkeypatch.setattr(sys.modules[__name__], "PACKAGE", fake)
-    sites, _ = _launch_sites()
-    assert {k for k, v in sites.items() if _needs_a_decision(v)} == {("m.py", "go"), ("m.py", "named")}
+    assert _undecided(fake) == {("m.py", name) for name in (
+        "opaque", "named", "wrapped", "jailed", "shell", "injected", "assigned", "by_alias",
+        "by_attribute", "by_exec", "by_pty", "by_asyncio")}
+
+
+def test_an_unlisted_injected_runner_launch_in_the_real_package_fails_the_inventory(tmp_path):
+    """The Agent View shape the board found (a launch function injected as a default and
+    called through an attribute), added to a copy of the REAL package, is undecided."""
+    import shutil
+
+    copy = tmp_path / "phase_loop_runtime"
+    shutil.copytree(PACKAGE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    with (copy / "claude_agent_view.py").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n\nclass _Mutant:\n"
+            "    def __init__(self, runner=subprocess.run):\n        self._runner = runner\n"
+            "    def go(self, argv):\n        return self._runner(argv)\n")
+    assert _undecided(copy) - set(INVENTORY) == {("claude_agent_view.py", "_Mutant.__init__")}
+    assert _undecided(PACKAGE) <= set(INVENTORY)
 
 
 # -- the choke point, observed -----------------------------------------------------------

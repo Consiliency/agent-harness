@@ -946,3 +946,154 @@ class TestEveryAgentLaunchIsRelocated:
         monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
         with pytest.raises(sandbox_policy.SandboxRamBackedError):
             sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
+
+
+def _record_scratch_script(seen: Path) -> list[str]:
+    return ["/bin/sh", "-c",
+            'printf "%s\\n%s\\n" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}" > "$0"', str(seen)]
+
+
+class TestRound3Coverage:
+    """Round 3 (agent-harness#1161): the Agent View executor route, and launches whose
+    relocation no test pinned."""
+
+    def test_the_agent_view_executor_launch_goes_through_the_provider_interface(
+        self, tmp_path, monkeypatch,
+    ):
+        from phase_loop_runtime import panel_invoker
+        from phase_loop_runtime.claude_agent_view import ClaudeAgentViewAdapter
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        calls = []
+        real = panel_invoker.run_provider
+
+        def _spy(argv, **kwargs):
+            calls.append(argv)
+            return real(argv, **kwargs)
+
+        monkeypatch.setattr(panel_invoker, "run_provider", _spy)
+        seen = tmp_path / "seen.txt"
+        result = ClaudeAgentViewAdapter()._runner(
+            _record_scratch_script(seen), cwd=str(tmp_path), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+        assert result.returncode == 0 and len(calls) == 1
+        assert seen.read_text(encoding="utf-8").splitlines() == [
+            str(cache / "phase-loop" / "tmp")] * 2
+
+    def test_the_print_executor_route_relocates_at_the_launch(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import launcher
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        seen = tmp_path / "seen.txt"
+        launcher.launch(_record_scratch_script(seen), env={"PATH": "/usr/bin:/bin"})
+        assert seen.read_text(encoding="utf-8").splitlines() == [
+            str(cache / "phase-loop" / "tmp")] * 2
+
+    def test_the_capture_preflight_probe_keeps_its_frozen_env(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from phase_loop_runtime import panel_invoker
+
+        seen = {}
+
+        def _launch(command, **kwargs):
+            seen["decision"] = kwargs.get("child_scratch")
+            return SimpleNamespace(returncode=0)
+
+        def _preflight(command, *, probe_runner, publish):
+            probe_runner(["probe"], {"PATH": "/usr/bin"}, 5)
+            return command
+
+        monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", _launch)
+        latch = SimpleNamespace(execute_if_open=lambda *a, **k: None)
+        panel_invoker._capture_provider_preflight(
+            SimpleNamespace(preflight=_preflight), ["codex"], latch)
+        assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE
+
+    def test_the_falsifier_dependency_snapshot_uses_the_staging_root(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import review_stage
+
+        root = tmp_path / "staging-root"
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(root))
+        where = {}
+        monkeypatch.setattr(review_stage, "_falsifier_interpreter_scope", lambda: ("py", (), "id"))
+        monkeypatch.setattr(review_stage, "_falsifier_interpreter_digest", lambda e, d: "digest")
+        monkeypatch.setattr(review_stage, "_snapshot_falsifier_dependencies",
+                            lambda stage, destination: where.setdefault("deps", destination))
+        monkeypatch.setattr(review_stage, "_require_single_link_files", lambda roots: None)
+        monkeypatch.setattr(review_stage, "_run_bounded_falsifier_node",
+                            lambda **kwargs: (0, b"", b"", None, None))
+        review_stage.run_bounded_falsifier_node(
+            staged=tmp_path, nodeid="t::n", wall_clock_s=1, output_cap_bytes=1)
+        assert Path(where["deps"]).parent == root
+
+    def test_a_convergence_refusal_is_a_failed_envelope(self, tmp_path, monkeypatch):
+        from phase_loop_runtime.convergence.adapters import (
+            AdapterExecutionRequest, run_claude_adapter,
+        )
+        from phase_loop_runtime.convergence.contracts import AdmissionRequest
+
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
+        monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs")
+        monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", set())
+        admission = AdmissionRequest("a", 1, "f", "d", "head==abc", "repo", "key")
+        request = AdapterExecutionRequest("a", admission, ("claude",), tmp_path, 10, "execute")
+        envelope = run_claude_adapter(request)
+        assert envelope.status.value == "failed"
+        assert "RAM fallback is refused" in envelope.detail
+
+    def test_the_credentialless_president_home_is_in_the_relocated_dir(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import president_adapter
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "no-home"))
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        with president_adapter._president_agy_environment({"TMPDIR": str(scratch)}) as env:
+            assert Path(env["HOME"]).parent == scratch, env
+
+    def test_an_empty_env_still_gets_the_decision(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import panel_invoker
+
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        _slash_tmp_is_ram(monkeypatch)
+        seen = tmp_path / "seen.txt"
+        panel_invoker.run_provider(_record_scratch_script(seen), env={})
+        assert seen.read_text(encoding="utf-8").splitlines() == [
+            str(cache / "phase-loop" / "tmp")] * 2
+
+    def test_a_base_others_may_write_must_be_sticky(self, tmp_path):
+        base = tmp_path / "base"
+        base.mkdir()
+        base.chmod(0o777)
+        assert not sandbox_policy._private(base / "phase-loop" / "tmp", base)
+        base.chmod(0o1777)
+        assert sandbox_policy._private(base / "phase-loop" / "tmp", base)
+
+    def test_a_killed_runs_persistent_residue_is_swept_after_the_ttl(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import panel_invoker
+
+        staging = tmp_path / "staging"
+        cache = tmp_path / "cache"
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        scratch = cache / "phase-loop" / "tmp"
+        old = time.time() - 2 * 24 * 3600
+        residue = [staging / "pl-review-stage-a", staging / "pl-falsifier-deps-b",
+                   scratch / "phase-loop-broker-agy-c", scratch / "phase-loop-president-agy-d"]
+        for path in residue:
+            (path / "inner").mkdir(parents=True)
+            os.utime(path, (old, old))
+        fresh = scratch / "phase-loop-broker-agy-live"
+        fresh.mkdir()
+        unrelated = scratch / "someone-elses-file-dir"
+        unrelated.mkdir()
+        os.utime(unrelated, (old, old))
+        panel_invoker._gc_stale_panel_scratch()
+        assert not any(p.exists() for p in residue)
+        assert fresh.exists() and unrelated.exists()
