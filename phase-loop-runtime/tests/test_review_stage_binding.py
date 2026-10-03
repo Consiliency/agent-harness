@@ -23,7 +23,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -1384,7 +1383,9 @@ def test_falsifier_rejected_stage_inside_repo_is_cleaned(tmp_path, monkeypatch):
     repo = _git_repo(tmp_path / "repo")
     head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     stage_parent = repo / "ignored"
-    monkeypatch.setattr(tempfile, "tempdir", str(stage_parent))
+    # The falsifier stages under the sandbox staging root (agent-harness#1147); point it
+    # inside the repo so the stage lands where the independence check must reject it.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(stage_parent))
     path = "phase-loop-runtime/tests/test_finding_F001.py"
     entry = SimpleNamespace(
         finding_id="F001", new_test_path=path,
