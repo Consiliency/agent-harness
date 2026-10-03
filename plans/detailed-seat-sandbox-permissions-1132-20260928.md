@@ -1329,3 +1329,73 @@ Non-goals:
 - Resource limits beyond the leg deadline (named in D3).
 - The parent-held tree-identity half of agent-harness#895.
 - Toolchains outside `/usr`.
+
+## Amendment A1 (2026-10-03): the seat uses the Claude login's access token by default
+
+Maintainer decision, 2026-10-03, relayed by the team lead. It **supersedes D2**. D2's text
+above is kept as the record of the earlier ruling. Its sentence "The operator's primary login
+never enters the jail" no longer holds, and its sealed fallback now applies only when neither
+credential source exists.
+
+**Goal.** A user runs the harness, and the jailed Claude seat works on the subscription they
+are logged in with. There is no token placement step, and the seat is never silently left
+without tools.
+
+**Inputs measured on claw (Claude Code 2.1.288).**
+- **The login store:** on Linux, the login lives at `$CLAUDE_CONFIG_DIR/.credentials.json`,
+  else `~/.claude/.credentials.json`. The file is 0600. Its `claudeAiOauth` object has the keys
+  `accessToken`, `refreshToken`, `expiresAt` (epoch milliseconds), `refreshTokenExpiresAt`,
+  `scopes`, `subscriptionType` and `rateLimitTier`.
+- **macOS:** the CLI keeps the same JSON in the login Keychain. The generic-password service
+  is `Claude Code-credentials`. When `CLAUDE_CONFIG_DIR` is set, the service gets the suffix
+  `-<first 8 hex of sha256(config dir)>`. The account is `$USER`. This is read from the CLI
+  bundle, and it is tested with a fake, not on a Mac.
+- **Windows:** the file store. This is tested with a fake, not on a Windows host.
+- **Delivery:** the team lead measured that the CLI accepts the login's short-lived access
+  token through `CLAUDE_CODE_OAUTH_TOKEN` in an empty HOME. This amendment's live run measures
+  the production fd channel.
+- **The refresh trigger:** `claude auth status --json` makes no inference call. Its key set is
+  `analyticsDisabled`, `apiProvider`, `authMethod`, `configDirectory`, `email`, `loggedIn`,
+  `orgId`, `orgName`, `projectsDirectory` and `subscriptionType`. Whether it refreshes a
+  near-expiry token is recorded in the evidence. A refresh is never forced on a copy of the
+  store.
+
+**Design.**
+1. **Credential source, resolved fresh at each jailed launch.**
+   - (a) If the seat-token file exists, it is used. This is an optional override, for example
+     to bill another subscription. It is expected to be a long-lived `setup-token`.
+   - (b) Otherwise, the current login's `claudeAiOauth.accessToken` is used. Nothing else is
+     taken: not the refresh token, not the file, and not the account blob.
+   - Both go over the existing drained-pipe channel, and both are output-scanned.
+2. **Expiry.** The login token's remaining lifetime must cover a margin. The default margin is
+   the leg's deadline. `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` overrides it.
+   - **If it is short:** the host runs the CLI's own `claude auth status --json`, never with
+     the refresh token and never in the seat, and then re-reads.
+   - **If it is still short:** the leg is refused before launch with
+     `claude_seat_login_token_expiring` (fix: `claude login`).
+   - **An auth failure on a login-sourced leg:** at or past the launch-time `expiresAt` it is
+     `claude_seat_login_token_expired`, as both the detail and the notice, and it is safe to
+     relaunch with a fresh token. Before that time it is `claude_seat_login_rejected`. An
+     override keeps `claude_seat_token_rejected`.
+3. **No silent degrading.** Before any seat launches, every board publishes one mode per seat:
+   `jailed` (with tools), `sealed` (no tools) or `degraded` (refused before launch). Each mode
+   carries its notice code, reason and one-line fix. It is published as `seat_modes` in the
+   `advisor-board --json` payload, as one stderr line per seat, and as `seat-modes.json` in the
+   stream directory. Post-run notices are unchanged. A host that is jail-capable but has no
+   recorded EC-EXECFIND-2 pass now shows `degraded` with
+   `seat_sandbox_refused:jail_unqualified` by default, because a login is normally present.
+4. **Rate limits by source.** A rate or usage limit is `claude_seat_login_rate_limited` for the
+   login and `claude_seat_token_rate_limited` for the override. The reset time stays in the
+   leg detail, because notices render only from literals.
+5. **Residual.** A seat can use the access token for the token's remaining lifetime, which is
+   hours, not a year-long setup token. The response to a suspected leak is to log out and back
+   in. The token also expires on its own. This is documented in CONTRACTS and on the card.
+6. **General.** Product code carries no fleet paths, pool names or vendor-vault specifics.
+
+**A1 acceptance.**
+- [ ] Fakes cover each platform source (Linux, macOS and Windows), the precedence, the expiry
+  margin and the refresh trigger, the fail-closed refusal, the preflight mode lines, and the
+  mid-run expiry classification.
+- [ ] Every new behaviour has a mutation receipt.
+- [ ] A live run on claw passes end to end on the login route, with the override moved aside
+  and restored.
