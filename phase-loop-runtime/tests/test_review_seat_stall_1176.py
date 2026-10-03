@@ -1125,3 +1125,236 @@ def test_r4_last_is_append_order_not_first_seen_position(tmp_path):
     stopped = {**block, "message": {**block["message"], "stop_reason": "max_tokens"}}
     path = write(tmp_path / "t.jsonl", [REQUEST, block, error, stopped, {**error, "parentUuid": "re"}])
     assert panel._claude_transcript_outcome(path).kind == "pending"  # capped: the CLI continues
+
+
+# --- round 5 (C5-1 / G5-1): the live turn is the current request's records by MEMBERSHIP ------
+
+REQ2 = {"type": "user", "uuid": "u-2", "message": {"role": "user", "content": "Second request."}}
+# ANSWER's uuid (first seen under REQUEST) re-journaled open with changed content after REQ2's give-up
+LATE_EARLIER = {**ANSWER, "message": {**ANSWER["message"], "stop_reason": None,
+                                      "content": [{"type": "text", "text": "Review"}]}}
+
+
+@pytest.mark.parametrize("president", [False, True])
+def test_r5_an_earlier_requests_record_never_masks_the_current_give_up(tmp_path, president):
+    """C5-1 / G5-1: a record whose uuid was first seen before the current request is never
+    evidence for it, whatever position it is appended at. At r4 the position slice took it as
+    the last record (open, so ``pending``) and the seat waited forever."""
+    path = write(tmp_path / "t.jsonl", [REQUEST, ANSWER, REQ2, api_error("server_error"), LATE_EARLIER])
+    outcome = panel._claude_transcript_outcome(path, require_terminal=president)
+    assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_provider_api_error")
+    # an earlier request's record re-journaled under ANY content or state is never evidence
+    stopped = {**LATE_EARLIER, "message": {**LATE_EARLIER["message"], "stop_reason": "end_turn"}}
+    capped_earlier = {**LATE_EARLIER, "message": {**LATE_EARLIER["message"], "stop_reason": "max_tokens"}}
+    for late in (stopped, capped_earlier, {**REQUEST, "toolUseResult": "x", "message": {
+            "role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "late"}]}}):
+        write(path, [REQUEST, ANSWER, REQ2, api_error("server_error"), late])
+        outcome = panel._claude_transcript_outcome(path, require_terminal=president)
+        assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_provider_api_error"), late
+    # an error record stays terminal evidence under any uuid, an earlier request's included
+    late_error = api_error("rate_limit")
+    late_error["uuid"] = ANSWER["uuid"]
+    write(path, [REQUEST, ANSWER, REQ2, capped(1), late_error])
+    outcome = panel._claude_transcript_outcome(path, require_terminal=president)
+    assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_rate_limited")
+
+
+@pytest.mark.parametrize("heartbeat_only", [False, True])
+@pytest.mark.parametrize("mode", ["review", "president"])
+def test_r5_session_ends_on_the_give_up_behind_an_earlier_requests_record(
+    tmp_path, monkeypatch, heartbeat_only, mode,
+):
+    """C5-1 / G5-1, full session. At r4: bounded ``claude_tui_stalled``; heartbeat_only ran until
+    cancelled."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    records = [REQUEST, ANSWER, REQ2, api_error("server_error"), LATE_EARLIER]
+    monitor = panel._ReviewMonitor(
+        tmp_path / "monitor.json", "review", 0, threading.Event(), stall_notice_s=3600)
+    guard = threading.Timer(3, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=_provider(transcript, records, release), cwd=tmp_path,
+            prompt="input", output_file=tmp_path / "absent", timeout_s=10,
+            backstop_s=10, stall_threshold_s=.4, env=os.environ, mode=mode,
+            review_monitor=monitor if heartbeat_only else None,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert (log, text) == ("claude_seat_provider_api_error", "") and rc != 0
+
+
+def test_r5_property_an_earlier_requests_record_never_changes_a_terminal_outcome(tmp_path):
+    """Over generated journals, on both routes: appending a changed version (any stop state)
+    of a record first seen BEFORE the current request never changes a terminal outcome."""
+    import random
+
+    path = tmp_path / "t.jsonl"
+    rng = random.Random(5)
+    checked = 0
+    for _ in range(1500):
+        records, tail, fresh_terminal = _generated_transcript(rng)
+        if not fresh_terminal:
+            continue
+        last_request = max(i for i, r in enumerate(records) if r.get("type") == "user" and not r.get("isMeta"))
+        earlier = [r for r in records[:last_request] if r.get("type") == "assistant"
+                   and not r.get("isApiErrorMessage")]
+        if not earlier:
+            continue
+        old = rng.choice(earlier)
+        late = {**old, "message": {**old["message"], "stop_reason": rng.choice([None, "end_turn", "max_tokens"]),
+                                   "content": [{"type": "text", "text": f"late {rng.randrange(10**6)}"}]}}
+        for president in (False, True):
+            before = panel._claude_transcript_outcome(write(path, records), require_terminal=president)
+            if before.kind not in ("gave_up", "rejected"):
+                continue
+            after = panel._claude_transcript_outcome(write(path, [*records, late]), require_terminal=president)
+            assert (after.kind, after.code) == (before.kind, before.code), (president, records, late)
+            checked += 1
+    assert checked > 100
+
+
+# --- round 5: tests for the two clauses mutation M2 and M7 showed unpinned --------------------
+
+def test_r5_a_stale_open_copy_of_a_stopped_record_is_not_the_last_record(tmp_path):
+    """Mutation M2 (drop the stale-open-copy rule): an open copy of a record that already
+    stopped, with its content unchanged, is not streaming -- the turn stays ended."""
+    ruling = _answer("a-r", "m-r", "No blocking findings.\nFORCING DECISION: APPROVE")
+    open_ruling = {**ruling, "message": {**ruling["message"], "stop_reason": None}}
+    path = write(tmp_path / "t.jsonl", [REQUEST, api_error("server_error"), ruling, open_ruling])
+    outcome = panel._claude_transcript_outcome(path, require_terminal=True)
+    assert (outcome.kind, outcome.code) == ("rejected", "claude_seat_transcript_rejected")
+    missing_key = {**ANSWER, "message": {k: v for k, v in ANSWER["message"].items() if k != "stop_reason"}}
+    write(path, [REQUEST, ANSWER, missing_key])
+    outcome = panel._claude_transcript_outcome(path)
+    assert (outcome.kind, outcome.code) == ("rejected", "claude_seat_transcript_rejected")
+
+
+def test_r5_a_turn_that_stops_on_a_stop_sequence_is_terminal(tmp_path):
+    """Mutation M7 (``rejected`` on end_turn only): a ``stop_sequence`` stop is a completed
+    turn too. The president route refuses a ruling that does not end with end_turn."""
+    ruling = _answer("a-r", "m-r", "No blocking findings.\nFORCING DECISION: APPROVE")
+    ruling["message"]["stop_reason"] = "stop_sequence"
+    path = write(tmp_path / "t.jsonl", [REQUEST, ruling])
+    outcome = panel._claude_transcript_outcome(path, require_terminal=True)
+    assert (outcome.kind, outcome.code) == ("rejected", "claude_seat_transcript_rejected")
+
+
+# --- round 5 (N4-1 / G4-1): a thinking block flushed before its text is not yet the answer ----
+
+THINKING_FIRST = {"type": "assistant", "uuid": "a-think", "message": {
+    "id": "msg_m", "role": "assistant", "model": "claude-sonnet-5", "stop_reason": "end_turn",
+    "content": [{"type": "thinking", "thinking": "", "signature": "sig"}]}}
+TEXT_AFTER = {"type": "assistant", "uuid": "a-text", "parentUuid": "a-think", "message": {
+    "id": "msg_m", "role": "assistant", "model": "claude-sonnet-5", "stop_reason": "end_turn",
+    "content": [{"type": "text", "text": "Review complete\nAGREE"}]}}
+
+
+def test_r5_a_thinking_record_without_text_is_not_a_rejected_answer(tmp_path):
+    path = write(tmp_path / "t.jsonl", [REQUEST, THINKING_FIRST])
+    assert panel._claude_transcript_outcome(path).kind == "pending"
+    write(path, [REQUEST, THINKING_FIRST, TEXT_AFTER])
+    assert panel._claude_transcript_outcome(path).text == "Review complete\nAGREE"
+
+
+@pytest.mark.parametrize("heartbeat_only", [False, True])
+def test_r5_session_waits_for_the_text_flushed_after_its_thinking(tmp_path, monkeypatch, heartbeat_only):
+    """N4-1 / G4-1, staged: the text record lands 1 s after its thinking record. At r4 the leg
+    ended ``claude_seat_transcript_rejected`` before the answer arrived."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    first = "".join(json.dumps(r) + "\n" for r in [REQUEST, THINKING_FIRST])
+    second = json.dumps(TEXT_AFTER) + "\n"
+    script = (
+        "import sys, time\nfrom pathlib import Path\n"
+        "print('Claude Code fake provider ready for review', flush=True)\n"
+        f"p = Path({str(transcript)!r}); time.sleep(.2); p.write_text({first!r})\n"
+        "time.sleep(1)\n"
+        f"with p.open('a') as f: f.write({second!r})\n"
+        f"while not Path({str(release)!r}).exists():\n"
+        "    sys.stdout.write('\\r* Thinking...'); sys.stdout.flush(); time.sleep(.05)\n"
+    )
+    monitor = panel._ReviewMonitor(
+        tmp_path / "monitor.json", "review", 0, threading.Event(), stall_notice_s=3600)
+    guard = threading.Timer(6, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=[sys.executable, "-c", script], cwd=tmp_path,
+            prompt="input", output_file=tmp_path / "absent", timeout_s=10,
+            backstop_s=10, stall_threshold_s=3, env=os.environ,
+            review_monitor=monitor if heartbeat_only else None,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert text == "Review complete\nAGREE", (rc, text, log)
+
+
+# --- round 5 (codex F001): a request replay is a replay whatever its completion metadata -------
+
+@pytest.mark.parametrize("mode", ["review", "president"])
+@pytest.mark.parametrize("heartbeat_only", [False, True])
+@pytest.mark.parametrize("null_first", [False, True])
+@pytest.mark.parametrize("earlier_request", [False, True])
+def test_request_replay_cannot_hide_a_provider_give_up(
+    tmp_path, monkeypatch, mode, heartbeat_only, null_first, earlier_request,
+):
+    """codex r5 F001 falsifier, verbatim (16 cases)."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(panel, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    request = {**REQUEST, "message": {**REQUEST["message"]}}
+    replay = {**request, "message": {**request["message"]}, "parentUuid": "re-journaled"}
+    (request if null_first else replay)["message"]["stop_reason"] = None
+    records = [request, capped(1)]
+    if earlier_request:
+        records.append({**REQUEST, "uuid": "u-next",
+                        "message": {"role": "user", "content": "Next request"}})
+    records.extend([api_error("max_output_tokens"), replay])
+    transcript = tmp_path / "session.jsonl"
+    release = tmp_path / "release"
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "review", 0,
+                                   threading.Event(), stall_notice_s=3600)
+    guard = threading.Timer(2, monitor.cancel.set)
+    guard.start()
+    try:
+        rc, text, log, _ = panel._run_claude_tui_session(
+            command=_provider(transcript, records, release), cwd=tmp_path,
+            prompt="input", output_file=tmp_path / "absent", timeout_s=10,
+            backstop_s=10, stall_threshold_s=.4, env=os.environ, mode=mode,
+            review_monitor=monitor if heartbeat_only else None,
+            allow_transcript_final=True, broker_transcript_path=transcript,
+        )
+    finally:
+        guard.cancel()
+        release.touch()
+    assert log == "claude_seat_output_budget_exhausted", (rc, text, log)
+    assert rc != 0 and text == ""
+
+
+@pytest.mark.parametrize("president", [False, True])
+def test_r5_the_walk_and_the_parser_agree_on_which_user_record_is_the_request(tmp_path, president):
+    """codex r5 F001, classifier: the walk's request boundary is the parser's. A replayed request
+    (completion metadata added or dropped) is not newer; a changed request under a reused uuid
+    is a new request on both views, so the earlier give-up is not its evidence."""
+    replay = {**REQUEST, "parentUuid": "re", "message": {**REQUEST["message"], "stop_reason": None}}
+    path = write(tmp_path / "t.jsonl", [REQUEST, capped(1), api_error("max_output_tokens")])
+    before = panel._claude_transcript_outcome(path, require_terminal=president).versions
+    write(path, [REQUEST, capped(1), api_error("max_output_tokens"), replay])
+    outcome = panel._claude_transcript_outcome(path, require_terminal=president)
+    assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_output_budget_exhausted")
+    assert outcome.versions == before  # a replayed request is not progress either
+    changed = {**REQUEST, "message": {**REQUEST["message"], "content": "A changed request."}}
+    write(path, [REQUEST, capped(1), api_error("max_output_tokens"), changed])
+    assert panel._claude_transcript_outcome(path, require_terminal=president).kind == "pending"

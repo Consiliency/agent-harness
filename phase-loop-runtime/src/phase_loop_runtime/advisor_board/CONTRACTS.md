@@ -702,15 +702,23 @@ give-up detector are views of it, so they cannot disagree:
   `quotaLimits.resetsAt` when present), `claude_seat_rate_limited` (any other
   `rate_limit`) or `claude_seat_provider_api_error`.
 - `rejected`: no answer, and the turn ended in a completed (`end_turn` /
-  `stop_sequence`) answer the route's parser refuses. The leg ends at once as
-  DEGRADED with `claude_seat_transcript_rejected`.
+  `stop_sequence`) answer carrying a text block that the route's parser refuses.
+  The leg ends at once as DEGRADED with `claude_seat_transcript_rejected`.
 - `pending`: anything else (an open or capped message, the CLI's resume prompt,
   a newer request, a writer mid-append). A `max_tokens` stop is never terminal.
-The "last live record" is decided in APPEND order within the current request.
-Only non-evidence is skipped: an exact replay of a version already seen (same
-uuid, content, `stop_reason` presence and value, and error flag), a stale open
-copy of a stopped record whose content is unchanged, and sidechain records
-(`isSidechain`), which the answer parser drops too. An `isApiErrorMessage`
+The "last live record" is decided in APPEND order among the current request's
+records, chosen by membership, not position. The current request is the last
+user record that is not `isMeta`, carries no tool_result and is not a replay (its
+uuid and content recurring, whatever its completion metadata, as in the answer
+parser). A record is evidence for it only when it is a new version first seen in
+it: its uuid was first seen after the request (a record of an earlier request is
+never evidence, wherever it is appended, except an `isApiErrorMessage` record
+appended in the current request, which always is); it is not an exact replay of a
+version already seen (same uuid, content, `stop_reason` presence and value, and
+error flag) nor a stale open copy of a stopped record whose content is unchanged;
+and it is not a sidechain record (`isSidechain`), which the answer parser drops
+too. An open record first seen in the current request, even a changed version
+after its own stop, is still streaming and reads `pending`. An `isApiErrorMessage`
 record is terminal event evidence and is never collapsed into an earlier
 version of its uuid. Replays and rewritten metadata are not progress. `provider_terminal_state` records the code that
 ended the leg. `isApiErrorMessage` matches JSON `true` or the string `"true"`,

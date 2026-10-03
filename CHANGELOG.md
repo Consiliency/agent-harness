@@ -19,6 +19,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   leg: a turn that ended in an answer the route refuses is `claude_seat_transcript_rejected`,
   and a completed review without a verdict is handed back rather than left waiting.
   Re-journaled transcript records count neither as progress nor as a new turn position.
+  Only records first seen in the current request decide how its turn ended: a record of an
+  earlier request appended late, a replayed request (whatever its completion metadata) and a
+  subagent's sidechain record are never the turn's last record, and a sidechain answer is never
+  the seat's answer. A record first seen in the current request that is still open, even a
+  changed version after its own stop, reads as streaming, and a stopped thinking block is not
+  yet the answer until its text block arrives.
 - A heartbeat_only seat with no genuine progress for `PHASE_LOOP_REVIEW_STALL_NOTICE_S`
   (default 3600 s) is flagged `seat_progress_stalled`, not ended. The flag appears in the
   seat's monitoring record, as one stderr warning, in `advisor-board --json` legs

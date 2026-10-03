@@ -5437,14 +5437,19 @@ class _TranscriptOutcome:
 def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict, dict]]]:
     """``(record_versions, last_line_parses, live_turn)`` for transcript ``lines``.
 
-    ``live_turn`` is the current request's records in APPEND order (agent-harness#1194 r4): the
-    records after the last genuine request (a user record that is not ``isMeta``, carries no
-    tool_result and is not a replay), minus only what is not provider evidence:
-      * an exact replay of a version already seen (same uuid, content, ``stop_reason`` and error
-        flag; Claude Code re-journals records with changed ``parentUuid``/``promptId``/
-        ``usage``), and a stale open copy of a stopped record whose content is unchanged --
+    ``live_turn`` is the current request's records in APPEND order (agent-harness#1194 r4). The
+    current request is the last genuine request: a user record that is not ``isMeta``, carries no
+    tool_result and is not a replay (its uuid and content recurring, whatever its completion
+    metadata -- the answer parser's request rule). Its records are decided by MEMBERSHIP, not by
+    position (r5): a record is evidence for it only when it is a NEW version first seen in it --
+      * its uuid was first seen after the request; a record of an earlier request is never
+        evidence for the current one, whatever its content, state or position -- except an
+        ``isApiErrorMessage`` record appended in the current request, which is always evidence;
+      * it is not an exact replay of a version already seen (same uuid, content, ``stop_reason``
+        and error flag; Claude Code re-journals records with changed ``parentUuid``/``promptId``/
+        ``usage``), nor a stale open copy of a stopped record whose content is unchanged --
         the answer parser's own two replay rules (agent-harness#1002);
-      * sidechain records (``isSidechain``), which never decide the main turn's last record.
+      * it is not a sidechain record (``isSidechain``), which never decides the main turn.
     An ``isApiErrorMessage`` record is terminal EVENT evidence: it is never collapsed into an
     earlier version of its uuid, whatever its ``stop_reason``. "Last" is the last record
     appended, never an earlier position kept by identity.
@@ -5457,7 +5462,8 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
     versions: set[str] = set()
     seen: set[str] = set()
     stopped: dict[str, str] = {}  # uuid -> content of its stopped version
-    events: list[tuple[dict, dict]] = []
+    first_seen: dict[str, int] = {}  # uuid -> position of its first record
+    events: list[tuple[int, dict, dict]] = []  # (position, payload, message)
     complete = True
     for index, line in enumerate(lines):
         try:
@@ -5472,10 +5478,16 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
         said = json.dumps([message.get("id"), message.get("role"), message.get("content")], sort_keys=True,
                           default=str)
         error = _claude_api_error_record(payload, message)
-        # The state includes whether ``stop_reason`` is present at all, as in the answer parser.
-        version = json.dumps([uid, said, "stop_reason" in message, message.get("stop_reason"), error],
+        # The state includes whether ``stop_reason`` is present at all, as in the answer parser. A
+        # user record recurring with its uuid and content is a replay whatever its completion
+        # metadata -- the answer parser's request rule -- so it is neither progress nor a newer
+        # request (r5).
+        version = json.dumps([uid, said] if message.get("role") == "user" else
+                             [uid, said, "stop_reason" in message, message.get("stop_reason"), error],
                              default=str)
         versions.add(version)
+        if uid is not None:
+            first_seen.setdefault(uid, index)  # wherever first seen, a sidechain included
         if payload.get("isSidechain") is True:
             continue
         if uid is not None:
@@ -5486,7 +5498,7 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
             seen.add(version)
             if message.get("stop_reason") is not None:
                 stopped[uid] = said
-        events.append((payload, message))
+        events.append((index, payload, message))
 
     def _genuine_request(payload: dict, message: dict) -> bool:
         content = message.get("content")
@@ -5494,8 +5506,17 @@ def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict,
                 and not (isinstance(content, list) and any(
                     isinstance(item, dict) and item.get("type") == "tool_result" for item in content)))
 
-    requests = [i for i, (payload, message) in enumerate(events) if _genuine_request(payload, message)]
-    return len(versions), complete, (events[requests[-1] + 1:] if requests else [])
+    requests = [i for i, (_, payload, message) in enumerate(events) if _genuine_request(payload, message)]
+    if not requests:
+        return len(versions), complete, []
+    start = events[requests[-1]][0]
+
+    def _member(payload: dict, message: dict) -> bool:
+        uid = payload.get("uuid") if isinstance(payload.get("uuid"), str) and payload.get("uuid") else None
+        return uid is None or first_seen[uid] > start or _claude_api_error_record(payload, message)
+
+    return len(versions), complete, [(payload, message) for _, payload, message in events[requests[-1] + 1:]
+                                     if _member(payload, message)]
 
 
 def _claude_give_up_code(payload: dict) -> str:
@@ -5519,7 +5540,8 @@ def _claude_transcript_outcome(path: Path, *, require_terminal: bool = False) ->
         nothing more will be journaled -- the turn is over with nothing
         accepted: ``gave_up`` when that record is an ``isApiErrorMessage`` give-up (typed by
         ``error`` and ``quotaLimits``), ``rejected`` when it is a completed (``end_turn`` /
-        ``stop_sequence``) answer the route's parser refuses;
+        ``stop_sequence``) record carrying a text block that the route's parser refuses (a
+        thinking block the CLI flushed before its text is not yet the answer, r5);
       * otherwise ``pending``: an open or capped message, the CLI's resume prompt, a newer
         request, or a writer mid-append. A ``max_tokens`` stop is never terminal: the CLI
         continues it (agent-harness#1077).
@@ -5537,7 +5559,10 @@ def _claude_transcript_outcome(path: Path, *, require_terminal: bool = False) ->
     payload, message = turn[-1]
     if _claude_api_error_record(payload, message):
         return _TranscriptOutcome("gave_up", versions, code=_claude_give_up_code(payload))
-    if message.get("role") == "assistant" and message.get("stop_reason") in ("end_turn", "stop_sequence"):
+    content = message.get("content")
+    if message.get("role") == "assistant" and message.get("stop_reason") in ("end_turn", "stop_sequence") \
+            and (isinstance(content, str) or isinstance(content, list) and any(
+                isinstance(item, dict) and item.get("type") == "text" for item in content)):
         return _TranscriptOutcome("rejected", versions, code=_CLAUDE_TRANSCRIPT_REJECTED)
     return _TranscriptOutcome("pending", versions)
 
