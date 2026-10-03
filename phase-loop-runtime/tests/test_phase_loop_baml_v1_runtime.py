@@ -4112,7 +4112,13 @@ def test_a_supervisor_killed_in_its_successor_launch_is_revived_by_an_exiting_ca
                     with mock.patch.object(m._Client, "_supervise", _traced_supervisors(client, _killed_twice_plan(k), died=died)), \
                             mock.patch.object(m._Client, "_own", _held_candidate(client, release, then)):
                         client._ensure_supervisor()
+                        first = _supervisors_of(client)
                         assert _wait(lambda: died[:1] == [0], 3.0), (k, died)
+                        # ``died`` is written in the wrapper's finally, before the
+                        # thread itself has ended: join it, or a slow runner still
+                        # counts it alive (macos-15-intel, platform run 37094857906).
+                        for thread in first:
+                            thread.join(2)
                         if not _supervisor_threads(client):
                             no_successor += 1  # only the held candidate is left
                         release.set()
