@@ -244,6 +244,10 @@ def test_a_stamp_that_does_not_prove_a_decision_for_this_env_is_caught(runtime, 
     runtime.with_env(env)
     found = hook.drain()
     assert found, f"{case}: a stamp that proves nothing was accepted"
+    reason = {"empty": "missing or empty", "copied_exception": "exception was not applied",
+              "values_changed_after": "not minted for this env", "forged": "not minted",
+              "minted_in_another_process": "not minted"}[case]
+    assert reason in found[0], found
 
 
 def test_a_fresh_relocate_decision_passes_and_a_reused_stamp_is_never_trusted(runtime):
