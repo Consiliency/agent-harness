@@ -1399,3 +1399,43 @@ without tools.
 - [ ] Every new behaviour has a mutation receipt.
 - [ ] A live run on claw passes end to end on the login route, with the override moved aside
   and restored.
+
+## Amendment A2 (2026-10-03): the jail is qualified on first use
+
+Maintainer ruling, 2026-10-03, relayed by the team lead. It supersedes A1 item 3's
+"`degraded` with `seat_sandbox_refused:jail_unqualified` by default". It also folds in
+agent-harness#1186's first-use self-check (option C). That issue's shipped host-independent
+policy digest, and its N2 prerequisite, stay open there.
+
+**Rule.** A Claude seat that would take the jailed route, on a host with no EC-EXECFIND-2
+pass recorded for this host, jail profile digest and falsifier-run layout, is handled as
+follows. A Claude seat is never refused for this.
+- **Run once:** the harness runs the host's jail qualification itself, once, before
+  launching. It is the same procedure as `phase-loop seat-sandbox qualify`, and on a pass it
+  records the pass in the per-host store.
+- **Serialized:** an exclusive lock in the per-user state directory serializes the run, so
+  concurrent seats and boards run it once and the others wait, then re-read the store.
+- **On a pass:** the seat runs jailed with tools, and its mode line reads
+  `jailed (qualified now)`.
+- **On a failure, or when the run cannot happen** (missing prerequisites, an unsafe store, a
+  timeout or an error): the seat takes the sealed route with
+  `seat_jail_qualification_failed`. Its mode line names the typed reason (`prerequisite_missing`,
+  `store_unsafe`, `falsifiers_failed`, `timeout` or `error`) and that reason's literal fix.
+- **The failure cache:** a failure is cached for this host, digest and layout only, so it is
+  not retried on every seat. It is retried after `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S`
+  (default 3600 s), or as soon as the digest or the layout changes. A lock timeout is not
+  cached.
+- **The injected gate:** an injected `pass_recorded` (a test seam) keeps the gate alone, so
+  no pass is still `seat_sandbox_refused:jail_unqualified`.
+- **The launch-time re-check** against the built jail is unchanged, and still refuses an
+  unrecorded digest.
+- **In tests:** a suite-wide guard fails any test that would reach a real first-use
+  qualification.
+
+**A2 acceptance.**
+- [ ] Fakes cover: no record, qualified, then jailed; a failure, then sealed and loud;
+  concurrent first use running once; a cached failure not retried until its TTL, digest or
+  layout changes; and an existing pass skipping the run.
+- [ ] Every new behaviour has a mutation receipt.
+- [ ] Live on claw: with the pass record moved aside and restored afterwards, a first-use
+  qualification followed by a jailed launch works.
