@@ -1522,6 +1522,16 @@ def _publish_seat_preflight(
     if not pointer_brief:
         return ()
     brokered_route = mode == "review" and review_authorization is not None
+    jailed_by_leg: dict[str, bool] = {}
+
+    def _usable_by(leg: str | None, brokered: bool) -> bool:
+        # agent-harness#1132: a seat whose launch takes the jailed route has its tools in
+        # the staged tree, so it CAN read the brief's files.
+        if leg is not None and leg not in jailed_by_leg:
+            jailed_by_leg[leg] = _seat_jailed_at_launch(leg, review_authorization,
+                                                        brokered=brokered)
+        return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))
+
     notices = _seat_preflight.pointer_brief_preflight(
         board.seats,
         staged_tree=(review_authorization is not None and getattr(
@@ -1530,7 +1540,7 @@ def _publish_seat_preflight(
                               and not _has_injected_review_execution_seam(leg=leg)),
         native_fill=lambda seat, leg: (
             leg == "claude" and seat.model is not None and _under_claude_code(base_env)),
-        sandbox_usable_by=sandbox_usable_by,
+        sandbox_usable_by=_usable_by,
     )
     for notice in notices:
         logging.getLogger(__name__).warning("seat preflight: %s", notice.render())
@@ -8241,6 +8251,10 @@ def _exec_jailed_claude_leg(
             # so, beside the detail that carries the reset time.
             if _seat_jail.is_limit_detail(failure.template):
                 seat.notices.append("claude_seat_token_rate_limited")
+            elif failure.template == "auth_failure":
+                # P2 (claw, 2026-10-03): a token the provider rejects ends the jailed TUI
+                # with the classifier's auth class.
+                seat.notices.append("claude_seat_token_rejected")
     return status, text
 
 
@@ -9150,6 +9164,17 @@ def _seat_route_for_spawn(
     if refusal is not None:
         return route, [], refusal[0]
     return route, [], None
+
+
+def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
+                           *, brokered: bool) -> bool:
+    """Will this seat's production brokered launch take the jailed route? The same J7
+    decision and EC-EXECFIND-2 gate ``_default_spawn`` applies; a jail that would be refused
+    is not jailed (that seat does not launch at all)."""
+    if not brokered:
+        return False
+    route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True)
+    return route is not None and route.jailed and refusal is None
 
 
 def _dedupe(codes: Sequence[str]) -> tuple[str, ...]:

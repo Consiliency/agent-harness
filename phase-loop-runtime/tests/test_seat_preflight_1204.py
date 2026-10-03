@@ -95,9 +95,12 @@ def _chunker114_board(tmp_path, *, pointer_brief=True, verdict="PARTIALLY AGREE"
 
 
 @pytest.fixture
-def staged_tree(monkeypatch):
-    """The review stages an exact-head tree (the production default)."""
+def staged_tree(monkeypatch, tmp_path):
+    """The review stages an exact-head tree (the production default). The chunker#114 seats
+    have no seat token, so this host's own seat token and jail passes are not read: with
+    them, the preflight would put a Claude seat on the jailed route (agent-harness#1132)."""
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "no-seat-state"))
 
 
 def test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run(
@@ -475,3 +478,35 @@ def test_r1_the_all_native_early_path_still_publishes_its_preflight(tmp_path, mo
         on_seat_preflight=published.append)
     assert published == [()]
     assert all(leg.status == "UNAVAILABLE" and leg.source_grounded for leg in result.legs)
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1132: a jailed Claude seat has its tools in the staged tree, so it CAN read
+# the pointer brief; the preflight reads the same jailed-route facts the launch acts on.
+# --------------------------------------------------------------------------------------
+
+def _jailed_route(leg, **_k):
+    from phase_loop_runtime import seat_jail
+
+    if leg == "claude":
+        return seat_jail.SeatRoute(True)
+    if leg == "gemini":
+        return seat_jail.SeatRoute(False, "gemini_seat_egress_unconfined")
+    return None
+
+
+@pytest.mark.parametrize("qualified, unreadable", [
+    (True, ["gemini"]),               # the jailed Claude seat reads its brief
+    (False, ["claude", "gemini"]),    # an unqualified jail does not launch: no file access
+])
+def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _jailed_route)
+    monkeypatch.setattr(pi._seat_jail, "pass_record_verdict",
+                        lambda digest: (qualified, "pass" if qualified else "no_record"))
+    board = types.SimpleNamespace(seats=[_seat("claude"), _seat("gemini"), _seat("codex")])
+    notices = pi._publish_seat_preflight(
+        board, pointer_brief=True, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        base_env={}, stream_dir=None, on_seat_preflight=None)
+    assert [n.leg for n in notices] == unreadable
+    assert all(n.code == UNREADABLE for n in notices)

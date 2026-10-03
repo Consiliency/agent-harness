@@ -355,6 +355,20 @@ MUTATIONS: list[dict[str, object]] = [
      "old": "    token = _seat_jail.read_claude_seat_token()\n    executable = _resolve_claude_executable()",
      "new": "    token = globals().setdefault(\"_SEAT_TOKEN\", _seat_jail.read_claude_seat_token())\n    executable = _resolve_claude_executable()",
      "nodes": [f"{T_PERM}::test_each_jailed_leg_launches_with_the_token_current_at_its_launch"]},
+    # The pointer-brief preflight reads the jailed route (team-lead ruling, 2026-10-03).
+    {"id": "preflight-ignores-the-jail", "file": PI,
+     "old": "        return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))",
+     "new": "        return sandbox_usable_by(leg, brokered)",
+     "nodes": ["tests/test_seat_preflight_1204.py::test_a_jailed_claude_seat_is_not_marked_unreadable[True-unreadable0]"]},
+    {"id": "preflight-counts-a-refused-jail", "file": PI,
+     "old": "    return route is not None and route.jailed and refusal is None",
+     "new": "    return route is not None and route.jailed",
+     "nodes": ["tests/test_seat_preflight_1204.py::test_a_jailed_claude_seat_is_not_marked_unreadable[False-unreadable1]"]},
+    # P2: a rejected seat token carries its notice.
+    {"id": "token-rejected-notice-dropped", "file": PI,
+     "old": '                seat.notices.append("claude_seat_token_rejected")',
+     "new": '                pass',
+     "nodes": [f"{T_NOTE}::test_a_rejected_seat_token_ends_the_leg_with_its_notice"]},
 ]
 
 

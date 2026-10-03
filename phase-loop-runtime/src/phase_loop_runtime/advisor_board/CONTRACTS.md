@@ -959,7 +959,13 @@ are recorded on agent-harness#1132.
   token's subscription for a rate or usage limit (the shared leg-failure classifier's
   `usage_limit` class, with the provider's reset time when it gives one), the leg ends with
   that detail and the notice `claude_seat_token_rate_limited`: rotate or replace the seat
-  token, or wait for the reset. It is never a `seat_sandbox_refused:*` code.
+  token, or wait for the reset. It is never a `seat_sandbox_refused:*` code. A token the provider
+  rejects (the classifier's `auth_failure`, measured in P2) carries
+  `claude_seat_token_rejected`.
+- **Pointer-brief preflight.** On a `--pointer-brief` board, a seat whose launch takes the
+  jailed route (the same J7 decision and EC-EXECFIND-2 gate the launch applies) has file
+  access to the staged tree, so it is source-grounded and never marked
+  `seat_pointer_brief_unreadable`. A jail that would be refused is not counted as one.
 - **Pointer mode.** A jailed seat gets a pointer brief: jail-path preamble, the
   AUTHORITATIVE INSTRUCTIONS inline, and POINTER frames naming the bundle (path, sha256,
   size) and the tree (path, source commit, approved digest). Evidence records

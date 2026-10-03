@@ -459,6 +459,17 @@ def test_a_rate_limited_seat_token_ends_the_leg_with_its_own_notice(monkeypatch,
     assert "seat token's subscription" in why and "rotate or replace the seat token" in fix
 
 
+def test_a_rejected_seat_token_ends_the_leg_with_its_notice(monkeypatch, tmp_path):
+    # P2 measured the shape: a token the provider rejects is the classifier's auth class.
+    seat, status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"),
+        tail="Invalid API key · Please run /login")
+    assert status == "DEGRADED"
+    assert [f.template for f in sink] == ["auth_failure"]
+    assert seat.notices == ["claude_seat_token_rejected"]
+
+
 def test_a_leg_whose_tail_names_no_limit_carries_no_token_notice(monkeypatch, tmp_path):
     seat, status, _text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="",

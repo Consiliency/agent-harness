@@ -267,7 +267,7 @@ work continues.
 |---|---|---|---|
 | P5 | `p5-seat-uid.json` | `36c9d77d198bfd41d10a0e75bf82a3f660e1e0dd7f76944dfe029f29c84ee8b7` | pass |
 | P1 | `p1-claude-config-pty.json` | `bec8bd08b9ccb99c7d3e774396a27b37b04a615347e77fb43356d2fbf7cf7ad3` | pass |
-| P2 | — | — | not run: waits on the maintainer's seat token |
+| P2 (2026-10-03) | `p2-claude-seat-token.json` | `8dead61a7c935d411ca7a6408f6b583523dabeee35fdb1999115518b4a9b4d3d` | **pass**: fd route authenticates and the seat quotes a tool's output; a rejected token is `auth_failure`. Not measured: scope/expiry, billing, revocation (sacrificial token) |
 | P4 | `p4-agy-d7-credential.json` | `121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035` | **stop**: `gemini_seat_token_scope_excess` |
 | P4 containment (maintainer ruling "prove then enable") | `p4-containment.json` | `fe71bb819a2e701e5e60685e79aa33602e9ab56c8d19b42d70a49b0d6b6cab45` | **stop**: `gemini_seat_egress_unconfined`; (a) holds, (b) fails |
 | P3 | — | — | not run: P3 runs only after P4 passes |
