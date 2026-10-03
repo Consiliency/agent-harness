@@ -1161,6 +1161,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--agy-canary-private-board-name",
         help="Capture-only basename for the full board JSON inside the private evidence root.",
     )
+    # agent-harness#1204: the brief points at files in the staged tree.
+    advisor_board_sub.add_argument(
+        "--pointer-brief", action="store_true", default=False,
+        help=("Declare that the brief points the reviewers at files in the staged tree instead of "
+              "inlining them. Before any seat launches, each seat whose route cannot open those "
+              "files is warned (seat_pointer_brief_unreadable, on stderr); it still runs, but its "
+              "verdict is not counted as source-grounded, and the floor counts grounded seats only."),
+    )
     # agent-harness#802: an advisory, non-gating run over a standalone document.
     advisor_board_sub.add_argument(
         "--advisory", action="store_true", default=False,
@@ -2080,7 +2088,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         write_private_board,
     )
     from .panel_invoker import _mode_instructions, _preflight_gemini_heartbeat, invoke_board
-    from .panel_invoker import PresidentPolicyError
+    from .panel_invoker import NativeFillRefusalError, PresidentPolicyError
 
     # The authoritative review instructions: the code-review brief, or the advisory contract,
     # staged as the brief file every seat and native fill binds (agent-harness#802).
@@ -2134,6 +2142,12 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         return 2
     if capture is None and private_board_name:
         print("advisor-board: private board name requires PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", file=sys.stderr)
+        return 2
+    pointer_brief = bool(getattr(args, "pointer_brief", False))
+    if capture is not None and pointer_brief:
+        # The capture board's schema is closed; a pointer-brief board is not a capture.
+        print("advisor-board: --pointer-brief cannot be combined with agy canary capture", file=sys.stderr)
+        capture.close()
         return 2
     if capture is not None and not bool(getattr(args, "json", False)):
         print("advisor-board: capture requires --json so full board output stays private", file=sys.stderr)
@@ -2327,6 +2341,10 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 "agy_canary_capture": capture,
                 **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
             }
+            if pointer_brief:
+                # agent-harness#1204: the preflight's notices are printed BEFORE any launch.
+                invoke_kwargs["pointer_brief"] = True
+                invoke_kwargs["on_seat_preflight"] = _print_seat_preflight
             if review_authorization is not None:
                 invoke_kwargs["review_authorization"] = review_authorization
                 invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority
@@ -2335,6 +2353,14 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     except PresidentPolicyError as exc:
         # PRESROUTE: a refused president path (override, stream, resume) is a typed exit.
         print(f"advisor-board: president refused [{exc.code}]: {exc}", file=sys.stderr)
+        if capture is not None:
+            capture.close()
+        return 2
+    except NativeFillRefusalError as exc:
+        # agent-harness#1183: a fill refused at binding (the seat did not defer) is a native-fill
+        # refusal naming the seat's real outcome, never an artifact-staging failure.
+        refusal = exc.refusal
+        print(f"advisor-board: native fill refused [{refusal.reason}]: {refusal.detail} (seat {refusal.seat_key})", file=sys.stderr)
         if capture is not None:
             capture.close()
         return 2
@@ -2363,13 +2389,17 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
     usable_vendors = {leg.leg for leg in result.usable_legs}
+    # agent-harness#1204 (ii): the floor counts source-grounded seats only. Without
+    # --pointer-brief no seat is marked, so this equals ``usable_count``.
+    from .seat_preflight import grounded_usable_legs
+    grounded_count = len(grounded_usable_legs(result))
     # A runnable review command must signal when the result is NOT a usable review.
     # Tie the exit code to the board's own contract: it targets 4 independent
     # reviewers with a HARD FLOOR of ``FLOOR_SEATS`` (3). If fewer than the floor of
     # legs returned an OK verdict with text (the rest DEGRADED / ERROR / TIMEOUT /
     # EMPTY / UNAVAILABLE — e.g. the claude leg deferring under Claude Code is one
     # expected non-OK), the board is below its independence floor → exit nonzero.
-    usable = usable_count >= FLOOR_SEATS
+    usable = grounded_count >= FLOOR_SEATS
     exit_code = 0 if usable else 1
     # PRESROUTE: a president-tier board that the president ruled BLOCKING is not a
     # usable landing; say so and exit nonzero.
@@ -2445,6 +2475,16 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 for leg in result.legs
             ],
         }
+        if pointer_brief:
+            # agent-harness#1204: present only for a pointer-brief board, so every other
+            # payload (and the closed capture schema) is unchanged.
+            # The preflight notices join the seat notices (agent-harness#1132); neither
+            # list replaces the other.
+            payload["grounded_seats"] = grounded_count
+            payload["notices"] += [n.as_json() for n in result.seat_preflight_notices]
+            for entry, leg in zip(payload["legs"], result.legs):
+                entry["source_grounded"] = leg.source_grounded
+                entry["notices"] += [n.as_json() for n in leg.seat_preflight_notices]
         if advisory:
             payload.update(_advisory_labels(review_brief, composed_board=board.name))
         if capture is not None:
@@ -2499,6 +2539,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         print(f"  [{leg.status}] {leg.seat_key}{detail}")
         for notice in leg.seat_notices:
             print(f"      notice {notice.code}: {notice.what} / {notice.why} / fix: {notice.fix}")
+        for notice in leg.seat_preflight_notices:
+            # agent-harness#1204: once per seat, from the notice table's literals.
+            print(f"      notice {notice.code}: {notice.what} -- fix: {notice.fix}")
         # Print each reviewer's actual verdict text so the board can be reconciled
         # from the command's output (not just leg statuses).
         text = (leg.text or "").strip()
@@ -2528,8 +2571,10 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             why = f" — {shown}" if shown else ""
             print(f"advisor-board:   [{leg.status}] {leg.seat_key}{why}{fill}", file=sys.stderr)
     if not usable:
+        grounded = (f" ({grounded_count} source-grounded)" if grounded_count != usable_count
+                    else "")
         print(
-            f"advisor-board: only {usable_count} usable review leg(s) < floor {FLOOR_SEATS} "
+            f"advisor-board: only {usable_count} usable review leg(s){grounded} < floor {FLOOR_SEATS} "
             "— below the board's independence floor, not a usable board.",
             file=sys.stderr,
         )
@@ -2567,6 +2612,12 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
 def _board_notices_json(legs) -> list[dict[str, str]]:
     """Every leg's typed seat notices (agent-harness#1132), rendered from literals."""
     return [notice.as_json() for leg in legs for notice in leg.seat_notices]
+
+
+def _print_seat_preflight(notices) -> None:
+    """agent-harness#1204: the pointer-brief preflight, printed before any seat launches."""
+    for notice in notices:
+        print(f"advisor-board: preflight: {notice.render()}", file=sys.stderr)
 
 
 def _outside_agent_preflight_command(args: argparse.Namespace) -> int:
@@ -3196,7 +3247,9 @@ def _hotfix_verification_commands(plan_stub: Path) -> list[list[str]]:
 
 
 def _redact_hotfix_reason(reason: str) -> str:
-    return " ".join(reason.split())[:200]
+    from .credential_redaction import redact_text
+
+    return " ".join(redact_text(reason).split())[:200]
 
 
 def _migrate_events_command(*, repo: Path, dry_run: bool, backup_suffix: str) -> int:

@@ -259,6 +259,7 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     ("gpt-6-sol", "codex", "max"),  # explicit seat (codex's own default model); not a board default
     ("gpt-6.1-sol", "codex", "max"),  # explicit seat, selected by board config; not a board default
     ("claude-sonnet-5", "claude", "max"),
+    ("claude-sonnet-5-5", "claude", "max"),  # explicit seat, selected by board config; not a board default
     ("claude-opus-4-8", "claude", "max"),
     # design-model-tier-taxonomy.md: claude-opus-5 is the new Claude heavy model.
     # opus-4-8 is retained above — still referenced by tests (advisor_board_schema) —

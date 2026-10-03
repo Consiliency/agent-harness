@@ -71,6 +71,106 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.
 
+### One shared redaction pipeline with broader credential-shape coverage
+
+- New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
+  control characters, detects credential shapes, e-mail addresses and the running user's home
+  paths and names over the same text, merges the spans, and replaces each once. All of these
+  use it, so the same input gives the same output everywhere:
+  - review-leg details, PTY tails and private leg logs;
+  - run-metadata stderr excerpts;
+  - the hotfix reasons recorded by `observability` and the CLI.
+- Value grammar:
+  - an unquoted value runs to whitespace, including an auth-scheme word before it;
+  - a quoted value (escapes allowed, may contain spaces) runs to its matching close quote plus
+    any non-space text glued after it. A lone quoted value followed only by structural
+    delimiters is redacted inside its quotes.
+- Key names are matched without a left word boundary, so glued and prefixed names
+  (`dbPassword`, `mysecret`, `GITHUB_TOKEN`) are covered. `secret_key`, `private_key`,
+  `access_key`, `passphrase`, `credential(s)` and `signature` are added.
+- Newly recognised shapes:
+  - a secret command-line flag followed by a bare or quoted value;
+  - URL userinfo, including a token-only userinfo;
+  - `Cookie`/`Set-Cookie` headers, including JSON and dict forms;
+  - PEM and PGP private-key blocks;
+  - `x-api-key`.
+- Every pattern is linear in the input length, with bounded quantifiers after alternations.
+- Credential shapes are detected over the normalized text and over the raw text with colour codes
+  removed, and a span found in either is redacted, so normalization only adds coverage. Every
+  site redacts its whole input before any excerpt is cut. Whitespace around the separator is
+  unbounded. JWT-shaped tokens are found by a linear scan of dotted token runs.
+- Pipeline branch-operation error messages now go through the same pipeline.
+- The previous leg-detail redaction is replayed exactly inside the pipeline (its detectors, its
+  merge, then the closeout gate's forbidden shapes over its own output), and every offset it
+  replaced is always replaced, so the pipeline removes at least what the previous redaction
+  removed whatever the newer shapes add. Tests require the replay's output to equal the frozen
+  previous function's output. The previous stderr-excerpt detector also runs, over the raw text.
+- Every step is linear in the input length, at every site. The closeout gate's
+  `process.env[...] =` shape and the JWT shape are found by linear scans that return exactly the
+  regex's matches (tested against the regexes); the gate itself still uses the regex. The
+  placeholder containment check is a bisect, and the colour-free view maps back to raw offsets
+  through its run starts, so memory stays proportional to the input.
+- Tests compare every site against a frozen copy of the previous functions, end to end, and
+  require the output to keep no value fragment the previous output had removed.
+- `redaction.STDERR_SECRET_KV_RE` and the panel's private detector copies are removed.
+- The BAML adapter's error sanitizer moves onto this module in a follow-up, after its
+  in-flight change lands.
+- No agy route-core file changes, so this needs no agy requalification.
+
+### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204)
+
+- `invoke_board(pointer_brief=True)`, `advisor-board --pointer-brief` and the governed gate's `pointer_brief` declare that the brief points reviewers at files in the staged tree instead of inlining them. Nothing detects a pointer brief from its text.
+- **Before any seat launches,** a board-level preflight (`seat_preflight.py`) decides, from each seat's production route, whether it can open those files. Every seat that cannot gets the typed notice `seat_pointer_brief_unreadable`. The notice is published before the first launch: through the `on_seat_preflight` callback (the CLI prints it on stderr), a warning log, and `seat-preflight.json` in `stream_dir`.
+- **Maintainer ruling, policy (ii).** The seat still runs, but its verdict is not source-grounded, so it never counts as a passing seat. That covers:
+  - the governed landing count;
+  - the CLI floor;
+  - the pre-merge minimum of usable reviewers;
+  - the train review record;
+  - president input, where it becomes a "not counted" item.
+
+  A `DISAGREE` from such a seat still blocks. The notice also reaches the JSON payload (`notices`, `legs[].notices`, `legs[].source_grounded`, `grounded_seats`), the text summary and the governed findings.
+- **Without the flag,** every board, payload and count is unchanged. Evidence: treesitter-chunker#114, reported on agent-harness#1132.
+
+### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
+
+- `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and
+  every writer re-serialized all rows with sorted keys. Rows on main are in neither
+  order, so appending one entry rewrote the whole file (+7743/-7725).
+- `append_entry`, `update_lifecycle` and `register_historical_plans` now edit the parsed
+  document in place and write it back in file order. A new slug goes at the end, and
+  every row that was not changed keeps its bytes. The issue's repro now adds 18 lines
+  and removes none.
+- Replacing an existing slug keeps that row's position and key order, including nested
+  key order for values that did not change. Extension keys that the replacement omits,
+  such as `plan_authority_history`, are carried forward instead of being dropped.
+  `update_lifecycle` changes only `status`, `updated_at` and `lifecycle`.
+- A manifest file that exists but whose JSON is not an object (`null`, a list, a
+  string, a number) is still rejected with `manifest must be an object`. It is never
+  treated as absent.
+- Output stays ASCII-escaped, as before. A hand-edited row holding a raw non-ASCII
+  character is `\u`-escaped on the next write.
+- `plan_manifest.py` is part of the agy-qualified runtime source, so the next release
+  cut's agy qualification covers this change.
+
+### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175)
+
+- A sealed prompt of 96 KiB or less now goes to agy as one user event
+  (`agy_ndjson_single_event_v1`) that ends with the review instruction. It no longer
+  goes through an acknowledgement turn first. Larger prompts keep the chunked ingestion
+  protocol (`agy_ndjson_same_session_ingestion_v1`) unchanged.
+- Why: the acknowledgement turn carried the whole review task, and gemini-3.8-flash-high
+  acted on it there. On claw (agy 1.2.13), 6 of 8 single-chunk legs failed:
+  - 4 made tool calls (`run_command ls`, `view_file`), and the deny profile refused
+    every one;
+  - 2 wrote the review in place of the acknowledgement line.
+
+  Sent as one event, 10 of 12 legs were accepted, with no tool step and no
+  acknowledgement failure. The other 2 ended with a provider "stream was interrupted"
+  error, which the chunked protocol also hit in the same window.
+- The stream classifier is unchanged: any tool or subagent step still rejects the leg.
+  The HARDEN evidence verifier recomputes whichever protocol a record names. It
+  requires a one-chunk prompt for the single-event protocol.
+
 ### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
 
 - The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem
@@ -88,6 +188,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The change is in the launch wrapper (`panel_invoker.py`), not in an agy route-core
   file, so this needs no agy requalification of its own. The next release cut's full
   qualification covers it.
+
+### Register `claude-sonnet-5-5` as an explicit advisor-board seat (agent-harness#1178)
+
+- `claude-sonnet-5-5` (Claude Sonnet 5.5) is a registered model on the `claude` lane at effort
+  `max`, answering to the `fable` review-seat alias, so a governed policy requiring `fable`
+  accepts a board that seats it. It does not answer to `gemini`.
+- Registration only: no shipped default moves. `DEFAULT_LEG_MODELS["claude"]` and the HARDEN
+  claude route stay on `claude-opus-5-5`; no preset seats it; the capability-registry tier
+  constants are unchanged (`claude-sonnet-5` stays the regular tier); the planner, implementer
+  and executor defaults and the president ladder are unchanged.
+- No user-config route selects it for the production review boards yet (agent-harness#1171).
+  It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
+- No agy route-core file changes, so this needs no agy requalification of its own.
 
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 

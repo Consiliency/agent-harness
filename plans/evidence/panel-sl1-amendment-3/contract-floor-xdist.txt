@@ -1,0 +1,6 @@
+panel-sl1-measure-base run1 (-n 4, whole file): 39 passed, 1 warning in 1.10s
+panel-sl1-measure-base run2 (-n 4, whole file): 39 passed, 1 warning in 1.07s
+panel-sl1-measure-base run3 (-n 4, whole file): 39 passed, 1 warning in 1.09s
+panel-sl1-measure-head run1 (-n 4, whole file): 39 passed, 1 warning in 1.07s
+panel-sl1-measure-head run2 (-n 4, whole file): 39 passed, 1 warning in 1.10s
+panel-sl1-measure-head run3 (-n 4, whole file): 39 passed, 1 warning in 1.07s

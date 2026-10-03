@@ -1317,4 +1317,6 @@ def _slug(value: str) -> str:
 
 
 def _redact_hotfix_reason(reason: str) -> str:
-    return re.sub(r"\s+", " ", reason).strip()[:200]
+    from .credential_redaction import redact_text
+
+    return " ".join(redact_text(reason).split())[:200]

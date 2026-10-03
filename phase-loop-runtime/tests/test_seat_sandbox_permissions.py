@@ -83,6 +83,24 @@ def test_j7_without_a_stop_gemini_is_still_unqualified_until_l3():
     assert route == seat_jail.SeatRoute(False, "gemini_seat_profile_unqualified")
 
 
+@pytest.mark.parametrize("leg", ["claude", "gemini", "codex", "grok"])
+def test_j7_the_jailed_route_is_claude_only(leg):
+    """With every route fact forced true and no recorded stop, only Claude is jailed; a
+    Gemini seat stays sealed with its typed notice (the tooled Gemini seat is
+    agent-harness#1170)."""
+    assert seat_jail.JAILED_LEGS == frozenset({"claude"})
+    route = seat_jail.decide_seat_route(
+        leg, staged_tree_approved=True, capable=lambda: None,
+        claude_token_present=lambda: True, gemini_credential_present=lambda: True,
+        gemini_qualified=lambda: True, gemini_recorded_stop=None)
+    if leg == "claude":
+        assert route == seat_jail.SeatRoute(True)
+    elif leg == "gemini":
+        assert route == seat_jail.SeatRoute(False, "gemini_seat_profile_unqualified")
+    else:
+        assert route is None
+
+
 @pytest.mark.parametrize("code", ["seat_sandbox_unavailable_host",
                                   "seat_sandbox_unavailable_tiocsti",
                                   "seat_sandbox_unavailable_seat_uid"])
