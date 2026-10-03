@@ -418,7 +418,17 @@ def _private(path: Path, base: Path) -> bool:
         base.mkdir(parents=True, exist_ok=True)
     except OSError:
         return False
-    if not base.is_dir():
+    try:
+        base_st = base.stat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(base_st.st_mode):
+        return False
+    # A base another account may write must be sticky, as a shared temp dir is. Group
+    # write counts only for a group other than this account's own (umask 002 is common).
+    shared_write = base_st.st_mode & 0o002 or (
+        base_st.st_mode & 0o020 and hasattr(os, "getgid") and base_st.st_gid != os.getgid())
+    if hasattr(os, "getuid") and shared_write and not base_st.st_mode & stat.S_ISVTX:
         return False
     current = base
     try:
@@ -567,6 +577,15 @@ def _child_tmp_dir() -> ScratchLocation:
             continue
         return ScratchLocation(candidate, False)
     return ScratchLocation(legacy_staging_root(), True, "no private disk-backed dir with room")
+
+
+def child_scratch_candidates() -> list[Path]:
+    """The child-scratch directories :func:`_child_tmp_dir` may choose, without creating
+    any of them (for the crash-residue sweep)."""
+    cache = _user_cache_dir()
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    out = [cache / "phase-loop" / "tmp"] if cache is not None else []
+    return out + [legacy_staging_root() / f"phase-loop-{uid}" / "tmp"]
 
 
 def _child_default_tmp(name: str, env: Mapping[str, str]) -> list[str]:

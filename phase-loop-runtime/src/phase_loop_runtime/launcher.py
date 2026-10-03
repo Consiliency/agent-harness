@@ -2631,10 +2631,12 @@ def launch(
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
     # stamped — so a spawned child never mis-reads the host harness as its own run-from
     # context. This covers every ``launch_with_spec`` -> ``launch`` CLI child. The
-    # claude channel / agent-view routes (HTTP / adapter, not a CLI child) and the
-    # advisor-panel legs (their own ``_subscription_env`` surface) are a separate,
-    # env-managed spawn surface and intentionally not routed through here; AUTOSEL
-    # never auto-picks claude, so those routes don't need the run-from sentinel.
+    # claude channel route (HTTP, no CLI child), the agent-view route (``claude --bg``
+    # through ``ClaudeAgentViewAdapter``, whose default runner is the provider launch
+    # interface, so its scratch is decided there -- agent-harness#1147) and the
+    # advisor-panel legs (their own ``_subscription_env`` surface) are separate spawn
+    # surfaces and intentionally not routed through here; AUTOSEL never auto-picks
+    # claude, so those routes don't need the run-from sentinel.
     # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
     if caller_run_id:

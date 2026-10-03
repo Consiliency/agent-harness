@@ -3168,6 +3168,36 @@ def _gc_stale_panel_scratch(
         if key not in seen:
             seen.add(key)
             _gc_panel_scratch_root(base, max_age_s)
+    # Since agent-harness#1147 these live on persistent disk rather than a /tmp a reboot
+    # clears, so a killed run's copy would otherwise stay forever: the launcher's review
+    # copy and the falsifier's dependency snapshot under the staging root, and the owned
+    # agy HOMEs under the relocated CLI scratch dir. Each is a per-run directory removed by
+    # its own `finally`; only what a killed run left behind is old enough to sweep.
+    try:
+        _gc_unmarked_residue(
+            [(base, ("pl-review-stage-*", "pl-falsifier-deps-*")) for base in bases]
+            + [(Path(d), ("phase-loop-broker-agy-*", "phase-loop-president-agy-*"))
+               for d in _sandbox_policy.child_scratch_candidates()],
+            max_age_s,
+        )
+    except Exception:
+        pass
+
+
+def _gc_unmarked_residue(roots, max_age_s: int) -> None:
+    cutoff = time.time() - max_age_s
+    for root, patterns in roots:
+        for pattern in patterns:
+            for path in Path(root).glob(pattern):
+                try:
+                    st = path.lstat()
+                    if (path.is_symlink() or not stat.S_ISDIR(st.st_mode)
+                            or (hasattr(os, "getuid") and st.st_uid != os.getuid())
+                            or st.st_mtime >= cutoff):
+                        continue
+                    _review_stage.remove_review_stage(path)
+                except Exception:
+                    continue
 
 
 def _gc_panel_scratch_root(base: Path, max_age_s: int) -> None:

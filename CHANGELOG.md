@@ -23,7 +23,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   per-user cache dir (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`, `%LOCALAPPDATA%`),
   and then to the temp dir, but only if it is not RAM-backed. The launcher's agy review copy
   and the falsifier's stage use the same root. Every directory the runtime creates below
-  the cache dir is created 0700 and must be a real directory owned by this account.
+  the cache dir is created 0700 and must be a real directory owned by this account; a cache
+  dir that another account can write must be sticky.
+- **Persistent residue.** A killed run's launcher review copy, falsifier dependency snapshot
+  and owned agy HOMEs now outlive a reboot, so the crash-residue sweep also removes those
+  older than the TTL.
 - **Spawned agent CLIs** (board legs, advisory seats, brokered legs, the president,
   executors):
   - Each unset `TMPDIR` / `CLAUDE_CODE_TMPDIR` whose own default destination is RAM-backed
@@ -34,9 +38,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - Decided at one place for review providers: `launch_provider` / `run_provider` apply the
     scratch decision to every env they launch with, and only the named exceptions opt out.
     Bounded Gemini legs and the bounded Gemini president are relocated, including the agy
-    HOME they run in. Convergence adapters are relocated too.
-  - A test enumerates every process launch in the package and fails on one whose scratch
-    decision is not stated.
+    HOME they run in. Convergence adapters are relocated too, and so is the Claude Agent
+    View executor route: `ClaudeAgentViewAdapter`'s default runner is now the provider
+    launch interface, so `claude --bg` is decided there.
+  - A test enumerates every process launch in the package, however it is spelled
+    (including a launch function passed as a runner, module aliases, and an agent CLI
+    behind `env`/`bwrap`/`sh -c`), and fails on one whose scratch decision is not stated.
 - **Caps and floor.**
   - Filesystem size comes from `shutil.disk_usage`, so it now works on Windows.
   - The retention ceiling is `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging
