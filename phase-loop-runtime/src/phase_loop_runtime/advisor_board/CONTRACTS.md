@@ -944,12 +944,38 @@ are recorded on agent-harness#1132.
   them (P5, P1).
   The host prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`) is a
   one-time root step by the maintainer, never run by the runtime.
-- **Credential channels.** Claude: a dedicated `claude setup-token` seat token at
-  `$XDG_STATE_HOME/phase-loop/seat-credentials/claude` (0600 in 0700, owned by the euid),
-  delivered only through one drained pipe named by `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`.
-  No token is in any argv, environment value, evidence or log; seat output is scanned for
-  its bytes and standard/URL-safe/hex encodings (`claude_seat_token_in_output`). Gemini: the
-  D7 access-token-only copy (builder only; the tooled Gemini route is gated on P4 then P3).
+- **Credential channels (plan amendment A1).** The Claude credential is resolved afresh at
+  each jailed launch, in this order:
+  1. The seat-token override at `$XDG_STATE_HOME/phase-loop/seat-credentials/claude` (0600
+     in 0700, owned by the euid), when present.
+  2. Otherwise, the current Claude login's `claudeAiOauth.accessToken` only, never its
+     refresh token. It comes from the CLI's own store: `$CLAUDE_CONFIG_DIR/.credentials.json`
+     or `~/.claude/.credentials.json`, and the login Keychain on macOS.
+
+  - **The login token's margin:** it must have the seat's deadline (or
+    `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`) left. Otherwise the host runs `claude auth
+    status` once and re-reads. If it is still short, the leg is refused with
+    `claude_seat_login_token_expiring`.
+  - **Delivery:** either credential is delivered only through one drained pipe named by
+    `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`. No credential is in any argv, environment
+    value, evidence or log.
+  - **The output scan:** seat output is scanned for the credential's bytes and its
+    standard, URL-safe and hex encodings (`claude_seat_token_in_output`).
+  - **The residual:** a seat can use the credential for its remaining lifetime. That is
+    hours for a login access token. The response is to log out and back in; the token also
+    expires on its own.
+  - **Gemini:** the D7 access-token-only copy (builder only; the tooled Gemini route is gated
+    on P4 then P3).
+- **Credential outcomes by source.** For the override: `claude_seat_token_rate_limited` and
+  `claude_seat_token_rejected`. For the login: `claude_seat_login_rate_limited` and
+  `claude_seat_login_rejected`. A login token at or past its launch-time expiry fails as
+  `claude_seat_login_token_expired`, in both the detail and the notice, and is safe to
+  relaunch. None of these is a `seat_sandbox_refused:*` code.
+- **Seat modes (plan amendment A1).** Before any seat launches, every board publishes one
+  mode per seat: `jailed`, `unconfined`, `sealed`, `degraded` or `native`. Each mode carries
+  its notice code, reason and fix, and the modes are delivered through `on_seat_modes`, the
+  log and `seat-modes.json`. The `advisor-board` CLI prints them to stderr and carries them as
+  `seat_modes` in `--json`.
 - **Seat-token rotation.** The token file is read at each jailed launch and never cached
   across legs or rounds. A token replaced between legs (atomic rename in the same 0700
   directory) is used by the next launch; a running leg keeps the token it was launched with.

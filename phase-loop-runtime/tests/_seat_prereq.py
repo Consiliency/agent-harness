@@ -20,8 +20,8 @@ SEAT_UID_PREREQUISITE = (
     "apt install uidmap + usermod --add-subuids/--add-subgids <operator>"
 )
 SEAT_TOKEN_PREREQUISITE = (
-    "no Claude seat token: run `claude setup-token` and store it owner-only at "
-    "$XDG_STATE_HOME/phase-loop/seat-credentials/claude (P2 is maintainer-run)"
+    "no Claude seat credential: run `claude login`, or store a `claude setup-token` token "
+    "owner-only at $XDG_STATE_HOME/phase-loop/seat-credentials/claude"
 )
 USERNS_UNAVAILABLE = "unprivileged bwrap user namespaces unavailable on this host"
 
@@ -55,9 +55,14 @@ def require_seat_uid() -> None:
 
 
 def require_seat_token() -> None:
-    from phase_loop_runtime import seat_jail
+    """A Claude seat credential: the seat-token override, or the user's Claude login
+    (plan amendment A1)."""
+    from phase_loop_runtime import seat_credentials, seat_jail
 
-    if not seat_jail.claude_seat_token_ready():
+    if seat_jail.claude_seat_token_present():
+        if not seat_jail.claude_seat_token_ready():
+            pytest.skip(SEAT_TOKEN_PREREQUISITE)
+    elif seat_credentials.read_login_token() is None:
         pytest.skip(SEAT_TOKEN_PREREQUISITE)
 
 

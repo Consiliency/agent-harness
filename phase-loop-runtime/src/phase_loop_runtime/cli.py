@@ -2331,6 +2331,14 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     elif getattr(args, "native_president", None) is not None:
         print("advisor-board: --native-president requires --landing-tier", file=sys.stderr)
         return 2
+    # agent-harness#1132 (plan amendment A1): every seat's launch mode, printed before any
+    # seat launches and carried into the JSON payload.
+    seat_modes: list = []
+
+    def _on_seat_modes(modes) -> None:
+        seat_modes.extend(modes)
+        _print_seat_modes(modes)
+
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
             invoke_kwargs: dict[str, object] = {
@@ -2340,6 +2348,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 **({"brief_ref": advisory_brief_ref} if advisory else {}),
                 "agy_canary_capture": capture,
                 **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
+                "on_seat_modes": _on_seat_modes,
             }
             if pointer_brief:
                 # agent-harness#1204: the preflight's notices are printed BEFORE any launch.
@@ -2450,6 +2459,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             "shortfall": shortfall,
             # agent-harness#1132: typed seat notices, board-wide and per leg.
             "notices": _board_notices_json(result.legs),
+            # agent-harness#1132 (plan amendment A1): each seat's launch mode, decided before
+            # any seat launched.
+            "seat_modes": [mode.as_json() for mode in seat_modes],
             "independence": {
                 "level": independence.level,
                 # The sealed evidence floor derives these from concrete leg
@@ -2505,8 +2517,10 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 return 2
             payload["agy_canary_capture"] = expected_capture
             # The private capture board has its own closed schema, which predates seat
-            # notices (agent-harness#1132); it is written without them, byte-for-byte as before.
-            capture_payload = {key: value for key, value in payload.items() if key != "notices"}
+            # notices and seat modes (agent-harness#1132); it is written without them,
+            # byte-for-byte as before.
+            capture_payload = {key: value for key, value in payload.items()
+                               if key not in ("notices", "seat_modes")}
             capture_payload["legs"] = [
                 {key: value for key, value in leg.items() if key != "notices"}
                 for leg in payload["legs"]
@@ -2612,6 +2626,12 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
 def _board_notices_json(legs) -> list[dict[str, str]]:
     """Every leg's typed seat notices (agent-harness#1132), rendered from literals."""
     return [notice.as_json() for leg in legs for notice in leg.seat_notices]
+
+
+def _print_seat_modes(modes) -> None:
+    """agent-harness#1132 (plan amendment A1): one line per seat, before any seat launches."""
+    for mode in modes:
+        print(f"advisor-board: seat mode: {mode.render()}", file=sys.stderr)
 
 
 def _print_seat_preflight(notices) -> None:

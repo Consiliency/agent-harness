@@ -38,6 +38,8 @@ T_PERM = "tests/test_seat_sandbox_permissions.py"
 T_NOTE = "tests/test_seat_notices.py"
 T_LIVE = "tests/test_seat_jail_live_d8.py"
 SQ = SRC / "seat_jail_qualification.py"
+SC = SRC / "seat_credentials.py"
+T_CRED = "tests/test_seat_credentials.py"
 GR = SRC / "governed_review.py"
 CL = SRC / "cli.py"
 T_AGY = "tests/test_agy_canary_evidence.py"
@@ -331,7 +333,7 @@ MUTATIONS: list[dict[str, object]] = [
      "nodes": [f"{T_PERM}::test_j7_the_jailed_route_is_claude_only[gemini]"]},
     # Seat-token rotation and the rate-limited token notice (maintainer addendum, 2026-10-03).
     {"id": "token-notice-dropped", "file": PI,
-     "old": '                seat.notices.append("claude_seat_token_rate_limited")',
+     "old": '                seat.notices.append("claude_seat_login_rate_limited" if login\n                                    else "claude_seat_token_rate_limited")',
      "new": '                pass',
      "nodes": [f"{T_NOTE}::test_a_rate_limited_seat_token_ends_the_leg_with_its_own_notice"]},
     {"id": "jailed-tail-unclassified", "file": PI,
@@ -352,8 +354,8 @@ MUTATIONS: list[dict[str, object]] = [
      "nodes": [f"{T_PERM}::test_the_seat_token_is_read_afresh_after_an_atomic_replace",
                f"{T_PERM}::test_each_jailed_leg_launches_with_the_token_current_at_its_launch"]},
     {"id": "seat-token-cached-per-process", "file": PI,
-     "old": "    token = _seat_jail.read_claude_seat_token()\n    executable = _resolve_claude_executable()",
-     "new": "    token = globals().setdefault(\"_SEAT_TOKEN\", _seat_jail.read_claude_seat_token())\n    executable = _resolve_claude_executable()",
+     "old": "    token = credential.token\n",
+     "new": "    token = globals().setdefault(\"_SEAT_TOKEN\", credential.token)\n",
      "nodes": [f"{T_PERM}::test_each_jailed_leg_launches_with_the_token_current_at_its_launch"]},
     # The pointer-brief preflight reads the jailed route (team-lead ruling, 2026-10-03).
     {"id": "preflight-ignores-the-jail", "file": PI,
@@ -366,9 +368,56 @@ MUTATIONS: list[dict[str, object]] = [
      "nodes": ["tests/test_seat_preflight_1204.py::test_a_jailed_claude_seat_is_not_marked_unreadable[False-unreadable1]"]},
     # P2: a rejected seat token carries its notice.
     {"id": "token-rejected-notice-dropped", "file": PI,
-     "old": '                seat.notices.append("claude_seat_token_rejected")',
-     "new": '                pass',
+     "old": '                    seat.notices.append("claude_seat_login_rejected" if login\n                                        else "claude_seat_token_rejected")',
+     "new": '                    pass',
      "nodes": [f"{T_NOTE}::test_a_rejected_seat_token_ends_the_leg_with_its_notice"]},
+    # Plan amendment A1: the login credential, its margin, the modes and the outcomes.
+    {"id": "A1-override-loses-precedence", "file": SC,
+     "old": "    if override_present():\n        return SeatCredential(",
+     "new": "    if False:\n        return SeatCredential(",
+     "nodes": [f"{T_CRED}::test_an_override_takes_precedence_over_the_login"]},
+    {"id": "A1-no-margin-check", "file": SC,
+     "old": "    if login.expires_at is not None and login.expires_at - now() < margin_s:\n        refresh()",
+     "new": "    if False:\n        refresh()",
+     "nodes": [f"{T_CRED}::test_a_short_login_is_refreshed_through_the_cli_then_reread",
+               f"{T_CRED}::test_a_login_still_short_after_the_refresh_is_refused[None]"]},
+    {"id": "A1-refresh-skipped", "file": SC,
+     "old": "        refresh()\n        login = read_login()",
+     "new": "        login = read_login()",
+     "nodes": [f"{T_CRED}::test_a_short_login_is_refreshed_through_the_cli_then_reread"]},
+    {"id": "A1-takes-the-refresh-token", "file": SC,
+     "old": '    token = oauth.get("accessToken") if isinstance(oauth, dict) else None',
+     "new": '    token = oauth.get("refreshToken") if isinstance(oauth, dict) else None',
+     "nodes": [f"{T_CRED}::test_the_file_store_yields_only_the_access_token_and_expiry[linux]"]},
+    {"id": "A1-keychain-suffix-dropped", "file": SC,
+     "old": '    return f"{_KEYCHAIN_SERVICE}-{digest[:8]}"',
+     "new": '    return _KEYCHAIN_SERVICE',
+     "nodes": [f"{T_CRED}::test_a_custom_config_dir_suffixes_the_keychain_service"]},
+    {"id": "A1-writable-store-accepted", "file": SC,
+     "old": "                or stat.S_IMODE(info.st_mode) & 0o022\n",
+     "new": "",
+     "nodes": [f"{T_CRED}::test_an_unsuitable_file_store_is_no_login[group-writable]"]},
+    {"id": "A1-expiry-not-classified", "file": PI,
+     "old": "                if login and seat.expires_at is not None and time.time() >= seat.expires_at:",
+     "new": "                if False:",
+     "nodes": [f"{T_NOTE}::test_a_login_token_past_its_launch_expiry_is_its_own_relaunchable_outcome"]},
+    {"id": "A1-login-limit-worded-as-override", "file": PI,
+     "old": '                seat.notices.append("claude_seat_login_rate_limited" if login',
+     "new": '                seat.notices.append("claude_seat_token_rate_limited" if login',
+     "nodes": [f"{T_NOTE}::test_a_rate_limited_login_names_the_subscription"]},
+    {"id": "A1-refused-seat-shown-sealed", "file": PI,
+     "old": "            modes.append(_coded(sp.MODE_DEGRADED, refusal))",
+     "new": "            modes.append(_coded(sp.MODE_SEALED, refusal))",
+     "nodes": [f"{T_NOTE}::test_a_seat_that_will_be_refused_is_degraded_with_its_fix[False-None-expected0]"]},
+    {"id": "A1-mode-skips-the-credential", "file": PI,
+     "old": '            found = _claude_credential() if leg == "claude" else None',
+     "new": '            found = None',
+     "nodes": [f"{T_NOTE}::test_seat_modes_name_every_route_before_launch",
+               f"{T_NOTE}::test_a_seat_that_will_be_refused_is_degraded_with_its_fix[True-claude_seat_login_token_expiring-expected1]"]},
+    {"id": "A1-cli-drops-seat-modes", "file": CL,
+     "old": '            "seat_modes": [mode.as_json() for mode in seat_modes],',
+     "new": '            "seat_modes": [],',
+     "nodes": ["tests/test_seat_preflight_1204.py::test_cli_prints_every_seat_mode_and_carries_it_in_the_payload"]},
 ]
 
 

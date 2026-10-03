@@ -51,6 +51,7 @@ _REVIEW_BRIEF = pi._mode_instructions("review")
 _DEFAULT_JSON_KEYS = {
     "board", "usable", "requested_seats", "delivered_seats", "shortfall", "independence", "legs",
     "notices",  # agent-harness#1132: typed seat notices, board-wide
+    "seat_modes",  # agent-harness#1132 (plan amendment A1): each seat's launch mode
 }
 _CANNED = PanelResult(legs=(
     PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:adversarial"),

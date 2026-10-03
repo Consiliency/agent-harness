@@ -162,10 +162,12 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
     "claude_seat_token_missing": (
-        "inline fallback", "no seat credential",
-        "run `claude setup-token`, store it as documented"),
+        "inline fallback", "no Claude login found and no seat token override",
+        "run `claude login`"),
     "claude_seat_token_rejected": (
-        "leg ended", "revoked or expired", "re-run setup"),
+        "leg ended", "the seat token override was rejected (revoked or expired)",
+        "replace the override with a fresh `claude setup-token` token, or remove it to use "
+        "your Claude login"),
     "claude_seat_token_in_output": (
         "leg rejected", "seat tried to publish its credential", "revoke the token"),
     # Not a jail fault: the jail ran, and the provider refused the seat token's subscription.
@@ -175,6 +177,22 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "provider's reset time when it gives one)",
         "rotate or replace the seat token with one for another subscription, or wait for the "
         "reset"),
+    # The same outcomes when the credential is the user's Claude login (plan amendment A1).
+    "claude_seat_login_rate_limited": (
+        "leg ended",
+        "your Claude subscription is rate- or usage-limited (the leg detail names the reset "
+        "time when the provider gives one)",
+        "wait for the reset, or log in to another subscription"),
+    "claude_seat_login_rejected": (
+        "leg ended", "the Claude login's access token was rejected", "run `claude login`"),
+    "claude_seat_login_token_expired": (
+        "leg ended", "the Claude login's access token expired during the run",
+        "re-run the seat: each launch reads a fresh token"),
+    "claude_seat_login_token_expiring": (
+        "leg refused",
+        "the Claude login's access token expires before the seat's deadline, and the CLI did "
+        "not refresh it",
+        "run `claude login`, then re-run"),
     "claude_seat_bypass_ack_blocked": (
         "leg refused", "pre-seed stale for this CLI", "upgrade runtime"),
     "claude_tui_workspace_trust_blocked": (
@@ -523,6 +541,13 @@ class SeatRoute:
             raise ValueError(f"a sealed route needs a fallback code, got {self.code!r}")
 
 
+def _claude_credential_present() -> bool:
+    # A seat-token override or the user's Claude login (plan amendment A1).
+    from .seat_credentials import claude_seat_credential_present
+
+    return claude_seat_credential_present()
+
+
 def decide_seat_route(
     leg: str,
     *,
@@ -540,7 +565,8 @@ def decide_seat_route(
     0. no staged tree approved -> ``seat_sandbox_not_staged``; nothing else runs;
     1. a recorded Gemini route stop -> that stop's code;
     2. host capability -> ``seat_sandbox_unavailable_*``;
-    3. credential presence -> ``claude_seat_token_missing`` / ``gemini_seat_credential_missing``;
+    3. credential presence (Claude: an override or a login) -> ``claude_seat_token_missing`` /
+       ``gemini_seat_credential_missing``;
     4. Gemini tooled-profile qualification -> ``gemini_seat_profile_unqualified``.
     """
     if leg not in ("claude", "gemini"):
@@ -553,7 +579,7 @@ def decide_seat_route(
     if code is not None:
         return SeatRoute(False, code)
     if leg == "claude":
-        present = claude_token_present or claude_seat_token_present
+        present = claude_token_present or _claude_credential_present
         if not present():
             return SeatRoute(False, "claude_seat_token_missing")
     else:

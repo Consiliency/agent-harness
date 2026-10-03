@@ -199,7 +199,7 @@ def test_reviewer_floor_counts_grounded_seats_only():
 _REAL_COMPOSE = None
 
 
-def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True):
+def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True, modes=()):
     """Drive ``advisor-board`` with composition, authorization and dispatch patched, so the
     run does not depend on which vendor CLIs this host has installed."""
     import os
@@ -224,6 +224,8 @@ def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True):
         captured.update(kwargs)
         if kwargs.get("on_seat_preflight") is not None:
             kwargs["on_seat_preflight"](tuple(n for leg in legs for n in leg.seat_preflight_notices))
+        if modes:
+            kwargs["on_seat_modes"](tuple(modes))
         return PanelResult(legs=tuple(legs))
 
     monkeypatch.setattr(cli, "invoke_board", fake_invoke_board, raising=False)
@@ -510,3 +512,21 @@ def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, u
         base_env={}, stream_dir=None, on_seat_preflight=None)
     assert [n.leg for n in notices] == unreadable
     assert all(n.code == UNREADABLE for n in notices)
+
+
+def test_cli_prints_every_seat_mode_and_carries_it_in_the_payload(tmp_path, monkeypatch):
+    # agent-harness#1132 (plan amendment A1): no seat is silently left without tools.
+    from phase_loop_runtime import seat_jail
+
+    _what, why, fix = seat_jail.NOTICES["seat_sandbox_refused:jail_unqualified"]
+    modes = (sp.SeatMode("claude:a", "claude", sp.MODE_DEGRADED,
+                         "seat_sandbox_refused:jail_unqualified", why, fix, None, 0),
+             sp.SeatMode("codex:a", "codex", sp.MODE_UNCONFINED, "seat_filesystem_unconfined",
+                         "tools", "jail", None, 1))
+    legs = [_leg(leg, "AGREE", grounded=True) for leg in ("codex", "grok", "claude")]
+    _code, out, err, _captured = _run_cli(tmp_path, monkeypatch, legs, pointer_brief=False,
+                                          modes=modes)
+    assert ("advisor-board: seat mode: seat claude:a (claude): degraded "
+            "[seat_sandbox_refused:jail_unqualified]") in err
+    assert f"fix: {fix}" in err
+    assert json.loads(out)["seat_modes"] == [m.as_json() for m in modes]

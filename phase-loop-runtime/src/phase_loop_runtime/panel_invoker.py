@@ -117,6 +117,7 @@ from . import review_stage as _review_stage
 from . import sandbox_egress as _sandbox_egress
 from . import sandbox_policy as _sandbox_policy
 from . import sandbox_retention as _sandbox_retention
+from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
@@ -1551,6 +1552,96 @@ def _publish_seat_preflight(
     return notices
 
 
+def _seat_launch_modes(
+    board: Board, *, mode: str | None,
+    review_authorization: "ReviewIsolationAuthorization | None",
+    base_env: Mapping[str, str] | None,
+) -> "tuple[_seat_preflight.SeatMode, ...]":
+    """agent-harness#1132 (plan amendment A1): each seat's launch mode, from the PRODUCTION
+    route facts the spawn will act on (J7, the EC-EXECFIND-2 gate, the Claude credential and
+    its expiry margin). Decides only; launches nothing."""
+    sp = _seat_preflight
+    brokered_route = mode == "review" and review_authorization is not None
+    staged = (review_authorization is not None
+              and getattr(review_authorization, "staged_tree_sha256", None) is not None)
+    credential: dict[str, object] = {}
+
+    def _claude_credential() -> "_seat_credentials.SeatCredential | str":
+        # Once per board: the override, or the login with the default margin (each launch
+        # re-checks against its own deadline).
+        if "value" not in credential:
+            try:
+                credential["value"] = _seat_credentials.resolve_claude_seat_credential(
+                    _seat_credentials.login_margin_s(None))
+            except _seat_jail.SeatSandboxRefused as exc:
+                credential["value"] = exc.code
+        return credential["value"]  # type: ignore[return-value]
+
+    modes = []
+    for position, seat in enumerate(board.seats):
+        leg = (getattr(seat, "harness", None) or "").lower()
+        key = str(getattr(seat, "seat_key", "") or leg)
+
+        def _coded(kind: str, code: str, source: str | None = None) -> "_seat_preflight.SeatMode":
+            _what, why, fix = _seat_jail.NOTICES[code]
+            return sp.SeatMode(key, leg, kind, code, why, fix, source, position)
+
+        if leg == "claude" and seat.model is not None and _under_claude_code(base_env):
+            modes.append(_coded(sp.MODE_NATIVE, "under_claude_code"))
+            continue
+        brokered = brokered_route and not _has_injected_review_execution_seam(leg=leg)
+        if not brokered:
+            modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, None,
+                                     "not a brokered review launch: no seat sandbox applies",
+                                     "", None, position))
+            continue
+        route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization,
+                                                         eligible=True)
+        if route is None:
+            if staged and sandbox_usable_by(leg, True):
+                modes.append(_coded(sp.MODE_UNCONFINED, "seat_filesystem_unconfined"))
+            elif not staged:
+                modes.append(_coded(sp.MODE_SEALED, "seat_sandbox_not_staged"))
+            else:
+                modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, None,
+                                         "this route has no file tools", "", None, position))
+        elif refusal is not None:
+            modes.append(_coded(sp.MODE_DEGRADED, refusal))
+        elif not route.jailed:
+            modes.append(_coded(sp.MODE_SEALED, str(route.code)))
+        else:
+            found = _claude_credential() if leg == "claude" else None
+            if isinstance(found, str):
+                modes.append(_coded(sp.MODE_DEGRADED, found))
+            else:
+                modes.append(sp.SeatMode(
+                    key, leg, sp.MODE_JAILED, None,
+                    "full tools inside its per-seat jail", "",
+                    getattr(found, "source", None), position))
+    return tuple(modes)
+
+
+def _publish_seat_modes(
+    board: Board, *, mode: str | None,
+    review_authorization: "ReviewIsolationAuthorization | None",
+    base_env: Mapping[str, str] | None, stream_dir: "Path | str | None",
+    on_seat_modes: "Callable[[tuple[_seat_preflight.SeatMode, ...]], None] | None",
+) -> "tuple[_seat_preflight.SeatMode, ...]":
+    """Publish every seat's mode before any seat launches: callback, log, and
+    ``seat-modes.json`` in the stream directory."""
+    modes = _seat_launch_modes(board, mode=mode, review_authorization=review_authorization,
+                               base_env=base_env)
+    log = logging.getLogger(__name__)
+    for seat_mode in modes:
+        (log.info if seat_mode.mode == _seat_preflight.MODE_JAILED else log.warning)(
+            "seat mode: %s", seat_mode.render())
+    if stream_dir is not None:
+        _seat_preflight.write_modes_record(Path(stream_dir), modes)
+    if on_seat_modes is not None:
+        on_seat_modes(modes)
+    return modes
+
+
 def attach_seat_preflight_notices(
     legs: Sequence[PanelLegResult],
     notices: "Sequence[_seat_preflight.SeatPreflightNotice]",
@@ -2446,6 +2537,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_staging_below_floor", "seat_filesystem_unconfined", "seat_tool_denied",
     "claude_seat_token_missing", "claude_seat_token_rejected", "claude_seat_token_in_output",
     "claude_seat_token_rate_limited", "claude_seat_bypass_ack_blocked",
+    "claude_seat_login_rate_limited", "claude_seat_login_rejected",
+    "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
     "gemini_seat_token_scope_excess", "gemini_seat_stream_split_unavailable",
     "gemini_seat_profile_unqualified", "gemini_seat_token_expired", "gemini_seat_token_in_output",
@@ -8015,6 +8108,10 @@ class _JailedSeat:
     review_dir: Path
     seat_dir: Path
     notices: list[str] = field(default_factory=list)
+    #: Where the token came from (plan amendment A1): the seat-token override or the login.
+    source: str = _seat_credentials.SOURCE_OVERRIDE
+    #: The login token's expiry at launch (epoch seconds); ``None`` for the override.
+    expires_at: float | None = None
 
 
 def _resolve_claude_executable() -> Path:
@@ -8027,6 +8124,7 @@ def _resolve_claude_executable() -> Path:
 def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
+    *, margin_s: float | None = None,
 ) -> _JailedSeat:
     """J7 step 5, in order: the pre-exec tree re-hash, the token read, the jail build (the
     seccomp filter included), the pre-seed and the probe jail. The first failure raises
@@ -8053,7 +8151,11 @@ def _prepare_jailed_claude(
         os.close(tree_fd)
     if observed != review_authorization.staged_tree_sha256:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed"))
-    token = _seat_jail.read_claude_seat_token()
+    # Read afresh for THIS launch: the override if present, else the current login's access
+    # token with at least `margin_s` of lifetime left (plan amendment A1).
+    credential = _seat_credentials.resolve_claude_seat_credential(
+        _seat_credentials.login_margin_s(margin_s))
+    token = credential.token
     executable = _resolve_claude_executable()
     bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
     brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
@@ -8093,7 +8195,8 @@ def _prepare_jailed_claude(
         _seat_jail.close_jail_fds(jail)
         raise
     return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
-                       review_dir=review_dir, seat_dir=seat_dir)
+                       review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
+                       expires_at=credential.expires_at)
 
 
 def _exec_jailed_claude_leg(
@@ -8246,15 +8349,23 @@ def _exec_jailed_claude_leg(
         if (failure is None or failure.unknown) and log_text and _is_harness_code(str(log_text)):
             failure = _LegFailure(template=str(log_text))
         if failure is not None:
-            failure_detail_sink.append(failure)
-            # A capped subscription is not a broken jail: the seat token's own notice says
+            login = seat.source == _seat_credentials.SOURCE_LOGIN
+            # A capped subscription is not a broken jail: the credential's own notice says
             # so, beside the detail that carries the reset time.
             if _seat_jail.is_limit_detail(failure.template):
-                seat.notices.append("claude_seat_token_rate_limited")
+                seat.notices.append("claude_seat_login_rate_limited" if login
+                                    else "claude_seat_token_rate_limited")
             elif failure.template == "auth_failure":
                 # P2 (claw, 2026-10-03): a token the provider rejects ends the jailed TUI
-                # with the classifier's auth class.
-                seat.notices.append("claude_seat_token_rejected")
+                # with the classifier's auth class. A login token past its launch-time
+                # expiry is its own outcome, safe to relaunch with a fresh token.
+                if login and seat.expires_at is not None and time.time() >= seat.expires_at:
+                    failure = _LegFailure(template="claude_seat_login_token_expired")
+                    seat.notices.append("claude_seat_login_token_expired")
+                else:
+                    seat.notices.append("claude_seat_login_rejected" if login
+                                        else "claude_seat_token_rejected")
+            failure_detail_sink.append(failure)
     return status, text
 
 
@@ -9592,6 +9703,7 @@ def _default_spawn(
                                 review_dir, base / "seat", review_authorization, seat_id,
                                 _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
                                 (staged_bundle, staged_instructions),
+                                margin_s=leg_deadline,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
@@ -10606,8 +10718,13 @@ def invoke_board(
     native_president_fill: Mapping[str, str] | None = None,
     pointer_brief: bool = False,
     on_seat_preflight: "Callable[[tuple[_seat_preflight.SeatPreflightNotice, ...]], None] | None" = None,
+    on_seat_modes: "Callable[[tuple[_seat_preflight.SeatMode, ...]], None] | None" = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
+
+    agent-harness#1132 (plan amendment A1): before ANY seat launches, every seat's launch
+    mode (jailed / unconfined / sealed / degraded / native, with its reason and fix) is
+    published: ``on_seat_modes``, the log, and ``seat-modes.json`` in ``stream_dir``.
 
     agent-harness#1204: ``pointer_brief=True`` declares that the brief points the reviewers
     at files in the staged tree instead of inlining them. Before ANY seat launches, every
@@ -11094,6 +11211,10 @@ def invoke_board(
                     review_authorization=review_authorization, base_env=base_env,
                     stream_dir=stream_dir, on_seat_preflight=on_seat_preflight,
                 )
+                _publish_seat_modes(
+                    board, mode=mode, review_authorization=review_authorization,
+                    base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
+                )
                 deferred: list[PanelLegResult] = []
                 for seat in board.seats:
                     leg = (seat.harness or "").lower()
@@ -11363,6 +11484,10 @@ def invoke_board(
             board, pointer_brief=pointer_brief, mode=mode,
             review_authorization=review_authorization, base_env=base_env,
             stream_dir=stream_dir, on_seat_preflight=on_seat_preflight,
+        )
+        _publish_seat_modes(
+            board, mode=mode, review_authorization=review_authorization,
+            base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
         )
 
         def _run_seat_body(item: Seat | tuple[int, Seat], monitor: _ReviewMonitor | None = None) -> PanelLegResult:

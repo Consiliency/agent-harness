@@ -369,6 +369,8 @@ class _FakeSeat:
         self.review_dir = tmp_path / "review"
         self.seat_dir = tmp_path / "seat"
         self.notices = []
+        self.source = "seat_token"     # the override; tests set "login" where they need it
+        self.expires_at = None
 
 
 def test_codex_r1_no_parent_snapshot_ever_holds_the_token(monkeypatch, tmp_path):
@@ -423,8 +425,10 @@ def test_codex_r1_panel_invoker_imports_without_posix_open_flags():
 # refusal, and the detail carries the provider's reset time.
 # --------------------------------------------------------------------------------------
 
-def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text, tail):
+def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text, tail,
+                            source="seat_token", expires_at=None):
     seat = _FakeSeat(tmp_path)
+    seat.source, seat.expires_at = source, expires_at
     monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
     monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
     monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda jail: None)
@@ -518,3 +522,141 @@ def test_every_limit_code_in_the_detail_vocabulary_raises_the_token_notice():
     limits = sorted(c for c in vocabulary if re.search(r"(?:rate|usage)_limit", c))
     assert limits, "the guard found nothing to check"
     assert [c for c in limits if not seat_jail.is_limit_detail(c)] == []
+
+
+# --------------------------------------------------------------------------------------
+# Plan amendment A1: the same outcomes when the credential is the user's Claude login.
+# --------------------------------------------------------------------------------------
+
+_AUTH_TAIL = "Invalid API key · Please run /login"
+
+
+def test_a_login_token_past_its_launch_expiry_is_its_own_relaunchable_outcome(monkeypatch,
+                                                                            tmp_path):
+    seat, status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail=_AUTH_TAIL,
+        source="login", expires_at=time.time() - 5)
+    assert status == "DEGRADED"
+    assert [f.template for f in sink] == ["claude_seat_login_token_expired"]
+    assert seat.notices == ["claude_seat_login_token_expired"]
+    assert pi._finalize_leg_detail("claude_seat_login_token_expired") == "claude_seat_login_token_expired"
+
+
+def test_a_login_token_rejected_before_its_expiry_is_a_rejection(monkeypatch, tmp_path):
+    seat, _status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail=_AUTH_TAIL,
+        source="login", expires_at=time.time() + 3600)
+    assert [f.template for f in sink] == ["auth_failure"]
+    assert seat.notices == ["claude_seat_login_rejected"]
+
+
+def test_a_rate_limited_login_names_the_subscription(monkeypatch, tmp_path):
+    seat, _status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="",
+        log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"),
+        tail="Usage limit reached. Try again at 5:00 PM", source="login",
+        expires_at=time.time() + 3600)
+    assert [f.template for f in sink] == ["usage_limit (resets 17:00)"]
+    assert seat.notices == ["claude_seat_login_rate_limited"]
+    assert "your Claude subscription" in seat_jail.NOTICES["claude_seat_login_rate_limited"][1]
+
+
+def test_no_credential_outcome_is_a_jail_refusal():
+    for code in ("claude_seat_login_rate_limited", "claude_seat_login_rejected",
+                 "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
+                 "claude_seat_token_rate_limited", "claude_seat_token_rejected"):
+        assert code in seat_jail.NOTICE_CODES and not code.startswith("seat_sandbox_")
+        assert code not in seat_jail.SEALED_FALLBACK_CODES
+
+
+# --------------------------------------------------------------------------------------
+# Plan amendment A1: every seat's launch mode, before any seat launches.
+# --------------------------------------------------------------------------------------
+
+def _mode_board():
+    return types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness=leg, seat_key=f"{leg}:a", model="m")
+        for leg in ("claude", "gemini", "codex", "grok")])
+
+
+def _route(leg, **_k):
+    if leg == "claude":
+        return seat_jail.SeatRoute(True)
+    if leg == "gemini":
+        return seat_jail.SeatRoute(False, "gemini_seat_egress_unconfined")
+    return None
+
+
+def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=None):
+    from phase_loop_runtime import seat_credentials
+
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", route)
+    monkeypatch.setattr(pi._seat_jail, "pass_record_verdict",
+                        lambda digest: (qualified, "pass" if qualified else "no_record"))
+
+    def _resolve(margin_s, **_k):
+        if isinstance(credential, str):
+            raise seat_jail.SeatSandboxRefused(credential)
+        return credential or seat_credentials.SeatCredential(b"x", "login", 9e9)
+
+    monkeypatch.setattr(pi._seat_credentials, "resolve_claude_seat_credential", _resolve)
+    return pi._seat_launch_modes(
+        _mode_board(), mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        base_env=env or {})
+
+
+def _by_leg(modes):
+    return {m.leg: (m.mode, m.code, m.credential) for m in modes}
+
+
+def test_seat_modes_name_every_route_before_launch(monkeypatch):
+    assert _by_leg(_modes(monkeypatch)) == {
+        "claude": ("jailed", None, "login"),
+        "gemini": ("sealed", "gemini_seat_egress_unconfined", None),
+        "codex": ("unconfined", "seat_filesystem_unconfined", None),
+        "grok": ("unconfined", "seat_filesystem_unconfined", None),
+    }
+
+
+@pytest.mark.parametrize("qualified, credential, expected", [
+    (False, None, ("degraded", "seat_sandbox_refused:jail_unqualified", None)),
+    (True, "claude_seat_login_token_expiring",
+     ("degraded", "claude_seat_login_token_expiring", None)),
+])
+def test_a_seat_that_will_be_refused_is_degraded_with_its_fix(monkeypatch, qualified,
+                                                             credential, expected):
+    modes = _modes(monkeypatch, qualified=qualified, credential=credential)
+    claude = next(m for m in modes if m.leg == "claude")
+    assert (claude.mode, claude.code, claude.credential) == expected
+    assert claude.fix == seat_jail.NOTICES[expected[1]][2] and claude.fix
+
+
+def test_no_login_and_no_override_is_a_sealed_seat_that_says_so(monkeypatch):
+    def _no_credential(leg, **k):
+        return (seat_jail.SeatRoute(False, "claude_seat_token_missing") if leg == "claude"
+                else _route(leg))
+
+    claude = next(m for m in _modes(monkeypatch, route=_no_credential) if m.leg == "claude")
+    assert (claude.mode, claude.code) == ("sealed", "claude_seat_token_missing")
+    assert claude.fix == "run `claude login`"
+
+
+def test_a_native_claude_seat_is_reported_native(monkeypatch):
+    modes = _modes(monkeypatch, env={"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli"})
+    assert _by_leg(modes)["claude"][0] == "native"
+
+
+def test_seat_modes_are_published_before_launch(monkeypatch, tmp_path):
+    _modes(monkeypatch)   # installs the fakes
+    seen = []
+    modes = pi._publish_seat_modes(
+        _mode_board(), mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        base_env={}, stream_dir=tmp_path / "stream", on_seat_modes=seen.append)
+    assert seen == [modes]
+    record = json.loads((tmp_path / "stream" / "seat-modes.json").read_text())
+    assert record["schema"] == "seat_modes.v1"
+    assert [m["mode"] for m in record["modes"]] == ["jailed", "sealed", "unconfined", "unconfined"]

@@ -73,6 +73,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the classifier's `usage_limit` detail (reset time included when given) and the new notice
   `claude_seat_token_rate_limited`, never a jail refusal. The jailed leg now runs the shared
   leg-failure classifier over its PTY tail, after scanning the tail for the seat token.
+- Plan amendment A1 (maintainer decision 2026-10-03): the jailed Claude seat uses the
+  subscription you are logged in with.
+  - **The credential:** only the current login's access token, read fresh from the CLI's
+    own store at each launch (the file store, or the Keychain on macOS), over the same
+    drained pipe. The seat-token file becomes an optional override that takes precedence.
+  - **A short token:** the host asks the CLI (`claude auth status`) to refresh it, and
+    otherwise refuses with `claude_seat_login_token_expiring`.
+  - **A token that expires during a run** is `claude_seat_login_token_expired`, safe to
+    relaunch.
+  - **The login's own notices:** rate-limit and rejection have their own login notices.
+  - **Seat modes:** before any seat launches, every board prints and publishes each seat's
+    mode (`seat_modes` in `advisor-board --json`).
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

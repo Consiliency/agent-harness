@@ -532,27 +532,55 @@ Cloud APIs answer from inside the jail, because the egress namespace filters by 
 and Google API hosts share front-end addresses. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
-**Warning: storing the seat token switches every Claude seat to the jailed route.**
-On a host that has the prerequisite below, a Claude seat with a staged tree takes the
-jailed route as soon as a seat token is stored. Until an EC-EXECFIND-2 pass is recorded
-for this jail's profile digest, that route is refused. So after you store the token, every
-such brokered Claude seat is refused with `seat_sandbox_refused:jail_unqualified` and returns
-DEGRADED; it does not fall back to the sealed route. This includes board rounds, which run
-the reviewed PR's own runtime.
+**Warning: where the host supports the jail, Claude seats are jailed by default.** The
+seat's credential is your Claude login, which is normally present (see below). So on a host
+that has the prerequisite below, every brokered Claude seat with a staged tree takes the
+jailed route. Until an EC-EXECFIND-2 pass is recorded for this jail's profile digest, that
+route is refused. The seat's pre-launch mode line shows `degraded` with
+`seat_sandbox_refused:jail_unqualified`, and the seat returns DEGRADED. It does not fall
+back to the sealed route. This includes board rounds, which run the reviewed PR's own
+runtime. Record the pass first, with `phase-loop seat-sandbox qualify`.
 
-Operational order:
-1. Record the EC-EXECFIND-2 pass for the jail digest.
-2. Only then store the seat token.
+**Seat modes.** Before any seat launches, the board prints one line per seat
+(`advisor-board: seat mode: ...`), and the `--json` payload carries `seat_modes`. The modes
+are:
+- `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
+- `unconfined`: tools on the staged tree without a jail (codex, grok).
+- `sealed`: no tools; the bundle is inlined.
+- `degraded`: refused before launch.
+- `native`: filled by the driving session.
 
-If you store the token earlier, accept those refusals. Or place the token only while you run
-a probe, and remove it before board rounds.
+Every mode other than `jailed` names its notice code, its reason and a one-line fix. The
+same modes are written to `seat-modes.json` in the stream directory.
 
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
 conventional). The runtime never runs these. Without them the seat stays sealed with
 `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
 
-**Claude seat token.** The seat uses a dedicated token, never your primary login:
+**Claude seat credential.** By default, the seat uses the subscription you are logged in
+with.
+- **What is read, and when:** at every jailed launch, the runtime reads only the current
+  login's access token from the Claude CLI's own store. That is
+  `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`, and the login
+  Keychain on macOS. It never reads or uses the refresh token.
+- **A short token:** if the token has less lifetime left than the seat's deadline, the
+  runtime asks the CLI to bring the login up to date (`claude auth status`) and reads it
+  again. Set `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` (seconds) to override the deadline as the
+  margin.
+  - If the token is still too short, the leg is refused with
+    `claude_seat_login_token_expiring` (fix: `claude login`).
+  - A token that expires during a run ends the leg with `claude_seat_login_token_expired`.
+    Re-running it reads a fresh token.
+- **Switching subscriptions:** `claude login` to another subscription takes effect at the
+  next launch.
+- **No credential:** with no login and no override, the seat stays sealed with
+  `claude_seat_token_missing` (fix: `claude login`).
+
+**Optional override: a dedicated seat token.** To bill a different subscription, store a
+long-lived `claude setup-token` token. When the file exists, it takes precedence over the
+login. The override carries no expiry information, so it should be a long-lived token, not
+a copied login token.
 
 ```bash
 claude setup-token          # mint a long-lived subscription token
@@ -561,21 +589,31 @@ install -d -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/phase-loop/seat-credent
 ```
 
 The file must be 0600 in a 0700 directory owned by you, or the leg is refused with
-`seat_sandbox_refused:token_file_unsafe`. The token reaches the seat only through one
-drained pipe; it is never in an argv, environment value, log or evidence record. **Revoke
-it** from your Claude account settings if a leg reports `claude_seat_token_in_output` or
-`seat_sandbox_retained_after_teardown` on a suspect leg, then mint a new one. A jailed seat
-can read its own token and use it for the token's lifetime; that residual is recorded
-under agent-harness#361 (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
+`seat_sandbox_refused:token_file_unsafe`.
 
-**Replacing the seat token.** The runtime reads the token file at every jailed launch, so
-you can swap it between legs or rounds, for example to move to another subscription. Write
+Either credential reaches the seat only through one drained pipe. It never appears in an
+argv, an environment value, a log or an evidence record, and the seat's output is scanned
+for it.
+- **The residual:** a jailed seat can read the credential it was given and use it for that
+  credential's remaining lifetime. That is hours for a login access token, or the setup
+  token's lifetime for an override. This residual is recorded under agent-harness#361
+  (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
+- **If a leg reports `claude_seat_token_in_output`**, or `seat_sandbox_retained_after_teardown`
+  on a suspect leg:
+  - **With the login:** log out and back in (`claude logout`, then `claude login`). The
+    access token also expires on its own within hours.
+  - **With an override:** revoke it from your Claude account settings, and mint a new one.
+
+**Replacing the seat token override.** The runtime reads the override at every jailed
+launch, so you can swap it between legs or rounds, for example to move to another
+subscription. Write
 the new token beside the file and rename it over the old one, so no launch reads half a
 file. A leg that is already running keeps its own token. Replacing the token does not
 change the jail's digest or invalidate its recorded qualification. If a leg reports
-`claude_seat_token_rate_limited`, the token's subscription hit a rate or usage limit; the
-leg's detail names the reset time when the provider gives one. Rotate or replace the token,
-or wait for the reset. The jail itself is fine.
+`claude_seat_token_rate_limited`, the override's subscription hit a rate or usage limit. With
+the login, the same outcome is `claude_seat_login_rate_limited`. The leg's detail names the
+reset time when the provider gives one. Rotate or replace the credential, or wait for the
+reset. The jail itself is fine.
 
 **Notices.** Each seat's notices are `{code, seat_key, what, why, fix}` in the
 `advisor-board --json` payload (`notices`, `legs[].notices`) and in the text summary. The
