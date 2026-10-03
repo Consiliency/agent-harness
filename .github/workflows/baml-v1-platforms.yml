@@ -1,0 +1,117 @@
+name: baml-v1 platforms (scratch, agent-harness#1135)
+# Throwaway pre-merge dispatch for agent-harness#1135 (plan verification step 3).
+# Lives ONLY on the scratch branch scratch/baml-v1-platforms; never merged.
+on:
+  push:
+    branches: [scratch/baml-v1-platforms-8]
+  workflow_dispatch: {}
+jobs:
+  step3:
+    name: step 3 (${{ matrix.os }}, ${{ matrix.venv }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04-arm, venv: stdlib}
+          - {os: macos-14, venv: stdlib}
+          - {os: macos-15-intel, venv: stdlib}
+          - {os: windows-latest, venv: stdlib}
+          - {os: windows-latest, venv: uv}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: venv
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.venv }}" = uv ]; then
+            python -m pip install uv
+            uv venv --python "$(python -c 'import sys; print(sys.executable)')" "$RUNNER_TEMP/v"
+          else
+            python -m venv "$RUNNER_TEMP/v"
+          fi
+          if [ -x "$RUNNER_TEMP/v/Scripts/python.exe" ]; then PY="$RUNNER_TEMP/v/Scripts/python.exe"; else PY="$RUNNER_TEMP/v/bin/python"; fi
+          echo "PY=$PY" >> "$GITHUB_ENV"
+          if [ "${{ matrix.venv }}" = uv ]; then uv pip install --python "$PY" "./phase-loop-runtime[visual]" pytest psutil; else "$PY" -m pip install "./phase-loop-runtime[visual]" pytest psutil; fi
+      - name: step 1 (installed package, real parse, parent never loads baml_bridge)
+        run: |
+          set -euo pipefail
+          "$PY" -c "import importlib.util as u, importlib.metadata as md, sys, json; assert u.find_spec('baml_py') is None; assert md.version('baml-bridge')=='0.20.1'; from phase_loop_runtime import baml_modular as m; print(m.parse_baml_response('EmitPhaseCloseout', json.dumps({'terminal_status':'complete','verification_status':'passed','dirty_paths':[],'produced_if_gates':['G'],'required_human_inputs':[]})).payload['terminal_status']); assert 'baml_bridge' not in sys.modules"
+      - name: step 3 (v1 runtime + dependency tests; the I1 sweep runs on the Linux x86_64 lanes)
+        working-directory: phase-loop-runtime
+        run: |
+          set -euo pipefail
+          # The repo conftest imports fcntl (POSIX-only); the v1 runtime file needs none of it.
+          extra=""; [ "$RUNNER_OS" = Windows ] && extra="--noconftest"
+          PYTHONPATH=src:tests "$PY" -m pytest -q -p no:cacheprovider -rs $extra \
+            tests/test_phase_loop_baml_v1_runtime.py tests/test_phase_loop_baml_dependency.py \
+            -k "not i1_boundary_sweep and not ($([ "$RUNNER_OS" = Windows ] && echo test_pyproject_declares || echo __none__))"
+  baml-sources:
+    name: BAML sources (pinned baml-cli fmt + check)
+    # agent-harness#1135 (D3, release notes (e)): a sha-verified baml-cli whose
+    # version equals the installed bridge's toolchain version; a zero-diff fmt
+    # round-trip on the RAW sources; `check` on raw and on rendered sources.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the runtime
+        run: |
+          set -euo pipefail
+          python -m pip install ./phase-loop-runtime
+
+      - name: Download and verify baml-cli 0.20.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tarball=baml-language-0.20.1-x86_64-unknown-linux-gnu.tar.gz
+          mkdir -p "$RUNNER_TEMP/bamlcli"
+          cd "$RUNNER_TEMP/bamlcli"
+          gh release download baml-language-0.20.1 -R BoundaryML/baml -p "$tarball*"
+          sha256sum -c "$tarball.sha256"
+          echo "6067729f14483eca4ab61bfcd3c1921818e9ecc66da035bc64fbbfeb850e2795  $tarball" | sha256sum -c -
+          tar -xzf "$tarball"
+          echo "$RUNNER_TEMP/bamlcli/bin" >> "$GITHUB_PATH"
+
+      - name: Toolchain and bridge versions agree
+        run: |
+          set -euo pipefail
+          cli="$(baml-cli --version 2>/dev/null)"
+          bridge="$(python -c 'import baml_bridge as b; print(b.get_toolchain_version())')"
+          echo "cli=$cli bridge=$bridge"
+          test "$cli" = "baml-cli 0.20.1"
+          test "$cli" = "baml-cli $bridge"
+
+      - name: fmt round-trip on the raw sources
+        run: |
+          set -euo pipefail
+          (cd phase-loop-runtime/src/phase_loop_runtime && baml-cli --agent-skill-check off fmt baml_src/*.baml)
+          git diff --exit-code -- phase-loop-runtime/src/phase_loop_runtime/baml_src
+
+      - name: check on raw and rendered sources
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/bamlraw"; rendered="$RUNNER_TEMP/bamlchk"
+          mkdir -p "$raw/baml_src" "$rendered/baml_src"
+          cp phase-loop-runtime/src/phase_loop_runtime/baml_src/*.baml "$raw/baml_src/"
+          printf '[package]\nname = "bamlraw"\n' > "$raw/baml.toml"
+          baml-cli --agent-skill-check off check --project "$raw" 2>&1 | tee "$RUNNER_TEMP/raw.log"
+          grep -q 'Finished checked 9 file(s)' "$RUNNER_TEMP/raw.log"
+          BAMLCHK="$rendered/baml_src" python -c 'import os, pathlib; from phase_loop_runtime import baml_modular as m; d = pathlib.Path(os.environ["BAMLCHK"]); [(d / n).write_text(t, encoding="utf-8") for n, t in m._read_baml_files().items()]'
+          printf '[package]\nname = "bamlchk"\n' > "$rendered/baml.toml"
+          baml-cli --agent-skill-check off check --project "$rendered" 2>&1 | tee "$RUNNER_TEMP/rendered.log"
+          grep -q 'Finished checked 9 file(s)' "$RUNNER_TEMP/rendered.log"
+
