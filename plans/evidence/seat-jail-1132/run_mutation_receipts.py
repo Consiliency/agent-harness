@@ -317,6 +317,18 @@ MUTATIONS: list[dict[str, object]] = [
      "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
      "new": "    if not route.jailed:\n        return route, [], None",
      "nodes": [f"{T_NOTE}::test_sealed_claude_seat_carries_its_notice_through_the_spawn"]},
+    # Merge with agent-harness#1204: the pointer-brief preflight notices are appended to
+    # the seat notices; replacing them (main's pre-merge shape) must turn the test red.
+    {"id": "merge-preflight-replaces-seat-notices", "file": CL,
+     "old": 'payload["notices"] += [n.as_json() for n in result.seat_preflight_notices]',
+     "new": 'payload["notices"] = [n.as_json() for n in result.seat_preflight_notices]',
+     "nodes": ["tests/test_seat_preflight_1204.py::"
+               "test_cli_pointer_brief_keeps_the_seat_notices_beside_the_preflight_notices"]},
+    # The jailed route is Claude-only: a Gemini leg passing step 4 must turn the pin red.
+    {"id": "gemini-passes-step4", "file": SJ,
+     "old": "if leg not in JAILED_LEGS or gemini_qualified is None or not gemini_qualified():",
+     "new": "if gemini_qualified is None or not gemini_qualified():",
+     "nodes": [f"{T_PERM}::test_j7_the_jailed_route_is_claude_only[gemini]"]},
 ]
 
 
