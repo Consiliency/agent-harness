@@ -137,6 +137,57 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
 - No agy route-core file changes, so this needs no agy requalification of its own.
 
+### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139)
+
+- `phase-loop-closeout-audit` now grades the files inside a collapsed ignored directory
+  (`!! .dev-skills/`, `!! dist/`) instead of blocking on the directory entry. The
+  `/.dev-skills/` entry written by `phase-loop init` previously made every harness handoff
+  `unknown_ignored`.
+- **Harness handoffs** are `runner_owned` only when the file carries the workflow-skill
+  handoff contract:
+  - the required frontmatter keys are present;
+  - `from` equals a shipped skill's directory;
+  - `repo_root` is this repository;
+  - `commit` exists in this repository.
+
+  This replaces the agent-harness#1084 rule, which trusted any path under
+  `.dev-skills/handoffs/`.
+- **New `declared_output` bucket.** A project commits `.phase-loop-generated-outputs.json`
+  (a closed v1 format), naming each producer command (an argv; shell syntax is
+  rejected) and bounded output globs. A declared file passes only if all of these hold:
+  - an observed invocation of a producer that covers it created the file or changed
+    its content. Timestamp-only, mode and link changes earn nothing, and writes by
+    other commands are never credited;
+  - the evidence was recorded at the current commit AND in the current phase;
+  - its content digest is unchanged;
+  - it is not a symlink.
+- **Recording.**
+  - `phase-loop-closeout-audit --repo . --record-outputs` performs a clean, observed
+    rebuild. It first moves existing ignored declared outputs aside (never deleting
+    them), runs each producer under a timeout, records, and then audits.
+  - It is a no-op without a declaration. The execute-phase skills and runner prompt
+    now prescribe it.
+  - Phase identity is ONLY an explicit `--phase <ALIAS>` (or the runner's live alias
+    in-process). Every runner prompt that can lead to an audit (execute, repair,
+    review, harness lane, delegated child, and any prompt whose skill pack prescribes
+    the audit) writes the command with `--phase <its alias>`. The skills, hint and
+    docs show the quoted, shell-safe placeholder `--phase "<ALIAS>"`. Only the
+    roadmap's alias grammar is accepted, so the placeholder is refused and every real
+    alias is not. The identity is never read from the
+    environment or `.phase-loop/state.json`. Without it, `--record-outputs` exits 2
+    before touching the worktree and the audit blocks.
+  - Producers are bounded by a validated timeout and killed by process group.
+  - Only the newest 5 directories of moved-aside outputs are kept.
+  - The runner's verification records when it runs a declared producer command, and
+    it reports recording failures.
+- **Still blocks:**
+  - files that are undeclared, pre-placed, timestamp- or metadata-only-touched,
+    later-edited or symlinked;
+  - anything recorded at another commit or phase, or while HEAD moved.
+
+  An invalid declaration exits 2.
+- See `docs/phase-loop/closeout-generated-outputs.md`.
+
 ### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
