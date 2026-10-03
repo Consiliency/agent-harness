@@ -65,7 +65,7 @@ jobs:
           # Secrets are readable in a step context, never in a job-level `if:`.
           # GitHub also withholds secrets from fork-PR runs, so this is a second,
           # independent reason a fork can never reach the offload path.
-          TS_AUTHKEY_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}  # tailnet credential present (Tailscale OAuth client); name kept for the eligibility logic
+          TS_AUTHKEY_SET: ${{ secrets.TS_OAUTH_SECRET != '' }} # tailnet credential present (Tailscale OAuth client); name kept for the eligibility logic
           # The current rootless Dagger engine cannot provide /dev/net/tun to
           # nested exec containers. Use the complete hosted lanes until a
           # reviewed offload environment proves the real egress tests pass.
