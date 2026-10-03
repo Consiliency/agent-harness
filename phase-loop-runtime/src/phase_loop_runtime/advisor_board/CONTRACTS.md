@@ -393,10 +393,12 @@ the caller passes a PATH and the runtime reads it.
     (`_child_environment`). The Agent View executor's `claude --bg` goes through the
     interface: `ClaudeAgentViewAdapter`'s default runner calls `run_provider` with an
     explicit env. A bounded brokered agy leg's owned HOME is created in the
-    relocated dir as well. Every decided env carries `PHASE_LOOP_SCRATCH_DECIDED=<decision>`;
-    the test suite's audit hook (`tests/_scratch_audit_hook.py`) fails any test in which
-    the runtime spawns an agent CLI without it, whatever API spawns it -- that is the
-    completeness check. `tests/test_agent_cli_scratch_inventory_1147.py` is a static early
+    relocated dir as well. Every decided env carries
+    `PHASE_LOOP_SCRATCH_DECIDED=<decision>:<nonce>:<mac>`, bound to its scratch values
+    (`sandbox_policy.scratch_stamp_valid`); the test suite's audit hook
+    (`tests/_scratch_audit_hook.py`) fails any test in which the runtime spawns an agent CLI
+    -- named from the runtime's own harness registries -- without a stamp that proves a
+    decision for that env, whatever API spawns it. That is the completeness check. `tests/test_agent_cli_scratch_inventory_1147.py` is a static early
     warning: it enumerates every process launch in the package and fails on one with no
     stated decision. It is conservative: an unresolvable use of a launch-capable module (a computed `getattr`,
     `__dict__`, the module as a value, a dynamic import, `exec`/`eval`) needs a stated

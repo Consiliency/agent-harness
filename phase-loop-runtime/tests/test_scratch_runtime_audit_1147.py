@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -58,6 +60,15 @@ _RUNTIME_MODULE = textwrap.dedent('''
     def decided():
         subprocess.run([CLAUDE], env=sandbox_policy.child_scratch_env(
             os.environ, sandbox_policy.CHILD_SCRATCH_RELOCATE))
+
+    def with_env(env):
+        subprocess.run([CLAUDE], env=env)
+
+    def thread_direct():
+        import threading
+        thread = threading.Thread(target=subprocess.run, args=([CLAUDE],))
+        thread.start()
+        thread.join()
 ''')
 
 
@@ -129,8 +140,9 @@ def test_agent_detection(program, argv, expected):
 
 def test_the_marker_names_the_decision():
     for decision in sandbox_policy.CHILD_SCRATCH_DECISIONS:
-        assert sandbox_policy.child_scratch_env({}, decision)[
-            sandbox_policy.CHILD_SCRATCH_MARKER] == decision
+        env = sandbox_policy.child_scratch_env({}, decision)
+        assert env[sandbox_policy.CHILD_SCRATCH_MARKER].partition(":")[0] == decision
+        assert sandbox_policy.scratch_stamp_valid(env) == decision
 
 
 @pytest.mark.parametrize("site", [
@@ -180,4 +192,123 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
         panel_invoker._cleanup_claude_launch_timeout(
             adapter, cwd=str(tmp_path), env=env,
             exc=subprocess.TimeoutExpired(["claude"], 1, output=b"", stderr=b""))
-    assert seen.read_text(encoding="utf-8") == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    assert seen.read_text(encoding="utf-8").partition(":")[0] == sandbox_policy.CHILD_SCRATCH_RELOCATE
+
+
+
+# -- round 6: the stamp must PROVE a decision made for this env -------------------------
+
+
+def _decided_env(decision=sandbox_policy.CHILD_SCRATCH_RELOCATE):
+    return sandbox_policy.child_scratch_env({"PATH": os.environ["PATH"]}, decision)
+
+
+@pytest.mark.parametrize("case", [
+    "empty", "inherited_from_os_environ", "copied_exception", "values_changed_after",
+    "forged", "minted_in_another_process",
+])
+def test_a_stamp_that_does_not_prove_a_decision_for_this_env_is_caught(runtime, monkeypatch, case):
+    import subprocess
+
+    env = _decided_env()
+    marker = sandbox_policy.CHILD_SCRATCH_MARKER
+    if case == "empty":
+        env[marker] = ""
+    elif case == "inherited_from_os_environ":
+        monkeypatch.setenv(marker, env[marker])  # a valid stamp, but the process's own
+    elif case == "copied_exception":
+        env = _decided_env(sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP)  # valid, wrong site
+    elif case == "values_changed_after":
+        env["TMPDIR"] = "/somewhere/else"
+    elif case == "forged":
+        env[marker] = "relocate:" + "0" * 16 + ":" + "0" * 64
+    else:
+        src = str(Path(sandbox_policy.__file__).resolve().parents[1])
+        minted = subprocess.run(
+            [sys.executable, "-c",
+             "import json,sys; from phase_loop_runtime import sandbox_policy as p; "
+             "print(json.dumps(p.child_scratch_env({'PATH': sys.argv[1]}, p.CHILD_SCRATCH_RELOCATE)))",
+             env["PATH"]],
+            capture_output=True, text=True, check=True, env={**os.environ, "PYTHONPATH": src})
+        env = __import__("json").loads(minted.stdout)
+    hook.drain()
+    if case == "inherited_from_os_environ":
+        runtime.partial_getattr()  # inherits os.environ
+        found = hook.drain()
+        assert found and "no env was decided" in found[0], found
+        hook.drain()
+        runtime.with_env(dict(os.environ))  # an explicit copy of it: the stamp is the process's
+        found = hook.drain()
+        assert found and "inherited" in found[0], found
+        return
+    runtime.with_env(env)
+    found = hook.drain()
+    assert found, f"{case}: a stamp that proves nothing was accepted"
+
+
+def test_a_fresh_relocate_decision_passes_and_a_reused_stamp_is_never_trusted(runtime):
+    exception = _decided_env(sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP)
+    decided = sandbox_policy.child_scratch_env(exception, sandbox_policy.CHILD_SCRATCH_RELOCATE)
+    assert sandbox_policy.scratch_stamp_valid(decided) == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    assert decided[sandbox_policy.CHILD_SCRATCH_MARKER] != exception[sandbox_policy.CHILD_SCRATCH_MARKER]
+    hook.drain()
+    runtime.with_env(decided)
+    assert hook.drain() == []
+
+
+def test_an_exception_applied_at_the_launch_interface_passes(runtime, tmp_path):
+    from phase_loop_runtime import panel_invoker
+
+    hook.drain()
+    panel_invoker.run_provider([runtime.CLAUDE], env={"PATH": os.environ["PATH"]},
+                               child_scratch=sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP)
+    assert hook.drain() == []
+
+
+def test_an_unattributable_spawn_is_judged(runtime):
+    hook.drain()
+    runtime.thread_direct()
+    found = hook.drain()
+    assert found and "unattributed" in found[0], found
+
+
+def test_the_hook_proves_it_is_live():
+    assert hook._installed and hook._probe_seen
+
+
+# -- round 6: agent-CLI names come from the runtime's registries ------------------------
+
+
+def test_every_registered_harness_binary_is_watched():
+    from phase_loop_runtime import panel_invoker
+    from phase_loop_runtime.advisor_board import registries
+    from phase_loop_runtime.capability_registry import capability_registry
+
+    expected = {spec.cli for spec in registries._HARNESS_SPECS}
+    expected |= set(panel_invoker._LEG_CLI.values())
+    expected |= {p.split()[0] for r in capability_registry().values()
+                 for p in (r.auth_preflight_probes or ()) if p.split()}
+    assert expected <= hook.AGENT_CLIS, expected - hook.AGENT_CLIS
+    assert {"pi", "pi-agent-watch", "cursor-agent", "opencode"} <= hook.AGENT_CLIS
+
+
+def test_a_new_harness_in_the_registry_is_covered_without_editing_the_hook(monkeypatch):
+    from phase_loop_runtime.advisor_board import registries
+
+    spec = registries._HARNESS_SPECS[0]
+    monkeypatch.setattr(registries, "_HARNESS_SPECS", (
+        *registries._HARNESS_SPECS, type(spec)(name="newharness", cli="new-agent-cli",
+                                               auth_lanes=spec.auth_lanes, backing=spec.backing)))
+    assert "new-agent-cli" in hook.runtime_agent_binaries()
+
+
+@pytest.mark.parametrize("binary", ["pi", "pi-agent-watch"])
+def test_an_undecided_pi_launch_is_caught(runtime, tmp_path, binary):
+    cli = tmp_path / binary
+    cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cli.chmod(0o755)
+    runtime.CLAUDE = str(cli)
+    hook.drain()
+    runtime.partial_getattr()
+    found = hook.drain()
+    assert found and binary in found[0], found

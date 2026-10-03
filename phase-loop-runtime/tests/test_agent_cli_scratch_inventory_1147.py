@@ -64,9 +64,10 @@ LOOP_LAUNCH_METHODS = frozenset({"subprocess_exec", "subprocess_shell"})
 #: Submodules reached as an attribute of a launch-capable module.
 SUBMODULES = {("asyncio", "subprocess"): "asyncio.subprocess"}
 
-#: Program names that are agent CLIs, including their npm package basenames.
-AGENT_CLIS = frozenset({"claude", "codex", "agy", "gemini", "grok", "opencode", "cursor-agent",
-                        "claude-code", "gemini-cli"})
+#: Program names that are agent CLIs: the runtime's own registries (shared with the
+#: runtime audit hook), plus npm package basenames.
+from _scratch_audit_hook import AGENT_CLIS  # noqa: E402
+
 #: Programs that run another program named later in their argv.
 WRAPPERS = frozenset({"env", "sudo", "doas", "bwrap", "sh", "bash", "zsh", "dash", "nsenter",
                       "unshare", "setpriv", "timeout", "nice", "ionice", "stdbuf", "xargs",

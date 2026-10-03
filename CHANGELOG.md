@@ -45,10 +45,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     View executor route: `ClaudeAgentViewAdapter`'s default runner is now the provider
     launch interface, so `claude --bg` is decided there.
   - Completeness is enforced at RUNTIME: `child_scratch_env` stamps every env it decides
-    with `PHASE_LOOP_SCRATCH_DECIDED=<decision>` (the named exceptions included), and the
-    test suite's audit hook fails any test in which the runtime spawns an agent CLI --
-    through `subprocess`, `os.exec*`, `os.posix_spawn*`, `os.spawn*`, `os.system` or
-    `pty.spawn`, after `env` and `sh -c` parsing, in forked children too -- without it.
+    with `PHASE_LOOP_SCRATCH_DECIDED=<decision>:<nonce>:<mac>`, binding the decision to the
+    env's `TMPDIR` / `CLAUDE_CODE_TMPDIR` under a per-process key, and never trusts a stamp
+    already in the env. The test suite's audit hook fails any test in which the runtime
+    spawns an agent CLI -- through `subprocess`, `os.exec*`, `os.posix_spawn*`, `os.spawn*`,
+    `os.system` or `pty.spawn`, after `env` and `sh -c` parsing, in forked children too --
+    without a stamp that proves a decision for that env: an empty, forged, foreign, stale
+    or inherited stamp does not count, and an exception stamp counts only at the launch
+    interface. The agent-CLI names are derived from the runtime's own harness registries,
+    so Pi (`pi`, `pi-agent-watch`) and any new harness are covered.
   - A static inventory test remains as an early warning: it enumerates every process
     launch in the package and fails on one whose scratch decision is not stated. It is
     conservative: any use of a launch-capable module it
