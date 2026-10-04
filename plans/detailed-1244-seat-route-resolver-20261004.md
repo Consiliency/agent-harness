@@ -39,6 +39,19 @@ For every seat, whatever its harness, the resolver tries these in order:
      `ai`, that can sandbox locally;
    - **E2B cloud** (#896 plan 4 = agent-harness#1165).
 
+   **Self-hosted requirements** are the maintainer's requirements for #896 plan 3, recorded
+   on agent-harness#896 (issuecomment-5983731656). They are referenced here, not restated:
+   - reachable only over the tailnet;
+   - a per-principal token **and** an allowed tailnet source;
+   - multi-user dev hosts, where the principal is the per-account token and the source
+     check is a device/tag allowlist, with R6 isolation between accounts;
+   - per-principal aggregate caps;
+   - later, signed requests in place of bearer tokens.
+
+   The resolver depends on one consequence of these: a self-hosted refusal reaches the mode
+   line as a typed reason with its fix (see `seat_preflight` below), and the chain moves to
+   the next backend.
+
    They are tried in the order of a harness-agnostic config list,
    `[seat_route] remote_backends`. The default is `["self-hosted", "e2b"]` (ruled R1): the fleet tailnet/LAN host first, then E2B.
 3. **Host-native fill:** the **host** harness fills the seat with its own sub-agent
@@ -301,7 +314,17 @@ No existing home: #1166's `decide_seat_route` handles only the jail.
   - `seat_remote_sandbox_unconfigured`;
   - `seat_credential_source_missing`;
   - `seat_host_native_standin`;
-  - `seat_sealed_operator_opt_in`.
+  - `seat_sealed_operator_opt_in`;
+  - the self-hosted refusals, mapped from #896 plan 3's `PlacementUnavailable` codes:
+    - `seat_remote_no_principal_token`. Why: there is no token for this OS account on that
+      host. Fix: "ask the sandbox host's admin to issue a token for this account".
+    - `seat_remote_source_not_allowed`. Why: this device or tag is not in the host's tailnet
+      source allowlist. Fix: "ask the host admin to allow this device or tag".
+    - `seat_remote_principal_cap_exceeded`. Why: this account is at its concurrent, CPU or
+      memory cap. Fix: "wait for this account's other sandboxes, or ask the admin to raise
+      the cap".
+
+    Each is recorded in `tried`, and the resolver moves on to the next backend.
 - `SeatMode` — add the fields `stand_in_for` and `host_harness`. `render` prints `native
   (<host> stand-in for <vendor>)` or `WARNING: sealed (operator opt-in, NO TOOLS)` with the env var to unset.
 
@@ -483,6 +506,9 @@ Mutation receipts: one per step, one for the sealed guard, and one for host dete
 - [ ] An E2B-placed seat's evidence carries its sandbox duration (created and
   confirmed-killed times, seconds). With no `[e2b]` cap keys set, E2B is still available.
   Both are proven with a fake E2B backend.
+- [ ] A fake self-hosted backend that answers each of plan 3's three refusals (no token,
+  source not allowed, cap exceeded) yields the matching `seat_remote_*` code and fix on the
+  mode line, and the resolver then tries `e2b`.
 - [ ] `remote_backends` is walked in config order, and an unavailable backend's
   `PlacementUnavailable` code is recorded in `tried`. Proven with fake self-hosted and e2b
   backends.
