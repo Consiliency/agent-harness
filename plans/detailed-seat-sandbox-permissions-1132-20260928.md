@@ -1460,3 +1460,37 @@ Board round 7 at 34c6cf40. These clarify A1 and A2; they add no new rule.
   root, not the jail's tmpfs `/tmp`. The jail digest changes; hosts re-qualify on first use.
 - **Suite isolation.** Tests see an empty `CLAUDE_CONFIG_DIR` and seat state root; only
   the live jailed-seat test (marker `host_seat_credentials`) reads the host's.
+
+## Amendment A3 (2026-10-04): no host-side refresh; preflight and wait for the login to renew
+
+Maintainer ruling, 2026-10-04, relayed by the team lead. It supersedes A1's "short token:
+the host runs `claude auth status` once and re-reads" and the later refresh repairs (board
+rounds 8 to 11). The harness never runs the Claude CLI to renew a credential.
+
+**Rule.**
+- **Preflight:** before seats launch, the login token's expiry is read read-only from the
+  platform store, with the same reader A1 uses. Nothing that reads Claude configuration is
+  executed.
+- **Awaiting notice:** if the remaining lifetime is under the seat's margin (the one margin
+  function), the seat's mode line, text and JSON carry
+  `claude_seat_login_token_awaiting_refresh`, with the minutes left and the fix "use Claude
+  or run `claude auth login`". Other seats are not held.
+- **Wait:** the store is polled read-only, every 30 s by default
+  (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`). Once a renewed token clears the margin, the seat
+  launches jailed as normal, logged as `jailed (login refreshed)`. The token is re-read at
+  launch, as before.
+- **Bound:** the wait is at most `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S`, default 900 s;
+  0 means do not wait. On timeout the seat runs sealed (no tools) with
+  `claude_seat_login_token_expiring` and the fix "run `claude auth login`, then re-run". A
+  store that stops yielding a login during the wait seals the seat with
+  `claude_seat_token_missing`. The board is never refused, as in A2.
+- **Monitoring:** the wait happens before staging, before any seat id or namespace is
+  held. Under `heartbeat_only` it is recorded as a login wait, not as a stall, and the stall
+  clock starts after it. Under a bounded policy it is charged to the leg's deadline.
+  Cancellation interrupts the wait.
+
+**A3 acceptance.**
+- [ ] Fakes cover: short, renewed mid-wait, then jailed; short, timeout, then sealed; a
+  wait of 0, then sealed at once; the store unreadable mid-wait, then typed; cancellation
+  during the wait; and no CLI executed at any point.
+- [ ] Every new behaviour has a mutation receipt.
