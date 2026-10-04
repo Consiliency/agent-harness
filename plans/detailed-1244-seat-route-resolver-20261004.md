@@ -14,7 +14,8 @@ This plan implements agent-harness#1244. The maintainer's rulings of 2026-10-04 
 once, under "Rulings", and every other section points to them by ID.
 
 The goal is that every review seat, **and the president**, of every harness, gets a route
-with tools, or else is degraded and not run. Harness-specific code is kept to thin adapters
+with tools, or else is degraded and not run. The one exception is the temporary president
+last resort (P-LR). Harness-specific code is kept to thin adapters
 for credentials, CLI argv and host sub-agent mechanisms.
 
 **Split (round-1 board).** The work is more than one bounded change, so it is split into three
@@ -46,12 +47,16 @@ whatever the harness:
    is taken only when the monitoring policy admits a native fill. Under `heartbeat_only` it
    is skipped with a typed reason until PR-A2 lifts the refusal (D2).
 4. **Degraded, not run.** The seat gets a typed notice with its fix, shown in the pre-launch
-   mode line. For the president, the landing gate reports "no president".
+   mode line. For the president, P-LR (the sealed last resort) applies first, where main had
+   a president. Only when that cannot run either (for example on non-Linux, as on main) does
+   the landing gate report "no president" (`president_no_tooled_route`).
 
 **Sealed** (inlined and toolless) is never a step:
 - For a **seat**, it runs only when `PHASE_LOOP_SEAT_ALLOW_SEALED=1` is set (D4), and then
   only after steps 1–3 have all failed. It is announced loudly.
-- The **president** is never sealed, whether or not the opt-in is set.
+- The **president** is never sealed by the opt-in. Its only sealed path is the ruled
+  **president last resort** (P-LR): it applies after every president rung has failed to find
+  a tooled route, it is announced loudly, and it is temporary.
 - The agy qualification board is the one internal exemption. The guard enforces it
   structurally (see "Sealed guard").
 
@@ -71,10 +76,11 @@ On non-Linux hosts the chain runs per seat, never as a refusal of the whole boar
 | D1 | agent-harness#1166 changes its **own** fallbacks to degraded: the A2 qualification failure, the A3 login-wait timeout and vanished login, and `jail_unqualified`. These plans do not change them. PR-A1 has an entry check and a guard. |
 | D2 | The `heartbeat_only` refusal of native fill is lifted, for resolver stand-ins only, for both seats and the president, under the PR-A2 guard. |
 | D3 | A stand-in counts as its own vendor. Independence is accounted for honestly. |
-| D4 | For seats only, sealed is opt-in (`PHASE_LOOP_SEAT_ALLOW_SEALED=1`) with a loud mode line. This needs a HARDEN/CONTRACTS amendment. agy qualification is the only exemption. The president is never sealed. |
+| D4 | For seats only, sealed is opt-in (`PHASE_LOOP_SEAT_ALLOW_SEALED=1`) with a loud mode line. This needs a HARDEN/CONTRACTS amendment. agy qualification is the only exemption. The president is never sealed by the opt-in; see P-LR. |
 | D5 | Non-Linux hosts are resolved per seat (agent-harness#1098). |
 | D6 | codex and grok keep their current tool-enabled staged route until srt covers them. |
-| President | The president goes through the same chain and is never sealed, even with the opt-in set. If no rung has a tooled route, it is degraded and not run, and the landing gate reports "no president". The PR that removes the president's sealed route must also deliver a working tooled president route. A host never gets "no president" where main had a president. |
+| President | The president goes through the same chain as seats. Every tooled rung is tried first: the local jail or D6, then remote, then native when admitted. A host never gets "no president" where main had a president. |
+| P-LR | **"Number 2 until the sandboxes are available for all harnesses."** This is a temporary exception for the **president only**; seats remain never-toolless. When no president rung has a tooled route, the existing toolless (sealed) president runs as the **last resort**. The mode line and the evidence carry `president_sealed_last_resort`, the per-rung reasons, and the fix "make a sandbox available: …". **Sunset:** the exception is removed when sandboxes cover every harness, which is agent-harness#1244's end goal. A host where the president has a tooled route never gets the last resort. |
 | S1–S4 | srt adoption: macOS first; the Linux jail stays until srt passes the conformance suite; Windows goes to remote; srt egress supersedes agent-harness#1170; srt TLS inspection is used for Gemini if needed. Detail is in the evidence file. |
 | R1 | `remote_backends` defaults to `["self-hosted", "e2b"]`. |
 | R2 | E2B has no runtime spending caps. The account-side spending limit is documented as the operator's guard. Each sandbox's duration is recorded in the evidence. Plan 4's time-to-live is a liveness bound, not a budget. |
@@ -219,75 +225,141 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
 
 - `_seat_route_for_spawn` and `_publish_seat_modes` (#1166) — modify — build both from
   `resolve_seat_route`. Every seat's mode is published before the first spawn.
-- **Sealed guard at the argv level.** `_require_tooled_or_opted_in(target, *, env,
-  exemption=None)` is called inside every builder that can produce a tools-off launch:
+- **Sealed guard at the argv level.** `_require_tooled_or_permitted(capability)` is called
+  inside every **launch** builder that can produce a tools-off launch:
   - `_render_broker_inline_prompt`;
-  - `_broker_tool_controls`;
   - `_broker_claude_tui_command` with `sandboxed=None`;
   - `_brokered_gemini_command` with `staged_tree=None`;
   - the brokered codex `read-only` argv;
   - the grok `--tools ""` argv.
 
-  It passes in only two cases:
-  - **(a)** the target is a **seat**, *and* the guard itself re-reads
-    `sealed_opt_in_enabled(env)` at build time, *and* that read is true. It never trusts a
-    caller-built `ResolvedSeatRoute(step="sealed_opt_in")`.
-  - **(b)** `exemption is panel_invoker._AGY_QUALIFICATION_EXEMPTION`, a module-level
-    sentinel object compared by identity.
+  `_broker_tool_controls` derives evidence; it does not build a launch, so it carries no
+  guard.
 
-  A **president** target never passes (a), whatever the env. Otherwise the guard raises
-  `seat_route_sealed_without_opt_in`. There is no caller string.
+  The guard decides the **target kind** from the sealed leg capability the launch already
+  holds, never from a caller argument. A leg authorization whose `operation` is
+  `PRESIDENT_OPERATION_V1` (only `derive_president_leg_authorization` can mint one) is a
+  president. Anything else is a seat. The guard passes in exactly three cases:
+  - **(a) Seat opt-in.** The target is a seat, and the guard itself reads
+    `sealed_opt_in_enabled(base_env)` and finds it set. `base_env` is the env passed to
+    `invoke_board`, which defaults to `os.environ`; `--allow-sealed-seat` sets it there. The
+    guard never trusts a caller-built `ResolvedSeatRoute(step="sealed_opt_in")`.
+  - **(b) President last resort (P-LR).** The target is a president, and its leg
+    capability carries `sealed_last_resort=True`. `derive_president_leg_authorization` sets
+    that field only when the ladder walk's recorded resolutions show no tooled rung (see
+    "Tooled president"). Neither the opt-in nor any caller can set it.
+  - **(c) agy qualification.** The guard verifies the **calling code object**:
+    `sys._getframe(1).f_code` must be `agy_qualification.validate_directory.__code__` or
+    `agy_qualification.run_operation.__code__`, compared by identity. The only way to have
+    that frame is to run the qualification function itself, so possession of nothing, and
+    no import, re-export, `getattr` or `vars` trick, grants it. A president target is
+    refused in this case.
 
-  The sentinel is structural. A static (AST) test asserts that
-  `_AGY_QUALIFICATION_EXEMPTION` is referenced only at its definition and in
-  `agy_qualification.py`. A reference anywhere else turns the test red.
+  Otherwise the guard raises `seat_route_sealed_without_opt_in`. There is no sentinel object
+  and no caller string. A static test is kept only as a **tripwire, not the boundary**. It
+  fails on:
+  - string constants naming the agy frames;
+  - non-literal `getattr`, `vars` or `__dict__` access on `panel_invoker` or
+    `agy_qualification`.
+
+  It scans the whole package and the phase-loop-skills scripts.
 - **Claude under Claude Code: jailed first** (#1166 sites). The
   `not (leg == "claude" and _under_claude_code(env))` clause in `_seat_route_for_spawn`'s
   eligibility (around :10088) is removed. The `under_claude_code` deferral in
   `_exec_claude_tui_leg` (around :8382) then applies only when the resolved route is
   `host_native`. The `MODE_NATIVE` publish (around :1662) comes from the resolver.
 
-  A jailed TUI runs with the jail's own env and home, not the host session's. If a nested
-  self-PTY TUI cannot start in practice, the seat skips step 1 with
-  `claude_seat_nested_tui_unavailable` and the chain continues.
+  A jailed TUI runs with the jail's own env and home, not the host session's. #1166 notes
+  that the nested self-PTY adapter is unavailable inside Claude Code, so jailed-first under
+  Claude Code is gated on a **pre-resolution fact**, `nested_tui_qualified`. It is recorded
+  by running the jail qualification once from a Claude Code session.
+
+  Until that fact is recorded, step 1 skips **before resolution** with
+  `claude_seat_nested_tui_unavailable`, never at launch. A **bounded** Claude Code board then
+  fills the claude seat and the claude president natively at step 3, exactly as main does.
+  So PR-A1 is never worse there.
 - `invoke_board` — modify — a `degraded` route returns `DEGRADED`, `seat_not_run:<reason>`,
   with **zero** spawns.
 - `_under_claude_code` route decisions — modify — use `detect_host_harness(env)` together
   with the adapter registry.
 
-### Tooled president (`president_adapter.py`, `advisor_board/backing.py`) — delivered with the sealed removal
+### Tooled president (`president_adapter.py`, `panel_invoker.py`, `advisor_board/backing.py`)
 
-The president gets the **reviewed tree** together with its findings bundle:
-- **Tree source.** The board's staged review tree, the one whose digest is in the review
-  authorization's `staged_tree_sha256`, is copied into the president's stage under
-  `sandbox/`, next to `review-bundle.md` and `review-instructions.md`.
-- **`PresidentIsolationAuthorization`** — add `staged_tree_sha256`. Three functions bind it,
-  and each verifies it equals the board's digest:
-  - `prepare_president_isolation_authorization`;
-  - `derive_president_leg_authorization`;
-  - `activate_president_isolation_authorization`.
+**The tree: retained, threaded, and re-hashed.**
+1. **Retained snapshot.** `invoke_board` stages **one** pristine reviewed tree with
+   `stage_review_tree(canonical_repo, board_dir)`, at the same time as it mints the review
+   authorization. The snapshot is the source of that authorization's `staged_tree_sha256`.
+   It is made read-only and kept until the president returns. It is removed in
+   `invoke_board`'s `finally`. Seats keep their own writable clones as today.
 
-  `_president_repo_digest`'s "reads no tree" contract is amended.
-- **`_launch_brokered`** — `ParentUnixBroker(staged_dir=stage)` now exposes `sandbox/`. Each
-  rung reaches step 1 through the same launchers as a seat:
-  - **claude** gets `decide_seat_route(leg, staged_tree_approved=True)` from the president
-    authorization, so it runs jailed with tools;
-  - **codex** and **grok** get the D6 staged route over `_sandbox_in(stage)`;
-  - **gemini** skips by design until PR-B.
-- **`_transport`** — routes each rung through `resolve_seat_route`, with these results:
-  - **`degraded`:** the rung records `president_unavailable`, and the ladder descends.
-  - **Every rung degraded:** `president_ruling_missing:president_no_tooled_route`, and the
-    landing fails closed.
-  - **Sealed:** never. The `_launch_claude` tools-off argv is unreachable for the president,
-    even with the opt-in set.
-- **`PRESIDENT_FILL_HEARTBEAT_REFUSED`** — added to `_PRESIDENT_REFUSAL_CODES`, so the
-  ladder descends instead of raising. The resolver already skips step 3 under
-  `heartbeat_only`. PR-A2 lifts the refusal under the mint guard.
+   Because the snapshot is retained, the president never re-stages from the live repo, and a
+   working tree edited after the seats ran cannot reach it.
+2. **Threading.** After minting, `invoke_board` calls
+   `president_invoke.bind_review_tree(digest, snapshot_path)`. It does this for the
+   auto-wired invoke and for the invokes built earlier by `runner.py` (around :8580) and
+   `cli.py` (around :2317). An unbound `PresidentInvoke` has no tree, so its tooled rungs
+   skip with `president_tree_unbound`.
+3. **Per-rung copy at the readers' path.** Each rung's stage receives a fresh writable copy
+   of the snapshot at **`<stage>/reviewed-tree`**, with its
+   `.git/phase-loop-source-commit` marker kept. That is the path `_sandbox_in` and the jail
+   (`HOST_TREE_DIRNAME`) read.
+4. **Re-hash before every launch.** Immediately before each rung launches,
+   `review_tree_manifest_sha256(<stage>/reviewed-tree)` must equal the bound digest. In
+   addition:
+   - the president leg capability (`derive_president_leg_authorization`) gains
+     `staged_tree_sha256`;
+   - `ParentUnixBroker` re-hashes `reviewed-tree` against it at init, which covers the D6
+     codex and grok rungs;
+   - the jail re-hashes as it already does;
+   - `revalidate_president_isolation_authorization` gains `staged_dir`;
+   - the claude rung's `staged_tree_approved` comes from this check, never a literal.
+
+   A mismatch fails the president **closed** with
+   `president_ruling_missing:president_stage_changed`. Tampering is not descended past.
+5. **`PresidentIsolationAuthorization`** gains `staged_tree_sha256`. Prepare, derive,
+   activate and revalidate each bind it. `_president_repo_digest`'s "reads no tree" contract
+   is amended.
+
+**Rungs:**
+- **claude:** the jail.
+- **codex and grok:** D6 over `_sandbox_in(stage)`.
+- **gemini:** skips until PR-B.
+
+**Descent (the actual mechanism).** `invoke_president` (around `panel_invoker.py:731`)
+descends only on `{"status": "unavailable", "code": "president_unavailable"}`. So:
+- **`PresidentInvoke.__call__`** (around `president_adapter.py:169-170`) no longer sends the
+  claude rung native ahead of the resolver. Every rung is resolved first in `__call__`, with
+  the jail first.
+- **A step-3 skip, or a `degraded` route,** returns `unavailable` / `president_unavailable`,
+  so the walk descends.
+- **`president_fill_heartbeat_refused`** is added to `_PRESIDENT_REFUSAL_CODES` only as a
+  typed backstop.
+- **A rung whose tooled launch fails** after resolution (`jail_build`, a launch error)
+  returns `president_invocation_failed`, and the walk does not descend. That is parity with
+  main, and the plan states it.
+
+**Last resort (P-LR).** The ladder walk records each rung's resolution. If **no rung**
+resolved to a tooled route, it re-derives the top rung's leg capability with
+`sealed_last_resort=True`, which only `derive_president_leg_authorization` can set. It then
+runs the existing sealed president for that rung, with:
+- mode line: `WARNING: president sealed (LAST RESORT, NO TOOLS) -- <per-rung reasons>; fix:
+  make a sandbox available: …`;
+- evidence: `president_sealed_last_resort: true`, plus the per-rung `tried` codes.
+
+The guard admits that launch through case (b) only. The opt-in plays no part.
+
+**Main-supported host classes** (the parity table):
+
+| Host class | Main | PR-A1 |
+|---|---|---|
+| Linux, jail-capable, outside Claude Code | brokered sealed president | tooled president (jail / D6) |
+| Linux, jail-incapable (kernel before 6.2, i.e. no `dev.tty.legacy_tiocsti`; root; no subuid or `newuidmap`), codex/grok rungs usable | brokered sealed | tooled president on D6 |
+| Linux, jail-incapable, only a claude rung (or a gemini-only ladder) | brokered sealed | **P-LR sealed last resort** with the warning |
+| Claude Code, bounded, nested TUI not qualified | native claude president | the same native president (step 3) |
+| Claude Code, `heartbeat_only` | native refused, so the walk falls to the next rung | it descends past the claude rung, else P-LR |
+| non-Linux | no president (Linux-only gate) | no president. Unchanged, and P-LR is not invented there. |
+
 - **`build_president_invoke`** — the brief carries each seat's resolved route.
-- **Sequencing rule.** If the tooled president slice is cut from PR-A1, the removal of the
-  president's sealed route moves with it to the PR that adds the tooled route. A host never
-  gets "no president" where main has one. On main the president is Linux-only (backing gate
-  around line 1602), so non-Linux hosts have no president there either.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py` (modify; D5)
 
@@ -313,79 +385,97 @@ Every Linux gate, with its disposition:
   - `seat_sealed_operator_opt_in`;
   - `president_no_tooled_route`;
   - `seat_host_native_heartbeat_refused`;
-  - `claude_seat_nested_tui_unavailable`.
+  - `claude_seat_nested_tui_unavailable`;
+  - `president_sealed_last_resort`;
+  - `president_stage_changed`;
+  - `president_tree_unbound`.
 - `SEAT_MODES` — add `remote`.
 - `SeatMode` — add the new fields. `render` prints `WARNING: sealed (operator opt-in, NO
   TOOLS) -- unset PHASE_LOOP_SEAT_ALLOW_SEALED`.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py`, `cli.py` (modify)
 
-- `agy_qualification.py` — its direct renderer calls (around lines 301 and 559) pass
-  `exemption=_AGY_QUALIFICATION_EXEMPTION`, and its mode line says so.
+- `agy_qualification.py` — no signature change. Its two renderer calls (around lines 301
+  and 559) are admitted by the guard's code-object check. Its mode line says so.
 - `cli.py` `advisor-board` — add `--allow-sealed-seat`.
 
 ### `phase-loop-runtime/tests/test_seat_route.py`, `tests/test_president_route.py`, `tests/test_sealed_guard.py` (create)
 
 - **The table.** Every registry harness, crossed with:
-  - hosts: Linux with the jail, Linux without user namespaces, macOS, Windows;
+  - host OS: Linux with the jail, Linux without the jail, macOS, Windows;
   - a remote root configured or not;
   - monitoring policy: bounded or `heartbeat_only`;
-  - host: Claude Code or none;
+  - host: Claude Code, with and without `nested_tui_qualified`, or none;
   - the opt-in on or off.
 - **Guard.**
-  - Every builder, called from every production caller, the president included, with the
-    opt-in **both unset and set**.
-  - A hand-built `sealed_opt_in` route with the env unset.
-  - The AST check on the sentinel.
-- **Positive president.**
-  - With a qualified jail (faked jail runner, real argv and authorization), the claude rung
-    launches **with tools** over the staged tree and returns a ruling.
-  - With the jail absent, the codex rung launches on the D6 route with tools and returns a
+  - Every launch builder, from every production caller, the president included, with the
+    opt-in unset and set.
+  - A hand-built `sealed_opt_in` route.
+  - A caller that reaches the agy functions' `__code__` objects, or the guard, through
+    `getattr`, `vars` or a re-export. It is refused, because its frame is not the
+    qualification frame.
+  - A president capability presented from inside an agy frame is refused.
+  - A president target dressed as a seat is refused. The kind comes from the capability.
+  - The tripwire scan.
+- **President tree.**
+  - Positive: the claude rung, jailed, and the codex rung, on D6, each receive
+    `<stage>/reviewed-tree` matching the board digest, launch with tools, and return a
     ruling.
-- **Driver gate.** With a remote root configured and no driver, a spy backend records zero
-  calls.
-- **Non-Linux.** On a Darwin fake, the board mints and each seat resolves per seat. Launch
-  revalidation (the codex r1 F002 falsifier) is exercised with an **injected** non-local
-  route, because PR-A1 produces no launched non-local route. A `local` route is refused at
-  launch.
-- **D1 entry.** The check above, plus: no `SEALED_FALLBACK_CODES` member reaches
-  `MODE_SEALED` or a tools-off argv.
+  - Substituted tree: one byte changed in the rung's copy, or in the snapshot, gives
+    `president_stage_changed`, and no rung launches.
+  - Unbound invoke: `president_tree_unbound`.
+- **Descent.** On a **Claude Code host fake** under `heartbeat_only`, the claude rung
+  returns `president_unavailable` and the walk reaches the codex rung.
+- **P-LR.**
+  - On a jail-incapable host fake with only a claude rung: a sealed last-resort president,
+    with the warning and the evidence.
+  - On a capable host: never.
+  - With a gemini-only ladder (codex r3 F002): last resort.
+- **Parity.** One row per main-supported host class in the table above.
+- **Driver gate, non-Linux and D1 entry:** as before. A spy backend sees zero calls. The
+  revalidation test uses an injected non-local route. No `SEALED_FALLBACK_CODES` member
+  reaches sealed, except through P-LR for the president.
 
 ### PR-A1 acceptance
 
-- [ ] For every registry harness, a seat target with no tooled route resolves to
-  `degraded`, with `seat_not_run_no_tooled_route` and **0** spawns. This includes a claude
-  seat under `heartbeat_only` on a Claude Code host fake with no jail.
-- [ ] **Positive:** a president claude rung with a qualified jail launches with tools over
-  the staged tree and returns a ruling. A codex rung on the D6 route does the same.
-- [ ] Under `heartbeat_only` with no jail, the president descends past the claude rung and
-  does not raise.
-- [ ] A president with every rung degraded yields
-  `president_ruling_missing:president_no_tooled_route`, and the landing fails closed.
-- [ ] No production caller builds a tools-off argv for the president, whether
-  `PHASE_LOOP_SEAT_ALLOW_SEALED` is **unset or set**. The codex r1 F003 and r2 F002
-  falsifiers both pass.
-- [ ] A seat gets a tools-off argv only with the env opt-in, as read by the guard, or with
-  the agy sentinel.
-- [ ] On a non-Linux host, the board is not refused, each seat resolves per seat, and a
-  `local` route is refused at launch.
-- [ ] codex and grok seats keep their D6 staged route, with tools. The credential gate
-  never excludes them.
+- [ ] For every registry harness, a seat with no tooled route resolves to `degraded`, with
+  `seat_not_run_no_tooled_route` and **0** spawns. That includes a claude seat under
+  `heartbeat_only` on a Claude Code host fake with no jail. **Seats are never sealed
+  without the env opt-in.**
+- [ ] **Positive president:** the claude rung, jailed, and the codex rung, on D6, launch
+  with tools over a `reviewed-tree` that matches the board digest, and return a ruling. A
+  substituted tree gives `president_stage_changed`, and no rung launches.
+- [ ] On a **Claude Code host fake** under `heartbeat_only`, the president descends past
+  the claude rung via `president_unavailable`, and does not raise.
+- [ ] **P-LR:** on a jail-incapable host with only a claude rung, the president runs
+  sealed as the last resort, with `president_sealed_last_resort`, the per-rung reasons and
+  the fix, in both the mode line and the evidence. On a host with a tooled rung, the last
+  resort is **never** used.
+- [ ] Every main-supported host class in the parity table has a president in PR-A1.
+- [ ] The guard admits a tools-off launch only through cases (a), (b) and (c). The opt-in
+  never admits a president, and reflective access never admits the agy case.
+- [ ] On a non-Linux host, the board is not refused. Seats resolve per seat, and a `local`
+  route is refused at launch.
+- [ ] codex and grok seats keep their D6 route with tools. The credential gate never
+  excludes them.
 - [ ] With a remote root configured and no driver, step 2 is
   `sandbox_placement_driver_unavailable`, with zero backend calls.
 - [ ] Every target's mode is published before the first spawn. A diff check shows
   `LEG_STATUSES` and `DEFAULT_RATIFICATION_POLICIES` unchanged, and `SEAT_MODES` changed
   only by the addition of `remote`.
 
-**Named mutations:**
+**Named mutations**, each of which must turn its item red:
 - spawn a degraded seat;
-- **force every president rung's step 1 to skip** (the positive item goes red);
-- allow step 3 under `heartbeat_only`;
-- drop `president_fill_heartbeat_refused` from the refusal set;
-- let the opt-in authorize a president;
-- trust `route.step` without re-reading the env;
-- reference the agy sentinel from a seat or president call site (AST red);
-- restore a whole-board platform gate, or skip launch revalidation;
+- force every president rung's step 1 to skip on a capable host. P-LR must not engage, and
+  the positive item goes red;
+- skip the president tree re-hash;
+- stage the president from the live repo instead of the snapshot;
+- **restore `__call__`'s native pre-check under `heartbeat_only`**;
+- engage P-LR while a tooled rung exists;
+- let the opt-in admit a president;
+- admit the agy case by symbol instead of by frame;
+- trust a caller-asserted target kind;
+- restore a whole-board platform gate;
 - make the credential gate exclude codex or grok;
 - call `available()` without the driver;
 - publish a mode after launch;
@@ -501,8 +591,10 @@ never for behaviour that no plan produces.
 
 - **`advisor_board/CONTRACTS.md`** (PR-A1):
   - a "Seat route resolver (agent-harness#1244)" section;
-  - the **HARDEN amendment (D4)**: for seats, sealed only on the env opt-in or for the agy
-    qualification sentinel; the **president** is never sealed;
+  - the **HARDEN amendment (D4 and P-LR)**:
+    - for seats, sealed runs only on the env opt-in, or from the agy qualification frames;
+    - the president is never sealed by the opt-in;
+    - the president runs sealed only as the P-LR last resort, with its sunset condition;
   - the president's tree contract: the president reads the staged reviewed tree;
   - the new codes and the `remote` mode.
 
@@ -511,7 +603,8 @@ never for behaviour that no plan produces.
   skills come with PR-A2.
 - **`CHANGELOG.md`** — PR-A1 records these behaviour changes:
   - no sealed fallback;
-  - a tooled president with the reviewed tree;
+  - a tooled president with the retained reviewed tree;
+  - the president last resort (P-LR), with its warning;
   - non-Linux boards resolved per seat;
   - a claude seat under Claude Code is jailed first;
   - non-governed tooled legs are relabelled from `sealed` to `unconfined`. PR-A2 and PR-A3 each add their own entry.
@@ -554,7 +647,7 @@ There is no grep check. The argv-level guard test and the president test are the
 - **Executor sandboxing.** Executors run with tools today but without a sandbox. That is
   outside these PRs; the end goal of agent-harness#1244 covers it.
 - **Fleet dotfiles**: provision the E2B key file.
-- **Removing the sealed opt-in** once steps 1–3 cover the supported hosts.
+- **Removing the sealed opt-in and P-LR** once sandboxes cover every harness (the P-LR sunset).
 
 ## Execution Policy
 
