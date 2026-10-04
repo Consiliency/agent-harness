@@ -71,7 +71,7 @@ class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):
             "dotfiles_plan_manifest.baml": (
                 "class DotfilesPlanManifest",
                 "class DotfilesPlanRef",
-                "digest string?",
+                "digest: string?",
                 "plans",
                 "roadmap_ref",
                 "lifecycle",
