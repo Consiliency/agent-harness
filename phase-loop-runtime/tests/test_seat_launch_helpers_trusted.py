@@ -9,6 +9,7 @@ behave the same from any directory, a reviewed repository included.
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import sys
 import warnings
@@ -101,20 +102,46 @@ def test_the_in_namespace_helpers_ignore_a_package_in_the_launch_cwd(monkeypatch
 _REPOSITORY_TOOLING = {("verification_evidence.py", "pip"), ("runner.py", "pytest")}
 
 
+_PACKAGE_MODULE_IN_TEXT = re.compile(r"(?:^|\s)-m\s+phase_loop_runtime(?:\.|\s|$)")
+
+
+def _text_parts(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        return [v.value for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+    return []
+
+
 def _module_launches(tree: ast.AST) -> list[tuple[int, str]]:
-    """Every ``[sys.executable, "-m", "<module>", ...]`` list or tuple literal."""
+    """Every argv literal (list or tuple) that runs a module with ``-m``:
+
+    * ``"-m"`` followed by ``phase_loop_runtime...``, whatever the interpreter spelling
+      (``sys.executable``, ``"/usr/bin/python3"``, ``"python3"``, a variable);
+    * ``sys.executable, "-m", <module>`` for any module (third-party tooling is listed);
+    * an element whose text runs ``-m phase_loop_runtime...`` (a shell command string)."""
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.List, ast.Tuple)):
             continue
         items = node.elts
-        for i in range(len(items) - 2):
-            head = items[i]
-            if (isinstance(head, ast.Attribute) and head.attr == "executable"
-                    and isinstance(head.value, ast.Name) and head.value.id == "sys"
-                    and isinstance(items[i + 1], ast.Constant) and items[i + 1].value == "-m"
-                    and isinstance(items[i + 2], ast.Constant)):
-                found.append((node.lineno, str(items[i + 2].value)))
+        for i, item in enumerate(items):
+            for text in _text_parts(item):
+                if _PACKAGE_MODULE_IN_TEXT.search(text):
+                    found.append((node.lineno, text.strip()))
+            if not (isinstance(item, ast.Constant) and item.value == "-m" and i + 1 < len(items)):
+                continue
+            target = items[i + 1]
+            module = target.value if (isinstance(target, ast.Constant)
+                                      and isinstance(target.value, str)) else None
+            head = items[i - 1] if i else None
+            by_executable = (isinstance(head, ast.Attribute) and head.attr == "executable"
+                             and isinstance(head.value, ast.Name) and head.value.id == "sys")
+            if module is not None and (module == "phase_loop_runtime"
+                                       or module.startswith("phase_loop_runtime.")
+                                       or by_executable):
+                found.append((node.lineno, module))
     return found
 
 
@@ -136,8 +163,40 @@ def test_no_package_helper_is_launched_with_dash_m():
 def test_the_inventory_scan_sees_a_dash_m_launch():
     sample = ast.parse('argv = [sys.executable, "-m", "phase_loop_runtime.seat_uid", "x"]\n')
     assert _module_launches(sample) == [(1, "phase_loop_runtime.seat_uid")]
+    # Any interpreter spelling, and a shell command string, is seen too.
+    for spelling in ('"/usr/bin/python3"', '"python3"', "python", "sys.executable"):
+        sample = ast.parse(f'a = ({spelling}, "-m", "phase_loop_runtime.seat_uid", "handoff")\n')
+        assert _module_launches(sample) == [(1, "phase_loop_runtime.seat_uid")], spelling
+    sample = ast.parse('a = ["/bin/sh", "-c", f"cd {d} && python3 -m phase_loop_runtime.seat_uid x"]\n')
+    assert len(_module_launches(sample)) == 1
     # nsenter's own `-m` (its mount namespace flag) is not a Python launch.
-    assert _module_launches(ast.parse('a = ["/usr/bin/nsenter", "-t", "1", "-U", "-m"]\n')) == []
+    assert _module_launches(ast.parse('a = ["/usr/bin/nsenter", "-t", "1", "-U", "-m", "--x"]\n')) == []
+
+
+def test_the_handoff_segment_is_the_trusted_launch(monkeypatch, tmp_path):
+    """The seat-uid handoff runs under nsenter with the parent's working directory: its
+    segment of the jail prefix is exactly the trusted launch, nothing else."""
+    from test_seat_sandbox_permissions import _fake_jail
+
+    jail = _fake_jail(tmp_path / "jail")
+    enter_h = ("nsenter", "-t", "4242", "-U", "--net", "--mount", "--preserve-credentials")
+    token = pi._EGRESS_LAUNCH_PREFIX.set((*enter_h, "setpriv", "--bounding-set=-all"))
+    try:
+        prefix = pi._compose_seat_jail_prefix(jail)
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(token)
+        seat_jail.close_jail_fds(jail)
+    keyring = seat_uid.trusted_module_argv("phase_loop_runtime.seat_keyring_exec", "--")
+    handoff = seat_uid.trusted_module_argv(
+        "phase_loop_runtime.seat_uid", "handoff", jail.review_dir, jail.tree_dir,
+        str(jail.seat_ids[0]), "--")
+    assert prefix[:len(keyring)] == keyring
+    rest = prefix[len(keyring):]
+    assert tuple(rest[:len(enter_h)]) == enter_h
+    rest = rest[len(enter_h):]
+    assert rest[:len(handoff)] == handoff
+    assert rest[len(handoff):len(handoff) + len(jail.process_owner)] == list(jail.process_owner)
+    assert "-m" not in prefix[:len(keyring) + len(enter_h) + len(handoff)]
 
 
 # --------------------------------------------------------------------------------------
@@ -187,3 +246,31 @@ def test_the_seat_scratch_is_its_disk_backed_home_never_the_jail_tmpfs(tmp_path)
         assert (home / seat_jail.SEAT_TMP_DIRNAME).is_dir()
     finally:
         seat_jail.close_jail_fds(jail)
+
+
+def test_the_qualification_probe_gets_a_decided_env(monkeypatch, tmp_path):
+    """Non-live: the EC-EXECFIND-2 probe launch takes the jailed launch's decided env."""
+    import contextlib
+
+    from phase_loop_runtime import sandbox_egress, sandbox_policy, seat_jail_qualification as sq
+
+    seen: list = []
+
+    def _run(argv, **kwargs):
+        seen.append(kwargs.get("env"))
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    monkeypatch.setattr(sq.seat_uid, "subordinate_range", lambda _f: (100000, 65536))
+    monkeypatch.setattr(sq.seat_uid, "seat_id_count", lambda *a: 1)
+    monkeypatch.setattr(sq.seat_uid, "lease_seat_id", lambda _n: contextlib.nullcontext(7))
+    monkeypatch.setattr(sq.seat_uid, "teardown_in_h", lambda *a, **k: None)
+    monkeypatch.setattr(sandbox_egress, "isolated_network",
+                        lambda **k: contextlib.nullcontext(
+                            ["nsenter", "-t", "4242", "-U", "--net", "setpriv"]))
+    monkeypatch.setattr(pi, "_require_canonical_jail", lambda jail: None)
+    monkeypatch.setattr(pi, "_compose_seat_jail_prefix", lambda jail, *a: ["prefix"])
+    monkeypatch.setattr(sq.subprocess, "run", _run)
+    with contextlib.suppress(Exception):
+        sq._run_probe_in_jail("claude", tmp_path, {}, Path("/usr/bin/true"), None)
+    assert len(seen) == 1
+    assert sandbox_policy.decided_scratch(seen[0]) == sandbox_policy.CHILD_SCRATCH_RELOCATE

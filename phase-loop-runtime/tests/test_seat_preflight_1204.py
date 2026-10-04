@@ -536,3 +536,43 @@ def test_cli_prints_every_seat_mode_and_carries_it_in_the_payload(tmp_path, monk
             "[seat_sandbox_refused:jail_unqualified]") in err
     assert f"fix: {fix}" in err
     assert json.loads(out)["seat_modes"] == [m.as_json() for m in modes]
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1132 round 8: every board path hands its per-leg timeouts to the seat
+# modes, so the mode line checks the margin the launch will check.
+# --------------------------------------------------------------------------------------
+
+def _record_mode_timeouts(monkeypatch):
+    seen: list = []
+    real = pi._publish_seat_modes
+
+    def _publish(*args, **kwargs):
+        seen.append(kwargs.get("timeouts_by_leg"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pi, "_publish_seat_modes", _publish)
+    return seen
+
+
+def test_the_board_path_hands_its_leg_timeouts_to_the_seat_modes(monkeypatch):
+    harden_require("review-leg-isolation")
+    seen = _record_mode_timeouts(monkeypatch)
+    invoke_sanctioned_board_control(
+        DEFAULT_BOARD, "artifact", spawn=lambda leg, artifact: ("OK", "AGREE"),
+        base_env={}, max_concurrency=1, timeouts_by_leg={"claude": 3600})
+    assert seen == [{"claude": 3600}]
+
+
+def test_the_all_native_path_hands_its_leg_timeouts_to_the_seat_modes(monkeypatch):
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    from phase_loop_runtime.advisor_board.schema import Board
+
+    claude = next(seat for seat in DEFAULT_SEATS if seat.harness == "claude")
+    board = Board(name="all-claude", purpose="premerge-review", seats=(claude,))
+    seen = _record_mode_timeouts(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    invoke_sanctioned_board_control(
+        board, "artifact", base_env={"CLAUDECODE": "1"}, timeouts_by_leg={"claude": 3600})
+    assert seen == [{"claude": 3600}]

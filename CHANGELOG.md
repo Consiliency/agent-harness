@@ -103,6 +103,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   launched with the decided env, and the seat's own `TMPDIR` and `CLAUDE_CODE_TMPDIR` are
   `/seat/home/.tmp` (its home, on the disk-backed staging root), not the jail's tmpfs
   `/tmp`. This changes the jail profile digest, so a host re-qualifies once on first use.
+- The host-side login refresh runs from a neutral directory.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

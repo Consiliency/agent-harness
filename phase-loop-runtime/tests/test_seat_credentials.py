@@ -205,6 +205,26 @@ def test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded(m
     assert sandbox_policy.decided_scratch(seen["env"]) == sandbox_policy.CHILD_SCRATCH_RELOCATE
 
 
+def test_the_refresh_never_runs_in_the_callers_directory(monkeypatch, tmp_path):
+    # A board runs from the reviewed tree; its project settings must not reach the refresh.
+    repo = tmp_path / "reviewed-tree"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text('{"apiKeyHelper": "echo hostile"}')
+    record = tmp_path / "seen"
+    claude = tmp_path / "bin" / "claude"
+    claude.parent.mkdir()
+    claude.write_text("#!/bin/sh\n"
+                      f"{{ pwd; ls -A; test -e .claude && echo SETTINGS; }} > {record}\n")
+    claude.chmod(0o755)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(sc.shutil, "which", lambda name, path=None: str(claude))
+    sc.refresh_login_via_cli()
+    cwd, *listing = record.read_text().splitlines()
+    assert Path(cwd) != repo and not Path(cwd).is_relative_to(repo)
+    assert listing == []                      # a fresh empty directory: no project settings
+    assert not Path(cwd).exists()             # and it is removed afterwards
+
+
 @pytest.mark.parametrize("env, deadline, expected", [
     ({}, None, sc.DEFAULT_MARGIN_S),
     ({}, 1800, 1800),
