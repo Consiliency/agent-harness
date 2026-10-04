@@ -104,7 +104,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `/seat/home/.tmp` (its home, on the disk-backed staging root), not the jail's tmpfs
   `/tmp`. This changes the jail profile digest, so a host re-qualifies once on first use.
 - The host-side login refresh runs from a neutral directory under the per-user state root,
-  with the user's settings only.
+  loads no settings, and does not run when the CLI's config root is inside the working
+  directory.
 - The jailed seat's identity probe lists its descriptors from a child process, not a shell
   pipeline, so a correctly confined seat is no longer refused intermittently.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed

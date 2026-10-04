@@ -47,6 +47,7 @@ GR = SRC / "governed_review.py"
 CL = SRC / "cli.py"
 T_AGY = "tests/test_agy_canary_evidence.py"
 T_HELP = "tests/test_seat_launch_helpers_trusted.py"
+T_R10 = "tests/test_seat_login_refresh_config_root_1166.py"
 
 UPG_NODE = (f"{T_PERM}::test_upg_every_other_group_writable_chain_refuses_with_the_chmod_notice"
             "[%s]")
@@ -545,8 +546,8 @@ MUTATIONS: list[dict[str, object]] = [
      "new": "    for directory in (home, out):",
      "nodes": [f"{T_HELP}::test_the_seat_scratch_is_its_disk_backed_home_never_the_jail_tmpfs"]},
     {"id": "R7-login-refresh-env-undecided", "file": SC,
-     "old": "                env=sandbox_policy.child_scratch_env(os.environ,\n                                                     sandbox_policy.CHILD_SCRATCH_RELOCATE))",
-     "new": "                )",
+     "old": "                env=sandbox_policy.child_scratch_env(env, sandbox_policy.CHILD_SCRATCH_RELOCATE))",
+     "new": "                env=env)",
      "nodes": [f"{T_CRED}::test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded"]},
     {"id": "R7-suite-sees-the-host-claude-state", "file": CONFTEST,
      "old": '    if request.node.get_closest_marker("host_seat_credentials") is not None:',
@@ -576,10 +577,11 @@ MUTATIONS: list[dict[str, object]] = [
      "new": '        with tempfile.TemporaryDirectory(prefix="refresh-") as neutral:',
      "nodes": [f"{T_CRED}::test_the_refresh_never_runs_in_the_reviewed_tree"]},
     {"id": "R9-refresh-loads-project-settings", "file": SC,
-     "old": '            run([claude, "--setting-sources", "user", "auth", "status", "--json"],',
+     "old": '            run([claude, "--setting-sources", "", "auth", "status", "--json"],',
      "new": '            run([claude, "auth", "status", "--json"],',
      "nodes": [f"{T_CRED}::test_the_refresh_never_runs_in_the_reviewed_tree",
-               f"{T_CRED}::test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded"]},
+               f"{T_CRED}::test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded",
+               f"{T_R10}::test_the_refresh_loads_no_settings_and_keeps_the_verified_store"]},
     {"id": "R9-refresh-parent-inside-the-cwd-accepted", "file": SC,
      "old": "    if resolved == here or here in resolved.parents:\n        return None",
      "new": "    if False:\n        return None",
@@ -588,6 +590,29 @@ MUTATIONS: list[dict[str, object]] = [
      "old": "    \"/usr/bin/python3 -I -S -c 'import os\\n\"\n    \"def ok(n):\\n\"\n    \" try: os.fstat(int(n)); return True\\n\"\n    \" except OSError: return False\\n\"\n    \"print(\\\" \\\".join(n for n in sorted(os.listdir(\\\"/proc/self/fd\\\"), key=int) if ok(n)) + \\\" \\\")'; \"\n",
      "new": "    'ls /proc/$$/fd | sort -n | tr \"\\\\n\" \" \"; echo; '\n",
      "nodes": [f"{T_JAIL}::test_the_probe_lists_descriptors_without_a_pipeline"]},
+    # Round 10 (codex F001): no settings, and no repository-controlled config root.
+    {"id": "R10-refresh-loads-user-settings", "file": SC,
+     "old": '            run([claude, "--setting-sources", "", "auth", "status", "--json"],',
+     "new": '            run([claude, "--setting-sources", "user", "auth", "status", "--json"],',
+     "nodes": [f"{T_R10}::test_the_refresh_loads_no_settings_and_keeps_the_verified_store"]},
+    {"id": "R10-config-root-in-the-tree-accepted", "file": SC,
+     "old": "    if _inside(resolved, here) or _inside(store, here):",
+     "new": "    if False:",
+     "nodes": [f"{T_R10}::test_a_config_root_in_the_reviewed_tree_is_refused_typed[CLAUDE_CONFIG_DIR]",
+               f"{T_R10}::test_a_config_root_in_the_reviewed_tree_is_refused_typed[HOME]",
+               f"{T_R10}::test_a_symlink_into_the_reviewed_tree_is_refused_typed[root]"]},
+    {"id": "R10-store-symlink-unchecked", "file": SC,
+     "old": "    if _inside(resolved, here) or _inside(store, here):",
+     "new": "    if _inside(resolved, here):",
+     "nodes": [f"{T_R10}::test_a_symlink_into_the_reviewed_tree_is_refused_typed[store]"]},
+    {"id": "R10-config-dir-not-pinned", "file": SC,
+     "old": '        env["CLAUDE_CONFIG_DIR"] = str(resolved)',
+     "new": '        pass',
+     "nodes": [f"{T_R10}::test_the_refresh_loads_no_settings_and_keeps_the_verified_store"]},
+    {"id": "R10-default-root-sets-config-dir", "file": SC,
+     "old": '        env["HOME"] = str(home.resolve())',
+     "new": '        env["CLAUDE_CONFIG_DIR"] = str(resolved)',
+     "nodes": [f"{T_R10}::test_an_unset_config_dir_stays_unset_with_a_verified_home"]},
 ]
 
 

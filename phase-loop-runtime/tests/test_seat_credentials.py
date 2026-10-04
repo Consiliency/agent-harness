@@ -197,7 +197,7 @@ def test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded(m
 
     monkeypatch.setattr(sc.shutil, "which", lambda name, path=None: "/opt/bin/claude")
     sc.refresh_login_via_cli(run=run)
-    assert seen["argv"] == ["/opt/bin/claude", "--setting-sources", "user", "auth", "status",
+    assert seen["argv"] == ["/opt/bin/claude", "--setting-sources", "", "auth", "status",
                             "--json"]
     assert seen["stdout"] is subprocess.DEVNULL and seen["stderr"] is subprocess.DEVNULL
     # agent-harness#1147: the host CLI runs with its scratch decided, never an inherited env.
@@ -238,7 +238,7 @@ def test_the_refresh_never_runs_in_the_reviewed_tree(monkeypatch, tmp_path):
     assert Path(cwd).resolve().is_relative_to(seat_jail.state_home().resolve())
     assert listing == []                      # a fresh empty directory
     assert not Path(cwd).exists()             # removed afterwards
-    assert argv == "--setting-sources user auth status --json"   # no project/local settings
+    assert argv == "--setting-sources  auth status --json"   # no settings at all
     assert store.read_text() == "refreshed\n"                     # the user's own store
     assert not any((repo / "tmp").iterdir())
 

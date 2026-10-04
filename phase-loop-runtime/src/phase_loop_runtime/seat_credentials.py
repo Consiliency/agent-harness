@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -191,28 +192,76 @@ def _refresh_parent() -> Path | None:
     return parent
 
 
-def refresh_login_via_cli(run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> None:
+#: Why a login refresh did not run (it is never an error: the re-read decides).
+REFRESH_NO_CLI = "login_refresh_no_cli"
+REFRESH_NO_PRIVATE_DIR = "login_refresh_no_private_dir"
+REFRESH_CONFIG_IN_WORKING_TREE = "login_refresh_config_root_in_working_tree"
+REFRESH_FAILED = "login_refresh_failed"
+
+
+def _inside(path: Path, here: Path) -> bool:
+    return path == here or here in path.parents
+
+
+def _refresh_env(base: Mapping[str, str]) -> "tuple[dict[str, str] | None, str | None]":
+    """The env the refresh runs with, or ``(None, reason)``. The CLI's effective config root
+    (``CLAUDE_CONFIG_DIR``, else ``$HOME/.claude``) and its credential store must not
+    resolve (symlinks followed) into this process's working directory: a board runs from
+    the reviewed tree, so a root there is repository-controlled. The verified roots are
+    passed explicitly. ``CLAUDE_CONFIG_DIR`` is set only when it was set: setting it would
+    move the CLI's global config, and on macOS its Keychain item name."""
+    env = dict(base)
+    try:
+        here = Path.cwd().resolve()
+        configured = env.get("CLAUDE_CONFIG_DIR")
+        home = Path(env.get("HOME") or Path.home())
+        root = Path(configured) if configured else home / ".claude"
+        if not root.is_absolute():
+            return None, REFRESH_CONFIG_IN_WORKING_TREE
+        resolved = root.resolve()
+        store = (root / ".credentials.json").resolve()
+    except (OSError, RuntimeError):
+        return None, REFRESH_CONFIG_IN_WORKING_TREE
+    if _inside(resolved, here) or _inside(store, here):
+        return None, REFRESH_CONFIG_IN_WORKING_TREE
+    if configured:
+        env["CLAUDE_CONFIG_DIR"] = str(resolved)
+    else:
+        env["HOME"] = str(home.resolve())
+    return env, None
+
+
+def refresh_login_via_cli(run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                          ) -> str | None:
     """Ask the CLI to bring its login up to date, on the host. Its output (which names the
-    account) is discarded; a failure is not an error here, the re-read decides. It runs
-    with this process's environment after the agent-harness#1147 scratch decision, from a
-    fresh empty directory under :func:`_refresh_parent`, and loads the user's settings
-    only (``--setting-sources user``): no directory's project or local settings apply. The
+    account) is discarded. Returns ``None`` when the refresh ran, else why it did not (one
+    of the ``REFRESH_*`` reasons, logged); neither is an error here, the re-read decides.
+
+    It runs from a fresh empty directory under :func:`_refresh_parent`, loads NO settings
+    (``--setting-sources ""``, as the brokered seat does), and gets the verified config
+    root from :func:`_refresh_env`, after the agent-harness#1147 scratch decision. The
     login store it reads and writes is the user's (``CLAUDE_CONFIG_DIR`` or ``~/.claude``)."""
+    log = logging.getLogger(__name__)
     claude = shutil.which("claude")
     if claude is None:
-        return
+        return REFRESH_NO_CLI
+    env, refused = _refresh_env(os.environ)
+    if env is None:
+        log.warning("Claude login refresh not run: %s", refused)
+        return refused
     parent = _refresh_parent()
     if parent is None:
-        return
+        log.warning("Claude login refresh not run: %s", REFRESH_NO_PRIVATE_DIR)
+        return REFRESH_NO_PRIVATE_DIR
     try:
         with tempfile.TemporaryDirectory(prefix="refresh-", dir=parent) as neutral:
-            run([claude, "--setting-sources", "user", "auth", "status", "--json"],
+            run([claude, "--setting-sources", "", "auth", "status", "--json"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                 timeout=_REFRESH_TIMEOUT_S, check=False, cwd=neutral,
-                env=sandbox_policy.child_scratch_env(os.environ,
-                                                     sandbox_policy.CHILD_SCRATCH_RELOCATE))
+                env=sandbox_policy.child_scratch_env(env, sandbox_policy.CHILD_SCRATCH_RELOCATE))
     except (OSError, subprocess.SubprocessError):
-        return
+        return REFRESH_FAILED
+    return None
 
 
 def login_margin_s(deadline_s: float | None = None, env: Mapping[str, str] | None = None) -> float:
@@ -246,7 +295,7 @@ def resolve_claude_seat_credential(
     margin_s: float, *,
     now: Callable[[], float] | None = None,
     read_login: Callable[[], LoginToken | None] | None = None,
-    refresh: Callable[[], None] | None = None,
+    refresh: Callable[[], object] | None = None,
 ) -> SeatCredential:
     """The credential for ONE launch. Raises ``SeatSandboxRefused`` with exactly one notice
     code: ``seat_sandbox_refused:token_file_unsafe`` (an unsafe override),
