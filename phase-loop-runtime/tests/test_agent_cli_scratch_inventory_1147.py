@@ -134,6 +134,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "git"),
     ("conformance/outside_agent_conform_evidence.py", "_validate_chronology._git_blob_bytes"): (
         NOT_AGENT, "git"),
+    ("baml_modular.py", "_spawn_popen"): (
+        NOT_AGENT, "the BAML worker: this Python interpreter (-I -S) running the worker script"),
     ("generated_outputs.py", "_run_bounded"): (
         NOT_AGENT, "the repository's declared build-output producers (closeout audit)"),
     # Launch functions passed as values (injectable runners); each one's callers launch
