@@ -6,7 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### A vendor-neutral sandbox placement seam, with today's local path behind it (agent-harness#896, plan 1a)
+## [0.7.23] - 2026-10-05
+
+### Qualified agy set adds 1.2.16 (agent-harness#1248)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
+  now admit agy 1.2.16 (Linux x64 image SHA256
+  `a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86`, from the upstream
+  `agy_cli_linux_x64.tar.gz` asset SHA256 `d4247430…`). Its help digest equals 1.2.15's
+  (`8fcf4022…`). The set is now 1.2.11, 1.2.12, 1.2.14, 1.2.15 and 1.2.16.
+- All five members were requalified on the release tree (completion, cancel and
+  owner-loss each, then `--validate`), because agent-harness#1160 and agent-harness#1161
+  changed `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
+- BAML v1 ships with `baml-bridge` 0.20.1 and `protobuf` 7.36.2 (the locked resolution of
+  `protobuf>=6.31.1,<8`).
+
+### Gate A clean-room: the scratch audit hook judges an installed runtime (PR agent-harness#1247)
+
+- The agent-harness#1147 test-suite audit hook located the runtime only under the source
+  tree. Inside a venv, `sysconfig`'s `platstdlib` is a prefix of site-packages. So in the
+  standalone-from-wheel gate every frame of the installed `phase_loop_runtime` counted as
+  standard library: runtime spawns went unjudged, and runtime threads were reported as
+  unattributed. Gate A has been red on `main` since agent-harness#1161. The hook now
+  counts the package actually imported as runtime, and skips site-packages explicitly.
+  This is test-only; no runtime behaviour changes.
+- `credential_redaction.py` no longer emits a `SyntaxWarning` for an invalid escape on a
+  cold import under Python 3.12 (a docstring is now raw). agent-harness#1241 had
+  worked around that warning in a stderr test for the v0.7.22 tag run.
+
+### A vendor-neutral remote sandbox placement seam, with today's local path behind it; stricter sandbox-root parsing (agent-harness#896, plan 1a; PR agent-harness#1246)
 
 - **Seam.** `phase_loop_runtime.sandbox_placement` defines the placement contract every
   backend follows (prepare, revalidate, commit, execute, release), its receipts, the
@@ -32,8 +60,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Knob.** `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` refuses a seat leg that was not executed
   remotely; in this release that is every seat leg (`sandbox_placement_required_unavailable`).
   An unrecognised value is read as on. Advisory-mode boards are not governed by it.
-- **Release note.** This changes runtime source, so the agy pin set drifts and the next
-  release cut requalifies agy.
+- **Release note.** This changes runtime source, so the agy pin set drifted; this cut
+  requalifies agy (see the agy entry above).
+
+### Plans: review seats never run toolless (agent-harness#1244; PR agent-harness#1245)
+
+- Planning only: two detailed plans for agent-harness#1244 (the seat route resolver and the
+  sandbox selection evidence), registered in `plans/manifest.json`. No runtime change.
+
 
 ### Sandbox staging and agent-CLI scratch stay off RAM; retention is sized to its filesystem (agent-harness#1147)
 
@@ -198,8 +232,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   never expires, and `dagger-offload` (pinned to Consiliency/ci-actions@3929e18, from
   Consiliency/ci-actions#5) mints a fresh ephemeral, pre-approved key per run. Offload
   eligibility now keys on `TS_OAUTH_SECRET`; fork PRs still never receive it.
-
-### Heartbeat-only seats no longer stall silently (agent-harness#1176)
 
 ## [0.7.22] - 2026-10-03
 
