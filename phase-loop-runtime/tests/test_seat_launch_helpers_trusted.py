@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -120,7 +121,11 @@ def _module_launches(tree: ast.AST) -> list[tuple[int, str]]:
 def test_no_package_helper_is_launched_with_dash_m():
     offenders = []
     for path in sorted(SRC.rglob("*.py")):
-        for line, module in _module_launches(ast.parse(path.read_text(encoding="utf-8"))):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        for line, module in _module_launches(tree):
             if (path.name, module) in _REPOSITORY_TOOLING:
                 continue
             offenders.append(f"{path.relative_to(SRC)}:{line} -m {module}")
@@ -133,3 +138,52 @@ def test_the_inventory_scan_sees_a_dash_m_launch():
     assert _module_launches(sample) == [(1, "phase_loop_runtime.seat_uid")]
     # nsenter's own `-m` (its mount namespace flag) is not a Python launch.
     assert _module_launches(ast.parse('a = ["/usr/bin/nsenter", "-t", "1", "-U", "-m"]\n')) == []
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1147 scratch decision on the jailed launch (merged with agent-harness#1161).
+# --------------------------------------------------------------------------------------
+
+def test_the_jailed_probe_and_launch_get_the_same_decided_env(monkeypatch, tmp_path):
+    from phase_loop_runtime import sandbox_policy
+    from test_seat_sandbox_permissions import _fake_jail
+
+    jail = _fake_jail(tmp_path / "jail")
+    probe = _fake_jail(tmp_path / "probe")
+    seen: list = []
+    monkeypatch.setattr(pi, "_require_qualified_jail", lambda owner: None)
+    monkeypatch.setattr(pi, "_compose_launch_prefix", lambda *a: ["prefix"])
+    monkeypatch.setattr(pi, "_compose_seat_jail_prefix", lambda owner, *a: ["probe-prefix"])
+    monkeypatch.setattr(pi, "_require_jailed_seat_identity",
+                        lambda prefix, owner, fds=(), env=None: seen.append(env))
+    monkeypatch.setattr(pi.subprocess, "Popen", lambda argv, **kw: seen.append(kw["env"]))
+    try:
+        pi.launch_provider([jail.provider_argv0], process_owner=jail, probe_owner=probe,
+                           env={"HOME": "/operator"}, stdin=subprocess.DEVNULL)
+    finally:
+        seat_jail.close_jail_fds(jail)
+        seat_jail.close_jail_fds(probe)
+    assert len(seen) == 2 and seen[0] is seen[1]
+    assert sandbox_policy.decided_scratch(seen[0]) == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    # The caller's env is not the helper chain's: the jail clears it and sets the seat's own.
+    assert "HOME" not in seen[0]
+
+
+def test_the_seat_scratch_is_its_disk_backed_home_never_the_jail_tmpfs(tmp_path):
+    from test_seat_sandbox_permissions import _fake_jail
+
+    for leg in ("claude", "gemini"):
+        env = seat_jail.seat_env(leg, token_fd=None)
+        assert env["TMPDIR"] == seat_jail.SEAT_TMP
+        assert seat_jail.SEAT_TMP.startswith(seat_jail.SEAT_HOME + "/")
+    assert seat_jail.seat_env("claude", token_fd=None)["CLAUDE_CODE_TMPDIR"] == seat_jail.SEAT_TMP
+    jail = _fake_jail(tmp_path)
+    try:
+        owner = list(jail.process_owner)
+        setenv = {owner[i + 1]: owner[i + 2] for i, item in enumerate(owner) if item == "--setenv"}
+        assert setenv["TMPDIR"] == setenv["CLAUDE_CODE_TMPDIR"] == seat_jail.SEAT_TMP
+        home = Path(jail.review_dir) / seat_jail.HOST_HOME_DIRNAME
+        assert owner[owner.index(str(home)) + 1] == seat_jail.SEAT_HOME
+        assert (home / seat_jail.SEAT_TMP_DIRNAME).is_dir()
+    finally:
+        seat_jail.close_jail_fds(jail)

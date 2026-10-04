@@ -3880,8 +3880,19 @@ def _pass_refusal(digest: str, pass_recorded: "Callable[[str], bool] | None" = N
     return _seat_jail.refused(sub), reason
 
 
+def _jail_launch_env(decision: str = _sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                     ) -> "_sandbox_policy.DecidedEnv":
+    """The env of a jailed launch's helper chain (keyring, nsenter, handoff, bwrap), after
+    its scratch decision (agent-harness#1147). The seat itself never sees it: bwrap clears
+    the environment and sets the seat's own (``seat_jail.seat_env``), whose scratch is the
+    disk-backed ``seat_jail.SEAT_TMP`` in the seat's home. Callers hand this exact object
+    to the spawn; a copy is not a decision."""
+    return _sandbox_policy.child_scratch_env(_seat_uid._pythonpath_env(), decision)
+
+
 def _require_jailed_seat_identity(prefix: "Sequence[str]", jail: "_seat_jail.SeatJail",
-                                  pass_fds: "Sequence[int]" = ()) -> None:
+                                  pass_fds: "Sequence[int]" = (),
+                                  env: "_sandbox_policy.DecidedEnv | None" = None) -> None:
     """J6/J15: launch only on POSITIVE evidence the seat is confined as declared.
 
     The probe runs through the exact jail prefix (a probe jail of the same shape, since
@@ -3898,7 +3909,7 @@ def _require_jailed_seat_identity(prefix: "Sequence[str]", jail: "_seat_jail.Sea
             seen = subprocess.run(
                 [*prefix, "/bin/sh", "-c", _seat_jail.JAIL_PROBE, "sh", marker],
                 capture_output=True, text=True, timeout=60,
-                env=_seat_uid._pythonpath_env(), stdin=subprocess.DEVNULL,
+                env=env if env is not None else _jail_launch_env(), stdin=subprocess.DEVNULL,
                 pass_fds=tuple(pass_fds), close_fds=True,
             ).stdout.splitlines()
         except subprocess.TimeoutExpired:
@@ -4045,12 +4056,15 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
                                                 "a jailed launch needs its probe jail")
         _require_qualified_jail(process_owner)
+        # The provider's scratch decision, applied to the helper chain's own env; the probe
+        # and the launch are handed this same decided object.
+        env = _jail_launch_env(child_scratch)
         _require_jailed_seat_identity(_compose_seat_jail_prefix(probe_owner), probe_owner,
-                                      probe_owner.pass_fds)
+                                      probe_owner.pass_fds, env)
         kwargs.pop("cwd", None)
         kwargs["pass_fds"] = tuple(process_owner.pass_fds)
         kwargs["close_fds"] = True
-        kwargs["env"] = _seat_uid._pythonpath_env()
+        kwargs["env"] = env
         return subprocess.Popen([*prefix, *argv], **kwargs)
     if _probes_seat(prefix, process_owner):
         if probe_owner is None:

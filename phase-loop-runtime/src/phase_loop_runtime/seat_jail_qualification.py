@@ -406,7 +406,7 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
             done = subprocess.run(
                 [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
                 capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
-                env=seat_uid._pythonpath_env(), stdin=subprocess.DEVNULL)
+                env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
         finally:
             seat_jail.close_jail_fds(jail)
             for parent in (review, seat_dir):

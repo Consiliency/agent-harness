@@ -697,7 +697,9 @@ def test_hang_investigation_sealed_claude_tui_session_is_golden_to_main(monkeypa
     """Board round 1 hang investigation (agent-harness#1166): on the sealed route this
     runtime hands the Claude TUI session EXACTLY what main's runtime does -- argv, cwd shape,
     env keys, prompt and every liveness/monitoring kwarg. The golden was captured from
-    main's runtime (origin/main b6a482fa) with the same inputs."""
+    main's runtime (origin/main b6a482fa) with the same inputs; its env keys were re-taken
+    from origin/main 62a80506, whose scratch decision (agent-harness#1161) adds
+    ``PHASE_LOOP_SCRATCH_DECIDED``."""
     import uuid as _uuid
 
     golden = json.loads((Path(__file__).parent / "data"

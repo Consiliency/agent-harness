@@ -34,6 +34,7 @@
  "env": [
   "HOME",
   "PATH",
+  "PHASE_LOOP_SCRATCH_DECIDED",
   "TERM"
  ],
  "mode": "review",

@@ -51,6 +51,10 @@ SEAT_REVIEW = "/seat/review"
 SEAT_BUNDLE = SEAT_REVIEW + "/review-bundle.md"
 SEAT_INSTRUCTIONS = SEAT_REVIEW + "/review-instructions.md"
 SEAT_CLAUDE_CONFIG = SEAT_HOME + "/.claude"
+# The seat's scratch (agent-harness#1147): in its home, which is on the disk-backed staging
+# root. The jail's own `/tmp` is a tmpfs, so it is not the seat's TMPDIR.
+SEAT_TMP_DIRNAME = ".tmp"
+SEAT_TMP = SEAT_HOME + "/" + SEAT_TMP_DIRNAME
 
 # Host layout under a leg's review dir.
 HOST_TREE_DIRNAME = "reviewed-tree"
@@ -1090,7 +1094,7 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
         "XDG_CACHE_HOME": SEAT_HOME + "/.cache",
         "XDG_DATA_HOME": SEAT_HOME + "/.local/share",
         "XDG_STATE_HOME": SEAT_HOME + "/.local/state",
-        "TMPDIR": "/tmp",
+        "TMPDIR": SEAT_TMP,
         "PATH": SEAT_BIN + ":/usr/bin:/bin",
         "LANG": lang,
         "TERM": term,
@@ -1098,6 +1102,7 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
     }
     if leg == "claude":
         env["CLAUDE_CONFIG_DIR"] = SEAT_CLAUDE_CONFIG
+        env["CLAUDE_CODE_TMPDIR"] = SEAT_TMP
         if token_fd is not None:
             env[CLAUDE_TOKEN_FD_ENV] = str(token_fd)
     return env
@@ -1196,7 +1201,7 @@ def build_seat_jail(
     out = review_dir / HOST_OUT_DIRNAME
     if not tree.is_dir() or tree.is_symlink():
         raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
-    for directory in (home, out):
+    for directory in (home, out, home / SEAT_TMP_DIRNAME):
         try:
             os.mkdir(directory, 0o700)
         except OSError as exc:
