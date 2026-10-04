@@ -351,15 +351,17 @@ def isolated_network(
         slirp = None
         try:
             if timeout_s is None:
-                from .panel_invoker import launch_provider
+                from .panel_invoker import _infrastructure_launch, launch_provider
 
                 owner_read, owner_write = os.pipe()
-                holder = launch_provider(
-                    ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
-                     f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
-                     f'echo $$ > {pidfile}; touch {ready}; read -r _owner_lifetime'],
-                    stdin=owner_read, close_fds=True,
-                )
+                # Infrastructure, not a provider: never counted as a leg's provider spawn.
+                with _infrastructure_launch():
+                    holder = launch_provider(
+                        ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
+                         f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
+                         f'echo $$ > {pidfile}; touch {ready}; read -r _owner_lifetime'],
+                        stdin=owner_read, close_fds=True,
+                    )
             else:
                 holder = subprocess.Popen(
                     ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
@@ -375,12 +377,13 @@ def isolated_network(
             nspid = Path(pidfile).read_text(encoding="utf-8").strip()
 
             if timeout_s is None:
-                slirp = launch_provider(
-                    ["slirp4netns", "--configure", "--mtu=65520",
-                     "--disable-host-loopback", f"--exit-fd={owner_read}", nspid, "tap0"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    pass_fds=(owner_read,), close_fds=True,
-                )
+                with _infrastructure_launch():
+                    slirp = launch_provider(
+                        ["slirp4netns", "--configure", "--mtu=65520",
+                         "--disable-host-loopback", f"--exit-fd={owner_read}", nspid, "tap0"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        pass_fds=(owner_read,), close_fds=True,
+                    )
             else:
                 slirp = subprocess.Popen(
                     ["slirp4netns", "--configure", "--mtu=65520",

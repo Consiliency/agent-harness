@@ -31,7 +31,6 @@ import unicodedata
 import json
 import threading
 import uuid
-import warnings
 from collections import Counter
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3527,9 +3526,9 @@ class _SpawnCounter:
         self._lock = threading.Lock()
         self._count = 0
 
-    def increment(self) -> None:
+    def increment(self, delta: int = 1) -> None:
         with self._lock:
-            self._count += 1
+            self._count += delta
 
     @property
     def count(self) -> int:
@@ -3549,10 +3548,24 @@ def _bind_spawn_counter(counter: "_SpawnCounter | None"):
         _LEG_SPAWNS.reset(token)
 
 
-def _count_provider_spawn() -> None:
+_INFRASTRUCTURE_LAUNCH: ContextVar[bool] = ContextVar("_INFRASTRUCTURE_LAUNCH", default=False)
+
+
+@contextlib.contextmanager
+def _infrastructure_launch():
+    """Launches inside this block are infrastructure (the egress namespace holder, its
+    uplink), not providers: they go through the launch interface but are never counted."""
+    token = _INFRASTRUCTURE_LAUNCH.set(True)
+    try:
+        yield
+    finally:
+        _INFRASTRUCTURE_LAUNCH.reset(token)
+
+
+def _count_provider_spawn(delta: int = 1) -> None:
     counter = _LEG_SPAWNS.get()
-    if counter is not None:
-        counter.increment()
+    if counter is not None and not _INFRASTRUCTURE_LAUNCH.get():
+        counter.increment(delta)
 
 
 # This build has no driver that executes a leg on a non-local placement backend (plan 1b of
@@ -3821,8 +3834,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         else:
             probe = _compose_launch_prefix(cwd, probe_owner, retain_caps)
         _require_seat_identity(probe, retain_caps)
+    process = subprocess.Popen([*prefix, *argv], **kwargs)
+    # Counted once the process exists: a launch that fails to exec is not a spawn.
     _count_provider_spawn()
-    return subprocess.Popen([*prefix, *argv], **kwargs)
+    return process
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
@@ -3832,8 +3847,14 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
     prefix = _provider_launch_prefix(kwargs.get("cwd"))
     if _probes_seat(prefix):
         _require_seat_identity(prefix)
+    # Counted while it runs, so a record taken mid-run sees it; withdrawn when the process
+    # never started (`subprocess.run` raises OSError only when the exec itself fails).
     _count_provider_spawn()
-    return subprocess.run([*prefix, *argv], **kwargs)
+    try:
+        return subprocess.run([*prefix, *argv], **kwargs)
+    except OSError:
+        _count_provider_spawn(-1)
+        raise
 
 
 def _record_sandbox_facts(
@@ -9175,6 +9196,13 @@ def _with_placement(value: tuple) -> tuple:
     )
 
 
+def _placement_gate(backend: object) -> str | None:
+    """The execution gate: a refusal code for a backend this build cannot execute on."""
+    if _sandbox_placement.is_local(backend) or _NONLOCAL_EXECUTION_DRIVER:
+        return None
+    return "sandbox_placement_driver_unavailable"
+
+
 def _refuse_unless_executed_remotely(mode: str, *, executed_remotely: bool) -> None:
     """``PHASE_LOOP_SANDBOX_REMOTE_REQUIRED``: refuse a seat leg the runtime did not run
     through a remote backend's ``execute``. Exemption is by EXECUTION, never by where
@@ -9322,12 +9350,15 @@ def _default_spawn(
     # The leg's state behind the placement seam (agent-harness#896). Initialised before the
     # `try` so the `finally` releases whatever exists, however the leg exits.
     placement: "_sandbox_placement.LegPlacement | None" = None
-    facts_token = None
     egress_stack = contextlib.ExitStack()
     broker: ParentUnixBroker | None = None
     quiescence_failed = False
     spawn_counter = _SpawnCounter()
     spawn_token = _LEG_SPAWNS.set(spawn_counter)
+    # The leg starts with NO sandbox facts, whatever its calling context holds, and the
+    # leg's own `finally` restores that context through this first token -- so a leg reports
+    # only facts it recorded, and the next leg on the thread can never inherit them.
+    facts_token = _SANDBOX_ROUND_FACTS.set({})
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
@@ -9361,34 +9392,32 @@ def _default_spawn(
                 # One root for the whole round. Unreachable falls back with a warning;
                 # below the free-space floor REFUSES, because filling this filesystem
                 # takes the host down while a refused round costs minutes.
+                # Under the fail-closed knob the outcome is already known here, so refuse
+                # before anything is selected, probed or staged. The launch-boundary check
+                # below is the backstop.
+                _refuse_unless_executed_remotely(mode, executed_remotely=False)
+                # Every configured root, tried in order (`[sandbox] roots` / `order`, or the
+                # single `PHASE_LOOP_SANDBOX_ROOT`). THE EXECUTION GATE is `accept`: it is
+                # asked before a non-local root is chosen, before `prepare` and before ANY
+                # backend method -- a build commits only what it will execute.
+                # Registration is a protocol check; without the gate, an installed backend
+                # would receive the tree while the seat ran here.
                 root_choice = _sandbox_policy.select_sandbox_root(
-                    configured=_sandbox_policy.configured_root(),
                     fallback=review_dir,
                     floor_bytes=staging_floor,
                     probe_timeout_s=_sandbox_policy.probe_timeout_s(),
+                    roots=_sandbox_policy.configured_roots(),
+                    accept=_placement_gate,
                 )
                 backend = _sandbox_placement.resolve_backend(root_choice)
-                if not _sandbox_placement.is_local(backend) and not _NONLOCAL_EXECUTION_DRIVER:
-                    # THE EXECUTION GATE, before `prepare` and before ANY backend method: a
-                    # build commits only what it will execute. Registration is a protocol
-                    # check; without this, an installed backend would receive the tree
-                    # while the seat ran here.
-                    _refuse_unless_executed_remotely(mode, executed_remotely=False)
-                    reason = f"{root_choice.scheme}: sandbox_placement_driver_unavailable"
-                    warnings.warn(
-                        f"sandbox placement {reason}; staging locally", RuntimeWarning,
-                        stacklevel=2,
+                if _placement_gate(backend) is not None:
+                    # Backstop: `select_sandbox_root` never returns a refused backend.
+                    raise _sandbox_placement.PlacementUnavailable(
+                        "sandbox_placement_driver_unavailable",
                     )
-                    root_choice = _sandbox_policy.SandboxRootChoice(
-                        None, review_dir, True, reason,
-                    )
-                    backend = _sandbox_placement.LOCAL_BACKEND
                 # The namespace is acquired AFTER both revalidations, not here -- see
                 # `sandbox_root_choice` below.
                 sandbox_root_choice = root_choice
-                # Under the fail-closed knob the outcome is already known here, so refuse
-                # before anything is staged. The launch-boundary check below is the backstop.
-                _refuse_unless_executed_remotely(mode, executed_remotely=False)
                 # `prepare` is RUNTIME code for every backend: stage locally, measuring the
                 # filesystem that ACTUALLY receives the clone (board round 7, codex,
                 # BLOCKING), and own the partial stage until it returns.
@@ -9402,10 +9431,9 @@ def _default_spawn(
                     authorization_sha256=review_authorization.staged_tree_sha256,
                 )
                 # Recorded right after `prepare`, so a leg that fails later -- egress,
-                # revalidation -- still reports where its tree was. The reset is the leg's
-                # own `finally`, from this first `set`, so every exit restores the
-                # pre-leg value.
-                facts_token = _record_sandbox_facts(
+                # revalidation -- still reports where its tree was. The leg's own `finally`
+                # restores the pre-leg value on every exit.
+                _record_sandbox_facts(
                     root_choice, {}, staged_at=staged_tree_path, placement=placement,
                 )
             # Outside the digest branch on purpose: a lease that approves NO tree must
@@ -9472,11 +9500,11 @@ def _default_spawn(
             sandbox_enforcement = _sandbox_egress.enforcement_report(
                 applied=bool(egress_prefix),
             )
-            # The facts are reset by the leg's own `finally` through the FIRST token: an
+            # The facts are reset by the leg's own `finally` through its FIRST token: an
             # earlier version set this and never reset it, so the NEXT leg on the same
             # worker thread inherited this leg's isolation claim (board round 4). A token
             # parked on the egress stack only covered exits after egress came up.
-            token = _record_sandbox_facts(
+            _record_sandbox_facts(
                 sandbox_root_choice, sandbox_enforcement,
                 # WHERE IT IS, not where it was selected to go. `staged_tree_path` is the
                 # real stage; `sandbox_root_choice.path` is a policy decision.
@@ -9484,8 +9512,6 @@ def _default_spawn(
                 seat_identity=bool(egress_prefix),
                 placement=placement,
             )
-            if facts_token is None:
-                facts_token = token
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
             if leg == "gemini" and not seat_key:
@@ -9779,24 +9805,30 @@ def _default_spawn(
         return _BrokeredSpawnResult("DEGRADED", "", _exception_failure(exc),
                                    placement=placement_evidence)
     finally:
-        egress_stack.close()
-        if facts_token is not None:
-            _SANDBOX_ROUND_FACTS.reset(facts_token)
-        _LEG_SPAWNS.reset(spawn_token)
-        if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
-            shutil.rmtree(provider_output_dir, ignore_errors=True)
-        if base is not None and not quiescence_failed:
-            # The staged tree is deliberately read-only, and `rmtree(ignore_errors=True)`
-            # cannot unlink through a 0o500 directory -- it would fail SILENTLY and leak
-            # the whole stage every round. `release` drops it first, through the helper
-            # that restores modes on the way down.
-            if placement is not None:
-                placement.backend.release(placement.prepared)
-            # The same helper for the rest: a panelist can leave a read-only directory in
-            # `work/` too, and a bare rmtree then leaks the whole scratch dir silently.
-            _review_stage.remove_review_stage(base)
-        if capture_scratch is not None and agy_capture is None and not quiescence_failed:
-            shutil.rmtree(capture_scratch, ignore_errors=True)
+        # Nested so that NO exit -- not even egress teardown raising -- skips the rest: the
+        # stage is released, and this leg's facts and spawn counter are reset, so the next
+        # leg on this thread can never carry them.
+        try:
+            egress_stack.close()
+        finally:
+            try:
+                if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
+                    shutil.rmtree(provider_output_dir, ignore_errors=True)
+                if base is not None and not quiescence_failed:
+                    # The staged tree is deliberately read-only, and `rmtree(ignore_errors=
+                    # True)` cannot unlink through a 0o500 directory -- it would fail
+                    # SILENTLY and leak the whole stage every round. `release` drops it
+                    # first, through the helper that restores modes on the way down.
+                    if placement is not None:
+                        placement.backend.release(placement.prepared)
+                    # The same helper for the rest: a panelist can leave a read-only
+                    # directory in `work/` too, and a bare rmtree then leaks it silently.
+                    _review_stage.remove_review_stage(base)
+                if capture_scratch is not None and agy_capture is None and not quiescence_failed:
+                    shutil.rmtree(capture_scratch, ignore_errors=True)
+            finally:
+                _SANDBOX_ROUND_FACTS.reset(facts_token)
+                _LEG_SPAWNS.reset(spawn_token)
 
 
 # CS-0.8: routes the `_default_spawn` real-exec boundary through the

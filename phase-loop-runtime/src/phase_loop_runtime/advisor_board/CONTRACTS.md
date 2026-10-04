@@ -393,8 +393,10 @@ the caller passes a PATH and the runtime reads it.
     backend or refuses.
   - **Receipts.** Backends return `BackendReceipt`s only. Only the runtime builds a
     `PlacementReceipt(attested_by="runtime")`, for a step it performed and observed
-    (`prepared`, `committed`, `launched` -- `execute` called, or a local spawn it counted --
-    and `completed`). A backend's claim is recorded as `attested_by="backend"`. Every
+    (`prepared`, `committed`, `launched` -- `execute` called, or a local provider process
+    the runtime started, counted once `Popen` returned; a launch that fails to exec is not
+    one, and infrastructure launches such as the egress namespace holder and its uplink are
+    never counted -- and `completed`). A backend's claim is recorded as `attested_by="backend"`. Every
     receipt carries `sandbox_ref` (`[A-Za-z0-9._:-]{1,128}`, anything else refuses the
     placement) and `snapshot_sha256`, which the runtime computes from the local stage.
   - **`sandbox_root_applied`.** Local: the built-in backend, no host, and the root is the
@@ -412,23 +414,41 @@ the caller passes a PATH and the runtime reads it.
     fields. `declaration()` names the backend's egress residuals (closed kinds, each with
     `closed_in_guest`), the control-plane variables it injects into the guest (values
     redacted), and `max_lifetime_s`.
+  - **Roots.** `PHASE_LOOP_SANDBOX_ROOT` is the single-root form. Otherwise the user
+    config's `[sandbox]` table in `advisor-boards.toml` names one root per remote backend
+    (`roots.self-hosted = "https://…"`, `roots.e2b = "e2b://…"`) and the order to try them
+    (`order`, default `["self-hosted", "e2b"]`; named roots it omits follow in file order).
+    The single root is an alias for one backend and, when set, the only candidate. A
+    malformed table or unknown key raises `sandbox_config_invalid`; a repository file cannot
+    carry `[sandbox]`. Candidates are tried in order and the first usable one is chosen;
+    each one passed over adds `<name>: <reason>` to `sandbox_root_reason`.
+  - **Root parsing.** A value is stripped; anything containing `://` is a URL and keeps only
+    scheme, host, port and path. A malformed scheme (`sandbox_root_scheme_invalid`), a
+    built-in scheme written as a URL (`sandbox_root_scheme_builtin`), and a non-URL value
+    with `user:…@` or a query (`sandbox_root_unrecognised`) are refused without a probe and
+    rendered as a placeholder. No warning, reason, recorded path or probe argument is built
+    from the configured text; all use the parsed form.
   - **Execution gate.** A build calls a non-local backend's methods only if its own driver
     executes on that backend (`panel_invoker._NONLOCAL_EXECUTION_DRIVER`). This release has
-    no such driver: a resolved non-local backend is refused before `prepare` and before any
-    of its methods, and the leg falls back to local with `sandbox_root_fell_back=true` and a
-    reason naming the scheme and `sandbox_placement_driver_unavailable`.
+    no such driver: root selection passes over every non-local backend before `prepare` and
+    before any of its methods, and the leg falls back to local with
+    `sandbox_root_fell_back=true` and a reason naming the root and
+    `sandbox_placement_driver_unavailable`.
   - **Fail-closed knob.** `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` (`1`/`true`/`yes`/`on`; any
     unrecognised value is on) refuses a seat leg -- every review-mode leg `_default_spawn`
     launches for a board seat, tree or no tree -- unless the runtime ran it through a remote
     backend's `execute`. Exemption is by execution, never by where placement came from, so
-    in this release it refuses every seat leg, before anything is staged, with detail
-    `sandbox_placement_required_unavailable`.
+    in this release it refuses every seat leg, before any root is probed or anything is
+    staged, with detail `sandbox_placement_required_unavailable`. Advisory-mode boards are
+    not seat legs and are not governed by it.
   - **Evidence.** The leg's placement record (`sandbox_placement_backend`,
     `sandbox_placement_receipts`, `sandbox_placement_verified`,
     `sandbox_local_provider_spawns`, `sandbox_snapshot_sha256` -- the authorization's
     digest) is recorded right after `prepare` and travels on
-    `PanelLegResult.sandbox_placement_evidence` on every exit, failures included. The local
-    spawn count is read when the record is serialized. A brokered leg's broker evidence
+    `PanelLegResult.sandbox_placement_evidence` on every exit, failures included; the
+    runner persists it in the leg's `implementation-panel-<leg>.json`. The local spawn count
+    is read when the record is serialized. Every exit, including egress teardown raising,
+    releases the stage and resets the leg's facts and spawn counter. A brokered leg's broker evidence
     carries the same keys, and `scripts/verify_harden_evidence.py` enumerates them and
     checks the `applied` rule for the recorded backend.
 - **Spawned CLI scratch (agent-harness#1147, `fill_child_tmp_env`).** Agent CLIs write

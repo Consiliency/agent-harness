@@ -197,6 +197,21 @@ unknown, the attempt is `launched`:
   that scheme alone. It falls back or fails closed like any other refusal, and local legs are
   untouched.
 
+**Amendment: named backend roots (agent-harness#1246 round 1, requested by agent-harness#1245).**
+- One root per **named** remote backend, from the user config's `[sandbox]` table in
+  `advisor-boards.toml`: `roots.<name> = "<root>"`, tried in `order` (default
+  `["self-hosted", "e2b"]`; named roots the order omits follow in file order). Names match
+  `[a-z0-9][a-z0-9-]{0,62}`. A repository file cannot carry `[sandbox]`.
+- `PHASE_LOOP_SANDBOX_ROOT` stays as the single-root form, an alias for one backend; when it is
+  set it is the only candidate.
+- Candidates are tried in order; the first usable one is chosen. The execution gate is applied
+  to each candidate before it is chosen, so in 1a every non-local candidate is passed over and
+  the leg falls back to local, with `<name>: <root>: <reason>` for each in `sandbox_root_reason`.
+- Credential stripping applies per root: every root is parsed (stripped; anything containing
+  `://` is a URL) before it is rendered, and unusable forms are typed refusals that are never
+  probed.
+- A malformed `[sandbox]` table is `sandbox_config_invalid`, never a silent local round.
+
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py` (create)

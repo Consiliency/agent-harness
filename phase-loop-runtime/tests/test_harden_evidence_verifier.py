@@ -515,6 +515,42 @@ def test_a_sandboxed_broker_record_round_trips_and_backend_claims_do_not(tmp_pat
     with pytest.raises(verifier.EvidenceError):
         verify({**sandboxed, "sandbox_anything_else": True})
 
+    # Each condition of the placement check, refused on its own (agent-harness#1246 r1).
+    remote = {**backend_only, "sandbox_placement_receipts": [
+        {**receipt, "attested_by": "runtime"} for receipt in backend_only["sandbox_placement_receipts"]
+    ]}
+    committed, completed = remote["sandbox_placement_receipts"]
+    reason = "the selected root is recorded but NOT used for placement"
+    for label, record in {
+        "remote applied after a local spawn": {**remote, "sandbox_local_provider_spawns": 1},
+        "commit and completion name different sandboxes": {
+            **remote, "sandbox_placement_receipts": [committed, {**completed, "sandbox_ref": "fx-2"}],
+        },
+        "placed snapshot is not the authorized tree": {
+            **remote, "sandbox_placement_receipts": [
+                {**committed, "snapshot_sha256": "e" * 64}, {**completed, "snapshot_sha256": "e" * 64},
+            ],
+        },
+        "applied with an unapplied reason": {**sandboxed, "sandbox_root_unapplied_reason": reason},
+        "not applied without a reason": {
+            **{k: v for k, v in sandboxed.items() if k != "sandbox_root_unapplied_reason"},
+            "sandbox_root_applied": False,
+        },
+        "local applied with a host": {**sandboxed, "sandbox_root_host": "ai"},
+        "local applied off its selected root": {**sandboxed, "sandbox_root_path": "/elsewhere"},
+        "a disagreeing backend receipt": {
+            **remote, "sandbox_placement_receipts": [
+                committed, completed,
+                {**completed, "attested_by": "backend", "sandbox_ref": "fx-9"},
+            ],
+        },
+    }.items():
+        with pytest.raises(verifier.EvidenceError):
+            verify(record)
+            pytest.fail(f"accepted: {label}")
+    # And the honest unapplied form passes.
+    verify({**sandboxed, "sandbox_root_applied": False, "sandbox_root_unapplied_reason": reason})
+
 
 class HardenEvidenceVerifierContractTests(unittest.TestCase):
     def test_harden_review_request_retains_recomputed_git_bound_inputs(self) -> None:

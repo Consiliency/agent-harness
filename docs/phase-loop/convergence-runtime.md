@@ -236,12 +236,26 @@ selection is recorded in the leg's evidence as `sandbox_root_*`.
   this root.
 - A URL (`scheme://host/path`) names a placement backend. A scheme with no registered
   backend is never probed (no ssh, DNS or socket); the leg falls back to local and the
-  reason names the scheme. Userinfo and the query string are dropped when the value is
-  parsed, so they never reach a warning or the evidence. This release has no driver that
+  reason names the scheme. The value is stripped, and anything containing `://` is read as
+  a URL: only its scheme, host, port and path are kept. A malformed scheme, a built-in
+  scheme written as a URL (`local://`, `hostpath://`), and a non-URL value carrying
+  `user:…@` or a query string are refused without a probe. Warnings and evidence render the
+  parsed form, never the configured text.
+- Instead of the single root, the user config (`advisor-boards.toml`) can name one root per
+  remote backend and the order to try them:
+
+  ```toml
+  [sandbox]
+  order = ["self-hosted", "e2b"]          # the default
+  roots.self-hosted = "https://sandbox.example/srv"
+  roots.e2b = "e2b://template"
+  ```
+
+  `PHASE_LOOP_SANDBOX_ROOT`, when set, is the only candidate. This release has no driver that
   executes on a non-local backend, so a registered one is also a recorded local fallback
   (`sandbox_placement_driver_unavailable`), and no stage is sent to it.
 - `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` covers seat legs only: every review-mode leg the
-  panel launches for a board seat. `1`, `true`, `yes` and `on` turn it on; unset, empty,
+  panel launches for a board seat. Advisory-mode boards are not governed by it. `1`, `true`, `yes` and `on` turn it on; unset, empty,
   `0`, `false`, `no` and `off` leave it off; any other value is read as on, with a warning.
   In this release it refuses every seat leg with `sandbox_placement_required_unavailable`.
 
