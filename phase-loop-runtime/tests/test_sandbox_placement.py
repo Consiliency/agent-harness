@@ -131,6 +131,11 @@ class _Recorder:
                 model=None, out_dir=Path(out_dir), out_file=Path(out_dir) / "x.txt",
                 codex_effort_args=(), staged_tree=tree,
             )
+            # The model is not a placement fact: normalized, so a model-id bump does not
+            # re-capture a golden it has nothing to do with.
+            argv = [
+                "<MODEL>" if i and argv[i - 1] == "--model" else a for i, a in enumerate(argv)
+            ]
             rec.launch = {
                 "argv": [rec.norm(a) for a in argv],
                 # The attested preimage is `str(cwd.resolve())` (`_record_provider_launch`);

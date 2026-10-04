@@ -103,7 +103,7 @@
         "-c",
         "sandbox_workspace_write.exclude_tmpdir_env_var=true",
         "--model",
-        "gpt-6-astra",
+        "<MODEL>",
         "--output-last-message",
         "<BASE>/out/x.txt",
         "-"
