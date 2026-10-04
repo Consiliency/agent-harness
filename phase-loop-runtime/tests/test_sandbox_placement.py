@@ -1364,3 +1364,45 @@ def test_the_runner_persists_a_failed_legs_placement(tmp_path, monkeypatch):
     assert record["sandbox_placement_evidence"] == placement
     others = [p for p in run_dir.glob("implementation-panel-*.json") if first.leg not in p.name]
     assert all("sandbox_placement_evidence" not in json.loads(p.read_text()) for p in others)
+
+
+# --- root-value parsing and [sandbox] validation (agent-harness#1246 president) --------
+
+
+@pytest.mark.parametrize("separator", [" ", "\t", "\n"])
+def test_a_named_root_value_is_parsed_strictly(tmp_path, monkeypatch, separator):
+    password = f"synthetic{separator}password"
+    root = f"user:{password}@host.invalid:/p"
+    _user_config(monkeypatch, tmp_path, f'[sandbox]\nroots.self-hosted = "{root.encode("unicode_escape").decode()}"\n')
+    assert sandbox_policy.configured_roots()[0][1] == root
+    probes: list[str] = []
+    monkeypatch.setattr(
+        sandbox_policy, "_probe_with_deadline",
+        lambda value, timeout: probes.append(value) or False,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        choice = sandbox_policy.select_sandbox_root(
+            roots=sandbox_policy.configured_roots(), fallback=tmp_path, floor_bytes=0,
+        )
+    rendered = choice.reason + "".join(str(w.message) for w in caught)
+    assert "password" not in rendered
+    assert probes == []
+    assert "sandbox_root_unrecognised" in choice.reason
+
+
+def test_a_host_with_whitespace_is_refused():
+    assert sandbox_policy.parse_location("bad host:/p").refusal == "sandbox_root_unrecognised"
+
+
+def test_board_loading_refuses_a_malformed_sandbox_table(tmp_path):
+    from phase_loop_runtime.advisor_board import config
+
+    path = tmp_path / "advisor-boards.toml"
+    path.write_text('[sandbox]\nroots = "https://h/p"\n', encoding="utf-8")
+    with pytest.raises(config.BoardConfigError):
+        config.load_boards(
+            path, validate=False, is_available=lambda _: True, auth_ok=lambda _: True,
+        )
+    path.write_text('[sandbox]\nroots.self-hosted = "https://h/p"\n', encoding="utf-8")
+    config.load_boards(path, validate=False, is_available=lambda _: True, auth_ok=lambda _: True)

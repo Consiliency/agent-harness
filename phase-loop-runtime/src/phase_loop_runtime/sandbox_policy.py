@@ -179,9 +179,10 @@ class SandboxRootChoice:
 
 _URL_SCHEME = re.compile(r"[a-z][a-z0-9+.-]*")
 _BUILTIN_SCHEMES = ("local", "hostpath")
-# `user:secret@` in a value that is not a URL. A slash or backslash between the colon and
-# the `@` means a path (`host:/p/a@b`, `C:\\Users\\a@b`), not userinfo.
-_USERINFO_SHAPED = re.compile(r"[^/\\\s@]*:[^/\\\s@]*@")
+# `user:secret@` in a value that is not a URL, whatever characters the secret holds. A slash
+# or backslash between the colon and the `@` means a path (`host:/p/a@b`, `C:\\Users\\a@b`),
+# not userinfo.
+_USERINFO_SHAPED = re.compile(r"[^/\\@]*:[^/\\@]*@")
 
 
 def _invalid(code: str) -> SandboxLocation:
@@ -227,6 +228,9 @@ def parse_location(value: str | os.PathLike[str]) -> SandboxLocation:
     head, _, tail = text.partition(":")
     if len(head) <= 1 or not tail:
         return SandboxLocation(None, Path(text))
+    if any(ch.isspace() for ch in head):
+        # No host name contains whitespace.
+        return _invalid("sandbox_root_unrecognised")
     return SandboxLocation(head, Path(tail), "hostpath")
 
 

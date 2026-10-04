@@ -418,6 +418,7 @@ def load_boards(
         _reject_unknown(data.keys(), _KNOWN_TOP_KEYS, str(cfg_path))
         _parse_president(data, str(cfg_path))  # a bad [president] fails at load too
         _parse_agy(data, str(cfg_path))  # and a bad [agy] (agent-harness#1076)
+        _parse_sandbox(data, str(cfg_path))  # and a bad [sandbox] (agent-harness#896)
         raw_boards = data.get("boards", [])
         if not isinstance(raw_boards, list):
             raise BoardConfigError(f"{cfg_path}: 'boards' must be an array of tables")
