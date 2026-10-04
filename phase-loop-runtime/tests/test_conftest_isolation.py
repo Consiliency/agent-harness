@@ -50,3 +50,15 @@ def test_isolation_does_not_mask_an_explicit_poison(monkeypatch, tmp_path: Path)
     monkeypatch.setenv("GEMINI_ISOLATION_PROBE", "1")
     with pytest.raises(AgyCanaryEvidenceError, match="customization source"):
         inventory_customizations(home=tmp_path, project_dir=None, env=None)
+
+
+def test_the_claude_login_and_seat_state_are_pinned_to_empty_tmp_dirs(tmp_path: Path) -> None:
+    # agent-harness#1132: a test never sees the host's Claude login, seat token or jail passes.
+    from phase_loop_runtime import seat_credentials, seat_jail
+
+    for pinned in (seat_credentials.claude_config_dir(), seat_jail.state_home()):
+        assert pinned.is_dir() and not any(pinned.iterdir())
+        assert pinned.resolve().is_relative_to(tmp_path.resolve())
+    assert not seat_jail.claude_seat_token_path().exists()
+    assert seat_credentials.read_login_token(platform="linux") is None
+    assert not seat_credentials.override_present()

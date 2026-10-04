@@ -111,6 +111,35 @@ def _no_real_first_use_jail_qualification(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
+    """agent-harness#1132: keep the suite off the host's Claude login and seat state.
+
+    A production route that decides a Claude seat reads the CLI's login store
+    (``$CLAUDE_CONFIG_DIR``, else ``~/.claude``), the seat-token override and the recorded
+    jail passes (``seat_jail.state_home()``: ``$XDG_STATE_HOME``, else ``~/.local/state``).
+    On a host with a login and a recorded pass such a test would take the jailed route and
+    handle a real credential. Both point at empty per-test directories here. The state root
+    is pinned through ``state_home`` rather than the variable, which ``_isolate_host_state``
+    keeps out of the environment; a test that sets ``XDG_STATE_HOME`` itself still wins.
+    Only a test marked ``host_seat_credentials`` (the live jailed-seat check) sees the
+    host's own state."""
+    if request.node.get_closest_marker("host_seat_credentials") is not None:
+        return
+    from phase_loop_runtime import seat_jail
+
+    config = tmp_path / "claude-config-isolated"
+    state = tmp_path / "seat-state-isolated"
+    config.mkdir(mode=0o700)
+    state.mkdir(mode=0o700)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    real_state_home = seat_jail.state_home
+    monkeypatch.setattr(
+        seat_jail, "state_home",
+        lambda: real_state_home() if os.environ.get("XDG_STATE_HOME") else state,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_implicit_review_authority(monkeypatch):
     from phase_loop_runtime import panel_invoker
 

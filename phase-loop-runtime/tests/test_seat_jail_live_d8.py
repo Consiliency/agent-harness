@@ -250,6 +250,7 @@ def test_live_pre_drop_set_is_exactly_the_three_capabilities(tmp_path):
 # sits above `_prepare_jailed_claude`, so this drives the jailed leg directly.
 # --------------------------------------------------------------------------------------
 
+@pytest.mark.host_seat_credentials
 def test_live_jailed_claude_runs_a_tool_and_quotes_it(tmp_path):
     import hashlib
     import types

@@ -163,7 +163,7 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "on the tooled profile a defect; on the sealed route expected"),
     "claude_seat_token_missing": (
         "inline fallback", "no Claude login found and no seat token override",
-        "run `claude login`"),
+        "run `claude auth login`"),
     "claude_seat_token_rejected": (
         "leg ended", "the seat token override was rejected (revoked or expired)",
         "replace the override with a fresh `claude setup-token` token, or remove it to use "
@@ -184,7 +184,7 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "time when the provider gives one)",
         "wait for the reset, or log in to another subscription"),
     "claude_seat_login_rejected": (
-        "leg ended", "the Claude login's access token was rejected", "run `claude login`"),
+        "leg ended", "the Claude login's access token was rejected", "run `claude auth login`"),
     "claude_seat_login_token_expired": (
         "leg ended", "the Claude login's access token expired during the run",
         "re-run the seat: each launch reads a fresh token"),
@@ -198,7 +198,7 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused",
         "the Claude login's access token expires before the seat's deadline, and the CLI did "
         "not refresh it",
-        "run `claude login`, then re-run"),
+        "run `claude auth login`, then re-run"),
     "claude_seat_bypass_ack_blocked": (
         "leg refused", "pre-seed stale for this CLI", "upgrade runtime"),
     "claude_tui_workspace_trust_blocked": (

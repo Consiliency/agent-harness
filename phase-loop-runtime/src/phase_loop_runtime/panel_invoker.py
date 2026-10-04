@@ -1600,6 +1600,7 @@ def _seat_launch_modes(
     board: Board, *, mode: str | None,
     review_authorization: "ReviewIsolationAuthorization | None",
     base_env: Mapping[str, str] | None,
+    timeouts_by_leg: Mapping[str, int] | None = None,
 ) -> "tuple[_seat_preflight.SeatMode, ...]":
     """agent-harness#1132 (plan amendment A1): each seat's launch mode, from the PRODUCTION
     route facts the spawn will act on (J7, the EC-EXECFIND-2 gate, the Claude credential and
@@ -1608,20 +1609,24 @@ def _seat_launch_modes(
     brokered_route = mode == "review" and review_authorization is not None
     staged = (review_authorization is not None
               and getattr(review_authorization, "staged_tree_sha256", None) is not None)
-    credential: dict[str, object] = {}
+    timeouts = dict(timeouts_by_leg or {})
+    credential: dict[float, object] = {}
     # Per board: whether a leg's jail was qualified just now (the first seat's outcome).
     qualified_now: dict[str, bool] = {}
+    # Per board: each leg's route, decided once (a first-use qualification that timed out
+    # is not cached, so it must not be waited for again by every seat of that leg).
+    routes: dict[str, tuple] = {}
 
-    def _claude_credential() -> "_seat_credentials.SeatCredential | str":
-        # Once per board: the override, or the login with the default margin (each launch
-        # re-checks against its own deadline).
-        if "value" not in credential:
+    def _claude_credential(leg: str) -> "_seat_credentials.SeatCredential | str":
+        # The override, or the login, checked against the SAME margin the launch will use
+        # (`_claude_seat_login_margin_s`, keyed as the spawn keys its timeout: by leg).
+        margin = _claude_seat_login_margin_s(timeouts.get(leg))
+        if margin not in credential:
             try:
-                credential["value"] = _seat_credentials.resolve_claude_seat_credential(
-                    _seat_credentials.login_margin_s(None))
+                credential[margin] = _seat_credentials.resolve_claude_seat_credential(margin)
             except _seat_jail.SeatSandboxRefused as exc:
-                credential["value"] = exc.code
-        return credential["value"]  # type: ignore[return-value]
+                credential[margin] = exc.code
+        return credential[margin]  # type: ignore[return-value]
 
     modes = []
     for position, seat in enumerate(board.seats):
@@ -1641,8 +1646,9 @@ def _seat_launch_modes(
                                      "not a brokered review launch: no seat sandbox applies",
                                      "", None, position))
             continue
-        route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization,
-                                                         eligible=True)
+        if leg not in routes:
+            routes[leg] = _seat_route_for_spawn(leg, review_authorization, eligible=True)
+        route, _notices, refusal = routes[leg]
         if route is None:
             if staged and sandbox_usable_by(leg, True):
                 modes.append(_coded(sp.MODE_UNCONFINED, "seat_filesystem_unconfined"))
@@ -1664,7 +1670,7 @@ def _seat_launch_modes(
         elif not route.jailed:
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
-            found = _claude_credential() if leg == "claude" else None
+            found = _claude_credential(leg) if leg == "claude" else None
             if leg not in qualified_now:
                 outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
                 qualified_now[leg] = (outcome is not None
@@ -1684,11 +1690,12 @@ def _publish_seat_modes(
     review_authorization: "ReviewIsolationAuthorization | None",
     base_env: Mapping[str, str] | None, stream_dir: "Path | str | None",
     on_seat_modes: "Callable[[tuple[_seat_preflight.SeatMode, ...]], None] | None",
+    timeouts_by_leg: Mapping[str, int] | None = None,
 ) -> "tuple[_seat_preflight.SeatMode, ...]":
     """Publish every seat's mode before any seat launches: callback, log, and
     ``seat-modes.json`` in the stream directory."""
     modes = _seat_launch_modes(board, mode=mode, review_authorization=review_authorization,
-                               base_env=base_env)
+                               base_env=base_env, timeouts_by_leg=timeouts_by_leg)
     log = logging.getLogger(__name__)
     for seat_mode in modes:
         (log.info if seat_mode.mode == _seat_preflight.MODE_JAILED else log.warning)(
@@ -3755,10 +3762,11 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
     enter_h = egress[:egress.index("setpriv")]
     seat_id = jail.seat_ids[0]
     return [
-        sys.executable, "-m", "phase_loop_runtime.seat_keyring_exec", "--",
+        *_seat_uid.trusted_module_argv("phase_loop_runtime.seat_keyring_exec", "--"),
         *enter_h,
-        sys.executable, "-m", "phase_loop_runtime.seat_uid", "handoff", jail.review_dir,
-        jail.tree_dir, str(seat_id), *(("--gemini",) if jail.leg == "gemini" else ()), "--",
+        *_seat_uid.trusted_module_argv(
+            "phase_loop_runtime.seat_uid", "handoff", jail.review_dir, jail.tree_dir,
+            str(seat_id), *(("--gemini",) if jail.leg == "gemini" else ()), "--"),
         *jail.process_owner,
         *_seat_jail.setpriv_drop(seat_id),
         *_seat_jail.seat_cwd(),
@@ -5692,6 +5700,27 @@ def _claude_api_error_record(payload: dict, message: dict) -> bool:
 # an error record, which that route fails closed on). Nothing more will be journaled.
 _CLAUDE_TRANSCRIPT_REJECTED = "claude_seat_transcript_rejected"
 _CLAUDE_TERMINAL_CODES = _CLAUDE_PROVIDER_GAVE_UP_CODES | {_CLAUDE_TRANSCRIPT_REJECTED}
+
+
+def _claude_leg_failure(
+    status: str, rc: int | None, review_text: str, log_text: object, pty_tail: str,
+    known: Sequence[str | os.PathLike[str]] = (),
+) -> "_LegFailure | None":
+    """A failed Claude leg's detail, the same on the sealed and the jailed route.
+
+    The provider's typed give-up IS the reason (a usage limit carries the reset time from the
+    journal's ``quotaLimits``, rendered by ``_claude_quota_reset``, never from provider text),
+    except the GENERIC give-up: when the PTY tail names an authentication failure, that is the
+    reason, so a rejected or expired credential keeps its own outcome (plan amendment A1).
+    Every other terminal code keeps priority over the tail."""
+    terminal = _claude_terminal_code(log_text)
+    if terminal is None:
+        return _leg_failure_detail(status, rc, review_text, pty_tail, known)
+    if terminal == _CLAUDE_GAVE_UP_OTHER:
+        tail = _leg_failure_detail(status, rc, review_text, pty_tail, known)
+        if tail is not None and tail.template == "auth_failure":
+            return tail
+    return _LegFailure(str(log_text))
 
 
 def _claude_terminal_code(detail: object) -> str | None:
@@ -8435,13 +8464,8 @@ def _exec_claude_tui_leg(
     # The detail itself goes to a caller-owned sink so this function's (status, text) shape
     # stays unchanged.
     if failure_detail_sink is not None and status != "OK":
-        tail_failure = (
-            # The provider's typed give-up IS the reason; the idle PTY tail adds nothing.
-            # A usage limit carries the reset time from the journal's ``quotaLimits``, rendered
-            # by ``_claude_quota_reset``, never from provider text.
-            _LegFailure(log_text) if _claude_terminal_code(log_text)
-            else _leg_failure_detail(status, rc, review_text, pty_tail, seat_paths)
-        )
+        tail_failure = _claude_leg_failure(status, rc, review_text, log_text, pty_tail,
+                                           seat_paths)
         if tail_failure is not None and tail_failure.unknown and log_text:
             tail_failure = replace(tail_failure, prefix=log_text)
         if tail_failure is not None:
@@ -8479,7 +8503,7 @@ def _resolve_claude_executable() -> Path:
 def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
-    *, margin_s: float | None = None,
+    *, timeout_s: int | None = None,
 ) -> _JailedSeat:
     """J7 step 5, in order: the pre-exec tree re-hash, the token read, the jail build (the
     seccomp filter included), the pre-seed and the probe jail. The first failure raises
@@ -8507,9 +8531,10 @@ def _prepare_jailed_claude(
     if observed != review_authorization.staged_tree_sha256:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed"))
     # Read afresh for THIS launch: the override if present, else the current login's access
-    # token with at least `margin_s` of lifetime left (plan amendment A1).
+    # token with at least the leg's margin of lifetime left (plan amendment A1). The margin is
+    # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
     credential = _seat_credentials.resolve_claude_seat_credential(
-        _seat_credentials.login_margin_s(margin_s))
+        _claude_seat_login_margin_s(timeout_s))
     token = credential.token
     executable = _resolve_claude_executable()
     bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
@@ -8701,10 +8726,7 @@ def _exec_jailed_claude_leg(
         # As on the sealed route: the provider's typed give-up (agent-harness#1194) IS the
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
-        if _claude_terminal_code(log_text):
-            failure: "_LegFailure | None" = _LegFailure(str(log_text))
-        else:
-            failure = _leg_failure_detail(status, rc, review_text, pty_tail)
+        failure = _claude_leg_failure(status, rc, review_text, log_text, pty_tail)
         if (failure is None or failure.unknown) and log_text and _is_harness_code(str(log_text)):
             failure = _LegFailure(template=str(log_text))
         if failure is not None:
@@ -8885,8 +8907,23 @@ def _leg_deadline_from(timeout_s: int | None, review_dir: Path) -> tuple[int, in
     """
     if timeout_s is None:
         ref = _leg_timeout_for(review_dir)
-        return ref, max(int(ref), _MAX_LEG_TIMEOUT_S)
-    return int(timeout_s), int(timeout_s)
+        return ref, max(int(ref), _leg_hard_deadline_s(None))
+    return int(timeout_s), _leg_hard_deadline_s(timeout_s)
+
+
+def _leg_hard_deadline_s(timeout_s: int | None) -> int:
+    """A leg's hard deadline before its review is staged: the explicit override as-is, else
+    the backstop. ``_leg_deadline_from`` raises the input-scaled default to this same value
+    (that default never exceeds :data:`_LEG_TIMEOUT_MAX_S`, the backstop)."""
+    return int(timeout_s) if timeout_s is not None else _MAX_LEG_TIMEOUT_S
+
+
+def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
+    """The ONE lifetime a Claude seat's login token must still have when the seat launches
+    (plan amendment A1): its leg's hard deadline, or ``PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S``.
+    The pre-launch seat mode and the launch both call this, so a seat announced as jailed is
+    never refused at launch for a margin the announcement did not check."""
+    return _seat_credentials.login_margin_s(_leg_hard_deadline_s(timeout_s))
 
 
 def _exec_leg(
@@ -10074,7 +10111,7 @@ def _default_spawn(
                                 review_dir, base / "seat", review_authorization, seat_id,
                                 _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
                                 (staged_bundle, staged_instructions),
-                                margin_s=leg_deadline,
+                                timeout_s=timeout_s,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
@@ -11584,6 +11621,7 @@ def invoke_board(
                 _publish_seat_modes(
                     board, mode=mode, review_authorization=review_authorization,
                     base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
+                    timeouts_by_leg=timeouts_by_leg,
                 )
                 early_preflight = _publish_seat_preflight(
                     board, pointer_brief=pointer_brief, mode=mode,
@@ -11859,6 +11897,7 @@ def invoke_board(
         _publish_seat_modes(
             board, mode=mode, review_authorization=review_authorization,
             base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,
+            timeouts_by_leg=timeouts_by_leg,
         )
         seat_preflight_notices = _publish_seat_preflight(
             board, pointer_brief=pointer_brief, mode=mode,

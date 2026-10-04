@@ -679,7 +679,7 @@ def test_no_login_and_no_override_is_a_sealed_seat_that_says_so(monkeypatch):
 
     claude = next(m for m in _modes(monkeypatch, route=_no_credential) if m.leg == "claude")
     assert (claude.mode, claude.code) == ("sealed", "claude_seat_token_missing")
-    assert claude.fix == "run `claude login`"
+    assert claude.fix == "run `claude auth login`"
 
 
 def test_a_native_claude_seat_is_reported_native(monkeypatch):
@@ -715,3 +715,178 @@ def test_a_session_give_up_on_a_limit_carries_the_credentials_notice(monkeypatch
     assert status == "DEGRADED"
     assert [f.template for f in sink] == [give_up]
     assert seat.notices == [notice]
+
+
+# --------------------------------------------------------------------------------------
+# Plan amendment A1: the pre-launch mode and the launch check ONE login-token margin.
+# --------------------------------------------------------------------------------------
+
+_NOW = 1_800_000_000.0
+
+
+def _login_store(monkeypatch, tmp_path, seconds_left: float):
+    from phase_loop_runtime import seat_credentials
+
+    config = tmp_path / "claude-config"
+    config.mkdir(mode=0o700)
+    store = config / ".credentials.json"
+    store.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "fake-login-access-token", "expiresAt": (_NOW + seconds_left) * 1000}}))
+    store.chmod(0o600)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-without-override"))
+    monkeypatch.delenv(seat_credentials.MARGIN_ENV, raising=False)
+    monkeypatch.setattr(seat_credentials.time, "time", lambda: _NOW)
+    monkeypatch.setattr(seat_credentials, "refresh_login_via_cli", lambda: None)
+
+
+def _launch_outcome(monkeypatch, tmp_path, timeout_s):
+    """What `_prepare_jailed_claude` does with this login for a leg with ``timeout_s``."""
+    monkeypatch.setattr(pi._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
+    monkeypatch.setattr(pi._seat_jail, "build_seat_jail",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launchable")))
+    review = tmp_path / "launch" / "review"
+    (review / seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
+    try:
+        pi._prepare_jailed_claude(review, tmp_path / "launch" / "seat",
+                                  types.SimpleNamespace(staged_tree_sha256="a" * 64), 1, 1,
+                                  ("bundle", "instructions"), timeout_s=timeout_s)
+    except seat_jail.SeatSandboxRefused as exc:
+        return exc.code
+    except AssertionError:
+        return None
+    raise AssertionError("unreachable")
+
+
+@pytest.mark.parametrize("seconds_left", [600, 1200, 2400])
+@pytest.mark.parametrize("timeout_s", [None, 300, 2100])
+def test_the_seat_mode_and_the_launch_agree_on_the_login_margin(monkeypatch, tmp_path,
+                                                                seconds_left, timeout_s):
+    _login_store(monkeypatch, tmp_path, seconds_left)
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _route)
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
+                        lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
+    board = types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness="claude", seat_key="claude:a", model="m")])
+    timeouts = {} if timeout_s is None else {"claude": timeout_s}
+    (claude,) = pi._seat_launch_modes(
+        board, mode="review", review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        base_env={}, timeouts_by_leg=timeouts)
+    refused = _launch_outcome(monkeypatch, tmp_path, timeout_s)
+    if refused is None:
+        assert (claude.mode, claude.code) == ("jailed", None)
+    else:
+        assert refused == "claude_seat_login_token_expiring"
+        assert (claude.mode, claude.code) == ("degraded", refused)
+
+
+def test_the_launch_margin_is_the_legs_hard_deadline(monkeypatch):
+    from phase_loop_runtime import seat_credentials
+
+    monkeypatch.delenv(seat_credentials.MARGIN_ENV, raising=False)
+    review = Path("/nonexistent-review-dir")
+    monkeypatch.setattr(pi, "_leg_timeout_for", lambda _d: 852)
+    assert pi._claude_seat_login_margin_s(None) == pi._leg_deadline_from(None, review)[1] == 1800
+    assert pi._claude_seat_login_margin_s(300) == pi._leg_deadline_from(300, review)[1] == 300
+    monkeypatch.setenv(seat_credentials.MARGIN_ENV, "60")
+    assert pi._claude_seat_login_margin_s(None) == 60
+
+
+def test_the_spawn_hands_its_leg_timeout_to_the_jailed_launch(monkeypatch, tmp_path):
+    """The production spawn passes the SAME per-leg timeout the mode was computed from."""
+    import contextlib as _contextlib
+
+    seen: list = []
+
+    def _prepare(*_a, timeout_s=None, **_k):
+        seen.append(timeout_s)
+        raise seat_jail.SeatSandboxRefused("claude_seat_login_token_expiring")
+
+    def _stage(_repo, review_dir):
+        tree = Path(review_dir) / "pl-panel-stage-x"
+        (tree / ".git").mkdir(parents=True)
+        (tree / ".git" / "phase-loop-source-commit").write_text("c" * 40)
+        return tree
+
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", lambda leg, **k: seat_jail.SeatRoute(True))
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
+                        lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
+    monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
+                        lambda **k: types.SimpleNamespace(fell_back=False, path=tmp_path,
+                                                          host=None, reason=""))
+    monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", _stage)
+    monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda _f: (100000, 65536))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda *a: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda _n: _contextlib.nullcontext(7))
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: _contextlib.nullcontext(
+                            ["nsenter", "-t", "4242", "-U", "--net", "setpriv"]))
+    monkeypatch.setattr(pi, "_prepare_jailed_claude", _prepare)
+    monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "derive_review_leg_authorization",
+                        lambda *a, **k: types.SimpleNamespace(expires_monotonic_ns=time.monotonic_ns() + 10**12))
+    monkeypatch.setattr(pi, "harden_subscription_model", lambda leg, model, effort=None: model)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    # A fake that misses a step must fail here, not end as an anonymous DEGRADED leg.
+    monkeypatch.setattr(pi, "_exception_failure",
+                        lambda exc: (_ for _ in ()).throw(exc))
+    spawned = pi._default_spawn(
+        "claude", "ARTIFACT", mode="review", model="m", timeout_s=420,
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        canonical_repo_authority=tmp_path,
+    )
+    assert seen == [420], spawned
+    assert tuple(spawned)[0] == "DEGRADED"
+    assert "claude_seat_login_token_expiring" in spawned.seat_notices
+
+
+# --------------------------------------------------------------------------------------
+# Plan amendment A1: a journaled give-up does not hide an authentication failure.
+# --------------------------------------------------------------------------------------
+
+_AUTH_TAIL = "Invalid API key · Please run /login"
+
+
+@pytest.mark.parametrize("source, expires_in, detail, notice", [
+    ("login", -5, "claude_seat_login_token_expired", "claude_seat_login_token_expired"),
+    ("login", 3600, "auth_failure", "claude_seat_login_rejected"),
+    ("seat_token", None, "auth_failure", "claude_seat_token_rejected"),
+])
+def test_a_journaled_give_up_keeps_the_credential_outcome(monkeypatch, tmp_path, source,
+                                                         expires_in, detail, notice):
+    from test_review_seat_stall_1176 import REQUEST, api_error, write
+
+    outcome = pi._claude_transcript_outcome(
+        write(tmp_path / "t.jsonl", [REQUEST, api_error("authentication_error")]))
+    assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_provider_api_error")
+    seat, status, text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="", log_text=pi._HarnessCode(outcome.code),
+        tail=_AUTH_TAIL, source=source,
+        expires_at=None if expires_in is None else time.time() + expires_in)
+    assert status == "DEGRADED" and text == ""
+    assert [f.template for f in sink] == [detail]
+    assert seat.notices == [notice]
+
+
+@pytest.mark.parametrize("terminal, tail, detail", [
+    # The generic give-up yields to an authentication tail ...
+    ("claude_seat_provider_api_error", _AUTH_TAIL, "auth_failure"),
+    # ... but not to an unlabelled one,
+    ("claude_seat_provider_api_error", "something else", "claude_seat_provider_api_error"),
+    # and every typed give-up keeps its priority over any tail.
+    ("claude_seat_rate_limited", _AUTH_TAIL, "claude_seat_rate_limited"),
+    ("claude_seat_output_budget_exhausted", _AUTH_TAIL, "claude_seat_output_budget_exhausted"),
+    ("claude_seat_transcript_rejected", _AUTH_TAIL, "claude_seat_transcript_rejected"),
+], ids=["generic-auth", "generic-other", "rate-limited-auth", "budget-auth", "rejected-auth"])
+def test_the_sealed_and_jailed_routes_label_a_give_up_alike(monkeypatch, tmp_path,
+                                                            terminal, tail, detail):
+    code = pi._HarnessCode(terminal)
+    assert pi._claude_leg_failure("DEGRADED", 1, "", code, tail).template == detail
+    _seat, _status, _text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=1, review_text="", log_text=code, tail=tail)
+    assert [f.template for f in sink] == [detail]

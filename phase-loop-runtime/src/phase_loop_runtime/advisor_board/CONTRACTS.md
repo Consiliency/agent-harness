@@ -1005,10 +1005,12 @@ are recorded on agent-harness#1132.
      refresh token. It comes from the CLI's own store: `$CLAUDE_CONFIG_DIR/.credentials.json`
      or `~/.claude/.credentials.json`, and the login Keychain on macOS.
 
-  - **The login token's margin:** it must have the seat's deadline (or
-    `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`) left. Otherwise the host runs `claude auth
-    status` once and re-reads. If it is still short, the leg is refused with
-    `claude_seat_login_token_expiring`.
+  - **The login token's margin:** it must have the seat's hard deadline (its explicit
+    per-leg timeout, else the 1800 s backstop) or `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`
+    left. Otherwise the host runs `claude auth status` once and re-reads. If it is still
+    short, the leg is refused with `claude_seat_login_token_expiring`. One function
+    (`_claude_seat_login_margin_s`) gives this margin to both the pre-launch seat mode and
+    the launch, so a seat shown as `jailed` is never refused at launch for its margin.
   - **Delivery:** either credential is delivered only through one drained pipe named by
     `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`. No credential is in any argv, environment
     value, evidence or log.
@@ -1023,7 +1025,11 @@ are recorded on agent-harness#1132.
   `claude_seat_token_rejected`. For the login: `claude_seat_login_rate_limited` and
   `claude_seat_login_rejected`. A login token at or past its launch-time expiry fails as
   `claude_seat_login_token_expired`, in both the detail and the notice, and is safe to
-  relaunch. None of these is a `seat_sandbox_refused:*` code.
+  relaunch. None of these is a `seat_sandbox_refused:*` code. On both the sealed and the
+  jailed route, an authentication failure in the PTY tail takes priority over the generic
+  journaled give-up (`claude_seat_provider_api_error`), so a credential outcome is never
+  hidden behind it; every typed give-up (limits, output budget, rejected transcript) keeps
+  its priority.
 - **First-use qualification (plan amendment A2; folds in agent-harness#1186 option C).** A
   jailed route with no recorded pass for this host, digest and layout runs the host's jail
   qualification once, before launch. It is serialized by an exclusive lock in the per-user
@@ -1041,6 +1047,12 @@ are recorded on agent-harness#1132.
   its notice code, reason and fix, and the modes are delivered through `on_seat_modes`, the
   log and `seat-modes.json`. The `advisor-board` CLI prints them to stderr and carries them as
   `seat_modes` in `--json`.
+- **Launch helpers.** The pre-jail and in-namespace helpers (`seat_keyring_exec`, the
+  `seat_uid` handoff and its in-namespace verbs) run from the installation the parent
+  imported: `python -I` with this package's root put first on the import path
+  (`seat_uid.trusted_module_argv`), never `python -m`, whatever the launch's working
+  directory is. An inventory test fails on any `sys.executable -m` launch of a package
+  module.
 - **Seat-token rotation.** The token file is read at each jailed launch and never cached
   across legs or rounds. A token replaced between legs (atomic rename in the same 0700
   directory) is used by the next launch; a running leg keeps the token it was launched with.

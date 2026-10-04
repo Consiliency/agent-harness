@@ -571,18 +571,19 @@ with.
   login's access token from the Claude CLI's own store. That is
   `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`, and the login
   Keychain on macOS. It never reads or uses the refresh token.
-- **A short token:** if the token has less lifetime left than the seat's deadline, the
-  runtime asks the CLI to bring the login up to date (`claude auth status`) and reads it
+- **A short token:** if the token has less lifetime left than the seat's deadline (its
+  per-leg timeout, else 1800 s), the runtime asks the CLI to bring the login up to date (`claude auth status`) and reads it
   again. Set `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` (seconds) to override the deadline as the
   margin.
   - If the token is still too short, the leg is refused with
-    `claude_seat_login_token_expiring` (fix: `claude login`).
+    `claude_seat_login_token_expiring` (fix: `claude auth login`). The seat's mode line
+    already says so before any seat launches: it checks the same margin.
   - A token that expires during a run ends the leg with `claude_seat_login_token_expired`.
     Re-running it reads a fresh token.
-- **Switching subscriptions:** `claude login` to another subscription takes effect at the
+- **Switching subscriptions:** `claude auth login` to another subscription takes effect at the
   next launch.
 - **No credential:** with no login and no override, the seat stays sealed with
-  `claude_seat_token_missing` (fix: `claude login`).
+  `claude_seat_token_missing` (fix: `claude auth login`).
 
 **Optional override: a dedicated seat token.** To bill a different subscription, store a
 long-lived `claude setup-token` token. When the file exists, it takes precedence over the
@@ -607,7 +608,7 @@ for it.
   (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
 - **If a leg reports `claude_seat_token_in_output`**, or `seat_sandbox_retained_after_teardown`
   on a suspect leg:
-  - **With the login:** log out and back in (`claude logout`, then `claude login`). The
+  - **With the login:** log out and back in (`claude auth logout`, then `claude auth login`). The
     access token also expires on its own within hours.
   - **With an override:** revoke it from your Claude account settings, and mint a new one.
 

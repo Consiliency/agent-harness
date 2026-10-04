@@ -1439,3 +1439,18 @@ follows. A Claude seat is never refused for this.
 - [ ] Every new behaviour has a mutation receipt.
 - [ ] Live on claw: with the pass record moved aside and restored afterwards, a first-use
   qualification followed by a jailed launch works.
+
+## Round 7 repairs (2026-10-03)
+
+Board round 7 at 34c6cf40. These clarify A1 and A2; they add no new rule.
+- **One login margin.** A1's margin "the leg deadline" is the leg's hard deadline before
+  staging: its explicit per-leg timeout, else the 1800 s backstop, or
+  `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`. The pre-launch seat mode and the launch both get
+  it from one function, so A1 item 3's `degraded` mode covers a token that is too short for
+  the launch.
+- **Credential outcomes are not hidden.** On both routes, an authentication failure named by
+  the PTY tail takes priority over the generic journaled give-up
+  (`claude_seat_provider_api_error`). Every typed give-up keeps its priority.
+- **Launch helpers** run from the trusted package only (`seat_uid.trusted_module_argv`).
+- **Fix literal.** The fix line for the login codes is `claude auth login` (Claude CLI
+  2.1.288 has no top-level `login` command); this corrects A1's `claude login`.

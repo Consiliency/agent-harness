@@ -77,7 +77,7 @@ def test_a_failure_is_typed_cached_and_not_retried_within_its_ttl():
     assert store.runs == 2                                       # retried after the TTL
 
 
-@pytest.mark.parametrize("change", ["digest", "layout"])
+@pytest.mark.parametrize("change", ["digest", "layout", "host"])
 def test_a_cached_failure_is_retried_as_soon_as_the_digest_or_layout_changes(monkeypatch,
                                                                             change):
     store = _Store(passes=False)
@@ -85,8 +85,11 @@ def test_a_cached_failure_is_retried_as_soon_as_the_digest_or_layout_changes(mon
     if change == "digest":
         real = seat_jail.jail_profile_digest
         monkeypatch.setattr(seat_jail, "jail_profile_digest", lambda leg: "b" * len(real(leg)))
-    else:
+    elif change == "layout":
         monkeypatch.setattr(seat_jail, "falsifier_layout_identity", lambda: "another-layout")
+    else:
+        # A failure recorded on another host (a shared state directory) is not this host's.
+        monkeypatch.setattr(seat_jail, "host_identity", lambda: "another-host")
     _ensure(store, now=lambda: 1001.0, retry_after_s=3600)
     assert store.runs == 2
 
@@ -157,3 +160,11 @@ def test_the_suite_never_runs_a_real_first_use_qualification():
     # The conftest guard replaces the real qualification for every test.
     with pytest.raises(pytest.fail.Exception):
         aq._default_qualify("claude")
+
+
+def test_a_qualifier_that_reports_a_pass_but_records_none_is_a_failure():
+    # Only a recorded pass jails a seat: the qualifier's own word is not one.
+    store = _Store()
+    outcome = aq.ensure_qualified("claude", verdict=store.verdict,
+                                  qualify=lambda leg: {"result": "pass"})
+    assert outcome == aq.Outcome(aq.FAILED, "error") and not outcome.qualified

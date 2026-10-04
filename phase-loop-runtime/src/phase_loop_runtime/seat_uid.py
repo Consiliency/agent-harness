@@ -406,10 +406,26 @@ def validate_reap_target(path: str, *, records: Path | None = None,
 # Running a helper inside H.
 # --------------------------------------------------------------------------------------
 
+# A helper module runs from THIS installation, whatever the launch's working directory:
+# ``-I`` keeps the working directory, PYTHON* variables and the user site off the import
+# path, and the boot puts this package's own root first.
+_PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent)
+_TRUSTED_BOOT = ("import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); "
+                 "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)")
+
+
+def trusted_module_argv(module: str, *args: str) -> list[str]:
+    """The argv that runs ``module`` (a ``phase_loop_runtime`` module) as ``__main__`` from
+    the installation this process imported, never from the working directory."""
+    if not module.startswith("phase_loop_runtime."):
+        raise ValueError("only this package's helpers are launched this way")
+    return [sys.executable, "-I", "-c", _TRUSTED_BOOT, _PACKAGE_ROOT, module, *args]
+
+
 def in_h_argv(holder_pid: int, verb: str, *args: str) -> list[str]:
     """``nsenter`` into H as H-root, then this module's helper ``verb``."""
     return ["/usr/bin/nsenter", "-t", str(holder_pid), "-U", "-m", "--preserve-credentials",
-            sys.executable, "-m", "phase_loop_runtime.seat_uid", verb, *args]
+            *trusted_module_argv("phase_loop_runtime.seat_uid", verb, *args)]
 
 
 class SeatObjectMissing(FileNotFoundError):
@@ -435,8 +451,7 @@ def read_in_h(holder_pid: int, root: str, relpath: str, cap_bytes: int,
 
 
 def _pythonpath_env() -> dict[str, str]:
-    package_root = str(Path(__file__).resolve().parent.parent)
-    return {"PATH": "/usr/bin:/bin", "PYTHONPATH": package_root, "LC_ALL": "C"}
+    return {"PATH": "/usr/bin:/bin", "PYTHONPATH": _PACKAGE_ROOT, "LC_ALL": "C"}
 
 
 def holder_pid_from_prefix(prefix: Sequence[str]) -> int:

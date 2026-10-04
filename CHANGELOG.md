@@ -94,6 +94,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **Failures are cached** per host, digest and layout, and retried after an hour or on a
     change.
   - This folds in agent-harness#1186's first-use self-check.
+- The seat mode and the launch check a Claude login token against one margin, the leg's
+  hard deadline, so a seat shown as `jailed` is not refused at launch for its token's
+  lifetime. A journaled give-up no longer hides an authentication failure: the login and
+  seat-token outcomes keep their own codes on both routes. The seat launch helpers run from
+  the trusted package only. Fix lines name `claude auth login`.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

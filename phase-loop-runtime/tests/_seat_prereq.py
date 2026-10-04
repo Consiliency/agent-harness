@@ -20,7 +20,7 @@ SEAT_UID_PREREQUISITE = (
     "apt install uidmap + usermod --add-subuids/--add-subgids <operator>"
 )
 SEAT_TOKEN_PREREQUISITE = (
-    "no Claude seat credential: run `claude login`, or store a `claude setup-token` token "
+    "no Claude seat credential: run `claude auth login`, or store a `claude setup-token` token "
     "owner-only at $XDG_STATE_HOME/phase-loop/seat-credentials/claude"
 )
 USERNS_UNAVAILABLE = "unprivileged bwrap user namespaces unavailable on this host"
