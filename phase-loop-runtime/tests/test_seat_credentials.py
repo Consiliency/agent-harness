@@ -197,7 +197,8 @@ def test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded(m
 
     monkeypatch.setattr(sc.shutil, "which", lambda name, path=None: "/opt/bin/claude")
     sc.refresh_login_via_cli(run=run)
-    assert seen["argv"] == ["/opt/bin/claude", "auth", "status", "--json"]
+    assert seen["argv"] == ["/opt/bin/claude", "--setting-sources", "user", "auth", "status",
+                            "--json"]
     assert seen["stdout"] is subprocess.DEVNULL and seen["stderr"] is subprocess.DEVNULL
     # agent-harness#1147: the host CLI runs with its scratch decided, never an inherited env.
     from phase_loop_runtime import sandbox_policy
@@ -205,24 +206,48 @@ def test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded(m
     assert sandbox_policy.decided_scratch(seen["env"]) == sandbox_policy.CHILD_SCRATCH_RELOCATE
 
 
-def test_the_refresh_never_runs_in_the_callers_directory(monkeypatch, tmp_path):
-    # A board runs from the reviewed tree; its project settings must not reach the refresh.
+def _hostile_repo_and_fake_cli(monkeypatch, tmp_path):
+    """A reviewed tree with a hostile project config, the temp variables pointing into it,
+    and a fake `claude` that records where it ran and refreshes the store it was given."""
     repo = tmp_path / "reviewed-tree"
     (repo / ".claude").mkdir(parents=True)
     (repo / ".claude" / "settings.json").write_text('{"apiKeyHelper": "echo hostile"}')
+    (repo / "tmp").mkdir()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(repo / "tmp"))
+    monkeypatch.setattr(sc.tempfile, "tempdir", None)        # re-read the ambient temp root
     record = tmp_path / "seen"
     claude = tmp_path / "bin" / "claude"
     claude.parent.mkdir()
     claude.write_text("#!/bin/sh\n"
-                      f"{{ pwd; ls -A; test -e .claude && echo SETTINGS; }} > {record}\n")
+                      f"{{ pwd; echo \"$*\"; ls -A; }} > {record}\n"
+                      'echo refreshed > "$CLAUDE_CONFIG_DIR/.credentials.json"\n')
     claude.chmod(0o755)
     monkeypatch.chdir(repo)
     monkeypatch.setattr(sc.shutil, "which", lambda name, path=None: str(claude))
+    return repo, record
+
+
+def test_the_refresh_never_runs_in_the_reviewed_tree(monkeypatch, tmp_path):
+    # A board runs from the reviewed tree, whose temp variables may point into it too.
+    repo, record = _hostile_repo_and_fake_cli(monkeypatch, tmp_path)
+    store = sc.claude_config_dir() / ".credentials.json"
     sc.refresh_login_via_cli()
-    cwd, *listing = record.read_text().splitlines()
-    assert Path(cwd) != repo and not Path(cwd).is_relative_to(repo)
-    assert listing == []                      # a fresh empty directory: no project settings
-    assert not Path(cwd).exists()             # and it is removed afterwards
+    cwd, argv, *listing = record.read_text().splitlines()
+    assert not Path(cwd).resolve().is_relative_to(repo.resolve())
+    assert Path(cwd).resolve().is_relative_to(seat_jail.state_home().resolve())
+    assert listing == []                      # a fresh empty directory
+    assert not Path(cwd).exists()             # removed afterwards
+    assert argv == "--setting-sources user auth status --json"   # no project/local settings
+    assert store.read_text() == "refreshed\n"                     # the user's own store
+    assert not any((repo / "tmp").iterdir())
+
+
+def test_a_state_root_inside_the_working_directory_skips_the_refresh(monkeypatch, tmp_path):
+    repo, record = _hostile_repo_and_fake_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(seat_jail, "state_home", lambda: repo / "state")
+    sc.refresh_login_via_cli()
+    assert not record.exists()                # the re-read decides; nothing ran in the tree
 
 
 @pytest.mark.parametrize("env, deadline, expected", [

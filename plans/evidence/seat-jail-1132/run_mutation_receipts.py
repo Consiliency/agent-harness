@@ -567,9 +567,23 @@ MUTATIONS: list[dict[str, object]] = [
      "new": "                    base_env=base_env, stream_dir=stream_dir, on_seat_modes=on_seat_modes,",
      "nodes": ["tests/test_seat_preflight_1204.py::test_the_all_native_path_hands_its_leg_timeouts_to_the_seat_modes"]},
     {"id": "R8-login-refresh-in-the-callers-cwd", "file": SC,
-     "old": "                check=False, cwd=neutral,",
-     "new": "                check=False,",
-     "nodes": [f"{T_CRED}::test_the_refresh_never_runs_in_the_callers_directory"]},
+     "old": "                timeout=_REFRESH_TIMEOUT_S, check=False, cwd=neutral,",
+     "new": "                timeout=_REFRESH_TIMEOUT_S, check=False,",
+     "nodes": [f"{T_CRED}::test_the_refresh_never_runs_in_the_reviewed_tree"]},
+    # Round 9 (codex F001): the refresh's directory never comes from the ambient temp root.
+    {"id": "R9-refresh-dir-from-the-ambient-temp-root", "file": SC,
+     "old": '        with tempfile.TemporaryDirectory(prefix="refresh-", dir=parent) as neutral:',
+     "new": '        with tempfile.TemporaryDirectory(prefix="refresh-") as neutral:',
+     "nodes": [f"{T_CRED}::test_the_refresh_never_runs_in_the_reviewed_tree"]},
+    {"id": "R9-refresh-loads-project-settings", "file": SC,
+     "old": '            run([claude, "--setting-sources", "user", "auth", "status", "--json"],',
+     "new": '            run([claude, "auth", "status", "--json"],',
+     "nodes": [f"{T_CRED}::test_the_refresh_never_runs_in_the_reviewed_tree",
+               f"{T_CRED}::test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded"]},
+    {"id": "R9-refresh-parent-inside-the-cwd-accepted", "file": SC,
+     "old": "    if resolved == here or here in resolved.parents:\n        return None",
+     "new": "    if False:\n        return None",
+     "nodes": [f"{T_CRED}::test_a_state_root_inside_the_working_directory_skips_the_refresh"]},
 ]
 
 
