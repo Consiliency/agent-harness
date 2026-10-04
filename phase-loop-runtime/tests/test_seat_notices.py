@@ -743,6 +743,8 @@ def _login_store(monkeypatch, tmp_path, seconds_left: float):
 def _launch_outcome(monkeypatch, tmp_path, timeout_s):
     """What `_prepare_jailed_claude` does with this login for a leg with ``timeout_s``."""
     monkeypatch.setattr(pi._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
+    # A host without the Claude CLI (CI) must not refuse the build before it is reached.
+    monkeypatch.setattr(pi, "_resolve_claude_executable", lambda: Path("/usr/bin/true"))
     monkeypatch.setattr(pi._seat_jail, "build_seat_jail",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launchable")))
     review = tmp_path / "launch" / "review"

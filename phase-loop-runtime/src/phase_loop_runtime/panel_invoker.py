@@ -9057,14 +9057,16 @@ def _leg_deadline_from(timeout_s: int | None, review_dir: Path) -> tuple[int, in
     """
     if timeout_s is None:
         ref = _leg_timeout_for(review_dir)
-        return ref, max(int(ref), _leg_hard_deadline_s(None))
-    return int(timeout_s), _leg_hard_deadline_s(timeout_s)
+        return ref, max(int(ref), _MAX_LEG_TIMEOUT_S)
+    return int(timeout_s), int(timeout_s)
 
 
 def _leg_hard_deadline_s(timeout_s: int | None) -> int:
     """A leg's hard deadline before its review is staged: the explicit override as-is, else
-    the backstop. ``_leg_deadline_from`` raises the input-scaled default to this same value
-    (that default never exceeds :data:`_LEG_TIMEOUT_MAX_S`, the backstop)."""
+    the backstop. It equals ``_leg_deadline_from``'s hard deadline, which raises the
+    input-scaled default to the backstop (that default never exceeds
+    :data:`_LEG_TIMEOUT_MAX_S`); ``test_the_launch_margin_is_the_legs_hard_deadline`` pins
+    the two together."""
     return int(timeout_s) if timeout_s is not None else _MAX_LEG_TIMEOUT_S
 
 
