@@ -584,6 +584,10 @@ MUTATIONS: list[dict[str, object]] = [
      "old": "    if resolved == here or here in resolved.parents:\n        return None",
      "new": "    if False:\n        return None",
      "nodes": [f"{T_CRED}::test_a_state_root_inside_the_working_directory_skips_the_refresh"]},
+    {"id": "R9-probe-lists-fds-from-a-pipeline", "file": SJ,
+     "old": "    \"/usr/bin/python3 -I -S -c 'import os\\n\"\n    \"def ok(n):\\n\"\n    \" try: os.fstat(int(n)); return True\\n\"\n    \" except OSError: return False\\n\"\n    \"print(\\\" \\\".join(n for n in sorted(os.listdir(\\\"/proc/self/fd\\\"), key=int) if ok(n)) + \\\" \\\")'; \"\n",
+     "new": "    'ls /proc/$$/fd | sort -n | tr \"\\\\n\" \" \"; echo; '\n",
+     "nodes": [f"{T_JAIL}::test_the_probe_lists_descriptors_without_a_pipeline"]},
 ]
 
 

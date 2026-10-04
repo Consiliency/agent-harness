@@ -105,6 +105,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `/tmp`. This changes the jail profile digest, so a host re-qualifies once on first use.
 - The host-side login refresh runs from a neutral directory under the per-user state root,
   with the user's settings only.
+- The jailed seat's identity probe lists its descriptors from a child process, not a shell
+  pipeline, so a correctly confined seat is no longer refused intermittently.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

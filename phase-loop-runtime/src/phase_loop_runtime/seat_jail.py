@@ -1273,7 +1273,14 @@ JAIL_PROBE = (
     # inherited from an outer sandbox shows `Seccomp: 2` without this jail's filter.
     '/usr/bin/unshare -U /bin/true 2>/dev/null && echo nested-userns-allowed '
     '|| echo nested-userns-denied; '
-    'ls /proc/$$/fd | sort -n | tr "\\n" " "; echo; '
+    # The descriptors a child inherits from the seat's shell, listed by that child: a plain
+    # command, so the shell holds no pipe while it forks it. (`ls /proc/$$/fd` in a pipeline
+    # raced the shell's own pipe descriptors: a spurious extra fd refused the seat.)
+    "/usr/bin/python3 -I -S -c 'import os\n"
+    "def ok(n):\n"
+    " try: os.fstat(int(n)); return True\n"
+    " except OSError: return False\n"
+    "print(\" \".join(n for n in sorted(os.listdir(\"/proc/self/fd\"), key=int) if ok(n)) + \" \")'; "
     'awk "{print \\$5}" /proc/self/mountinfo | sort; '
     'if test -e "$1"; then echo host-marker-visible; else echo host-marker-hidden; fi'
 )

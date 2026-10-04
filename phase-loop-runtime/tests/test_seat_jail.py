@@ -730,3 +730,36 @@ def test_a_replaced_seat_token_changes_no_jail_digest(tmp_path):
             seat_jail.close_jail_fds(jail)
     canonical = seat_jail.jail_profile_digest("claude")
     assert digests == [(canonical, canonical), (canonical, canonical)]
+
+
+# --------------------------------------------------------------------------------------
+# The identity probe's descriptor line is listed by a child the shell forks with no pipe
+# open (agent-harness#1132 round 9: `ls /proc/$$/fd | ...` raced the shell's own pipe
+# descriptors under load and refused a correctly confined seat).
+# --------------------------------------------------------------------------------------
+
+def _fd_segment() -> str:
+    probe = seat_jail.JAIL_PROBE
+    start = probe.index("/usr/bin/python3 -I -S -c 'import os")
+    return probe[start:probe.index("'; ", start) + 3]
+
+
+def test_the_probe_lists_descriptors_without_a_pipeline():
+    segment = _fd_segment()
+    assert "/proc/$$/fd" not in seat_jail.JAIL_PROBE
+    # Outside the Python source (single-quoted), the command has no pipe or substitution.
+    shell = segment[:segment.index("'")] + segment[segment.rindex("'"):]
+    assert not set("|`$(") & set(shell)
+
+
+def test_the_probe_descriptor_line_is_exactly_the_inherited_set():
+    read, write = os.pipe()
+    os.set_inheritable(read, True)
+    try:
+        for _ in range(20):
+            done = subprocess.run(["/bin/sh", "-c", _fd_segment()], pass_fds=(read,),
+                                  capture_output=True, text=True, timeout=30)
+            assert done.stdout == f"0 1 2 {read} \n", done
+    finally:
+        os.close(read)
+        os.close(write)
