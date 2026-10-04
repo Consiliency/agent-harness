@@ -151,7 +151,16 @@ class TestTheHelpersThemselves:
 class TestTheTUILaunch:
     @staticmethod
     def _provider(output_file):
-        return ["/bin/sh", "-c", f"printf 'Reviewed.\\n\\nAGREE\\n' > {output_file}; exit 0"]
+        source = (
+            "import json,os,pathlib,re,sys\n"
+            "text='Reviewed.\\n\\nAGREE\\n'\n"
+            "session=sys.argv[sys.argv.index('--session-id')+1]\n"
+            "project=pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects'/re.sub(r'[^A-Za-z0-9.-]','-',os.getcwd())\n"
+            "event={'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':text}],'stop_reason':'end_turn'}}\n"
+            "(project/(session+'.jsonl')).write_text(json.dumps(event)+'\\n')\n"
+            f"pathlib.Path({str(output_file)!r}).write_text(text)\n"
+        )
+        return ["/usr/bin/python3", "-I", "-S", "-c", source]
 
     def test_the_prefix_actually_executes_in_front_of_the_tui_provider(self, tmp_path, monkeypatch):
         marker = tmp_path / "TUI_PREFIX_RAN"

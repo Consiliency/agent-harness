@@ -35,7 +35,13 @@ while not release.read_text():
  time.sleep(.02)
 text='The declared candidate has been inspected for this ownership control.\\n'
 text+=('FORCING DECISION: continue' if sys.argv[4]=='president' else 'AGREE')+'\\n'
-if sys.argv[4] in ('tui','president'): output.write_text(text)
+if sys.argv[4] in ('tui','president'):
+ import re
+ project=pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects'/re.sub(r'[^A-Za-z0-9.-]','-',os.getcwd())
+ session=sys.argv[sys.argv.index('--session-id')+1]
+ event={'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':text}],'stop_reason':'end_turn'}}
+ (project/(session+'.jsonl')).write_text(json.dumps(event)+'\\n')
+ output.write_text(text)
 else: print(text,flush=True)
 '''
     command = ['/usr/bin/python3', '-I', '-S', '-c', source,
@@ -112,8 +118,8 @@ else: print(text,flush=True)
             time.sleep(.02)
         assert not errors, errors
         facts = json.loads(facts_path.read_text())
-        expected_pid = 3 if route in ('tui', 'president') else 2
-        expected_ppid = 2 if route in ('tui', 'president') else 1
+        expected_pid = 2
+        expected_ppid = 1
         assert facts == {'pid': expected_pid, 'ppid': expected_ppid, 'cgroup_mount': False,
                          'bounding': '0000000000000000', 'no_new_privs': '1'}
         assert len(roots) == 1
@@ -133,7 +139,7 @@ else: print(text,flush=True)
             status = Path(f'/proc/{parent}/status').read_text().splitlines()
             parent = int(next(line.split()[1] for line in status if line.startswith('PPid:')))
             assert parent > 1 and len(ancestry) <= 8
-        expected_ancestry = 3 if route in ('supervised', 'tui', 'president') else 2
+        expected_ancestry = 3 if route == 'supervised' else 2
         assert len(ancestry) == expected_ancestry, (route, ancestry)
     finally:
         panel_invoker._write_seat_text(release, 'released')

@@ -273,3 +273,71 @@ print(json.dumps({'proc_keys_read':True,'completed':True,'serials':sorted(serial
             os.close(descriptor)
         for _, serial, ring in reversed(keys):
             assert libc.syscall(keyctl, 9, serial, ring) == 0
+
+
+@pytest.mark.parametrize("previous_errno", [errno.EKEYREVOKED, errno.EKEYEXPIRED, errno.ENOKEY])
+def test_final_link_joins_when_previous_session_is_unavailable(previous_errno):
+    from phase_loop_runtime import seat_keyring_exec as link
+
+    class Libc:
+        def __init__(self):
+            self.calls = []
+
+        def syscall(self, number, operation, *args):
+            self.calls.append(operation)
+            if len(self.calls) == 1:
+                ctypes.set_errno(previous_errno)
+                return -1
+            return 42
+
+    libc = Libc()
+    link._join_session(libc, 250)
+    assert libc.calls == [0, 1, 0]
+
+
+@pytest.mark.parametrize("previous_errno", [errno.EPERM, errno.EACCES])
+def test_final_link_requires_permission_to_read_existing_session(previous_errno):
+    from phase_loop_runtime import seat_keyring_exec as link
+
+    class Libc:
+        def syscall(self, *args):
+            ctypes.set_errno(previous_errno)
+            return -1
+
+    with pytest.raises(OSError):
+        link._join_session(Libc(), 250)
+
+
+def test_real_final_link_runs_from_replaced_parent_session(tmp_path):
+    from phase_loop_runtime import seat_keyring_exec as link
+    from phase_loop_runtime.seat_seccomp import sealed_keyring_filter
+
+    descriptor = sealed_keyring_filter()
+    keyctl = {"x86_64": 250, "aarch64": 219}[platform.machine()]
+    probe = (
+        "import ctypes,errno,json,pathlib; "
+        "libc=ctypes.CDLL(None,use_errno=True); libc.syscall.restype=ctypes.c_long; "
+        f"result=libc.syscall({keyctl},0,-3,0); "
+        "assert result==-1 and ctypes.get_errno()==errno.EPERM; "
+        "pathlib.Path('/proc/keys').read_text(); print(json.dumps({'deny':True}))"
+    )
+    script = (
+        "import ctypes,runpy,sys; "
+        "libc=ctypes.CDLL(None,use_errno=True); libc.syscall.restype=ctypes.c_long; "
+        f"serial=libc.syscall({keyctl},1,ctypes.c_void_p()); "
+        "sys.exit(77) if serial<0 else None; "
+        f"assert libc.syscall({keyctl},3,serial)==0; "
+        f"sys.argv={[str(Path(link.__file__)), str(descriptor), sys.executable, '-I', '-S', '-c', probe]!r}; "
+        f"runpy.run_path({str(Path(link.__file__))!r},run_name='__main__')"
+    )
+    try:
+        result = subprocess.run([sys.executable, "-I", "-S", "-c", script],
+                                pass_fds=(descriptor,), capture_output=True, text=True, timeout=10)
+    finally:
+        os.close(descriptor)
+    if result.returncode == 77:
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks keyring support")
+        pytest.skip("kernel keyrings unavailable in this test environment")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"deny": True}

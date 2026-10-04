@@ -191,3 +191,16 @@ sys.exit(1)
     assert 'synthetic-access-token' not in text + tail
     assert '[credential redacted]' in tail
     assert panel_invoker._SEAT_REDACTIONS.get() == ()
+
+
+@pytest.mark.parametrize("directory", ["bin", ".local/bin", ".cargo/bin"])
+def test_standalone_codex_profile_mounts_only_executable(operator_home, tmp_path, directory):
+    executable = operator_home / directory / "codex"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(Path("/usr/bin/true").read_bytes())
+    executable.chmod(0o700)
+    with panel_invoker.seat_profile(harness="codex", executable=str(executable),
+                                   env={"HOME": str(operator_home)}, cwd=tmp_path) as (command, profile):
+        assert command == "/run/phase-loop-seat/provider"
+        assert str(executable.parent.parent) not in profile.mount_args
+        assert "/run/phase-loop-seat/codex-runtime" not in profile.mount_args

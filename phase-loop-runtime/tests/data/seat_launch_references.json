@@ -1,4 +1,5 @@
 [
+  {"count": 3, "function": "_SeatClaudeJournal.read", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_pgrp_and_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "group_cpu_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_c4_document_refs", "module": "adoption_bundle", "primitive": "io.read_text", "role": "host-io"},

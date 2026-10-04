@@ -24,7 +24,12 @@ def _checked(value):
 
 
 def _join_session(libc, number):
-    before = _checked(libc.syscall(number, 0, -3, 1))
+    try:
+        before = _checked(libc.syscall(number, 0, -3, 1))
+    except OSError as exc:
+        if exc.errno not in {errno.EKEYREVOKED, errno.EKEYEXPIRED, errno.ENOKEY}:
+            raise
+        before = None
     _checked(libc.syscall(number, 1, ctypes.c_void_p()))
     after = _checked(libc.syscall(number, 0, -3, 0))
     if before == after:

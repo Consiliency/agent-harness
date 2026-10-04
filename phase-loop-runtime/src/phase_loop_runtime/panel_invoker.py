@@ -19,6 +19,7 @@ import mimetypes
 import os
 import re
 import select
+import socket
 import shutil
 import signal
 import stat
@@ -311,82 +312,183 @@ def _seat_fd_closer(keep=(), terminal_fd=None) -> list[str]:
             str(terminal_fd if terminal_fd is not None else -1)]
 
 
-_CLAUDE_JOURNAL_COLLECTOR = (
-    "import json,os,stat,subprocess,sys,time\n"
-    "journal=sys.argv[1]\n"
-    "output=sys.argv[2]\n"
-    "command=sys.argv[3:]\n"
-    "def _write(data):\n"
-    " fd=os.open(output,os.O_WRONLY|os.O_NOFOLLOW|os.O_CLOEXEC)\n"
-    " try:\n"
-    "  out=os.fstat(fd)\n"
-    "  if (not stat.S_ISREG(out.st_mode)) or out.st_nlink != 1 or out.st_uid != os.getuid():\n"
-    "   sys.exit(129)\n"
-    "  os.ftruncate(fd,0)\n"
-    "  if data:\n"
-    "   os.write(fd,data)\n"
-    " finally:\n"
-    "  os.close(fd)\n"
-    "def _clear():\n"
-    " try:\n"
-    "  _write(b'')\n"
-    " except Exception:\n"
-    "  pass\n"
-    "def _snapshot(final):\n"
-    " if not os.path.exists(journal):\n"
-    "  return None\n"
-    " parent=os.path.dirname(journal)\n"
-    " name=os.path.basename(journal)\n"
-    " if sorted(os.listdir(parent)) != [name]:\n"
-    "  sys.exit(126)\n"
-    " info=os.lstat(journal)\n"
-    " if (not stat.S_ISREG(info.st_mode)) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_size > 32*1024*1024:\n"
-    "  sys.exit(127)\n"
-    " with open(journal,'rb') as source:\n"
-    "  data=source.read()\n"
-    " if not final and data and not data.endswith(b'\\n'):\n"
-    "  return None\n"
-    " for line in data.splitlines():\n"
-    "  if line.strip():\n"
-    "   json.loads(line)\n"
-    " return data\n"
-    "if os.path.exists(journal):\n"
-    " sys.exit(125)\n"
-    "proc=subprocess.Popen(command)\n"
-    "for _fd in (0,1,2):\n"
-    " try:\n"
-    "  os.close(_fd)\n"
-    " except OSError:\n"
-    "  pass\n"
-    "rc=None\n"
-    "try:\n"
-    " while True:\n"
-    "  rc=proc.poll()\n"
-    "  if rc is not None:\n"
-    "   break\n"
-    "  data=_snapshot(False)\n"
-    "  if data is not None:\n"
-    "   _write(data)\n"
-    "  time.sleep(0.05)\n"
-    " data=_snapshot(True)\n"
-    " if data is None:\n"
-    "  sys.exit(125)\n"
-    " _write(data)\n"
-    "except json.JSONDecodeError:\n"
-    " _clear()\n"
-    " sys.exit(128)\n"
-    "except SystemExit:\n"
-    " _clear()\n"
-    " raise\n"
-    "except Exception:\n"
-    " _clear()\n"
-    " sys.exit(130)\n"
-    "sys.exit(rc)\n"
-)
+_CLAUDE_JOURNAL_COLLECTOR = r"""import json,os,socket,stat,struct,subprocess,sys
+journal,output=sys.argv[1:3]
+export=int(sys.argv[3])
+command=sys.argv[4:]
+handles=[os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)]
+parts=os.path.dirname(journal).split('/')[1:]
+try:
+ for part in parts:
+  handles.append(os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=handles[-1]))
+ name=os.path.basename(journal)
+ if os.listdir(handles[-1]):
+  sys.exit(125)
+ if export>=0:
+  channel=socket.socket(fileno=export)
+  namespace=os.open('/proc/self/ns/mnt',os.O_RDONLY)
+  exported=[namespace,*handles]
+  channel.sendmsg([json.dumps([parts,name]).encode()],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,struct.pack('i'*len(exported),*exported))])
+  os.close(namespace)
+  channel.close()
+  for fd in handles: os.close(fd)
+  os.execv(command[0],command)
+ proc=subprocess.Popen(command)
+ rc=proc.wait()
+ if rc: sys.exit(rc)
+ for index,part in enumerate(parts):
+  current=os.stat(part,dir_fd=handles[index],follow_symlinks=False)
+  original=os.fstat(handles[index+1])
+  if (current.st_dev,current.st_ino)!=(original.st_dev,original.st_ino) or not stat.S_ISDIR(current.st_mode): sys.exit(126)
+ if os.listdir(handles[-1])!=[name]: sys.exit(126)
+ fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=handles[-1])
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid() or info.st_size>32*1024*1024: sys.exit(127)
+ data=os.read(fd,32*1024*1024+1)
+ os.close(fd)
+ if not data.endswith(b'\n'): sys.exit(128)
+ users=0
+ final=None
+ for line in data.split(b'\n'):
+  if not line.strip(): continue
+  record=json.loads(line)
+  message=record.get('message',{})
+  if message.get('role')=='user':
+   users+=1
+   if users>1 or final is not None: sys.exit(128)
+  if message.get('role')=='assistant':
+   final=message
+   if message.get('stop_reason') not in (None,'end_turn') or any(block.get('type')=='tool_use' for block in message.get('content',[])): sys.exit(128)
+ if final is None or final.get('stop_reason')!='end_turn': sys.exit(128)
+ fd=os.open(output,os.O_WRONLY|os.O_NOFOLLOW)
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid(): sys.exit(129)
+ os.ftruncate(fd,0)
+ with os.fdopen(fd,'wb') as target: target.write(data)
+except Exception as exc:
+ print("seat_journal_handoff_unavailable:"+type(exc).__name__,file=sys.stderr)
+ sys.exit(130)
+finally:
+ for fd in handles:
+  try: os.close(fd)
+  except OSError: pass
+"""
 
-def _claude_journal_collector_command(command, *, expected_journal: str, output: Path) -> list[str]:
+
+def _claude_journal_collector_command(command, *, expected_journal: str, output: Path,
+                                      export_fd: int = -1) -> list[str]:
     return ["/usr/bin/python3", "-I", "-S", "-c", _CLAUDE_JOURNAL_COLLECTOR,
-            expected_journal, os.path.abspath(output), *command]
+            expected_journal, os.path.abspath(output), str(export_fd), *command]
+
+
+class _SeatClaudeJournal:
+    def __init__(self):
+        self.reader, self.writer = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.reader.setblocking(False)
+        self.handles = []
+        self.parts = []
+        self.name = ""
+        self.identity = None
+
+    def close(self):
+        self.reader.close()
+        self.writer.close()
+        for descriptor in self.handles:
+            os.close(descriptor)
+        self.handles.clear()
+
+    def read(self):
+        if not self.handles:
+            try:
+                data, ancillary, flags, _ = self.reader.recvmsg(
+                    8192, socket.CMSG_SPACE(256 * 4), socket.MSG_CMSG_CLOEXEC,
+                )
+            except BlockingIOError:
+                return b""
+            for level, kind, payload in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    self.handles.extend(struct.unpack("i" * (len(payload) // 4), payload))
+            if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+                raise AgyCanaryEvidenceError("seat journal handoff incomplete")
+            self.parts, self.name = json.loads(data)
+            if (not self.parts or len(self.handles) != len(self.parts) + 2
+                    or any(not isinstance(part, str) or part in {"", ".", ".."} or "/" in part
+                           for part in [*self.parts, self.name])):
+                raise AgyCanaryEvidenceError("seat journal handoff invalid")
+        for index, part in enumerate(self.parts):
+            current = os.stat(part, dir_fd=self.handles[index + 1], follow_symlinks=False)
+            original = os.fstat(self.handles[index + 2])
+            if (not stat.S_ISDIR(current.st_mode)
+                    or (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino)):
+                raise AgyCanaryEvidenceError("seat journal directory changed")
+        names = os.listdir(self.handles[-1])
+        if not names:
+            return b""
+        if names != [self.name]:
+            raise AgyCanaryEvidenceError("seat journal directory changed")
+        info = os.stat(self.name, dir_fd=self.handles[-1], follow_symlinks=False)
+        identity = (info.st_dev, info.st_ino)
+        if self.identity is not None and self.identity != identity:
+            raise AgyCanaryEvidenceError("seat journal identity changed")
+        self.identity = identity
+        data = read_seat_output(self.handles[-1], self.name,
+                                max_bytes=32 * 1024 * 1024, expect_uid=os.getuid())
+        current = os.stat(self.name, dir_fd=self.handles[-1], follow_symlinks=False)
+        if identity != (current.st_dev, current.st_ino):
+            raise AgyCanaryEvidenceError("seat journal identity changed")
+        return data
+
+
+def _validated_claude_journal(data):
+    if not data or not data.endswith(b"\n"):
+        return ""
+    try:
+        users = 0
+        assistant_seen = False
+        pending = set()
+        seen = set()
+        for line in data.split(b"\n"):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            message = record.get("message", {})
+            identity = record.get("uuid")
+            version = (identity, json.dumps([message.get("id"), message.get("role"),
+                                           message.get("content"), message.get("stop_reason")], sort_keys=True))
+            if identity and version in seen:
+                continue
+            if identity:
+                seen.add(version)
+            content = message.get("content")
+            if message.get("role") == "user":
+                if isinstance(content, list) and content and all(
+                        isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+                    for block in content:
+                        tool = block.get("tool_use_id")
+                        if not isinstance(tool, str) or tool not in pending:
+                            return ""
+                        pending.remove(tool)
+                    continue
+                users += 1
+                if users > 1 or assistant_seen:
+                    return ""
+            if message.get("role") == "assistant":
+                assistant_seen = True
+                if message.get("stop_reason") not in {None, "end_turn", "tool_use"}:
+                    return ""
+                tools = [block for block in content or [] if block.get("type") == "tool_use"]
+                if message.get("stop_reason") == "tool_use" and not tools:
+                    return ""
+                for block in tools:
+                    tool = block.get("id")
+                    if not isinstance(tool, str) or not tool:
+                        return ""
+                    pending.add(tool)
+        if pending:
+            return ""
+        return _final_assistant_text_from_jsonl(None, require_terminal=True, data=data)
+    except (AttributeError, TypeError, ValueError, UnicodeError):
+        return ""
 
 
 class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
@@ -3718,6 +3820,7 @@ class SeatProfile:
     pass_fds: tuple[int, ...] = ()
     keep_fds: tuple[int, ...] = ()
     terminal_fd: int | None = None
+    journal: _SeatClaudeJournal | None = field(default=None, repr=False)
     broker_socket: str | Path | None = None
 
 
@@ -3952,7 +4055,11 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             source = _seat_bind_source(Path(executable).resolve(strict=True))
             mounts.extend(("--ro-bind", source, destination))
             native = Path(source)
-            if harness == "codex" and native.name == "codex" and native.parent.name == "bin":
+            if (harness == "codex" and native.name == "codex" and native.parent.name == "bin"
+                    and native.parent.parent.parent.name in {"vendor", "releases"}
+                    and re.fullmatch(r"(?:[^/]+-)?(?:x86_64|aarch64)-unknown-linux-musl",
+                                     native.parent.parent.name)
+                    and (native.parent.parent / "codex-path").is_dir()):
                 runtime = _seat_bind_source(native.parent.parent)
                 mounts.extend(("--ro-bind", runtime, "/run/phase-loop-seat/codex-runtime"))
                 destination = "/run/phase-loop-seat/codex-runtime/bin/codex"
@@ -4022,7 +4129,7 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     outputs = (*outputs, *((transcript,) if transcript is not None else ()))
     outputs = tuple(_precreate_seat_output(path) for path in outputs)
     with seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
-                      readonly_paths=readonly, outputs=outputs,
+                      readonly_paths=readonly, outputs=tuple(path for path in outputs if path != transcript),
                       gemini_profile=gemini_profile, role=role) as (provider, profile):
         owned_command = [provider, *command[1:]]
         if transcript_path is not None:
@@ -4039,13 +4146,19 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             profile = replace(profile, mount_args=(*profile.mount_args,
                               "--dir", config_dir + "/projects",
                               "--dir", project))
+            journal = _SeatClaudeJournal()
+            profile = replace(profile, journal=journal,
+                              pass_fds=(*profile.pass_fds, journal.writer.fileno()),
+                              keep_fds=(*profile.keep_fds, journal.writer.fileno()))
             owned_command = _claude_journal_collector_command(
                 owned_command, expected_journal=project + "/" + transcript_name,
-                output=transcript,
+                output=transcript, export_fd=journal.writer.fileno(),
             )
         try:
             yield owned_command, profile
         finally:
+            if profile.journal is not None:
+                profile.journal.close()
             if _SEAT_REDACTIONS.get():
                 retained = (*outputs, *((transcript,) if transcript_path is not None else ()))
                 for path in dict.fromkeys(retained):
@@ -5790,7 +5903,8 @@ _CLAUDE_RESUME_PROMPT = (
 )
 
 
-def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
+def _final_assistant_text_from_jsonl(path: Path | None, *, require_terminal: bool = False,
+                                     data: bytes | None = None) -> str:
     """Return the final turn's single assistant message, or "" when that cannot be proven.
 
     The rule (agent-harness#1002): a TURN starts at the last user record that is not a replay
@@ -5826,8 +5940,8 @@ def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = Fal
     hold more than one message id and none an A-B-A.
     """
     try:
-        lines = _read_seat_text(path).split("\n")
-    except OSError:
+        lines = (data.decode("utf-8") if data is not None else _read_seat_text(path)).split("\n")
+    except (OSError, UnicodeError):
         return ""
     last_line = max((i for i, text in enumerate(lines) if text.strip()), default=-1)
     records: list[tuple[dict, dict]] = []
@@ -6956,6 +7070,8 @@ def _run_claude_tui_session(
     master_fd: int | None = None
     proc: subprocess.Popen[bytes] | None = None
     terminal_bytes = bytearray()
+    journal = None
+    journal_error = False
     prompt_sent = False
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
@@ -6998,18 +7114,31 @@ def _run_claude_tui_session(
         )
 
     def _transcript_text() -> str:
+        if journal is not None:
+            return _final_assistant_text_from_jsonl(None, data=_journal_data())
         if session_transcript_path is not None:
             return _final_assistant_text_from_jsonl(session_transcript_path)
         return ""
 
     def _transcript_activity() -> int:
+        if journal is not None:
+            return len(_journal_data())
         if session_transcript_path is not None:
             info = _seat_output_metadata(session_transcript_path)
             return info.st_size if info is not None else 0
         return 0
 
     def _broker_final() -> str:
+        nonlocal journal_error
         if not allow_transcript_final or broker_transcript_path is None:
+            return ""
+        if journal is not None:
+            data = _journal_data()
+            final = _validated_claude_journal(data)
+            if not final and _final_assistant_text_from_jsonl(None, require_terminal=True, data=data):
+                journal_error = True
+            return final
+        if proc is None or proc.poll() != 0:
             return ""
         # A president may need a format re-ask. Hand its completed API turn to
         # invoke_president even when the text lacks the required ruling grammar;
@@ -7021,7 +7150,40 @@ def _run_claude_tui_session(
     def _pending_tool_uses() -> tuple[str, ...]:
         return _claude_pending_tool_uses(session_transcript_path) if session_transcript_path else ()
 
+    def _journal_data():
+        nonlocal journal_error
+        try:
+            return journal.read()
+        except (OSError, AgyCanaryEvidenceError, ValueError, TypeError):
+            journal_error = True
+            return b""
+
+    def _canonical_complete(text):
+        if not _completion_ok(text, mode):
+            return False
+        return journal is None or bool(_validated_claude_journal(_journal_data()))
+
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
+        if rc == 0:
+            if review_monitor is not None and review_monitor.cancel.is_set():
+                return 1, "", "review_operation_cancelled", ""
+            if journal is not None:
+                _terminate_process_group(proc, force_group=True)
+                data = _journal_data()
+                final = _validated_claude_journal(data)
+                if journal_error or not final:
+                    return 1, "", "claude_tui_journal_collection_refused", ""
+                _write_seat_text(session_transcript_path, data.decode("utf-8"))
+                if log.startswith("claude_tui_broker_"):
+                    text = final
+                elif log == "claude_tui_file_output":
+                    text = _current_output()
+                    if not _completion_ok(text, mode):
+                        return 1, "", "claude_tui_missing_canonical_output", ""
+            elif proc is None or proc.poll() != 0:
+                return 1, "", "claude_tui_journal_collection_refused", ""
+            if review_monitor is not None and review_monitor.cancel.is_set():
+                return 1, "", "review_operation_cancelled", ""
         # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
         # return so a startup/liveness failure is diagnosable (ah#196/#223); an OK
         # file verdict carries no tail.
@@ -7053,6 +7215,7 @@ def _run_claude_tui_session(
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             command, env=env, cwd=cwd, outputs=(output_file,), transcript_path=session_transcript_path,
         ))
+        journal = profile.journal
         master_fd, slave_fd = pty.openpty()
         profile = replace(profile, pass_fds=(*profile.pass_fds, slave_fd), terminal_fd=slave_fd)
         # ah#196/#223 R1: pin a wide window so a long scratch-cwd path renders
@@ -7079,7 +7242,7 @@ def _run_claude_tui_session(
                     env=dict(env),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=slave_fd,
                     text=False,
                     close_fds=True,
                     start_new_session=True,
@@ -7172,7 +7335,9 @@ def _run_claude_tui_session(
                             except subprocess.TimeoutExpired:
                                 pass
                         review_text = _current_output()
-                        if _completion_ok(review_text, mode):
+                        if proc.poll() == 127 and "seat_keyring_unavailable" in _tui_screen_text(terminal_bytes):
+                            return _finish(127, "", "seat_keyring_unavailable")
+                        if _canonical_complete(review_text):
                             return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = transcript_salvage or _transcript_text()
                         broker_final = _broker_final()
@@ -7190,6 +7355,8 @@ def _run_claude_tui_session(
                             review_text or transcript_text,
                             "claude_tui_pty_eof_no_output",
                         )
+            if journal_error:
+                return _finish(1, "", "claude_tui_journal_collection_refused")
             now = time.monotonic()
             # ah#196/#223 startup gate (PRE-SUBMIT only). Answer the workspace-trust
             # modal once, then submit on editor quiescence — never paste on a blind
@@ -7283,7 +7450,7 @@ def _run_claude_tui_session(
                 last_review_len = len(review_text)
                 last_heartbeat = now
                 last_output_progress = now
-            if _completion_ok(review_text, mode):
+            if _canonical_complete(review_text):
                 return _finish(0, review_text, "claude_tui_file_output")
             if now >= next_transcript_check:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
@@ -7314,7 +7481,7 @@ def _run_claude_tui_session(
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
-                if _completion_ok(review_text, mode):
+                if _canonical_complete(review_text):
                     return _finish(0, review_text, "claude_tui_file_output")
                 broker_final = _broker_final()
                 if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
@@ -7339,7 +7506,7 @@ def _run_claude_tui_session(
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
             if review_monitor is None and now - last_heartbeat >= stall_threshold_s:
                 review_text = _current_output()
-                if _completion_ok(review_text, mode):
+                if _canonical_complete(review_text):
                     return _finish(0, review_text, "claude_tui_file_output")
                 # agent-harness#343: an unmatched tool_use means the reviewer is
                 # legitimately blocked inside a tool whose transcript cannot grow

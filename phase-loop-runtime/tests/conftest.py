@@ -150,7 +150,7 @@ def pytest_configure(config):
         audit_path = directory / f"launches-{os.getpid()}.jsonl"
     close_audit = install_launch_audit(
         audit_path,
-        fail=os.environ.get("PHASE_LOOP_LAUNCH_AUDIT_FAIL") == "1",
+        fail=True,
         native_inference_hashes=_recorded_provider_hashes(),
     )
     config.add_cleanup(close_audit)

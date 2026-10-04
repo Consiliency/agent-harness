@@ -365,12 +365,12 @@ if shape == "sibling":
     transcript.write_text(json.dumps(json.loads(sys.argv[2])) + "\n")
     (project / "unexpected.jsonl").write_text("{}\n")
 elif shape == "symlink":
-    target = project / "target.jsonl"
+    target = project.parent / "target.jsonl"
     target.write_text(json.dumps(json.loads(sys.argv[2])) + "\n")
     transcript.symlink_to(target)
 elif shape == "hardlink":
     transcript.write_text(json.dumps(json.loads(sys.argv[2])) + "\n")
-    os.link(transcript, project / "linked.jsonl")
+    os.link(transcript, project.parent / "linked.jsonl")
 elif shape == "partial-json":
     transcript.write_text(json.dumps(json.loads(sys.argv[2])) + "\n{")
 else:
