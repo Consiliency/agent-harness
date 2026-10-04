@@ -213,6 +213,9 @@ class SeatMode:
     def render(self) -> str:
         code = f" [{self.code}]" if self.code else ""
         fix = f"; fix: {self.fix}" if self.fix else ""
+        if self.mode == MODE_DEGRADED:
+            # Plan amendment A3b: said before the board starts, so the operator can act.
+            return f"seat {self.seat_key} ({self.leg}): degraded \u2014 will not run{code}: {self.why}{fix}"
         mode = f"{self.mode} (qualified now)" if self.qualified_now else self.mode
         return f"seat {self.seat_key} ({self.leg}): {mode}{code} -- {self.why}{fix}"
 

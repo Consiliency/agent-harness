@@ -544,8 +544,9 @@ seat with a staged tree takes the jailed route.
   run.
 - **On a pass:** the pass is recorded, and the seat runs jailed. Its mode line reads
   `jailed (qualified now)`.
-- **On a failure, or if the run cannot happen:** the seat runs sealed, without tools, and
-  its mode line names `seat_jail_qualification_failed`, the reason and the fix.
+- **On a failure, or if the run cannot happen:** the seat is degraded and does not run (it
+  never falls back to a toolless seat), and its mode line names
+  `seat_jail_qualification_failed`, the reason and the fix.
 - **Retrying:** a failure is not retried on every seat. It is retried after
   `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default one hour), or as soon as the jail or the
   host layout changes.
@@ -556,7 +557,8 @@ are:
 - `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
 - `unconfined`: tools on the staged tree without a jail (codex, grok).
 - `sealed`: no tools; the bundle is inlined.
-- `degraded`: refused before launch.
+- `degraded`: will not run. The line reads `degraded — will not run [<code>]: <reason>;
+  fix: <command>`, before the board starts.
 - `native`: filled by the driving session.
 
 Every mode other than `jailed` names its notice code, its reason and a one-line fix. The
@@ -585,15 +587,15 @@ with.
     `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (default 900 s; 0 means do not wait). Other seats
     are not held. A renewed login runs the seat jailed, and the log says
     `jailed (login refreshed)`.
-  - **Not renewed in time:** the seat runs sealed (no tools) with
-    `claude_seat_login_token_expiring` (fix: `claude auth login`, then re-run). The board
-    is never refused.
+  - **Not renewed in time:** the seat is degraded and does not run, with
+    `claude_seat_login_token_expiring` (fix: run `claude auth login`, or use Claude to
+    refresh it, then re-run). The rest of the board runs.
   - A token that expires during a run ends the leg with `claude_seat_login_token_expired`.
     Re-running it reads a fresh token.
 - **Switching subscriptions:** `claude auth login` to another subscription takes effect at the
   next launch.
-- **No credential:** with no login and no override, the seat stays sealed with
-  `claude_seat_token_missing` (fix: `claude auth login`).
+- **No credential:** with no login and no override, the seat is degraded and does not run,
+  with `claude_seat_token_missing` (fix: `claude auth login`, then re-run).
 
 **Optional override: a dedicated seat token.** To bill a different subscription, store a
 long-lived `claude setup-token` token. When the file exists, it takes precedence over the

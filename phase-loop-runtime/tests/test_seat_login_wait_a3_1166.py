@@ -2,8 +2,9 @@
 
 The harness never runs the Claude CLI to renew a credential. A jailed Claude seat whose login
 is short of the launch margin waits -- before staging, reading the store read-only -- for its
-owner to renew it; renewed, it runs jailed; not renewed in time (or no wait allowed), it runs
-sealed with ``claude_seat_login_token_expiring``. Fakes only.
+owner to renew it; renewed, it runs jailed; not renewed in time (or no wait allowed), it is
+DEGRADED and NOT RUN with ``claude_seat_login_token_expiring`` -- never a toolless (sealed)
+substitute (plan amendment A3b). Fakes only.
 """
 
 from __future__ import annotations
@@ -243,6 +244,7 @@ def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, 
     if jailed_leg is not None:
         monkeypatch.setattr(pi, "_exec_jailed_claude_leg", jailed_leg)
     monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
+    monkeypatch.setattr(_FakeBroker, "invoked", 0)
     monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
     monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
     monkeypatch.setattr(pi, "derive_review_leg_authorization",
@@ -258,25 +260,43 @@ def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, 
         review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
         canonical_repo_authority=tmp_path, review_monitor=review_monitor,
     )
+    calls["launched"] = _FakeBroker.invoked              # any provider launch, sealed or jailed
     return spawned, calls
 
 
 @pytest.mark.parametrize("outcome", [sc.LOGIN_READY, sc.LOGIN_REFRESHED])
 def test_a_renewed_login_launches_the_seat_jailed(monkeypatch, tmp_path, outcome):
     _spawned, calls = _spawn(monkeypatch, tmp_path, outcome)
-    assert calls == {"prepare": 1}
+    assert calls == {"prepare": 1, "launched": 1}     # the jailed route is taken
 
 
 @pytest.mark.parametrize("outcome, code", [
     (sc.LOGIN_TIMEOUT, "claude_seat_login_token_expiring"),
     (sc.LOGIN_MISSING, "claude_seat_token_missing"),
 ])
-def test_a_login_not_renewed_runs_the_seat_sealed_never_refused(monkeypatch, tmp_path,
-                                                                 outcome, code):
+def test_a_login_not_renewed_is_degraded_and_not_run(monkeypatch, tmp_path, outcome, code):
     spawned, calls = _spawn(monkeypatch, tmp_path, outcome)
-    assert calls == {"prepare": 0}                     # the jail is never built
-    assert code in spawned.seat_notices
-    assert not any(n.startswith("seat_sandbox_refused") for n in spawned.seat_notices)
+    # Plan amendment A3b: no jail is built and NOTHING is launched -- no sealed substitute.
+    assert calls == {"prepare": 0, "launched": 0}
+    assert tuple(spawned)[:2] == ("DEGRADED", "")
+    assert str(tuple(spawned)[2]) == code
+    assert spawned.seat_notices == (code,)
+    assert list((tmp_path / "staging").iterdir()) == []
+
+
+def test_a_seat_with_no_credential_is_degraded_and_not_run(monkeypatch, tmp_path):
+    spawned, calls = _spawn(monkeypatch, tmp_path, sc.LOGIN_READY)
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
+                        lambda leg, **k: seat_jail.SeatRoute(False, "claude_seat_token_missing"))
+    from test_seat_notices import _FakeBroker
+
+    monkeypatch.setattr(_FakeBroker, "invoked", 0)
+    spawned = pi._default_spawn(
+        "claude", "ARTIFACT", mode="review", model="m", timeout_s=420,
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        canonical_repo_authority=tmp_path)
+    assert tuple(spawned)[0] == "DEGRADED" and _FakeBroker.invoked == 0
+    assert spawned.seat_notices == ("claude_seat_token_missing",)
 
 
 def test_cancellation_during_the_wait_cancels_the_leg_and_leaves_no_scratch(monkeypatch,

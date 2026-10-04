@@ -532,7 +532,8 @@ def test_cli_prints_every_seat_mode_and_carries_it_in_the_payload(tmp_path, monk
     legs = [_leg(leg, "AGREE", grounded=True) for leg in ("codex", "grok", "claude")]
     _code, out, err, _captured = _run_cli(tmp_path, monkeypatch, legs, pointer_brief=False,
                                           modes=modes)
-    assert ("advisor-board: seat mode: seat claude:a (claude): degraded "
+    # Plan amendment A3b: a degraded seat is announced as one that will not run.
+    assert ("advisor-board: seat mode: seat claude:a (claude): degraded \u2014 will not run "
             "[seat_sandbox_refused:jail_unqualified]") in err
     assert f"fix: {fix}" in err
     assert json.loads(out)["seat_modes"] == [m.as_json() for m in modes]

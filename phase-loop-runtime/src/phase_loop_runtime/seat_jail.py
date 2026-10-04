@@ -166,8 +166,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
     "claude_seat_token_missing": (
-        "inline fallback", "no Claude login found and no seat token override",
-        "run `claude auth login`"),
+        "leg refused", "no Claude login found and no seat token override; the seat does not run",
+        "run `claude auth login`, then re-run"),
     "claude_seat_token_rejected": (
         "leg ended", "the seat token override was rejected (revoked or expired)",
         "replace the override with a fresh `claude setup-token` token, or remove it to use "
@@ -194,15 +194,15 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "re-run the seat: each launch reads a fresh token"),
     # Plan amendment A2: the first-use qualification failed or could not run.
     "seat_jail_qualification_failed": (
-        "inline fallback",
+        "leg refused",
         "this host's seat jail is not qualified: the automatic first-use qualification "
-        "failed or could not run (the mode line names the reason)",
+        "failed or could not run (the mode line names the reason); the seat does not run",
         "run `phase-loop seat-sandbox qualify` to see why"),
     "claude_seat_login_token_expiring": (
-        "inline fallback",
+        "leg refused",
         "the Claude login's access token expires before the seat's deadline and was not "
-        "renewed within the wait (plan amendment A3)",
-        "run `claude auth login`, then re-run"),
+        "renewed within the wait; the seat does not run",
+        "run `claude auth login` (or use Claude to refresh it), then re-run"),
     "claude_seat_login_token_awaiting_refresh": (
         "waiting",
         "the Claude login's access token expires before the seat's deadline; the seat waits "
@@ -287,8 +287,14 @@ SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
     "gemini_seat_token_refreshed_in_jail",
     "seat_sandbox_unavailable_host", "seat_sandbox_unavailable_tiocsti",
     "seat_sandbox_unavailable_seat_uid",
-    "claude_seat_token_missing", "gemini_seat_credential_missing",
-    "gemini_seat_profile_unqualified", "seat_jail_qualification_failed",
+    "gemini_seat_credential_missing",
+    "gemini_seat_profile_unqualified",
+})
+#: Plan amendment A3b: a jail-eligible Claude seat that cannot run jailed is DEGRADED and
+#: not run, never a toolless (sealed) substitute. ``decide_seat_route`` may still name one
+#: of these on a non-jailed route; the spawn and the modes turn it into that refusal.
+JAIL_NOT_RUN_CODES: frozenset[str] = frozenset({
+    "claude_seat_token_missing", "seat_jail_qualification_failed",
     "claude_seat_login_token_expiring",
 })
 
@@ -553,7 +559,7 @@ class SeatRoute:
     def __post_init__(self) -> None:
         if self.jailed and self.code is not None:
             raise ValueError("a jailed route carries no fallback code")
-        if not self.jailed and self.code not in SEALED_FALLBACK_CODES:
+        if not self.jailed and self.code not in SEALED_FALLBACK_CODES | JAIL_NOT_RUN_CODES:
             raise ValueError(f"a sealed route needs a fallback code, got {self.code!r}")
 
 

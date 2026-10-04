@@ -990,8 +990,16 @@ are recorded on agent-harness#1132.
   `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
   `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
   `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
-  byte-identical to before, with that notice. Codex and grok are not jailed
+  byte-identical to before, with that notice, except a Claude seat's step 3, which is not
+  run (plan amendment A3b, below). Codex and grok are not jailed
   (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+- **No sealed fallback for a jail-eligible seat (plan amendment A3b).** A Claude seat that
+  would take the jailed route but cannot (no credential, a failed first-use qualification,
+  a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)
+  is DEGRADED and NOT RUN, typed, with a fix. It is never a toolless substitute.
+  `seat_jail.JAIL_NOT_RUN_CODES` names the route codes this applies to; none of them is in
+  `SEALED_FALLBACK_CODES`. The sealed route stays for hosts without the jail prerequisites,
+  an unstaged review and the Gemini seat (agent-harness#1244).
 - **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
   seat always takes the sealed route with its typed notice, whatever its credential,
   qualification or recorded stop; a tooled Gemini seat is agent-harness#1170.
@@ -1091,9 +1099,9 @@ are recorded on agent-harness#1132.
     `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (900 s; 0 means no wait).
     - **Renewed:** the seat runs jailed (logged `jailed (login refreshed)`), re-reading the
       token at launch.
-    - **Not renewed in time:** the seat runs sealed with `claude_seat_login_token_expiring`.
-      A store that stops yielding a login seals it with `claude_seat_token_missing`. It is
-      never refused.
+    - **Not renewed in time:** the seat is DEGRADED and NOT RUN with
+      `claude_seat_login_token_expiring`. A store that stops yielding a login ends it with
+      `claude_seat_token_missing`. Nothing is launched (plan amendment A3b).
     - **Monitoring:** under `heartbeat_only` the wait is recorded as `login_wait` in the
       monitoring record, not as a stall, and the stall clock starts after it. Under a
       bounded policy it is charged to the leg's deadline. The monitor's cancel event and the
@@ -1122,10 +1130,10 @@ are recorded on agent-harness#1132.
   qualification once, before launch. It is serialized by an exclusive lock in the per-user
   state directory, and on a pass it records the pass.
   - **On a pass:** the seat stays jailed, and its mode reports `qualified_now`.
-  - **On a failure, or a run that cannot happen:** the seat takes the sealed route with
-    `seat_jail_qualification_failed` and a typed reason (`prerequisite_missing`,
-    `store_unsafe`, `falsifiers_failed`, `timeout` or `error`), each with a literal fix. It
-    is never refused for this.
+  - **On a failure, or a run that cannot happen (a cached failure included):** the seat is
+    DEGRADED and NOT RUN with `seat_jail_qualification_failed` and a typed reason
+    (`prerequisite_missing`, `store_unsafe`, `falsifiers_failed`, `timeout` or `error`),
+    each with a literal fix (plan amendment A3b supersedes A2's sealed fallback).
   - **The failure cache:** failures are cached per host, digest and layout for
     `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default 3600 s). A lock timeout is not cached.
   - **The launch-time re-check** against the built jail still refuses an unrecorded digest.

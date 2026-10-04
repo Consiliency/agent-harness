@@ -16,8 +16,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   D7 Gemini copy builder. Plan: `plans/detailed-seat-sandbox-permissions-1132-20260928.md`.
 - A production brokered Claude or Gemini leg now decides its route once (J7) and carries a
   typed notice when it stays on the sealed inline route (`seat_sandbox_not_staged`,
-  `seat_sandbox_unavailable_{host,tiocsti,seat_uid}`, `claude_seat_token_missing`,
-  `gemini_seat_egress_unconfined`, ...). Codex and grok given a tree carry
+  `seat_sandbox_unavailable_{host,tiocsti,seat_uid}`, `gemini_seat_egress_unconfined`, ...).
+  A jail-eligible Claude seat with no credential is not run (`claude_seat_token_missing`;
+  plan amendment A3b). Codex and grok given a tree carry
   `seat_filesystem_unconfined`. Notices appear in the `advisor-board` JSON payload
   (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
   closed detail vocabulary (F030).
@@ -83,8 +84,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     with the minutes left). The seat waits, reading the store read-only every 30 s
     (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`), for up to `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S`
     (default 900 s; 0 means no wait), and other seats are not held. Renewed, it runs jailed.
-    Otherwise it runs sealed with `claude_seat_login_token_expiring` (fix: `claude auth
-    login`, then re-run); the board is never refused.
+    Otherwise it is degraded and not run with `claude_seat_login_token_expiring` (fix: run
+    `claude auth login`, or use Claude to refresh it, then re-run); the rest of the board
+    runs.
   - **A token that expires during a run** is `claude_seat_login_token_expired`, safe to
     relaunch.
   - **The login's own notices:** rate-limit and rejection have their own login notices.
@@ -94,8 +96,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   this host's jail has no recorded qualification. The harness qualifies the jail on first
   use, once per host, serialized by a lock, and records the pass.
   - **On a pass**, the mode line reads `jailed (qualified now)`.
-  - **On a failure**, the seat runs sealed with `seat_jail_qualification_failed`, its reason
-    and its fix.
+  - **On a failure**, the seat is degraded and not run with `seat_jail_qualification_failed`,
+    its reason and its fix (plan amendment A3b).
   - **Failures are cached** per host, digest and layout, and retried after an hour or on a
     change.
   - This folds in agent-harness#1186's first-use self-check.
@@ -108,6 +110,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   launched with the decided env, and the seat's own `TMPDIR` and `CLAUDE_CODE_TMPDIR` are
   `/seat/home/.tmp` (its home, on the disk-backed staging root), not the jail's tmpfs
   `/tmp`. This changes the jail profile digest, so a host re-qualifies once on first use.
+- Plan amendment A3b (maintainer ruling 2026-10-04): a jail-eligible Claude seat never falls
+  back to the toolless (sealed) route. A failed or cached-failed first-use qualification, no
+  credential, or a login not renewed within the wait leaves the seat degraded and not run,
+  with a typed notice and fix. Its mode line says so before the board starts:
+  `degraded — will not run [<code>]: <reason>; fix: <command>`. Hosts without the jail
+  prerequisites and the Gemini seat keep the sealed route (agent-harness#1244).
 - The jailed seat's identity probe lists its descriptors from a child process, not a shell
   pipeline, so a correctly confined seat is no longer refused intermittently.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed

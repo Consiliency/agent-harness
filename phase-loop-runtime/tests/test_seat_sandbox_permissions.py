@@ -768,15 +768,15 @@ def test_codex_r5_hostile_records_refuse_typed_through_the_gate(tmp_path, monkey
     record_path.chmod(0o600)
     assert seat_jail.pass_record_verdict(digest) == (False, R5_REASONS[shape])
     # Plan amendment A2: a hostile record is no pass, so the first-use qualification runs
-    # (here: a failing fake); the seat is never jailed and falls back sealed.
+    # (here: a failing fake); the seat is never jailed and does not run (A3b).
     from phase_loop_runtime import seat_jail_autoqualify as aq
 
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True),
         qualify_on_first_use=lambda leg: aq.ensure_qualified(
             leg, qualify=lambda _leg: {"result": "fail"}))
-    assert route == seat_jail.SeatRoute(False, "seat_jail_qualification_failed")
-    assert refusal is None and notices == ["seat_jail_qualification_failed"]
+    # Plan amendment A3b: degraded and not run -- never jailed, never a sealed substitute.
+    assert refusal == "seat_jail_qualification_failed" and notices == []
 
 
 def test_codex_r5_the_exception_class_reaches_the_launch_refusal_and_the_log(
@@ -869,8 +869,8 @@ def test_upg_every_other_group_writable_chain_refuses_with_the_chmod_notice(
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", _auth(True), eligible=True, decide=lambda leg, **k: seat_jail.SeatRoute(True),
         qualify_on_first_use=lambda leg: aq.ensure_qualified(leg, qualify=_qualify_and_record))
-    assert route == seat_jail.SeatRoute(False, "seat_jail_qualification_failed")
-    assert refusal is None and notices == ["seat_jail_qualification_failed"]
+    # Plan amendment A3b: degraded and not run -- never jailed, never a sealed substitute.
+    assert refusal == "seat_jail_qualification_failed" and notices == []
     assert aq.recent_outcome(seat_jail.jail_profile_digest("claude")).reason == "store_unsafe"
     fix = aq.REASON_FIXES["store_unsafe"]
     assert "chmod go-w" in fix and "user-private group" in fix

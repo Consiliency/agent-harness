@@ -1647,7 +1647,7 @@ def _seat_launch_modes(
                     credential[margin] = (sp.MODE_JAILED, _CLAUDE_LOGIN_AWAITING,
                                           cred.SOURCE_LOGIN, left)
                 else:
-                    credential[margin] = (sp.MODE_SEALED, _CLAUDE_LOGIN_EXPIRING, None, left)
+                    credential[margin] = (sp.MODE_DEGRADED, _CLAUDE_LOGIN_EXPIRING, None, left)
         return credential[margin]
 
     modes = []
@@ -1679,16 +1679,16 @@ def _seat_launch_modes(
             else:
                 modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, None,
                                          "this route has no file tools", "", None, position))
-        elif refusal is not None:
-            modes.append(_coded(sp.MODE_DEGRADED, refusal))
-        elif route.code == "seat_jail_qualification_failed":
-            # Plan amendment A2: sealed, loudly, with the typed reason and its fix.
+        elif refusal == "seat_jail_qualification_failed":
+            # Plan amendments A2 + A3b: degraded and not run, with the typed reason and its fix.
             outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
             reason = outcome.reason if outcome is not None and outcome.reason else "error"
-            _what, why, _fix = _seat_jail.NOTICES[route.code]
-            modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, route.code,
+            _what, why, _fix = _seat_jail.NOTICES[refusal]
+            modes.append(sp.SeatMode(key, leg, sp.MODE_DEGRADED, refusal,
                                      f"{why}; reason: {reason}",
                                      _seat_jail_autoqualify.REASON_FIXES[reason], None, position))
+        elif refusal is not None:
+            modes.append(_coded(sp.MODE_DEGRADED, refusal))
         elif not route.jailed:
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
@@ -1703,7 +1703,7 @@ def _seat_launch_modes(
                 modes.append(sp.SeatMode(
                     key, leg, sp.MODE_JAILED, code,
                     f"{why} (expires in {_minutes(left)}m; waits up to "
-                    f"{int(_seat_credentials.login_refresh_wait_s())} s, then runs sealed)",
+                    f"{int(_seat_credentials.login_refresh_wait_s())} s, then will not run)",
                     fix, source, position, qualified_now[leg]))
             elif code is not None:
                 modes.append(_coded(kind, code))
@@ -9909,10 +9909,11 @@ def _seat_route_for_spawn(
 
     A jailed route whose jail digest has no recorded EC-EXECFIND-2 pass is qualified on
     first use (plan amendment A2): the host's jail qualification runs once, serialized, and
-    on a pass the seat stays jailed. If it fails or cannot run, the seat falls back to the
-    sealed route with ``seat_jail_qualification_failed``. It is never refused for this,
-    and never jailed without a recorded pass. An injected ``pass_recorded`` is the gate
-    alone: no recorded pass is refused with ``seat_sandbox_refused:jail_unqualified``."""
+    on a pass the seat stays jailed. If it fails or cannot run, the seat is degraded and not
+    run with ``seat_jail_qualification_failed`` (plan amendment A3b: never a sealed
+    substitute), and never jailed without a recorded pass. A jail-eligible seat with no
+    credential is likewise not run. An injected ``pass_recorded`` is the gate alone: no
+    recorded pass is refused with ``seat_sandbox_refused:jail_unqualified``."""
     if not eligible:
         return None, [], None
     route = (decide or _seat_jail.decide_seat_route)(
@@ -9921,6 +9922,9 @@ def _seat_route_for_spawn(
     )
     if route is None:
         return None, [], None
+    if not route.jailed and route.code in _seat_jail.JAIL_NOT_RUN_CODES:
+        # Plan amendment A3b: a jail-eligible seat that cannot run jailed does not run.
+        return route, [], str(route.code)
     if not route.jailed:
         return route, [str(route.code)], None
     if pass_recorded is not None:
@@ -9929,11 +9933,10 @@ def _seat_route_for_spawn(
     outcome = (qualify_on_first_use or _seat_jail_autoqualify.ensure_qualified)(leg)
     if outcome.qualified:
         return route, [], None
+    # Plan amendment A3b (supersedes A2's sealed fallback): the seat is degraded and not run.
     logging.getLogger(__name__).warning(
-        "seat jail not qualified on this host (%s); %s takes the sealed route",
-        outcome.reason, leg)
-    sealed = "seat_jail_qualification_failed"
-    return _seat_jail.SeatRoute(False, sealed), [sealed], None
+        "seat jail not qualified on this host (%s); the %s seat will not run", outcome.reason, leg)
+    return route, [], "seat_jail_qualification_failed"
 
 
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
@@ -9946,8 +9949,8 @@ def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAutho
     route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True)
     if route is None or not route.jailed or refusal is not None:
         return False
-    # Plan amendment A3: a short login with no wait allowed runs sealed. (With a wait, the
-    # seat is counted jailed: it runs sealed only if the login is not renewed in time.)
+    # Plan amendment A3/A3b: a short login with no wait allowed does not run. (With a wait,
+    # the seat is counted jailed: it does not run only if the login is not renewed in time.)
     return not (leg == "claude" and _seat_credentials.login_refresh_wait_s() == 0
                 and _seat_credentials.login_seconds_left(_claude_seat_login_margin_s(None))
                 is not None)
@@ -10097,7 +10100,8 @@ def _default_spawn(
     jailed = seat_route is not None and seat_route.jailed
     # Plan amendment A3: a jailed Claude seat whose login is short of the launch margin
     # waits, read-only, for it to be renewed -- before staging, so no seat id or namespace is
-    # held. A wait that ends short seals the seat; nothing is run to renew the credential.
+    # held. A wait that ends short leaves the seat degraded and not run (A3b); nothing is run
+    # to renew the credential.
     login_wait: "_seat_credentials.LoginWait | None" = None
     if jailed and leg == "claude":
         try:
@@ -10110,14 +10114,15 @@ def _default_spawn(
             raise
         if login_wait.outcome in (_seat_credentials.LOGIN_TIMEOUT,
                                   _seat_credentials.LOGIN_MISSING):
-            sealed = (_CLAUDE_LOGIN_EXPIRING if login_wait.outcome == _seat_credentials.LOGIN_TIMEOUT
-                      else "claude_seat_token_missing")
+            # Plan amendment A3b: degraded and not run -- never a toolless substitute.
+            code = (_CLAUDE_LOGIN_EXPIRING if login_wait.outcome == _seat_credentials.LOGIN_TIMEOUT
+                    else "claude_seat_token_missing")
             logging.getLogger(__name__).warning(
-                "seat claude [%s]: the login was not renewed within the wait; the seat runs "
-                "sealed (run `claude auth login`, then re-run)", sealed)
-            seat_route = _seat_jail.SeatRoute(False, sealed)
-            seat_notices = [*seat_notices, sealed]
-            jailed = False
+                "seat claude [%s]: the login was not renewed within the wait; the seat will "
+                "not run (fix: %s)", code, _seat_jail.NOTICES[code][2])
+            if base is not None:
+                shutil.rmtree(base, ignore_errors=True)
+            return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code), seat_notices=(code,))
         elif login_wait.outcome == _seat_credentials.LOGIN_REFRESHED:
             logging.getLogger(__name__).info(
                 "seat claude: jailed (login refreshed) after %d s", int(login_wait.waited_s))

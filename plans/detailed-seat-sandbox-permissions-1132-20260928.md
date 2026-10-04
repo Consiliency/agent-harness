@@ -1494,3 +1494,29 @@ rounds 8 to 11). The harness never runs the Claude CLI to renew a credential.
   wait of 0, then sealed at once; the store unreadable mid-wait, then typed; cancellation
   during the wait; and no CLI executed at any point.
 - [ ] Every new behaviour has a mutation receipt.
+
+## Amendment A3b (2026-10-04): no sealed fallback
+
+Maintainer ruling, 2026-10-04, relayed by the team lead. It supersedes A2's sealed fallback
+and A3's "runs sealed": a sealed review wastes tokens and chokes on inlined context.
+
+**Rule.** A jail-eligible Claude seat that cannot run jailed is DEGRADED and NOT RUN, with a
+typed notice and its fix. It never falls back to the toolless (sealed) route. This covers:
+- a failed first-use qualification, a cached failure included (`seat_jail_qualification_failed`
+  with its reason and fix);
+- a login not renewed within the A3 wait, or a store that stops yielding a login
+  (`claude_seat_login_token_expiring`, fix "run `claude auth login` (or use Claude to refresh
+  it), then re-run"; `claude_seat_token_missing`);
+- no credential at all (`claude_seat_token_missing`);
+- the existing refusals (`seat_sandbox_refused:jail_unqualified`, the launch-time re-check, an
+  unsafe override), which were already not run.
+
+The pre-launch mode line shows each as `degraded — will not run [<code>]: <reason>; fix:
+<command>`, before the board starts. None of these codes is a sealed fallback code.
+
+**Out of scope here:** hosts without the jail prerequisites, an unstaged review and the Gemini
+seat keep the sealed route (agent-harness#1244).
+
+**A3b acceptance.**
+- [ ] Each path above ends degraded, not run and typed, with no launch at all (no sealed
+  argv or spawn), and a mutant that re-routes it to sealed is red.

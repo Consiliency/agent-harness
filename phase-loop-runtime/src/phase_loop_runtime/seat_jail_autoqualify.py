@@ -8,9 +8,9 @@ store. This folds in agent-harness#1186's first-use self-check (option C).
 
 - **One run per host:** the run is serialized by an exclusive lock in the per-user state
   directory. Concurrent seats or boards wait for it, then re-read the store.
-- **On a failure** (the falsifiers failed, or the run could not happen): the seat falls back
-  to the sealed route with ``seat_jail_qualification_failed`` and a typed reason. It never
-  refuses the board.
+- **On a failure** (the falsifiers failed, or the run could not happen): the seat is
+  degraded and not run with ``seat_jail_qualification_failed`` and a typed reason (plan
+  amendment A3b: never a sealed substitute). The rest of the board runs.
 - **The failure cache:** a failure is cached for this host, digest and layout only, and is
   retried after ``RETRY_ENV`` seconds or as soon as the digest or layout changes.
 """
@@ -251,7 +251,7 @@ def ensure_qualified(
         try:
             evidence = qualify(leg)
             reason = None if evidence.get("result") == "pass" else "falsifiers_failed"
-        except Exception as exc:  # every failure falls back sealed; none refuses the board
+        except Exception as exc:  # every failure is typed; the seat is degraded, not run
             reason = classify_failure(exc)
         if reason is None and verdict(digest)[0]:
             return _remember(digest, Outcome(QUALIFIED_NOW))

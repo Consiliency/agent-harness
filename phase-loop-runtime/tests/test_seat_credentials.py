@@ -161,14 +161,15 @@ def test_neither_source_is_the_missing_notice(no_override):
 
 def test_a_short_login_at_launch_is_refused_and_nothing_is_run(no_override, monkeypatch):
     # Plan amendment A3: the launch never renews a credential; the wait (before staging)
-    # is where a short login is given time. At launch it is typed, and sealed by the spawn.
+    # is where a short login is given time. At launch it is typed, and the seat is not run.
     monkeypatch.setattr(sc.subprocess, "run", pytest.fail)
     monkeypatch.setattr(sc.subprocess, "Popen", pytest.fail)
     with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
         sc.resolve_claude_seat_credential(900, now=lambda: 1000.0,
                                           read_login=lambda: _login(1500.0))
     assert caught.value.code == "claude_seat_login_token_expiring"
-    assert caught.value.code in seat_jail.SEALED_FALLBACK_CODES
+    assert caught.value.code in seat_jail.JAIL_NOT_RUN_CODES
+    assert caught.value.code not in seat_jail.SEALED_FALLBACK_CODES
     assert not hasattr(sc, "refresh_login_via_cli")
 
 
