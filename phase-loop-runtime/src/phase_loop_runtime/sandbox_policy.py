@@ -62,13 +62,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
 from dataclasses import dataclass
-import hashlib
-import hmac
 from ipaddress import ip_address
 import os
 from pathlib import Path
 import re
-import secrets
 from typing import Mapping
 import shutil
 import stat
@@ -76,6 +73,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+import weakref
 
 __all__ = [
     "SandboxLocation",
@@ -662,53 +660,49 @@ CHILD_SCRATCH_DECISIONS = (
 )
 
 
-#: Stamped into every env that :func:`child_scratch_env` decides (agent-harness#1147). The
-#: value BINDS the decision to that env: ``<decision>:<nonce>:<mac>``, where the MAC (keyed
-#: per process, never exported) covers the decision, a fresh nonce and the values the
-#: decision governs (``TMPDIR``, ``CLAUDE_CODE_TMPDIR``). The test suite's audit hook
-#: re-checks it at every agent-CLI spawn (:func:`scratch_stamp_valid`), so a launch that
-#: skipped the decision fails at RUNTIME however it is spelled -- and a stamp that was
-#: copied, inherited from another process, emptied, or no longer matches the env's scratch
-#: values does not count as a decision.
+#: A label naming the decision taken, set in every env :func:`child_scratch_env` returns.
+#: It is informational only: nothing trusts it as proof of a decision.
 CHILD_SCRATCH_MARKER = "PHASE_LOOP_SCRATCH_DECIDED"
-_STAMP_KEY = secrets.token_bytes(32)
 
 
-def _stamp_mac(decision: str, nonce: str, env: Mapping[str, str]) -> str:
-    message = "\0".join([decision, nonce, *(f"{name}={env.get(name, '')}"
-                                            for name in _CHILD_TMP_ENV_VARS)])
-    return hmac.new(_STAMP_KEY, message.encode("utf-8", "surrogateescape"),
-                    hashlib.sha256).hexdigest()
+class DecidedEnv(dict):
+    """The env a scratch decision returned. A plain ``dict`` subclass, so every consumer
+    (``subprocess``, ``os.exec*``, JSON, evidence) treats it as the mapping it is."""
+
+    scratch_decision: str = ""
 
 
-def scratch_stamp_valid(env: Mapping[str, str]) -> str | None:
-    """The decision ``env`` carries, if its stamp was minted by :func:`child_scratch_env`
-    IN THIS PROCESS for exactly this env's scratch values; else ``None``."""
-    value = env.get(CHILD_SCRATCH_MARKER, "") if env is not None else ""
-    decision, _, rest = str(value).partition(":")
-    nonce, _, mac = rest.partition(":")
-    if decision not in CHILD_SCRATCH_DECISIONS or not nonce or not mac:
+#: Every env :func:`child_scratch_env` has returned and that is still alive, by ``id``.
+#: Weak, so it holds nothing alive and an ``id`` cannot be reused while it is listed.
+_DECIDED: "weakref.WeakValueDictionary[int, DecidedEnv]" = weakref.WeakValueDictionary()
+
+
+def decided_scratch(env: object) -> str | None:
+    """The decision ``env`` IS the result of, or ``None``. Bound to the object itself: a
+    copy, a rebuilt or hand-made env, or a process's own environment was not decided --
+    the test suite's audit hook uses this as its regression tripwire (agent-harness#1147)."""
+    if env is None or _DECIDED.get(id(env)) is not env:
         return None
-    return decision if hmac.compare_digest(mac, _stamp_mac(decision, nonce, env)) else None
+    return env.scratch_decision
 
 
-def child_scratch_env(env: Mapping[str, str], decision: str) -> dict[str, str]:
+def child_scratch_env(env: Mapping[str, str], decision: str) -> DecidedEnv:
     """The env an agent CLI is launched with, after its scratch decision.
 
     ``CHILD_SCRATCH_RELOCATE`` applies :func:`fill_child_tmp_env`; the two named
     exceptions keep the env as built. Any other value is refused, so a launch site cannot
-    state a decision this module does not know. A stamp already in ``env`` is never
-    trusted: it is dropped and the decision is taken afresh. The result is stamped with
-    ``CHILD_SCRATCH_MARKER`` (see above). Returns a new dict.
+    state a decision this module does not know. The result is a new :class:`DecidedEnv`
+    labelled ``CHILD_SCRATCH_MARKER=<decision>`` and recorded as decided
+    (:func:`decided_scratch`).
     """
     if decision not in CHILD_SCRATCH_DECISIONS:
         raise ValueError(f"unknown child scratch decision {decision!r}")
-    out = dict(env)
-    out.pop(CHILD_SCRATCH_MARKER, None)
+    out = DecidedEnv(env)
     if decision == CHILD_SCRATCH_RELOCATE:
         fill_child_tmp_env(out)
-    nonce = secrets.token_hex(8)
-    out[CHILD_SCRATCH_MARKER] = f"{decision}:{nonce}:{_stamp_mac(decision, nonce, out)}"
+    out[CHILD_SCRATCH_MARKER] = decision
+    out.scratch_decision = decision
+    _DECIDED[id(out)] = out
     return out
 
 

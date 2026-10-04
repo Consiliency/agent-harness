@@ -141,8 +141,8 @@ def test_agent_detection(program, argv, expected):
 def test_the_marker_names_the_decision():
     for decision in sandbox_policy.CHILD_SCRATCH_DECISIONS:
         env = sandbox_policy.child_scratch_env({}, decision)
-        assert env[sandbox_policy.CHILD_SCRATCH_MARKER].partition(":")[0] == decision
-        assert sandbox_policy.scratch_stamp_valid(env) == decision
+        assert env[sandbox_policy.CHILD_SCRATCH_MARKER] == decision
+        assert sandbox_policy.decided_scratch(env) == decision
 
 
 @pytest.mark.parametrize("site", [
@@ -192,11 +192,11 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
         panel_invoker._cleanup_claude_launch_timeout(
             adapter, cwd=str(tmp_path), env=env,
             exc=subprocess.TimeoutExpired(["claude"], 1, output=b"", stderr=b""))
-    assert seen.read_text(encoding="utf-8").partition(":")[0] == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    assert seen.read_text(encoding="utf-8") == sandbox_policy.CHILD_SCRATCH_RELOCATE
 
 
 
-# -- round 6: the stamp must PROVE a decision made for this env -------------------------
+# -- round 7: a decision is bound to the env OBJECT it returned -------------------------
 
 
 def _decided_env(decision=sandbox_policy.CHILD_SCRATCH_RELOCATE):
@@ -204,60 +204,71 @@ def _decided_env(decision=sandbox_policy.CHILD_SCRATCH_RELOCATE):
 
 
 @pytest.mark.parametrize("case", [
-    "empty", "inherited_from_os_environ", "copied_exception", "values_changed_after",
-    "forged", "minted_in_another_process",
+    "copied", "rebuilt", "hand_made_with_label", "inherited", "copy_of_os_environ",
+    "exception_at_another_site", "decided_in_another_process",
 ])
-def test_a_stamp_that_does_not_prove_a_decision_for_this_env_is_caught(runtime, monkeypatch, case):
+def test_an_env_that_is_not_the_one_a_decision_returned_is_caught(runtime, monkeypatch, case):
+    import json
     import subprocess
 
-    env = _decided_env()
+    decided = _decided_env()
     marker = sandbox_policy.CHILD_SCRATCH_MARKER
-    if case == "empty":
-        env[marker] = ""
-    elif case == "inherited_from_os_environ":
-        monkeypatch.setenv(marker, env[marker])  # a valid stamp, but the process's own
-    elif case == "copied_exception":
-        env = _decided_env(sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP)  # valid, wrong site
-    elif case == "values_changed_after":
-        env["TMPDIR"] = "/somewhere/else"
-    elif case == "forged":
-        env[marker] = "relocate:" + "0" * 16 + ":" + "0" * 64
+    hook.drain()
+    if case == "copied":
+        runtime.with_env(dict(decided))
+    elif case == "rebuilt":
+        runtime.with_env({key: value for key, value in decided.items()})
+    elif case == "hand_made_with_label":
+        runtime.with_env({"PATH": os.environ["PATH"], marker: sandbox_policy.CHILD_SCRATCH_RELOCATE})
+    elif case == "inherited":
+        monkeypatch.setenv(marker, sandbox_policy.CHILD_SCRATCH_RELOCATE)
+        runtime.partial_getattr()  # no env: inherits os.environ, label and all
+    elif case == "copy_of_os_environ":
+        monkeypatch.setenv(marker, sandbox_policy.CHILD_SCRATCH_RELOCATE)
+        runtime.with_env(dict(os.environ))
+    elif case == "exception_at_another_site":
+        runtime.with_env(_decided_env(sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP))
     else:
         src = str(Path(sandbox_policy.__file__).resolve().parents[1])
-        minted = subprocess.run(
+        out = subprocess.run(
             [sys.executable, "-c",
              "import json,sys; from phase_loop_runtime import sandbox_policy as p; "
              "print(json.dumps(p.child_scratch_env({'PATH': sys.argv[1]}, p.CHILD_SCRATCH_RELOCATE)))",
-             env["PATH"]],
+             os.environ["PATH"]],
             capture_output=True, text=True, check=True, env={**os.environ, "PYTHONPATH": src})
-        env = __import__("json").loads(minted.stdout)
-    hook.drain()
-    if case == "inherited_from_os_environ":
-        runtime.partial_getattr()  # inherits os.environ
-        found = hook.drain()
-        assert found and "no env was decided" in found[0], found
-        hook.drain()
-        runtime.with_env(dict(os.environ))  # an explicit copy of it: the stamp is the process's
-        found = hook.drain()
-        assert found and "inherited" in found[0], found
-        return
-    runtime.with_env(env)
+        runtime.with_env(json.loads(out.stdout))
     found = hook.drain()
-    assert found, f"{case}: a stamp that proves nothing was accepted"
-    reason = {"empty": "missing or empty", "copied_exception": "exception was not applied",
-              "values_changed_after": "not minted for this env", "forged": "not minted",
-              "minted_in_another_process": "not minted"}[case]
+    assert found, f"{case}: an env that was not decided was accepted"
+    reason = {"inherited": "no env was decided",
+              "exception_at_another_site": "exception was not applied"}.get(
+        case, "not the env a scratch decision returned")
     assert reason in found[0], found
 
 
-def test_a_fresh_relocate_decision_passes_and_a_reused_stamp_is_never_trusted(runtime):
-    exception = _decided_env(sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP)
-    decided = sandbox_policy.child_scratch_env(exception, sandbox_policy.CHILD_SCRATCH_RELOCATE)
-    assert sandbox_policy.scratch_stamp_valid(decided) == sandbox_policy.CHILD_SCRATCH_RELOCATE
-    assert decided[sandbox_policy.CHILD_SCRATCH_MARKER] != exception[sandbox_policy.CHILD_SCRATCH_MARKER]
+def test_the_decided_object_itself_passes_even_after_the_launch_adds_a_key(runtime):
+    decided = _decided_env()
+    decided["PHASE_LOOP_CALLER_RUN_ID"] = "run-1"  # as the executor launch does
     hook.drain()
     runtime.with_env(decided)
     assert hook.drain() == []
+
+
+def test_an_env_decided_again_over_another_decision_is_its_own_decision():
+    exception = _decided_env(sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP)
+    again = sandbox_policy.child_scratch_env(exception, sandbox_policy.CHILD_SCRATCH_RELOCATE)
+    assert sandbox_policy.decided_scratch(again) == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    assert again[sandbox_policy.CHILD_SCRATCH_MARKER] == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    assert sandbox_policy.decided_scratch(dict(again)) is None
+
+
+def test_a_dead_decision_is_forgotten_and_its_id_cannot_vouch_for_a_new_object():
+    import gc
+
+    decided = _decided_env()
+    ident = id(decided)
+    del decided
+    gc.collect()
+    assert ident not in sandbox_policy._DECIDED
 
 
 def test_an_exception_applied_at_the_launch_interface_passes(runtime, tmp_path):
@@ -276,8 +287,33 @@ def test_an_unattributable_spawn_is_judged(runtime):
     assert found and "unattributed" in found[0], found
 
 
-def test_the_hook_proves_it_is_live():
-    assert hook._installed and hook._probe_seen
+def test_installation_proves_enforcement_and_fails_without_it(monkeypatch):
+    assert hook._installed
+    hook._prove_enforcement()  # the real check passes with the real hook
+    monkeypatch.setattr(hook, "_decision_problem", lambda env, function: None)
+    with pytest.raises(RuntimeError, match="not enforcing"):
+        hook._prove_enforcement()  # a hook that accepts everything is caught
+
+
+def test_a_vetoed_registration_fails_installation(tmp_path):
+    """In a fresh interpreter, an earlier hook that vetoes `sys.addaudithook` makes
+    `install` fail rather than report a live hook."""
+    import subprocess
+
+    code = (
+        "import sys\n"
+        "def veto(event, args):\n"
+        "    if event == 'sys.addaudithook':\n"
+        "        raise RuntimeError('veto')\n"
+        "sys.addaudithook(veto)\n"
+        "import _scratch_audit_hook as hook\n"
+        "try:\n    hook.install()\nexcept RuntimeError:\n    sys.exit(3)\n"
+        "sys.exit(0)\n")
+    paths = os.pathsep.join([str(Path(hook.__file__).parent),
+                             str(Path(sandbox_policy.__file__).resolve().parents[1])])
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                            env={**os.environ, "PYTHONPATH": paths})
+    assert result.returncode == 3, result.stderr
 
 
 # -- round 6: agent-CLI names come from the runtime's registries ------------------------

@@ -1,21 +1,19 @@
 """Runtime completeness check for agent-CLI scratch decisions (agent-harness#1147).
 
+This is a REGRESSION TRIPWIRE FOR THE TEST SUITE, not an adversarial boundary: it makes a
+launch path that forgets the scratch decision fail whatever test exercises it. It does not
+try to stop code that deliberately evades it.
+
 A static scan of Python cannot be complete: every round of review found another spelling
-of a launch (``getattr``, ``functools.partial``, an argv built elsewhere, a runner passed
-as a value). This hook does not read source. It watches the interpreter's own audit
+of a launch. This hook does not read source. It watches the interpreter's own audit
 events for every process spawn -- ``subprocess.Popen``, ``os.exec*``, ``os.posix_spawn*``,
 ``os.spawn*``, ``os.system``, ``pty.spawn`` -- and, when the PROGRAM or any argv element
-resolves to an agent CLI (after ``env`` / shell ``-c`` parsing), requires the spawn's env
-to carry a stamp that PROVES a decision was made for that env:
-
-* the stamp is minted by ``sandbox_policy.child_scratch_env`` and binds the decision, a
-  nonce and the env's scratch values under a per-process key
-  (``sandbox_policy.scratch_stamp_valid`` re-checks it), so an empty, forged, foreign or
-  stale stamp is not a decision;
-* an env inherited from this process (no ``env`` passed), or a stamp equal to one this
-  process's own environment carries, is not a decision;
-* a named EXCEPTION stamp counts only at the launch interface that applies exceptions
-  (``launch_provider`` / ``run_provider``).
+resolves to an agent CLI (after ``env`` / shell ``-c`` parsing), requires the env object
+handed to the spawn to BE an env a scratch decision returned
+(``sandbox_policy.decided_scratch``: bound by object identity). A copied, rebuilt,
+inherited or hand-made env is not a decision, whatever it contains. A named EXCEPTION
+decision counts only at the launch interface that applies exceptions (``launch_provider``
+/ ``run_provider``).
 
 The agent-CLI names come from the runtime's own registries (``runtime_agent_binaries``),
 so a new harness is covered without editing this file.
@@ -24,6 +22,10 @@ Only spawns made BY THE RUNTIME are judged: the first frame outside the standard
 must be inside the ``phase_loop_runtime`` package (a spawn with no such frame at all, such
 as a thread targeting ``subprocess.run``, is judged too). Test code that starts its own
 fake CLIs is not a runtime launch.
+
+``install`` proves ENFORCEMENT before the suite relies on it: a real spawn of a harmless
+stub named like an agent CLI must be rejected with an undecided env and accepted with a
+decided one, or installation fails.
 
 Known limits (no audit event, or no hook in the child): native ``execve`` through
 ``ctypes``/``cffi``, a ``multiprocessing`` "spawn"-method child, and a fresh Python
@@ -161,33 +163,21 @@ def _runtime_caller() -> tuple[str, str] | None:
     return ("<unattributed: no frame outside the standard library>", "")
 
 
-#: The stamp the test process itself carried when the hook was installed: inherited, so
-#: never evidence of a decision.
-_INHERITED = os.environ.get(MARKER)
 #: The only launch sites where a named EXCEPTION decision is applied (the provider launch
-#: interface's `child_scratch=`). An exception stamp anywhere else was not set there.
+#: interface's `child_scratch=`). An exception decision anywhere else was not set there.
 _EXCEPTION_SITES = frozenset({"launch_provider", "run_provider"})
 
 
 def _decision_problem(env: object, function: str) -> str | None:
-    """Why this spawn's env is NOT evidence of a decision made for it; ``None`` if it is."""
+    """Why this spawn's env is NOT the env a decision returned; ``None`` if it is."""
     from phase_loop_runtime import sandbox_policy
 
     if env is None:
         return "it inherits this process's own environment (no env was decided for it)"
-    try:
-        mapping = {os.fsdecode(k): os.fsdecode(v) for k, v in dict(env).items()}
-    except (TypeError, ValueError):
-        return "its env cannot be read"
-    stamp = mapping.get(MARKER)
-    if not stamp:
-        return f"{MARKER} is missing or empty"
-    if stamp in (os.environ.get(MARKER), _INHERITED):
-        return f"{MARKER} was inherited from this process's environment"
-    decision = sandbox_policy.scratch_stamp_valid(mapping)
+    decision = sandbox_policy.decided_scratch(env)
     if decision is None:
-        return (f"{MARKER} was not minted for this env (forged, copied from another "
-                "process, or its scratch values changed after the decision)")
+        return ("its env is not the env a scratch decision returned "
+                "(copied, rebuilt, inherited or hand-made)")
     if decision != sandbox_policy.CHILD_SCRATCH_RELOCATE and function not in _EXCEPTION_SITES:
         return f"the {decision!r} exception was not applied at its launch site"
     return None
@@ -221,7 +211,7 @@ def hook(event: str, args: tuple) -> None:
     names = agent_words(program, argv)
     if not names:
         return
-    caller = _runtime_caller()
+    caller = ("<install self-check>", "") if _self_check else _runtime_caller()
     if caller is None:
         return
     location, function = caller
@@ -230,7 +220,7 @@ def hook(event: str, args: tuple) -> None:
         return
     message = f"{event} of {sorted(names)} from {location} without a scratch decision: {problem}"
     violations.append(message)
-    if log_path is not None:
+    if log_path is not None and not _self_check:
         try:
             with open(log_path, "a", encoding="utf-8") as handle:
                 handle.write(message + "\n")
@@ -257,26 +247,52 @@ def drain() -> list[str]:
 _installed = False
 
 
-_PROBE_EVENT = "phase_loop.scratch_audit_hook.probe"
-_probe_seen = False
+_self_check = False
 
 
-def _probe(event: str, args: tuple) -> None:
-    global _probe_seen
-    if event == _PROBE_EVENT:
-        _probe_seen = True
+def _prove_enforcement() -> None:
+    """Spawn a harmless stub named like an agent CLI twice: with an undecided env it must
+    be rejected, with a decided one accepted. Anything else means the hook is not
+    enforcing, and installation fails."""
+    import subprocess
+    import tempfile
+
+    from phase_loop_runtime import sandbox_policy
+
+    global enabled, _self_check
+    name = sorted(AGENT_CLIS)[0]
+    with tempfile.TemporaryDirectory(prefix="pl-scratch-hook-check-") as root:
+        stub = Path(root) / name
+        stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o700)
+        base = {"PATH": "/usr/bin:/bin", "TMPDIR": root, "CLAUDE_CODE_TMPDIR": root}
+        saved, previous = list(violations), enabled
+        violations.clear()
+        enabled, _self_check = True, True
+        try:
+            subprocess.run([str(stub)], env=dict(base), check=False)
+            rejected = list(violations)
+            violations.clear()
+            subprocess.run([str(stub)], check=False, env=sandbox_policy.child_scratch_env(
+                base, sandbox_policy.CHILD_SCRATCH_RELOCATE))
+            accepted = not violations
+        finally:
+            enabled, _self_check = previous, False
+            violations[:] = saved
+    if not rejected or not accepted:
+        raise RuntimeError(
+            "the scratch audit hook is not enforcing: an undecided agent-CLI spawn was "
+            f"{'not ' if not rejected else ''}rejected and a decided one was "
+            f"{'not ' if not accepted else ''}accepted")
 
 
 def install() -> None:
-    """Register the hook and PROVE it is live: an earlier hook can veto registration
-    (``sys.addaudithook`` raises then, or the hook never sees events), so a probe event
-    must reach it before the suite relies on it."""
+    """Register the hook and PROVE it enforces (``_prove_enforcement``). An earlier hook
+    may veto registration (``sys.addaudithook`` raises) or the hook may never see events;
+    either way installation fails rather than certifying an absent hook."""
     global _installed
     if _installed:
         return
     sys.addaudithook(hook)
-    sys.addaudithook(_probe)
-    sys.audit(_PROBE_EVENT)
-    if not _probe_seen:
-        raise RuntimeError("the scratch audit hook did not receive its probe event")
+    _prove_enforcement()
     _installed = True
