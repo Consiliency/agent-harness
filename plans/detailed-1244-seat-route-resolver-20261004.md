@@ -2,250 +2,318 @@
 status: planned
 issue: agent-harness#1244
 lands_after: agent-harness#1222, agent-harness#1166
+builds_on: plans/detailed-remote-sandbox-placement-896-20260929.md, plans/detailed-e2b-cloud-backend-896-20260929.md
 ---
 
-# Detailed plan: review seats never run toolless — one seat-route resolver (agent-harness#1244, first PR)
+# Detailed plan: review seats never run toolless — adopt one open-source sandbox, one seat-route resolver (agent-harness#1244)
 
 ## Task
 
-agent-harness#1244, maintainer decision 2026-10-04 (the issue is the source of truth; not
-restated here). This first PR adds one seat-route resolver that every board and panel path
-calls, with the order **(1) local sandbox → (2) remote sandbox → (3) native fill with tools,
-labelled a stand-in → (4) degraded, not run**, and removes the sealed (toolless) route as a
-fallback. Sealed survives only as an explicit operator opt-in, off by default and named in the
-mode line.
+agent-harness#1244, maintainer decisions of 2026-10-04. The issue is the source of truth and
+is not restated here.
 
-Out of scope, filed as follow-ups: the per-OS sandboxes (macOS Seatbelt/VM, Windows
-AppContainer/WSL2), the remote backend itself (agent-harness#896), the Gemini egress proxy
-(agent-harness#1170), and native fill under a non-Claude-Code host (a Codex-hosted "sol" fill).
+This plan sets the **policy** and the **resolver**, and **adopts** an existing open-source
+process sandbox rather than building per-OS isolation ("this should not be rocket science").
+It is harness-agnostic: the resolver and the sandbox treat every seat and executor harness in
+`advisor_board/registries.py` alike (claude, codex, gemini/agy, grok, opencode, pi, cursor).
+Harness-specific code is limited to thin adapters for credential delivery and CLI argv.
 
-## Sequencing (decided here)
+The work splits into bounded PRs:
+- **PR-A (this plan, in full):** the resolver and policy. Sealed is removed as a fallback,
+  degraded-not-run is typed, and the generic host-native fill and credential-source
+  interfaces are defined.
+- **PR-B (its own detailed plan, listed under follow-ups):** the adopted sandbox as the
+  local backend.
 
-**This PR lands after agent-harness#1222 and agent-harness#1166, and consumes #1166's
-interface. #1166 does not adopt the resolver.** #1166 owns step (1) and the mode-line
-surface. It has had more than ten board rounds, and adding scope to it would reset its
-review. The resolver takes #1166's step-1 outcome as input, by symbol on its pushed head:
-`seat_jail.decide_seat_route`, `SeatRoute`, `SEALED_FALLBACK_CODES`,
-`panel_invoker._seat_route_for_spawn`, `panel_invoker._publish_seat_modes`, and
-`seat_preflight.SeatMode` / `SEAT_MODES`. If any of these is renamed before #1166 lands, the
-implementer re-reads them on main. This plan pins symbols, not SHAs.
+Remote is agent-harness#896's existing placement seam. It is referenced here, not
+redesigned.
 
-**The brief's premise about #1166 A3 is wrong as of this plan.** The team-lead brief says
-amendment A3 already makes #1166's own fallbacks degraded-not-run. A3 as written
-(`plans/detailed-seat-sandbox-permissions-1132-20260928.md`, "Amendment A3", on #1166's
-branch) says otherwise:
-- A login-wait timeout runs the seat **sealed** with `claude_seat_login_token_expiring`.
-- A store that stops yielding a login seals it with `claude_seat_token_missing`.
-- A2's qualification failure still goes sealed with `seat_jail_qualification_failed`.
+## The chain (policy)
 
-`SEALED_FALLBACK_CODES` therefore still exists. This PR converts every code in it into
-"step 1 unavailable, reason=<code>" and continues the chain. Maintainer decision **D1**
-(below) is whether #1166 should do this itself before landing.
+For every seat, whatever its harness, the resolver tries these in order:
+
+1. **Local sandbox:** the adopted process sandbox (see "Sandbox selection"), used as
+   agent-harness#896's `local` placement backend.
+2. **Remote sandbox:** an agent-harness#896 placement backend. The self-hosted backend
+   (plan 3: authenticated HTTPS, for example a tailnet or LAN host such as `ai` that can
+   sandbox locally) comes first, then cloud (agent-harness#1165, E2B).
+3. **Host-native fill:** the **host** harness fills the seat with its own sub-agent
+   mechanism, with tools, whatever that host is (a Claude Code `Task`, a Codex
+   `spawn_agent`, and so on). The seat is labelled a stand-in for its vendor and the
+   president is told. Hosts with no sub-agent mechanism skip this step.
+4. **Degraded, not run:** a typed notice and a fix line in the pre-launch mode line.
+
+The seat is **never** toolless. The sealed (inlined, toolless) route survives only as an
+explicit operator opt-in (`PHASE_LOOP_SEAT_ALLOW_SEALED` / `--allow-sealed-seat`, default
+off). It is tried only after steps 1–3 all fail, and the mode line says
+`sealed (operator opt-in)`.
+
+The resolver is the choice of an agent-harness#896 placement backend per seat (`local`, then
+`self-hosted`, then `cloud`, each checked with `PlacementBackend.available()`, where a
+`PlacementUnavailable(code)` becomes a skipped step), followed by host-native fill and then
+degraded.
+
+## Sandbox selection
+
+Each claim below was checked against the project's own README, source or registry on
+2026-10-04 by a research pass. Cells marked "unverified" were not confirmed against primary
+docs.
+
+| Candidate | Linux | macOS | Windows | Unprivileged | FS allowlist | Egress domain allowlist | Wraps any CLI | License | Health | Install |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **sandbox-runtime `srt`** ([anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime)) | bubblewrap + seccomp | Seatbelt | **alpha**: a dedicated sandbox account, WFP filters and a restricted token | yes; Windows needs one elevated install | yes (allow/deny read and write) | **yes**: built-in HTTP and SOCKS5 proxies with allowed/denied domains, deny by default | yes (`srt <cmd>`) | Apache-2.0 | npm 0.0.78, 2026-09-30; active | `npm i -g`; Linux also needs bwrap, socat and ripgrep |
+| Codex CLI sandbox ([openai/codex](https://github.com/openai/codex)) | bubblewrap | Seatbelt | native (sandbox users, WFP, restricted token) | Windows elevated mode needs admin | yes | yes (`network-proxy`) | `codex sandbox <cmd>` | Apache-2.0 | active | **ships inside one vendor's CLI** |
+| bubblewrap | yes | no | no | yes | yes | **no** (no network or loopback only) | yes | LGPL-2.1 | v0.13.0 | distro package |
+| nsjail / firejail | yes | no | no | nsjail unverified; firejail is SUID (**no**) | yes | no | yes | Apache-2.0 / GPL-2.0 | active | build or package |
+| Podman / Docker rootless | yes | via a VM | via WSL2 or a VM | yes, rootless (unverified) | mounts | not built in (unverified) | inside an image | Apache-2.0 | active | **high** (images, plus a VM on macOS and Windows) |
+| Apple `container`, Lima/colima | via the host | macOS 26 on Apple silicon / yes | no | unverified | mounts | unverified | inside a VM | Apache-2.0 / MIT | active | medium |
+| gVisor, Kata, Firecracker | Linux; Kata and Firecracker need KVM | no | no | gVisor `--rootless`; others need `/dev/kvm` | yes | no | as an OCI image | Apache-2.0 | active | medium to high |
+| microsandbox ([superradcompany/microsandbox](https://github.com/superradcompany/microsandbox)) | KVM | Apple silicon | yes (WHP) | unverified | VM | yes (`allowed_hosts`) | `msb run <image> -- <cmd>` | Apache-2.0 | active | medium (microVM plus image) |
+| E2B runtime (self-host) | Linux + KVM | no | no | unverified | yes | yes (nftables plus SNI/Host) | yes | Apache-2.0 | active | high; already planned as agent-harness#896 cloud (agent-harness#1165) |
+| Daytona | — | — | — | — | — | — | — | unclear | **repository archived 2026-10-03** | out |
+
+**Recommendation: `srt` is the one local sandbox on every OS** (decision S1). It is the only
+maintained, standalone and harness-neutral candidate that covers Linux, macOS and Windows
+without a container or VM, and that has both a filesystem allowlist and a domain egress
+allowlist.
+- **Linux:** it is bubblewrap, the same primitive as our jail (agent-harness#1166 and
+  agent-harness#1222), so it fits the launch owner rather than replacing it.
+- **Egress:** its proxy is deny-by-default, with a domain allowlist and a refusal of
+  loopback and metadata addresses. That is the agent-harness#1170 shape, so the Gemini
+  seat's egress question becomes configuration (decision S3).
+- **Rejected alternatives:**
+  - Codex's sandbox is equivalent, but it ships inside one vendor's CLI.
+  - bubblewrap, nsjail, gVisor, Kata and Firecracker have no domain allowlist and are
+    Linux-only.
+  - Containers and VMs carry the highest install friction.
+
+**Fallbacks:**
+- **Windows:** `srt` is **alpha** there. It needs one elevated install, and it cannot open
+  CLIs installed per user (nvm, Scoop, `pip --user`). It is the one local option to try.
+  Where it is unusable, the seat goes to step 2: a tailnet or LAN host via agent-harness#896
+  plan 3. microsandbox, which needs a microVM, is the alternative if a VM is acceptable
+  (decision S2).
+- **macOS:** `srt` uses Seatbelt. Where that fails, the seat goes to step 2.
+- **Linux without user namespaces** (for example Ubuntu 24.04+ with
+  `apparmor_restrict_unprivileged_userns=1`): step 2, with the sysctl named as the fix.
+
+**Credentials (generic):**
+- A `SeatCredentialSource` interface: `harness`, `kind` (`short_lived_login_token`,
+  `api_key` or `oauth_files`), `present()` and `deliver(into)`.
+- Each harness is one adapter. The Claude adapter wraps agent-harness#1166's
+  `seat_credentials` (`resolve_claude_seat_credential`). The others (codex, gemini/agy, grok
+  and the omnigent harnesses) are follow-ups.
+- A harness with no adapter cannot take step 1 or step 2. It is skipped with
+  `seat_credential_source_missing`.
+- The remote path uses agent-harness#896's `one_shot_secret` channel, unchanged.
+
+## Sequencing
+
+- **PR-A lands after agent-harness#1222 and agent-harness#1166.** It consumes #1166's
+  interface by symbol: `seat_jail.decide_seat_route`, `SeatRoute`, `SEALED_FALLBACK_CODES`,
+  `panel_invoker._seat_route_for_spawn`, `_publish_seat_modes`, and `seat_preflight.SeatMode`
+  / `SEAT_MODES`. #1166 does not adopt the resolver: it has had more than ten board rounds.
+  Until PR-B lands, #1166's jail is step 1 on Linux for the harnesses it covers.
+- **A premise in the brief is wrong:** #1166's amendment A3 does **not** make its fallbacks
+  degraded. As written, a login-wait timeout and a missing login store run the seat sealed
+  (`claude_seat_login_token_expiring`, `claude_seat_token_missing`), and A2's qualification
+  failure also runs sealed. PR-A turns every `SEALED_FALLBACK_CODES` member into "step 1
+  unavailable, reason=<code>" and continues the chain (decision D1).
+- **The critical path to "never toolless" on hosts without a local sandbox** is
+  agent-harness#896 plan 1a → plan 1b → plan 3 (self-hosted). Cloud is 1a → 1b →
+  agent-harness#1165.
+  - Until 1a lands, PR-A's step 2 is a shim that returns
+    `seat_remote_sandbox_unconfigured`.
+  - Once 1a lands, the shim is replaced by `sandbox_placement.resolve_backend`.
+  - Once plan 3 lands, a tailnet host such as `ai` takes the seats.
+  - Plan 3 states its own dependency on the seat jail for jailed launches.
+- PR-B (srt) depends on 1a only to register as the `local` backend kind. It can start
+  before 1b.
 
 ## Research summary
 
-There is no single route resolver on main. A seat's route comes from separate predicates in
-`phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`:
-- The board-wide gates in `invoke_board`: `native_host_deferral_only` and
-  `exact_broker_routes`, with `harden_review_unsupported_route_refused` for anything else.
-- `_SANDBOX_INCAPABLE_BROKERED_LEGS = {"claude","gemini"}` and `sandbox_usable_by`.
-- The silent sealed fallback, at the brokered spawn's call to
-  `_render_broker_inline_prompt(..., staged_tree=... if sandbox_usable_by(...) else None)`.
-- The native-fill path: `native_agent_leg_request`, `preflight_native_leg_fills`, and
-  `apply_native_leg_fills`. The last accepts only a same-model fill on an
+**Route choice on main is scattered** across predicates in `panel_invoker.py`:
+- the board gates in `invoke_board` (`native_host_deferral_only`, `exact_broker_routes`);
+- `_SANDBOX_INCAPABLE_BROKERED_LEGS` / `sandbox_usable_by`;
+- the silent sealed fallback at the brokered spawn's
+  `_render_broker_inline_prompt(..., staged_tree=None)`;
+- the native-fill trio `native_agent_leg_request`, `preflight_native_leg_fills` and
+  `apply_native_leg_fills`. The last accepts a same-model fill only on an
   `UNAVAILABLE/under_claude_code` leg.
 
-Native fill is refused under `heartbeat_only`. `advisor_board/backing.py`
-`resolve_review_monitoring_policy` raises `review_monitoring_unsupported_route:native_fill`,
-and boards have run heartbeat-only since 2026-09-24. **Step (3) is therefore dead for every
-current board until D2 is decided.**
+**Native fill is detected for Claude Code only.**
+- `_under_claude_code` checks `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT`, and
+  `president_adapter.py` makes the same check.
+- Generic pieces exist but nothing constructs them: `schema.HostContext.host_harness`,
+  `identify_host_leg`, and the `NativeAgentLegRequest` docstring, which names Codex
+  `spawn_agent`.
+- `harness_env_signatures.py` already recognises a Codex host (`CODEX_THREAD_ID`).
 
-Remote placement (agent-harness#896) is only planned on main:
-`plans/detailed-e2b-cloud-backend-896-20260929.md` and its placement plan name
-`sandbox_placement.resolve_backend` / `PlacementBackend.available()` /
-`PlacementUnavailable(code)`. `sandbox_policy.configured_root()` only records a location and
-is not "configured and usable."
+**Native fill is refused under `heartbeat_only`.** `backing.resolve_review_monitoring_policy`
+raises `review_monitoring_unsupported_route:native_fill`, so step 3 cannot run on current
+boards (decision D2).
 
-Governance on main:
-- `ratification_policy.py:100-105` sets `required_vendors` per gate (3 for pre-merge-CR and
-  release-dispatch, 2 for plan/design).
-- `_effective_vendors` does not count an empty, timed-out or DEGRADED seat.
-- `governed_premerge._MIN_USABLE_REVIEWERS = 2`, with the full 3-vendor quorum deferred to
+**Non-Linux boards are refused whole** by `backing.prepare_review_composition_authorization`
+and the review-isolation authorization (decision D5).
+
+**Governance on main:**
+- `ratification_policy.py:100-105` sets `required_vendors` per gate.
+- `_effective_vendors` does not count DEGRADED legs.
+- `governed_premerge._MIN_USABLE_REVIEWERS = 2`, and the full quorum is deferred to
   agent-harness#375.
-- `advisor_board/composition.board_independence` marks any repeated vendor family `degraded`.
-- The seat-count states are EC-REVIEWTRUTH-1 / EC-REVIEWTRUTH-4, and native-fill counting is
+- `composition.board_independence` marks any repeated vendor family as degraded.
+- Seat-count states are EC-REVIEWTRUTH-1 and EC-REVIEWTRUTH-4, and native counting is
   EC-REVIEWTRUTH-14.
-- No cross-vendor stand-in field exists. The closest are `_native_fill` metadata and
-  `attach_provider_refusal_state(fallback_used=True)`.
-- The stand-in practice so far (a native Opus filling a filtered codex seat) is an
-  out-of-band operator ruling, not code.
+- No stand-in field exists. The closest are the `_native_fill` metadata and `fallback_used`.
 
 ## Frozen vocabulary
 
-No new leg status:
-- `LEG_STATUSES` (`panel_invoker.py:194-201`: OK, EMPTY, TIMEOUT, ERROR, DEGRADED,
-  UNAVAILABLE) is unchanged. There is no `NOT_RUN`. "Degraded, not run" is status
-  `DEGRADED` with zero launches.
-- No new seat mode. The modes stay #1166's `jailed | unconfined | sealed | degraded | native`.
-  Remote has no mode in this PR because step (2) never resolves until agent-harness#896,
-  which adds `remote`.
+Nothing frozen changes:
+- `LEG_STATUSES` (`panel_invoker.py:194-201`) is unchanged, with no `NOT_RUN`. Degraded,
+  not run is `DEGRADED` with zero spawns.
+- `SEAT_MODES` is unchanged. agent-harness#896 adds `remote` when step 2 can resolve.
 
-Additions, each extending a closed list in the way that list already grows:
-- Notice codes in `seat_preflight.NOTICE_TEXT`.
-- One `_HARNESS_DETAIL_CODE_TEMPLATES` pattern, `seat_not_run:<reason>`, under
-  `advisor_board/CONTRACTS.md` "Leg `detail` vocabulary" (lines 470-489).
-- The additive `SeatMode.stand_in_for` field.
+Additions only, each made the way its closed list already grows:
+- notice codes in `seat_preflight.NOTICE_TEXT`;
+- one detail template, `seat_not_run:<reason>`, under `advisor_board/CONTRACTS.md`
+  "Leg `detail` vocabulary" (lines 470-489);
+- the additive `SeatMode.stand_in_for` and `SeatMode.host_harness`.
 
-The sealed route is the HARDEN-era "CLI seats cannot read files" contract. Making it opt-in
-is recorded as a CONTRACTS amendment entry, not a silent edit. See D4.
+Making the HARDEN sealed route opt-in is a CONTRACTS amendment entry (decision D4).
 
-## Changes
+## Changes (PR-A)
 
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_route.py` (create)
 
-No existing home: #1166's `decide_seat_route` is jail-only (it returns `None` for
-codex/grok, and `jailed | sealed` otherwise).
+No existing home: #1166's `decide_seat_route` handles only the jail.
 
-- `SeatRouteStep` — add — a closed enum-like set of literals: `local`, `remote`, `native`,
-  `degraded`, `sealed_opt_in`, `unconfined`.
-- `ResolvedSeatRoute` — add — a frozen dataclass with these fields:
-  - `step`
-  - `mode`: a #1166 `SEAT_MODES` literal
-  - `code`: a notice code or None
-  - `stand_in_for`: the vendor family or None
-  - `filled_by_model`: str or None
-  - `tried`: a tuple of `(step, code)` for each skipped step
-- `resolve_seat_route(seat, *, local, remote_probe, native_capable, allow_sealed)` — add —
-  a pure function. It does not probe, and takes every fact as an argument so tests cover the
-  logic and a separate test covers the gathering:
-  - codex and grok return `unconfined`.
-  - claude: (1) a `local` jailed outcome returns `local`, and any `SEALED_FALLBACK_CODES`
-    outcome or `None` records the code and continues. (2) The `remote_probe` result. (3) If
-    `native_capable`: claude-on-Claude-Code is the existing same-model native fill
-    (`stand_in_for=None`), and any other vendor gets `stand_in_for=<vendor>`. (4) Otherwise
-    `degraded`, with the last skipped code as the reason.
-  - gemini: step (1) is skipped with `gemini_seat_egress_unconfined` until
-    agent-harness#1170, then (2)→(3)→(4).
-  - `sealed_opt_in` is returned only when `allow_sealed` is true **and** steps (1)–(3) all
-    failed.
-- `remote_sandbox_probe(seat)` — add — the default step-2 fact. It returns unavailable with
-  `seat_remote_sandbox_unconfigured` until agent-harness#896 lands
-  `sandbox_placement.resolve_backend`. Its docstring names that seam as the plug-in point.
-- `sealed_opt_in_enabled(env)` — add — reads `PHASE_LOOP_SEAT_ALLOW_SEALED=1`. Default off.
+- `ResolvedSeatRoute` — add — a frozen dataclass:
+  - `step`, one of `local | remote | host_native | degraded | sealed_opt_in`;
+  - `mode`, a `SEAT_MODES` literal;
+  - `code`;
+  - `backend`, the agent-harness#896 backend name or None;
+  - `stand_in_for`;
+  - `host_harness`;
+  - `tried`, a tuple of `(step, code)`.
+- `resolve_seat_route(seat, *, local, remote, host, credential, allow_sealed)` — add — a pure
+  function with the same logic for every harness, where every fact is an argument:
+  - `local`: the outcome of step 1. Today that is #1166's `decide_seat_route`; after PR-B it
+    is the srt backend's `available()`.
+  - `remote`: a callable over the configured agent-harness#896 backends.
+  - `host`: a `HostContext`.
+  - `credential`: a `SeatCredentialSource` or None.
+- The interim routes of specific harnesses are kept as inputs, not as branches:
+  - the codex and grok `unconfined` route (tools on the staged tree) counts as a step-1
+    outcome until PR-B (decision D6);
+  - gemini skips step 1 with `gemini_seat_egress_unconfined` until srt egress or
+    agent-harness#1170 lands.
+- `remote_sandbox_probe(seat)` — add — a shim that returns `seat_remote_sandbox_unconfigured`
+  until agent-harness#896 plan 1a. Its docstring names `sandbox_placement.resolve_backend` as
+  the replacement.
+- `SeatCredentialSource` (a Protocol) and `ClaudeLoginCredentialSource` (an adapter over
+  #1166's `seat_credentials`) — add.
+- `detect_host_harness(env)` — add — returns a `HostContext` from the existing signatures.
+  Claude Code is identified by `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT`, and Codex by
+  `CODEX_THREAD_ID` via `harness_env_signatures`.
+- The registry flag `native_subagent: bool` per harness — add, in `registries.py` — it is
+  true for claude and codex, and false elsewhere until verified.
+- `sealed_opt_in_enabled(env)` — add — default off.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py` (modify)
 
-- `NOTICE_TEXT` — modify — add what/why/fix literals for these codes:
-  - `seat_not_run_no_tooled_route`: fix "configure a remote sandbox, run the board under Claude
-    Code, or qualify the jail on this host".
-  - `seat_remote_sandbox_unconfigured`.
-  - `seat_native_standin`: why "stands in for <vendor>"; fix "none: counts as the host
-    vendor".
-  - `seat_sealed_operator_opt_in`: fix "unset PHASE_LOOP_SEAT_ALLOW_SEALED".
-- `SeatMode` — modify — add `stand_in_for: str | None = None` to `as_json`. `render` prints
-  `native (stand-in for <vendor>)` or `sealed (operator opt-in)`.
+- `NOTICE_TEXT` — add these codes, each with what, why and fix:
+  - `seat_not_run_no_tooled_route` (fix: "qualify the local sandbox, configure an
+    agent-harness#896 remote, or run the board under a harness with sub-agents");
+  - `seat_remote_sandbox_unconfigured`;
+  - `seat_credential_source_missing`;
+  - `seat_host_native_standin`;
+  - `seat_sealed_operator_opt_in`.
+- `SeatMode` — add the fields `stand_in_for` and `host_harness`. `render` prints `native
+  (<host> stand-in for <vendor>)` or `sealed (operator opt-in)`.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (modify)
 
-- `_seat_route_for_spawn` (#1166) — modify — call `seat_route.resolve_seat_route` with
-  #1166's `decide_seat_route` outcome as `local`. It returns the resolved route, not
-  `SeatRoute`.
-- The brokered spawn's `_render_broker_inline_prompt(..., staged_tree=None)` branch — modify —
-  this is reachable only when the resolved step is `sealed_opt_in`. Every other path with
-  `staged_tree=None` raises `seat_route_sealed_without_opt_in` (fail closed).
-- `invoke_board`, around the per-seat launch loop — modify — a `degraded` route produces a
-  `DEGRADED` `PanelLegResult` with detail `seat_not_run:<reason>` and **zero spawns**. A
-  `native` route emits a `NativeAgentLegRequest` through the existing
-  `native_agent_leg_request`.
-- `_publish_seat_modes` (#1166) — modify — modes come from the resolver. Every seat's mode is
-  published before any launch, so the pre-launch mode line shows the step, the stand-in label
-  and the fix.
-- `apply_native_leg_fills` / `preflight_native_leg_fills` — modify — accept a fill whose
-  model differs from the seat's model only when the resolved route has `stand_in_for` set,
-  and record `stand_in_for` and `filled_by_model` in `_native_fill`. A same-model fill is
-  unchanged.
-- `agy_qualification.py` (the Gemini heartbeat qualification board) — modify — it
-  qualifies the sealed agy route itself, so it is the one sanctioned non-operator caller of
-  the sealed route. It passes `allow_sealed=True` explicitly, and its mode line says
-  `sealed (operator opt-in)`. The sealed guard exempts no other caller.
-- `invoke_panel`, `invoke_panel_request` — modify — route through the same resolver. There
-  are no other per-seat route predicates. `sandbox_usable_by` becomes an input to step (1)
-  only.
+- `_seat_route_for_spawn` (#1166) — delegate to `resolve_seat_route`.
+- The brokered spawn's `staged_tree=None` branch — this branch becomes reachable only for
+  `sealed_opt_in`. Any other path raises `seat_route_sealed_without_opt_in`.
+- `invoke_board` per-seat launch — a `degraded` route produces a `DEGRADED`
+  `PanelLegResult`, `seat_not_run:<reason>`, with zero spawns. A `host_native` route emits
+  `native_agent_leg_request` for **any** host whose registry entry has `native_subagent`.
+- `_under_claude_code` call sites — replace with `detect_host_harness(env).host_harness` plus
+  the registry flag.
+- `apply_native_leg_fills` / `preflight_native_leg_fills` — accept a model that differs from
+  the seat only when `stand_in_for` is set. Record `stand_in_for`, `host_harness` and
+  `filled_by_model` in `_native_fill`.
+- `_publish_seat_modes` (#1166) — build the modes from the resolver, so every seat's step,
+  stand-in label and fix print before the first spawn.
+- `invoke_panel` / `invoke_panel_request` — use the same resolver.
 
-### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py` (modify; conditional on D2)
+### `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py` (modify)
 
-- `resolve_review_monitoring_policy` — modify — only if D2 = (a). Allow a native fill under
-  `heartbeat_only` when it is a resolver-produced stand-in, and keep the refusal for a
-  caller-supplied fill. If D2 = (b), there is no change, and a native-route seat under
-  heartbeat-only keeps today's `UNAVAILABLE` / `under_claude_code` detail. That way the
-  out-of-band `--native-leg` fill still binds: `apply_native_leg_fills` accepts only that
-  shape. `seat_not_run:<reason>` is reserved for seats that have no native option.
-- `prepare_review_composition_authorization` and the review-isolation authorization (both
-  `platform.system() != "Linux"` gates, around lines 949 and 996) — modify, only if D5 = (a).
-  On non-Linux, the whole-board refusal becomes a per-seat step-1 fact,
-  `seat_local_sandbox_unsupported_os`, so the seat continues to steps 2→3→4. Under D5 = (b),
-  non-Linux boards stay refused whole (agent-harness#1098), and this PR does not close the
-  issue's "hosts without the jail" box for macOS or Windows.
+- The Gemini heartbeat qualification board — it qualifies the sealed agy route itself, so it
+  is the one sanctioned non-operator caller. It passes `allow_sealed=True` explicitly, and
+  its mode line says so.
+
+### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py` (modify; conditional)
+
+- `resolve_review_monitoring_policy` — under D2 = (a), allow a resolver-produced host-native
+  stand-in under `heartbeat_only`. Under (b), the seat keeps `UNAVAILABLE` /
+  `under_claude_code`, so an out-of-band `--native-leg` fill still binds.
+- The Linux-only gates (around lines 949 and 996) — under D5 = (a), make them a per-seat
+  step-1 fact (`seat_local_sandbox_unsupported_os`) rather than a refusal of the whole board.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/president_adapter.py` (modify)
 
-- `build_president_invoke` (around line 564) — modify — the president's brief carries each
-  seat's resolved route: step, `stand_in_for`, `filled_by_model` and the not-run reason. This
-  is how the president is told.
+- `build_president_invoke` — the president's brief carries each seat's resolved route:
+  step, backend, host, `stand_in_for` and the not-run reason. Its `_under_claude_code` check
+  becomes `detect_host_harness`.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/cli.py` (modify)
 
-- The `advisor-board` parser — modify — add `--allow-sealed-seat`, which sets the same switch
-  as the env var.
-- The mode-line print (#1166's per-seat stderr line) — modify — no new printer. It renders
-  the new `SeatMode` fields.
+- `advisor-board` — add `--allow-sealed-seat`. The per-seat stderr mode line renders the new
+  fields.
 
 ### `phase-loop-runtime/tests/test_seat_route.py` (create)
 
-- A table test over host × seat × facts covering every order: Linux jail ok; no
-  subuid/uidmap, macOS or Windows (step 1 unavailable); Gemini; remote configured (a fake
-  probe); under or not under Claude Code; opt-in on or off.
-- One falsifier per step: deleting a step from the resolver reds a named row.
-- A guard that the sealed prompt branch raises without the opt-in.
-- A gathering test that calls the real call sites (`invoke_board` through `cli.py`
-  `advisor-board`, `runner.py` `invoke_board(CODE_REVIEW_BOARD, ...)`,
-  `agy_qualification.py`, `invoke_panel`, `governed_review.py`) with fakes at the spawn seam.
-  It asserts every seat's route came from `resolve_seat_route`, and that a degraded seat
-  made zero spawns.
+- A table over harness × host × facts:
+  - every registry harness;
+  - Linux with the jail, Linux without user namespaces, macOS, Windows;
+  - a remote fake that is configured or absent;
+  - Claude Code, Codex and no-sub-agent hosts;
+  - the opt-in on and off.
+- One falsifier per step.
+- The sealed guard.
+- A gathering test that drives the real call sites (`cli.py advisor-board`,
+  `runner.py invoke_board(CODE_REVIEW_BOARD, …)`, `agy_qualification.py`, `invoke_panel`,
+  `governed_review.py`) with fakes at the spawn seam.
 
 ## Governance (describe, do not invent)
 
-This PR changes **no** quorum rule:
-- A `degraded` not-run seat is DEGRADED, so `_effective_vendors` already does not count it,
-  and EC-REVIEWTRUTH-1/-4 classify the board FLOOR-ONLY or BELOW-FLOOR from the delivered
-  count.
-- A native stand-in reviews with tools and counts as a reviewing seat of its **host** vendor
-  family. On a board that already seats Claude, an Opus stand-in for Gemini is therefore a
-  repeated family: `board_independence` reports `degraded`, and the stand-in does not raise
-  the `required_vendors` count.
+PR-A changes no quorum rule:
+- A degraded seat is DEGRADED, so it is not counted (`_effective_vendors`, and
+  EC-REVIEWTRUTH-1 and -4 apply).
+- A host-native stand-in counts as a seat of its **host's** vendor family. On a board that
+  already seats that vendor, it is a repeat, and `board_independence` reports degraded.
 
-Whether a labelled stand-in should count toward `required_vendors` is D3. It is not decided
-here.
+Whether a labelled stand-in should count toward `required_vendors` is decision D3.
 
 ## Documentation impact
 
-- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify — add a
-  "Seat route resolver (agent-harness#1244)" section: the order, sealed as opt-in only (the
-  HARDEN amendment entry, D4), the new notice codes and the `seat_not_run:<reason>` detail
-  pattern.
-- `phase-loop-skills/advisor-board/SKILL.md` — modify — replace the sealed-fallback wording
-  with the chain and the opt-in.
-- `CHANGELOG.md` — modify — behaviour change: a seat with no tooled route is not run, where
-  before it ran sealed.
-- `docs/outside-agent-conformance.md` — modify, only if it describes the sealed route as a
-  default (the implementer greps for "sealed").
+- `advisor_board/CONTRACTS.md` — add the section "Seat route resolver (agent-harness#1244)":
+  the chain, sealed as opt-in only (D4), the notice codes and the detail template.
+- `phase-loop-skills/advisor-board/SKILL.md` — replace the sealed-fallback wording with the
+  chain.
+- `CHANGELOG.md` — a behaviour change: a seat with no tooled route is not run, where before
+  it ran sealed.
+- `docs/outside-agent-conformance.md` — only if it describes sealed as a default (grep for
+  "sealed").
 
 ## Dependencies & order
 
-1. agent-harness#1222, then agent-harness#1166, land on main.
-2. D1, D2, D4 and D5 are decided. D3 does not block this PR.
-3. Within the PR: `seat_preflight` codes → `seat_route.py` and its test → panel_invoker
-   wiring → cli/president → docs.
+1. agent-harness#1222, then agent-harness#1166, land.
+2. Decisions D1, D2, D4, D5 and D6 are settled. S1 to S3 gate only PR-B.
+3. Within PR-A: notice codes → `seat_route.py` and its test → panel_invoker wiring →
+   cli/president → docs.
 
 ## Verification
 
@@ -254,60 +322,66 @@ cd phase-loop-runtime
 uv run pytest tests/test_seat_route.py tests/test_seat_notices.py tests/test_seat_jail*.py -q
 uv run pytest tests -q -k "native_fill or monitoring_policy or board_independence or premerge"
 grep -n "staged_tree=None" src/phase_loop_runtime/panel_invoker.py   # only the opt-in branch
-PHASE_LOOP_SEAT_ALLOW_SEALED= uv run python -m phase_loop_runtime.cli advisor-board --help | grep -- --allow-sealed-seat
+grep -n "_under_claude_code" src/phase_loop_runtime/*.py src/phase_loop_runtime/advisor_board/*.py  # no route decision left on it
 ```
 
 Edge cases:
-- A jail that becomes unqualified mid-board.
-- A remote probe that raises, which is treated as unavailable with a typed code, never sealed.
-- Opt-in set on a host where the jail works, which still runs jailed (opt-in is last resort).
-- A Gemini seat on a Linux jail host.
-- A board where every seat is degraded, which is BELOW-FLOOR and refused, never "converged".
+- the jail becomes unqualified mid-board;
+- the remote probe raises (typed, never sealed);
+- the opt-in is set on a host whose sandbox works (it still runs sandboxed);
+- every seat is degraded (BELOW-FLOOR, so the board never converges);
+- the host is Codex (the stand-in is labelled `codex`).
 
-Mutation receipts are required, one per resolver step and one for the sealed guard.
+Mutation receipts: one per step, one for the sealed guard, and one for host detection.
 
 ## Acceptance criteria
 
-- [ ] `resolve_seat_route` returns `degraded` with `seat_not_run_no_tooled_route` for a Claude
-  seat with no jail, no remote and no native capability, and the board makes **0** spawns
-  for that seat. Proven by `tests/test_seat_route.py`.
-- [ ] With `PHASE_LOOP_SEAT_ALLOW_SEALED` unset, no production path reaches
-  `_render_broker_inline_prompt(..., staged_tree=None)`. The guard test reds when the raise
-  is removed.
-- [ ] A Gemini seat is never `sealed` by default. It resolves `native` with
-  `stand_in_for="gemini"` under Claude Code (D2 permitting), otherwise `degraded`.
-- [ ] Every board seat's mode, including step, stand-in label and fix, is in
-  `seat-modes.json` and on stderr before the first spawn, and the president brief carries
-  the same routes.
-- [ ] No change to `LEG_STATUSES`, `SEAT_MODES`, `DEFAULT_RATIFICATION_POLICIES` or
-  `board_independence` (diff check).
+- [ ] For every registry harness, a seat with no local sandbox, no remote backend and no
+  host sub-agent resolves to `degraded` / `seat_not_run_no_tooled_route` and makes 0
+  spawns. Proven by `tests/test_seat_route.py`.
+- [ ] With `PHASE_LOOP_SEAT_ALLOW_SEALED` unset, only `agy_qualification` reaches
+  `_render_broker_inline_prompt(..., staged_tree=None)`. The guard test goes red when the
+  raise is removed.
+- [ ] A host-native fill is emitted under both a Claude Code host and a Codex host fake, and
+  is labelled with `host_harness` and `stand_in_for`. A host without sub-agents skips the
+  step.
+- [ ] Every seat's mode is in `seat-modes.json` and on stderr before the first spawn, and the
+  president brief carries the same routes.
+- [ ] A diff check shows no change to `LEG_STATUSES`, `SEAT_MODES`,
+  `DEFAULT_RATIFICATION_POLICIES` or `board_independence`.
 
 ## Maintainer decisions needed
 
-- **D1:** #1166 A3/A2 still fall back to sealed. Should #1166 convert them to degraded
-  before landing, or does this PR do it? Recommended: this PR.
-- **D2:** native fill is refused under `heartbeat_only`. (a) Allow resolver-produced
-  stand-ins under heartbeat-only, or (b) keep the refusal, so step (3) means "degraded, fill
-  out of band with `--native-leg`". Recommended: (a). The refusal came from the
-  agent-harness#908 board r4 (d) finding.
-- **D3:** does a labelled stand-in count toward `required_vendors` and toward independence?
-  Current code says no. This PR keeps that.
-- **D4:** demoting the HARDEN sealed route to opt-in needs a CONTRACTS/HARDEN amendment entry.
-  Is the opt-in name `PHASE_LOOP_SEAT_ALLOW_SEALED` / `--allow-sealed-seat` approved?
+- **S1:** adopt `srt` (sandbox-runtime, Apache-2.0) as the one local sandbox on every OS, as
+  agent-harness#896's `local` backend wrapped at the agent-harness#1222 launch owner.
+  Recommended. On Linux, does srt replace #1166's hand-built bwrap jail, or does the jail stay
+  as the Linux backend until a parity check?
+- **S2:** Windows: try srt (alpha, one elevated install, cannot open per-user-installed CLIs),
+  then a tailnet host via plan 3; or adopt microsandbox (a microVM) on Windows.
+- **S3:** use srt's egress proxy for the Gemini seat, in place of building the
+  agent-harness#1170 proxy.
+- **D1:** PR-A, not #1166, converts #1166's sealed fallbacks (A2 and A3) to degraded.
+  Recommended.
+- **D2:** host-native fill is refused under `heartbeat_only` (agent-harness#908 r4 (d)).
+  (a) Allow resolver stand-ins (recommended), or (b) keep the refusal and fill out of band.
+- **D3:** should a labelled stand-in count toward `required_vendors` and independence?
+  Today it does not.
+- **D4:** a HARDEN/CONTRACTS amendment to make sealed opt-in, and the opt-in's name.
+- **D5:** non-Linux boards are refused whole today (agent-harness#1098). Make that a
+  per-seat step-1 fact (recommended)?
+- **D6:** may the codex and grok "unconfined" route (tools on the staged tree, no isolation)
+  remain step 1 until srt covers them, or do they go to steps 2 → 3 → 4 now?
 
-- **D5:** today the board is refused whole on non-Linux (`backing.py` Linux gates;
-  agent-harness#1098). (a) Make it a per-seat step-1 fact, so macOS and Windows go
-  2→3→4 (recommended), or (b) keep the whole-board refusal until the per-OS sandboxes
-  exist.
+## Follow-ups (separate issues or plans)
 
-## Follow-ups (file as separate issues)
-
-- macOS seat sandbox (Seatbelt `sandbox-exec` or a VM).
-- Windows seat sandbox (AppContainer or a WSL2 jail).
-- Remote backend: agent-harness#896 plugs into `remote_sandbox_probe` and adds mode `remote`.
-- Gemini egress: agent-harness#1170 removes the Gemini step-1 skip.
-- Native fill under a Codex host (a "sol" stand-in).
-- Remove the sealed opt-in once steps 1–3 cover the supported hosts.
+- **PR-B:** a detailed plan for the srt local backend. It covers config generation from the
+  seat's staged tree and egress allowlist, the per-OS prerequisite checks (bwrap, socat,
+  ripgrep and the userns sysctl; Seatbelt; the Windows install), and qualification.
+- Credential-source adapters for codex, gemini/agy, grok and the omnigent harnesses.
+- A native-subagent capability probe per harness for opencode, pi, cursor and gemini.
+- agent-harness#896 plans 1a, 1b and 3, which are the critical path, and agent-harness#1165
+  (cloud).
+- Removing the sealed opt-in once steps 1–3 cover the supported hosts.
 
 ## Execution Policy
 
