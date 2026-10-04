@@ -16,6 +16,7 @@ C4_DOCUMENT = Path("docs/c4/phase-loop-runtime-c4-document.md")
 TASK_CATALOG = Path("docs/tasks/dotfiles-task-catalog.md")
 RUNTIME_PROJECTION_SURFACE = "phase-loop status --runtime-projection --json"
 BAML_SCHEMA_ROOT = Path("vendor/phase-loop-runtime/src/phase_loop_runtime/baml_src")
+BAML_BRIDGE_SOURCE = "phase_loop_bridge.baml"
 ADOPTION_BUNDLE_PATH = Path("docs/adoption/dotfiles-adoption-bundle.json")
 
 
@@ -143,6 +144,8 @@ def _source_roots(repo: Path) -> list[dict[str, str]]:
 def _schema_refs(repo: Path) -> list[dict[str, str]]:
     refs: list[dict[str, str]] = []
     for path in sorted((repo / BAML_SCHEMA_ROOT).glob("*.baml")):
+        if path.name == BAML_BRIDGE_SOURCE:
+            continue  # host glue with no classes, not a schema (agent-harness#1135 #26)
         source_path = _repo_relative(repo, path)
         refs.append(
             {

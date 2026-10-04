@@ -12,7 +12,9 @@ Four bounds hold on every execution:
 * **Environment.** The child inherits only what survives the two pure scrubbers
   this package is permitted to use -- the subscription scrubber and the
   mutation-credential stripper -- so no mutation credential, vendor API key, or
-  endpoint escape reaches it.
+  endpoint escape reaches it. The provider's own scratch is then moved off a
+  RAM-backed temp dir (agent-harness#1147): only ``TMPDIR`` / ``CLAUDE_CODE_TMPDIR``
+  may be added, set to the runtime's own private disk-backed dir.
 * **Time and process group.** The child runs in its own session; a timeout kills
   the whole process group, so a provider that forked helpers cannot outlive its
   bound.
@@ -35,6 +37,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from phase_loop_runtime import sandbox_policy
 from phase_loop_runtime.advisor_board.backing import scrub_subscription_env
 from phase_loop_runtime.convergence.broker.credsep import strip_mutation_credentials
 from phase_loop_runtime.convergence.contracts import AdmissionRequest
@@ -57,6 +60,7 @@ _DETAIL_MALFORMED = "adapter returned no parseable convergence result"
 _DETAIL_OK = "adapter returned a bounded convergence result"
 _DETAIL_OVERFLOW = "adapter exceeded its bounded output size"
 _DETAIL_CLEANUP = "adapter process cleanup failed"
+_DETAIL_NO_SCRATCH = "adapter has no disk-backed scratch and RAM fallback is refused"
 
 
 @dataclass(frozen=True)
@@ -89,9 +93,13 @@ class AdapterExecutionRequest:
 
 
 def _child_environment() -> dict[str, str]:
-    """The bounded child environment, built only from the permitted pure scrubbers."""
+    """The bounded child environment, built only from the permitted pure scrubbers, then
+    given the provider-launch scratch decision."""
 
-    return strip_mutation_credentials(scrub_subscription_env(os.environ))
+    return sandbox_policy.child_scratch_env(
+        strip_mutation_credentials(scrub_subscription_env(os.environ)),
+        sandbox_policy.CHILD_SCRATCH_RELOCATE,
+    )
 
 
 def _envelope(status: ConvergenceResultStatus, attempt_id: str, detail: str) -> ConvergenceResultEnvelope:
@@ -115,10 +123,14 @@ def run_bounded(request: AdapterExecutionRequest, *, provider: str) -> Convergen
     primary_error = cleanup_error = None
     selector = None
     try:
+        child_env = _child_environment()
+    except sandbox_policy.SandboxSpaceError:
+        return _envelope(ConvergenceResultStatus.FAILED, request.attempt_id, _DETAIL_NO_SCRATCH)
+    try:
         process = subprocess.Popen(
             list(request.argv),
             cwd=str(request.cwd),
-            env=_child_environment(),
+            env=child_env,
             bufsize=0,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

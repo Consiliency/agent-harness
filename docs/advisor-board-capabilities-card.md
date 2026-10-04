@@ -435,8 +435,10 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 The Gemini extension (agent-harness#905) admits only a closed set of qualified
 `agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`:
-1.2.11 (SHA256 `ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`)
-and 1.2.12 (SHA256 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`),
+1.2.11 (SHA256 `ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`),
+1.2.12 (SHA256 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`),
+1.2.14 (SHA256 `0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029`)
+and 1.2.15 (SHA256 `5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164`),
 so a host that has not yet auto-updated keeps its Gemini seat (agent-harness#1008).
 It requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, stdin input (one event when the sealed prompt fits one

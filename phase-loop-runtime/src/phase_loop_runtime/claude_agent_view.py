@@ -166,12 +166,22 @@ class LaunchPreflightResult:
         }
 
 
+def _provider_runner(argv, **kwargs) -> subprocess.CompletedProcess[str]:
+    """The default runner: every ``claude`` this adapter starts goes through the review
+    provider launch interface, with an explicit env, so the CLI's own scratch is decided
+    there (agent-harness#1147) -- never inherited unexamined from this process."""
+    from .panel_invoker import run_provider
+
+    env = kwargs.pop("env", None)
+    return run_provider(argv, env=dict(os.environ) if env is None else env, **kwargs)
+
+
 class ClaudeAgentViewAdapter:
     def __init__(
         self,
         *,
         claude_bin: str = "claude",
-        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: Callable[..., subprocess.CompletedProcess[str]] = _provider_runner,
         config_path: Path | None = None,
         sleep: Callable[[float], None] = time.sleep,
         projects_root: Path | None = None,

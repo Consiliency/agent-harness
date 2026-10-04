@@ -103,7 +103,260 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.
 
+### Sandbox staging and agent-CLI scratch stay off RAM; retention is sized to its filesystem (agent-harness#1147)
+
+- **Invariant.** Sandbox staging and spawned-CLI scratch are never RAM-backed while a
+  disk-backed location is usable. Otherwise they run in a typed degraded mode: one warning
+  and hard-clamped retention, and the round is never crashed. Set
+  `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` to refuse instead.
+  - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
+    in `/proc/self/mountinfo`, so overmounts and moved mounts are judged correctly. macOS
+    and Windows temp dirs count as disk.
+  - **Named exceptions:** the agy qualification and capture jails keep their tmpfs `/tmp`
+    and frozen env, because they are evidence (follow-up agent-harness#1179); the Gemini
+    heartbeat seat's jail has its own private `/tmp` (agent-harness#1181).
+- **Staging root.** Review scratch (`pl-panel-*`) and its sandbox clone go to
+  `PHASE_LOOP_SANDBOX_STAGING_DIR` if set. Otherwise they go to `phase-loop/sandboxes` in the
+  per-user cache dir (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`, `%LOCALAPPDATA%`),
+  and then to the temp dir, but only if it is not RAM-backed. The launcher's agy review copy
+  and the falsifier's stage use the same root. Every directory the runtime creates below
+  the cache dir is created 0700 and must be a real directory owned by this account. The
+  cache dir itself must be owned by this account or root, and neither it nor any ancestor
+  may be writable by another account unless sticky.
+- **Persistent residue.** A killed run's launcher review copy, falsifier dependency snapshot
+  and owned agy HOMEs now outlive a reboot. Each records its owner (pid and start time) in
+  a sibling `<name>.owner` file, and the crash-residue sweep removes one only once that
+  owner is provably gone -- never by age, because a copy's mtime does not move while a
+  child works inside it. A directory with no owner record is kept. Owner records and
+  sandbox markers are created exclusively at an unpredictable staging name and never
+  follow links; a record that is a link or not this account's counts as an unknown owner.
+- **Spawned agent CLIs** (board legs, advisory seats, brokered legs, the president,
+  executors):
+  - Each unset `TMPDIR` / `CLAUDE_CODE_TMPDIR` whose own default destination is RAM-backed
+    now points at a private (0700) disk-backed per-user dir with room. Claude Code's
+    `/tmp/claude-<uid>` alone reached 6 GB of a 15 GB RAM `/tmp`.
+  - Values you set are never overridden; set either variable to opt out. The brokered
+    route's allowlist still drops ambient values.
+  - Decided at one place for review providers: `launch_provider` / `run_provider` apply the
+    scratch decision to every env they launch with, and only the named exceptions opt out.
+    Bounded Gemini legs and the bounded Gemini president are relocated, including the agy
+    HOME they run in. Convergence adapters are relocated too, and so is the Claude Agent
+    View executor route: `ClaudeAgentViewAdapter`'s default runner is now the provider
+    launch interface, so `claude --bg` is decided there.
+  - Completeness is checked at RUNTIME by a test-suite regression tripwire (not an
+    adversarial boundary). `child_scratch_env` returns a `DecidedEnv` (a `dict` subclass)
+    labelled `PHASE_LOOP_SCRATCH_DECIDED=<decision>` and records it by object identity
+    (`sandbox_policy.decided_scratch`, a weak registry). The test suite's audit hook fails
+    any test in which the runtime spawns an agent CLI -- through `subprocess`, `os.exec*`,
+    `os.posix_spawn*`, `os.spawn*`, `os.system` or `pty.spawn`, after `env` and `sh -c`
+    parsing, in forked children too -- unless the env object handed to the spawn IS one a
+    decision returned. A copied, rebuilt, inherited or hand-made env fails, and an
+    exception decision counts only at the launch interface. The hook proves at install
+    that it rejects an undecided stub spawn and accepts a decided one. Agent-CLI names are
+    derived from the runtime's own harness registries, so Pi (`pi`, `pi-agent-watch`) and
+    any new harness are covered.
+  - A static inventory test remains as an early warning: it enumerates every process
+    launch in the package and fails on one whose scratch decision is not stated. It is
+    conservative: any use of a launch-capable module it
+    cannot resolve (a computed `getattr`, `__dict__`, the module passed as a value, a
+    dynamic import, `exec`/`eval`) also needs a stated decision, as does any use of a
+    provider entry point that does not hand it a decided env.
+  - Env builders take no scratch decision; each route decides afterwards, so a named
+    exception (the heartbeat seat, agy qualification and capture) is never refused by a
+    relocation it is exempt from under `PHASE_LOOP_SANDBOX_REFUSE_RAM=1`.
+- **Caps and floor.**
+  - Filesystem size comes from `shutil.disk_usage`, so it now works on Windows.
+  - The retention ceiling is `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging
+    filesystem)`, or 10% on a RAM-backed one.
+  - The default 2 GiB floor is capped at 25% of a small filesystem, and is 25% of a
+    RAM-backed one.
+  - A configured `PHASE_LOOP_SANDBOX_FLOOR_BYTES` is used verbatim, even when it equals the
+    default.
+- **Reaping.** Before a round is refused for space, retained sandboxes are reaped
+  oldest-first. The TTL, footprint and free-space reaps never remove a sandbox whose owning
+  process is still running, and the owner marker is published atomically.
+- **Leftovers.** The crash-residual sweep covers both the new staging root and the old
+  temp-dir root, so sandboxes left in `/tmp` by earlier releases are still reclaimed. A
+  round's scratch dir is removed with the mode-restoring helper, so a read-only directory
+  left by a panelist no longer leaks it.
+- **Claude transcript lookup.** The adapter now derives a seat's Claude transcript dir with
+  Claude Code's own rule: every character outside `[A-Za-z0-9-]` becomes `-`, dots
+  included. It used to keep dots. That was harmless under `/tmp`, but under `~/.cache` the
+  adapter looked in a directory that never exists, so a brokered Claude seat's progress and
+  finished review went unseen and the seat hung until cancelled.
+- **agy requalification.** `panel_invoker.py`, `sandbox_policy.py`, `sandbox_retention.py`
+  and `harness_env_signatures.py` changed, so the agy pin set drifts: the next release cut
+  requalifies agy.
+
+### BAML v1 0.20.1 (agent-harness#1135)
+
+- **Dependency.** `baml-py>=0.222,<0.223` is replaced by `baml-bridge==0.20.1` (exact pin, D6)
+  and `protobuf>=6.31.1,<8`. The protobuf floor is baml-bridge's own gencode check, so an
+  environment pinned to `protobuf<6` no longer resolves. The `baml` / `baml-cli` console scripts
+  that `baml-py` installed are gone. The public `baml_modular` API is unchanged.
+- **A BAML worker subprocess.** The v1 runtime never loads in the runner process: it runs in
+  `phase_loop_runtime/_baml_worker.py`, started on first use (about 0.8 s cold start per process,
+  about 3 ms per call after), with **about 280 MB resident** (v0 added about 21 MB in-process).
+  Its environment is an allowlist (`PATH` to the interpreter, the temp and Windows system
+  variables, and the dynamic-loader variables); no credential, proxy, `HOME`, `BAML_*` or
+  locale variable reaches it. It runs in its own session, so a terminal Ctrl-C does not kill
+  it, and in the package directory, never the caller's cwd. Its native exit hooks are confined
+  to it.
+- **Owner death.** Linux (glibc and musl): `PR_SET_PDEATHSIG`, with a `getppid` watchdog as
+  backup. Windows: a `KILL_ON_JOB_CLOSE` Job Object; the worker is started with the real
+  interpreter (`sys._base_executable`) so the venv redirector cannot escape the job. macOS:
+  the `getppid` watchdog; residual: during the ~0.8 s `initialize_runtime` the watchdog cannot
+  run, so an init that hung forever *after* the owner died would orphan the worker.
+- **New `BamlWorkerError(BamlValidationError)`** with `.kind` and `.rc`. Transport and liveness
+  faults are retried at most twice, each on a fresh worker with the same source snapshot and
+  byte-identical request body; a death between calls is recovered and logged, not charged.
+  After the retry budget the closeout parse and the Tier-3 gate record a `blocked` /
+  `unretryable_external_outage` "NOT evaluated" outcome, never a verdict and never a skip, and a
+  launch fails typed. A fault that persists through the retry budget can therefore abort
+  `phase-loop run` before launch (#22, #24). `worker_fault_log()` is a new public diagnostic.
+- **Closeout prompt text changed (D1).** v1 renders the EmitPhaseCloseout prompt; the request
+  envelope, the D1a schema description (`schema_sha256` unchanged) and the Tier-3 evidence
+  request are byte-identical to v0.
+- **`injection.py` no longer launches with a fallback instruction** when the closeout contract
+  cannot be rendered (#22).
+- **Behaviour fixes and limits.** A backslash in a closeout list value no longer crashes the
+  render (#10). A closeout integer beyond i64 now parses as `null` where v0 clamped it (#12). A
+  serialized request over 4 MiB is refused with a plain `BamlValidationError` before anything
+  is sent; the 17 MiB response cap is derived from it (#27).
+- **No runtime profiling.** The worker disables the v1 runtime's profiling (`BAML_PROFILE=0`,
+  forced), so no call data is written to disk.
+- **Message redaction.** Correct the redaction character class and replacement template used
+  for BAML client messages. Values of secret-named environment variables are now redacted first,
+  and bearer values and common token shapes are also covered. A reaped worker's fault-log entry
+  keeps a redacted, bounded tail of its stderr (`stderr_tail`).
+- **Not usable in a forked child that has not exec'd.** Call BAML from the parent or from a
+  spawn- or exec-started process; a non-exec fork child gets `BamlWorkerError(kind="forked")`
+  (#30). Nothing in-tree forks without exec (agent-harness#1140).
+- **Sources.** The `.baml` files move to v1 syntax and gain `phase_loop_bridge.baml` (host glue,
+  excluded from adoption-bundle schema refs). The raw digests of the 8 schema files change, so
+  **vendoring repos must run `phase-loop adoption-bundle refresh` after upgrading** (#26). CI
+  gains a blocking `baml-sources` job (sha-verified `baml-cli 0.20.1`, fmt round-trip, `check` on
+  raw and rendered sources); C-8 of the 2026-09-01 codebase review is covered by the D3 field
+  regex, the schema-dump test and that fmt round-trip.
+- **Platforms.** Verified: x86_64 glibc (py3.10, py3.12) and, in the pre-merge dispatch,
+  `ubuntu-24.04-arm`, `macos-14`, `macos-15-intel` and `windows-latest` (stdlib venv and uv venv;
+  the Job Object owner-death test passes there). **musl is much slower to start:** on
+  `python:3.10-alpine` (x86_64) `initialize_runtime` takes about 13 s, not 0.8 s, so the first
+  BAML call in each process pays that; later calls are ~5 ms. Not in any matrix and unverified:
+  musl-aarch64 and win-arm64.
+- **Pin-bump checklist** for any future `baml-bridge` change: re-run the `baml describe` builtin
+  `spawn` audit, the release-notes review and Step 0-style parity against the v0 goldens.
+- **agy requalification at the release cut.** This change touches `phase_loop_runtime/**/*.py`
+  (including the new worker), so the next release cut requalifies both agy images and records
+  the `baml-bridge` and `protobuf` versions in the release notes.
+- **Full I1 interrupt sweep.** Pull requests run a fixed regression subset of the worker
+  client's interrupt sweep; the full sweep (~40 min per Python) runs weekly and on dispatch in
+  `baml-i1-sweep.yml`, and a green run on the release commit is required at the cut
+  (`docs/releases/baml-v1-release-checks.md`).
+- **Rollback:** revert to `baml-py>=0.222,<0.223` and cut a patch release.
+
+### CI offload authenticates with a Tailscale OAuth client (agent-harness#1237)
+
+- The offloaded gate (`test.yml`) and the fail-closed negative probe
+  (`offload-negative-probes.yml`) now join the tailnet through the org's Tailscale OAuth
+  client (`TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET`, scope `auth_keys`, tag `tag:ci-gp`)
+  instead of the `TS_AUTHKEY` auth key. Auth keys expire after at most 90 days; the org key
+  lapsed on 2026-10-01 and offloaded gates across the org failed with `invalid key` (this repo's
+  suite offload is currently gated off by `OFFLOAD_SANDBOX_READY`). The OAuth client
+  never expires, and `dagger-offload` (pinned to Consiliency/ci-actions@3929e18, from
+  Consiliency/ci-actions#5) mints a fresh ephemeral, pre-approved key per run. Offload
+  eligibility now keys on `TS_OAUTH_SECRET`; fork PRs still never receive it.
+
 ### Heartbeat-only seats no longer stall silently (agent-harness#1176)
+
+## [0.7.22] - 2026-10-03
+
+### Qualified agy set is now 1.2.11, 1.2.12, 1.2.14 and 1.2.15 (agent-harness#1236; PR agent-harness#1238)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` admits two more agy entry images, each with its own
+  `--help` digest:
+  - agy 1.2.14, image `0d0d3eba…`, with the same help digest as 1.2.11 and 1.2.12
+    (`83e3a0c3…`);
+  - agy 1.2.15, image `5f9c16b2…`, with its own help digest `8fcf4022…`. The only help change
+    is that `--effort` lists `xhigh`.
+- 1.2.11 and 1.2.12 stay in the set. The match is by exact image hash, not by version.
+- Each member has its own redacted record under `plans/evidence/agy-<version>-linux-x64-qualification.json`
+  and an entry in `qualified-provider-images.json`. All four were qualified live on the release
+  tree.
+- agy 1.2.13 is not in the set. The 0.7.21 notes said it would be qualified in this release
+  (agent-harness#1157); 1.2.14 and 1.2.15 supersede it upstream. A host still running 1.2.13 is
+  admitted by first-use self-qualification (agent-harness#1076) as `locally_qualified`, as before.
+- **Caveat:** agy 1.2.16 has been the upstream-latest release since 2026-10-03T03:56Z, after
+  this cut was qualified, and it is not a qualified member in 0.7.22. So
+  `verify_qualified_agy_image.py --upstream-only` and the nightly upstream job fail until a later
+  release qualifies it. The tag build is unaffected, because publish-pypi runs `--source-only`.
+  Genuine upstream releases, 1.2.16 included, self-qualify on first use as `locally_qualified`
+  (agent-harness#1130).
+
+### Human-invoked FABPUB publication handoff (agent-harness#1117; PR agent-harness#1221)
+
+- New `publishing.publish_human_invoked_from_worktree(repo, owned_paths, plan_path=...,
+  verification_artifact_path=..., draft=...)` is the supported way for a human-invoked
+  detailed-plan run to publish. It checks the repository's authority receipt and ACTIVE
+  authority, binds the plan and verification-artifact digests into a publication checkpoint
+  outside the worktree, and then runs the existing broker-only publication flow.
+- Missing or drifted repository authority returns `publication_blocked` with a typed
+  `HumanPublicationHandoff.v1`, which lists the supported bootstrap probe, apply and resume
+  steps. Callers never build authority records, receipts or checkpoint roots themselves.
+- The four `execute-detailed` skills now call this adapter.
+
+### FABPUB bootstrap keeps its authority binding when history roots are supplied (agent-harness#1117, agent-harness#1213; PRs agent-harness#1211, agent-harness#1212, agent-harness#1219)
+
+- When a caller passes explicit history roots, the existing bootstrap cutover, inventory
+  digest and authority root are kept, not replaced. Supplied roots must be canonical absolute
+  paths and not symlinks. A retry whose coverage or binding drifted is refused.
+- A bootstrap receipt whose bootstrap is briefly absent and then restored is checked again
+  after its locks are taken, and is refused if the held locks are no longer sufficient.
+- The activation barrier and the cutover writer take their authority locks in the same
+  order, so the two can no longer wait on each other across two roots. The onboarding-only
+  slot is released before train fencing.
+- Public signatures, receipt schemas and recorded bytes are unchanged. Choosing complete
+  history roots is still the operator's responsibility; these changes do not attest it.
+
+### EXECFIND: isolated falsifier runner and per-finding receipts (PRs agent-harness#1163, agent-harness#1164, agent-harness#1188)
+
+- A review seat can attach a `falsifier` to a finding: a pytest node in a new
+  `tests/test_finding_<id>.py`, given as a diff. `run_finding_falsifier` runs that one node
+  against the exact reviewed head in its own staged tree, with no credentials, no network and
+  no live tree, and returns a metadata-only `finding_falsifier.v1` record. RED and GREEN are
+  observed outcomes; neither decides a finding on its own. See ABDFALSIFY in
+  `advisor_board/CONTRACTS.md`.
+- The governed gate parses the attachments, keeps a receipt per finding and takes a
+  `falsifier_policy` of `optional` (the default; an unresolved falsifier warns) or `required`
+  (it blocks). A leg that arrives already carrying an attachment is held as
+  `foreign_falsifier_attachment`, and every seat's findings still reach the gate.
+- agent-harness#1188 records the landed `sl0_repairs` entry for SL-2's authorized frozen-node
+  repair.
+
+### A refused native fill names the seat's real outcome (agent-harness#1183; PR agent-harness#1190)
+
+- When a claude seat degraded before it could defer, the native-fill refusal
+  `native_fill_seat_not_deferred` now says what happened instead: no leg for the seat, a
+  deferral for a different model, or the leg's status and detail (for example `DEGRADED
+  (env_failure: staging filesystem below its free-space floor)`). The typed reason is
+  unchanged.
+- `advisor-board` prints a binding refusal as `native fill refused [<reason>]: <detail>`
+  instead of `could not stage the artifact`.
+
+### Stalled Claude TUI seats report their tool progress (agent-harness#639; PR agent-harness#1193)
+
+- A stalled Claude TUI seat's diagnostic now adds content-free counts from its own session
+  transcript: `completed_tools`, `pending_tools` and `assistant_after_tools`. No timeout,
+  heartbeat, retry or verdict rule changes.
+
+### Plans: remote sandbox placement, model roster, PANEL amendment #3 (agent-harness#896, agent-harness#1171, agent-harness#1078; PRs agent-harness#1162, agent-harness#1165, agent-harness#1173, agent-harness#1169)
+
+- Planning only: no runtime change. agent-harness#1162 is the sandbox placement seam plan
+  (plan 1a of agent-harness#896), agent-harness#1165 the E2B cloud backend plan,
+  agent-harness#1173 the model roster and job-slot tiers plan (agent-harness#1171), and
+  agent-harness#1169 the third PANEL SL-1 amendment with its measured node grants.
+
+### Heartbeat-only seats no longer stall silently (agent-harness#1176; PR agent-harness#1194)
 
 - A brokered Claude seat that gives up on its turn now ends at once as DEGRADED with a typed
   reason instead of waiting forever. This is the case where Claude Code journals an API-error
@@ -131,7 +384,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   governed `seat_progress_stalled` warn. A seat that finishes after a stall keeps the notice
   as history (`last_progress_notice`, `progress_notice_count`), not as an active notice.
 
-### One shared redaction pipeline with broader credential-shape coverage
+### One shared redaction pipeline with broader credential-shape coverage (PR agent-harness#1202)
 
 - New module `credential_redaction` with one pipeline, `redact_text`. It normalizes escape and
   control characters, detects credential shapes, e-mail addresses and the running user's home
@@ -177,7 +430,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in-flight change lands.
 - No agy route-core file changes, so this needs no agy requalification.
 
-### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204)
+### Pointer-brief boards warn before launch and do not count seats that cannot open the files (agent-harness#1204; PR agent-harness#1205)
 
 - `invoke_board(pointer_brief=True)`, `advisor-board --pointer-brief` and the governed gate's `pointer_brief` declare that the brief points reviewers at files in the staged tree instead of inlining them. Nothing detects a pointer brief from its text.
 - **Before any seat launches,** a board-level preflight (`seat_preflight.py`) decides, from each seat's production route, whether it can open those files. Every seat that cannot gets the typed notice `seat_pointer_brief_unreadable`. The notice is published before the first launch: through the `on_seat_preflight` callback (the CLI prints it on stderr), a warning log, and `seat-preflight.json` in `stream_dir`.
@@ -191,7 +444,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   A `DISAGREE` from such a seat still blocks. The notice also reaches the JSON payload (`notices`, `legs[].notices`, `legs[].source_grounded`, `grounded_seats`), the text summary and the governed findings.
 - **Without the flag,** every board, payload and count is unchanged. Evidence: treesitter-chunker#114, reported on agent-harness#1132.
 
-### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174)
+### Plan manifest writers no longer rewrite rows they did not change (agent-harness#1174; PR agent-harness#1195)
 
 - `plan_manifest.append_entry` re-sorted every row of `plans/manifest.json` by slug, and
   every writer re-serialized all rows with sorted keys. Rows on main are in neither
@@ -212,7 +465,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `plan_manifest.py` is part of the agy-qualified runtime source, so the next release
   cut's agy qualification covers this change.
 
-### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175)
+### A brokered Gemini review that fits one chunk is sent as one agy event (agent-harness#1175; PR agent-harness#1177)
 
 - A sealed prompt of 96 KiB or less now goes to agy as one user event
   (`agy_ndjson_single_event_v1`) that ends with the review instruction. It no longer
@@ -231,7 +484,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   The HARDEN evidence verifier recomputes whichever protocol a record names. It
   requires a one-chunk prompt for the single-event protocol.
 
-### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths)
+### Harden the Gemini heartbeat sandbox's filesystem view (allowlisted read-only view, minimal writable paths; PR agent-harness#1181)
 
 - The brokered Gemini heartbeat seat's sandbox now exposes only an allowlisted filesystem
   view. It starts from an empty root and binds read-only only what the provider was
@@ -249,7 +502,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   file, so this needs no agy requalification of its own. The next release cut's full
   qualification covers it.
 
-### Register `claude-sonnet-5-5` as an explicit advisor-board seat (agent-harness#1178)
+### Register `claude-sonnet-5-5` as an explicit advisor-board seat (PR agent-harness#1178)
 
 - `claude-sonnet-5-5` (Claude Sonnet 5.5) is a registered model on the `claude` lane at effort
   `max`, answering to the `fable` review-seat alias, so a governed policy requiring `fable`
@@ -262,7 +515,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   It is reachable through an explicit `Seat` or `invoke_panel(models={"claude": ...})`.
 - No agy route-core file changes, so this needs no agy requalification of its own.
 
-### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139)
+### Closeout audit attributes handoffs and declared build outputs by provenance (agent-harness#1139; PR agent-harness#1189)
 
 - `phase-loop-closeout-audit` now grades the files inside a collapsed ignored directory
   (`!! .dev-skills/`, `!! dist/`) instead of blocking on the directory entry. The
@@ -313,7 +566,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   An invalid declaration exits 2.
 - See `docs/phase-loop/closeout-generated-outputs.md`.
 
-### Register `gpt-6.1-sol` as an explicit advisor-board seat (agent-harness#1172)
+### Register `gpt-6.1-sol` as an explicit advisor-board seat (PR agent-harness#1172)
 
 - `gpt-6.1-sol` is a registered model on the `codex` lane at effort `max`, answering to the
   `sol` review-seat alias, so a governed policy requiring `sol` accepts a board that seats it.

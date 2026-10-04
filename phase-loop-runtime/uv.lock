@@ -25,18 +25,22 @@ wheels = [
 ]
 
 [[package]]
-name = "baml-py"
-version = "0.222.0"
+name = "baml-bridge"
+version = "0.20.1"
 source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+    { name = "typing-extensions" },
+]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/ec/9c8958b0e1a661c60900a94e2b8d13e7b4b6d09511837dfa3d59732d4e02/baml_py-0.222.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:1270fa6ceaa2093bec7d4bf7f857d33ce4547849eaca8aa21c5518b498832e25", size = 21808749, upload-time = "2026-04-27T23:29:18.126Z" },
-    { url = "https://files.pythonhosted.org/packages/30/b8/73f2d43dcf1fab0d79fbb91132f3ca184b44891ebb98bd0def431999dbb1/baml_py-0.222.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:bfd00afed25f939d10f99d555de2900930fc462ebb20b8d46e99c1aabadba7e9", size = 20668661, upload-time = "2026-04-27T23:29:20.87Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/79/f452e52abdea0f971e835c9ca6e95833f8ea1bcbbd9ae65089e32200151c/baml_py-0.222.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:174ef4e713da23d6a9d6dc2d55b6a28a88c5030edf55060dfc42f1c7eccfc7db", size = 24360345, upload-time = "2026-04-27T23:29:23.5Z" },
-    { url = "https://files.pythonhosted.org/packages/6c/b2/f5b9437e236c418b22de3e1fc247d72109843391cb52186f7170cbde51c6/baml_py-0.222.0-cp38-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:a4a3c0f249e398be48eefc8f4f8dd78a54b0ec73f1e44c23062f549884e921a3", size = 23738386, upload-time = "2026-04-27T23:29:25.822Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/08/9696bf70bec78b7a158b1d0dbdc043581170c4d8988aaf9ed7966aae4527/baml_py-0.222.0-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:5e3ac35992dbb7ef8fe60e4f7ad15623fac9fb008255394c436b9514c2fd0287", size = 24109751, upload-time = "2026-04-27T23:29:27.999Z" },
-    { url = "https://files.pythonhosted.org/packages/46/05/32053db7478b94d3e98295bcceae5e043d54e7d32eaa3decd6318fbcf7ce/baml_py-0.222.0-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:84a2af099a78d337bb053fd84fd126bfffc96d0338a356627d63ff4d7a85972b", size = 24614675, upload-time = "2026-04-27T23:29:30.507Z" },
-    { url = "https://files.pythonhosted.org/packages/eb/89/ac76b9f6fe2d663b91f05c08bbdb47bbed0c5211d1ed3f188ee4483556e4/baml_py-0.222.0-cp38-abi3-win_amd64.whl", hash = "sha256:d4d769f4c6cd8a4605f549aa519b3d68aa93e0f6d5b7f42172ac16bae95ad820", size = 22008363, upload-time = "2026-04-27T23:29:33.451Z" },
-    { url = "https://files.pythonhosted.org/packages/05/62/9cfa9c35e9544ce56a41ca63b5d0cd35d655cb60a8f6ddead408b8c25fc9/baml_py-0.222.0-cp38-abi3-win_arm64.whl", hash = "sha256:c26a7c71268fb18ea5d3f56b2693c55aca18cc422bce630486c3ef20b409daf3", size = 20417604, upload-time = "2026-04-27T23:29:35.704Z" },
+    { url = "https://files.pythonhosted.org/packages/43/01/39904fc7b61b50b47a7604f2ee3f9f492df2237c9c12297cc7fe58afa731/baml_bridge-0.20.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:9bbadb15e891e0656a918e10ef8130764b6a27e05a3495d2931f489bbd6e2ee3", size = 10418851, upload-time = "2026-09-20T21:55:20.486Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/ed/d482c1f1063f20315a1d79b8634316c4a786b71ced8f936e00109b11f3d2/baml_bridge-0.20.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:17974a3e475adeef7fcd1d99382ca2d100e709e21b0f5b1bf64a58d42b8833a7", size = 10054008, upload-time = "2026-09-20T21:55:23.653Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/e3/2c6b576fd64a7307149ac3250a861735e1a1d70c9fc480a402994163d239/baml_bridge-0.20.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c0ba0507758d44c0d0714ac33942da53113c224f34385f9c5618c410f3fc3306", size = 10596160, upload-time = "2026-09-20T21:55:27.122Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/c4/eab78195d38babbd5ec9d313a8fa03a8d9c018deaa006b3260903ecc8edf/baml_bridge-0.20.1-cp310-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:b59d78ba86d73041b26d6000640aa8f6e3e875d0d4132573340695da90f71f8c", size = 10023324, upload-time = "2026-09-20T21:55:30.128Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/bc/5eff83ff6222bfad4e04a22c8c8dd94b4e39566cff150ab4670757d982a7/baml_bridge-0.20.1-cp310-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:f1246cb4b2bd28b5cd43b34727dc1bf6c7532c255dcfa6ab59ee84cdd70389fe", size = 10236514, upload-time = "2026-09-20T21:55:33.46Z" },
+    { url = "https://files.pythonhosted.org/packages/04/96/857b49eba70742a2e459f6142dff54bb239970e2c30ea485a2cdd3e06fc0/baml_bridge-0.20.1-cp310-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:ac9019cfa95cc5d0882825dd8b1fef0ebf1d5047cee14ab4a7767f4692d37098", size = 10751488, upload-time = "2026-09-20T21:55:36.048Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/35/3b4d8f65031ad6511f289fe0bc4f68098de98689bbfbb415c863b1746f7f/baml_bridge-0.20.1-cp310-abi3-win_amd64.whl", hash = "sha256:b12d710384c92c1f8ceb93f28bb415ff03e9bf6e2c6a34881991cfa36033321f", size = 10748288, upload-time = "2026-09-20T21:55:38.739Z" },
+    { url = "https://files.pythonhosted.org/packages/79/be/ab887945694ba23cacd4995b932bb61f8fc31f24119a189abf496c25401a/baml_bridge-0.20.1-cp310-abi3-win_arm64.whl", hash = "sha256:3f8151ada3464409163b2ca3ddc8e7d9972659d4b7bbc31f0a02447e3a1bba5e", size = 10354325, upload-time = "2026-09-20T21:55:41.53Z" },
 ]
 
 [[package]]
@@ -339,14 +343,15 @@ wheels = [
 
 [[package]]
 name = "phase-loop-runtime"
-version = "0.7.21"
+version = "0.7.22"
 source = { editable = "." }
 dependencies = [
-    { name = "baml-py" },
+    { name = "baml-bridge" },
     { name = "consiliency-contract" },
     { name = "detect-secrets" },
     { name = "jsonschema" },
     { name = "packaging" },
+    { name = "protobuf" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rfc8785" },
@@ -369,12 +374,13 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "baml-py", specifier = ">=0.222,<0.223" },
+    { name = "baml-bridge", specifier = "==0.20.1" },
     { name = "consiliency-contract", specifier = ">=0.6.5,<0.7" },
     { name = "detect-secrets", specifier = "==1.5.0" },
     { name = "jsonschema", specifier = ">=4,<5" },
     { name = "packaging", specifier = ">=21" },
     { name = "pillow", marker = "extra == 'visual'", specifier = ">=10,<13" },
+    { name = "protobuf", specifier = ">=6.31.1,<8" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "rfc8785", specifier = ">=0.1.4,<0.2" },
@@ -501,6 +507,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "protobuf"
+version = "7.36.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/89/5b8517baa72f84a67b8a307ba953c91057af618bf40bf676f3c03551f8f0/protobuf-7.36.2.tar.gz", hash = "sha256:497d0463ff3316681da6c0b9e8d06cb465d61abce00b613ab42226175644d1bb", size = 512737, upload-time = "2026-09-17T20:07:59.326Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/72/98342feb672507c8f3a69e34b4fa8961f608edba5c1a48a6f47156d92cb5/protobuf-7.36.2-cp310-abi3-macosx_10_9_universal2.whl", hash = "sha256:cbc70b17ee27e28894c7fee8bb04be1abead49e936bc70eb60052531eee2079e", size = 456039, upload-time = "2026-09-17T20:07:51.542Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/ea/91fdf7c2b8bbd49cde056f00a9df6773532987e1c00fe2830b895af95c7e/protobuf-7.36.2-cp310-abi3-manylinux2014_aarch64.whl", hash = "sha256:e11e1f0180583a2af89db6a2ecd9e8dc40aa6d2988ca175bfd0e6d12ea72d74e", size = 344219, upload-time = "2026-09-17T20:07:52.914Z" },
+    { url = "https://files.pythonhosted.org/packages/17/ab/5fd5f8ece73fad885c5a09aa849b32d70472f954ba3a92d3bb5974ea953b/protobuf-7.36.2-cp310-abi3-manylinux2014_s390x.whl", hash = "sha256:f4fee11ec330d238b34a05c9b675f693c20415d1c5bd7d5320cc2f8a798eb9cf", size = 357223, upload-time = "2026-09-17T20:07:53.985Z" },
+    { url = "https://files.pythonhosted.org/packages/db/f3/3996583dd2906297a637af12114deddf7658af6e683fedb83be061983fb5/protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl", hash = "sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2", size = 343223, upload-time = "2026-09-17T20:07:54.931Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/1b/dcc64f358fcb51811b58ae40b3d28f820725f116d86487cc20bd4b130701/protobuf-7.36.2-cp310-abi3-win32.whl", hash = "sha256:912c1221170e16c08d1f086762f563dd61ff83c18b5fa6652952dfaded66f728", size = 442998, upload-time = "2026-09-17T20:07:55.826Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/55/b77bda4e5e5f5971fb51b07663694690e9afdb9402136c16a522bd621cad/protobuf-7.36.2-cp310-abi3-win_amd64.whl", hash = "sha256:a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353", size = 456514, upload-time = "2026-09-17T20:07:57.188Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/04/d52c7016b04b6c5108f26691f9d33ec82a9b65d041f1a9c771137693d618/protobuf-7.36.2-py3-none-any.whl", hash = "sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e", size = 179806, upload-time = "2026-09-17T20:07:58.211Z" },
 ]
 
 [[package]]

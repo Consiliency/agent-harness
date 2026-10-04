@@ -195,10 +195,10 @@ _FROZEN_ROADMAP_EXCERPT = """\
    / `verdict_schema_sha256`. CONFORM's pin work is therefore NO LONGER externally gated and is
    satisfiable against merged sources; EC-CONFORM-5/6/7 are re-derived accordingly below. (Swept
    the other four assumptions against current `main`: #2 subsequently reconciled — `governed-pipeline#128`
-   CLOSED, we still ship `0.7.21`; #3 holds — `tui_adapter_required` still present in
+   CLOSED, we still ship `0.7.22`; #3 holds — `tui_adapter_required` still present in
 
    stale; #2's later drift is reconciled below.)
-2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.21; it has acted on
+2. `governed-pipeline` pins agent-harness 0.7.14 while we ship 0.7.22; it has acted on
    `governed-pipeline#128`, which is CLOSED. No phase here depends on that being resolved.
 3. The claude/fable board seat is structurally unavailable when the runtime drives the board from
 
@@ -1448,7 +1448,7 @@ ASSUMPTION_PROBES: tuple[dict[str, object], ...] = (
         "id": "LEGIBLE-A2-LOCAL-VERSION",
         "assumption": 2,
         "kind": "repo_constant",
-        "anchor": "we ship 0.7.21",
+        "anchor": "we ship 0.7.22",
         "mutation_id": "change-either-surface-alone",
         "positive_control_id": "current-equal-pair",
         "subject": {
@@ -1457,9 +1457,9 @@ ASSUMPTION_PROBES: tuple[dict[str, object], ...] = (
                 {"module": "phase_loop_runtime", "attribute": "__version__"},
             ]
         },
-        "expected": {"must_agree": True, "agreed_value": "0.7.21"},
-        "observation": {"values": ["0.7.21", "0.7.21"]},
-        "mutation": {"values": ["0.7.22", "0.7.21"]},
+        "expected": {"must_agree": True, "agreed_value": "0.7.22"},
+        "observation": {"values": ["0.7.22", "0.7.22"]},
+        "mutation": {"values": ["0.7.23", "0.7.22"]},
     },
     {
         "id": "LEGIBLE-A2-NO-DEPENDENCY",

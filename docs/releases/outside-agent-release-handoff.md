@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.21`
-- Runtime `phase_loop_runtime.__version__`: `0.7.21`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.21`
+- Version: `0.7.22`
+- Runtime `phase_loop_runtime.__version__`: `0.7.22`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.22`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.21`
+- Validator version: `0.7.22`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,52 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+- `publication_status=prepared`
+- `0.7.22` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.21` tag commit (`3c61b270`):
+  - the qualified agy image set grows to 1.2.11, 1.2.12, 1.2.14 and 1.2.15. 1.2.14 shares the
+    1.2.11/1.2.12 help digest; 1.2.15 carries its own (`8fcf4022…`). All four members were
+    qualified live on this release tree (validated 3 and `route_qualified` true for each;
+    all 223 source pins verified). Assets, checked against the GitHub API: 1.2.11
+    `c91c62c5e6fa954f5a7e1d7b9ad417d749db4aa60a4ba0b3d604dec1b645d190`, 1.2.12
+    `26c7c4c661d6c9beda734fcf305031056a6ea46e697c4533e8151179724e2950`, 1.2.14
+    `68cf4d221cb62e0289245439d3d37f599bdc8e0c4e1e3dae03f326463a0c26dc`, 1.2.15
+    `bbd4a4b29f0e9fe1fc2e1345b5d44fa08540e43014da46bc2c4bf70cf05745d8`. Each series ran from a saved copy of its
+    member's official release archive member, never from the `agy` on `PATH`, and every
+    preregistration names the intended image. 1.2.13 is not a member: 1.2.14 and 1.2.15
+    supersede it upstream, and first-use self-qualification still admits it per host.
+    **Caveat:** agy 1.2.16 has been upstream-latest since 2026-10-03T03:56Z, after this cut
+    was qualified, and it is not a release-qualified member in 0.7.22, so
+    `verify_qualified_agy_image.py --upstream-only` and the nightly upstream job fail until a
+    later release qualifies it. The tag build is unaffected (publish-pypi runs `--source-only`).
+    Genuine upstream releases, 1.2.16 included, self-qualify on first use as
+    `locally_qualified` (agent-harness#1130);
+  - heartbeat-only seats no longer stall silently (agent-harness#1194, agent-harness#1176);
+  - the closeout audit attributes handoffs and declared build outputs by provenance
+    (agent-harness#1189, agent-harness#1139);
+  - one shared redaction pipeline (agent-harness#1202);
+  - pointer-brief seat preflight (agent-harness#1205, agent-harness#1204);
+  - the human-invoked FABPUB publication handoff and the bootstrap-binding repairs
+    (agent-harness#1221, agent-harness#1211, agent-harness#1212, agent-harness#1219,
+    agent-harness#1117, agent-harness#1213);
+  - a one-chunk brokered Gemini review sent as one agy event, and the Gemini seat's
+    allowlisted filesystem view (agent-harness#1177, agent-harness#1175, agent-harness#1181);
+  - `claude-sonnet-5-5` and `gpt-6.1-sol` registered as explicit seats, with no default moved
+    (agent-harness#1178, agent-harness#1172);
+  - EXECFIND SL-1 and SL-2: the isolated falsifier runner and per-finding receipts
+    (agent-harness#1163, agent-harness#1164, agent-harness#1188);
+  - smaller fixes: agent-harness#1190 (agent-harness#1183), agent-harness#1195
+    (agent-harness#1174) and agent-harness#1193 (agent-harness#639);
+  - plans only: agent-harness#1162, agent-harness#1165, agent-harness#1173 and
+    agent-harness#1169; and the 0.7.21 published record (agent-harness#1159).
+- Release tracking: agent-harness#1236; the appended plan-authority rows cite it.
+- Tag: not yet created. The signed `v0.7.22` tag push, which publishes to PyPI, is
+  maintainer-gated.
+
+### Previous release: 0.7.21 (published)
 
 - `publication_status=published`
 - `0.7.21` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -385,9 +431,28 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.21 (published)
+### This release: 0.7.22 (prepared)
 
 The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`) from a `git archive` export of `10c04f68` (the release tree after the agent-harness#1233 rebase; later commits touch no packaged file). They are a
+preparation measurement, not a publication record: the publishing workflow rebuilds from the
+tagged commit and verifies `SHA256SUMS`, and the published digests are recorded here after the
+tag push. As for `0.7.15`–`0.7.21`, the published digests are expected to differ, because
+archive bytes are timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `3f39ae117a7aca87f8f9d3a3edd19a8642d54581770e64af023e5e7fceeca65e`
+- prepared direct-sdist sha256: `c1dda82a95ead797273bf5a41e2eee7b8f50428fecfeeb1654d25e1d2582f0a8`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.21 (published)
+
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`36524847790` from its build of the tagged commit `3c61b270`, equal to the digests PyPI
+reports: wheel `de814ecd9620b84c020b97aab10cb66c3f8ce1a26c439850848efc345844e30c`, sdist
+`66859f087046b9ee71367a78e2de789b7640d91fba86b2cd97a344b771797913`.
+
+The pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
 `Consiliency/agent-harness#519`) from an export of the release commit's tree. They are a
 preparation measurement, not a publication record: the publishing workflow rebuilds from the
@@ -537,23 +602,23 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.21` build described above.
+Measured on the prepared `0.7.22` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.21-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.21.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.21.data`, `phase_loop_runtime-0.7.21.dist-info`
-- Wheel file count: `476`
+- Wheel artifact: `phase_loop_runtime-0.7.22-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.22.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.22.data`, `phase_loop_runtime-0.7.22.dist-info`
+- Wheel file count: `480`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `981` regular files (`1116` archive members including directories)
+- Sdist file count: `996` regular files (`1131` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
-`0.7.20` is published (PyPI, trusted-publish workflow `36341122951`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.20`. Once
-`0.7.21` is published (tag push → PyPI; this document records it as `prepared` until then),
-the pin may move to `phase-loop-runtime==0.7.21`. In either case, call:
+`0.7.21` is published (PyPI, trusted-publish workflow `36524847790`), so governed-pipeline
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.21`. Once
+`0.7.22` is published (tag push → PyPI; this document records it as `prepared` until then),
+the pin may move to `phase-loop-runtime==0.7.22`. In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -600,6 +665,9 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
+- For `0.7.21`: the package was not published from this handoff; trusted workflow
+  `36524847790` published it from the signed `v0.7.21` tag (verified tag object
+  `94e6955a2a91e6120801967b7b6947ad93ede6f0`, signed with the maintainer's key).
 - For `0.7.20`: the package was not published from this handoff; trusted workflow
   `36341122951` published it from the signed `v0.7.20` tag (verified tag object
   `e57dc8bf514ce3e38ed4a22b8e9479bf51f95925`, signed with the maintainer's key).
@@ -624,7 +692,7 @@ merge verdict.
 - For `0.7.14`: the package was not published from this handoff; trusted workflow
   `32783112944` published it from the signed `v0.7.14` tag (verified tag object
   `2de6c06973b84890b62184fa023d387f6044a43c`).
-- For `0.7.20`, `0.7.19`, `0.7.18`, `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
+- For `0.7.21`, `0.7.20`, `0.7.19`, `0.7.18`, `0.7.17`, `0.7.16`, `0.7.15` and `0.7.14` a maintainer-authorised tag push triggered the
   workflow and it completed successfully; none was
   dispatched from a handoff.
 - Production governed-pipeline enforcement is not claimed by this handoff.
