@@ -103,13 +103,11 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("panel_invoker.py", "_cleanup_claude_launch_timeout"): (
         RELOCATED, "panel_invoker.py:_exec_claude_tui_leg:_broker_leg_env"),
     # agent-harness#1132: the jailed seat's helper chain (probe and launch, one decided
-    # env object) and the host-side login refresh.
+    # env object).
     ("panel_invoker.py", "_require_jailed_seat_identity"): (
         RELOCATED, "panel_invoker.py:_jail_launch_env:child_scratch_env"),
     ("seat_jail_qualification.py", "_run_probe_in_jail"): (
         RELOCATED, "panel_invoker.py:_jail_launch_env:child_scratch_env"),
-    ("seat_credentials.py", "refresh_login_via_cli"): (
-        RELOCATED, "seat_credentials.py:refresh_login_via_cli:child_scratch_env"),
     # -- the named exceptions --------------------------------------------------------
     ("agy_canary_evidence.py", "ProviderLaunchAuthority.preflight"): (
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),

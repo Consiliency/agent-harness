@@ -574,12 +574,20 @@ with.
   `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`, and the login
   Keychain on macOS. It never reads or uses the refresh token.
 - **A short token:** if the token has less lifetime left than the seat's deadline (its
-  per-leg timeout, else 1800 s), the runtime asks the CLI to bring the login up to date (`claude auth status`) and reads it
-  again. Set `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` (seconds) to override the deadline as the
-  margin.
-  - If the token is still too short, the leg is refused with
-    `claude_seat_login_token_expiring` (fix: `claude auth login`). The seat's mode line
-    already says so before any seat launches: it checks the same margin.
+  per-leg timeout, else 1800 s), the seat waits for you to renew the login. The harness never
+  runs the Claude CLI for this. Set `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` (seconds) to
+  override the deadline as the margin.
+  - **Before any seat launches:** the mode line says
+    `claude_seat_login_token_awaiting_refresh`, with the minutes left. Use Claude, or run
+    `claude auth login`.
+  - **The wait:** the seat re-reads the store (read-only) every 30 s
+    (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`), for up to
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (default 900 s; 0 means do not wait). Other seats
+    are not held. A renewed login runs the seat jailed, and the log says
+    `jailed (login refreshed)`.
+  - **Not renewed in time:** the seat runs sealed (no tools) with
+    `claude_seat_login_token_expiring` (fix: `claude auth login`, then re-run). The board
+    is never refused.
   - A token that expires during a run ends the leg with `claude_seat_login_token_expired`.
     Re-running it reads a fresh token.
 - **Switching subscriptions:** `claude auth login` to another subscription takes effect at the

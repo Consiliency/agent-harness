@@ -199,10 +199,15 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "failed or could not run (the mode line names the reason)",
         "run `phase-loop seat-sandbox qualify` to see why"),
     "claude_seat_login_token_expiring": (
-        "leg refused",
-        "the Claude login's access token expires before the seat's deadline, and the CLI did "
-        "not refresh it",
+        "inline fallback",
+        "the Claude login's access token expires before the seat's deadline and was not "
+        "renewed within the wait (plan amendment A3)",
         "run `claude auth login`, then re-run"),
+    "claude_seat_login_token_awaiting_refresh": (
+        "waiting",
+        "the Claude login's access token expires before the seat's deadline; the seat waits "
+        "for it to be renewed",
+        "use Claude or run `claude auth login`"),
     "claude_seat_bypass_ack_blocked": (
         "leg refused", "pre-seed stale for this CLI", "upgrade runtime"),
     "claude_tui_workspace_trust_blocked": (
@@ -284,6 +289,7 @@ SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
     "seat_sandbox_unavailable_seat_uid",
     "claude_seat_token_missing", "gemini_seat_credential_missing",
     "gemini_seat_profile_unqualified", "seat_jail_qualification_failed",
+    "claude_seat_login_token_expiring",
 })
 
 

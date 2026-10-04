@@ -155,6 +155,25 @@ def _no_real_first_use_jail_qualification(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_long_real_login_wait(monkeypatch):
+    """agent-harness#1132 (plan amendment A3): a jailed Claude seat whose login is short
+    waits up to 15 minutes for it to be renewed. A test that reaches that real wait with a
+    long bound fails here instead of sleeping; tests inject the wait or set a short
+    ``PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S``."""
+    from phase_loop_runtime import seat_credentials
+
+    real = seat_credentials.await_login_margin
+
+    def _guarded(margin_s, *, max_wait_s, **kwargs):
+        if max_wait_s > 60 and kwargs.get("monotonic") is None:   # a real clock
+            pytest.fail("a test reached a real login wait of %ss; inject it or bound it"
+                        % max_wait_s)
+        return real(margin_s, max_wait_s=max_wait_s, **kwargs)
+
+    monkeypatch.setattr(seat_credentials, "await_login_margin", _guarded)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
     """agent-harness#1132: keep the suite off the host's Claude login and seat state.
 

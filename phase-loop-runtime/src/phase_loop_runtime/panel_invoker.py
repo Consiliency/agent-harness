@@ -330,6 +330,14 @@ class _ReviewMonitor:
                     "(notice window %ds); heartbeat_only keeps waiting",
                     self.record["seat_position"], int(silence), int(self.record["stall_notice_s"]),
                 )
+        self._write()
+
+    def note(self, **fields: object) -> None:
+        """Record a fact that is not seat progress (e.g. a login wait), then publish."""
+        self.record.update(fields)
+        self._write()
+
+    def _write(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
@@ -1610,23 +1618,37 @@ def _seat_launch_modes(
     staged = (review_authorization is not None
               and getattr(review_authorization, "staged_tree_sha256", None) is not None)
     timeouts = dict(timeouts_by_leg or {})
-    credential: dict[float, object] = {}
+    credential: dict[float, tuple] = {}
     # Per board: whether a leg's jail was qualified just now (the first seat's outcome).
     qualified_now: dict[str, bool] = {}
     # Per board: each leg's route, decided once (a first-use qualification that timed out
     # is not cached, so it must not be waited for again by every seat of that leg).
     routes: dict[str, tuple] = {}
 
-    def _claude_credential(leg: str) -> "_seat_credentials.SeatCredential | str":
-        # The override, or the login, checked against the SAME margin the launch will use
-        # (`_claude_seat_login_margin_s`, keyed as the spawn keys its timeout: by leg).
+    def _claude_credential(leg: str) -> tuple:
+        # Read-only, against the SAME margin the launch will use (`_claude_seat_login_margin_s`,
+        # keyed as the spawn keys its timeout: by leg). Returns (mode, code, source, seconds
+        # left): an override or a login with enough left is jailed; a short login is jailed
+        # and awaiting its renewal, or sealed when no wait is allowed (plan amendment A3).
         margin = _claude_seat_login_margin_s(timeouts.get(leg))
         if margin not in credential:
-            try:
-                credential[margin] = _seat_credentials.resolve_claude_seat_credential(margin)
-            except _seat_jail.SeatSandboxRefused as exc:
-                credential[margin] = exc.code
-        return credential[margin]  # type: ignore[return-value]
+            cred = _seat_credentials
+            if cred.override_present():
+                try:
+                    cred.resolve_claude_seat_credential(margin)
+                    credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_OVERRIDE, None)
+                except _seat_jail.SeatSandboxRefused as exc:
+                    credential[margin] = (sp.MODE_DEGRADED, exc.code, None, None)
+            else:
+                left = cred.login_seconds_left(margin)
+                if left is None:
+                    credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_LOGIN, None)
+                elif cred.login_refresh_wait_s() > 0:
+                    credential[margin] = (sp.MODE_JAILED, _CLAUDE_LOGIN_AWAITING,
+                                          cred.SOURCE_LOGIN, left)
+                else:
+                    credential[margin] = (sp.MODE_SEALED, _CLAUDE_LOGIN_EXPIRING, None, left)
+        return credential[margin]
 
     modes = []
     for position, seat in enumerate(board.seats):
@@ -1670,18 +1692,26 @@ def _seat_launch_modes(
         elif not route.jailed:
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
-            found = _claude_credential(leg) if leg == "claude" else None
+            kind, code, source, left = (_claude_credential(leg) if leg == "claude"
+                                        else (sp.MODE_JAILED, None, None, None))
             if leg not in qualified_now:
                 outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
                 qualified_now[leg] = (outcome is not None
                                       and outcome.state == _seat_jail_autoqualify.QUALIFIED_NOW)
-            if isinstance(found, str):
-                modes.append(_coded(sp.MODE_DEGRADED, found))
+            if code == _CLAUDE_LOGIN_AWAITING:
+                _what, why, fix = _seat_jail.NOTICES[code]
+                modes.append(sp.SeatMode(
+                    key, leg, sp.MODE_JAILED, code,
+                    f"{why} (expires in {_minutes(left)}m; waits up to "
+                    f"{int(_seat_credentials.login_refresh_wait_s())} s, then runs sealed)",
+                    fix, source, position, qualified_now[leg]))
+            elif code is not None:
+                modes.append(_coded(kind, code))
             else:
                 modes.append(sp.SeatMode(
                     key, leg, sp.MODE_JAILED, None,
                     "full tools inside its per-seat jail", "",
-                    getattr(found, "source", None), position, qualified_now[leg]))
+                    source, position, qualified_now[leg]))
     return tuple(modes)
 
 
@@ -2607,6 +2637,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_seat_token_rate_limited", "claude_seat_bypass_ack_blocked",
     "claude_seat_login_rate_limited", "claude_seat_login_rejected",
     "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
+    "claude_seat_login_token_awaiting_refresh",
     "seat_jail_qualification_failed",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
     "gemini_seat_token_scope_excess", "gemini_seat_stream_split_unavailable",
@@ -9070,6 +9101,58 @@ def _leg_hard_deadline_s(timeout_s: int | None) -> int:
     return int(timeout_s) if timeout_s is not None else _MAX_LEG_TIMEOUT_S
 
 
+_CLAUDE_LOGIN_AWAITING = "claude_seat_login_token_awaiting_refresh"
+_CLAUDE_LOGIN_EXPIRING = "claude_seat_login_token_expiring"
+
+
+def _minutes(seconds: float | None) -> int:
+    return max(0, int((seconds or 0) // 60))
+
+
+def _await_claude_login(
+    timeout_s: int | None, review_monitor: "_ReviewMonitor | None",
+    quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
+) -> "_seat_credentials.LoginWait":
+    """Plan amendment A3: before a jailed Claude seat is staged, wait -- reading the login
+    store read-only and running nothing -- for a login short of the launch margin to be
+    renewed by its owner. Bounded by ``PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S`` and, under a
+    bounded policy, by the leg's hard deadline (the wait is charged to it). Under
+    ``heartbeat_only`` the wait is recorded as a login wait, and the stall clock starts after
+    it. Cancellation (the monitor's event or the quiescence latch) ends it at once."""
+    cred = _seat_credentials
+    margin = _claude_seat_login_margin_s(timeout_s)
+    left = cred.login_seconds_left(margin)
+    if left is None:
+        return cred.LoginWait(cred.LOGIN_READY, 0.0)
+    max_wait = cred.login_refresh_wait_s()
+    if review_monitor is None:
+        max_wait = min(max_wait, float(_leg_hard_deadline_s(timeout_s)))
+    logging.getLogger(__name__).warning(
+        "seat claude [%s]: the login token expires in %dm; waiting up to %d s for it to be "
+        "renewed (use Claude or run `claude auth login`)",
+        _CLAUDE_LOGIN_AWAITING, _minutes(left), int(max_wait))
+    cancel = review_monitor.cancel if review_monitor is not None else threading.Event()
+
+    def _wait(seconds: float) -> bool:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        return cancel.wait(seconds)
+
+    if review_monitor is not None:
+        review_monitor.note(login_wait={"state": "awaiting_refresh", "max_wait_s": max_wait,
+                                        "waited_s": 0.0})
+    result = cred.LoginWait(cred.LOGIN_TIMEOUT, 0.0)
+    try:
+        result = cred.await_login_margin(margin, max_wait_s=max_wait,
+                                         poll_s=cred.login_refresh_poll_s(), wait=_wait)
+    finally:
+        if review_monitor is not None:
+            review_monitor.started = time.monotonic()  # the stall clock starts after the wait
+            review_monitor.note(login_wait={"state": result.outcome, "max_wait_s": max_wait,
+                                            "waited_s": round(result.waited_s, 1)})
+    return result
+
+
 def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
     """The ONE lifetime a Claude seat's login token must still have when the seat launches
     (plan amendment A1): its leg's hard deadline, or ``PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S``.
@@ -9861,7 +9944,13 @@ def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAutho
     if not brokered:
         return False
     route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True)
-    return route is not None and route.jailed and refusal is None
+    if route is None or not route.jailed or refusal is not None:
+        return False
+    # Plan amendment A3: a short login with no wait allowed runs sealed. (With a wait, the
+    # seat is counted jailed: it runs sealed only if the login is not renewed in time.)
+    return not (leg == "claude" and _seat_credentials.login_refresh_wait_s() == 0
+                and _seat_credentials.login_seconds_left(_claude_seat_login_margin_s(None))
+                is not None)
 
 
 def _dedupe(codes: Sequence[str]) -> tuple[str, ...]:
@@ -10006,6 +10095,32 @@ def _default_spawn(
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
                                     seat_notices=(seat_refusal,))
     jailed = seat_route is not None and seat_route.jailed
+    # Plan amendment A3: a jailed Claude seat whose login is short of the launch margin
+    # waits, read-only, for it to be renewed -- before staging, so no seat id or namespace is
+    # held. A wait that ends short seals the seat; nothing is run to renew the credential.
+    login_wait: "_seat_credentials.LoginWait | None" = None
+    if jailed and leg == "claude":
+        try:
+            login_wait = _await_claude_login(timeout_s, review_monitor, quiescence_latch)
+        except BaseException as exc:
+            if base is not None:
+                shutil.rmtree(base, ignore_errors=True)
+            if isinstance(exc, _seat_credentials.LoginWaitCancelled):
+                raise _ReviewOperationCancelled("review_operation_cancelled") from exc
+            raise
+        if login_wait.outcome in (_seat_credentials.LOGIN_TIMEOUT,
+                                  _seat_credentials.LOGIN_MISSING):
+            sealed = (_CLAUDE_LOGIN_EXPIRING if login_wait.outcome == _seat_credentials.LOGIN_TIMEOUT
+                      else "claude_seat_token_missing")
+            logging.getLogger(__name__).warning(
+                "seat claude [%s]: the login was not renewed within the wait; the seat runs "
+                "sealed (run `claude auth login`, then re-run)", sealed)
+            seat_route = _seat_jail.SeatRoute(False, sealed)
+            seat_notices = [*seat_notices, sealed]
+            jailed = False
+        elif login_wait.outcome == _seat_credentials.LOGIN_REFRESHED:
+            logging.getLogger(__name__).info(
+                "seat claude: jailed (login refreshed) after %d s", int(login_wait.waited_s))
     staged_tree_path: Path | None = None
     # Set only when a sandbox was staged; it is what gates the egress acquisition after
     # the revalidations, so the two decisions stay in one place each.
@@ -10197,6 +10312,10 @@ def _default_spawn(
         # here and thread the deadline down (an explicit override is honored as-is; only
         # the input-scaled default is raised to the _MAX backstop).
         leg_timeout, leg_deadline = _leg_deadline_from(timeout_s, review_dir)
+        if login_wait is not None and login_wait.waited_s and review_monitor is None:
+            # Plan amendment A3: a bounded leg's login wait is charged to its deadline.
+            leg_timeout = max(1, int(leg_timeout - login_wait.waited_s))
+            leg_deadline = max(1, int(leg_deadline - login_wait.waited_s))
         # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
         # path calls the leg execs with their exact prior signatures — existing
         # tests monkeypatch ``_exec_leg`` with a fixed arg list and must keep passing.

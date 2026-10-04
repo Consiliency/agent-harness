@@ -149,8 +149,7 @@ def test_an_override_takes_precedence_over_the_login(monkeypatch, tmp_path):
 
 def test_without_an_override_the_login_is_used(no_override):
     got = sc.resolve_claude_seat_credential(900, now=lambda: 1000.0,
-                                            read_login=lambda: _login(5000.0),
-                                            refresh=pytest.fail)
+                                            read_login=lambda: _login(5000.0))
     assert (got.token, got.source, got.expires_at) == (ACCESS.encode(), sc.SOURCE_LOGIN, 5000.0)
 
 
@@ -160,24 +159,17 @@ def test_neither_source_is_the_missing_notice(no_override):
     assert caught.value.code == "claude_seat_token_missing"
 
 
-def test_a_short_login_is_refreshed_through_the_cli_then_reread(no_override):
-    reads = iter([_login(1500.0), _login(9000.0)])
-    refreshed = []
-    got = sc.resolve_claude_seat_credential(900, now=lambda: 1000.0,
-                                            read_login=lambda: next(reads),
-                                            refresh=lambda: refreshed.append(True))
-    assert refreshed == [True] and got.expires_at == 9000.0
-
-
-@pytest.mark.parametrize("after", [None, 1500.0])
-def test_a_login_still_short_after_the_refresh_is_refused(no_override, after):
-    reads = iter([_login(1500.0), None if after is None else _login(after)])
+def test_a_short_login_at_launch_is_refused_and_nothing_is_run(no_override, monkeypatch):
+    # Plan amendment A3: the launch never renews a credential; the wait (before staging)
+    # is where a short login is given time. At launch it is typed, and sealed by the spawn.
+    monkeypatch.setattr(sc.subprocess, "run", pytest.fail)
+    monkeypatch.setattr(sc.subprocess, "Popen", pytest.fail)
     with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
         sc.resolve_claude_seat_credential(900, now=lambda: 1000.0,
-                                          read_login=lambda: next(reads), refresh=lambda: None)
+                                          read_login=lambda: _login(1500.0))
     assert caught.value.code == "claude_seat_login_token_expiring"
-    assert caught.value.code not in seat_jail.SEALED_FALLBACK_CODES
-    assert not caught.value.code.startswith("seat_sandbox_")
+    assert caught.value.code in seat_jail.SEALED_FALLBACK_CODES
+    assert not hasattr(sc, "refresh_login_via_cli")
 
 
 def test_a_login_replaced_between_launches_is_read_afresh(no_override):
@@ -186,68 +178,6 @@ def test_a_login_replaced_between_launches_is_read_afresh(no_override):
     store["token"] = sc.LoginToken(b"fake-login-access-" + b"b" * 24, 9000.0)  # another subscription
     second = sc.resolve_claude_seat_credential(900, now=lambda: 1000.0, read_login=lambda: store["token"])
     assert first.token != second.token and second.token.endswith(b"b" * 24)
-
-
-def test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded(monkeypatch):
-    seen = {}
-
-    def run(argv, **kwargs):
-        seen.update(argv=argv, **kwargs)
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(sc.shutil, "which", lambda name, path=None: "/opt/bin/claude")
-    sc.refresh_login_via_cli(run=run)
-    assert seen["argv"] == ["/opt/bin/claude", "--setting-sources", "", "auth", "status",
-                            "--json"]
-    assert seen["stdout"] is subprocess.DEVNULL and seen["stderr"] is subprocess.DEVNULL
-    # agent-harness#1147: the host CLI runs with its scratch decided, never an inherited env.
-    from phase_loop_runtime import sandbox_policy
-
-    assert sandbox_policy.decided_scratch(seen["env"]) == sandbox_policy.CHILD_SCRATCH_RELOCATE
-
-
-def _hostile_repo_and_fake_cli(monkeypatch, tmp_path):
-    """A reviewed tree with a hostile project config, the temp variables pointing into it,
-    and a fake `claude` that records where it ran and refreshes the store it was given."""
-    repo = tmp_path / "reviewed-tree"
-    (repo / ".claude").mkdir(parents=True)
-    (repo / ".claude" / "settings.json").write_text('{"apiKeyHelper": "echo hostile"}')
-    (repo / "tmp").mkdir()
-    for name in ("TMPDIR", "TEMP", "TMP"):
-        monkeypatch.setenv(name, str(repo / "tmp"))
-    monkeypatch.setattr(sc.tempfile, "tempdir", None)        # re-read the ambient temp root
-    record = tmp_path / "seen"
-    claude = tmp_path / "bin" / "claude"
-    claude.parent.mkdir()
-    claude.write_text("#!/bin/sh\n"
-                      f"{{ pwd; echo \"$*\"; ls -A; }} > {record}\n"
-                      'echo refreshed > "$CLAUDE_CONFIG_DIR/.credentials.json"\n')
-    claude.chmod(0o755)
-    monkeypatch.chdir(repo)
-    monkeypatch.setattr(sc.shutil, "which", lambda name, path=None: str(claude))
-    return repo, record
-
-
-def test_the_refresh_never_runs_in_the_reviewed_tree(monkeypatch, tmp_path):
-    # A board runs from the reviewed tree, whose temp variables may point into it too.
-    repo, record = _hostile_repo_and_fake_cli(monkeypatch, tmp_path)
-    store = sc.claude_config_dir() / ".credentials.json"
-    sc.refresh_login_via_cli()
-    cwd, argv, *listing = record.read_text().splitlines()
-    assert not Path(cwd).resolve().is_relative_to(repo.resolve())
-    assert Path(cwd).resolve().is_relative_to(seat_jail.state_home().resolve())
-    assert listing == []                      # a fresh empty directory
-    assert not Path(cwd).exists()             # removed afterwards
-    assert argv == "--setting-sources  auth status --json"   # no settings at all
-    assert store.read_text() == "refreshed\n"                     # the user's own store
-    assert not any((repo / "tmp").iterdir())
-
-
-def test_a_state_root_inside_the_working_directory_skips_the_refresh(monkeypatch, tmp_path):
-    repo, record = _hostile_repo_and_fake_cli(monkeypatch, tmp_path)
-    monkeypatch.setattr(seat_jail, "state_home", lambda: repo / "state")
-    sc.refresh_login_via_cli()
-    assert not record.exists()                # the re-read decides; nothing ran in the tree
 
 
 @pytest.mark.parametrize("env, deadline, expected", [

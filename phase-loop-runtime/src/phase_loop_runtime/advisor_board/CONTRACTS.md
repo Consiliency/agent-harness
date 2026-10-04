@@ -1081,10 +1081,23 @@ are recorded on agent-harness#1132.
 
   - **The login token's margin:** it must have the seat's hard deadline (its explicit
     per-leg timeout, else the 1800 s backstop) or `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`
-    left. Otherwise the host runs `claude auth status` once and re-reads. If it is still
-    short, the leg is refused with `claude_seat_login_token_expiring`. One function
-    (`_claude_seat_login_margin_s`) gives this margin to both the pre-launch seat mode and
-    the launch, so a seat shown as `jailed` is never refused at launch for its margin.
+    left. One function (`_claude_seat_login_margin_s`) gives this margin to the pre-launch
+    seat mode, the wait and the launch.
+  - **A short login (plan amendment A3):** the harness never runs the Claude CLI to renew a
+    credential. The mode line carries `claude_seat_login_token_awaiting_refresh` with the
+    minutes left. Before staging, and before any seat id or namespace is held, the seat
+    waits: `seat_credentials.await_login_margin` reads the store read-only every
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S` (30 s), for up to
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (900 s; 0 means no wait).
+    - **Renewed:** the seat runs jailed (logged `jailed (login refreshed)`), re-reading the
+      token at launch.
+    - **Not renewed in time:** the seat runs sealed with `claude_seat_login_token_expiring`.
+      A store that stops yielding a login seals it with `claude_seat_token_missing`. It is
+      never refused.
+    - **Monitoring:** under `heartbeat_only` the wait is recorded as `login_wait` in the
+      monitoring record, not as a stall, and the stall clock starts after it. Under a
+      bounded policy it is charged to the leg's deadline. The monitor's cancel event and the
+      quiescence latch end it.
   - **Delivery:** either credential is delivered only through one drained pipe named by
     `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`. No credential is in any argv, environment
     value, evidence or log.

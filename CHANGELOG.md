@@ -78,8 +78,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **The credential:** only the current login's access token, read fresh from the CLI's
     own store at each launch (the file store, or the Keychain on macOS), over the same
     drained pipe. The seat-token file becomes an optional override that takes precedence.
-  - **A short token:** the host asks the CLI (`claude auth status`) to refresh it, and
-    otherwise refuses with `claude_seat_login_token_expiring`.
+  - **A short token (plan amendment A3):** the harness never runs the Claude CLI to renew
+    it. The seat's mode line says it is waiting (`claude_seat_login_token_awaiting_refresh`,
+    with the minutes left). The seat waits, reading the store read-only every 30 s
+    (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`), for up to `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S`
+    (default 900 s; 0 means no wait), and other seats are not held. Renewed, it runs jailed.
+    Otherwise it runs sealed with `claude_seat_login_token_expiring` (fix: `claude auth
+    login`, then re-run); the board is never refused.
   - **A token that expires during a run** is `claude_seat_login_token_expired`, safe to
     relaunch.
   - **The login's own notices:** rate-limit and rejection have their own login notices.
@@ -103,9 +108,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   launched with the decided env, and the seat's own `TMPDIR` and `CLAUDE_CODE_TMPDIR` are
   `/seat/home/.tmp` (its home, on the disk-backed staging root), not the jail's tmpfs
   `/tmp`. This changes the jail profile digest, so a host re-qualifies once on first use.
-- The host-side login refresh runs from a neutral directory under the per-user state root,
-  loads no settings, and does not run when the CLI's config root is inside the working
-  directory.
 - The jailed seat's identity probe lists its descriptors from a child process, not a shell
   pipeline, so a correctly confined seat is no longer refused intermittently.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed

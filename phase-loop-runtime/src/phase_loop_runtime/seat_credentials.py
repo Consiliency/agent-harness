@@ -10,29 +10,28 @@ Resolved afresh at every jailed launch, in this order:
 
 The login store is the CLI's: ``$CLAUDE_CONFIG_DIR/.credentials.json`` (else
 ``~/.claude/.credentials.json``) on Linux, WSL and Windows, and the login Keychain on macOS.
-A login token whose remaining lifetime is below the margin is refreshed on the HOST, only
-through the CLI's own ``claude auth status``; if it is still short, the launch is refused
-with ``claude_seat_login_token_expiring``. This module never uses a refresh token itself.
+A login token whose remaining lifetime is below the margin is never renewed here: the
+harness does not run the Claude CLI for credentials (plan amendment A3). The seat waits,
+reading the store read-only (:func:`await_login_margin`), for the login to be renewed by its
+owner; a wait that ends short seals the seat. This module never uses a refresh token.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import sandbox_policy, seat_jail
+from . import seat_jail
 
 SOURCE_OVERRIDE = "seat_token"
 SOURCE_LOGIN = "login"
@@ -44,7 +43,12 @@ DEFAULT_MARGIN_S = 900
 
 _STORE_CAP_BYTES = 1 << 20
 _KEYCHAIN_SERVICE = "Claude Code-credentials"
-_REFRESH_TIMEOUT_S = 60
+#: Plan amendment A3: how long a seat waits for a short login to be renewed (0: no wait),
+#: and how often the store is re-read meanwhile.
+WAIT_ENV = "PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S"
+DEFAULT_WAIT_S = 900
+POLL_ENV = "PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S"
+DEFAULT_POLL_S = 30
 
 
 @dataclass(frozen=True)
@@ -172,98 +176,6 @@ def read_login_token(**store_kwargs: object) -> LoginToken | None:
 # Refresh through the CLI, and the resolution order.
 # --------------------------------------------------------------------------------------
 
-def _refresh_parent() -> Path | None:
-    """A private directory for the login refresh's working directory, chosen independently
-    of the ambient temp variables: ``phase-loop/login-refresh`` under the per-user state
-    root, every component created 0700 and owned by this account
-    (``sandbox_policy._private``). ``None`` when it cannot be made, or when it would lie
-    inside this process's working directory (a board runs from the reviewed tree)."""
-    base = seat_jail.state_home()
-    parent = base / "phase-loop" / "login-refresh"
-    if not sandbox_policy._private(parent, base):
-        return None
-    try:
-        here = Path.cwd().resolve()
-        resolved = parent.resolve()
-    except OSError:
-        return None
-    if resolved == here or here in resolved.parents:
-        return None
-    return parent
-
-
-#: Why a login refresh did not run (it is never an error: the re-read decides).
-REFRESH_NO_CLI = "login_refresh_no_cli"
-REFRESH_NO_PRIVATE_DIR = "login_refresh_no_private_dir"
-REFRESH_CONFIG_IN_WORKING_TREE = "login_refresh_config_root_in_working_tree"
-REFRESH_FAILED = "login_refresh_failed"
-
-
-def _inside(path: Path, here: Path) -> bool:
-    return path == here or here in path.parents
-
-
-def _refresh_env(base: Mapping[str, str]) -> "tuple[dict[str, str] | None, str | None]":
-    """The env the refresh runs with, or ``(None, reason)``. The CLI's effective config root
-    (``CLAUDE_CONFIG_DIR``, else ``$HOME/.claude``) and its credential store must not
-    resolve (symlinks followed) into this process's working directory: a board runs from
-    the reviewed tree, so a root there is repository-controlled. The verified roots are
-    passed explicitly. ``CLAUDE_CONFIG_DIR`` is set only when it was set: setting it would
-    move the CLI's global config, and on macOS its Keychain item name."""
-    env = dict(base)
-    try:
-        here = Path.cwd().resolve()
-        configured = env.get("CLAUDE_CONFIG_DIR")
-        home = Path(env.get("HOME") or Path.home())
-        root = Path(configured) if configured else home / ".claude"
-        if not root.is_absolute():
-            return None, REFRESH_CONFIG_IN_WORKING_TREE
-        resolved = root.resolve()
-        store = (root / ".credentials.json").resolve()
-    except (OSError, RuntimeError):
-        return None, REFRESH_CONFIG_IN_WORKING_TREE
-    if _inside(resolved, here) or _inside(store, here):
-        return None, REFRESH_CONFIG_IN_WORKING_TREE
-    if configured:
-        env["CLAUDE_CONFIG_DIR"] = str(resolved)
-    else:
-        env["HOME"] = str(home.resolve())
-    return env, None
-
-
-def refresh_login_via_cli(run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
-                          ) -> str | None:
-    """Ask the CLI to bring its login up to date, on the host. Its output (which names the
-    account) is discarded. Returns ``None`` when the refresh ran, else why it did not (one
-    of the ``REFRESH_*`` reasons, logged); neither is an error here, the re-read decides.
-
-    It runs from a fresh empty directory under :func:`_refresh_parent`, loads NO settings
-    (``--setting-sources ""``, as the brokered seat does), and gets the verified config
-    root from :func:`_refresh_env`, after the agent-harness#1147 scratch decision. The
-    login store it reads and writes is the user's (``CLAUDE_CONFIG_DIR`` or ``~/.claude``)."""
-    log = logging.getLogger(__name__)
-    claude = shutil.which("claude")
-    if claude is None:
-        return REFRESH_NO_CLI
-    env, refused = _refresh_env(os.environ)
-    if env is None:
-        log.warning("Claude login refresh not run: %s", refused)
-        return refused
-    parent = _refresh_parent()
-    if parent is None:
-        log.warning("Claude login refresh not run: %s", REFRESH_NO_PRIVATE_DIR)
-        return REFRESH_NO_PRIVATE_DIR
-    try:
-        with tempfile.TemporaryDirectory(prefix="refresh-", dir=parent) as neutral:
-            run([claude, "--setting-sources", "", "auth", "status", "--json"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                timeout=_REFRESH_TIMEOUT_S, check=False, cwd=neutral,
-                env=sandbox_policy.child_scratch_env(env, sandbox_policy.CHILD_SCRATCH_RELOCATE))
-    except (OSError, subprocess.SubprocessError):
-        return REFRESH_FAILED
-    return None
-
-
 def login_margin_s(deadline_s: float | None = None, env: Mapping[str, str] | None = None) -> float:
     """The lifetime a login token must still have at launch: ``MARGIN_ENV`` when set to a
     non-negative number, else the leg's deadline, else :data:`DEFAULT_MARGIN_S`."""
@@ -295,23 +207,106 @@ def resolve_claude_seat_credential(
     margin_s: float, *,
     now: Callable[[], float] | None = None,
     read_login: Callable[[], LoginToken | None] | None = None,
-    refresh: Callable[[], object] | None = None,
 ) -> SeatCredential:
     """The credential for ONE launch. Raises ``SeatSandboxRefused`` with exactly one notice
     code: ``seat_sandbox_refused:token_file_unsafe`` (an unsafe override),
-    ``claude_seat_token_missing`` (neither source), or ``claude_seat_login_token_expiring``."""
+    ``claude_seat_token_missing`` (neither source), or ``claude_seat_login_token_expiring``
+    (a login with less than ``margin_s`` left; nothing is run to renew it)."""
     now = now or time.time
     read_login = read_login or read_login_token
-    refresh = refresh or refresh_login_via_cli
     if override_present():
         return SeatCredential(seat_jail.read_claude_seat_token(), SOURCE_OVERRIDE)
     login = read_login()
     if login is None:
         raise seat_jail.SeatSandboxRefused("claude_seat_token_missing")
     if login.expires_at is not None and login.expires_at - now() < margin_s:
-        refresh()
-        login = read_login()
-        if login is None or (login.expires_at is not None
-                             and login.expires_at - now() < margin_s):
-            raise seat_jail.SeatSandboxRefused("claude_seat_login_token_expiring")
+        raise seat_jail.SeatSandboxRefused("claude_seat_login_token_expiring")
     return SeatCredential(login.token, SOURCE_LOGIN, login.expires_at)
+
+
+# --------------------------------------------------------------------------------------
+# Plan amendment A3: wait, read-only, for a short login to be renewed by its owner.
+# --------------------------------------------------------------------------------------
+
+#: The outcomes of :func:`await_login_margin`.
+LOGIN_READY = "ready"          # an override, or a login already clearing the margin
+LOGIN_REFRESHED = "refreshed"  # a renewed login cleared the margin during the wait
+LOGIN_TIMEOUT = "timeout"      # still short when the wait ended (or no wait allowed)
+LOGIN_MISSING = "missing"      # the store yielded no login (at the start or mid-wait)
+
+
+def _seconds_env(name: str, default: float, env: Mapping[str, str] | None) -> float:
+    env = os.environ if env is None else env
+    try:
+        value = float(env.get(name, ""))
+    except ValueError:
+        return float(default)
+    return value if value >= 0 else float(default)
+
+
+def login_refresh_wait_s(env: Mapping[str, str] | None = None) -> float:
+    """``WAIT_ENV`` seconds when set to a non-negative number, else :data:`DEFAULT_WAIT_S`."""
+    return _seconds_env(WAIT_ENV, DEFAULT_WAIT_S, env)
+
+
+def login_refresh_poll_s(env: Mapping[str, str] | None = None) -> float:
+    """``POLL_ENV`` seconds when set to a positive number, else :data:`DEFAULT_POLL_S`."""
+    value = _seconds_env(POLL_ENV, DEFAULT_POLL_S, env)
+    return value if value > 0 else float(DEFAULT_POLL_S)
+
+
+def login_seconds_left(margin_s: float, *, now: Callable[[], float] | None = None,
+                       read_login: Callable[[], LoginToken | None] | None = None,
+                       ) -> float | None:
+    """Read-only preflight: the seconds left on a login that is SHORT of ``margin_s``, or
+    ``None`` when the seat needs no wait (an override, no login, no expiry, or enough)."""
+    if override_present():
+        return None
+    login = (read_login or read_login_token)()
+    if login is None or login.expires_at is None:
+        return None
+    left = login.expires_at - (now or time.time)()
+    return left if left < margin_s else None
+
+
+@dataclass(frozen=True)
+class LoginWait:
+    outcome: str
+    waited_s: float
+
+
+def await_login_margin(
+    margin_s: float, *,
+    max_wait_s: float,
+    poll_s: float,
+    wait: Callable[[float], bool],
+    now: Callable[[], float] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    read_login: Callable[[], LoginToken | None] | None = None,
+) -> LoginWait:
+    """Wait for the login to clear ``margin_s``, reading the store read-only and running
+    nothing. ``wait(seconds)`` sleeps and returns True when the wait was cancelled, which
+    raises :class:`LoginWaitCancelled`. Returns the outcome and the seconds waited."""
+    now = now or time.time
+    monotonic = monotonic or time.monotonic
+    read_login = read_login or read_login_token
+    if override_present():
+        return LoginWait(LOGIN_READY, 0.0)
+    start = monotonic()
+    waited = False
+    while True:
+        login = read_login()
+        if login is None:
+            return LoginWait(LOGIN_MISSING, monotonic() - start)
+        if login.expires_at is None or login.expires_at - now() >= margin_s:
+            return LoginWait(LOGIN_REFRESHED if waited else LOGIN_READY, monotonic() - start)
+        remaining = max_wait_s - (monotonic() - start)
+        if remaining <= 0:
+            return LoginWait(LOGIN_TIMEOUT, monotonic() - start)
+        if wait(min(poll_s, remaining)):
+            raise LoginWaitCancelled("review_operation_cancelled")
+        waited = True
+
+
+class LoginWaitCancelled(RuntimeError):
+    """The board was cancelled while a seat waited for its login to be renewed."""

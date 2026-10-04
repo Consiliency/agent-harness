@@ -579,10 +579,12 @@ def test_a_rate_limited_login_names_the_subscription(monkeypatch, tmp_path):
 
 def test_no_credential_outcome_is_a_jail_refusal():
     for code in ("claude_seat_login_rate_limited", "claude_seat_login_rejected",
-                 "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
+                 "claude_seat_login_token_expired",
                  "claude_seat_token_rate_limited", "claude_seat_token_rejected"):
         assert code in seat_jail.NOTICE_CODES and not code.startswith("seat_sandbox_")
         assert code not in seat_jail.SEALED_FALLBACK_CODES
+    # Plan amendment A3: a login not renewed within the wait seals the seat.
+    assert "claude_seat_login_token_expiring" in seat_jail.SEALED_FALLBACK_CODES
 
 
 # --------------------------------------------------------------------------------------
@@ -603,8 +605,8 @@ def _route(leg, **_k):
     return None
 
 
-def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=None):
-    from phase_loop_runtime import seat_credentials
+def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=None,
+           seconds_left=None):
     from phase_loop_runtime import seat_jail_autoqualify as aq
 
     monkeypatch.setattr(pi._seat_jail, "decide_seat_route", route)
@@ -618,12 +620,17 @@ def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=No
 
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", _ensure)
 
+    # `credential`: None (a login; `seconds_left` set = short of the margin), a code (an
+    # override the launch would refuse), or a SeatCredential (an override).
     def _resolve(margin_s, **_k):
         if isinstance(credential, str):
             raise seat_jail.SeatSandboxRefused(credential)
-        return credential or seat_credentials.SeatCredential(b"x", "login", 9e9)
+        return credential
 
+    monkeypatch.setattr(pi._seat_credentials, "override_present", lambda: credential is not None)
     monkeypatch.setattr(pi._seat_credentials, "resolve_claude_seat_credential", _resolve)
+    monkeypatch.setattr(pi._seat_credentials, "login_seconds_left",
+                        lambda margin_s, **_k: seconds_left)
     return pi._seat_launch_modes(
         _mode_board(), mode="review",
         review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
@@ -644,11 +651,29 @@ def test_seat_modes_name_every_route_before_launch(monkeypatch):
 
 
 def test_a_seat_that_will_be_refused_is_degraded_with_its_fix(monkeypatch):
-    modes = _modes(monkeypatch, credential="claude_seat_login_token_expiring")
+    code = "seat_sandbox_refused:token_file_unsafe"      # an override the launch refuses
+    modes = _modes(monkeypatch, credential=code)
     claude = next(m for m in modes if m.leg == "claude")
-    assert (claude.mode, claude.code, claude.credential) == (
-        "degraded", "claude_seat_login_token_expiring", None)
-    assert claude.fix == seat_jail.NOTICES["claude_seat_login_token_expiring"][2] and claude.fix
+    assert (claude.mode, claude.code, claude.credential) == ("degraded", code, None)
+    assert claude.fix == seat_jail.NOTICES[code][2] and claude.fix
+
+
+def test_a_short_login_is_announced_as_awaiting_its_renewal(monkeypatch):
+    # Plan amendment A3: the mode line says the seat waits, how long is left, and the fix.
+    monkeypatch.setenv(pi._seat_credentials.WAIT_ENV, "900")
+    claude = next(m for m in _modes(monkeypatch, seconds_left=420) if m.leg == "claude")
+    code = "claude_seat_login_token_awaiting_refresh"
+    assert (claude.mode, claude.code, claude.credential) == ("jailed", code, "login")
+    assert "expires in 7m" in claude.why and "900 s" in claude.why
+    assert claude.fix == seat_jail.NOTICES[code][2] == "use Claude or run `claude auth login`"
+    assert code in claude.render() and claude.as_json()["code"] == code
+
+
+def test_a_short_login_with_no_wait_allowed_is_a_sealed_mode(monkeypatch):
+    monkeypatch.setenv(pi._seat_credentials.WAIT_ENV, "0")
+    claude = next(m for m in _modes(monkeypatch, seconds_left=420) if m.leg == "claude")
+    assert (claude.mode, claude.code) == ("sealed", "claude_seat_login_token_expiring")
+    assert claude.fix == "run `claude auth login`, then re-run"
 
 
 def test_a_failed_first_use_qualification_is_a_loud_sealed_mode(monkeypatch):
@@ -737,7 +762,6 @@ def _login_store(monkeypatch, tmp_path, seconds_left: float):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-without-override"))
     monkeypatch.delenv(seat_credentials.MARGIN_ENV, raising=False)
     monkeypatch.setattr(seat_credentials.time, "time", lambda: _NOW)
-    monkeypatch.setattr(seat_credentials, "refresh_login_via_cli", lambda: None)
 
 
 def _launch_outcome(monkeypatch, tmp_path, timeout_s):
@@ -760,11 +784,13 @@ def _launch_outcome(monkeypatch, tmp_path, timeout_s):
     raise AssertionError("unreachable")
 
 
+@pytest.mark.parametrize("wait_s", ["900", "0"])
 @pytest.mark.parametrize("seconds_left", [600, 1200, 2400])
 @pytest.mark.parametrize("timeout_s", [None, 300, 2100])
 def test_the_seat_mode_and_the_launch_agree_on_the_login_margin(monkeypatch, tmp_path,
-                                                                seconds_left, timeout_s):
+                                                                seconds_left, timeout_s, wait_s):
     _login_store(monkeypatch, tmp_path, seconds_left)
+    monkeypatch.setenv(pi._seat_credentials.WAIT_ENV, wait_s)
     monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _route)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
@@ -778,8 +804,12 @@ def test_the_seat_mode_and_the_launch_agree_on_the_login_margin(monkeypatch, tmp
     if refused is None:
         assert (claude.mode, claude.code) == ("jailed", None)
     else:
+        # Plan amendment A3: short for the launch -> the mode says it waits for the login
+        # to be renewed, or (no wait allowed) that the seat runs sealed.
         assert refused == "claude_seat_login_token_expiring"
-        assert (claude.mode, claude.code) == ("degraded", refused)
+        assert (claude.mode, claude.code) == (
+            ("jailed", "claude_seat_login_token_awaiting_refresh") if wait_s != "0"
+            else ("sealed", refused))
 
 
 def test_the_launch_margin_is_the_legs_hard_deadline(monkeypatch):
