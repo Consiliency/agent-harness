@@ -40,7 +40,7 @@ For every seat, whatever its harness, the resolver tries these in order:
    - **E2B cloud** (#896 plan 4 = agent-harness#1165).
 
    They are tried in the order of a harness-agnostic config list,
-   `[seat_route] remote_backends`. Default `["self-hosted", "e2b"]`, decision R1.
+   `[seat_route] remote_backends`. The default is `["self-hosted", "e2b"]` (ruled R1): the fleet tailnet/LAN host first, then E2B.
 3. **Host-native fill:** the **host** harness fills the seat with its own sub-agent
    mechanism, with tools, whatever that host is (a Claude Code `Task`, a Codex
    `spawn_agent`, and so on). The seat is labelled a stand-in for its vendor and the
@@ -266,7 +266,7 @@ No existing home: #1166's `decide_seat_route` handles only the jail.
   - It is harness-agnostic. A backend's own eligibility (for example E2B's `eligible_legs`)
     is that backend's `available()` answer, not a branch in the resolver.
 - `[seat_route] remote_backends` — add, in `advisor_board/config.py` — a closed-value list of
-  names (`self-hosted`, `e2b`). The default is decision R1.
+  names (`self-hosted`, `e2b`). The default is `["self-hosted", "e2b"]` (ruled R1).
 - `SeatCredentialSource` (a Protocol) and `ClaudeLoginCredentialSource` (an adapter over
   #1166's `seat_credentials`) — add.
 - `detect_host_harness(env)` — add — returns a `HostContext` from the existing signatures.
@@ -304,6 +304,9 @@ No existing home: #1166's `decide_seat_route` handles only the jail.
 - `_publish_seat_modes` (#1166) — build the modes from the resolver, so every seat's step,
   stand-in label and fix print before the first spawn.
 - `invoke_panel` / `invoke_panel_request` — use the same resolver.
+- Seat evidence — add `placement` to each remote-placed leg: `backend`, `sandbox_id`,
+  `created_at`, `confirmed_killed_at` and `duration_s`, taken from the #896 `ExecResult` and
+  lease. This makes E2B spend auditable (R2). It is metadata only, not a new status.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py` (modify)
 
@@ -386,6 +389,13 @@ PR-A changes no quorum rule:
 
 ## Documentation impact
 
+- `docs/advisor-board-capabilities-card.md` — add a "Remote seats" entry (R2):
+  - the `remote_backends` order;
+  - that E2B costs money per sandbox-second and has no runtime cap;
+  - that the operator's guard is the E2B dashboard's spending-limits page and prepaid
+    credits;
+  - where the per-sandbox duration is recorded in the evidence.
+
 - `advisor_board/CONTRACTS.md`:
   - add the section "Seat route resolver (agent-harness#1244)": the chain, the notice codes,
     the detail template and `remote_backends`;
@@ -412,7 +422,7 @@ PR-A changes no quorum rule:
 ## Dependencies & order
 
 1. agent-harness#1222, then agent-harness#1166, land.
-2. D1–D6 and S1–S3 are ruled. R1 gates PR-A's default config only. S4 gates the tooled Gemini seat, and R2 gates E2B use.
+2. D1–D6, S1–S3, R1 and R2 are ruled. Only S4 is open, and it gates only the tooled Gemini seat.
 3. Within PR-A: notice codes → `seat_route.py` and its test → panel_invoker wiring →
    cli/president → docs.
 
@@ -453,6 +463,9 @@ Mutation receipts: one per step, one for the sealed guard, and one for host dete
   step.
 - [ ] Every seat's mode is in `seat-modes.json` and on stderr before the first spawn, and the
   president brief carries the same routes.
+- [ ] An E2B-placed seat's evidence carries its sandbox duration (created and
+  confirmed-killed times, seconds). With no `[e2b]` cap keys set, E2B is still available.
+  Both are proven with a fake E2B backend.
 - [ ] `remote_backends` is walked in config order, and an unavailable backend's
   `PlacementUnavailable` code is recorded in `tried`. Proven with fake self-hosted and e2b
   backends.
@@ -481,14 +494,25 @@ Mutation receipts: one per step, one for the sealed guard, and one for host dete
   agent-harness#1170 is superseded, and its requirements are the check.
 - **D6:** codex and grok keep their tool-enabled staged route until srt covers them. Nothing
   regresses to toolless.
+- **R1:** the default is `[seat_route] remote_backends = ["self-hosted", "e2b"]`: the fleet
+  tailnet/LAN host first, then E2B.
+- **R2:** E2B gets **no runtime spending caps** for now. The operator's guard is E2B's
+  account-side controls: prepaid credits, monthly overage billing with a payment method on
+  file, the dashboard "spending limits" budget page, and an account that is blocked once
+  credits run out with no payment method. Consequences:
+  - PR-A ships no default caps and does **not** keep E2B unavailable pending caps.
+  - This amends agent-harness#896 plan 4a1. That plan lists the CD3 caps
+    (`max_concurrent_per_run`, `max_seconds_per_run`, `max_seconds_per_day`) as required
+    `[e2b]` keys. Under R2 they become optional, and unset means no runtime cap. The
+    amendment is recorded on plan 4 when 4a1 is implemented, not restated here.
+  - Plan 4's per-sandbox TTL (`tier_max_lifetime_s`, `lease_ttl_s`) stays, as a **liveness
+    bound, not a budget**.
+  - Every E2B seat records its sandbox duration in the evidence (backend, sandbox id, created
+    and confirmed-killed times, seconds), so spend is auditable.
+  - The account-side spending limit is documented as the operator's guard in
+    `docs/advisor-board-capabilities-card.md`.
 
 **Open:**
-- **R1:** the default `remote_backends` order. Recommended: `["self-hosted", "e2b"]`, so the
-  free fleet host comes before paid cloud.
-- **R2:** E2B budget caps. Plan 4a1 ships no default numbers for `max_concurrent_per_run`,
-  `max_seconds_per_run`, `max_seconds_per_day` or `tier_max_lifetime_s` (3600 or 86400), and
-  E2B has no usage API, so the console spending limit is the backstop. Choose the defaults.
-  Recommended: E2B stays unavailable until every cap is set.
 - **S4 (new):** if srt's CONNECT proxy cannot refuse a request that names a different host
   inside TLS (SNI or Host) through an allowed CONNECT, choose between (a) srt's experimental
   TLS termination for the Gemini seat, and (b) keeping Gemini on step 2 (E2B's native SNI
@@ -498,7 +522,7 @@ Mutation receipts: one per step, one for the sealed guard, and one for host dete
 
 - **PR-B:** a detailed plan for the srt local backend: macOS first, then the Linux conformance suite (S1), then Gemini egress against the #1170 checks (S3). Close agent-harness#1170 as superseded. It covers config generation from the
   seat's staged tree and egress allowlist, the per-OS prerequisite checks (bwrap, socat,
-  ripgrep and the userns sysctl; Seatbelt; the Windows install), and qualification.
+  ripgrep and the userns sysctl; Seatbelt), and qualification. Windows is out until srt leaves alpha (S2).
 - Credential-source adapters for codex, gemini/agy, grok and the omnigent harnesses.
 - A native-subagent capability probe per harness for opencode, pi, cursor and gemini.
 - agent-harness#896 plans 1a, 1b, then 3 and 4a1 → 4a2 → 4b (agent-harness#1165), in
