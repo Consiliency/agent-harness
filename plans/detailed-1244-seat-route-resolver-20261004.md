@@ -87,30 +87,56 @@ docs.
 | E2B runtime (self-host) | Linux + KVM | no | no | unverified | yes | yes (nftables plus SNI/Host) | yes | Apache-2.0 | active | high; already planned as agent-harness#896 cloud (agent-harness#1165) |
 | Daytona | — | — | — | — | — | — | — | unclear | **repository archived 2026-10-03** | out |
 
-**Recommendation: `srt` is the one local sandbox on every OS** (decision S1). It is the only
-maintained, standalone and harness-neutral candidate that covers Linux, macOS and Windows
-without a container or VM, and that has both a filesystem allowlist and a domain egress
-allowlist.
-- **Linux:** it is bubblewrap, the same primitive as our jail (agent-harness#1166 and
-  agent-harness#1222), so it fits the launch owner rather than replacing it.
-- **Egress:** its proxy is deny-by-default, with a domain allowlist and a refusal of
-  loopback and metadata addresses. That is the agent-harness#1170 shape, so the Gemini
-  seat's egress question becomes configuration (decision S3).
-- **Rejected alternatives:**
-  - Codex's sandbox is equivalent, but it ships inside one vendor's CLI.
-  - bubblewrap, nsjail, gVisor, Kata and Firecracker have no domain allowlist and are
-    Linux-only.
-  - Containers and VMs carry the highest install friction.
+**Ruled (S1–S3, 2026-10-04): `srt` is the adopted local sandbox, introduced OS by OS.** It is
+the only maintained, standalone and harness-neutral candidate that covers Linux, macOS and
+Windows without a container or VM, and that has both a filesystem allowlist and a domain
+egress allowlist. Codex's sandbox is equivalent, but it ships inside one vendor's CLI.
+bubblewrap, nsjail, gVisor, Kata and Firecracker have no domain allowlist and run only on
+Linux. Containers and VMs carry the most install friction.
 
-**Fallbacks:**
-- **Windows:** `srt` is **alpha** there. It needs one elevated install, and it cannot open
-  CLIs installed per user (nvm, Scoop, `pip --user`). It is the one local option to try.
-  Where it is unusable, the seat goes to step 2: a tailnet or LAN host via agent-harness#896
-  plan 3. microsandbox, which needs a microVM, is the alternative if a VM is acceptable
-  (decision S2).
-- **macOS:** `srt` uses Seatbelt. Where that fails, the seat goes to step 2.
-- **Linux without user namespaces** (for example Ubuntu 24.04+ with
-  `apparmor_restrict_unprivileged_userns=1`): step 2, with the sysctl named as the fix.
+| OS | Step 1, local sandbox | Rule |
+|---|---|---|
+| **macOS** | **srt first** (Seatbelt) | S1. Where srt is unusable, go to step 2. |
+| **Linux** | **agent-harness#1166's jail stays** until srt passes the Linux conformance suite below; then srt replaces it | S1 |
+| **Windows** | **none yet**: seats go to step 2 (tailnet/LAN via #896 plan 3, or E2B). There is no Windows-specific sandbox work. Revisit srt when its Windows support leaves alpha. | S2 |
+| Linux without user namespaces (e.g. Ubuntu 24.04+ with `apparmor_restrict_unprivileged_userns=1`) | none: step 2, with the sysctl named as the fix | — |
+
+**Linux conformance suite (S1, a gate in PR-B).** srt must pass this suite before it replaces
+the jail. The suite runs the same probes against both #1166's jail and srt, and srt must
+match the jail on every row:
+- **Capability bounding.** CapBnd is 0 inside the seat, carrying over #1166's invariant and
+  its codex exception unchanged.
+- **Private home.** The seat sees a private `$HOME`, not the host's, and no host
+  credential store is readable.
+- **Egress allowlist.** Only the allowlisted hosts answer, measured with real replies.
+- **fd hygiene.** No inherited host fds beyond stdio and the declared channels.
+- **uid isolation.** The seat runs under its own uid or namespace mapping, and it cannot
+  signal or ptrace host processes.
+- **No host-path leaks.** Only the staged tree and declared paths are visible. Host paths
+  are absent from the environment, `/proc/self/mounts` and error text.
+
+Each row has a mutation that turns it red, such as removing a bind-mount restriction or
+widening the allowlist.
+
+**Egress: srt's proxy for every seat that needs network (ruled S3; supersedes
+agent-harness#1170).** srt's proxy is deny-by-default, with a domain allowlist and a refusal of
+loopback and metadata addresses. It is the egress layer for every networked seat, including
+a tooled Gemini seat. agent-harness#1170 is superseded, and PR-B closes it with a link. srt's
+proxy is checked against what #1170 required:
+- **(a)** only a short-lived access token enters the sandbox. This holds already on
+  #1166's evidence and is re-checked under srt.
+- **(b)** a containment probe with real replies: the agy inference host is reachable, and
+  every other Google API host on the same front-end addresses is refused. This includes a
+  request that tunnels through an allowed host but names another host inside TLS (SNI or
+  Host).
+- A mutation that widens the allowlist, or allows direct egress, turns the probe red.
+- The proxy runs outside the seat, holds no credentials, and the seat cannot reconfigure it.
+- The allowlist is measured from agy's real traffic, pinned as config, and not specific to
+  the fleet.
+
+If (b)'s inner-host row fails with srt's plain CONNECT proxy, the Gemini seat stays at
+step 2 (E2B filters by SNI natively). The other option is srt's experimental TLS
+termination. That choice is the new open decision S4.
 
 **Credentials (generic):**
 - A `SeatCredentialSource` interface: `harness`, `kind` (`short_lived_login_token`,
@@ -225,10 +251,14 @@ No existing home: #1166's `decide_seat_route` handles only the jail.
   - `host`: a `HostContext`.
   - `credential`: a `SeatCredentialSource` or None.
 - The interim routes of specific harnesses are kept as inputs, not as branches:
-  - the codex and grok `unconfined` route (tools on the staged tree) counts as a step-1
-    outcome until PR-B (decision D6);
-  - gemini skips step 1 with `gemini_seat_egress_unconfined` until srt egress or
-    agent-harness#1170 lands.
+  - **ruled D6:** codex and grok keep their current tool-enabled staged route
+    (`unconfined`) as their step-1 outcome until srt covers them. agent-harness#1222's
+    owner adds namespaces and private homes in the meantime. Nothing regresses to
+    toolless.
+  - Gemini skips step 1 with `gemini_seat_egress_unconfined` until srt's egress proxy
+    passes the #1170 checks above (S3). Until then it goes to steps 2, 3 and 4.
+  - On Windows, every seat skips step 1 with `seat_local_sandbox_unsupported_os` (S2).
+  - On Linux, step 1 is #1166's jail until the conformance suite passes (S1).
 - `remote_sandbox_probe(seat, backends)` — add — walks `[seat_route] remote_backends` in
   order. Each name goes through `sandbox_placement.resolve_backend` and then
   `PlacementBackend.available()`. A `PlacementUnavailable(code)` is recorded in `tried`.
@@ -382,7 +412,7 @@ PR-A changes no quorum rule:
 ## Dependencies & order
 
 1. agent-harness#1222, then agent-harness#1166, land.
-2. D1 to D5 are ruled. D6 and R1 gate PR-A. S1 to S3 gate PR-B, and R2 gates E2B use.
+2. D1–D6 and S1–S3 are ruled. R1 gates PR-A's default config only. S4 gates the tooled Gemini seat, and R2 gates E2B use.
 3. Within PR-A: notice codes → `seat_route.py` and its test → panel_invoker wiring →
    cli/president → docs.
 
@@ -443,25 +473,30 @@ Mutation receipts: one per step, one for the sealed guard, and one for host dete
 - **D5:** non-Linux hosts resolve per seat (agent-harness#1098).
 - **E2B is in this plan:** it is the second remote backend, with plan 4's key custody.
 
+- **S1:** keep agent-harness#1166's Linux jail until srt passes the Linux conformance suite.
+  macOS adopts srt first.
+- **S2:** Windows uses tailnet offload (#896 plan 3) or E2B for now. There is no
+  Windows-specific sandbox work; revisit srt when it leaves alpha.
+- **S3:** srt's egress proxy serves every networked seat, including tooled Gemini.
+  agent-harness#1170 is superseded, and its requirements are the check.
+- **D6:** codex and grok keep their tool-enabled staged route until srt covers them. Nothing
+  regresses to toolless.
+
 **Open:**
-- **S1:** adopt srt as the one local sandbox on every OS (recommended). On Linux, does it
-  replace #1166's bwrap jail, or does the jail stay until a parity check?
-- **S2:** on Windows, srt (alpha) first, or microsandbox (a microVM)?
-- **S3:** use srt's egress proxy for the Gemini seat instead of building agent-harness#1170?
 - **R1:** the default `remote_backends` order. Recommended: `["self-hosted", "e2b"]`, so the
-  free fleet host is tried before paid cloud; alternatively E2B only when no host is
-  configured.
-- **R2:** E2B budget caps. Plan 4a1 ships **no default numbers** for `max_concurrent_per_run`,
-  `max_seconds_per_run`, `max_seconds_per_day` and `tier_max_lifetime_s` (3600 or 86400), and
-  E2B has no usage API, so the console spending limit is the backstop. Choose the default
-  numbers, and decide whether a board may use E2B at all without them set (recommended: E2B
-  stays unavailable until all three caps are set).
-- **D6:** may the codex and grok `unconfined` route (tools, no isolation) remain step 1 until
-  srt covers them?
+  free fleet host comes before paid cloud.
+- **R2:** E2B budget caps. Plan 4a1 ships no default numbers for `max_concurrent_per_run`,
+  `max_seconds_per_run`, `max_seconds_per_day` or `tier_max_lifetime_s` (3600 or 86400), and
+  E2B has no usage API, so the console spending limit is the backstop. Choose the defaults.
+  Recommended: E2B stays unavailable until every cap is set.
+- **S4 (new):** if srt's CONNECT proxy cannot refuse a request that names a different host
+  inside TLS (SNI or Host) through an allowed CONNECT, choose between (a) srt's experimental
+  TLS termination for the Gemini seat, and (b) keeping Gemini on step 2 (E2B's native SNI
+  filter, or a self-hosted host). Recommended: (b) until srt's TLS termination is stable.
 
 ## Follow-ups (separate issues or plans)
 
-- **PR-B:** a detailed plan for the srt local backend. It covers config generation from the
+- **PR-B:** a detailed plan for the srt local backend: macOS first, then the Linux conformance suite (S1), then Gemini egress against the #1170 checks (S3). Close agent-harness#1170 as superseded. It covers config generation from the
   seat's staged tree and egress allowlist, the per-OS prerequisite checks (bwrap, socat,
   ripgrep and the userns sysctl; Seatbelt; the Windows install), and qualification.
 - Credential-source adapters for codex, gemini/agy, grok and the omnigent harnesses.
