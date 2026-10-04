@@ -28,8 +28,14 @@ Environment overrides (all optional):
   scratch is created in. Honoured as given, even on a tmpfs (degraded, with a warning).
   ``TMPDIR`` is deliberately NOT this override: systems commonly point it at a tmpfs.
 * ``PHASE_LOOP_SANDBOX_REFUSE_RAM=1`` -- fail closed: refuse instead of the degraded fallback.
-* ``PHASE_LOOP_SANDBOX_ROOT`` -- the *selected* root (``host:path`` allowed), recorded in the
-  evidence as ``sandbox_root_*``; placement does not consume it yet (agent-harness#896).
+* ``PHASE_LOOP_SANDBOX_ROOT`` -- the *selected* root, recorded in the evidence as
+  ``sandbox_root_*``. A bare path or ``host:path`` is record-only. A URL (``scheme://host/path``)
+  names a placement backend (:mod:`phase_loop_runtime.sandbox_placement`); one with no
+  registered backend is never probed and falls back to local, with the scheme in the reason.
+  Userinfo and the query string are dropped when the value is parsed.
+* ``PHASE_LOOP_SANDBOX_REMOTE_REQUIRED`` -- fail closed: refuse a seat leg that was not placed
+  remotely (:func:`remote_required`). No release has a remote execution driver yet, so with
+  it on every seat leg refuses.
 * ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` -- free-space floor. When set it is used verbatim; the
   default (2 GiB) is lowered to a quarter of a filesystem smaller than 8 GiB, and is a quarter
   of a RAM-backed one.
@@ -72,6 +78,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 import warnings
 import weakref
 
@@ -81,6 +88,7 @@ __all__ = [
     "SandboxSpaceError",
     "EgressPolicy",
     "parse_location",
+    "remote_required",
     "select_sandbox_root",
     "egress_allowlist",
     "configured_root",
@@ -141,8 +149,12 @@ class SandboxSpaceError(RuntimeError):
 class SandboxLocation:
     host: str | None
     path: Path
+    #: ``local``, ``hostpath``, or a URL scheme naming a placement backend.
+    scheme: str = "local"
 
     def __str__(self) -> str:
+        if self.scheme not in ("local", "hostpath"):
+            return f"{self.scheme}://{self.host or ''}{self.path.as_posix()}"
         return f"{self.host}:{self.path}" if self.host else str(self.path)
 
 
@@ -152,22 +164,37 @@ class SandboxRootChoice:
     path: Path
     fell_back: bool
     reason: str = ""
+    scheme: str = "local"
+
+
+_URL_SCHEME = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
 
 
 def parse_location(value: str | os.PathLike[str]) -> SandboxLocation:
-    """Parse a root spec. Bare path -> local; ``host:path`` -> that host.
+    """Parse a root spec. Bare path -> local; ``host:path`` -> that host; a URL -> its scheme.
 
     A Windows drive letter is a path, not a host: splitting on the first colon would read
     ``C:\\work`` as the host ``C``. A single-character prefix is therefore treated as a
     drive, and a value with no colon at all is always local.
+
+    A URL is recognised BEFORE the colon split, which would otherwise read ``https`` as an ssh
+    host. Its userinfo and query string are dropped here, at parse, so a credential in the
+    configured value never reaches ``repr``, ``asdict``, a warning or the evidence.
     """
     text = str(value)
+    url = _URL_SCHEME.match(text)
+    if url is not None:
+        parts = urlsplit(text)
+        host = parts.hostname or ""
+        if parts.port is not None:
+            host = f"{host}:{parts.port}"
+        return SandboxLocation(host or None, Path(parts.path or "/"), url.group(1).lower())
     if ":" not in text:
         return SandboxLocation(None, Path(text))
     head, _, tail = text.partition(":")
     if len(head) <= 1 or not tail:
         return SandboxLocation(None, Path(text))
-    return SandboxLocation(head, Path(tail))
+    return SandboxLocation(head, Path(tail), "hostpath")
 
 
 def _free_bytes(path: str | os.PathLike[str]) -> int:
@@ -250,6 +277,29 @@ def sandbox_enabled() -> bool:
 
 def configured_root() -> str | None:
     return os.environ.get("PHASE_LOOP_SANDBOX_ROOT") or None
+
+
+_REMOTE_REQUIRED_ENV = "PHASE_LOOP_SANDBOX_REMOTE_REQUIRED"
+_ON = frozenset({"1", "true", "yes", "on"})
+_OFF = frozenset({"", "0", "false", "no", "off"})
+
+
+def remote_required() -> bool:
+    """Must a seat leg be placed remotely? Opt-in, and it fails closed.
+
+    Governs seat legs only: every review-mode leg ``_default_spawn`` launches for a board
+    seat, whether or not a tree was authorized (RD3, seats only). An unrecognised value is
+    read as ON, with a warning -- a typo in a fail-closed knob must not silently open it.
+    """
+    value = os.environ.get(_REMOTE_REQUIRED_ENV, "").strip().lower()
+    if value in _OFF:
+        return False
+    if value not in _ON:
+        warnings.warn(
+            f"{_REMOTE_REQUIRED_ENV} has an unrecognised value; treating it as on",
+            RuntimeWarning, stacklevel=2,
+        )
+    return True
 
 
 def _env_int(name: str, default: int) -> int:
@@ -808,6 +858,27 @@ def select_sandbox_root(
     timeout = _DEFAULT_PROBE_TIMEOUT_S if probe_timeout_s is None else probe_timeout_s
     local = Path(fallback) if fallback is not None else Path(tempfile.gettempdir())
 
+    if configured and parse_location(configured).scheme not in ("local", "hostpath"):
+        # A URL root names a placement backend. It is NEVER probed here: no ssh, no DNS, no
+        # socket -- reachability is the backend's business, behind the placement seam. With
+        # no registered backend for the scheme, the round falls back to local and says why.
+        parsed = parse_location(configured)
+        from . import sandbox_placement
+
+        try:
+            backend = sandbox_placement.backend_for_scheme(parsed.scheme)
+        except sandbox_placement.PlacementUnavailable as exc:
+            backend, reason = None, f"{parsed}: {exc.code}"
+        else:
+            reason = f"{parsed}: no placement backend registered for scheme {parsed.scheme!r}"
+        if backend is not None:
+            return SandboxRootChoice(parsed.host, parsed.path, False, scheme=parsed.scheme)
+        warnings.warn(
+            f"sandbox root {parsed} is not placeable ({reason}); falling back to {local}",
+            RuntimeWarning, stacklevel=2,
+        )
+        return _local_fallback(local, floor, timeout, reason)
+
     if configured:
         if _probe_with_deadline(configured, timeout):
             parsed = parse_location(configured)
@@ -816,7 +887,7 @@ def select_sandbox_root(
             # reason to abandon a reachable root: treat it as satisfying the floor only
             # when it cannot be measured at all, and record that in the reason.
             if remote_free is None or remote_free >= floor:
-                return SandboxRootChoice(parsed.host, parsed.path, False)
+                return SandboxRootChoice(parsed.host, parsed.path, False, scheme=parsed.scheme)
             warnings.warn(
                 f"sandbox root {configured} is below the free-space floor; falling back to {local}",
                 RuntimeWarning, stacklevel=2,
@@ -828,14 +899,7 @@ def select_sandbox_root(
                 RuntimeWarning, stacklevel=2,
             )
             reason = f"{configured} unreachable within {timeout}s"
-        free = _free_bytes_at(SandboxLocation(None, local), timeout) or 0
-        if free < floor:
-            raise SandboxSpaceError(
-                f"refusing to create a sandbox: {local} has {free} bytes of free space, "
-                f"below the {floor}-byte floor. Filling this filesystem would take the host "
-                f"down; a refused round is recoverable."
-            )
-        return SandboxRootChoice(None, local, True, reason)
+        return _local_fallback(local, floor, timeout, reason)
 
     free = _free_bytes_at(SandboxLocation(None, local), timeout) or 0
     if free < floor:
@@ -845,6 +909,17 @@ def select_sandbox_root(
                 f"down; a refused round is recoverable."
         )
     return SandboxRootChoice(None, local, False)
+
+
+def _local_fallback(local: Path, floor: int, timeout: float, reason: str) -> SandboxRootChoice:
+    free = _free_bytes_at(SandboxLocation(None, local), timeout) or 0
+    if free < floor:
+        raise SandboxSpaceError(
+            f"refusing to create a sandbox: {local} has {free} bytes of free space, "
+            f"below the {floor}-byte floor. Filling this filesystem would take the host "
+            f"down; a refused round is recoverable."
+        )
+    return SandboxRootChoice(None, local, True, reason)
 
 
 @dataclass(frozen=True)

@@ -224,3 +224,26 @@ SHA, prior verification and approval are invalidated, the bound suite produces
 digest-addressed evidence, and only then can the broker admit republish or
 review. A conflict is typed and resumable; autonomous runs still stop at
 `drafts_open`.
+
+## Sandbox placement roots (agent-harness#896)
+
+`PHASE_LOOP_SANDBOX_ROOT` selects where a review sandbox should be placed, and the
+selection is recorded in the leg's evidence as `sandbox_root_*`.
+
+- A bare path or `host:path` is record-only: the sandbox is staged locally and
+  `sandbox_root_applied` is false unless the path really is the stage's parent. Where the
+  local stage goes is set by agent-harness#1147's `PHASE_LOOP_SANDBOX_STAGING_DIR`, not by
+  this root.
+- A URL (`scheme://host/path`) names a placement backend. A scheme with no registered
+  backend is never probed (no ssh, DNS or socket); the leg falls back to local and the
+  reason names the scheme. Userinfo and the query string are dropped when the value is
+  parsed, so they never reach a warning or the evidence. This release has no driver that
+  executes on a non-local backend, so a registered one is also a recorded local fallback
+  (`sandbox_placement_driver_unavailable`), and no stage is sent to it.
+- `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` covers seat legs only: every review-mode leg the
+  panel launches for a board seat. `1`, `true`, `yes` and `on` turn it on; unset, empty,
+  `0`, `false`, `no` and `off` leave it off; any other value is read as on, with a warning.
+  In this release it refuses every seat leg with `sandbox_placement_required_unavailable`.
+
+The contract every backend follows is in
+`phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`.
