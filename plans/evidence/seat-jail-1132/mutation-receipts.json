@@ -1,12 +1,12 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
-  "head": "34c6cf40daee257232474a479991aa897a39db8c",
+  "head": "23a1b8a662aeafd8b7d8c91a1ecedf4dfac2b36b",
   "issue": "agent-harness#1132",
   "receipts": [
     {
       "id": "F030-drop-identity-literal",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "\"seat_sandbox_refused:jail_build\", \"seat_sandbox_refused:namespace\",\n    \"seat_sandbox_refused:identity\", \"seat_sandbox_refused:jail_unqualified\",",
         "new": "\"seat_sandbox_refused:jail_build\", \"seat_sandbox_refused:namespace\",\n    \"seat_sandbox_refused:jail_unqualified\","
@@ -17,18 +17,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "48 passed, 1 warning in 1.30s"
+        "summary": "48 passed, 1 warning in 0.59s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 46 passed, 1 warning in 1.40s"
+        "summary": "2 failed, 46 passed, 1 warning in 0.67s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-remove-arch-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "emit(_JEQ_K, _AUDIT_ARCH[arch], 0, \"kill\")",
         "new": "emit(_JEQ_K, _AUDIT_ARCH[arch], 0, 0)"
@@ -39,18 +39,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.64s"
+        "summary": "2 passed, 1 warning in 0.66s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.50s"
+        "summary": "2 failed, 1 warning in 0.55s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-remove-x32-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "emit(_JGE_K, X32_SYSCALL_BIT, \"eperm\", 0)",
         "new": "emit(_JGE_K, X32_SYSCALL_BIT, 0, 0)"
@@ -60,18 +60,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.46s"
+        "summary": "1 failed, 1 warning in 0.44s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-condition-setns-on-flags",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "emit(_JEQ_K, nr[\"setns\"], \"eperm\", 0)",
         "new": "emit(_JEQ_K, nr[\"setns\"], \"ns_flags\", 0)"
@@ -81,18 +81,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.31s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-remove-af-alg-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "emit(_JEQ_K, AF_ALG, \"eperm\", \"allow\")",
         "new": "emit(_JEQ_K, AF_ALG, \"allow\", \"allow\")"
@@ -103,18 +103,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.55s"
+        "summary": "2 passed, 1 warning in 0.57s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.43s"
+        "summary": "2 failed, 1 warning in 0.64s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J14-ioctl-compare-high-half",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "emit(_LD_W_ABS, _arg_low(1), label=\"ioctl\")",
         "new": "emit(_LD_W_ABS, _arg_low(1) + 4, label=\"ioctl\")"
@@ -124,18 +124,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 1.26s"
+        "summary": "4 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 1.58s"
+        "summary": "4 failed, 1 warning in 0.53s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J1-bind-home",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    for name in ETC_READONLY_SUBSET:\n        host = os.path.join(\"/etc\", name)",
         "new": "    args += [\"--ro-bind\", str(Path.home()), str(Path.home())]\n    for name in ETC_READONLY_SUBSET:\n        host = os.path.join(\"/etc\", name)"
@@ -145,18 +145,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.43s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.49s"
+        "summary": "1 failed, 1 warning in 0.47s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J2-drop-remount-ro",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        \"--remount-ro\", \"/\",\n",
         "new": ""
@@ -166,18 +166,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.49s"
+        "summary": "1 passed, 1 warning in 0.65s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.34s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J3-drop-clearenv",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        \"--clearenv\",\n    ]",
         "new": "    ]"
@@ -187,18 +187,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.28s"
+        "summary": "1 passed, 1 warning in 0.63s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.49s"
+        "summary": "1 failed, 1 warning in 0.61s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J10-link-following-read",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "_O_READ = os.O_RDONLY | getattr(os, \"O_NOFOLLOW\", 0) | getattr(os, \"O_NONBLOCK\", 0)",
         "new": "_O_READ = os.O_RDONLY | getattr(os, \"O_NONBLOCK\", 0)"
@@ -208,18 +208,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.21s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.30s"
+        "summary": "1 failed, 1 warning in 0.46s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J10-link-following-tree-walk",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)\n            if stat.S_ISLNK(info.st_mode):",
         "new": "            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=True)\n            if stat.S_ISLNK(info.st_mode):"
@@ -229,18 +229,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.33s"
+        "summary": "1 passed, 1 warning in 0.57s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.48s"
+        "summary": "1 failed, 1 warning in 0.65s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J2-link-following-teardown",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)\n    if not stat.S_ISDIR(info.st_mode):\n        os.unlink(name, dir_fd=parent_fd)",
         "new": "    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=True)\n    if not stat.S_ISDIR(info.st_mode):\n        os.unlink(name, dir_fd=parent_fd)"
@@ -250,11 +250,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.28s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.44s"
+        "summary": "1 failed, 1 warning in 0.71s"
       },
       "result": "red_as_required"
     },
@@ -271,18 +271,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.32s"
+        "summary": "1 passed, 1 warning in 0.53s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.23s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "token-scan-disabled",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    return any(form in data for form in secret_encodings(secret))",
         "new": "    return False"
@@ -292,18 +292,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 1.34s"
+        "summary": "4 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 1.41s"
+        "summary": "4 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
     {
       "id": "token-file-mode-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()\n                or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > TOKEN_FILE_CAP_BYTES):",
         "new": "        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()\n                or info.st_size > TOKEN_FILE_CAP_BYTES):"
@@ -313,18 +313,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.34s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.25s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
     {
       "id": "D7-keep-refresh-token",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    copy[\"token\"] = {k: v for k, v in token.items() if k != \"refresh_token\"}",
         "new": "    copy[\"token\"] = dict(token)"
@@ -334,18 +334,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.17s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.35s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J7-capability-before-step0",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if not staged_tree_approved:\n        return SeatRoute(False, \"seat_sandbox_not_staged\")",
         "new": "    capable()\n    if not staged_tree_approved:\n        return SeatRoute(False, \"seat_sandbox_not_staged\")"
@@ -355,18 +355,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.24s"
+        "summary": "1 passed, 1 warning in 0.56s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.39s"
+        "summary": "1 failed, 1 warning in 0.61s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J7-qualification-before-credential",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        if not (gemini_credential_present or gemini_operator_credential_present)():\n            return SeatRoute(False, \"gemini_seat_credential_missing\")\n",
         "new": "        if leg not in JAILED_LEGS:\n            return SeatRoute(False, \"gemini_seat_profile_unqualified\")\n        if not (gemini_credential_present or gemini_operator_credential_present)():\n            return SeatRoute(False, \"gemini_seat_credential_missing\")\n"
@@ -376,18 +376,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.37s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "EXECFIND-carry-unrecorded-digest",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    refusal = _pass_refusal(_seat_jail.jail_profile_digest(leg), pass_recorded)\n",
         "new": "    refusal = None\n"
@@ -397,11 +397,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.26s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.20s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -418,11 +418,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.59s"
+        "summary": "1 passed, 1 warning in 0.76s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.58s"
+        "summary": "1 failed, 1 warning in 0.85s"
       },
       "result": "red_as_required"
     },
@@ -439,11 +439,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.30s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.21s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -460,18 +460,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 1.46s"
+        "summary": "4 passed, 1 warning in 0.70s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 2.82s"
+        "summary": "4 failed, 1 warning in 1.79s"
       },
       "result": "red_as_required"
     },
     {
       "id": "notices-accept-str-subclass",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                 if type(code) is str and code in _seat_jail.NOTICE_CODES)",
         "new": "                 if isinstance(code, str) and code in _seat_jail.NOTICE_CODES)"
@@ -481,18 +481,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.38s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.34s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
     {
       "id": "D8-skip-bounding-set-drop",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "\"--clear-groups\", \"--inh-caps=-all\", \"--ambient-caps=-all\", \"--bounding-set=-all\",",
         "new": "\"--clear-groups\", \"--inh-caps=-all\", \"--ambient-caps=-all\","
@@ -502,11 +502,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.38s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.36s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -523,18 +523,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 6.70s"
+        "summary": "2 passed, 1 warning in 5.70s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.58s"
+        "summary": "2 failed, 1 warning in 0.60s"
       },
       "result": "red_as_required"
     },
     {
       "id": "J9-sealed-argv-drift",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "\"--tools\", \"\", \"--allowedTools\", \"\", \"--disallowedTools\",",
         "new": "\"--tools\", \"default\", \"--allowedTools\", \"\", \"--disallowedTools\","
@@ -544,11 +544,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.39s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.31s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -565,18 +565,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.22s"
+        "summary": "1 passed, 1 warning in 3.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.15s"
+        "summary": "1 failed, 1 warning in 3.30s"
       },
       "result": "red_as_required"
     },
     {
       "id": "LIVE-P5-no-cap-drop-all",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        \"--cap-drop\", \"ALL\",\n",
         "new": ""
@@ -586,18 +586,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.04s"
+        "summary": "1 passed, 1 warning in 3.38s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.09s"
+        "summary": "1 failed, 1 warning in 3.30s"
       },
       "result": "red_as_required"
     },
     {
       "id": "LIVE-P1-tmpfs-not-sticky",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "\"--perms\", \"1777\", \"--tmpfs\", \"/tmp\",",
         "new": "\"--tmpfs\", \"/tmp\","
@@ -607,18 +607,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.11s"
+        "summary": "1 passed, 1 warning in 3.35s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.18s"
+        "summary": "1 failed, 1 warning in 3.44s"
       },
       "result": "red_as_required"
     },
     {
       "id": "LIVE-P5-etc-not-traversable",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    args += [\"--perms\", \"0755\", \"--dir\", \"/etc\"]\n",
         "new": ""
@@ -628,11 +628,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.07s"
+        "summary": "1 passed, 1 warning in 3.32s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.10s"
+        "summary": "1 failed, 1 warning in 3.29s"
       },
       "result": "red_as_required"
     },
@@ -649,18 +649,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 7.20s"
+        "summary": "1 passed, 1 warning in 6.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 6.62s"
+        "summary": "1 failed, 1 warning in 5.93s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R1-launch-refusal-code-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        if type(exc) is _seat_jail.SeatSandboxRefused:\n",
         "new": "        if False:\n"
@@ -670,18 +670,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.48s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.38s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R1-transcript-written-before-scan",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        if _seat_jail.contains_secret(data, seat.token):\n            token_seen.append(True)\n            data = b\"\"\n",
         "new": "        if _seat_jail.contains_secret(data, seat.token):\n            token_seen.append(True)\n"
@@ -691,18 +691,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.49s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.14s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R1-monitor-not-forwarded",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "            transcript_refresh=_refresh_transcript,\n            **({\"review_monitor\": review_monitor} if review_monitor is not None else {}),\n",
         "new": "            transcript_refresh=_refresh_transcript,\n"
@@ -712,18 +712,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.22s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.28s"
+        "summary": "1 failed, 1 warning in 0.47s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R1-canonical-jail-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    if _seat_jail.actual_profile_digest(jail) != _seat_jail.jail_profile_digest(jail.leg):",
         "new": "    if False:"
@@ -736,18 +736,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 1.34s"
+        "summary": "4 passed, 1 warning in 0.52s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 1.56s"
+        "summary": "4 failed, 1 warning in 0.72s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R1-mounts-derived-from-argv",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    for path in SYSTEM_READONLY_PATHS:\n        if os.path.isdir(path) and not os.path.islink(path):\n            points.add(path)\n",
         "new": "    for path in SYSTEM_READONLY_PATHS:\n        if os.path.isdir(path) and not os.path.islink(path):\n            points.add(path)\n    argv = list(jail.process_owner)\n    points.update(argv[i + 2] for i, a in enumerate(argv) if a == \"--bind\")\n"
@@ -757,11 +757,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.26s"
+        "summary": "1 passed, 1 warning in 0.49s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.45s"
+        "summary": "1 failed, 1 warning in 0.53s"
       },
       "result": "red_as_required"
     },
@@ -778,18 +778,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.52s"
+        "summary": "1 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.42s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R1-probe-accepts-inherited-seccomp",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "\"nested-userns-denied\", fds,",
         "new": "\"nested-userns-allowed\", fds,"
@@ -799,18 +799,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.10s"
+        "summary": "1 passed, 1 warning in 3.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.63s"
+        "summary": "1 failed, 1 warning in 3.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "HANG-sealed-tui-cwd-drift",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    tui_cwd = out_dir.resolve() if brokered else out_dir\n",
         "new": "    tui_cwd = out_dir.parent.resolve() if brokered else out_dir\n"
@@ -820,18 +820,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.25s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.32s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R2-behavioural-seccomp-check-deleted",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    '/usr/bin/unshare -U /bin/true 2>/dev/null && echo nested-userns-allowed '\n    '|| echo nested-userns-denied; '\n\n\"nested-userns-denied\", fds,",
         "new": "\nfds,"
@@ -841,18 +841,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.16s"
+        "summary": "1 passed, 1 warning in 3.26s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.07s"
+        "summary": "1 failed, 1 warning in 3.34s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R2-filter-count-check-deleted",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "NoNewPrivs|Seccomp|Seccomp_filters):\n\"Seccomp:\\t2\", f\"Seccomp_filters:\\t{_own_seccomp_filters() + 1}\",",
         "new": "NoNewPrivs|Seccomp):\n\"Seccomp:\\t2\","
@@ -862,18 +862,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.04s"
+        "summary": "1 passed, 1 warning in 3.28s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.04s"
+        "summary": "1 failed, 1 warning in 3.30s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R2-filter-count-read-from-group-leader",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "Path(\"/proc/thread-self/status\")",
         "new": "Path(\"/proc/self/status\")"
@@ -883,18 +883,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 4.02s"
+        "summary": "1 passed, 1 warning in 3.26s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 4.40s"
+        "summary": "1 failed, 1 warning in 3.31s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R2-seccomp-offset-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if os.lseek(jail.seccomp_fd, 0, os.SEEK_CUR) != 0:\n",
         "new": "    if False:\n"
@@ -904,18 +904,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.89s"
+        "summary": "1 passed, 1 warning in 3.20s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.96s"
+        "summary": "1 failed, 1 warning in 3.20s"
       },
       "result": "red_as_required"
     },
     {
       "id": "HOSTPASS-gate-code-not-named",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    sub = \"pass_store_unsafe\" if reason.startswith(\"store_unsafe:\") else \"jail_unqualified\"",
         "new": "    sub = \"pass_store_unsafe\" if reason.startswith(\"store_unsafe:\") else \"identity\""
@@ -925,18 +925,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.26s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.32s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R4-evidence-not-rehashed",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if evidence_bytes is None or hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha:\n        return False, \"evidence_mismatch\"\n",
         "new": "    if evidence_bytes is None:\n        return False, \"evidence_mismatch\"\n"
@@ -946,18 +946,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.30s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.32s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R4-host-not-bound",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "\"host_identity\": host, \"falsifier_layout\": layout}\n    if any(",
         "new": "\"falsifier_layout\": layout}\n    if any("
@@ -967,18 +967,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.28s"
+        "summary": "1 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.26s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R4-evidence-optional",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if not isinstance(evidence_name, str) or not isinstance(evidence_sha, str):\n        return False, \"evidence_mismatch\"\n",
         "new": "    if not isinstance(evidence_name, str) or not isinstance(evidence_sha, str):\n        return True, \"pass\"\n"
@@ -988,18 +988,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.20s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R4-blocking-open",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    flags = (os.O_RDONLY | getattr(os, \"O_NOFOLLOW\", 0) | getattr(os, \"O_NONBLOCK\", 0)\n",
         "new": "    flags = (os.O_RDONLY | getattr(os, \"O_NOFOLLOW\", 0)\n"
@@ -1009,7 +1009,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.39s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": "timeout",
@@ -1020,7 +1020,7 @@
     {
       "id": "R4-parent-chain-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        if problem is not None:\n            return False, f\"store_unsafe:{problem}:{directory}\"\n",
         "new": "        if False:\n            return False, \"\"\n"
@@ -1030,18 +1030,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.33s"
+        "summary": "2 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.29s"
+        "summary": "2 failed, 1 warning in 0.62s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R4-launch-not-requalified",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    refusal = _pass_refusal(_seat_jail.actual_profile_digest(jail), pass_recorded)\n",
         "new": "    refusal = None\n"
@@ -1051,18 +1051,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.15s"
+        "summary": "1 passed, 1 warning in 0.53s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.28s"
+        "summary": "1 failed, 1 warning in 0.59s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R4-record-owner-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()\n                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > cap):",
         "new": "        if (not stat.S_ISREG(info.st_mode)\n                or stat.S_IMODE(info.st_mode) & 0o022 or info.st_size > cap):"
@@ -1072,18 +1072,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.26s"
+        "summary": "1 passed, 1 warning in 0.61s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.30s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "Q-mount-check-disabled",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py",
-      "file_sha256": "0f5f09668eeccb5f2894d20b42bd0445d1a697cb9720027f61c8e7be3fa780cb",
+      "file_sha256": "1ac2515a78fff2944da6ed3866050bb2a7ec56b4294eaa29a8f7636d001f3613",
       "mutation": {
         "old": "                          if (m[1], m[2]) in protected_ids | protected_file_ids | ancestors]",
         "new": "                          if False]"
@@ -1093,18 +1093,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 9.07s"
+        "summary": "1 passed, 1 warning in 8.39s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 9.55s"
+        "summary": "1 failed, 1 warning in 8.56s"
       },
       "result": "red_as_required"
     },
     {
       "id": "Q-layout-ignores-system-roots",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    parts += [repr(review_stage._FALSIFIER_SYSTEM_ROOTS), repr(review_stage._FALSIFIER_PYTHON_FLAGS),",
         "new": "    parts += [repr(review_stage._FALSIFIER_PYTHON_FLAGS),"
@@ -1114,11 +1114,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.30s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.47s"
+        "summary": "1 failed, 1 warning in 0.55s"
       },
       "result": "red_as_required"
     },
@@ -1135,18 +1135,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "47 passed, 1 warning in 1.71s"
+        "summary": "47 passed, 1 warning in 0.61s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "47 failed, 1 warning in 2.48s"
+        "summary": "47 failed, 1 warning in 1.57s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R5-boundary-narrowed-to-oserror",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    except Exception as exc:\n        _LOG.warning(\"seat jail pass record rejected: %s\", type(exc).__name__)",
         "new": "    except OSError as exc:\n        _LOG.warning(\"seat jail pass record rejected: %s\", type(exc).__name__)"
@@ -1159,18 +1159,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 1.46s"
+        "summary": "4 passed, 1 warning in 0.69s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 2 passed, 1 warning in 1.53s"
+        "summary": "2 failed, 2 passed, 1 warning in 0.93s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R5-boundary-removed",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    try:\n        return _evaluate_pass_record(profile_digest, root=root, layout=layout, host=host)\n    except Exception as exc:\n        _LOG.warning(\"seat jail pass record rejected: %s\", type(exc).__name__)\n        return False, f\"error:{type(exc).__name__}\"\n",
         "new": "    return _evaluate_pass_record(profile_digest, root=root, layout=layout, host=host)\n"
@@ -1183,18 +1183,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 1.58s"
+        "summary": "4 passed, 1 warning in 0.88s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 2 passed, 1 warning in 1.85s"
+        "summary": "2 failed, 2 passed, 1 warning in 0.91s"
       },
       "result": "red_as_required"
     },
     {
       "id": "CI-closer-closes-nothing",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    \"  try: os.close(fd)\\n\"\n",
         "new": "    \"  try: pass\\n\"\n"
@@ -1204,18 +1204,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.46s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.36s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "CI-closer-dropped-from-launch-prefix",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        *_seat_jail.seat_fd_closer(\"\" if jail.token_fd is None else str(jail.token_fd)),\n",
         "new": ""
@@ -1225,11 +1225,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.28s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.33s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -1246,18 +1246,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 2.05s"
+        "summary": "1 passed, 1 warning in 1.39s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 2.25s"
+        "summary": "1 failed, 1 warning in 1.44s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R5-reason-drops-the-class",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "        return False, f\"error:{type(exc).__name__}\"\n",
         "new": "        return False, \"error\"\n"
@@ -1267,18 +1267,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.16s"
+        "summary": "1 passed, 1 warning in 0.54s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.27s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-no-exception-strict-0700",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if mode & 0o020 and not _operator_private_group(info.st_gid):\n",
         "new": "    if mode & 0o020:\n"
@@ -1288,18 +1288,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.60s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.40s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-primary-gid-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if gid != me.pw_gid:\n        return False\n",
         "new": "    if False:\n        return False\n"
@@ -1309,18 +1309,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.48s"
+        "summary": "1 passed, 1 warning in 0.56s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.32s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-group-name-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if group.gr_name != me.pw_name or any(",
         "new": "    if any("
@@ -1330,18 +1330,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.51s"
+        "summary": "1 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.34s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-other-members-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": " or any(m != me.pw_name for m in group.gr_mem):\n",
         "new": " or False:\n"
@@ -1351,18 +1351,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.58s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.24s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-other-primary-unchecked",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    return not any(acct.pw_gid == gid and acct.pw_uid != me.pw_uid for acct in getpwall())\n",
         "new": "    return True\n"
@@ -1372,18 +1372,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.36s"
+        "summary": "1 passed, 1 warning in 0.54s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.36s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-no-database-accepts",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if db is None:\n        return False\n",
         "new": "    if db is None:\n        return True\n"
@@ -1393,18 +1393,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.34s"
+        "summary": "1 passed, 1 warning in 0.66s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.38s"
+        "summary": "1 failed, 1 warning in 0.70s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-other-writable-allowed",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    if mode & 0o002:\n        return \"other_writable\"\n",
         "new": ""
@@ -1414,18 +1414,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.29s"
+        "summary": "1 passed, 1 warning in 0.52s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.28s"
+        "summary": "1 failed, 1 warning in 0.62s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-store-code-collapsed",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    sub = \"pass_store_unsafe\" if reason.startswith(\"store_unsafe:\") else \"jail_unqualified\"",
         "new": "    sub = \"jail_unqualified\""
@@ -1435,18 +1435,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.35s"
+        "summary": "1 passed, 1 warning in 0.58s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.34s"
+        "summary": "1 failed, 1 warning in 0.55s"
       },
       "result": "red_as_required"
     },
     {
       "id": "UPG-recorder-own-rule",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py",
-      "file_sha256": "0f5f09668eeccb5f2894d20b42bd0445d1a697cb9720027f61c8e7be3fa780cb",
+      "file_sha256": "1ac2515a78fff2944da6ed3866050bb2a7ec56b4294eaa29a8f7636d001f3613",
       "mutation": {
         "old": "            if seat_jail.pass_store_dir_problem(directory) is not None:\n",
         "new": "            if False:\n"
@@ -1456,18 +1456,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.31s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.21s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
     {
       "id": "sealed-notice-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    if not route.jailed:\n        return route, [str(route.code)], None",
         "new": "    if not route.jailed:\n        return route, [], None"
@@ -1477,11 +1477,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.75s"
+        "summary": "1 passed, 1 warning in 0.97s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.71s"
+        "summary": "1 failed, 1 warning in 1.08s"
       },
       "result": "red_as_required"
     },
@@ -1498,18 +1498,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.32s"
+        "summary": "1 passed, 1 warning in 0.69s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.36s"
+        "summary": "1 failed, 1 warning in 0.70s"
       },
       "result": "red_as_required"
     },
     {
       "id": "gemini-passes-step4",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "if leg not in JAILED_LEGS or gemini_qualified is None or not gemini_qualified():",
         "new": "if gemini_qualified is None or not gemini_qualified():"
@@ -1519,18 +1519,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.24s"
+        "summary": "1 passed, 1 warning in 0.56s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.39s"
+        "summary": "1 failed, 1 warning in 0.59s"
       },
       "result": "red_as_required"
     },
     {
       "id": "token-notice-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                seat.notices.append(\"claude_seat_login_rate_limited\" if login\n                                    else \"claude_seat_token_rate_limited\")",
         "new": "                pass"
@@ -1540,18 +1540,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "3 passed, 1 warning in 1.27s"
+        "summary": "3 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "3 failed, 1 warning in 1.33s"
+        "summary": "3 failed, 1 warning in 0.61s"
       },
       "result": "red_as_required"
     },
     {
       "id": "jailed-tail-unclassified",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    if terminal is None:\n        return _leg_failure_detail(status, rc, review_text, pty_tail, known)",
         "new": "    if terminal is None:\n        return None"
@@ -1561,18 +1561,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "3 passed, 1 warning in 1.31s"
+        "summary": "3 passed, 1 warning in 0.54s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "3 failed, 1 warning in 1.43s"
+        "summary": "3 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
     {
       "id": "jailed-tail-not-scanned",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "            or _seat_jail.contains_secret(pty_tail.encode(\"utf-8\", errors=\"replace\"), seat.token)):",
         "new": "            ):"
@@ -1582,18 +1582,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.16s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
     {
       "id": "limit-predicate-drops-1194-class",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "\"usage_limit\", \"claude_seat_rate_limited\", \"claude_seat_usage_limited\",",
         "new": "\"usage_limit\", \"claude_seat_rate_limited\","
@@ -1603,18 +1603,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "12 passed, 1 warning in 1.22s"
+        "summary": "12 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 11 passed, 1 warning in 1.15s"
+        "summary": "1 failed, 11 passed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
     {
       "id": "seat-token-file-cached",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-      "file_sha256": "6bae16de98a698fcb1e6272b35d0ea9e6994d5e90a055c6a92999d4a10db9da4",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
       "mutation": {
         "old": "    token = data.strip()\n    if not token or len(data) > TOKEN_FILE_CAP_BYTES",
         "new": "    token = globals().setdefault(\"_TOKEN_CACHE\", data.strip())\n    if not token or len(data) > TOKEN_FILE_CAP_BYTES"
@@ -1625,18 +1625,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.34s"
+        "summary": "2 passed, 1 warning in 0.67s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.46s"
+        "summary": "2 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
     {
       "id": "seat-token-cached-per-process",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    token = credential.token\n",
         "new": "    token = globals().setdefault(\"_SEAT_TOKEN\", credential.token)\n"
@@ -1646,18 +1646,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.20s"
+        "summary": "1 passed, 1 warning in 0.52s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.29s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
     {
       "id": "preflight-ignores-the-jail",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))",
         "new": "        return sandbox_usable_by(leg, brokered)"
@@ -1667,18 +1667,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.31s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.26s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A2-failed-qualification-still-jails",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    return _seat_jail.SeatRoute(False, sealed), [sealed], None",
         "new": "    return route, [sealed], None"
@@ -1689,18 +1689,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 4.39s"
+        "summary": "2 passed, 1 warning in 3.67s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 4.46s"
+        "summary": "2 failed, 1 warning in 3.70s"
       },
       "result": "red_as_required"
     },
     {
       "id": "token-rejected-notice-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                    seat.notices.append(\"claude_seat_login_rejected\" if login\n                                        else \"claude_seat_token_rejected\")",
         "new": "                    pass"
@@ -1710,18 +1710,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.21s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.18s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-override-loses-precedence",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
-      "file_sha256": "2ac698a82507ae53cf07a63f0d5438890a1be81bb6b2d2987dc64064b299c7c4",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
       "mutation": {
         "old": "    if override_present():\n        return SeatCredential(",
         "new": "    if False:\n        return SeatCredential("
@@ -1731,18 +1731,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.13s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.18s"
+        "summary": "1 failed, 1 warning in 0.43s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-no-margin-check",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
-      "file_sha256": "2ac698a82507ae53cf07a63f0d5438890a1be81bb6b2d2987dc64064b299c7c4",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
       "mutation": {
         "old": "    if login.expires_at is not None and login.expires_at - now() < margin_s:\n        refresh()",
         "new": "    if False:\n        refresh()"
@@ -1753,18 +1753,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.16s"
+        "summary": "2 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.28s"
+        "summary": "2 failed, 1 warning in 0.42s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-refresh-skipped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
-      "file_sha256": "2ac698a82507ae53cf07a63f0d5438890a1be81bb6b2d2987dc64064b299c7c4",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
       "mutation": {
         "old": "        refresh()\n        login = read_login()",
         "new": "        login = read_login()"
@@ -1774,18 +1774,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.09s"
+        "summary": "1 passed, 1 warning in 0.36s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.17s"
+        "summary": "1 failed, 1 warning in 0.41s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-takes-the-refresh-token",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
-      "file_sha256": "2ac698a82507ae53cf07a63f0d5438890a1be81bb6b2d2987dc64064b299c7c4",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
       "mutation": {
         "old": "    token = oauth.get(\"accessToken\") if isinstance(oauth, dict) else None",
         "new": "    token = oauth.get(\"refreshToken\") if isinstance(oauth, dict) else None"
@@ -1795,18 +1795,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.20s"
+        "summary": "1 passed, 1 warning in 0.39s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.21s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-keychain-suffix-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
-      "file_sha256": "2ac698a82507ae53cf07a63f0d5438890a1be81bb6b2d2987dc64064b299c7c4",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
       "mutation": {
         "old": "    return f\"{_KEYCHAIN_SERVICE}-{digest[:8]}\"",
         "new": "    return _KEYCHAIN_SERVICE"
@@ -1816,18 +1816,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.14s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.15s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-writable-store-accepted",
       "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
-      "file_sha256": "2ac698a82507ae53cf07a63f0d5438890a1be81bb6b2d2987dc64064b299c7c4",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
       "mutation": {
         "old": "                or stat.S_IMODE(info.st_mode) & 0o022\n",
         "new": ""
@@ -1837,18 +1837,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.10s"
+        "summary": "1 passed, 1 warning in 0.39s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.13s"
+        "summary": "1 failed, 1 warning in 0.44s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-expiry-not-classified",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                if login and seat.expires_at is not None and time.time() >= seat.expires_at:",
         "new": "                if False:"
@@ -1858,18 +1858,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.16s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.32s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-login-limit-worded-as-override",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                seat.notices.append(\"claude_seat_login_rate_limited\" if login",
         "new": "                seat.notices.append(\"claude_seat_token_rate_limited\" if login"
@@ -1879,18 +1879,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.24s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.39s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A1-mode-skips-the-credential",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "            found = _claude_credential(leg) if leg == \"claude\" else None",
         "new": "            found = None"
@@ -1901,11 +1901,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.27s"
+        "summary": "2 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.22s"
+        "summary": "2 failed, 1 warning in 0.53s"
       },
       "result": "red_as_required"
     },
@@ -1922,11 +1922,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.35s"
+        "summary": "1 passed, 1 warning in 0.68s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.47s"
+        "summary": "1 failed, 1 warning in 0.78s"
       },
       "result": "red_as_required"
     },
@@ -1943,11 +1943,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.08s"
+        "summary": "1 passed, 1 warning in 0.38s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.14s"
+        "summary": "1 failed, 1 warning in 0.45s"
       },
       "result": "red_as_required"
     },
@@ -1964,18 +1964,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.26s"
+        "summary": "1 passed, 1 warning in 0.37s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.27s"
+        "summary": "1 failed, 1 warning in 0.42s"
       },
       "result": "red_as_required"
     },
     {
       "id": "jailed-give-up-dropped",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    return _LegFailure(str(log_text))\n",
         "new": "    return _leg_failure_detail(status, rc, review_text, pty_tail, known)\n"
@@ -1985,11 +1985,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.28s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.33s"
+        "summary": "1 failed, 1 warning in 0.53s"
       },
       "result": "red_as_required"
     },
@@ -2006,11 +2006,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.77s"
+        "summary": "1 passed, 1 warning in 0.95s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.78s"
+        "summary": "1 failed, 1 warning in 0.95s"
       },
       "result": "red_as_required"
     },
@@ -2027,11 +2027,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.83s"
+        "summary": "1 passed, 1 warning in 0.96s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.56s"
+        "summary": "1 failed, 1 warning in 2.78s"
       },
       "result": "red_as_required"
     },
@@ -2048,11 +2048,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.10s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.28s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -2069,11 +2069,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.11s"
+        "summary": "1 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.21s"
+        "summary": "1 failed, 1 warning in 0.45s"
       },
       "result": "red_as_required"
     },
@@ -2090,11 +2090,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.19s"
+        "summary": "1 passed, 1 warning in 0.49s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.18s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -2111,11 +2111,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.14s"
+        "summary": "1 passed, 1 warning in 0.41s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.15s"
+        "summary": "1 failed, 1 warning in 0.46s"
       },
       "result": "red_as_required"
     },
@@ -2132,18 +2132,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.20s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.28s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A2-mode-hides-the-reason",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                                     f\"{why}; reason: {reason}\",",
         "new": "                                     why,"
@@ -2153,18 +2153,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.13s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.33s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
     {
       "id": "A2-suite-guard-removed",
       "file": "phase-loop-runtime/tests/conftest.py",
-      "file_sha256": "7eb167086c9e66b18c633111ecb359e020132c506d0489d1efcde20f010ef16e",
+      "file_sha256": "c2f7cfa0b78f9665cf17ea7dd564bce683aba3c457f864392d3c189f9c19e14e",
       "mutation": {
         "old": "    monkeypatch.setattr(seat_jail_autoqualify, \"_default_qualify\", _refuse)",
         "new": "    pass"
@@ -2174,18 +2174,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.12s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 9.08s"
+        "summary": "1 failed, 1 warning in 8.30s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-mode-uses-the-default-margin",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        margin = _claude_seat_login_margin_s(timeouts.get(leg))",
         "new": "        margin = _seat_credentials.login_margin_s(None)"
@@ -2195,18 +2195,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.50s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.36s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-mode-ignores-the-leg-timeout",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        margin = _claude_seat_login_margin_s(timeouts.get(leg))",
         "new": "        margin = _claude_seat_login_margin_s(None)"
@@ -2216,18 +2216,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.14s"
+        "summary": "1 passed, 1 warning in 0.60s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.38s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-launch-ignores-the-leg-timeout",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        _claude_seat_login_margin_s(timeout_s))",
         "new": "        _claude_seat_login_margin_s(None))"
@@ -2238,18 +2238,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.18s"
+        "summary": "2 passed, 1 warning in 0.56s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 passed, 1 warning in 1.15s"
+        "summary": "1 failed, 1 passed, 1 warning in 0.53s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-spawn-drops-the-leg-timeout",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "                                (staged_bundle, staged_instructions),\n                                timeout_s=timeout_s,",
         "new": "                                (staged_bundle, staged_instructions),\n                                timeout_s=None,"
@@ -2259,18 +2259,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.65s"
+        "summary": "1 passed, 1 warning in 1.01s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.56s"
+        "summary": "1 failed, 1 warning in 1.07s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-margin-is-not-the-hard-deadline",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    return int(timeout_s) if timeout_s is not None else _MAX_LEG_TIMEOUT_S",
         "new": "    return int(timeout_s) if timeout_s is not None else 900"
@@ -2280,18 +2280,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.16s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.20s"
+        "summary": "1 failed, 1 warning in 0.53s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-give-up-hides-auth",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    if terminal == _CLAUDE_GAVE_UP_OTHER:",
         "new": "    if False:"
@@ -2302,18 +2302,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.27s"
+        "summary": "2 passed, 1 warning in 0.70s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.38s"
+        "summary": "2 failed, 1 warning in 0.82s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-auth-beats-a-typed-give-up",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "    if terminal == _CLAUDE_GAVE_UP_OTHER:",
         "new": "    if True:"
@@ -2323,11 +2323,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.23s"
+        "summary": "1 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.27s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
@@ -2345,11 +2345,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.35s"
+        "summary": "2 passed, 1 warning in 0.60s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 1.43s"
+        "summary": "2 failed, 1 warning in 0.59s"
       },
       "result": "red_as_required"
     },
@@ -2366,18 +2366,18 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.15s"
+        "summary": "1 passed, 1 warning in 0.41s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.24s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
     {
       "id": "R7-jail-prefix-back-to-dash-m",
       "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-      "file_sha256": "697c07b71a3b4cdc921d4a32369556802c36f39cfed848eb44f65e12b7a6ba76",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
       "mutation": {
         "old": "        *_seat_uid.trusted_module_argv(\"phase_loop_runtime.seat_keyring_exec\", \"--\"),",
         "new": "        sys.executable, \"-m\", \"phase_loop_runtime.seat_keyring_exec\", \"--\","
@@ -2388,11 +2388,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 2 warnings in 4.21s"
+        "summary": "2 passed, 1 warning in 4.02s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 2 warnings in 3.97s"
+        "summary": "2 failed, 1 warning in 3.80s"
       },
       "result": "red_as_required"
     },
@@ -2409,11 +2409,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.17s"
+        "summary": "1 passed, 1 warning in 0.38s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.33s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
@@ -2430,11 +2430,159 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.15s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.16s"
+        "summary": "1 failed, 1 warning in 0.45s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-jail-env-copied-after-decision",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
+      "mutation": {
+        "old": "        kwargs[\"env\"] = env\n        return subprocess.Popen([*prefix, *argv], **kwargs)",
+        "new": "        kwargs[\"env\"] = dict(env)\n        return subprocess.Popen([*prefix, *argv], **kwargs)"
+      },
+      "nodes": [
+        "tests/test_seat_launch_helpers_trusted.py::test_the_jailed_probe_and_launch_get_the_same_decided_env"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed, 1 warning in 0.54s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 1 warning in 0.63s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-jail-env-undecided",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+      "file_sha256": "37f75b4eefb0265bb519bd80a791f3c640aeb321619feff51ae95e29aab21ffa",
+      "mutation": {
+        "old": "    return _sandbox_policy.child_scratch_env(_seat_uid._pythonpath_env(), decision)",
+        "new": "    return _seat_uid._pythonpath_env()"
+      },
+      "nodes": [
+        "tests/test_seat_launch_helpers_trusted.py::test_the_jailed_probe_and_launch_get_the_same_decided_env",
+        "tests/test_seat_jail_live_d8.py::test_j6_live_identity_probe_passes_through_the_production_prefix"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "2 passed, 1 warning in 3.53s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 1 passed, 1 warning, 1 error in 3.54s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-qualification-env-undecided",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py",
+      "file_sha256": "1ac2515a78fff2944da6ed3866050bb2a7ec56b4294eaa29a8f7636d001f3613",
+      "mutation": {
+        "old": "                env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)",
+        "new": "                env=seat_uid._pythonpath_env(), stdin=subprocess.DEVNULL)"
+      },
+      "nodes": [
+        "tests/test_seat_jail_live_d8.py::test_execfind2_jail_falsifiers_pass_on_the_production_jail"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed, 1 warning in 8.25s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 passed, 1 warning, 1 error in 8.41s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-seat-tmpdir-on-the-jail-tmpfs",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
+      "mutation": {
+        "old": "        \"TMPDIR\": SEAT_TMP,",
+        "new": "        \"TMPDIR\": \"/tmp\","
+      },
+      "nodes": [
+        "tests/test_seat_launch_helpers_trusted.py::test_the_seat_scratch_is_its_disk_backed_home_never_the_jail_tmpfs"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed, 1 warning in 0.52s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 1 warning in 0.57s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-seat-tmp-not-created",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+      "file_sha256": "9963d3b1985a762cbb569c230c4ca7234a6541e9f5ebb4156ea6e07de6322ae1",
+      "mutation": {
+        "old": "    for directory in (home, out, home / SEAT_TMP_DIRNAME):",
+        "new": "    for directory in (home, out):"
+      },
+      "nodes": [
+        "tests/test_seat_launch_helpers_trusted.py::test_the_seat_scratch_is_its_disk_backed_home_never_the_jail_tmpfs"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed, 1 warning in 0.49s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 1 warning in 0.58s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-login-refresh-env-undecided",
+      "file": "phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py",
+      "file_sha256": "2c48a92c6ed07d1e1d5ec7055a35136da0866f81c60f3b98a2112e24aad56c55",
+      "mutation": {
+        "old": "            env=sandbox_policy.child_scratch_env(os.environ,\n                                                 sandbox_policy.CHILD_SCRATCH_RELOCATE))",
+        "new": "            )"
+      },
+      "nodes": [
+        "tests/test_seat_credentials.py::test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed, 1 warning in 0.41s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 1 warning in 0.49s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "R7-suite-sees-the-host-claude-state",
+      "file": "phase-loop-runtime/tests/conftest.py",
+      "file_sha256": "c2f7cfa0b78f9665cf17ea7dd564bce683aba3c457f864392d3c189f9c19e14e",
+      "mutation": {
+        "old": "    if request.node.get_closest_marker(\"host_seat_credentials\") is not None:",
+        "new": "    if True:"
+      },
+      "nodes": [
+        "tests/test_conftest_isolation.py::test_the_claude_login_and_seat_state_are_pinned_to_empty_tmp_dirs"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed, 1 warning in 0.35s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 1 warning in 0.36s"
       },
       "result": "red_as_required"
     }
