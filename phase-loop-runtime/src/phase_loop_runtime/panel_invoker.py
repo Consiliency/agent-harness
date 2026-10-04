@@ -1566,9 +1566,13 @@ def _publish_seat_preflight(
     review_authorization: "ReviewIsolationAuthorization | None",
     base_env: Mapping[str, str] | None, stream_dir: "Path | str | None",
     on_seat_preflight: "Callable[[tuple[_seat_preflight.SeatPreflightNotice, ...]], None] | None",
+    timeouts_by_leg: Mapping[str, int] | None = None,
 ) -> "tuple[_seat_preflight.SeatPreflightNotice, ...]":
     """agent-harness#1204: decide and PUBLISH the pointer-brief notices before any seat
     launches (callback, warning log, ``seat-preflight.json``). ``()`` without the flag.
+
+    ``timeouts_by_leg`` is the board's per-leg timeout, exactly as the spawn receives it, so
+    the credential margin checked here is the one the launch checks (agent-harness#1132 r12).
 
     The route facts are the PRODUCTION route each seat takes; an injected ``spawn`` is a
     hermetic stand-in for it and does not change the answer."""
@@ -1581,8 +1585,9 @@ def _publish_seat_preflight(
         # agent-harness#1132: a seat whose launch takes the jailed route has its tools in
         # the staged tree, so it CAN read the brief's files.
         if leg is not None and leg not in jailed_by_leg:
-            jailed_by_leg[leg] = _seat_jailed_at_launch(leg, review_authorization,
-                                                        brokered=brokered)
+            jailed_by_leg[leg] = _seat_jailed_at_launch(
+                leg, review_authorization, brokered=brokered,
+                timeout_s=(timeouts_by_leg or {}).get(leg))
         return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))
 
     notices = _seat_preflight.pointer_brief_preflight(
@@ -4199,6 +4204,12 @@ def sandbox_usable_by(leg: str | None, brokered: bool, *, jailed: bool = False) 
 _EGRESS_LAUNCH_PREFIX: ContextVar[tuple[str, ...]] = ContextVar(
     "_EGRESS_LAUNCH_PREFIX", default=(),
 )
+
+# agent-harness#1132 (r12): the cancellation event of the board a seat runs under, set by
+# ``invoke_board`` around each seat in the worker thread, under EVERY monitoring policy. A
+# wait inside the seat (the login wait) honours it even where no monitor carries it (the
+# bounded policy). ``None`` outside a board.
+_BOARD_CANCEL: ContextVar["threading.Event | None"] = ContextVar("_BOARD_CANCEL", default=None)
 
 
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
@@ -9131,12 +9142,23 @@ def _await_claude_login(
         "seat claude [%s]: the login token expires in %dm; waiting up to %d s for it to be "
         "renewed (use Claude or run `claude auth login`)",
         _CLAUDE_LOGIN_AWAITING, _minutes(left), int(max_wait))
-    cancel = review_monitor.cancel if review_monitor is not None else threading.Event()
+    # agent-harness#1132 (r12): the board's cancellation reaches the wait under every policy:
+    # the heartbeat monitor carries it, and under the bounded policy the board's context does.
+    cancel = (review_monitor.cancel if review_monitor is not None
+              else _BOARD_CANCEL.get() or threading.Event())
 
     def _wait(seconds: float) -> bool:
-        if quiescence_latch is not None:
-            quiescence_latch.raise_if_set()
-        return cancel.wait(seconds)
+        # The quiescence latch has no event a cancel sets, so it is re-checked every
+        # `_LOGIN_WAIT_SLICE_S`: a latch cancel or trip ends the wait promptly.
+        deadline = time.monotonic() + seconds
+        while True:
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return cancel.is_set()
+            if cancel.wait(min(remaining, _LOGIN_WAIT_SLICE_S)):
+                return True
 
     if review_monitor is not None:
         review_monitor.note(login_wait={"state": "awaiting_refresh", "max_wait_s": max_wait,
@@ -9151,6 +9173,9 @@ def _await_claude_login(
             review_monitor.note(login_wait={"state": result.outcome, "max_wait_s": max_wait,
                                             "waited_s": round(result.waited_s, 1)})
     return result
+
+
+_LOGIN_WAIT_SLICE_S = 0.25
 
 
 def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
@@ -9940,7 +9965,7 @@ def _seat_route_for_spawn(
 
 
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
-                           *, brokered: bool) -> bool:
+                           *, brokered: bool, timeout_s: int | None = None) -> bool:
     """Will this seat's production brokered launch take the jailed route? The same J7
     decision and EC-EXECFIND-2 gate ``_default_spawn`` applies; a jail that would be refused
     is not jailed (that seat does not launch at all)."""
@@ -9952,7 +9977,7 @@ def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAutho
     # Plan amendment A3/A3b: a short login with no wait allowed does not run. (With a wait,
     # the seat is counted jailed: it does not run only if the login is not renewed in time.)
     return not (leg == "claude" and _seat_credentials.login_refresh_wait_s() == 0
-                and _seat_credentials.login_seconds_left(_claude_seat_login_margin_s(None))
+                and _seat_credentials.login_seconds_left(_claude_seat_login_margin_s(timeout_s))
                 is not None)
 
 
@@ -11944,6 +11969,7 @@ def invoke_board(
                     board, pointer_brief=pointer_brief, mode=mode,
                     review_authorization=review_authorization, base_env=base_env,
                     stream_dir=stream_dir, on_seat_preflight=on_seat_preflight,
+                    timeouts_by_leg=timeouts_by_leg,
                 )
                 deferred: list[PanelLegResult] = []
                 for seat in board.seats:
@@ -12220,6 +12246,7 @@ def invoke_board(
             board, pointer_brief=pointer_brief, mode=mode,
             review_authorization=review_authorization, base_env=base_env,
             stream_dir=stream_dir, on_seat_preflight=on_seat_preflight,
+            timeouts_by_leg=timeouts_by_leg,
         )
 
         def _run_seat_body(item: Seat | tuple[int, Seat], monitor: _ReviewMonitor | None = None) -> PanelLegResult:
@@ -12484,6 +12511,15 @@ def invoke_board(
             )
 
         def _run_seat(item: Seat | tuple[int, Seat]) -> PanelLegResult:
+            # agent-harness#1132 (r12): the board's cancellation reaches every seat, bounded
+            # included (set here, in the worker thread that runs the seat).
+            token = _BOARD_CANCEL.set(operation_cancel)
+            try:
+                return _run_seat_policy(item)
+            finally:
+                _BOARD_CANCEL.reset(token)
+
+        def _run_seat_policy(item: Seat | tuple[int, Seat]) -> PanelLegResult:
             if not policy_kwargs:
                 return _run_seat_body(item)
             index, seat = cast("tuple[int, Seat]", item)
