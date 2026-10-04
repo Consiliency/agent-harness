@@ -32,6 +32,7 @@ from .claude_agent_view import (
 from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, ClaudeRouteResult, is_loopback_http_url
 from .discovery import classify_phase_team_eligibility
 from .harness_env_signatures import child_executor_env
+from .sandbox_policy import CHILD_SCRATCH_RELOCATE, SandboxSpaceError, child_scratch_env
 from .injection import materialize_claude_plugin_bundle
 from .models import (
     ClaudeTeamPolicy,
@@ -1956,7 +1957,13 @@ def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
     metadata: dict[str, Any] = {"executor": spec.executor, "probes": []}
     probe_outputs: dict[str, str] = {}
     for probe in spec.auth_preflight_probes:
-        completed = subprocess.run(probe, shell=True, text=True, capture_output=True, check=False)
+        try:
+            probe_env = child_scratch_env(os.environ, CHILD_SCRATCH_RELOCATE)
+        except SandboxSpaceError as exc:  # refused under PHASE_LOOP_SANDBOX_REFUSE_RAM
+            completed = subprocess.CompletedProcess(probe, 1, "", str(exc))
+        else:
+            completed = subprocess.run(probe, shell=True, text=True, capture_output=True,
+                                       check=False, env=probe_env)
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
         probe_outputs[probe] = " ".join(part for part in (stdout, stderr) if part)
@@ -2478,6 +2485,10 @@ def _cleanup_paths(paths: tuple[str, ...]) -> dict[str, Any] | None:
                 # the codex schema / context temps are files. Handle both.
                 shutil.rmtree(path)
                 removed.append(str(path))
+                if path.name.startswith(_REVIEW_STAGE_DIR_PREFIX):
+                    from .sandbox_retention import release_scratch_dir
+
+                    release_scratch_dir(path)
             elif path.exists() or path.is_symlink():
                 path.unlink()
                 removed.append(str(path))
@@ -2631,12 +2642,16 @@ def launch(
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
     # stamped — so a spawned child never mis-reads the host harness as its own run-from
     # context. This covers every ``launch_with_spec`` -> ``launch`` CLI child. The
-    # claude channel / agent-view routes (HTTP / adapter, not a CLI child) and the
-    # advisor-panel legs (their own ``_subscription_env`` surface) are a separate,
-    # env-managed spawn surface and intentionally not routed through here; AUTOSEL
-    # never auto-picks claude, so those routes don't need the run-from sentinel.
+    # claude channel route (HTTP, no CLI child), the agent-view route (``claude --bg``
+    # through ``ClaudeAgentViewAdapter``, whose default runner is the provider launch
+    # interface, so its scratch is decided there -- agent-harness#1147) and the
+    # advisor-panel legs (their own ``_subscription_env`` surface) are separate spawn
+    # surfaces and intentionally not routed through here; AUTOSEL never auto-picks
+    # claude, so those routes don't need the run-from sentinel.
     # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
+    # The executor's scratch decision, stamped like every agent-CLI launch's (agent-harness#1147).
+    child_env = child_scratch_env(child_env, CHILD_SCRATCH_RELOCATE)
     if caller_run_id:
         child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
     if lease_authority is not None and not dry_run:
@@ -3175,13 +3190,24 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
     recursive copy for a non-git tree.
 
     The copy roots under the run dir when a ``log_path`` exists (reclaimed with the
-    run/worktree on SIGKILL) and under the system temp dir otherwise; either way it
+    run/worktree on SIGKILL) and under the sandbox staging root otherwise (never a
+    RAM-backed temp dir while a disk one is usable, agent-harness#1147); either way it
     is removed in ``launch_with_spec``'s ``finally`` (detected by the
     ``_REVIEW_STAGE_DIR_PREFIX`` dir name). Only reached inside that try/finally.
     """
-    parent = log_path.parent if log_path is not None else Path(tempfile.gettempdir())
+    if log_path is not None:
+        parent = log_path.parent
+    else:
+        from .sandbox_policy import staging_root
+
+        parent = staging_root()
     parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=_REVIEW_STAGE_DIR_PREFIX, dir=str(parent)))
+    # The copy lives on persistent disk (agent-harness#1147): record its owner, so the
+    # crash-residue sweep removes it only once this process is provably gone.
+    from .sandbox_retention import claim_scratch_dir
+
+    claim_scratch_dir(staged)
     # Self-clean on any copy failure: the mkdtemp dir is already on disk, so a partial
     # (or complete) tree snapshot would otherwise leak if copying raises — the caller
     # only records paths for cleanup that this function successfully RETURNS (#177 CR-F3).
@@ -3239,6 +3265,9 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
         return staged
     except BaseException:
         shutil.rmtree(staged, ignore_errors=True)
+        from .sandbox_retention import release_scratch_dir
+
+        release_scratch_dir(staged)
         raise
 
 

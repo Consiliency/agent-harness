@@ -6,6 +6,91 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Sandbox staging and agent-CLI scratch stay off RAM; retention is sized to its filesystem (agent-harness#1147)
+
+- **Invariant.** Sandbox staging and spawned-CLI scratch are never RAM-backed while a
+  disk-backed location is usable. Otherwise they run in a typed degraded mode: one warning
+  and hard-clamped retention, and the round is never crashed. Set
+  `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` to refuse instead.
+  - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
+    in `/proc/self/mountinfo`, so overmounts and moved mounts are judged correctly. macOS
+    and Windows temp dirs count as disk.
+  - **Named exceptions:** the agy qualification and capture jails keep their tmpfs `/tmp`
+    and frozen env, because they are evidence (follow-up agent-harness#1179); the Gemini
+    heartbeat seat's jail has its own private `/tmp` (agent-harness#1181).
+- **Staging root.** Review scratch (`pl-panel-*`) and its sandbox clone go to
+  `PHASE_LOOP_SANDBOX_STAGING_DIR` if set. Otherwise they go to `phase-loop/sandboxes` in the
+  per-user cache dir (`$XDG_CACHE_HOME` or `~/.cache`, `~/Library/Caches`, `%LOCALAPPDATA%`),
+  and then to the temp dir, but only if it is not RAM-backed. The launcher's agy review copy
+  and the falsifier's stage use the same root. Every directory the runtime creates below
+  the cache dir is created 0700 and must be a real directory owned by this account. The
+  cache dir itself must be owned by this account or root, and neither it nor any ancestor
+  may be writable by another account unless sticky.
+- **Persistent residue.** A killed run's launcher review copy, falsifier dependency snapshot
+  and owned agy HOMEs now outlive a reboot. Each records its owner (pid and start time) in
+  a sibling `<name>.owner` file, and the crash-residue sweep removes one only once that
+  owner is provably gone -- never by age, because a copy's mtime does not move while a
+  child works inside it. A directory with no owner record is kept. Owner records and
+  sandbox markers are created exclusively at an unpredictable staging name and never
+  follow links; a record that is a link or not this account's counts as an unknown owner.
+- **Spawned agent CLIs** (board legs, advisory seats, brokered legs, the president,
+  executors):
+  - Each unset `TMPDIR` / `CLAUDE_CODE_TMPDIR` whose own default destination is RAM-backed
+    now points at a private (0700) disk-backed per-user dir with room. Claude Code's
+    `/tmp/claude-<uid>` alone reached 6 GB of a 15 GB RAM `/tmp`.
+  - Values you set are never overridden; set either variable to opt out. The brokered
+    route's allowlist still drops ambient values.
+  - Decided at one place for review providers: `launch_provider` / `run_provider` apply the
+    scratch decision to every env they launch with, and only the named exceptions opt out.
+    Bounded Gemini legs and the bounded Gemini president are relocated, including the agy
+    HOME they run in. Convergence adapters are relocated too, and so is the Claude Agent
+    View executor route: `ClaudeAgentViewAdapter`'s default runner is now the provider
+    launch interface, so `claude --bg` is decided there.
+  - Completeness is checked at RUNTIME by a test-suite regression tripwire (not an
+    adversarial boundary). `child_scratch_env` returns a `DecidedEnv` (a `dict` subclass)
+    labelled `PHASE_LOOP_SCRATCH_DECIDED=<decision>` and records it by object identity
+    (`sandbox_policy.decided_scratch`, a weak registry). The test suite's audit hook fails
+    any test in which the runtime spawns an agent CLI -- through `subprocess`, `os.exec*`,
+    `os.posix_spawn*`, `os.spawn*`, `os.system` or `pty.spawn`, after `env` and `sh -c`
+    parsing, in forked children too -- unless the env object handed to the spawn IS one a
+    decision returned. A copied, rebuilt, inherited or hand-made env fails, and an
+    exception decision counts only at the launch interface. The hook proves at install
+    that it rejects an undecided stub spawn and accepts a decided one. Agent-CLI names are
+    derived from the runtime's own harness registries, so Pi (`pi`, `pi-agent-watch`) and
+    any new harness are covered.
+  - A static inventory test remains as an early warning: it enumerates every process
+    launch in the package and fails on one whose scratch decision is not stated. It is
+    conservative: any use of a launch-capable module it
+    cannot resolve (a computed `getattr`, `__dict__`, the module passed as a value, a
+    dynamic import, `exec`/`eval`) also needs a stated decision, as does any use of a
+    provider entry point that does not hand it a decided env.
+  - Env builders take no scratch decision; each route decides afterwards, so a named
+    exception (the heartbeat seat, agy qualification and capture) is never refused by a
+    relocation it is exempt from under `PHASE_LOOP_SANDBOX_REFUSE_RAM=1`.
+- **Caps and floor.**
+  - Filesystem size comes from `shutil.disk_usage`, so it now works on Windows.
+  - The retention ceiling is `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES, 25% of the staging
+    filesystem)`, or 10% on a RAM-backed one.
+  - The default 2 GiB floor is capped at 25% of a small filesystem, and is 25% of a
+    RAM-backed one.
+  - A configured `PHASE_LOOP_SANDBOX_FLOOR_BYTES` is used verbatim, even when it equals the
+    default.
+- **Reaping.** Before a round is refused for space, retained sandboxes are reaped
+  oldest-first. The TTL, footprint and free-space reaps never remove a sandbox whose owning
+  process is still running, and the owner marker is published atomically.
+- **Leftovers.** The crash-residual sweep covers both the new staging root and the old
+  temp-dir root, so sandboxes left in `/tmp` by earlier releases are still reclaimed. A
+  round's scratch dir is removed with the mode-restoring helper, so a read-only directory
+  left by a panelist no longer leaks it.
+- **Claude transcript lookup.** The adapter now derives a seat's Claude transcript dir with
+  Claude Code's own rule: every character outside `[A-Za-z0-9-]` becomes `-`, dots
+  included. It used to keep dots. That was harmless under `/tmp`, but under `~/.cache` the
+  adapter looked in a directory that never exists, so a brokered Claude seat's progress and
+  finished review went unseen and the seat hung until cancelled.
+- **agy requalification.** `panel_invoker.py`, `sandbox_policy.py`, `sandbox_retention.py`
+  and `harness_env_signatures.py` changed, so the agy pin set drifts: the next release cut
+  requalifies agy.
+
 ### BAML v1 0.20.1 (agent-harness#1135)
 
 - **Dependency.** `baml-py>=0.222,<0.223` is replaced by `baml-bridge==0.20.1` (exact pin, D6)

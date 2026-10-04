@@ -9,11 +9,10 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import review_stage
+from . import review_stage, sandbox_policy
 from .advisor_board import backing
 
 if TYPE_CHECKING:
@@ -198,7 +197,7 @@ def run_finding_falsifier(
         backing.activate_falsifier_isolation_authorization(authorization, repo=repo)
         staged = review_stage.stage_review_tree(repo)
         if (staged.is_symlink()
-                or staged.parent.resolve() != Path(tempfile.gettempdir()).resolve()
+                or staged.parent.resolve() != sandbox_policy.staging_root().resolve()
                 or not staged.name.startswith(review_stage.REVIEW_STAGE_DIR_PREFIX)
                 or staged.resolve() == repo
                 or repo in staged.resolve().parents):

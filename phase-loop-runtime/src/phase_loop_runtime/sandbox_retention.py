@@ -25,13 +25,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import secrets
 import shutil
+import stat
 import tarfile
 import time
+from typing import Callable
 
 from .review_stage import REVIEW_STAGE_DIR_PREFIX, remove_review_stage
 
-__all__ = ["SandboxEntry", "discover", "reap", "mark_as_sandbox", "SANDBOX_MARKER"]
+__all__ = [
+    "SandboxEntry", "discover", "reap", "reap_until_free", "mark_as_sandbox", "SANDBOX_MARKER",
+]
 
 WORK_DIRNAME = "work"
 
@@ -66,13 +71,171 @@ def _looks_like_a_sandbox(path: Path) -> bool:
     return path.name.startswith(REVIEW_STAGE_DIR_PREFIX)
 
 
-def mark_as_sandbox(path: Path) -> None:
-    """Claim a directory as reapable. Only the creator of a sandbox may call this."""
+def mark_as_sandbox(path: Path, *, owner_pid: int | None = None) -> None:
+    """Claim a directory as reapable. Only the creator of a sandbox may call this.
+
+    ``owner_pid`` names the process using it. The TTL, footprint and free-space reaps skip a
+    sandbox whose owner is still running: every directory under the staging root is
+    either a leak or a round in flight, and reaping oldest-first would otherwise delete a
+    CONCURRENT board's tree mid-review (agent-harness#1147).
+    """
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
-    (path / SANDBOX_MARKER).write_text(
-        "created by phase-loop review staging; safe to reap\n", encoding="utf-8"
+    owner = ""
+    if owner_pid is not None:
+        owner = f"pid={owner_pid} start={_process_start(owner_pid) or ''}\n"
+    body = ("created by phase-loop review staging; safe to reap\n" + owner).encode("utf-8")
+    # Published ATOMICALLY: written under another name, synced, then renamed into place.
+    # The marker is what makes a directory reapable, so a marker that exists before its
+    # owner line is written is a window in which a live round looks ownerless -- and a
+    # concurrent free-space reap deleted one in exactly that window.
+    _publish_atomically(path / SANDBOX_MARKER, body)
+
+
+def _process_start(pid: int) -> str | None:
+    """The kernel start time of ``pid`` (field 22 of ``/proc/<pid>/stat``), to tell a
+    live owner from a recycled pid. ``None`` where there is no ``/proc``."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return stat.rpartition(")")[2].split()[19]
+
+
+def _owner_alive(path: Path) -> bool:
+    """Is the process that marked this sandbox still running? Unknown owner: no."""
+    try:
+        text = (path / SANDBOX_MARKER).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _recorded_owner_alive(text)
+
+
+#: A per-run scratch directory that is not a sandbox (the launcher's review copy, the
+#: falsifier's dependency snapshot, an owned agy HOME) records its owner in a SIBLING file
+#: ``<name>.owner``, so the directory's own content is untouched.
+OWNER_SUFFIX = ".owner"
+
+
+class ScratchRecordError(OSError):
+    """A runtime record could not be published (agent-harness#1147). Raised instead of
+    writing through anything the runtime did not just create itself."""
+
+
+_EXCLUSIVE = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+              | getattr(os, "O_CLOEXEC", 0))
+
+
+def _publish_atomically(target: Path, body: bytes) -> None:
+    """Write ``target`` atomically. The staging file gets an unpredictable name and is
+    created exclusively, never following a link (``O_CREAT|O_EXCL|O_NOFOLLOW``, 0600), so
+    nothing already at a staging name is opened or truncated; it is synced and then
+    renamed onto ``target``. A rename that cannot replace ``target`` fails closed."""
+    target = Path(target)
+    for _attempt in range(8):
+        staging = target.with_name(f"{target.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            fd = os.open(staging, _EXCLUSIVE, 0o600)
+        except FileExistsError:
+            continue  # someone else's entry at that name: take a fresh one
+        except OSError as exc:  # EACCES, ENOSPC, EROFS, ELOOP...: nothing was created
+            raise ScratchRecordError(
+                f"could not publish {target.name}: {exc.strerror or exc}") from exc
+        break
+    else:
+        raise ScratchRecordError(f"no free staging name for {target.name}")
+    try:
+        try:
+            os.write(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(staging, target)
+    except OSError as exc:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise ScratchRecordError(f"could not publish {target.name}: {exc.strerror or exc}") from exc
+
+
+def claim_scratch_dir(path: Path, *, owner_pid: int | None = None) -> None:
+    """Record the process that owns per-run scratch ``path`` (agent-harness#1147). The
+    crash-residue sweep removes the directory only once this owner is provably gone.
+    Raises :class:`ScratchRecordError` (fail closed) if the record cannot be published."""
+    path = Path(path)
+    pid = os.getpid() if owner_pid is None else owner_pid
+    body = f"pid={pid} start={_process_start(pid) or ''}\n".encode("utf-8")
+    _publish_atomically(path.with_name(path.name + OWNER_SUFFIX), body)
+
+
+def release_scratch_dir(path: Path) -> None:
+    """Drop ``path``'s owner record once the directory itself is gone: only a regular
+    file of this account's, never through a link. Never raises."""
+    record = Path(path).with_name(Path(path).name + OWNER_SUFFIX)
+    try:
+        st = record.lstat()
+        if stat.S_ISREG(st.st_mode) and _ours(st):
+            record.unlink()
+    except OSError:
+        pass
+
+
+def _ours(st: os.stat_result) -> bool:
+    return not hasattr(os, "getuid") or st.st_uid == os.getuid()
+
+
+def _read_own_record(record: Path) -> str | None:
+    """A record's text, if it is a regular file of this account's (opened without
+    following a link); else ``None``."""
+    try:
+        fd = os.open(record, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or not _ours(st):
+            return None
+        return os.read(fd, 4096).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def scratch_owner_gone(path: Path) -> bool:
+    """Is the recorded owner of per-run scratch ``path`` PROVABLY gone? Only a readable
+    record naming a process that no longer runs (or whose pid was reused) says yes. No
+    record, or an unreadable one, is an unknown owner -- and an unknown owner is never
+    gone: deciding by age alone deleted a running child's files (agent-harness#1161)."""
+    text = _read_own_record(Path(path).with_name(Path(path).name + OWNER_SUFFIX))
+    if text is None:
+        return False  # absent, unreadable, a link, or another account's: unknown owner
+    fields = dict(part.split("=", 1) for part in text.split() if "=" in part)
+    if not fields.get("pid", "").isdigit():
+        return False
+    return not _recorded_owner_alive(text)
+
+
+def _recorded_owner_alive(text: str) -> bool:
+    fields = dict(
+        part.split("=", 1) for line in text.splitlines() for part in line.split() if "=" in part
     )
+    try:
+        pid = int(fields.get("pid", ""))
+    except ValueError:
+        return False
+    recorded = fields.get("start", "")
+    current = _process_start(pid)
+    if current is not None:
+        return not recorded or current == recorded
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _size_of(path: Path) -> int:
@@ -147,24 +310,15 @@ def reap(
     cutoff = time.time() - ttl_s
 
     def _retire(entry: SandboxEntry) -> bool:
-        if destination is not None:
-            try:
-                _archive_work(entry, destination)
-            except Exception:
-                # Never trade the irreproducible half for disk space. Space can be
-                # recovered on the next pass; the panelist's work cannot.
-                return False
-        try:
-            _remove(entry)
-        except Exception:
-            return False
-        removed.append(entry.path)
-        return True
+        gone = _reap_one(entry, archive_dest=destination)
+        removed.extend(gone)
+        return bool(gone)
 
     entries = discover(root)
     survivors = []
     for entry in entries:
-        if entry.mtime < cutoff:
+        # A cold sandbox whose owner still runs is a long round, not a leftover.
+        if entry.mtime < cutoff and not _owner_alive(entry.path):
             if not _retire(entry):
                 survivors.append(entry)
         else:
@@ -172,11 +326,59 @@ def reap(
 
     if max_total_bytes is not None:
         total = sum(e.size_bytes for e in survivors)
-        # Oldest first: the newest sandbox is the one most likely to be resumed.
+        # Oldest first: the newest sandbox is the one most likely to be resumed. A sandbox
+        # whose owner is still running is a round in flight, never over-budget waste.
         for entry in sorted(survivors, key=lambda e: e.mtime):
             if total <= max_total_bytes:
                 break
+            if _owner_alive(entry.path):
+                continue
             if _retire(entry):
                 total -= entry.size_bytes
 
     return removed
+
+
+def reap_until_free(
+    root: Path | str,
+    *,
+    floor_bytes: int,
+    free_bytes: Callable[[Path], int],
+    archive_dest: Path | str | None = None,
+) -> list[Path]:
+    """Reap retained sandboxes oldest-first until ``root`` has ``floor_bytes`` free.
+
+    Called before a new round is refused for space: retained sandboxes are reclaimable, and
+    refusing a board while they sit there trades a working review for cold leftovers. Live
+    rounds are skipped and the archive-before-reap rule still holds. Never raises.
+    """
+    root = Path(root)
+    removed: list[Path] = []
+    try:
+        if free_bytes(root) >= floor_bytes:
+            return removed
+        for entry in sorted(discover(root), key=lambda e: e.mtime):
+            if _owner_alive(entry.path):
+                continue
+            removed.extend(_reap_one(entry, archive_dest=archive_dest))
+            if free_bytes(root) >= floor_bytes:
+                break
+    except Exception:
+        pass
+    return removed
+
+
+def _reap_one(entry: SandboxEntry, *, archive_dest: Path | str | None = None) -> list[Path]:
+    """Archive then remove one sandbox; ``[]`` when it was kept."""
+    if archive_dest is not None:
+        try:
+            _archive_work(entry, Path(archive_dest))
+        except Exception:
+            # Never trade the irreproducible half for disk space. Space can be
+            # recovered on the next pass; the panelist's work cannot.
+            return []
+    try:
+        _remove(entry)
+    except Exception:
+        return []
+    return [entry.path]
