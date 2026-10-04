@@ -1382,3 +1382,29 @@ class TestRecordsAreCreatedExclusively:
         sandbox_retention.mark_as_sandbox(box, owner_pid=os.getpid())
         assert victim.read_text(encoding="utf-8") == "keep\n"
         assert sandbox_retention._owner_alive(box)
+
+
+@pytest.mark.parametrize("code", ["EACCES", "ENOSPC", "EROFS"])
+@pytest.mark.parametrize("step", ["create", "write", "fsync", "replace"])
+def test_every_publication_failure_is_typed_and_leaves_no_stage(tmp_path, monkeypatch, code, step):
+    """Round 9 (agent-harness#1161): whichever step fails, with whichever errno, the claim
+    raises ScratchRecordError, leaves no staging file and no record; a name collision
+    alone still retries on a fresh name."""
+    import errno
+
+    scratch = tmp_path / "pl-review-stage-e"
+    scratch.mkdir()
+    error = OSError(getattr(errno, code), os.strerror(getattr(errno, code)))
+    real = {"create": os.open, "write": os.write, "fsync": os.fsync, "replace": os.replace}
+
+    def failing(*args, **kwargs):
+        if step == "create" and not (args[1] & os.O_CREAT):
+            return real["create"](*args, **kwargs)
+        raise error
+
+    monkeypatch.setattr(os, {"create": "open"}.get(step, step), failing)
+    with pytest.raises(sandbox_retention.ScratchRecordError, match="could not publish"):
+        sandbox_retention.claim_scratch_dir(scratch)
+    monkeypatch.undo()
+    assert not list(tmp_path.glob("*.tmp"))
+    assert not (tmp_path / (scratch.name + sandbox_retention.OWNER_SUFFIX)).exists()

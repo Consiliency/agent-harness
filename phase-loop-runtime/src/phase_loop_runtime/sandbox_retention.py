@@ -138,6 +138,9 @@ def _publish_atomically(target: Path, body: bytes) -> None:
             fd = os.open(staging, _EXCLUSIVE, 0o600)
         except FileExistsError:
             continue  # someone else's entry at that name: take a fresh one
+        except OSError as exc:  # EACCES, ENOSPC, EROFS, ELOOP...: nothing was created
+            raise ScratchRecordError(
+                f"could not publish {target.name}: {exc.strerror or exc}") from exc
         break
     else:
         raise ScratchRecordError(f"no free staging name for {target.name}")
