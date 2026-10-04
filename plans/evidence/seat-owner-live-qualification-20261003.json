@@ -8,7 +8,8 @@
   "notes": [
     "No credential values, credential paths, host addresses, raw provider text, process IDs, or private filesystem paths are included.",
     "The first unwrapped CLI attempt failed before provider execution because no filtered egress holder was installed; this record uses the same qualification path wrapped in the production holder context.",
-    "The committed evidence postdates the run; subject_runtime_head names the exact runtime bytes executed."
+    "The committed evidence postdates the run; subject_runtime_head names the exact runtime bytes executed.",
+    "The repaired runtime is reported separately in seat-owner-repair-diagnostics-20261004.json; this historical record does not qualify changed runtime bytes."
   ],
   "operations": [
     {
@@ -100,7 +101,7 @@
   "provider": "agy",
   "provider_version": "1.2.15",
   "repository": "Consiliency/agent-harness",
-  "role": "redacted final-head live qualification evidence; raw receipts remain private",
+  "role": "redacted historical live qualification evidence; raw receipts remain private",
   "schema": "seat_owner_live_qualification_summary.v1",
   "stderr_bytes": 0,
   "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

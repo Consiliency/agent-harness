@@ -1,0 +1,84 @@
+{
+  "schema": "seat_owner_repair_diagnostics.v1",
+  "pr": "agent-harness#1222",
+  "subject_runtime_head": "1f7aa8eb83b556536e4508d7f7e1b76b1f15e6d9",
+  "runtime_sha256": "d634be95e92b45073841e5da32c3fbb99d6d67479d2ac6a4912b0cc9fce3542c",
+  "created_at": "2026-10-04T08:29:17.268144+00:00",
+  "qualification_status": "incomplete",
+  "notes": [
+    "Manual real-provider completions are diagnostics, not governed review approval or production qualification.",
+    "A synthetic pass is not production qualification.",
+    "Unobserved cleanup measurements remain null.",
+    "Fresh-store qualification stopped before provider admission at a trusted-runtime prerequisite; its failed attempt is retained privately.",
+    "The prior live qualification record describes its historical runtime and does not qualify this repaired head."
+  ],
+  "provider_diagnostics": [
+    {
+      "provider": "claude",
+      "returncode": 0,
+      "completed": true,
+      "tools_exercised": true,
+      "full_permissions": true,
+      "processes_reaped": true,
+      "process_groups_quiescent": true,
+      "holder_context_closed": true,
+      "namespace_quiescent": null,
+      "model_deadline_s": null,
+      "silence_deadline_s": null,
+      "raw_receipt_sha256": "acc78012135db2d269704124471ced095c516082b557f6d1d462eab90679572e",
+      "board_approval": false
+    },
+    {
+      "provider": "codex",
+      "returncode": 0,
+      "completed": true,
+      "tools_exercised": false,
+      "full_permissions": null,
+      "processes_reaped": null,
+      "process_groups_quiescent": null,
+      "holder_context_closed": true,
+      "namespace_quiescent": null,
+      "model_deadline_s": null,
+      "silence_deadline_s": null,
+      "raw_receipt_sha256": "342869ee1cabcf395c42442853eecbe19b14f029a9b1798e7f630c8cf65c9bf9",
+      "board_approval": false
+    },
+    {
+      "provider": "gemini",
+      "returncode": 0,
+      "completed": true,
+      "tools_exercised": false,
+      "full_permissions": null,
+      "processes_reaped": null,
+      "process_groups_quiescent": null,
+      "holder_context_closed": true,
+      "namespace_quiescent": true,
+      "model_deadline_s": null,
+      "silence_deadline_s": null,
+      "raw_receipt_sha256": "4c9a5e7e4c569b436dae5353175227ba92dfd29e06f444b5808453eb2db4f950",
+      "board_approval": false
+    },
+    {
+      "provider": "grok",
+      "returncode": 0,
+      "completed": true,
+      "tools_exercised": false,
+      "full_permissions": null,
+      "processes_reaped": null,
+      "process_groups_quiescent": null,
+      "holder_context_closed": true,
+      "namespace_quiescent": null,
+      "model_deadline_s": null,
+      "silence_deadline_s": null,
+      "raw_receipt_sha256": "debd80db3c8b679214700a89c30159c87868586252f19f17f21f5a33e163f581",
+      "board_approval": false
+    }
+  ],
+  "fresh_store_qualification": {
+    "returncode": 1,
+    "completed": false,
+    "provider_admission_observed": false,
+    "holder_context_closed": true,
+    "raw_receipt_sha256": "31beaf905c34d73563cae31853e89e3a5763f0b16313b77fac4132a39895d210"
+  }
+}
