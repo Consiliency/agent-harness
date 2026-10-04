@@ -198,7 +198,16 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
   - `tried`, a tuple of `(step, code)` pairs.
 - **`resolve_seat_route(target, *, local, remote, host, allow_sealed)`** — pure. The
   `target` is a seat or a president rung, and every fact is an argument.
-  - **Step 1, `local`:** #1166's `decide_seat_route` outcome for claude. For codex and grok,
+  - **Step 1, `local`:** for claude, step 1 has **`_seat_route_for_spawn` semantics** (ruled
+    F045): `decide_seat_route`, then `JAIL_NOT_RUN_CODES`, then first-use qualification.
+    Bare `decide_seat_route` is not enough. The resolver is pure, so the qualification
+    outcome is a new resolver input, `jail_qualification`, gathered before the call:
+    - the walk gets it from `seat_jail_autoqualify.ensure_qualified("claude")`;
+    - `derive` gets it read-only from `pass_record_verdict(jail_profile_digest("claude"))`.
+      `derive` never triggers autoqualification.
+
+    The credential state is also an input. The walk reads it after the same A3
+    `await_login_margin` wait the seat path applies. For codex and grok,
     the D6 staged route, which counts as step 1, passes no adapter gate, and is always
     tooled; it has no separate host qualification. For gemini, a skip with
     `gemini_seat_egress_unconfined` until PR-B (S3/S4). **On the agy qualification board**
@@ -217,7 +226,10 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
     grok or gemini target in PR-A1.
 
     In PR-A1 the registry holds today's Claude Code behaviour only: a same-model fill of a
-    claude seat. In practice, then, step 3 runs in PR-A1 only on bounded boards.
+    claude **seat or claude president target** under Claude Code (ruled F032). In practice,
+    then, step 3 runs in PR-A1 only on bounded boards. **A claude rung under Claude Code is
+    never the P-LR rung:** bounded monitoring resolves it to step 3, and `heartbeat_only`
+    stops the walk there.
   - **Step 4:** `degraded`.
 - **The step-2 shim** (`remote_step(target, choice)`). It never calls a backend method while
   `_NONLOCAL_EXECUTION_DRIVER` is false:
@@ -305,13 +317,19 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
       `invoke_board` pin re-entries (`_INVOKE_BOARD(**call)`, code identity), ←
       `agy_qualification.worker`. The worker is checked by `f_code is worker.__code__` and
       `f_globals is vars(agy_qualification)`.
-    - The chain must also show a gemini-only board.
+    - The board check runs on `prepare`'s **own** `board` argument: every seat must be
+      gemini, `mode == "review"` and `monitoring_policy == "heartbeat_only"` (N11).
     - There is no parameter for the flag, so no caller can request it.
     - The check runs **at mint, not at render**, because seat spawns run on pool threads
       where `invoke_board` is not on the stack. A render-time stack walk finds no
       `invoke_board` frame; this was verified on the real worker path.
-    - `derive_review_leg_authorization` copies the flag onto each leg. The guard admits a
-      **seat** capability with `qualification_board=True`, with the opt-in unset.
+    - `derive_review_leg_authorization` copies the flag onto each leg, and the operation
+      lease snapshots it (N12). The guard admits a **seat** capability with
+      `qualification_board=True` only when the lease agrees, with the opt-in unset. The
+      flag is stamped into the leg's evidence (N11).
+    - The residue is in-place forgery with `object.__setattr__`, the same class as every
+      other sealed field. The lease binding narrows it, and agent-harness#1250's follow-up
+      tracks it.
     - The resolver resolves that board's gemini seat to `qualification_sealed` (above).
 
     Every other board, including a board that some other function builds and passes into
@@ -448,6 +466,15 @@ descends only on `{"status": "unavailable", "code": "president_unavailable"}`. S
       "seat_sandbox_unavailable_tiocsti",
       # step 1, Claude under Claude Code before the nested-TUI fact exists
       "claude_seat_nested_tui_unavailable",
+      # step 1, claude credential / qualification states (ruled F045), each recomputed
+      # read-only by derive:
+      #   token_missing      <- seat_credentials.claude_seat_credential_present() is False
+      #   qualification_failed <- pass_record_verdict(expected digest) is not a pass
+      #   login_token_expiring <- login present and expires_at - now < login_margin_s(deadline),
+      #                           emitted for the president only after the A3 wait
+      "claude_seat_token_missing",
+      "seat_jail_qualification_failed",
+      "claude_seat_login_token_expiring",
       # step 1, gemini until PR-B (the only gemini step-1 code this resolver emits)
       "gemini_seat_egress_unconfined",
       # step 2, PR-A1 shim
@@ -459,6 +486,16 @@ descends only on `{"status": "unavailable", "code": "president_unavailable"}`. S
   })
   ```
 
+  - **The principle (ruled F045).** A step-1 skip is P-LR-eligible only if it is a host or
+    credential state that can be determined at resolution without launching anything, and
+    that `derive` can recompute from a read-only probe. Anything raised during a launch
+    attempt stays in the excluded pre-spawn bucket.
+  - **Kept excluded:** `seat_sandbox_refused:jail_unqualified` and
+    `seat_sandbox_refused:pass_store_unsafe`. In production they arise only on the built
+    jail's actual digest at launch (around `panel_invoker` :3890), or through an injected
+    gate. Either way they are pre-spawn integrity faults.
+  - **`claude_seat_login_token_expiring` is not treated as transient.** Main has a president
+    there, and no tooled route exists.
   - There is **no D6 entry**. D6 rungs are always tooled, and the M1 cases are not host
     capability.
   - #1166's other gemini sealed codes (credential, scope, stream-split, profile) are not
@@ -466,8 +503,10 @@ descends only on `{"status": "unavailable", "code": "president_unavailable"}`. S
     #1166's gemini decision runs. They are therefore excluded.
   - PR-A3 extends the set with the remote admission codes that describe a host or account
     without a usable remote sandbox: `seat_remote_no_principal_token`,
-    `seat_remote_source_not_allowed`, and E2B key-file missing. `seat_remote_principal_cap_exceeded`
-    is excluded because it is transient, and PR-A3 states its disposition.
+    `seat_remote_source_not_allowed`, and E2B key-file missing. PR-A3 must reconcile the
+    disposition of `seat_remote_principal_cap_exceeded` with the F045 principle and the
+    `login_token_expiring` precedent (F014): if main has a president there and no tooled
+    route exists, being transient is not by itself a reason to exclude it.
 - **Excluded.** Any other code fails the president closed, and never reaches P-LR. That
   includes:
   - wiring faults: `president_tree_unbound`, `president_snapshot_missing`,
@@ -476,22 +515,42 @@ descends only on `{"status": "unavailable", "code": "president_unavailable"}`. S
   - an unknown code.
 - **Recomputed, never trusted.** `derive_president_leg_authorization` accepts no walk
   records. It also requires the president authorization's `staged_tree_sha256` and a
-  bound, present snapshot (M1) before it will set the flag. To set `sealed_last_resort`, it re-runs the resolver over the authorized ladder
-  and the board's seats from host facts it gathers itself: the platform, the jail
-  prerequisites, the D6 qualification, the monitoring policy, the host harness and the
-  remote config. It sets the flag only if that recomputation is P-LR-eligible. A caller that
-  passes fabricated all-skip resolutions gains nothing.
-- **Which rung: main's walk, exactly, including where main stops.** Walk the seated,
-  routed rungs in ladder order, the way main's walk does. Rungs with no seat are skipped,
-  as main skips them with `president_unavailable`.
+  bound, present snapshot (M1) before it will set the flag.
+  - To set `sealed_last_resort`, it re-runs the resolver over the authorized ladder and
+    the board's seats, from host facts it gathers itself:
+    - the platform and the jail prerequisites;
+    - the read-only pass-record verdict and the credential state (F045);
+    - the monitoring policy, and `panel_invoker._under_claude_code(base_env)`;
+    - the remote config.
+  - It **recomputes the P-LR rung itself**, stop included (N8), and sets the flag only for
+    that rung.
+  - If its recomputation disagrees with the walk's code, it refuses the flag. Two
+    examples: the login was refreshed in the meantime, or a valid pass record exists while
+    the walk claimed `seat_jail_qualification_failed`. The president then fails closed with
+    `president_ruling_missing:<code>` and the fix line "retry", which is the N14 class.
+  - A caller that passes fabricated all-skip resolutions gains nothing.
+- **Which rung: main's walk, exactly, including where main stops.** Walk the seated rungs
+  in ladder order, the way main's walk does. Rungs with no seat are skipped, as main skips
+  them with `president_unavailable`.
   - If the walk reaches a rung where **main raises**, there is no P-LR rung, and the result
-    is `president_no_tooled_route`. That rung is a claude rung under Claude Code with
-    `heartbeat_only`, where main's `_native_fill` raises `president_fill_heartbeat_refused`.
+    is `president_no_tooled_route`. Main raises at two kinds of rung:
+    - **(i)** a claude rung where `panel_invoker._under_claude_code(base_env)` is true
+      (main's own predicate, never an env-string test; F030) under `heartbeat_only`. Main's
+      `_native_fill` raises `president_fill_heartbeat_refused` there.
+    - **(ii)** a seated rung with **no authorized route** in `_president_routes`. Main
+      raises "no authorized president route" (president_adapter.py:220-221), which becomes
+      `president_invocation_failed`. That rung is a **stop, not a skip** (F031), so a
+      later rung is never chosen.
+
+    The walk and `derive` both apply (i) and (ii). "Every seated rung" in the eligibility
+    clause counts only rungs walked before a stop.
   - Otherwise, the first seated rung is the P-LR rung.
   - Under Claude Code with bounded monitoring, the claude rung resolves to step 3 (native),
     so P-LR is never reached there.
   - The P-LR launch site is `invoke_president`'s walk, after the last rung. It re-derives
     the leg for the chosen rung and runs the existing sealed president for it.
+- **Pre-spawn fix line (N14).** A pre-spawn failure's mode line and refusal carry the
+  real cause, with the fix "retry; if it persists, see the cause".
 - **Terminal code when P-LR is ineligible.** The walk returns
   `president_ruling_missing:<first excluded code>` when any rung's skip was excluded: a
   wiring fault, a pre-spawn failure, or an unknown code. It returns
@@ -514,6 +573,8 @@ The guard admits that launch through case (b) only. The opt-in plays no part.
 | Linux, jail-capable, outside Claude Code | brokered sealed president | tooled president (jail / D6) |
 | Linux, jail-incapable (kernel before 6.2, i.e. no `dev.tty.legacy_tiocsti`; root; no subuid or `newuidmap`), codex/grok rungs usable | brokered sealed | tooled president on D6 |
 | Linux, jail-incapable, only a claude rung (or a gemini-only ladder) | brokered sealed | **P-LR sealed last resort** with the warning |
+| Linux, jail-capable, but the claude jail does not run: no readable login (for example an env-authenticated CLI via `CLAUDE_CODE_OAUTH_TOKEN`), a login still expiring after the A3 wait, or a failed qualification; a claude(+gemini)-only seated ladder; outside Claude Code | brokered sealed (main does not strip that env var) | **P-LR sealed last resort** with the warning (F045) |
+| the same host, with a codex or grok rung seated | brokered sealed | tooled D6 president, **zero** sealed launches |
 | Claude Code, bounded, nested TUI not qualified | native claude president | the same native president (step 3) |
 | Claude Code, `heartbeat_only`, claude is the first seated rung (e.g. `["fable","gemini"]`, or the default ladder, which ends in gemini) | **raises** `president_fill_heartbeat_refused`: not in main's `_PRESIDENT_REFUSAL_CODES`, so `invoke_board` re-raises it. **No president.** | descends to a **tooled** codex or grok rung, which is an improvement. Otherwise typed `president_no_tooled_route`. **Never a sealed president**, gemini included, because main had none. |
 | Claude Code, `heartbeat_only`, a non-claude rung seated before claude (e.g. `["gemini","fable"]`) | runs the earlier rung sealed | tooled if that rung has a tooled route; else P-LR on it, which is legitimate because main reached it |
@@ -618,9 +679,24 @@ Every Linux gate, with its disposition:
   codex's r4 F002 probe (`ladder=["gemini","fable"]` on a claude-only board) yields the
   `fable` rung.
 
+  **F045 tests.**
+  - One positive test per new code: `claude_seat_token_missing` (modelling an
+    env-authenticated login that `read_login_store` does not parse),
+    `seat_jail_qualification_failed`, and `claude_seat_login_token_expiring` after the A3
+    wait. Each gives P-LR with the warning.
+  - The negative test: the same host with a codex or grok rung gives a tooled D6 president
+    and zero sealed launches.
+  - A launch-time `jail_unqualified` on the built digest never reaches P-LR.
+  - A `derive`/walk disagreement fails closed with "retry".
+  - **F031:** a seated, unrouted rung before an eligible rung on `run_president_operation`
+    stops the walk, giving `president_no_tooled_route` with no sealed launch.
+  - **F032:** under Claude Code bounded, the claude president is filled natively at step 3
+    and is never the P-LR rung.
+
   **The R1/H1 shape:** a claude+gemini board, `ladder=["fable","gemini"]`, `CLAUDECODE=1`,
   `heartbeat_only` gives `president_no_tooled_route` with **zero** sealed launches. This is
-  the r5 probe `test_r5_cc_hb_claude_first_gemini.py`. The converse, `["gemini","fable"]`,
+  the r5 probe `test_r5_cc_hb_claude_first_gemini.py`, together with the spec model
+  `test_r5_stop_rule_revised.py`. The real closure is the implementation test. The converse, `["gemini","fable"]`,
   gives P-LR on gemini on a jail-incapable host. On a plain terminal that is jail-incapable
   with a claude-only ladder, P-LR runs with the warning, and the step-3 code is not stubbed
   away.
@@ -665,7 +741,14 @@ Every Linux gate, with its disposition:
   refused.
 - [ ] Under Claude Code with `heartbeat_only` and `ladder=["fable","gemini"]`, there is no
   sealed launch, and the result is `president_no_tooled_route`.
-- [ ] `PLR_HOST_CAPABILITY_CODES` equals the literal set in this plan.
+- [ ] `PLR_HOST_CAPABILITY_CODES` equals the literal set in this plan, including the three
+  F045 codes. Each code's `derive` recompute is read-only, and `derive` never
+  autoqualifies.
+- [ ] On a jail-capable host where the claude jail does not run (each F045 code), a
+  claude(+gemini)-only ladder gets the P-LR president. With a codex or grok rung seated, it
+  gets a tooled D6 president.
+- [ ] An unrouted seated rung, or a claude rung under `_under_claude_code(base_env)` with
+  `heartbeat_only`, stops the walk. A claude rung under Claude Code is never the P-LR rung.
 - [ ] The guard admits a tools-off launch only through cases (a), (b), (c) and (d). The opt-in
   never admits a president, and reflective access never admits the agy case.
 - [ ] On a non-Linux host, the board is not refused. Seats resolve per seat, and a `local`
@@ -688,6 +771,14 @@ Every Linux gate, with its disposition:
 - engage P-LR under Claude Code with `heartbeat_only` where main had no president, using
   the `["fable","gemini"]` ladder;
 - skip past a stopping claude rung instead of stopping;
+- **skip an unrouted seated rung instead of stopping (F031);**
+- test the stop with an env-string check instead of `_under_claude_code(base_env)` (F030);
+- **step 3 refuses the president target under Claude Code bounded (F032);**
+- drop each F045 code from the set, one mutation per code;
+- the walk claims `seat_jail_qualification_failed` while a valid pass record exists: no
+  flag;
+- let a launch-time `jail_unqualified` reach P-LR;
+- let `derive` call `ensure_qualified`;
 - add a code to `PLR_HOST_CAPABILITY_CODES`, or let `derive` set the flag with no bound
   snapshot;
 - drop case (d), or admit a non-worker caller through it;
