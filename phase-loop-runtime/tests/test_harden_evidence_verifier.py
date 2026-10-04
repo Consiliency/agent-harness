@@ -417,6 +417,105 @@ def test_claude_typed_request_transport_binding_preserves_legacy_and_rejects_dri
         verify(stripped)
 
 
+def _real_sandbox_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The placement facts the PRODUCTION `_default_spawn` records for a staged leg."""
+    import contextlib
+    import subprocess
+
+    from phase_loop_runtime import panel_invoker, review_stage, sandbox_egress
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    for argv in (["init", "-q"], ["config", "user.email", "t@e.st"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(repo), *argv], check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"], check=True)
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "staging"))
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_ROOT", raising=False)
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_REMOTE_REQUIRED", raising=False)
+
+    @contextlib.contextmanager
+    def isolated_network(*args, **kwargs):
+        yield ("/usr/bin/env",)
+
+    monkeypatch.setattr(sandbox_egress, "isolated_network", isolated_network)
+    seen: dict[str, Any] = {}
+
+    def exec_leg(*args, **kwargs):
+        panel_invoker.run_provider(["true"], check=True)
+        seen.update(panel_invoker._sandbox_evidence())
+        return 0, "ok", "log"
+
+    monkeypatch.setattr(panel_invoker, "_exec_leg", exec_leg)
+    auth = backing.ReviewIsolationAuthorization(
+        operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+        instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+        routes=(), readonly_tools=("Read",), child_credentialless=True,
+        child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+        canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+        _seal=backing._AUTHORIZATION_SEAL,
+        staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+    )
+    panel_invoker._default_spawn(
+        "codex", "BUNDLE", repo_dir=repo, review_authorization=auth, canonical_repo_authority=repo,
+    )
+    return json.loads(json.dumps(seen))
+
+
+def test_a_sandboxed_broker_record_round_trips_and_backend_claims_do_not(tmp_path, monkeypatch):
+    """Producer -> verifier on a real sandboxed record (agent-harness#896): the placement
+    facts this runtime records verify; the same record with `applied=true` resting only on
+    backend receipts does not. Mutation: skip the placement check."""
+    verifier = _load_harden_evidence_verifier()
+    layout = _verifier_fixture(verifier, tmp_path / "fixture")
+    request = _request(verifier, layout, "candidate")
+    inputs = {
+        kind: _artifact_json(verifier, layout, request[kind])["content"]
+        for kind in ("bundle", "instructions")
+    }
+    prompt = verifier.broker_sealed_prompt(inputs["bundle"], inputs["instructions"])
+    item = next(item for item in layout["evidence"]["reviews"]["candidate"]["seats"]
+                if item["harness"] == "codex")
+    seat = _artifact_json(verifier, layout, item["artifact"])
+
+    def verify(broker):
+        verifier.verify_broker(
+            broker, "codex", seat["requested_model"], seat["resolved_model"],
+            verifier.sha256(inputs["bundle"].encode()),
+            verifier.sha256(inputs["instructions"].encode()), prompt, seat["report"],
+        )
+
+    facts = _real_sandbox_record(tmp_path / "producer", monkeypatch)
+    assert facts["sandbox_root_applied"] is True
+    assert [r["step"] for r in facts["sandbox_placement_receipts"]] == ["prepared", "launched"]
+    sandboxed = {**seat["broker"], **facts}
+    verify(sandboxed)
+
+    digest = facts["sandbox_snapshot_sha256"]
+    backend_only = {
+        **sandboxed,
+        "sandbox_placement_backend": "fakex",
+        "sandbox_root_host": "sandbox.example",
+        "sandbox_staged_at": "fakex:fx-1",
+        "sandbox_local_provider_spawns": 0,
+        "sandbox_placement_receipts": [
+            {"step": step, "sandbox_ref": "fx-1", "snapshot_sha256": digest, "attested_by": "backend"}
+            for step in ("committed", "completed")
+        ],
+    }
+    with pytest.raises(verifier.EvidenceError):
+        verify(backend_only)
+    # The control: the same claims attested by the runtime are accepted.
+    verify({**backend_only, "sandbox_placement_receipts": [
+        {**receipt, "attested_by": "runtime"} for receipt in backend_only["sandbox_placement_receipts"]
+    ]})
+    # An undeclared sandbox key is still refused: the set is enumerated, not a prefix.
+    with pytest.raises(verifier.EvidenceError):
+        verify({**sandboxed, "sandbox_anything_else": True})
+
+
 class HardenEvidenceVerifierContractTests(unittest.TestCase):
     def test_harden_review_request_retains_recomputed_git_bound_inputs(self) -> None:
         """Review input must be retained evidence, not a self-reported digest."""
