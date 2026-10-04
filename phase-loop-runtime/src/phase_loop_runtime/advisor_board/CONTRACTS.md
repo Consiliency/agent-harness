@@ -1053,7 +1053,9 @@ are recorded on agent-harness#1132.
   read-only `/usr` (merged-`/usr` links recreated), an `/etc` subset, the provider image at
   `/seat/bin/<leg>`, the bundle and instructions as sealed memfds at `/seat/review/`, the
   staged clone read-write at `/seat/tree`, fresh `/seat/home` and `/seat/out`, tmpfs `/tmp`
-  and `/dev/shm`, `--remount-ro /`, `--clearenv` plus a declared environment, and the J14
+  and `/dev/shm`, `--remount-ro /`, `--clearenv` plus a declared environment (the seat's
+  `TMPDIR` and `CLAUDE_CODE_TMPDIR` are `/seat/home/.tmp`, on the disk-backed staging root,
+  never the tmpfs `/tmp`; agent-harness#1147), and the J14
   seccomp filter (architecture kill, x32 EPERM, nested user/mount namespaces, `setns`,
   `clone3` ENOSYS, key syscalls, AF_ALG sockets, TIOCSTI/TIOCLINUX). The profile digest
   covers the mount set, the flags and the filter digest.
@@ -1125,6 +1127,10 @@ are recorded on agent-harness#1132.
   (`seat_uid.trusted_module_argv`), never `python -m`, whatever the launch's working
   directory is. An inventory test fails on any `sys.executable -m` launch of a package
   module.
+- **Scratch decision (agent-harness#1147).** A jailed launch's helper chain gets one env
+  from `child_scratch_env` (`_jail_launch_env`), and that same object is handed to the
+  identity probe and the launch. The seat never sees it: bwrap clears the environment and
+  sets the seat's own.
 - **Seat-token rotation.** The token file is read at each jailed launch and never cached
   across legs or rounds. A token replaced between legs (atomic rename in the same 0700
   directory) is used by the next launch; a running leg keeps the token it was launched with.

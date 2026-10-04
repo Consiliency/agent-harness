@@ -1454,3 +1454,9 @@ Board round 7 at 34c6cf40. These clarify A1 and A2; they add no new rule.
 - **Launch helpers** run from the trusted package only (`seat_uid.trusted_module_argv`).
 - **Fix literal.** The fix line for the login codes is `claude auth login` (Claude CLI
   2.1.288 has no top-level `login` command); this corrects A1's `claude login`.
+- **Scratch (merge of agent-harness#1161).** The jailed launch's helper chain takes the
+  agent-harness#1147 scratch decision, one decided env for the probe and the launch. The
+  seat's `TMPDIR` and `CLAUDE_CODE_TMPDIR` are `/seat/home/.tmp` on the disk-backed staging
+  root, not the jail's tmpfs `/tmp`. The jail digest changes; hosts re-qualify on first use.
+- **Suite isolation.** Tests see an empty `CLAUDE_CONFIG_DIR` and seat state root; only
+  the live jailed-seat test (marker `host_seat_credentials`) reads the host's.

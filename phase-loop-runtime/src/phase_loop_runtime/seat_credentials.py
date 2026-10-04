@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import seat_jail
+from . import sandbox_policy, seat_jail
 
 SOURCE_OVERRIDE = "seat_token"
 SOURCE_LOGIN = "login"
@@ -172,14 +172,17 @@ def read_login_token(**store_kwargs: object) -> LoginToken | None:
 
 def refresh_login_via_cli(run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> None:
     """Ask the CLI to bring its login up to date, on the host. Its output (which names the
-    account) is discarded; a failure is not an error here, the re-read decides."""
+    account) is discarded; a failure is not an error here, the re-read decides. It runs
+    with this process's environment after the agent-harness#1147 scratch decision."""
     claude = shutil.which("claude")
     if claude is None:
         return
     try:
         run([claude, "auth", "status", "--json"], stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=_REFRESH_TIMEOUT_S,
-            check=False)
+            check=False,
+            env=sandbox_policy.child_scratch_env(os.environ,
+                                                 sandbox_policy.CHILD_SCRATCH_RELOCATE))
     except (OSError, subprocess.SubprocessError):
         return
 

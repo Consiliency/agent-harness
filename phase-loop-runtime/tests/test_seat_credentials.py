@@ -199,6 +199,10 @@ def test_the_refresh_trigger_is_the_clis_own_auth_status_with_output_discarded(m
     sc.refresh_login_via_cli(run=run)
     assert seen["argv"] == ["/opt/bin/claude", "auth", "status", "--json"]
     assert seen["stdout"] is subprocess.DEVNULL and seen["stderr"] is subprocess.DEVNULL
+    # agent-harness#1147: the host CLI runs with its scratch decided, never an inherited env.
+    from phase_loop_runtime import sandbox_policy
+
+    assert sandbox_policy.decided_scratch(seen["env"]) == sandbox_policy.CHILD_SCRATCH_RELOCATE
 
 
 @pytest.mark.parametrize("env, deadline, expected", [

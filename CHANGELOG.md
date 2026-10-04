@@ -99,6 +99,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   lifetime. A journaled give-up no longer hides an authentication failure: the login and
   seat-token outcomes keep their own codes on both routes. The seat launch helpers run from
   the trusted package only. Fix lines name `claude auth login`.
+- The jailed Claude seat takes agent-harness#1147's scratch decision: its helper chain is
+  launched with the decided env, and the seat's own `TMPDIR` and `CLAUDE_CODE_TMPDIR` are
+  `/seat/home/.tmp` (its home, on the disk-backed staging root), not the jail's tmpfs
+  `/tmp`. This changes the jail profile digest, so a host re-qualifies once on first use.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.
