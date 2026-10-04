@@ -164,6 +164,10 @@ codex/grok, and `jailed | sealed` otherwise).
   model differs from the seat's model only when the resolved route has `stand_in_for` set,
   and record `stand_in_for` and `filled_by_model` in `_native_fill`. A same-model fill is
   unchanged.
+- `agy_qualification.py` (the Gemini heartbeat qualification board) — modify — it
+  qualifies the sealed agy route itself, so it is the one sanctioned non-operator caller of
+  the sealed route. It passes `allow_sealed=True` explicitly, and its mode line says
+  `sealed (operator opt-in)`. The sealed guard exempts no other caller.
 - `invoke_panel`, `invoke_panel_request` — modify — route through the same resolver. There
   are no other per-seat route predicates. `sandbox_usable_by` becomes an input to step (1)
   only.
@@ -173,8 +177,15 @@ codex/grok, and `jailed | sealed` otherwise).
 - `resolve_review_monitoring_policy` — modify — only if D2 = (a). Allow a native fill under
   `heartbeat_only` when it is a resolver-produced stand-in, and keep the refusal for a
   caller-supplied fill. If D2 = (b), there is no change, and a native-route seat under
-  heartbeat-only resolves to `degraded` with the fix "fill natively and bind with
-  `--native-leg`".
+  heartbeat-only keeps today's `UNAVAILABLE` / `under_claude_code` detail. That way the
+  out-of-band `--native-leg` fill still binds: `apply_native_leg_fills` accepts only that
+  shape. `seat_not_run:<reason>` is reserved for seats that have no native option.
+- `prepare_review_composition_authorization` and the review-isolation authorization (both
+  `platform.system() != "Linux"` gates, around lines 949 and 996) — modify, only if D5 = (a).
+  On non-Linux, the whole-board refusal becomes a per-seat step-1 fact,
+  `seat_local_sandbox_unsupported_os`, so the seat continues to steps 2→3→4. Under D5 = (b),
+  non-Linux boards stay refused whole (agent-harness#1098), and this PR does not close the
+  issue's "hosts without the jail" box for macOS or Windows.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/president_adapter.py` (modify)
 
@@ -232,7 +243,7 @@ here.
 ## Dependencies & order
 
 1. agent-harness#1222, then agent-harness#1166, land on main.
-2. D1, D2 and D4 are decided. D3 does not block this PR.
+2. D1, D2, D4 and D5 are decided. D3 does not block this PR.
 3. Within the PR: `seat_preflight` codes → `seat_route.py` and its test → panel_invoker
    wiring → cli/president → docs.
 
@@ -283,6 +294,11 @@ Mutation receipts are required, one per resolver step and one for the sealed gua
   Current code says no. This PR keeps that.
 - **D4:** demoting the HARDEN sealed route to opt-in needs a CONTRACTS/HARDEN amendment entry.
   Is the opt-in name `PHASE_LOOP_SEAT_ALLOW_SEALED` / `--allow-sealed-seat` approved?
+
+- **D5:** today the board is refused whole on non-Linux (`backing.py` Linux gates;
+  agent-harness#1098). (a) Make it a per-seat step-1 fact, so macOS and Windows go
+  2→3→4 (recommended), or (b) keep the whole-board refusal until the per-OS sandboxes
+  exist.
 
 ## Follow-ups (file as separate issues)
 
