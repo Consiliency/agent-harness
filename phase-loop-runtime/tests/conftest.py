@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -25,6 +26,27 @@ from _outside_agent_canonical import (
 from _dotfiles_tree import dotfiles_tree_present
 from _quarantine import deselect_quarantined
 
+
+import _scratch_audit_hook
+
+# agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
+# scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
+_scratch_audit_hook.install()
+_scratch_audit_hook.enabled = True
+_scratch_audit_hook.log_path = os.path.join(
+    tempfile.mkdtemp(prefix="pl-scratch-audit-"), "violations.log")
+
+
+@pytest.fixture(autouse=True)
+def _every_agent_spawn_has_a_scratch_decision():
+    _scratch_audit_hook.drain()
+    yield
+    found = _scratch_audit_hook.drain()
+    assert not found, "agent-CLI spawn without a scratch decision:\n" + "\n".join(found)
+
+
+#: The developer's real home, captured before any test patches HOME (agent-harness#1147).
+_REAL_HOME = Path(os.path.abspath(Path.home()))
 
 _CONFORM_BODY_COUNTER_ENV = "PHASE_LOOP_CONFORM_BODY_COUNTER"
 
@@ -90,9 +112,31 @@ def _isolate_host_state(monkeypatch, tmp_path):
     authority_root = tmp_path / "fabpub-authority-isolated"
     authority_root.mkdir()
     monkeypatch.setenv(FABPUB_AUTHORITY_ROOT_ENV, str(authority_root))
+    # Review scratch defaults to a per-user cache dir (agent-harness#1147); keep the
+    # suite's rounds -- and the retention sweep they trigger -- out of the real one.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "sandbox-staging"))
     for name in list(os.environ):
         if name.startswith(_CUSTOMIZATION_ENV_PREFIXES) and name not in _CUSTOMIZATION_ENV_EXEMPT:
             monkeypatch.delenv(name)
+    # The suite must not depend on whether THIS host's /tmp is a tmpfs (agent-harness#1147):
+    # by default no mount table is readable, which the policy treats as disk. A test about
+    # RAM-backed placement fakes the mount table itself; one that needs the real table sets
+    # `_MOUNTINFO` back. Nor may it write the developer's real per-user cache dir: a cache
+    # dir that resolves under the real home becomes the test's own. (Not via
+    # XDG_CACHE_HOME: an XDG_CACHE_* variable counts as an agy customization source.)
+    from phase_loop_runtime import sandbox_policy
+
+    monkeypatch.setattr(sandbox_policy, "_MOUNTINFO", tmp_path / "no-mountinfo")
+    real_cache_dir = sandbox_policy._user_cache_dir
+
+    def _test_cache_dir():
+        found = real_cache_dir()
+        where = None if found is None else Path(os.path.abspath(found))
+        if where is not None and where.is_relative_to(_REAL_HOME) and not where.is_relative_to(tmp_path):
+            return tmp_path / "user-cache"
+        return found
+
+    monkeypatch.setattr(sandbox_policy, "_user_cache_dir", _test_cache_dir)
 
 
 @pytest.fixture(autouse=True)

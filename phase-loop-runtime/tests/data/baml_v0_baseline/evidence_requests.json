@@ -1,0 +1,118 @@
+{
+ "provenance": {
+  "baml_py_version": "0.222.0",
+  "captured_by": "tests/data/baml_v0_baseline/capture_v0.py",
+  "env_sentinels": [
+   "ANTHROPIC_API_KEY",
+   "BAML_HOME",
+   "BAML_LOG",
+   "BAML_TRACE",
+   "BOUNDARY_API_KEY",
+   "BOUNDARY_PROJECT_ID",
+   "HOME",
+   "HTTPS_PROXY",
+   "OPENAI_API_KEY",
+   "OPENAI_BASE_URL"
+  ],
+  "main_sha": "56dce95a52625a58cd08911f8f623c637bf52e44",
+  "python": "3.12.12"
+ },
+ "requests": {
+  "edge_values": {
+   "payload": {
+    "expected_artifact_characteristics": "{% for a in b %}x{% endfor %}",
+    "sample_artifact_content": "  lead/trail  ",
+    "tier2_signal_summary": ""
+   },
+   "v0": {
+    "body": {
+     "messages": [
+      {
+       "content": "Evaluate whether a suspected evidence artifact looks fabricated.\n\nInputs are intentionally bounded:\n- Tier 2 signal summary: \n- Sample artifact content:   lead/trail  \n- Expected artifact characteristics: {% for a in b %}x{% endfor %}\n\nReturn only an EvidenceJudgment object. Use verdict \"real\", \"fake\", or\n\"uncertain\". Keep reasoning concise and list concrete concerns, if any.\n\nAnswer in JSON using this schema:\n{\n  verdict: string,\n  confidence: float,\n  reasoning: string,\n  specific_concerns: string[],\n}",
+       "role": "user"
+      }
+     ],
+     "model": "phase-loop-evidence-audit"
+    },
+    "headers": {
+     "baml-original-url": "https://example.invalid/v1",
+     "content-type": "application/json"
+    },
+    "message_content_types": [
+     "str"
+    ],
+    "message_roles": [
+     "user"
+    ],
+    "method": "POST",
+    "prompt": "Evaluate whether a suspected evidence artifact looks fabricated.\n\nInputs are intentionally bounded:\n- Tier 2 signal summary: \n- Sample artifact content:   lead/trail  \n- Expected artifact characteristics: {% for a in b %}x{% endfor %}\n\nReturn only an EvidenceJudgment object. Use verdict \"real\", \"fake\", or\n\"uncertain\". Keep reasoning concise and list concrete concerns, if any.\n\nAnswer in JSON using this schema:\n{\n  verdict: string,\n  confidence: float,\n  reasoning: string,\n  specific_concerns: string[],\n}",
+    "prompt_sha256": "3f9e63ad338ce94c3c7ecebde7a1e0657529d26edc2e6f78a120e59530ac7fbf",
+    "url": "https://example.invalid/v1/chat/completions"
+   }
+  },
+  "sentinel_args": {
+   "payload": {
+    "expected_artifact_characteristics": "ARGSENTINEL-expected-artifact-characteristics",
+    "sample_artifact_content": "ARGSENTINEL-sample-artifact-content",
+    "tier2_signal_summary": "ARGSENTINEL-tier2-signal-summary"
+   },
+   "v0": {
+    "body": {
+     "messages": [
+      {
+       "content": "Evaluate whether a suspected evidence artifact looks fabricated.\n\nInputs are intentionally bounded:\n- Tier 2 signal summary: ARGSENTINEL-tier2-signal-summary\n- Sample artifact content: ARGSENTINEL-sample-artifact-content\n- Expected artifact characteristics: ARGSENTINEL-expected-artifact-characteristics\n\nReturn only an EvidenceJudgment object. Use verdict \"real\", \"fake\", or\n\"uncertain\". Keep reasoning concise and list concrete concerns, if any.\n\nAnswer in JSON using this schema:\n{\n  verdict: string,\n  confidence: float,\n  reasoning: string,\n  specific_concerns: string[],\n}",
+       "role": "user"
+      }
+     ],
+     "model": "phase-loop-evidence-audit"
+    },
+    "headers": {
+     "baml-original-url": "https://example.invalid/v1",
+     "content-type": "application/json"
+    },
+    "message_content_types": [
+     "str"
+    ],
+    "message_roles": [
+     "user"
+    ],
+    "method": "POST",
+    "prompt": "Evaluate whether a suspected evidence artifact looks fabricated.\n\nInputs are intentionally bounded:\n- Tier 2 signal summary: ARGSENTINEL-tier2-signal-summary\n- Sample artifact content: ARGSENTINEL-sample-artifact-content\n- Expected artifact characteristics: ARGSENTINEL-expected-artifact-characteristics\n\nReturn only an EvidenceJudgment object. Use verdict \"real\", \"fake\", or\n\"uncertain\". Keep reasoning concise and list concrete concerns, if any.\n\nAnswer in JSON using this schema:\n{\n  verdict: string,\n  confidence: float,\n  reasoning: string,\n  specific_concerns: string[],\n}",
+    "prompt_sha256": "03a837fcdb0f0c95c6a82903919dda251319249a40aa670915262b3cd9baf4fa",
+    "url": "https://example.invalid/v1/chat/completions"
+   }
+  },
+  "template_syntax": {
+   "payload": {
+    "expected_artifact_characteristics": "ARGSENTINEL-expected \u00fcn\u00efc\u00f8d\u00e9 \u2713",
+    "sample_artifact_content": "ARGSENTINEL-sample line1\nline2 `tick` back\\slash",
+    "tier2_signal_summary": "ARGSENTINEL-t2 sig ${PROJECT} {{ x }}"
+   },
+   "v0": {
+    "body": {
+     "messages": [
+      {
+       "content": "Evaluate whether a suspected evidence artifact looks fabricated.\n\nInputs are intentionally bounded:\n- Tier 2 signal summary: ARGSENTINEL-t2 sig ${PROJECT} {{ x }}\n- Sample artifact content: ARGSENTINEL-sample line1\nline2 `tick` back\\slash\n- Expected artifact characteristics: ARGSENTINEL-expected \u00fcn\u00efc\u00f8d\u00e9 \u2713\n\nReturn only an EvidenceJudgment object. Use verdict \"real\", \"fake\", or\n\"uncertain\". Keep reasoning concise and list concrete concerns, if any.\n\nAnswer in JSON using this schema:\n{\n  verdict: string,\n  confidence: float,\n  reasoning: string,\n  specific_concerns: string[],\n}",
+       "role": "user"
+      }
+     ],
+     "model": "phase-loop-evidence-audit"
+    },
+    "headers": {
+     "baml-original-url": "https://example.invalid/v1",
+     "content-type": "application/json"
+    },
+    "message_content_types": [
+     "str"
+    ],
+    "message_roles": [
+     "user"
+    ],
+    "method": "POST",
+    "prompt": "Evaluate whether a suspected evidence artifact looks fabricated.\n\nInputs are intentionally bounded:\n- Tier 2 signal summary: ARGSENTINEL-t2 sig ${PROJECT} {{ x }}\n- Sample artifact content: ARGSENTINEL-sample line1\nline2 `tick` back\\slash\n- Expected artifact characteristics: ARGSENTINEL-expected \u00fcn\u00efc\u00f8d\u00e9 \u2713\n\nReturn only an EvidenceJudgment object. Use verdict \"real\", \"fake\", or\n\"uncertain\". Keep reasoning concise and list concrete concerns, if any.\n\nAnswer in JSON using this schema:\n{\n  verdict: string,\n  confidence: float,\n  reasoning: string,\n  specific_concerns: string[],\n}",
+    "prompt_sha256": "18f83f897b7becd1b3a017d08d1808c5321c6109a78775783ad114c0a01f95c5",
+    "url": "https://example.invalid/v1/chat/completions"
+   }
+  }
+ }
+}

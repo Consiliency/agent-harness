@@ -203,4 +203,8 @@ def child_executor_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     for marker in CLAUDE_CODE_SELF_MARKERS:
         e.pop(marker, None)
     e[PHASE_LOOP_CHILD_ENV] = "1"
-    return e
+    # An executor CLI's own scratch goes to disk when its temp dir is RAM-backed and the
+    # caller has not set TMPDIR / CLAUDE_CODE_TMPDIR (agent-harness#1147).
+    from .sandbox_policy import fill_child_tmp_env
+
+    return fill_child_tmp_env(e)

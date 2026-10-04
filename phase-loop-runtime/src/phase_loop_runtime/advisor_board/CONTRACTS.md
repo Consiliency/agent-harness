@@ -337,7 +337,77 @@ the caller passes a PATH and the runtime reads it.
   (`max_age_s = 24h`) sweep of `pl-panel-*` dirs, called at the top of
   `_default_spawn`. Reclaims dirs leaked when a run is KILLED before the per-run
   `finally: rmtree` (timeout/crash); a concurrent run's fresh dir is never touched,
-  and a GC failure can NEVER affect the run (fully swallowed).
+  and a GC failure can NEVER affect the run (fully swallowed). It sweeps both the
+  current staging root and the system temp dir, where releases before
+  agent-harness#1147 staged.
+- **Staging root and retention (agent-harness#1147, `sandbox_policy`).**
+  - **Invariant.** Sandbox staging and spawned-CLI scratch are never RAM-backed while a
+    disk-backed candidate is usable. Otherwise they run in a typed DEGRADED mode
+    (`ScratchLocation.degraded`): one warning and hard-clamped retention, and the round is
+    never crashed. `PHASE_LOOP_SANDBOX_REFUSE_RAM=1` refuses instead (leg detail
+    `env_failure: no disk-backed scratch and RAM fallback refused`).
+  - **RAM-backed** means a Linux tmpfs or ramfs, identified by the device serving the path
+    (`st_dev` matched against `/proc/self/mountinfo`), so overmounts and moved mounts are
+    judged correctly. macOS and Windows temp dirs count as disk.
+  - **Named exceptions**, each a typed scratch decision (`child_scratch_env`): the agy
+    qualification and capture jails keep a tmpfs `/tmp` and their frozen env, because they
+    are qualification evidence (follow-up agent-harness#1179); and the Gemini HEARTBEAT
+    seat's jail mounts its own private `/tmp` (agent-harness#1181). Neither covers a
+    bounded Gemini leg or the bounded Gemini president, which run on the host.
+  - **Staging root.** Each round's `pl-panel-*` scratch, and the sandbox clone inside it,
+    is created under `staging_root()`. That is `PHASE_LOOP_SANDBOX_STAGING_DIR` when set;
+    otherwise `phase-loop/sandboxes` in the platform's per-user cache dir (`$XDG_CACHE_HOME`
+    or `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows); else
+    the system temp dir when it is not RAM-backed. `TMPDIR` is not the override. The
+    launcher's agy review copy (without a run log) and the falsifier's stage and
+    dependency snapshot use the same root. Every directory the runtime creates below the
+    cache dir is created 0700 and must be a real directory owned by this account.
+  - **Capacity.** Filesystem size comes from `shutil.disk_usage`, which works on every
+    platform.
+    - Retention ceiling: `min(PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES (40 GiB), 25% of the
+      filesystem)`, or 10% on a RAM-backed one.
+    - Default floor: 2 GiB capped at 25% of the filesystem, or 25% of a RAM-backed one.
+    - A floor that is configured (by the setting's presence) is used verbatim.
+  - **Reaping.** Before a round is refused for space, retained sandboxes are reaped
+    oldest-first. The TTL, footprint and free-space reaps all skip a sandbox whose owning
+    process is still running. The owner marker is published atomically (temp file, fsync,
+    rename).
+  - **Other knobs:** `PHASE_LOOP_SANDBOX_ROOT` (the selected root, recorded in the
+    evidence), `PHASE_LOOP_SANDBOX_TTL_S` (24 h), `PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S`,
+    `PHASE_LOOP_SANDBOX_ARCHIVE_DEST`, `PHASE_LOOP_SANDBOX_DISABLE`.
+- **Spawned CLI scratch (agent-harness#1147, `fill_child_tmp_env`).** Agent CLIs write
+  large scratch of their own; Claude Code uses `$CLAUDE_CODE_TMPDIR`, else the temp dir
+  (`/tmp/claude-<uid>`).
+  - **What is filled.** Each of `TMPDIR` and `CLAUDE_CODE_TMPDIR` that the child env does
+    not already set is judged against its own default destination. If that destination is
+    RAM-backed, the variable is set to a private (0700, ours) disk-backed per-user dir that
+    is above its free-space floor: `phase-loop/tmp` in the cache dir, else
+    `phase-loop-<uid>/tmp` under the temp dir.
+  - **Where it applies.** Every review-provider launch: `panel_invoker.launch_provider` /
+    `run_provider` apply `child_scratch_env` to the env they launch with, and only the
+    named exceptions can opt out (`child_scratch=`). The env builders fill too, so the
+    recorded provider evidence matches the launch: board legs and advisory seats
+    (`_subscription_env`, the `_exec_leg` explicit-env route), brokered legs including
+    bounded Gemini, and both presidents (`_broker_leg_env`). Outside the provider
+    interface: executors (`child_executor_env`) and convergence adapters
+    (`_child_environment`). The Agent View executor's `claude --bg` goes through the
+    interface: `ClaudeAgentViewAdapter`'s default runner calls `run_provider` with an
+    explicit env. A bounded brokered agy leg's owned HOME is created in the
+    relocated dir as well. A decision returns a `DecidedEnv` labelled
+    `PHASE_LOOP_SCRATCH_DECIDED=<decision>` and recorded by object identity
+    (`sandbox_policy.decided_scratch`). The test suite's audit hook
+    (`tests/_scratch_audit_hook.py`) -- a regression tripwire, not an adversarial boundary
+    -- fails any test in which the runtime spawns an agent CLI, named from the runtime's own
+    harness registries, with an env object that is not one a decision returned, whatever
+    API spawns it. That is the completeness check. `tests/test_agent_cli_scratch_inventory_1147.py` is a static early
+    warning: it enumerates every process launch in the package and fails on one with no
+    stated decision. It is conservative: an unresolvable use of a launch-capable module (a computed `getattr`,
+    `__dict__`, the module as a value, a dynamic import, `exec`/`eval`) needs a stated
+    decision too. Env builders (`_broker_subscription_env`, `scrub_subscription_env`)
+    take no decision; each route decides after building, so a named exception is never
+    refused by a relocation it is exempt from.
+  - **Overrides.** A value the caller set is never overridden. The brokered allowlist
+    still drops ambient values, so there only the runtime's own dir can appear.
 - **Golden byte-identity preserved.** No ref ⇒ identical staged bytes ⇒ identical
   per-leg argv / env / timeout. `tests/test_advisor_board_golden.py` (Proof A hits
   `_exec_leg`; Proof B injects `spawn=`) is untouched;

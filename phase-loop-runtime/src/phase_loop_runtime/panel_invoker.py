@@ -2511,7 +2511,8 @@ _PARAMETER_FREE_FAILURES: frozenset[str] = frozenset({
     "timeout", "auth_failure", "usage_limit", "tool_denied: headless tool permission auto-denied",
     "env_failure: temp dir unusable", "env_failure: app-server socket dir not user-owned",
     "env_failure: sandbox command could not be built",
-    "env_failure: staging filesystem below its free-space floor", _UNKNOWN_DETAIL,
+    "env_failure: staging filesystem below its free-space floor",
+    "env_failure: no disk-backed scratch and RAM fallback refused", _UNKNOWN_DETAIL,
 })
 _FAILURE_DETAIL_TEMPLATES: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.ASCII) for p in (
     *(re.escape(t) for t in sorted(_PARAMETER_FREE_FAILURES)),
@@ -2676,6 +2677,9 @@ def _exception_failure(exc: BaseException) -> object:
         # nothing is parsed out of the message and no template is matched, so it cannot
         # carry foreign text. Anything else is an unknown failure.
         return message
+    if isinstance(exc, _sandbox_policy.SandboxRamBackedError):
+        # PHASE_LOOP_SANDBOX_REFUSE_RAM, not a full disk (agent-harness#1147).
+        return "env_failure: no disk-backed scratch and RAM fallback refused"
     if isinstance(exc, _sandbox_policy.SandboxSpaceError):
         # A full disk is an operator-actionable environment failure (board round 8 of
         # agent-harness#908); its message names paths, so it gets our own template.
@@ -3194,8 +3198,65 @@ def _gc_stale_panel_scratch(
     age-gated so a CONCURRENT run's fresh dir is never touched. It is wrapped so a
     GC failure (permissions, a racing rmtree, an unreadable mtime) can NEVER affect
     the run — advisory hygiene only."""
+    if root is not None:
+        _gc_panel_scratch_root(Path(root), max_age_s)
+        return
+    # Both the current staging root AND the system temp dir: releases before
+    # agent-harness#1147 staged under `/tmp`, and a root nothing sweeps any more would
+    # strand what they left there until reboot -- on a tmpfs host, in RAM.
     try:
-        base = Path(tempfile.gettempdir()) if root is None else Path(root)
+        bases = [_sandbox_policy.staging_root(), _sandbox_policy.legacy_staging_root()]
+    except Exception:
+        return
+    seen: set[str] = set()
+    for base in bases:
+        key = os.path.realpath(base)
+        if key not in seen:
+            seen.add(key)
+            _gc_panel_scratch_root(base, max_age_s)
+    # Since agent-harness#1147 these live on persistent disk rather than a /tmp a reboot
+    # clears: the launcher's review copy and the falsifier's dependency snapshot under the
+    # staging root, and the owned agy HOMEs under the relocated CLI scratch dir. Each
+    # records its owner (`sandbox_retention.claim_scratch_dir`) and is removed by its own
+    # `finally`; the sweep removes one only once that owner is PROVABLY gone. Never by
+    # age: a copy's own mtime does not move while a child works inside it.
+    try:
+        _gc_ownerless_residue(
+            [(base, ("pl-review-stage-*", "pl-falsifier-deps-*")) for base in bases]
+            + [(Path(d), ("phase-loop-broker-agy-*", "phase-loop-president-agy-*"))
+               for d in _sandbox_policy.child_scratch_candidates()],
+        )
+    except Exception:
+        pass
+
+
+def _gc_ownerless_residue(roots) -> None:
+    suffix = _sandbox_retention.OWNER_SUFFIX
+    for root, patterns in roots:
+        for pattern in patterns:
+            for path in Path(root).glob(pattern):
+                try:
+                    if path.name.endswith(suffix):
+                        # An owner record whose directory is already gone (this account's
+                        # own regular file only; `release_scratch_dir` checks both).
+                        if not os.path.lexists(path.with_name(path.name[: -len(suffix)])):
+                            _sandbox_retention.release_scratch_dir(
+                                path.with_name(path.name[: -len(suffix)]))
+                        continue
+                    st = path.lstat()
+                    if (path.is_symlink() or not stat.S_ISDIR(st.st_mode)
+                            or (hasattr(os, "getuid") and st.st_uid != os.getuid())
+                            or not _sandbox_retention.scratch_owner_gone(path)):
+                        continue
+                    _review_stage.remove_review_stage(path)
+                    if not path.exists():
+                        _sandbox_retention.release_scratch_dir(path)
+                except Exception:
+                    continue
+
+
+def _gc_panel_scratch_root(base: Path, max_age_s: int) -> None:
+    try:
         cutoff = time.time() - max_age_s
         # Retention FIRST: it archives the irreproducible `work/` before removing anything.
         # The age sweep below used to run first and delete `pl-panel-*` outright, so a
@@ -3204,7 +3265,9 @@ def _gc_stale_panel_scratch(
         _sandbox_retention.reap(
             base,
             ttl_s=_sandbox_policy.ttl_seconds(),
-            max_total_bytes=_sandbox_policy.max_total_bytes(),
+            # Relative to the filesystem `base` is on: a fixed 40 GiB never triggers on a
+            # 15 GiB tmpfs (agent-harness#1147).
+            max_total_bytes=_sandbox_policy.effective_max_total_bytes(base),
             archive_dest=_sandbox_policy.archive_destination(),
         )
         # `pl-egress-ns-*` too: a killed coordinator leaves its namespace holder's work dir.
@@ -3315,9 +3378,11 @@ _BROKER_CODEX_SANDBOX_ENABLED_FEATURES: tuple[str, ...] = ("shell_tool", "code_m
 # What confines a sandboxed codex seat's WRITES: the `workspace-write` sandbox rooted at
 # the disposable tree, WITH `/tmp` and `$TMPDIR` removed from its writable set. codex's
 # `workspace-write` leaves both writable by default, and the round's scratch directory
-# (`/tmp/pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lives there, so without
+# (`pl-panel-*`, holding every seat's `out/panel-<leg>.txt`) lived there, so without
 # these a seat that can run commands could overwrite a SIBLING seat's verdict mid-round
-# (reproduced live on codex 0.156.1). With them, writes land only in the tree; the tree
+# (reproduced live on codex 0.156.1). The scratch now defaults to a per-user cache dir
+# (agent-harness#1147), which is neither the cwd nor `/tmp`, so it is not writable either
+# way; the exclusions stay for an operator who points the staging dir at `/tmp`. With them, writes land only in the tree; the tree
 # itself stays writable because it is the sandbox root. READS are NOT confined: the seat
 # can read any file the invoking user can (credentials included). What bounds that is the
 # egress policy (private networks denied) and the seat's report being the only output.
@@ -3636,7 +3701,18 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
         )
 
 
-def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, **kwargs) -> "subprocess.Popen[bytes]":
+def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
+    """Apply the provider's scratch decision to the ``env`` it is launched with. A launch
+    with no ``env`` inherits this process's own environment unchanged."""
+    if decision not in _sandbox_policy.CHILD_SCRATCH_DECISIONS:
+        raise ValueError(f"unknown child scratch decision {decision!r}")
+    if kwargs.get("env") is not None:
+        kwargs["env"] = _sandbox_policy.child_scratch_env(kwargs["env"], decision)
+
+
+def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
+                    child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                    **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
     Board rounds 5-8 found four separate ways a provider could be launched outside the
@@ -3662,7 +3738,13 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     on, sealed image data it reads once), so its probe uses the same wrapper without them.
     A callable ``probe_owner`` receives the probe's marker path, for an owner whose
     filesystem view must include that one file.
+
+    It is also where a provider's own scratch is decided (agent-harness#1147): an ``env``
+    handed to the child passes :func:`sandbox_policy.child_scratch_env` with
+    ``child_scratch``, so a new seam cannot skip the decision. The only other value is
+    ``CHILD_SCRATCH_PRIVATE_TMP``, for a child jailed with its own private ``/tmp``.
     """
+    _child_scratch_kwargs(kwargs, child_scratch)
     cwd = kwargs.get("cwd")
     prefix = _compose_launch_prefix(cwd, process_owner, retain_caps)
     if _probes_seat(prefix, process_owner):
@@ -3677,8 +3759,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     return subprocess.Popen([*prefix, *argv], **kwargs)
 
 
-def run_provider(argv, **kwargs) -> "subprocess.CompletedProcess[str]":
+def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                 **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`."""
+    _child_scratch_kwargs(kwargs, child_scratch)
     prefix = _provider_launch_prefix(kwargs.get("cwd"))
     if _probes_seat(prefix):
         _require_seat_identity(prefix)
@@ -4575,12 +4659,37 @@ def _broker_gemini_stream_result(
 
 
 def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Pass only runtime and subscription-login ambient state to a broker parent."""
-    env = _subscription_env(base_env)
+    """Pass only runtime and subscription-login ambient state to a broker parent.
+
+    Builds the env only: no scratch decision is taken here (agent-harness#1147). Each
+    route applies its own afterwards -- `_broker_leg_env` for a leg, the named exceptions
+    (the heartbeat seat, agy qualification) keep it as built -- so an exception is never
+    refused by a relocation it is exempt from."""
+    env = scrub_subscription_env(os.environ if base_env is None else base_env)
     allowed = {
         "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
     }
     return {key: value for key, value in env.items() if key in allowed}
+
+
+def _broker_leg_env(
+    base_env: Mapping[str, str] | None, leg: str, *, private_tmp: bool = False,
+) -> dict[str, str]:
+    """A brokered LEG's env: the broker allowlist, plus CLI scratch moved off RAM.
+
+    The ambient TMPDIR stays filtered out. What may be added back is only the runtime's
+    OWN private disk-backed dir, and only when the child's temp dir is RAM-backed
+    (agent-harness#1147) -- a path this runtime created, never a caller-supplied value.
+    Kept out of ``_broker_subscription_env`` itself so agy qualification, which shares
+    that allowlist, keeps its frozen env. ``private_tmp`` is for the Gemini HEARTBEAT seat
+    only (agent-harness#1181): its sandbox shows a read-only allowlisted view with its own
+    private ``/tmp``, where a host directory would not exist. A bounded Gemini leg runs on
+    the host and is relocated like every other leg.
+    """
+    env = _broker_subscription_env(base_env)
+    if private_tmp:
+        return env  # the exception is stamped where it is launched (`launch_provider`)
+    return _sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE)
 
 
 def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None, stream_dir=None):
@@ -4620,8 +4729,12 @@ def _brokered_agy_environment(
         raise ValueError("brokered Gemini subscription credential reference is unavailable") from exc
     if not stat.S_ISREG(token_stat.st_mode):
         raise ValueError("brokered Gemini subscription credential reference is invalid")
-    holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-")
+    # The owned HOME holds agy's working state; on the relocated scratch dir when the
+    # leg's env carries one (only the runtime's own dir survives the broker allowlist).
+    holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-",
+                                         dir=base_env.get("TMPDIR") or None)
     root = Path(holder.name)
+    _sandbox_retention.claim_scratch_dir(root)  # swept only once this process is gone
     root.chmod(0o700)
     config_dir = root / ".gemini" / "antigravity-cli"
     config_dir.mkdir(parents=True, mode=0o700)
@@ -4648,6 +4761,7 @@ def _brokered_agy_environment(
         yield env
     finally:
         holder.cleanup()
+        _sandbox_retention.release_scratch_dir(root)
         if evidence is not None:
             evidence["provider_agy_home_cleanup_verified"] = not root.exists()
 
@@ -4905,8 +5019,14 @@ def _broker_claude_tui_command(
 
 
 def _subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Child env restricted to local subscription authentication."""
-    return scrub_subscription_env(os.environ if base_env is None else base_env)
+    """Child env restricted to local subscription authentication.
+
+    A CLI's own scratch is moved off a RAM-backed temp dir (agent-harness#1147); a
+    ``TMPDIR`` / ``CLAUDE_CODE_TMPDIR`` the caller set is kept as is.
+    """
+    return _sandbox_policy.fill_child_tmp_env(
+        scrub_subscription_env(os.environ if base_env is None else base_env)
+    )
 
 
 # #64: cheap per-leg auth preflight. A logged-out CLI fails obliquely (codex
@@ -4939,7 +5059,7 @@ def _leg_auth_ok(
             timeout=timeout_s,
             check=False,
             stdin=subprocess.DEVNULL,
-            env=dict(env),
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return True, ""  # probe unavailable/slow → don't block; the leg fail-closes
@@ -4969,7 +5089,7 @@ def _claude_subscription_auth_ok(
             timeout=timeout_s,
             check=False,
             stdin=subprocess.DEVNULL,
-            env=dict(env),
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False, "subscription_auth_unproven"
@@ -5006,6 +5126,8 @@ def _claude_code_support_status(claude_bin: str = "claude") -> tuple[bool, str]:
             timeout=15,
             check=False,
             stdin=subprocess.DEVNULL,
+            env=_sandbox_policy.child_scratch_env(
+                os.environ, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except FileNotFoundError:
         return False, "missing_claude_cli"
@@ -5184,7 +5306,7 @@ def _cleanup_claude_launch_timeout(
         list_proc = subprocess.run(
             adapter.list_command(),
             cwd=cwd,
-            env=env,
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
             capture_output=True,
             text=True,
             timeout=30,
@@ -5217,7 +5339,13 @@ def _cleanup_claude_launch_timeout(
 
 
 def _claude_project_dir_for_cwd(cwd: str) -> Path:
-    slug = re.sub(r"[^A-Za-z0-9.-]", "-", cwd)
+    # Claude Code names a project's transcript dir by replacing EVERY character outside
+    # [A-Za-z0-9-] with "-" -- dots included: `/home/u/.cache/x` is `-home-u--cache-x`.
+    # Keeping the dot was invisible while every seat cwd lived under `/tmp`; with the
+    # stage under `~/.cache` (agent-harness#1147) it pointed the adapter at a directory
+    # that never exists, so a seat's finished review was never observed and the brokered
+    # Claude seat looked hung until cancelled.
+    slug = re.sub(r"[^A-Za-z0-9-]", "-", cwd)
     return Path.home() / ".claude" / "projects" / slug
 
 
@@ -6188,6 +6316,7 @@ def _run_leg_with_liveness(
     review_monitor: _ReviewMonitor | None = None,
     gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
     retain_caps: "Sequence[str]" = (),
+    child_scratch: str | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -6223,6 +6352,12 @@ def _run_leg_with_liveness(
                 lambda marker: review_monitor.owned_command(
                     (), gemini_profile=gemini_profile, cwd=cwd, probe_marker=marker)),
             retain_caps=retain_caps,
+            # The heartbeat jail mounts its own private /tmp (agent-harness#1181); a host
+            # scratch dir would not exist inside it. Every other leg is relocated unless
+            # the caller names its decision (the frozen capture route).
+            child_scratch=child_scratch or (
+                _sandbox_policy.CHILD_SCRATCH_RELOCATE if gemini_profile is None
+                else _sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP),
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -7081,7 +7216,7 @@ def _stop_claude_agent(
         proc = subprocess.run(
             adapter.stop_command(session_id),
             cwd=cwd,
-            env=env,
+            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
             capture_output=True,
             text=True,
             timeout=_CLAUDE_STOP_TIMEOUT_S,
@@ -7664,6 +7799,7 @@ def _capture_provider_preflight(
             deadline_s=float(timeout_s),
             stall_threshold_s=float(timeout_s),
             quiescence_latch=quiescence_latch,
+            child_scratch=_sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE,
         )
         return result.returncode
 
@@ -7742,7 +7878,7 @@ def _exec_claude_tui_leg(
     brokered = broker_prompt is not None
     if brokered and not broker_prompt:
         return "UNAVAILABLE", "brokered route rejects empty prompt"
-    env = _broker_subscription_env(env) if brokered else _subscription_env(env)
+    env = _broker_leg_env(env, "claude") if brokered else _subscription_env(env)
     if brokered and (research_seat is not None or agy_capture is not None):
         return "UNAVAILABLE", "brokered route rejects capture and research transports"
     if research_seat is not None:
@@ -8229,9 +8365,22 @@ def _exec_leg(
             return 1, "", _HarnessCode("review_operation_cancelled")
     if brokered and not broker_prompt:
         return 1, "", _HarnessCode("brokered route rejects empty prompt")
-    env = _broker_subscription_env(env) if brokered else (
-        _subscription_env() if env is None else dict(env)
+    # Build first, then decide: the capture route is a named exception (agent-harness#1179)
+    # and must never be refused by a relocation it is exempt from.
+    env = _broker_leg_env(
+        env, leg, private_tmp=leg == "gemini" and review_monitor is not None,
+    ) if brokered else (
+        scrub_subscription_env(os.environ) if env is None else dict(env)
     )
+    # The capture route runs in its own jail with a frozen env (agent-harness#1179); the
+    # launch keeps it as built. Every other leg's scratch is relocated at the launch.
+    leg_scratch = (_sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE if agy_capture is not None
+                   else None)
+    if not brokered and agy_capture is None:
+        # A caller-built env (an advisory seat's `resolve_seat_env`) gets the same CLI
+        # scratch relocation as the default one (agent-harness#1147); values it set win.
+        # The capture route is excluded: it runs in its own jail with its own frozen env.
+        env = _sandbox_policy.fill_child_tmp_env(env)
     if brokered and (agy_capture is not None or research_seat is not None):
         return 1, "", _HarnessCode("brokered route rejects capture and research transports")
     if agy_capture is not None:
@@ -8378,6 +8527,7 @@ def _exec_leg(
                     input_text=prompt,
                     quiescence_latch=quiescence_latch,
                     retain_caps=codex_retain_caps,
+                    child_scratch=leg_scratch,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
@@ -8623,6 +8773,7 @@ def _exec_leg(
                     proc = _run_leg_with_liveness(
                         cmd, cwd=provider_cwd, env=env, deadline_s=deadline_s,
                         input_text=None, quiescence_latch=quiescence_latch,
+                        child_scratch=leg_scratch,
                     )
             except subprocess.TimeoutExpired as exc:
                 if quiescence_latch is not None:
@@ -8849,6 +9000,7 @@ def _exec_leg(
                     deadline_s=deadline_s,
                     input_text=prompt if brokered else None,
                     quiescence_latch=quiescence_latch,
+                    child_scratch=leg_scratch,
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:
@@ -8986,6 +9138,16 @@ def _default_spawn(
         and not _has_injected_review_execution_seam(leg=leg)
     ):
         return "UNAVAILABLE", "missing HARDEN review authorization"
+    if capture_stage is None:
+        # On a disk-backed per-user root, never RAM while a disk candidate exists
+        # (agent-harness#1147). Only the opt-in PHASE_LOOP_SANDBOX_REFUSE_RAM refuses, and
+        # that refusal is an operational failure of this leg, not an exception out of it.
+        try:
+            staging_dir = _sandbox_policy.staging_root()
+        except _sandbox_policy.SandboxRamBackedError as exc:
+            if review_monitor is not None:
+                return _BrokeredSpawnResult("DEGRADED", "", _exception_failure(exc), evidence=None)
+            return "DEGRADED", "", _exception_failure(exc)
     try:
         # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
         _gc_stale_panel_scratch()
@@ -8998,7 +9160,9 @@ def _default_spawn(
         )
         # Resolved so the provider argv path slots are byte-identical to the
         # attested ``provider_cwd_sha256`` preimage the verifier recomputes.
-        base = Path(tempfile.mkdtemp(prefix="pl-panel-")).resolve() if capture_stage is None else None
+        base = Path(tempfile.mkdtemp(
+            prefix="pl-panel-", dir=staging_dir,
+        )).resolve() if capture_stage is None else None
         review_dir = capture_stage if capture_stage is not None else base / "review"
         out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
         if capture_stage is None:
@@ -9033,13 +9197,24 @@ def _default_spawn(
             # the authorization approved one; `revalidate_...` below refuses both an
             # unattested tree and one whose bytes do not match the approved digest.
             if getattr(review_authorization, "staged_tree_sha256", None) is not None:
+                # The floor is sized to the filesystem the clone lands on.
+                staging_floor = _sandbox_policy.effective_floor_bytes(review_dir)
+                if base is not None:
+                    # Retained sandboxes are reclaimable: reap them oldest-first (never a
+                    # live round's) before the floor below refuses this one.
+                    _sandbox_retention.reap_until_free(
+                        base.parent,
+                        floor_bytes=staging_floor,
+                        free_bytes=_sandbox_policy._free_bytes,
+                        archive_dest=_sandbox_policy.archive_destination(),
+                    )
                 # One root for the whole round. Unreachable falls back with a warning;
                 # below the free-space floor REFUSES, because filling this filesystem
                 # takes the host down while a refused round costs minutes.
                 root_choice = _sandbox_policy.select_sandbox_root(
                     configured=_sandbox_policy.configured_root(),
                     fallback=review_dir,
-                    floor_bytes=_sandbox_policy.floor_bytes(),
+                    floor_bytes=staging_floor,
                     probe_timeout_s=_sandbox_policy.probe_timeout_s(),
                 )
                 # The namespace is acquired AFTER both revalidations, not here -- see
@@ -9052,9 +9227,7 @@ def _default_spawn(
                 # filesystem that was never measured. Recording `sandbox_root_applied=
                 # False` documents that; it does not prevent filling the disk the broker
                 # and the host run on (board round 7, codex, BLOCKING).
-                _sandbox_policy.ensure_staging_space(
-                    review_dir, _sandbox_policy.floor_bytes(),
-                )
+                _sandbox_policy.ensure_staging_space(review_dir, staging_floor)
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,
@@ -9068,7 +9241,9 @@ def _default_spawn(
                 # merely LOOKS like a sandbox is never deleted -- which means an unmarked
                 # real sandbox leaks forever. Tightening the check without writing the
                 # marker would trade a data-loss bug for a disk-leak bug.
-                _sandbox_retention.mark_as_sandbox(base if base is not None else review_dir)
+                _sandbox_retention.mark_as_sandbox(
+                    base if base is not None else review_dir, owner_pid=os.getpid(),
+                )
                 # Staging is a NEW effect introduced here, so it is validated here --
                 # unconditionally, not behind the injected-seam predicate that skips
                 # the broader revalidation below. Otherwise a test seam, or any future
@@ -9429,7 +9604,9 @@ def _default_spawn(
             # restores modes on the way down.
             if staged_tree_path is not None:
                 _review_stage.remove_review_stage(staged_tree_path)
-            shutil.rmtree(base, ignore_errors=True)
+            # The same helper for the rest: a panelist can leave a read-only directory in
+            # `work/` too, and a bare rmtree then leaks the whole scratch dir silently.
+            _review_stage.remove_review_stage(base)
         if capture_scratch is not None and agy_capture is None and not quiescence_failed:
             shutil.rmtree(capture_scratch, ignore_errors=True)
 
