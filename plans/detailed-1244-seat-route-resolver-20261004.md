@@ -134,9 +134,26 @@ proxy is checked against what #1170 required:
 - The allowlist is measured from agy's real traffic, pinned as config, and not specific to
   the fleet.
 
-If (b)'s inner-host row fails with srt's plain CONNECT proxy, the Gemini seat stays at
-step 2 (E2B filters by SNI natively). The other option is srt's experimental TLS
-termination. That choice is the new open decision S4.
+**Ruled S4:** suppose (b)'s inner-host row shows that srt's plain CONNECT proxy cannot
+block a request that tunnels through an allowed host but names another host inside TLS. Then
+the tooled Gemini seat uses **srt's TLS-terminating proxy**. It does not fall back to a
+remote-only Gemini. The requirements:
+- **Interception CA:**
+  - generated per host and owner-only: the key file is 0600 and its directory 0700;
+  - trusted **only inside the seat's sandbox**, through the sandbox's own trust bundle or
+    env, and never added to the host trust store.
+- **The CA private key never enters the sandbox.** Only the CA certificate is mounted.
+- **Inner check:** the proxy verifies the inner Host and SNI against the allowlist, and
+  refuses on a mismatch.
+- **Probe (b) passes with inspection on:** the allowed host is reachable, and a different
+  Google API host is refused, with real replies.
+- **Evidence:** the seat's evidence records `egress.tls_inspection: true|false`.
+
+Each requirement has a mutation that turns it red:
+- trusting the CA in the host store;
+- mounting the key;
+- skipping the inner-host check;
+- dropping the evidence field.
 
 **Credentials (generic):**
 - A `SeatCredentialSource` interface: `harness`, `kind` (`short_lived_login_token`,
@@ -422,7 +439,7 @@ PR-A changes no quorum rule:
 ## Dependencies & order
 
 1. agent-harness#1222, then agent-harness#1166, land.
-2. D1–D6, S1–S3, R1 and R2 are ruled. Only S4 is open, and it gates only the tooled Gemini seat.
+2. Every decision is ruled (D1–D6, S1–S4, R1, R2 and E2B).
 3. Within PR-A: notice codes → `seat_route.py` and its test → panel_invoker wiring →
    cli/president → docs.
 
@@ -512,11 +529,13 @@ Mutation receipts: one per step, one for the sealed guard, and one for host dete
   - The account-side spending limit is documented as the operator's guard in
     `docs/advisor-board-capabilities-card.md`.
 
-**Open:**
-- **S4 (new):** if srt's CONNECT proxy cannot refuse a request that names a different host
-  inside TLS (SNI or Host) through an allowed CONNECT, choose between (a) srt's experimental
-  TLS termination for the Gemini seat, and (b) keeping Gemini on step 2 (E2B's native SNI
-  filter, or a self-hosted host). Recommended: (b) until srt's TLS termination is stable.
+- **S4:** if probe (b)'s inner-host row fails with the plain CONNECT proxy, the tooled
+  Gemini seat uses srt's TLS-terminating proxy. The CA is per host, owner-only, trusted only
+  inside the sandbox, and its key never enters the sandbox. The proxy checks the inner Host
+  and SNI, probe (b) must pass with inspection on, and inspection is recorded in the
+  evidence.
+
+**Open:** none.
 
 ## Follow-ups (separate issues or plans)
 
