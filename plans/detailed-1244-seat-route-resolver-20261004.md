@@ -199,8 +199,11 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
 - **`resolve_seat_route(target, *, local, remote, host, allow_sealed)`** — pure. The
   `target` is a seat or a president rung, and every fact is an argument.
   - **Step 1, `local`:** #1166's `decide_seat_route` outcome for claude. For codex and grok,
-    the D6 staged route, which counts as step 1 and passes no adapter gate. For gemini, a
-    skip with `gemini_seat_egress_unconfined` until PR-B (S3/S4). For a non-Linux host, a
+    the D6 staged route, which counts as step 1, passes no adapter gate, and is always
+    tooled; it has no separate host qualification. For gemini, a skip with
+    `gemini_seat_egress_unconfined` until PR-B (S3/S4). **On the agy qualification board**
+    (see case (d)), the gemini seat instead resolves to step `qualification_sealed` with
+    mode `sealed`, because that board exists to qualify the sealed agy route. For a non-Linux host, a
     skip with `seat_local_sandbox_unsupported_os`.
   - **Step 2, `remote`:** the step-2 shim below.
   - **Step 3, `host`:** taken only when all of these hold:
@@ -208,6 +211,10 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
     - that adapter can fill this target;
     - the new resolver input `native_admitted` is true. It is false under `heartbeat_only`
       until PR-A2, and the step is skipped with `seat_host_native_heartbeat_refused`.
+
+    If the host has no adapter, or the adapter cannot fill this target, the step is skipped
+    with `seat_host_native_unavailable`. That covers a plain terminal, and every codex,
+    grok or gemini target in PR-A1.
 
     In PR-A1 the registry holds today's Claude Code behaviour only: a same-model fill of a
     claude seat. In practice, then, step 3 runs in PR-A1 only on bounded boards.
@@ -230,7 +237,7 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
   `resolve_seat_route`. Every seat's mode is published before the first spawn.
 - **Sealed guard at the argv level.** `_require_tooled_or_permitted(*, capability)` is
   called inside every **launch** builder that can produce a tools-off launch:
-  - `_render_broker_inline_prompt`;
+  - `_render_broker_inline_prompt` with `staged_tree=None`;
   - `_broker_claude_tui_command` with `sandboxed=None`;
   - `_brokered_gemini_command` with `staged_tree=None`;
   - the brokered codex `read-only` argv builder;
@@ -241,14 +248,26 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
   **Capability threading (modified sites).** Each of the five builders gains a keyword-only
   `capability=None` parameter, the leg authorization of the launch it builds. The callers
   pass it:
-  - the seat brokered spawn passes its `ReviewLegAuthorization`;
+  - `_default_spawn` passes its `leg_authorization` into `_exec_leg(capability=)` (codex,
+    gemini and grok builders) and `_exec_claude_tui_leg(capability=)` (the claude TUI
+    builder). Both are modified sites;
   - the president's `_launch_brokered` passes its `leg` down through
-    `_transport(..., leg=)` into `_launch_claude`, the gemini launch, and the codex and grok
-    launches;
-  - the bounded seam branch of `__call__` passes `leg` the same way.
+    `_transport(..., leg=)` into `_launch_claude` and the gemini launch, and through
+    `_exec_leg(capability=)` into the codex and grok launches (president_adapter.py around
+    :262).
 
-  `agy_qualification.py` passes nothing; it has no signature change and is admitted only by
-  case (c).
+  **The bounded injected-seam branch of `__call__`** (around president_adapter.py:217-226)
+  has no leg, because `derive` runs only in `_launch_brokered`. It passes
+  `capability=None`. Any real tools-off builder it reaches is therefore refused. The seam
+  is never evidence. A frozen-corpus president test that drives the seam into a real
+  tools-off builder must stub at or below the builder; the implementer lists any such test
+  with its disposition.
+
+  The guard is called directly in each builder's body, never through a decorator or helper,
+  so the depth-2 frame below is exact.
+
+  `agy_qualification.py`'s two preparatory renders pass nothing. They have no signature
+  change and are admitted by case (c). Its worker launch is admitted by case (d).
 
   **Target kind is positive.** The kind is read from the capability:
   - a **seat** is a capability whose operation is the review operation
@@ -256,7 +275,7 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
   - a **president** is a capability whose operation is `PRESIDENT_OPERATION_V1`;
   - **no capability** is neither of these, and is refused unless case (c) holds.
 
-  The guard passes in exactly three cases:
+  The guard passes in exactly four cases:
   - **(a) Seat opt-in.** A seat capability is present, and the guard itself reads
     `sealed_opt_in_enabled(base_env)` and finds it set. `base_env` is the `invoke_board`
     env, which defaults to `os.environ` and is set by `--allow-sealed-seat`. The guard
@@ -274,6 +293,31 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
     fails. The remaining residue is monkeypatching `agy_qualification`'s own globals; the
     tripwire covers it, not the boundary. It is bounded in any case, because the two exempt
     sites render fixed text or render only to hash recorded inputs.
+
+  - **(d) The agy qualification worker launch** (codex r5 F001). `agy_qualification.worker`
+    runs `invoke_board(mode="review", monitoring_policy="heartbeat_only")` over a
+    gemini-only board. Its renderer caller is `_default_spawn`, which carries a genuine
+    `public_board_review.v1` leg, so cases (a) and (c) cannot admit it. Instead, the
+    **review authorization records qualification provenance at mint**:
+    - `prepare_review_isolation_authorization` sets `qualification_board=True` on the
+      sealed `ReviewIsolationAuthorization` only after checking the **exact** call chain
+      from its own frame: `prepare` ← `invoke_board` (code identity), with any number of
+      `invoke_board` pin re-entries (`_INVOKE_BOARD(**call)`, code identity), ←
+      `agy_qualification.worker`. The worker is checked by `f_code is worker.__code__` and
+      `f_globals is vars(agy_qualification)`.
+    - The chain must also show a gemini-only board.
+    - There is no parameter for the flag, so no caller can request it.
+    - The check runs **at mint, not at render**, because seat spawns run on pool threads
+      where `invoke_board` is not on the stack. A render-time stack walk finds no
+      `invoke_board` frame; this was verified on the real worker path.
+    - `derive_review_leg_authorization` copies the flag onto each leg. The guard admits a
+      **seat** capability with `qualification_board=True`, with the opt-in unset.
+    - The resolver resolves that board's gemini seat to `qualification_sealed` (above).
+
+    Every other board, including a board that some other function builds and passes into
+    `invoke_board`, mints `qualification_board=False`. A `FunctionType` rebuild of `worker`
+    with foreign globals fails the globals check. The residue, monkeypatching
+    `agy_qualification`'s globals, is the same as case (c), and the tripwire covers it.
 
   Otherwise the guard raises `seat_route_sealed_without_opt_in`.
 
@@ -371,8 +415,8 @@ asserts that none of them reaches `MODE_SEALED` or a tools-off argv.
 
 **Rungs:**
 - **claude:** the jail, or step 3 native (a claude **president** too) when admitted.
-- **codex and grok:** D6 over `_sandbox_in(stage)`. A D6 president rung is eligible only
-  where the D6 route is qualified for seats on that host, under the same check.
+- **codex and grok:** D6 over `_sandbox_in(stage)`. These rungs are always tooled. There is no separate D6
+  qualification, and a missing tree is an M1 case, not a capability skip.
 - **gemini:** skips until PR-B.
 
 **Descent (the actual mechanism).** `invoke_president` (around `panel_invoker.py:731`)
@@ -391,17 +435,39 @@ descends only on `{"status": "unavailable", "code": "president_unavailable"}`. S
   descent, which is parity with main.
 
 **Last resort (P-LR).**
-- **Eligibility.** P-LR is eligible only when **every** seated rung was skipped, at every
-  step, with a code in the closed set `PLR_HOST_CAPABILITY_CODES`. The set holds:
-  - the jail-prerequisite codes: `seat_sandbox_unavailable_host`,
-    `seat_sandbox_unavailable_tiocsti`, `seat_sandbox_unavailable_seat_uid`, and the
-    root-operator code;
-  - the gemini codes that apply until PR-B;
-  - D6 unqualified on this host;
-  - `claude_seat_nested_tui_unavailable`;
-  - `seat_host_native_heartbeat_refused`;
-  - the step-2 shim codes (`seat_remote_sandbox_unconfigured`,
-    `sandbox_placement_driver_unavailable`).
+- **Eligibility.** P-LR is eligible only when **every** seated rung, at every step that
+  applies to it, was skipped with a code in the frozen literal set below. A module constant
+  holds it, and an equality test pins it:
+
+  ```python
+  PLR_HOST_CAPABILITY_CODES = frozenset({
+      # step 1, jail prerequisites (#1166 seat_jail.NOTICES); a root operator surfaces as
+      # seat_sandbox_unavailable_seat_uid (seat_uid.seat_uid_available returns False for uid 0)
+      "seat_sandbox_unavailable_host",
+      "seat_sandbox_unavailable_seat_uid",
+      "seat_sandbox_unavailable_tiocsti",
+      # step 1, Claude under Claude Code before the nested-TUI fact exists
+      "claude_seat_nested_tui_unavailable",
+      # step 1, gemini until PR-B (the only gemini step-1 code this resolver emits)
+      "gemini_seat_egress_unconfined",
+      # step 2, PR-A1 shim
+      "seat_remote_sandbox_unconfigured",
+      "sandbox_placement_driver_unavailable",
+      # step 3
+      "seat_host_native_unavailable",
+      "seat_host_native_heartbeat_refused",
+  })
+  ```
+
+  - There is **no D6 entry**. D6 rungs are always tooled, and the M1 cases are not host
+    capability.
+  - #1166's other gemini sealed codes (credential, scope, stream-split, profile) are not
+    emitted by this resolver: it skips gemini on `gemini_seat_egress_unconfined` before
+    #1166's gemini decision runs. They are therefore excluded.
+  - PR-A3 extends the set with the remote admission codes that describe a host or account
+    without a usable remote sandbox: `seat_remote_no_principal_token`,
+    `seat_remote_source_not_allowed`, and E2B key-file missing. `seat_remote_principal_cap_exceeded`
+    is excluded because it is transient, and PR-A3 states its disposition.
 - **Excluded.** Any other code fails the president closed, and never reaches P-LR. That
   includes:
   - wiring faults: `president_tree_unbound`, `president_snapshot_missing`,
@@ -409,18 +475,30 @@ descends only on `{"status": "unavailable", "code": "president_unavailable"}`. S
   - a pre-spawn launch failure;
   - an unknown code.
 - **Recomputed, never trusted.** `derive_president_leg_authorization` accepts no walk
-  records. To set `sealed_last_resort`, it re-runs the resolver over the authorized ladder
+  records. It also requires the president authorization's `staged_tree_sha256` and a
+  bound, present snapshot (M1) before it will set the flag. To set `sealed_last_resort`, it re-runs the resolver over the authorized ladder
   and the board's seats from host facts it gathers itself: the platform, the jail
   prerequisites, the D6 qualification, the monitoring policy, the host harness and the
   remote config. It sets the flag only if that recomputation is P-LR-eligible. A caller that
   passes fabricated all-skip resolutions gains nothing.
-- **Which rung.** **The first rung main's walk would have launched in this environment.**
-  That is the first rung with a seat on the board that the authorization routes, with one
-  exclusion: under Claude Code, a claude rung is excluded, because main never runs the
-  sealed claude TUI there.
-  - If there is no such rung, the result is `president_no_tooled_route`.
+- **Which rung: main's walk, exactly, including where main stops.** Walk the seated,
+  routed rungs in ladder order, the way main's walk does. Rungs with no seat are skipped,
+  as main skips them with `president_unavailable`.
+  - If the walk reaches a rung where **main raises**, there is no P-LR rung, and the result
+    is `president_no_tooled_route`. That rung is a claude rung under Claude Code with
+    `heartbeat_only`, where main's `_native_fill` raises `president_fill_heartbeat_refused`.
+  - Otherwise, the first seated rung is the P-LR rung.
+  - Under Claude Code with bounded monitoring, the claude rung resolves to step 3 (native),
+    so P-LR is never reached there.
   - The P-LR launch site is `invoke_president`'s walk, after the last rung. It re-derives
-    the leg for that rung and runs the existing sealed president for it.
+    the leg for the chosen rung and runs the existing sealed president for it.
+- **Terminal code when P-LR is ineligible.** The walk returns
+  `president_ruling_missing:<first excluded code>` when any rung's skip was excluded: a
+  wiring fault, a pre-spawn failure, or an unknown code. It returns
+  `president_ruling_missing:president_no_tooled_route` only when every skip was
+  allowlisted but no P-LR rung exists. A pre-spawn failure is recorded in `tried` with its
+  real cause (for example `seat_sandbox_refused:jail_build`), not as the bare
+  `president_unavailable`.
 - **Loudness.**
   - Mode line: `WARNING: president sealed (LAST RESORT, NO TOOLS) -- <per-rung reasons>;
     fix: make a sandbox available: …`.
@@ -437,9 +515,11 @@ The guard admits that launch through case (b) only. The opt-in plays no part.
 | Linux, jail-incapable (kernel before 6.2, i.e. no `dev.tty.legacy_tiocsti`; root; no subuid or `newuidmap`), codex/grok rungs usable | brokered sealed | tooled president on D6 |
 | Linux, jail-incapable, only a claude rung (or a gemini-only ladder) | brokered sealed | **P-LR sealed last resort** with the warning |
 | Claude Code, bounded, nested TUI not qualified | native claude president | the same native president (step 3) |
-| Claude Code, `heartbeat_only`, claude is the first seated rung | **raises** `president_fill_heartbeat_refused`: not in main's `_PRESIDENT_REFUSAL_CODES`, so `invoke_board` re-raises it. **No president.** | descends to a tooled codex or grok rung; otherwise typed `president_no_tooled_route`. **Never P-LR**, because main had no president there. |
+| Claude Code, `heartbeat_only`, claude is the first seated rung (e.g. `["fable","gemini"]`, or the default ladder, which ends in gemini) | **raises** `president_fill_heartbeat_refused`: not in main's `_PRESIDENT_REFUSAL_CODES`, so `invoke_board` re-raises it. **No president.** | descends to a **tooled** codex or grok rung, which is an improvement. Otherwise typed `president_no_tooled_route`. **Never a sealed president**, gemini included, because main had none. |
+| Claude Code, `heartbeat_only`, a non-claude rung seated before claude (e.g. `["gemini","fable"]`) | runs the earlier rung sealed | tooled if that rung has a tooled route; else P-LR on it, which is legitimate because main reached it |
 | top ladder rung has no seat on the board | the walk skips it (`president_unavailable`) and runs the first seated rung | the same: skipped. P-LR, when eligible, uses the first seated rung. |
-| non-Linux | no president (Linux-only gate) | no president. Unchanged, and P-LR is not invented there. |
+| non-Linux, `invoke_board` path | the board is refused whole (backing ~949), so there is no president walk | the board now runs per seat (D5). Under Claude Code bounded, the president is native at step 3; otherwise typed `president_no_tooled_route`. `seat_local_sandbox_unsupported_os` is outside the allowlist, so P-LR never runs. |
+| non-Linux, standalone walk (`invoke_president` / `run_president_operation`), Claude Code bounded | native claude president (the `__call__` pre-check runs before the Linux gate) | native president at step 3, given a bound snapshot. Unbound means `president_tree_unbound`. |
 
 - **`build_president_invoke`** — the brief carries each seat's resolved route.
 
@@ -472,7 +552,8 @@ Every Linux gate, with its disposition:
   - `president_stage_changed`;
   - `president_tree_unbound`;
   - `president_snapshot_missing`;
-  - `seat_sandbox_disabled`.
+  - `seat_sandbox_disabled`;
+  - `seat_host_native_unavailable`.
 - `SEAT_MODES` — add `remote`.
 - `SeatMode` — add the new fields. `render` prints `WARNING: sealed (operator opt-in, NO
   TOOLS) -- unset PHASE_LOOP_SEAT_ALLOW_SEALED`.
@@ -515,6 +596,18 @@ Every Linux gate, with its disposition:
   - agy qualification's two real calls pass. **(This is the positive case.)** It adopts
     codex's r4 F001 probe with the frame-2 + `f_globals` check.
   - A `FunctionType` rebuilt over the qualification code with foreign globals is refused.
+  - The r5 models are at `/mnt/workspace/board-tools/plan1244-work/r5`. Codex's r5 F001
+    probe is red against the eb9737a2 spec. Against this spec, the case-(d) positive and
+    negative models (mint-time chain check) are green, and so are the stop-rule models and
+    the claude r5 probe.
+  - **The worker path (codex r5 F001 probe, positive):** `agy_qualification.worker` → the
+    real `invoke_board` → `_default_spawn` → the renderer is admitted through case (d),
+    with the opt-in unset.
+  - **The worker path, negative:** the same gemini-only board passed to `invoke_board` from
+    a different function mints `qualification_board=False` and is refused. A `worker`
+    rebuilt with foreign globals is refused.
+  - Positive admissions for case (a) through `_exec_leg` and `_exec_claude_tui_leg`, and
+    for case (b) through a P-LR codex or grok rung.
 - **P-LR exclusions.** On a capable host fake, none of these gives a sealed launch:
   - an unbound invoke;
   - a missing snapshot;
@@ -524,6 +617,13 @@ Every Linux gate, with its disposition:
 
   codex's r4 F002 probe (`ladder=["gemini","fable"]` on a claude-only board) yields the
   `fable` rung.
+
+  **The R1/H1 shape:** a claude+gemini board, `ladder=["fable","gemini"]`, `CLAUDECODE=1`,
+  `heartbeat_only` gives `president_no_tooled_route` with **zero** sealed launches. This is
+  the r5 probe `test_r5_cc_hb_claude_first_gemini.py`. The converse, `["gemini","fable"]`,
+  gives P-LR on gemini on a jail-incapable host. On a plain terminal that is jail-incapable
+  with a claude-only ladder, P-LR runs with the warning, and the step-3 code is not stubbed
+  away.
 
   On Claude Code with `heartbeat_only` and a claude-only ladder, the result is
   `president_no_tooled_route` with no sealed launch. With a seatless top rung, P-LR uses
@@ -560,8 +660,13 @@ Every Linux gate, with its disposition:
   Wiring faults, a missing snapshot, the sandbox-disable knob, fabricated resolutions and
   pre-spawn failures all fail closed on a capable host.
 - [ ] A builder call with no capability is refused unless it comes from the real agy
-  qualification frames. Those two calls pass.
-- [ ] The guard admits a tools-off launch only through cases (a), (b) and (c). The opt-in
+  qualification frames. Those two calls pass. The agy qualification **worker** launch
+  passes through case (d), and the same board launched from any other function is
+  refused.
+- [ ] Under Claude Code with `heartbeat_only` and `ladder=["fable","gemini"]`, there is no
+  sealed launch, and the result is `president_no_tooled_route`.
+- [ ] `PLR_HOST_CAPABILITY_CODES` equals the literal set in this plan.
+- [ ] The guard admits a tools-off launch only through cases (a), (b), (c) and (d). The opt-in
   never admits a president, and reflective access never admits the agy case.
 - [ ] On a non-Linux host, the board is not refused. Seats resolve per seat, and a `local`
   route is refused at launch.
@@ -580,7 +685,12 @@ Every Linux gate, with its disposition:
 - let `president_tree_unbound` count toward P-LR;
 - `derive` trusts caller-supplied resolutions;
 - P-LR picks ladder[0] instead of main's first launched rung;
-- engage P-LR under Claude Code with `heartbeat_only` where main had no president;
+- engage P-LR under Claude Code with `heartbeat_only` where main had no president, using
+  the `["fable","gemini"]` ladder;
+- skip past a stopping claude rung instead of stopping;
+- add a code to `PLR_HOST_CAPABILITY_CODES`, or let `derive` set the flag with no bound
+  snapshot;
+- drop case (d), or admit a non-worker caller through it;
 - classify a missing capability as a seat;
 - check `sys._getframe(1)`, or skip the `f_globals` check;
 - skip the president tree re-hash;
@@ -685,6 +795,7 @@ implementation PR agent-harness#1246 (issuecomment-5984291935):
 | Lifetime and renewal for a leg **with no deadline** (heartbeat-only seats and the president). 1b refuses a leg whose deadline exceeds `max_lifetime_s`, and never renews past the deadline. | Without it, every remote leg under the standing heartbeat-only mode is refused or undefined. Under R2 the TTL is a liveness bound. | #896 plan 1b, as an open question |
 
 **PR-A3 changes:**
+- extend `PLR_HOST_CAPABILITY_CODES` with the remote admission codes listed under "Last resort", and state the disposition of each excluded code;
 - replace the step-2 shim with an ordered `admit()` walk over `sandbox_policy.configured_roots()`;
 - map each admission code to a `seat_remote_*` notice and fix;
 - produce mode `remote` with `placement.{backend, sandbox_id, created_at,
@@ -710,7 +821,11 @@ never for behaviour that no plan produces.
     - for seats, sealed runs only on the env opt-in, or from the agy qualification frames;
     - the president is never sealed by the opt-in;
     - the president runs sealed only as the P-LR last resort, with its sunset condition;
-  - the president's tree contract: the president reads the staged reviewed tree;
+  - the president's tree contract: the president reads the staged reviewed tree.
+    `PresidentInvoke.bind_review_tree` is now part of the public president API. An unbound
+    `run_president_operation` walk fails closed with `president_tree_unbound`, and the fix
+    is to bind the board's snapshot;
+  - the agy qualification provenance (case (d)) and the `qualification_sealed` step;
   - the new codes and the `remote` mode.
 
   PR-A2 adds the "Review monitoring policy v1" exception for minted stand-ins (D2).
