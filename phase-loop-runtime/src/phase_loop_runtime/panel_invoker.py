@@ -3237,9 +3237,11 @@ def _gc_ownerless_residue(roots) -> None:
             for path in Path(root).glob(pattern):
                 try:
                     if path.name.endswith(suffix):
-                        # An owner record whose directory is already gone.
-                        if not path.with_name(path.name[: -len(suffix)]).exists():
-                            path.unlink()
+                        # An owner record whose directory is already gone (this account's
+                        # own regular file only; `release_scratch_dir` checks both).
+                        if not os.path.lexists(path.with_name(path.name[: -len(suffix)])):
+                            _sandbox_retention.release_scratch_dir(
+                                path.with_name(path.name[: -len(suffix)]))
                         continue
                     st = path.lstat()
                     if (path.is_symlink() or not stat.S_ISDIR(st.st_mode)

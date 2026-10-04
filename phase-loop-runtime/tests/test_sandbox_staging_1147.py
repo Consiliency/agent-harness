@@ -1285,3 +1285,100 @@ def test_an_unreadable_owner_record_is_an_unknown_owner(tmp_path):
     for text in ("garbage\n", "pid=notanumber start=\n", ""):
         record.write_text(text, encoding="utf-8")
         assert not sandbox_retention.scratch_owner_gone(copy), text
+
+
+class TestRecordsAreCreatedExclusively:
+    """Owner records and sandbox markers are created exclusively at an unpredictable
+    staging name and never follow a link (agent-harness#1161)."""
+
+    def test_a_link_or_file_at_a_staging_name_is_never_followed_or_truncated(
+        self, tmp_path, monkeypatch,
+    ):
+        import secrets as _secrets
+
+        scratch = tmp_path / "pl-review-stage-x"
+        scratch.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("keep me\n", encoding="utf-8")
+        record = scratch.name + sandbox_retention.OWNER_SUFFIX
+        names = iter(["planted-link", "planted-file", "fresh"])
+        monkeypatch.setattr(_secrets, "token_hex", lambda n=8: next(names))
+        (tmp_path / f"{record}.planted-link.tmp").symlink_to(victim)
+        (tmp_path / f"{record}.planted-file.tmp").write_text("not ours to truncate\n",
+                                                              encoding="utf-8")
+        sandbox_retention.claim_scratch_dir(scratch)
+        assert victim.read_text(encoding="utf-8") == "keep me\n"
+        assert (tmp_path / f"{record}.planted-file.tmp").read_text(
+            encoding="utf-8") == "not ours to truncate\n"
+        assert not (tmp_path / f"{record}.fresh.tmp").exists()  # renamed into place
+        assert not sandbox_retention.scratch_owner_gone(scratch)
+        assert (tmp_path / record).read_text(encoding="utf-8").startswith(f"pid={os.getpid()} ")
+
+    def test_no_free_staging_name_fails_closed_with_a_typed_reason(self, tmp_path, monkeypatch):
+        import secrets as _secrets
+
+        scratch = tmp_path / "pl-review-stage-y"
+        scratch.mkdir()
+        record = scratch.name + sandbox_retention.OWNER_SUFFIX
+        monkeypatch.setattr(_secrets, "token_hex", lambda n=8: "taken")
+        (tmp_path / f"{record}.taken.tmp").write_text("x", encoding="utf-8")
+        with pytest.raises(sandbox_retention.ScratchRecordError, match="no free staging name"):
+            sandbox_retention.claim_scratch_dir(scratch)
+        assert not (tmp_path / record).exists()
+
+    def test_a_rename_that_cannot_land_fails_closed_and_leaves_no_staging_file(
+        self, tmp_path, monkeypatch,
+    ):
+        scratch = tmp_path / "pl-review-stage-z"
+        scratch.mkdir()
+        (tmp_path / (scratch.name + sandbox_retention.OWNER_SUFFIX)).mkdir()  # cannot be replaced
+        with pytest.raises(sandbox_retention.ScratchRecordError, match="could not publish"):
+            sandbox_retention.claim_scratch_dir(scratch)
+        assert not list(tmp_path.glob("*.tmp"))
+
+    def test_a_record_that_is_a_link_or_not_ours_is_an_unknown_owner(self, tmp_path, monkeypatch):
+        scratch = tmp_path / "pl-review-stage-w"
+        scratch.mkdir()
+        record = tmp_path / (scratch.name + sandbox_retention.OWNER_SUFFIX)
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        target = tmp_path / "elsewhere"
+        target.write_text(f"pid={dead.pid} start=\n", encoding="utf-8")
+        record.symlink_to(target)
+        assert not sandbox_retention.scratch_owner_gone(scratch)  # a link: never followed
+        record.unlink()
+        record.write_text(f"pid={dead.pid} start=\n", encoding="utf-8")
+        assert sandbox_retention.scratch_owner_gone(scratch)  # control: ours, dead owner
+        real_fstat = os.fstat
+
+        def _fstat(fd):
+            result = real_fstat(fd)
+            fields = list(result)
+            fields[4] = os.getuid() + 4242
+            return os.stat_result(fields)
+
+        monkeypatch.setattr(os, "fstat", _fstat)
+        assert not sandbox_retention.scratch_owner_gone(scratch)  # another account's record
+
+    def test_release_never_removes_a_link_or_another_accounts_record(self, tmp_path):
+        scratch = tmp_path / "pl-review-stage-v"
+        record = tmp_path / (scratch.name + sandbox_retention.OWNER_SUFFIX)
+        target = tmp_path / "target"
+        target.write_text("x", encoding="utf-8")
+        record.symlink_to(target)
+        sandbox_retention.release_scratch_dir(scratch)
+        assert record.is_symlink() and target.exists()
+
+    def test_the_sandbox_marker_uses_the_same_exclusive_publication(self, tmp_path, monkeypatch):
+        import secrets as _secrets
+
+        box = tmp_path / "pl-panel-box"
+        box.mkdir()
+        victim = tmp_path / "victim"
+        victim.write_text("keep\n", encoding="utf-8")
+        names = iter(["planted", "fresh"])
+        monkeypatch.setattr(_secrets, "token_hex", lambda n=8: next(names))
+        (box / f"{sandbox_retention.SANDBOX_MARKER}.planted.tmp").symlink_to(victim)
+        sandbox_retention.mark_as_sandbox(box, owner_pid=os.getpid())
+        assert victim.read_text(encoding="utf-8") == "keep\n"
+        assert sandbox_retention._owner_alive(box)

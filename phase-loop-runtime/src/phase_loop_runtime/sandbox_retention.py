@@ -25,7 +25,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import secrets
 import shutil
+import stat
 import tarfile
 import time
 from typing import Callable
@@ -87,14 +89,7 @@ def mark_as_sandbox(path: Path, *, owner_pid: int | None = None) -> None:
     # The marker is what makes a directory reapable, so a marker that exists before its
     # owner line is written is a window in which a live round looks ownerless -- and a
     # concurrent free-space reap deleted one in exactly that window.
-    staging = path / f"{SANDBOX_MARKER}.{os.getpid()}.tmp"
-    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, body)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(staging, path / SANDBOX_MARKER)
+    _publish_atomically(path / SANDBOX_MARKER, body)
 
 
 def _process_start(pid: int) -> str | None:
@@ -122,20 +117,49 @@ def _owner_alive(path: Path) -> bool:
 OWNER_SUFFIX = ".owner"
 
 
+class ScratchRecordError(OSError):
+    """A runtime record could not be published (agent-harness#1147). Raised instead of
+    writing through anything the runtime did not just create itself."""
+
+
+_EXCLUSIVE = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+              | getattr(os, "O_CLOEXEC", 0))
+
+
 def _publish_atomically(target: Path, body: bytes) -> None:
-    staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Write ``target`` atomically. The staging file gets an unpredictable name and is
+    created exclusively, never following a link (``O_CREAT|O_EXCL|O_NOFOLLOW``, 0600), so
+    nothing already at a staging name is opened or truncated; it is synced and then
+    renamed onto ``target``. A rename that cannot replace ``target`` fails closed."""
+    target = Path(target)
+    for _attempt in range(8):
+        staging = target.with_name(f"{target.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            fd = os.open(staging, _EXCLUSIVE, 0o600)
+        except FileExistsError:
+            continue  # someone else's entry at that name: take a fresh one
+        break
+    else:
+        raise ScratchRecordError(f"no free staging name for {target.name}")
     try:
-        os.write(fd, body)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(staging, target)
+        try:
+            os.write(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(staging, target)
+    except OSError as exc:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise ScratchRecordError(f"could not publish {target.name}: {exc.strerror or exc}") from exc
 
 
 def claim_scratch_dir(path: Path, *, owner_pid: int | None = None) -> None:
     """Record the process that owns per-run scratch ``path`` (agent-harness#1147). The
-    crash-residue sweep removes the directory only once this owner is provably gone."""
+    crash-residue sweep removes the directory only once this owner is provably gone.
+    Raises :class:`ScratchRecordError` (fail closed) if the record cannot be published."""
     path = Path(path)
     pid = os.getpid() if owner_pid is None else owner_pid
     body = f"pid={pid} start={_process_start(pid) or ''}\n".encode("utf-8")
@@ -143,11 +167,37 @@ def claim_scratch_dir(path: Path, *, owner_pid: int | None = None) -> None:
 
 
 def release_scratch_dir(path: Path) -> None:
-    """Drop ``path``'s owner record once the directory itself is gone. Never raises."""
+    """Drop ``path``'s owner record once the directory itself is gone: only a regular
+    file of this account's, never through a link. Never raises."""
+    record = Path(path).with_name(Path(path).name + OWNER_SUFFIX)
     try:
-        Path(path).with_name(Path(path).name + OWNER_SUFFIX).unlink()
+        st = record.lstat()
+        if stat.S_ISREG(st.st_mode) and _ours(st):
+            record.unlink()
     except OSError:
         pass
+
+
+def _ours(st: os.stat_result) -> bool:
+    return not hasattr(os, "getuid") or st.st_uid == os.getuid()
+
+
+def _read_own_record(record: Path) -> str | None:
+    """A record's text, if it is a regular file of this account's (opened without
+    following a link); else ``None``."""
+    try:
+        fd = os.open(record, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or not _ours(st):
+            return None
+        return os.read(fd, 4096).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 def scratch_owner_gone(path: Path) -> bool:
@@ -155,11 +205,9 @@ def scratch_owner_gone(path: Path) -> bool:
     record naming a process that no longer runs (or whose pid was reused) says yes. No
     record, or an unreadable one, is an unknown owner -- and an unknown owner is never
     gone: deciding by age alone deleted a running child's files (agent-harness#1161)."""
-    try:
-        text = Path(path).with_name(Path(path).name + OWNER_SUFFIX).read_text(
-            encoding="utf-8", errors="replace")
-    except OSError:
-        return False
+    text = _read_own_record(Path(path).with_name(Path(path).name + OWNER_SUFFIX))
+    if text is None:
+        return False  # absent, unreadable, a link, or another account's: unknown owner
     fields = dict(part.split("=", 1) for part in text.split() if "=" in part)
     if not fields.get("pid", "").isdigit():
         return False

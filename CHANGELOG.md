@@ -30,7 +30,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and owned agy HOMEs now outlive a reboot. Each records its owner (pid and start time) in
   a sibling `<name>.owner` file, and the crash-residue sweep removes one only once that
   owner is provably gone -- never by age, because a copy's mtime does not move while a
-  child works inside it. A directory with no owner record is kept.
+  child works inside it. A directory with no owner record is kept. Owner records and
+  sandbox markers are created exclusively at an unpredictable staging name and never
+  follow links; a record that is a link or not this account's counts as an unknown owner.
 - **Spawned agent CLIs** (board legs, advisory seats, brokered legs, the president,
   executors):
   - Each unset `TMPDIR` / `CLAUDE_CODE_TMPDIR` whose own default destination is RAM-backed
