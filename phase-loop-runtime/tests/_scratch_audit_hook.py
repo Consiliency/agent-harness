@@ -18,12 +18,11 @@ decision counts only at the launch interface that applies exceptions (``launch_p
 The agent-CLI names come from the runtime's own registries (``runtime_agent_binaries``),
 so a new harness is covered without editing this file.
 
-Only spawns made BY THE RUNTIME are judged: the innermost frame inside the
-``phase_loop_runtime`` package that is actually imported (the source tree, or an installed
-wheel in site-packages) makes it a runtime spawn, provided every frame inside it is the
-standard library or a third-party package. A spawn with no frame outside those at all,
-such as a thread targeting ``subprocess.run``, is judged too. Test code that starts its
-own fake CLIs is not a runtime launch.
+Only spawns made BY THE RUNTIME are judged: the first frame outside the standard library
+and third-party packages must be inside the ``phase_loop_runtime`` package actually
+imported (the source tree, or an installed wheel in site-packages). A spawn with no such
+frame at all, such as a thread targeting ``subprocess.run``, is judged too. Test code that
+starts its own fake CLIs is not a runtime launch.
 
 ``install`` proves ENFORCEMENT before the suite relies on it: a real spawn of a harmless
 stub named like an agent CLI must be rejected with an undecided env and accepted with a
