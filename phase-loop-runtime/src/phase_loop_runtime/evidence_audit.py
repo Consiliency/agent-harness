@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .baml_modular import BamlRequest, build_baml_request, parse_baml_response
+from .baml_modular import BamlRequest, BamlWorkerError, build_baml_request, parse_baml_response
 
 
 # Heuristic-shaped string that might be a file path. Triggers on slashes;
@@ -842,6 +842,20 @@ def run_tier3_runner_audit(
                 sample_path,
                 expected_artifact_characteristics,
             )
+        except BamlWorkerError as exc:
+            # agent-harness#1135 (#24): Tier 3 could not run.  Block the closeout
+            # as "not evaluated"; never skip it and never judge it.
+            # The outage blocker takes precedence over any earlier judgment, and
+            # the remaining samples are not attempted (each would wait out the
+            # same retry budget).
+            blocker = {
+                "human_required": False,
+                "blocker_class": "unretryable_external_outage",
+                "blocker_summary": f"Tier 3 evidence audit NOT run: BAML worker {exc.kind} after the retry budget",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+            break
         except Exception as exc:
             judgment = _uncertain_fallback(str(exc))
         latency_ms = max(0, int((time.monotonic() - started) * 1000))
@@ -918,6 +932,8 @@ def evaluate_suspected_fake_evidence(
             reasoning=str(parsed["reasoning"]),
             specific_concerns=tuple(str(item) for item in parsed["specific_concerns"]),
         )
+    except BamlWorkerError:
+        raise
     except (
         OSError,
         TimeoutError,
