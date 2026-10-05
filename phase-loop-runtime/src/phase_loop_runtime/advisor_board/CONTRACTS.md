@@ -1082,7 +1082,8 @@ are recorded on agent-harness#1132.
 - **Credential channels (plan amendment A1).** The Claude credential is resolved afresh at
   each jailed launch, in this order:
   1. The seat-token override at `$XDG_STATE_HOME/phase-loop/seat-credentials/claude` (0600
-     in 0700, owned by the euid), when present.
+     in 0700, owned by the euid), only when it is bound to the account the launching session
+     is logged in to (plan amendment A4, below).
   2. Otherwise, the current Claude login's `claudeAiOauth.accessToken` only, never its
      refresh token. It comes from the CLI's own store: `$CLAUDE_CONFIG_DIR/.credentials.json`
      or `~/.claude/.credentials.json`, and the login Keychain on macOS.
@@ -1152,6 +1153,20 @@ are recorded on agent-harness#1132.
   from `child_scratch_env` (`_jail_launch_env`), and that same object is handed to the
   identity probe and the launch. The seat never sees it: bwrap clears the environment and
   sets the seat's own.
+- **The override follows the launching session (plan amendment A4).** A seat's credential
+  follows the subscription of the session that launched the leg.
+  - **Storing:** `phase-loop seat-sandbox store-token` stores the override (read with no
+    echo, or from stdin) together with `seat-credentials/claude.account`
+    (`{"schema": "seat_credential_binding.v1", "account": ...}`). The account is the
+    current login's `oauthAccount.accountUuid`, from `$CLAUDE_CONFIG_DIR/.claude.json` or
+    `~/.claude.json`, read without running the CLI. A store with no login is refused.
+  - **At launch:** the override is used only when its bound account equals the launching
+    session's account. When the accounts differ, when either is unknown, or when the
+    override has no binding, the seat uses the login and carries the notice
+    `claude_seat_override_other_subscription` (also on its mode line). That notice is not a
+    jail refusal.
+  - **Per harness:** each harness's `SeatCredentialAdapter` answers `override_present()`,
+    `override_account()` and `current_account()`, and the rule is the same for every harness.
 - **Seat-token rotation.** The token file is read at each jailed launch and never cached
   across legs or rounds. A token replaced between legs (atomic rename in the same 0700
   directory) is used by the next launch; a running leg keeps the token it was launched with.

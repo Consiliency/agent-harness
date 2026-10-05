@@ -632,6 +632,9 @@ def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=No
         return credential
 
     monkeypatch.setattr(pi._seat_credentials, "override_present", lambda: credential is not None)
+    monkeypatch.setattr(pi._seat_credentials, "override_decision",
+                        lambda adapter=None: pi._seat_credentials.OverrideDecision(
+                            credential is not None))
     monkeypatch.setattr(pi._seat_credentials, "resolve_claude_seat_credential", _resolve)
     monkeypatch.setattr(pi._seat_credentials, "login_seconds_left",
                         lambda margin_s, **_k: seconds_left)
@@ -928,3 +931,23 @@ def test_the_sealed_and_jailed_routes_label_a_give_up_alike(monkeypatch, tmp_pat
     _seat, _status, _text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="", log_text=code, tail=tail)
     assert [f.template for f in sink] == [detail]
+
+
+def test_an_ignored_override_is_on_the_jailed_mode_line(monkeypatch):
+    # Maintainer ruling 2026-10-05: the seat runs jailed on the login, and says why the
+    # stored override was not used.
+    from phase_loop_runtime import seat_credentials as sc
+
+    _modes(monkeypatch)   # installs the route fakes
+    monkeypatch.setattr(pi._seat_credentials, "override_decision",
+                        lambda adapter=None: sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION))
+    monkeypatch.setattr(pi._seat_credentials, "login_seconds_left", lambda margin, **k: None)
+    modes = pi._seat_launch_modes(
+        _mode_board(), mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64), base_env={})
+    claude = next(m for m in modes if m.leg == "claude")
+    assert (claude.mode, claude.code, claude.credential) == (
+        "jailed", sc.OVERRIDE_OTHER_SUBSCRIPTION, "login")
+    assert claude.fix == seat_jail.NOTICES[sc.OVERRIDE_OTHER_SUBSCRIPTION][2]
+    assert sc.OVERRIDE_OTHER_SUBSCRIPTION not in seat_jail.SEALED_FALLBACK_CODES
+    assert not sc.OVERRIDE_OTHER_SUBSCRIPTION.startswith("seat_sandbox_")

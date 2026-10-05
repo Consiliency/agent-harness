@@ -932,6 +932,18 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
     path = seat_jail.claude_seat_token_path()
     path.parent.mkdir(parents=True, mode=0o700)
     os.chmod(path.parent, 0o700)
+    # The override is bound to the launching session's account (maintainer ruling
+    # 2026-10-05), so the launch uses it.
+    from phase_loop_runtime import seat_credentials as sc
+
+    binding = path.with_name("claude.account")
+    binding.write_text(json.dumps({"schema": sc.BINDING_SCHEMA, "account": "acct-A"}))
+    os.chmod(binding, 0o600)
+    cfg = tmp_path / "claude-config"
+    cfg.mkdir()
+    (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A"}}))
+    os.chmod(cfg / ".claude.json", 0o600)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
     delivered: list[bytes] = []
 
     def _build(leg, seat_dir, executable, *, token_fd, **_kw):
@@ -960,3 +972,49 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
     assert delivered == [b"TOKEN-SUBSCRIPTION-A", b"TOKEN-SUBSCRIPTION-B"]
     # The running leg keeps its own token (its output scan uses it), whatever the file holds now.
     assert first.token == b"TOKEN-SUBSCRIPTION-A" and second.token == b"TOKEN-SUBSCRIPTION-B"
+
+
+def test_a_seat_launched_with_an_override_bound_elsewhere_uses_the_login(monkeypatch, tmp_path):
+    """Maintainer ruling 2026-10-05, through the launch itself: the stored override is bound
+    to another account, so the seat's pipe carries the login's token and the seat records
+    the ignored-override notice."""
+    import types
+
+    from phase_loop_runtime import seat_credentials as sc
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    path = seat_jail.claude_seat_token_path()
+    path.parent.mkdir(parents=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    _store_token(path, b"TOKEN-OVERRIDE-SUBSCRIPTION-B")
+    binding = path.with_name("claude.account")
+    binding.write_text(json.dumps({"schema": sc.BINDING_SCHEMA, "account": "acct-B"}))
+    os.chmod(binding, 0o600)
+    cfg = tmp_path / "claude-config"
+    cfg.mkdir()
+    (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A"}}))
+    os.chmod(cfg / ".claude.json", 0o600)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    monkeypatch.setattr(sc, "read_login_token",
+                        lambda: sc.LoginToken(b"TOKEN-LOGIN-SUBSCRIPTION-A", None))
+    delivered: list[bytes] = []
+
+    def _build(leg, seat_dir, executable, *, token_fd, **_kw):
+        token = os.read(token_fd, 4096)
+        os.close(token_fd)
+        if token != b"probe":
+            delivered.append(token)
+        return types.SimpleNamespace(leg=leg)
+
+    monkeypatch.setattr(panel_invoker._seat_jail, "build_seat_jail", _build)
+    monkeypatch.setattr(panel_invoker._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
+    monkeypatch.setattr(panel_invoker._seat_jail, "CLAUDE_PRESEED", {})
+    monkeypatch.setattr(panel_invoker, "_resolve_claude_executable", lambda: Path("/usr/bin/true"))
+    review = tmp_path / "leg" / "review"
+    (review / seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
+    seat = panel_invoker._prepare_jailed_claude(
+        review, tmp_path / "leg" / "seat", types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        1, 1, ("bundle", "instructions"))
+    assert delivered == [b"TOKEN-LOGIN-SUBSCRIPTION-A"]
+    assert seat.source == sc.SOURCE_LOGIN
+    assert seat.notices == [sc.OVERRIDE_OTHER_SUBSCRIPTION]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -29,7 +30,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Protocol
 
 from . import seat_jail
 
@@ -57,6 +58,8 @@ class SeatCredential:
     source: str
     #: Epoch seconds; ``None`` for the override, which carries no expiry.
     expires_at: float | None = None
+    #: Notice codes the resolution raised without refusing (e.g. an ignored override).
+    notices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -191,8 +194,215 @@ def login_margin_s(deadline_s: float | None = None, env: Mapping[str, str] | Non
     return float(deadline_s) if deadline_s else float(DEFAULT_MARGIN_S)
 
 
+# --------------------------------------------------------------------------------------
+# The launching session's subscription (maintainer ruling 2026-10-05): a seat's credential
+# follows the subscription the session that launched the leg is logged in to. An override is
+# used only when it is bound to that session's account.
+# --------------------------------------------------------------------------------------
+
+#: The notice for an override that is not used because it is not bound to the launching
+#: session's account (or either account cannot be determined).
+OVERRIDE_OTHER_SUBSCRIPTION = "claude_seat_override_other_subscription"
+#: The binding beside the override: ``{"schema": BINDING_SCHEMA, "account": "<id>"}``.
+BINDING_SCHEMA = "seat_credential_binding.v1"
+_BINDING_CAP_BYTES = 4096
+_ACCOUNT_FILE_CAP_BYTES = 16 << 20
+
+
+@dataclass(frozen=True)
+class OverrideDecision:
+    """Whether a stored override is used for this launch, and the notice when it is not."""
+    applies: bool
+    notice: str | None = None
+
+
+class SeatCredentialAdapter(Protocol):
+    """One harness's view of its seat credential. The resolver asks only these questions,
+    so the rule "an override must belong to the launching session's subscription" is the
+    same for every harness that has an override."""
+
+    harness: str
+    #: The notice raised when an override is present but not used.
+    override_ignored_notice: str
+    #: The credential sources, in precedence order (the override applies only when bound).
+    sources: tuple[str, ...]
+
+    def override_present(self) -> bool: ...
+
+    def override_path(self) -> Path: ...
+
+    def binding_path(self) -> Path: ...
+
+    def override_account(self) -> str | None:
+        """The account the stored override is bound to, or ``None`` when unknown."""
+
+    def current_account(self) -> str | None:
+        """The account the launching session is logged in to, or ``None`` when unknown."""
+
+
+def _read_owner_only(path: Path, cap: int, *, private_dir: bool) -> bytes | None:
+    """A regular file owned by the euid, not group/other-writable, read without following a
+    final link (and, with ``private_dir``, in a 0700 directory). ``None`` otherwise."""
+    if private_dir:
+        try:
+            info = os.stat(path.parent, follow_symlinks=False)
+        except OSError:
+            return None
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077
+                or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())):
+            return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_size > cap
+                or stat.S_IMODE(info.st_mode) & 0o022
+                or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())):
+            return None
+        chunks, total = [], 0
+        while total <= cap:
+            chunk = os.read(fd, min(1 << 20, cap + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks) if total <= cap else None
+    finally:
+        os.close(fd)
+
+
+def _account_id(value: object) -> str | None:
+    return value if isinstance(value, str) and 0 < len(value) <= 256 and value.isprintable() else None
+
+
+class ClaudeCredentialAdapter:
+    """Claude: the override is ``seat-credentials/claude``, its binding
+    ``seat-credentials/claude.account``; the session's account is the CLI's own
+    ``oauthAccount.accountUuid`` (``$CLAUDE_CONFIG_DIR/.claude.json``, else ``~/.claude.json``),
+    read without running the CLI."""
+
+    harness = "claude"
+    override_ignored_notice = OVERRIDE_OTHER_SUBSCRIPTION
+    sources = (SOURCE_OVERRIDE, SOURCE_LOGIN)
+
+    def __init__(self, env: Mapping[str, str] | None = None) -> None:
+        self._env = env
+
+    def override_present(self) -> bool:
+        return seat_jail.claude_seat_token_present()
+
+    def override_path(self) -> Path:
+        return seat_jail.claude_seat_token_path()
+
+    def binding_path(self) -> Path:
+        token = self.override_path()
+        return token.with_name(token.name + ".account")
+
+    def override_account(self) -> str | None:
+        raw = _read_owner_only(self.binding_path(), _BINDING_CAP_BYTES, private_dir=True)
+        try:
+            record = json.loads(raw) if raw else None
+        except (ValueError, UnicodeError, RecursionError):
+            return None
+        if not isinstance(record, dict) or record.get("schema") != BINDING_SCHEMA:
+            return None
+        return _account_id(record.get("account"))
+
+    def current_account(self) -> str | None:
+        env = os.environ if self._env is None else self._env
+        directory = env.get("CLAUDE_CONFIG_DIR")
+        path = Path(directory) if directory else Path.home()
+        raw = _read_owner_only(path / ".claude.json", _ACCOUNT_FILE_CAP_BYTES, private_dir=False)
+        try:
+            config = json.loads(raw) if raw else None
+        except (ValueError, UnicodeError, RecursionError):
+            return None
+        account = config.get("oauthAccount") if isinstance(config, dict) else None
+        return _account_id(account.get("accountUuid")) if isinstance(account, dict) else None
+
+
+def override_decision(adapter: SeatCredentialAdapter | None = None) -> OverrideDecision:
+    """Is the stored override used for THIS launch? Only when both accounts are known and
+    equal; a present override that is not used carries the adapter's notice."""
+    adapter = adapter or ClaudeCredentialAdapter()
+    if not adapter.override_present():
+        return OverrideDecision(False)
+    current, bound = adapter.current_account(), adapter.override_account()
+    if current is not None and bound is not None and current == bound:
+        return OverrideDecision(True)
+    return OverrideDecision(False, adapter.override_ignored_notice)
+
+
+class StoreRefused(RuntimeError):
+    """``store_override`` refused; the message names the fix and never carries the token."""
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` as a new 0600 file, atomically (a temp in the same
+    directory, then a rename)."""
+    staged = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_CLOEXEC", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged, path)
+    except BaseException:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise
+
+
+def store_override(token: bytes, adapter: SeatCredentialAdapter | None = None) -> None:
+    """Store a seat-token override bound to the account the CURRENT session is logged in to
+    (maintainer decision 2026-10-05: "Store command binds it").
+
+    The directory is created 0700 (an existing one must be private and owned by the euid).
+    The old binding is removed first, then the token is written, then its binding, so an
+    interrupted store leaves an unbound override, which is ignored. Raises
+    :class:`StoreRefused` without touching anything when the token is malformed or the
+    session's account cannot be determined."""
+    adapter = adapter or ClaudeCredentialAdapter()
+    token = token.strip()
+    if (not token or len(token) > seat_jail.TOKEN_FILE_CAP_BYTES
+            or not all(0x21 <= b <= 0x7E for b in token)):
+        raise StoreRefused("the token is empty, too long, or not printable ASCII")
+    account = adapter.current_account()
+    if account is None:
+        raise StoreRefused(f"no {adapter.harness} login found to bind the token to: log in "
+                           "with the subscription the token belongs to, then store it again")
+    path, binding = adapter.override_path(), adapter.binding_path()
+    directory = path.parent
+    for parent in (directory.parent, directory):
+        try:
+            parent.mkdir(mode=0o700, parents=True)
+        except FileExistsError:
+            pass
+    info = os.stat(directory, follow_symlinks=False)
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077
+            or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())):
+        raise StoreRefused(f"{directory} must be a directory you own with mode 0700 "
+                           f"(chmod 700 {directory})")
+    try:
+        os.unlink(binding)
+    except FileNotFoundError:
+        pass
+    _write_private(path, token + b"\n")
+    _write_private(binding, json.dumps({"schema": BINDING_SCHEMA, "account": account},
+                                       sort_keys=True).encode("utf-8") + b"\n")
+
+
 def override_present() -> bool:
-    return seat_jail.claude_seat_token_present()
+    """Whether the launch uses the override: present AND bound to the launching session's
+    account (the name is kept for its callers; an unbound override is not "present" to them)."""
+    return override_decision().applies
 
 
 def claude_seat_credential_present(
@@ -214,14 +424,20 @@ def resolve_claude_seat_credential(
     (a login with less than ``margin_s`` left; nothing is run to renew it)."""
     now = now or time.time
     read_login = read_login or read_login_token
-    if override_present():
+    decision = override_decision()
+    if decision.applies:
         return SeatCredential(seat_jail.read_claude_seat_token(), SOURCE_OVERRIDE)
+    ignored = (decision.notice,) if decision.notice else ()
+    if ignored:
+        logging.getLogger(__name__).warning(
+            "seat claude [%s]: the stored seat token is not bound to this session's account; "
+            "using the login", decision.notice)
     login = read_login()
     if login is None:
         raise seat_jail.SeatSandboxRefused("claude_seat_token_missing")
     if login.expires_at is not None and login.expires_at - now() < margin_s:
         raise seat_jail.SeatSandboxRefused("claude_seat_login_token_expiring")
-    return SeatCredential(login.token, SOURCE_LOGIN, login.expires_at)
+    return SeatCredential(login.token, SOURCE_LOGIN, login.expires_at, ignored)
 
 
 # --------------------------------------------------------------------------------------

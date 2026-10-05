@@ -1044,9 +1044,11 @@ def build_parser() -> argparse.ArgumentParser:
         "seat-sandbox",
         help=("Jailed review-seat maintenance: `qualify` runs the EC-EXECFIND-2 jail "
               "falsifiers on this host and records its pass; `reap PATH` removes a retained "
-              "seat directory."),
+              "seat directory; `store-token` stores a Claude seat-token override (read with no "
+              "echo, or from stdin) bound to the account you are logged in to now."),
     )
-    seat_sandbox_sub.add_argument("seat_sandbox_action", choices=("qualify", "reap"))
+    seat_sandbox_sub.add_argument("seat_sandbox_action",
+                                  choices=("qualify", "reap", "store-token"))
     seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH", nargs="?")
     # train-status: non-mutating inspection of the cross-repo train ledger (#45).
     # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
@@ -2612,8 +2614,35 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     return exit_code
 
 
+def _seat_store_token() -> int:
+    """`seat-sandbox store-token`: the token is read with no echo (or from stdin when it is
+    not a terminal) and is never printed; it is stored bound to the current login's account."""
+    import getpass
+
+    from . import seat_credentials
+
+    if sys.stdin.isatty():
+        token = getpass.getpass("Claude seat token (input hidden): ").encode("utf-8")
+    else:
+        token = sys.stdin.buffer.read(64 * 1024)
+    try:
+        seat_credentials.store_override(token)
+    except seat_credentials.StoreRefused as exc:
+        print(f"seat-sandbox store-token: refused: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"seat-sandbox store-token: failed ({type(exc).__name__})", file=sys.stderr)
+        return 1
+    print("seat-sandbox store-token: stored, bound to the account you are logged in to now; "
+          "seats use it only while you are logged in to that account")
+    return 0
+
+
 def _seat_sandbox_command(args: argparse.Namespace) -> int:
     from . import seat_uid
+
+    if args.seat_sandbox_action == "store-token":
+        return _seat_store_token()
 
     if args.seat_sandbox_action == "qualify":
         from . import seat_jail_autoqualify, seat_jail_qualification

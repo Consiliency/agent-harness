@@ -1638,7 +1638,8 @@ def _seat_launch_modes(
         margin = _claude_seat_login_margin_s(timeouts.get(leg))
         if margin not in credential:
             cred = _seat_credentials
-            if cred.override_present():
+            decision = cred.override_decision()
+            if decision.applies:
                 try:
                     cred.resolve_claude_seat_credential(margin)
                     credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_OVERRIDE, None)
@@ -1647,7 +1648,8 @@ def _seat_launch_modes(
             else:
                 left = cred.login_seconds_left(margin)
                 if left is None:
-                    credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_LOGIN, None)
+                    # An override bound to another subscription is ignored, loudly.
+                    credential[margin] = (sp.MODE_JAILED, decision.notice, cred.SOURCE_LOGIN, None)
                 elif cred.login_refresh_wait_s() > 0:
                     credential[margin] = (sp.MODE_JAILED, _CLAUDE_LOGIN_AWAITING,
                                           cred.SOURCE_LOGIN, left)
@@ -1710,6 +1712,11 @@ def _seat_launch_modes(
                     f"{why} (expires in {_minutes(left)}m; waits up to "
                     f"{int(_seat_credentials.login_refresh_wait_s())} s, then will not run)",
                     fix, source, position, qualified_now[leg]))
+            elif code is not None and kind == sp.MODE_JAILED:
+                # Jailed, with a notice the operator should see (an ignored override).
+                _what, why, fix = _seat_jail.NOTICES[code]
+                modes.append(sp.SeatMode(key, leg, kind, code, why, fix, source, position,
+                                         qualified_now[leg]))
             elif code is not None:
                 modes.append(_coded(kind, code))
             else:
@@ -2641,6 +2648,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_seat_token_missing", "claude_seat_token_rejected", "claude_seat_token_in_output",
     "claude_seat_token_rate_limited", "claude_seat_bypass_ack_blocked",
     "claude_seat_login_rate_limited", "claude_seat_login_rejected",
+    "claude_seat_override_other_subscription",
     "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
     "claude_seat_login_token_awaiting_refresh",
     "seat_jail_qualification_failed",
@@ -8768,7 +8776,7 @@ def _prepare_jailed_claude(
         raise
     return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
                        review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
-                       expires_at=credential.expires_at)
+                       expires_at=credential.expires_at, notices=list(credential.notices))
 
 
 def _exec_jailed_claude_leg(

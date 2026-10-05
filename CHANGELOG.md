@@ -118,6 +118,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   prerequisites and the Gemini seat keep the sealed route (agent-harness#1244).
 - The jailed seat's identity probe lists its descriptors from a child process, not a shell
   pipeline, so a correctly confined seat is no longer refused intermittently.
+- Plan amendment A4 (maintainer ruling 2026-10-05): a jailed Claude seat's credential
+  follows the subscription of the session that launched the leg.
+  - **Storing:** the new `phase-loop seat-sandbox store-token` stores the seat-token
+    override together with the account you are logged in to (read with no echo, or from
+    stdin; it is never printed).
+  - **At launch:** the override is used only while the launching session is logged in to
+    that account. Otherwise, or when either account is unknown, or for an override with no
+    binding, the seat uses the login with the new notice
+    `claude_seat_override_other_subscription`.
+  - **Per harness:** the rule sits behind a per-harness credential adapter.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

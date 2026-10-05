@@ -170,8 +170,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run `claude auth login`, then re-run"),
     "claude_seat_token_rejected": (
         "leg ended", "the seat token override was rejected (revoked or expired)",
-        "replace the override with a fresh `claude setup-token` token, or remove it to use "
-        "your Claude login"),
+        "store a fresh `claude setup-token` token with `phase-loop seat-sandbox store-token`, "
+        "or remove the override to use your Claude login"),
     "claude_seat_token_in_output": (
         "leg rejected", "seat tried to publish its credential", "revoke the token"),
     # Not a jail fault: the jail ran, and the provider refused the seat token's subscription.
@@ -182,6 +182,15 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "rotate or replace the seat token with one for another subscription, or wait for the "
         "reset"),
     # The same outcomes when the credential is the user's Claude login (plan amendment A1).
+    # Maintainer ruling 2026-10-05: a seat's credential follows the launching session's
+    # subscription; an override bound to another account (or to none) is not used.
+    "claude_seat_override_other_subscription": (
+        "seat token override ignored",
+        "the stored seat token is not bound to the subscription this session is logged in to "
+        "(or the binding or the session's account cannot be determined); the seat uses your "
+        "login",
+        "remove the override, or log in to the account it belongs to; or store a token for "
+        "this account with `phase-loop seat-sandbox store-token`"),
     "claude_seat_login_rate_limited": (
         "leg ended",
         "your Claude subscription is rate- or usage-limited (the leg detail names the reset "
