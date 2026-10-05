@@ -68,9 +68,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   agent-harness#361) on every tooled or pointer seat record.
 - New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;
   it accepts only a recorded, contained, subuid-owned path.
-- The seat token is read at every jailed launch, so an operator can replace it between legs
-  (an atomic rename) and the next leg uses the new one; it is bound by no jail digest or
-  qualification record. A jailed leg whose provider reports a rate or usage limit ends with
+- The seat-token override is read at every jailed launch, so storing a new one with
+  `phase-loop seat-sandbox store-token` between legs takes effect at the next leg. That
+  command is the only way to rotate it (plan amendment A4): a token file replaced by hand
+  is ignored. The override is bound by no jail digest or qualification record. A jailed leg whose provider reports a rate or usage limit ends with
   the classifier's `usage_limit` detail (reset time included when given) and the new notice
   `claude_seat_token_rate_limited`, never a jail refusal. The jailed leg now runs the shared
   leg-failure classifier over its PTY tail, after scanning the tail for the seat token.
@@ -132,8 +133,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - **Status:** `phase-loop seat-sandbox token-status` shows the binding, never the token.
   - **When the seat does not run:** its refusal carries the ignored-override notice beside
     its refusal code.
+  - **Organization (maintainer ruling 2026-10-05):** the record binds the login's account
+    AND organization (`oauthAccount.accountUuid` and `organizationUuid`, record schema v2).
+    It applies only when both equal the session's. A store with an unknown organization is
+    refused, and `token-status` shows both, exiting 0 only when the override applies.
+  - **Hardening:** the record must be owner-only (any group or other bit refuses with
+    `token_file_unsafe`), and the store refuses a state directory that is a link.
   - **Upgrade:** a hand-written override file is now ignored until it is stored again with
-    `store-token`. A host without a Claude login cannot store an override.
+    `store-token`. That includes a hand-written file with unsafe permissions, which is now
+    ignored rather than refused, because it is never used. A v1 (account-only) record is
+    unbound and must be stored again. A host without a Claude login cannot store an
+    override.
 - **Release cut:** agy requalification is required at the next release cut (both the sealed
   and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
   must pass on the final tree.

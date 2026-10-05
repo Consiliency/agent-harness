@@ -1081,3 +1081,52 @@ def test_a_degraded_mode_line_says_the_override_was_ignored(monkeypatch, tmp_pat
     claude = next(mode for mode in modes if mode.leg == "claude")
     assert claude.mode == "degraded" and claude.code == code
     assert _IGNORED in claude.render()
+
+
+# agent-harness#1253 round 2, codex F003 (president F053), adopted as written apart from its
+# filename and imports: a refusal after the credential is resolved, or in the namespace,
+# keeps the ignored-override notice.
+
+@pytest.mark.parametrize("boundary", ["prepare", "namespace"])
+def test_degraded_spawn_keeps_the_ignored_override(monkeypatch, tmp_path, boundary):
+    import contextlib
+
+    from phase_loop_runtime import seat_credentials as sc
+
+    from .test_seat_credentials import _store_override
+
+    _store_override(monkeypatch, tmp_path, bound_to="acct-B", session="acct-A")
+    monkeypatch.setattr(sc, "read_login_token", lambda: sc.LoginToken(b"fake-login-A", None))
+    monkeypatch.setattr(pi, "_seat_route_for_spawn",
+                        lambda *a, **k: (seat_jail.SeatRoute(True), [], None))
+
+    def stage(repo, review):
+        tree = review / "pl-panel-stage-x"
+        (tree / ".git").mkdir(parents=True)
+        (tree / ".git" / "phase-loop-source-commit").write_text("c" * 40)
+        return tree
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage)
+    monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
+                        lambda **k: types.SimpleNamespace(
+                            fell_back=False, path=tmp_path, host=None, reason=""))
+    monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
+    monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range",
+                        lambda f: None if boundary == "namespace" else (100000, 65536))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda *a: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda n: contextlib.nullcontext(7))
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextlib.nullcontext(
+                            ["nsenter", "-t", "4242", "-U", "--net", "setpriv"]))
+    monkeypatch.setattr(seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
+
+    def no_executable():
+        raise seat_jail.SeatSandboxRefused("seat_sandbox_refused:jail_build")
+
+    monkeypatch.setattr(pi, "_resolve_claude_executable", no_executable)
+    spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
+    assert spawned[0] == "DEGRADED"
+    expected = "jail_build" if boundary == "prepare" else "namespace"
+    assert f"seat_sandbox_refused:{expected}" in spawned.seat_notices
+    assert sc.OVERRIDE_OTHER_SUBSCRIPTION in spawned.seat_notices

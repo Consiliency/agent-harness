@@ -610,14 +610,17 @@ was stored for.
   stored by hand, without the command, is never used.
 - **What to store:** the override carries no expiry information, so it should be a
   long-lived token, not a copied login token.
-- **Checking it:** the store prints the account it bound the token to.
-  `phase-loop seat-sandbox token-status` shows that account, this session's account, and
-  whether the override applies now. It never shows the token.
+- **Checking it:** the store prints the account and organization it bound the token to.
+  `phase-loop seat-sandbox token-status` shows them, this session's, and whether the
+  override applies now. It exits 0 only when the override applies, and never shows the
+  token. Logging in to another organization of the same account also moves seats to the
+  login.
 - **One per user:** there is one override per Unix user. Storing from another account
   replaces it.
 - **Upgrading from an earlier release:** a hand-written override file is ignored until you
-  store it again with `store-token`. A host that never runs `claude login` cannot use an
-  override, because the store needs a login to bind the token to.
+  store it again with `store-token`, as is an override stored by an earlier version of this
+  release (which recorded the account only). A host that never runs `claude login` cannot
+  use an override, because the store needs a login to bind the token to.
 
 ```bash
 claude setup-token                         # mint a long-lived subscription token

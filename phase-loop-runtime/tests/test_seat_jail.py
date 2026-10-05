@@ -583,40 +583,6 @@ def test_j2_teardown_never_follows_a_planted_link(tmp_path):
 # The Claude seat token (D2) and the output scan.
 # --------------------------------------------------------------------------------------
 
-def _token_file(tmp_path: Path, *, dir_mode=0o700, file_mode=0o600, data=SENTINEL_TOKEN + b"\n"):
-    directory = tmp_path / "seat-credentials"
-    directory.mkdir(mode=0o700)
-    path = directory / "claude"
-    path.write_bytes(data)
-    path.chmod(file_mode)
-    directory.chmod(dir_mode)
-    return path
-
-
-def test_token_file_owner_only_is_read(tmp_path):
-    assert seat_jail.read_claude_seat_token(_token_file(tmp_path)) == SENTINEL_TOKEN
-
-
-@pytest.mark.parametrize("case", ["loose-file", "loose-dir", "symlink", "empty", "missing"])
-def test_token_file_hygiene_refuses(tmp_path, case):
-    if case == "loose-file":
-        path = _token_file(tmp_path, file_mode=0o644)
-    elif case == "loose-dir":
-        path = _token_file(tmp_path, dir_mode=0o755)
-    elif case == "empty":
-        path = _token_file(tmp_path, data=b"  \n")
-    elif case == "missing":
-        path = tmp_path / "nowhere" / "claude"
-    else:
-        real = _token_file(tmp_path)
-        (tmp_path / "seat-credentials").chmod(0o700)
-        path = real.parent / "alias"
-        path.symlink_to(real)
-    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
-        seat_jail.read_claude_seat_token(path)
-    assert refused.value.code == "seat_sandbox_refused:token_file_unsafe"
-
-
 def test_token_pipe_is_one_drained_channel():
     fd = seat_jail.token_pipe(SENTINEL_TOKEN)
     try:

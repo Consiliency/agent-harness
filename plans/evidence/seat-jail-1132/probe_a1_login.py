@@ -65,7 +65,8 @@ def main() -> int:
     passed, reason = seat_jail.pass_record_verdict(digest)
     if not passed:
         raise SystemExit(f"no recorded jail pass for {digest[:16]}: {reason}")
-    override = seat_jail.claude_seat_token_path()
+    # Since plan amendment A4 the override is the bound record (a raw token file is ignored).
+    override = seat_credentials.ClaudeCredentialAdapter().record_path()
     aside = override.with_name(override.name + ASIDE_SUFFIX)
     moved = False
     if os.path.lexists(override):
@@ -94,8 +95,7 @@ def main() -> int:
     finally:
         if moved:
             os.rename(aside, override)
-    restored = (not moved) or (os.path.isfile(override) and not os.path.lexists(aside)
-                               and seat_jail.claude_seat_token_ready())
+    restored = (not moved) or (os.path.isfile(override) and not os.path.lexists(aside))
     record = {
         "schema": "seat_jail_a1_login_route.v1",
         "issue": "agent-harness#1132",

@@ -134,8 +134,9 @@ def _login(expires_at):
     return sc.LoginToken(ACCESS.encode(), expires_at)
 
 
-def _session_account(monkeypatch, tmp_path, account: str | None):
-    """The launching session's login account: the CLI's oauthAccount.accountUuid."""
+def _session_account(monkeypatch, tmp_path, account: str | None, organization: str = "org-1"):
+    """The launching session's login: the CLI's oauthAccount.accountUuid and
+    organizationUuid (both from the one file)."""
     cfg = tmp_path / "claude-config"
     cfg.mkdir(exist_ok=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
@@ -143,7 +144,8 @@ def _session_account(monkeypatch, tmp_path, account: str | None):
     if account is None:
         target.unlink(missing_ok=True)
         return
-    target.write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+    target.write_text(json.dumps({"oauthAccount": {"accountUuid": account,
+                                                   "organizationUuid": organization}}))
     os.chmod(target, 0o600)
 
 
@@ -272,14 +274,15 @@ def test_no_override_raises_no_notice(no_override, monkeypatch, tmp_path):
     assert got.notices == ()
 
 
-def test_the_session_account_is_the_clis_own_oauth_account(monkeypatch, tmp_path):
-    _session_account(monkeypatch, tmp_path, "acct-A")
-    assert sc.ClaudeCredentialAdapter().current_account() == "acct-A"
+def test_the_session_identity_is_the_clis_own_oauth_account(monkeypatch, tmp_path):
+    _session_account(monkeypatch, tmp_path, "acct-A", "org-7")
+    assert sc.ClaudeCredentialAdapter().current_identity() == sc.Identity("acct-A", "org-7")
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
-    (tmp_path / "home" / ".claude.json").write_text(json.dumps({"oauthAccount": {}}))
-    assert sc.ClaudeCredentialAdapter().current_account() is None
+    for oauth in ({}, {"accountUuid": "acct-A"}, {"organizationUuid": "org-7"}):
+        (tmp_path / "home" / ".claude.json").write_text(json.dumps({"oauthAccount": oauth}))
+        assert sc.ClaudeCredentialAdapter().current_identity() is None   # both, or neither
 
 
 # --------------------------------------------------------------------------------------
@@ -332,7 +335,7 @@ def test_the_cli_refuses_without_a_login(monkeypatch, tmp_path, capsys):
 
 
 #: The record schema, spelled out so the module collects anywhere (checked below).
-_SCHEMA = "seat_credential_override.v1"
+_SCHEMA = "seat_credential_override.v2"
 
 
 def _record():
@@ -381,6 +384,10 @@ def test_an_unsafe_override_record_refuses_the_launch(monkeypatch, tmp_path, sha
     json.dumps({"schema": _SCHEMA, "token": "fake-token"}).encode(),
     json.dumps({"schema": _SCHEMA, "account": "acct-A"}).encode(),
     json.dumps({"schema": _SCHEMA, "account": "acct-A", "token": "has space"}).encode(),
+    # an organization-less record, and a v1 (account-only) record, bind nothing
+    json.dumps({"schema": _SCHEMA, "account": "acct-A", "token": "fake-token-x"}).encode(),
+    json.dumps({"schema": "seat_credential_override.v1", "account": "acct-A",
+                "token": "fake-token-x"}).encode(),
 ])
 def test_a_malformed_override_record_binds_nothing(monkeypatch, tmp_path, content):
     assert sc.RECORD_SCHEMA == _SCHEMA
@@ -392,7 +399,8 @@ def test_a_malformed_override_record_binds_nothing(monkeypatch, tmp_path, conten
 
 
 def test_the_rule_is_the_adapters_not_claudes():
-    # Any harness adapter gets the same rule: a record whose account equals the session's.
+    # Any harness adapter gets the same rule: a record whose account AND organization equal
+    # the session's.
     class _Adapter:
         harness = "other"
         override_ignored_notice = "other_override_other_subscription"
@@ -412,19 +420,21 @@ def test_the_rule_is_the_adapters_not_claudes():
                 raise sc.UnsafeOverride("x")
             return self._r
 
-        def current_account(self):
+        def current_identity(self):
             return self._c
 
         def account_source(self):
             return Path("/nonexistent")
 
-    good = sc.OverrideRecord("x", b"fake-token-x")
-    assert sc.override_decision(_Adapter(None, "x")) == sc.OverrideDecision(False)
-    applied = sc.override_decision(_Adapter(good, "x"))
+    here = sc.Identity("x", "org-1")
+    good = sc.OverrideRecord(here, b"fake-token-x")
+    assert sc.override_decision(_Adapter(None, here)) == sc.OverrideDecision(False)
+    applied = sc.override_decision(_Adapter(good, here))
     assert applied.applies and applied.token == b"fake-token-x"
-    assert sc.override_decision(_Adapter(good, "y")) == sc.OverrideDecision(
-        False, "other_override_other_subscription")
-    assert sc.override_decision(_Adapter(None, "x", unsafe=True)) == sc.OverrideDecision(
+    for other in (sc.Identity("y", "org-1"), sc.Identity("x", "org-2"), None):
+        assert sc.override_decision(_Adapter(good, other)) == sc.OverrideDecision(
+            False, "other_override_other_subscription")
+    assert sc.override_decision(_Adapter(None, here, unsafe=True)) == sc.OverrideDecision(
         False, refusal=sc.OVERRIDE_UNSAFE)
 
 
@@ -433,7 +443,8 @@ def test_store_binds_token_and_account_in_one_record(monkeypatch, tmp_path):
     sc.store_override(OVERRIDE + b"\n")
     record = _record()
     assert json.loads(record.read_text()) == {
-        "schema": sc.RECORD_SCHEMA, "account": "acct-A", "token": OVERRIDE.decode()}
+        "schema": sc.RECORD_SCHEMA, "account": "acct-A", "organization": "org-1",
+        "token": OVERRIDE.decode()}
     assert os.stat(record).st_mode & 0o777 == 0o600
     assert os.stat(record.parent).st_mode & 0o777 == 0o700
     assert [p.name for p in record.parent.iterdir()] == [record.name]   # no temp left behind
@@ -502,7 +513,7 @@ def _two_sessions(monkeypatch, tmp_path):
     for account in ("acct-A", "acct-B"):
         cfg = tmp_path / f"cfg-{account}"
         cfg.mkdir()
-        (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+        (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account, "organizationUuid": "org-1"}}))
         os.chmod(cfg / ".claude.json", 0o600)
         configs[account] = cfg
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configs["acct-A"]))      # this session: A
@@ -716,12 +727,15 @@ def test_the_store_says_which_account_it_bound_and_status_shows_it(monkeypatch, 
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(
         isatty=lambda: False, buffer=io.BytesIO(token + b"\n")))
     assert cli.main(["seat-sandbox", "store-token"]) == 0
-    assert "acct-A" in capsys.readouterr().out
-    assert cli.main(["seat-sandbox", "token-status"]) == 0
     out = capsys.readouterr().out
-    assert "bound account: acct-A" in out and "applies to this session: yes" in out
+    assert "account acct-A" in out and "organization org-1" in out
+    assert cli.main(["seat-sandbox", "token-status"]) == 0        # 0 only when it applies
+    out = capsys.readouterr().out
+    assert "bound: account acct-A, organization org-1" in out
+    assert "this session: account acct-A, organization org-1" in out
+    assert "applies to this session: yes" in out
     _session_account(monkeypatch, tmp_path, "acct-B")
-    assert cli.main(["seat-sandbox", "token-status"]) == 0
+    assert cli.main(["seat-sandbox", "token-status"]) != 0
     out = capsys.readouterr().out
     assert "applies to this session: no" in out and sc.OVERRIDE_OTHER_SUBSCRIPTION in out
     assert token.decode() not in out
@@ -755,12 +769,62 @@ def test_an_adapter_without_the_override_source_never_uses_one():
             return True
 
         def read_override(self):
-            return sc.OverrideRecord("x", b"fake-token-x")
+            return sc.OverrideRecord(sc.Identity("x", "o"), b"fake-token-x")
 
-        def current_account(self):
-            return "x"
+        def current_identity(self):
+            return sc.Identity("x", "o")
 
         def account_source(self):
             return Path("/nonexistent")
 
     assert sc.override_decision(_LoginOnly()) == sc.OverrideDecision(False)
+
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1253 president, maintainer ruling 2026-10-05: the override binds the account
+# AND the organization of the login it was stored under.
+# --------------------------------------------------------------------------------------
+
+def test_same_account_in_another_organization_uses_the_login(monkeypatch, tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    _session_account(monkeypatch, tmp_path, "acct-A", "org-1")
+    sc.store_override(OVERRIDE)
+    _session_account(monkeypatch, tmp_path, "acct-A", "org-2")     # same account, other org
+    got = sc.resolve_claude_seat_credential(900, now=lambda: 1000.0,
+                                            read_login=lambda: _login(9000.0))
+    assert got.source == sc.SOURCE_LOGIN and got.notices == (sc.OVERRIDE_OTHER_SUBSCRIPTION,)
+    _session_account(monkeypatch, tmp_path, "acct-A", "org-1")     # back: it applies again
+    assert sc.override_decision().applies
+
+
+def test_store_refuses_when_the_organization_is_unknown(monkeypatch, tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    cfg = tmp_path / "claude-config"
+    (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A"}}))
+    with pytest.raises(sc.StoreRefused):
+        sc.store_override(OVERRIDE)
+    assert not _record().exists()
+
+
+# codex round-2 falsifiers (F001, F002), adopted as written apart from their filenames.
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o644])
+def test_override_record_refuses_group_or_world_read_access(monkeypatch, tmp_path, mode):
+    _store_override(monkeypatch, tmp_path)
+    sc.ClaudeCredentialAdapter().record_path().chmod(mode)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+        sc.resolve_claude_seat_credential(
+            0, read_login=lambda: sc.LoginToken(b"fake-login-A", None))
+    assert refused.value.code == sc.OVERRIDE_UNSAFE
+
+
+def test_store_refuses_a_linked_state_root(monkeypatch, tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    root = seat_jail.state_home()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    root.symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises((sc.StoreRefused, OSError)):
+        sc.store_override(b"fake-seat-token")
+    assert not (elsewhere / "phase-loop" / "seat-credentials" / "claude.override.json").exists()

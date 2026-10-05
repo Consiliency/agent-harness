@@ -112,8 +112,11 @@ def main() -> int:
     passed, reason = seat_jail.pass_record_verdict(digest)
     if not passed:
         raise SystemExit(f"no recorded jail pass for {digest[:16]}: {reason}")
-    if not seat_jail.claude_seat_token_ready():
-        raise SystemExit("seat token not present / not owner-only")
+    from phase_loop_runtime import seat_credentials as _credentials
+
+    if not _credentials.override_decision().applies:
+        raise SystemExit("no stored seat-token override applies to this session "
+                         "(store one with `phase-loop seat-sandbox store-token`)")
     retention = seat_uid.retention_dir()
     retained_before = sorted(os.listdir(retention)) if retention.exists() else []
     with tempfile.TemporaryDirectory(prefix="pl-p2-") as scratch:
@@ -130,12 +133,14 @@ def main() -> int:
         dummy = scratch / "dummy-credentials" / "claude.override.json"
         dummy.parent.mkdir(mode=0o700)
         os.chmod(dummy.parent, 0o700)
-        account = seat_credentials.ClaudeCredentialAdapter().current_account()
-        if account is None:
-            raise SystemExit("no Claude login: the rejected-token leg needs the session account")
+        identity = seat_credentials.ClaudeCredentialAdapter().current_identity()
+        if identity is None:
+            raise SystemExit("no Claude login: the rejected-token leg needs the session's "
+                             "account and organization")
         fd = os.open(dummy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema": seat_credentials.RECORD_SCHEMA, "account": account,
+            json.dump({"schema": seat_credentials.RECORD_SCHEMA, "account": identity.account,
+                       "organization": identity.organization,
                        "token": DUMMY_TOKEN.decode("ascii")}, handle)
         adapter = seat_credentials.ClaudeCredentialAdapter
         real_paths = adapter.record_path, adapter.legacy_path

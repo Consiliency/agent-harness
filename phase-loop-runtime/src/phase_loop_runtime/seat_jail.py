@@ -828,64 +828,6 @@ def claude_seat_token_path() -> Path:
     return state_home() / "phase-loop" / "seat-credentials" / "claude"
 
 
-def claude_seat_token_present(path: Path | None = None) -> bool:
-    """J7 step 3: presence only. Hygiene is checked at read time (step 5)."""
-    target = path or claude_seat_token_path()
-    return os.path.lexists(target)
-
-
-def _owner_only_dir(path: Path) -> bool:
-    try:
-        info = os.stat(path, follow_symlinks=False)
-    except OSError:
-        return False
-    return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
-            and stat.S_IMODE(info.st_mode) & 0o077 == 0)
-
-
-def read_claude_seat_token(path: Path | None = None) -> bytes:
-    """Read the seat token: 0600 file in a 0700 directory, both owned by the euid.
-
-    Opened ``O_NOFOLLOW`` and checked with ``fstat``. Any failure raises
-    ``seat_sandbox_refused:token_file_unsafe``. The token is stripped of surrounding
-    whitespace and must be non-empty printable ASCII.
-    """
-    target = path or claude_seat_token_path()
-    unsafe = refused("token_file_unsafe")
-    if not _owner_only_dir(target.parent):
-        raise SeatSandboxRefused(unsafe)
-    try:
-        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError as exc:
-        raise SeatSandboxRefused(unsafe) from exc
-    try:
-        info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > TOKEN_FILE_CAP_BYTES):
-            raise SeatSandboxRefused(unsafe)
-        data = os.read(fd, TOKEN_FILE_CAP_BYTES + 1)
-    finally:
-        os.close(fd)
-    token = data.strip()
-    if not token or len(data) > TOKEN_FILE_CAP_BYTES or not all(0x21 <= b <= 0x7E for b in token):
-        raise SeatSandboxRefused(unsafe)
-    return token
-
-
-def claude_seat_token_ready(path: Path | None = None) -> bool:
-    """The jailed route's authentication proof, in place of ``_claude_subscription_auth_ok``.
-
-    ``claude auth status`` does not validate a token (plan, measured), so the only local
-    proof is that a hygienic token file exists; a rejected token is recognised at run time
-    by its P2 signature (``claude_seat_token_rejected``).
-    """
-    try:
-        read_claude_seat_token(path)
-    except SeatSandboxRefused:
-        return False
-    return True
-
-
 def token_pipe(token: bytes) -> int:
     """The token's only channel: a pipe whose read end is returned and whose write end is
     already closed. Once the CLI drains it, reopening the fd yields nothing."""

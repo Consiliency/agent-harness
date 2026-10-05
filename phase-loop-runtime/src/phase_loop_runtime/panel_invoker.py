@@ -8751,48 +8751,57 @@ def _prepare_jailed_claude(
     # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
     credential = _seat_credentials.resolve_claude_seat_credential(
         _claude_seat_login_margin_s(timeout_s))
-    token = credential.token
-    executable = _resolve_claude_executable()
-    bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
-    brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
-    token_fd = _seat_jail.token_pipe(token)
+    # agent-harness#1253 round 2: a refusal after the credential is resolved (the jail
+    # build, the pre-seed, the probe jail) still says when a stored override was ignored --
+    # the credential's notices as siblings of its one refusal code.
     try:
-        jail = _seat_jail.build_seat_jail(
-            "claude", seat_dir, executable, tree=tree, bundle_memfd=bundle,
-            instructions_memfd=brief, token_fd=token_fd, seat_ids=(seat_id, seat_id),
-        )
-    except BaseException:
-        for fd in (bundle, brief, token_fd):
-            os.close(fd)
-        raise
-    try:
-        if _seat_jail.CLAUDE_PRESEED:
-            home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
-            try:
-                _seat_jail.write_new_file_at(
-                    home, ".claude/.claude.json",
-                    json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
-                )
-            except OSError as exc:
-                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("preseed")) from exc
-            finally:
-                os.close(home)
-        # The probe jail: the same shape over its own empty directories, because the
-        # bundle memfds and the token pipe are single-use.
-        probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
-        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-        probe = _seat_jail.build_seat_jail(
-            "claude", probe_dir, executable,
-            bundle_memfd=_seat_jail.memfd_with("probe-bundle", b""),
-            instructions_memfd=_seat_jail.memfd_with("probe-instructions", b""),
-            token_fd=_seat_jail.token_pipe(b"probe"), seat_ids=(seat_id, seat_id),
-        )
-    except BaseException:
-        _seat_jail.close_jail_fds(jail)
-        raise
-    return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
-                       review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
-                       expires_at=credential.expires_at, notices=list(credential.notices))
+        token = credential.token
+        executable = _resolve_claude_executable()
+        bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
+        brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
+        token_fd = _seat_jail.token_pipe(token)
+        try:
+            jail = _seat_jail.build_seat_jail(
+                "claude", seat_dir, executable, tree=tree, bundle_memfd=bundle,
+                instructions_memfd=brief, token_fd=token_fd, seat_ids=(seat_id, seat_id),
+            )
+        except BaseException:
+            for fd in (bundle, brief, token_fd):
+                os.close(fd)
+            raise
+        try:
+            if _seat_jail.CLAUDE_PRESEED:
+                home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
+                try:
+                    _seat_jail.write_new_file_at(
+                        home, ".claude/.claude.json",
+                        json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
+                    )
+                except OSError as exc:
+                    raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("preseed")) from exc
+                finally:
+                    os.close(home)
+            # The probe jail: the same shape over its own empty directories, because the
+            # bundle memfds and the token pipe are single-use.
+            probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+            (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+            probe = _seat_jail.build_seat_jail(
+                "claude", probe_dir, executable,
+                bundle_memfd=_seat_jail.memfd_with("probe-bundle", b""),
+                instructions_memfd=_seat_jail.memfd_with("probe-instructions", b""),
+                token_fd=_seat_jail.token_pipe(b"probe"), seat_ids=(seat_id, seat_id),
+            )
+        except BaseException:
+            _seat_jail.close_jail_fds(jail)
+            raise
+        return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
+                           review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
+                           expires_at=credential.expires_at, notices=list(credential.notices))
+    except _seat_jail.SeatSandboxRefused as exc:
+        if not credential.notices:
+            raise
+        raise _seat_jail.SeatSandboxRefused(
+            exc.code, str(exc), also=_dedupe((*exc.also, *credential.notices))) from exc
 
 
 def _exec_jailed_claude_leg(
@@ -10669,6 +10678,11 @@ def _default_spawn(
         failure = _exception_failure(exc)
         if isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES:
             seat_notices.append(failure)
+        if jailed and leg == "claude":
+            # agent-harness#1253 round 2: a jailed Claude seat that fails here (e.g. its
+            # namespace) still says when a stored override was ignored -- the decision's
+            # notice only, beside the one refusal.
+            seat_notices.extend(n for n in _ignored_override(leg) if n not in seat_notices)
         if review_monitor is not None or seat_notices:
             return _BrokeredSpawnResult("DEGRADED", "", failure,
                                        evidence=broker.evidence if broker is not None else None,

@@ -1587,3 +1587,18 @@ Two of A4's statements are revised; the rest stands.
 stores, a token replaced by hand, a linked ancestor and a swapped directory during a store,
 a non-regular account file, and a terminal that cannot hide input each have a falsifier that
 is red at the round-1 head.
+
+### A4 revision 2 (2026-10-05, president ruling on agent-harness#1253)
+
+- **The binding:** maintainer ruling 2026-10-05: the override binds the login's account AND
+  organization. Both are read from the same `oauthAccount` (`accountUuid`,
+  `organizationUuid`), and the record schema becomes v2.
+  - **When it applies:** only when both are known and both equal the session's. A v1 or
+    organization-less record binds nothing.
+  - **The store:** it refuses when the organization is unknown.
+- **The record:** it must be owner-only (any group or other bit is `token_file_unsafe`), and
+  the store's link refusal includes the state root itself.
+- **Refusals:** a refusal raised after the credential is resolved carries the
+  ignored-override notice beside its one refusal code.
+- **Rotation:** `store-token` is the only rotation path. A raw token file, unsafe or not, is
+  never read; the A1-era raw-file readers are removed.

@@ -915,14 +915,21 @@ def _store_token(path: Path, token: bytes) -> None:
 
 
 def test_the_seat_token_is_read_afresh_after_an_atomic_replace(monkeypatch, tmp_path):
+    # The override is read at each launch: a store between two reads is what the next one
+    # sees (plan amendment A4: the record, replaced with one rename).
+    from phase_loop_runtime import seat_credentials as sc
+
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    path = seat_jail.claude_seat_token_path()
-    path.parent.mkdir(parents=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    _store_token(path, b"TOKEN-SUBSCRIPTION-A")
-    assert seat_jail.read_claude_seat_token() == b"TOKEN-SUBSCRIPTION-A"
-    _store_token(path, b"TOKEN-SUBSCRIPTION-B")
-    assert seat_jail.read_claude_seat_token() == b"TOKEN-SUBSCRIPTION-B"
+    cfg = tmp_path / "claude-config"
+    cfg.mkdir()
+    (cfg / ".claude.json").write_text(json.dumps(
+        {"oauthAccount": {"accountUuid": "acct-A", "organizationUuid": "org-1"}}))
+    os.chmod(cfg / ".claude.json", 0o600)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    sc.store_override(b"TOKEN-SUBSCRIPTION-A")
+    assert sc.override_decision().token == b"TOKEN-SUBSCRIPTION-A"
+    sc.store_override(b"TOKEN-SUBSCRIPTION-B")
+    assert sc.override_decision().token == b"TOKEN-SUBSCRIPTION-B"
 
 
 def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypatch, tmp_path):
@@ -938,7 +945,7 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
 
     cfg = tmp_path / "claude-config"
     cfg.mkdir()
-    (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A"}}))
+    (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A", "organizationUuid": "org-1"}}))
     os.chmod(cfg / ".claude.json", 0o600)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
     delivered: list[bytes] = []
@@ -987,7 +994,7 @@ def test_a_seat_launched_with_an_override_bound_elsewhere_uses_the_login(monkeyp
     cfg.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
     for account in ("acct-B", "acct-A"):     # stored while on B; the session then moves to A
-        (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+        (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account, "organizationUuid": "org-1"}}))
         os.chmod(cfg / ".claude.json", 0o600)
         if account == "acct-B":
             sc.store_override(b"TOKEN-OVERRIDE-SUBSCRIPTION-B")

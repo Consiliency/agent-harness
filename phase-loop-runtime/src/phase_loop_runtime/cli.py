@@ -2638,31 +2638,34 @@ def _seat_store_token() -> int:
     else:
         token = sys.stdin.buffer.read(64 * 1024)
     try:
-        account = seat_credentials.store_override(token)
+        identity = seat_credentials.store_override(token)
     except seat_credentials.StoreRefused as exc:
         print(f"seat-sandbox store-token: refused: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:
         print(f"seat-sandbox store-token: failed ({type(exc).__name__})", file=sys.stderr)
         return 1
-    print(f"seat-sandbox store-token: stored, bound to account {account} (the one you are "
-          "logged in to now); seats use it only while you are logged in to that account. "
+    print(f"seat-sandbox store-token: stored, bound to account {identity.account} in "
+          f"organization {identity.organization} (the login you are using now); seats use it "
+          "only while you are logged in to that account and organization. "
           "`phase-loop seat-sandbox token-status` shows the binding.")
     return 0
 
 
 def _seat_token_status() -> int:
     """`seat-sandbox token-status`: the stored override's binding and whether it applies to
-    this session. Never prints the token."""
+    this session. Never prints the token. Exits 0 only when the override applies."""
     from . import seat_credentials
 
     status = seat_credentials.override_status()
     print(f"seat-sandbox token-status: override {status['state']}"
-          f" (bound account: {status['bound_account'] or '-'};"
-          f" this session's account: {status['session_account'] or 'unknown'});"
+          f" (bound: account {status['bound_account'] or '-'},"
+          f" organization {status['bound_organization'] or '-'};"
+          f" this session: account {status['session_account'] or 'unknown'},"
+          f" organization {status['session_organization'] or 'unknown'});"
           f" applies to this session: {'yes' if status['applies'] else 'no'}"
           + (f" [{status['notice']}]" if status['notice'] else ""))
-    return 0
+    return 0 if status["applies"] else 1
 
 
 def _seat_sandbox_command(args: argparse.Namespace) -> int:

@@ -214,8 +214,10 @@ def login_margin_s(deadline_s: float | None = None, env: Mapping[str, str] | Non
 OVERRIDE_OTHER_SUBSCRIPTION = "claude_seat_override_other_subscription"
 #: The refusal for an override record that is not a private regular file the euid owns.
 OVERRIDE_UNSAFE = "seat_sandbox_refused:token_file_unsafe"
-#: The bound record: ``{"schema": RECORD_SCHEMA, "account": "<id>", "token": "<token>"}``.
-RECORD_SCHEMA = "seat_credential_override.v1"
+#: The bound record: ``{"schema": RECORD_SCHEMA, "account": "<id>", "organization": "<id>",
+#: "token": "<token>"}``. Maintainer ruling 2026-10-05: the override binds the account AND the
+#: organization of the login it was stored under; a v1 (account-only) record binds nothing.
+RECORD_SCHEMA = "seat_credential_override.v2"
 _RECORD_CAP_BYTES = seat_jail.TOKEN_FILE_CAP_BYTES + 4096
 _ACCOUNT_FILE_CAP_BYTES = 16 << 20
 #: Every metadata and store open: never follow a final link, never block (a FIFO or device
@@ -225,11 +227,22 @@ _O_READ = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK"
 
 
 @dataclass(frozen=True)
+class Identity:
+    """The login a credential belongs to: its account and its organization, both known."""
+    account: str
+    organization: str
+
+
+@dataclass(frozen=True)
 class OverrideRecord:
-    """One stored override as read: ``account`` and ``token`` are ``None`` when the record's
-    content is malformed (it then binds nothing)."""
-    account: str | None
+    """One stored override as read: ``identity`` and ``token`` are ``None`` when the record's
+    content is malformed or of an older schema (it then binds nothing)."""
+    identity: Identity | None
     token: bytes | None = field(default=None, repr=False)
+
+    @property
+    def account(self) -> str | None:
+        return self.identity.account if self.identity else None
 
 
 @dataclass(frozen=True)
@@ -268,11 +281,12 @@ class SeatCredentialAdapter(Protocol):
         """The bound record, read ONCE; ``None`` when there is none. Raises
         :class:`UnsafeOverride` for a record that is not a private regular file."""
 
-    def current_account(self) -> str | None:
-        """The account the launching session is logged in to, or ``None`` when unknown."""
+    def current_identity(self) -> Identity | None:
+        """The account and organization the launching session is logged in to, or ``None``
+        when either is unknown."""
 
     def account_source(self) -> Path:
-        """The file :meth:`current_account` reads (named in a store refusal)."""
+        """The file :meth:`current_identity` reads (named in a store refusal)."""
 
 
 def _regular_private(info: os.stat_result) -> bool:
@@ -337,14 +351,17 @@ def parse_override_record(raw: bytes) -> OverrideRecord:
     if not isinstance(record, dict) or record.get("schema") != RECORD_SCHEMA:
         return OverrideRecord(None)
     account = _account_id(record.get("account"))
+    organization = _account_id(record.get("organization"))
     token = record.get("token")
-    if account is None or not isinstance(token, str):
+    if account is None or organization is None or not isinstance(token, str):
         return OverrideRecord(None)
     try:
         token_bytes = token.encode("ascii")
     except UnicodeError:
         return OverrideRecord(None)
-    return OverrideRecord(account, token_bytes) if _valid_token(token_bytes) else OverrideRecord(None)
+    if not _valid_token(token_bytes):
+        return OverrideRecord(None)
+    return OverrideRecord(Identity(account, organization), token_bytes)
 
 
 class ClaudeCredentialAdapter:
@@ -387,7 +404,11 @@ class ClaudeCredentialAdapter:
             raise UnsafeOverride(type(exc).__name__) from None
         try:
             info = os.fstat(fd)
-            if not _private_dir(directory) or not _regular_private(info) or info.st_size > _RECORD_CAP_BYTES:
+            # Owner-only, like A1's token file: ANY group or other bit refuses (the shared
+            # `_regular_private` rule, which allows a readable 0644 account file, is not
+            # enough for a credential).
+            if (not _private_dir(directory) or not _regular_private(info)
+                    or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > _RECORD_CAP_BYTES):
                 raise UnsafeOverride("not a private regular file")
             raw = _read_fd(fd, _RECORD_CAP_BYTES)
         finally:
@@ -404,19 +425,24 @@ class ClaudeCredentialAdapter:
         home = env.get("HOME")
         return (Path(home) if home else Path.home()) / ".claude.json"
 
-    def current_account(self) -> str | None:
+    def current_identity(self) -> Identity | None:
+        # Both from the SAME read of the same file: the CLI's oauthAccount.
         raw = _read_owner_only(self.account_source(), _ACCOUNT_FILE_CAP_BYTES, private_dir=False)
         try:
             config = json.loads(raw) if raw else None
         except (ValueError, UnicodeError, RecursionError):
             return None
-        account = config.get("oauthAccount") if isinstance(config, dict) else None
-        return _account_id(account.get("accountUuid")) if isinstance(account, dict) else None
+        oauth = config.get("oauthAccount") if isinstance(config, dict) else None
+        if not isinstance(oauth, dict):
+            return None
+        account = _account_id(oauth.get("accountUuid"))
+        organization = _account_id(oauth.get("organizationUuid"))
+        return Identity(account, organization) if account and organization else None
 
 
 def override_decision(adapter: SeatCredentialAdapter | None = None) -> OverrideDecision:
     """Is the stored override used for THIS launch? Only when its record binds an account
-    equal to the launching session's; the decision then carries the very bytes it checked.
+    AND an organization equal to the launching session's; the decision then carries the very bytes it checked.
     A present override that is not used carries the adapter's notice; an unsafe record
     carries the refusal."""
     adapter = adapter or ClaudeCredentialAdapter()
@@ -426,9 +452,9 @@ def override_decision(adapter: SeatCredentialAdapter | None = None) -> OverrideD
         record = adapter.read_override()
     except UnsafeOverride:
         return OverrideDecision(False, refusal=OVERRIDE_UNSAFE)
-    current = adapter.current_account()
-    if (record is not None and record.account is not None and record.token is not None
-            and current is not None and record.account == current):
+    current = adapter.current_identity()
+    if (record is not None and record.identity is not None and record.token is not None
+            and current is not None and record.identity == current):
         return OverrideDecision(True, token=record.token)
     return OverrideDecision(False, adapter.override_ignored_notice)
 
@@ -451,14 +477,19 @@ def _dir_problem(info: os.stat_result, *, exact_private: bool) -> str | None:
 
 
 def _open_store_dir(record: Path) -> int:
-    """The record's directory as a held descriptor, opened component by component below the
-    state root without following links, each component checked by ``fstat`` on the
+    """The record's directory as a held descriptor, opened component by component from the
+    state root (the root included) without following links, each component checked by ``fstat`` on the
     descriptor actually held. Raises :class:`StoreRefused`."""
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     root = seat_jail.state_home()
     relative = record.parent.relative_to(root).parts
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(root, flags)
+    try:
+        fd = os.open(root, flags | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise StoreRefused(
+            f"{root} is a link (or not a directory): set XDG_STATE_HOME to the directory it "
+            f"names ({os.path.realpath(root)}) and store again") from exc
     try:
         problem = _dir_problem(os.fstat(fd), exact_private=False)
         if problem:
@@ -510,9 +541,10 @@ def _sweep_stale_temps(fd: int, name: str, *, older_than_s: float = 60.0) -> Non
             continue
 
 
-def store_override(token: bytes, adapter: SeatCredentialAdapter | None = None) -> str:
+def store_override(token: bytes, adapter: SeatCredentialAdapter | None = None) -> Identity:
     """Store a seat-token override bound to the account the CURRENT session is logged in to
-    (maintainer decision 2026-10-05: "Store command binds it"). Returns that account.
+    (maintainer decision 2026-10-05: "Store command binds it"), and to its organization
+    (maintainer ruling 2026-10-05). Returns that identity.
 
     The token and its account are one record, written as a new 0600 file under a random
     name and renamed into place, all relative to the held directory descriptor: a store is
@@ -528,16 +560,17 @@ def store_override(token: bytes, adapter: SeatCredentialAdapter | None = None) -
     token = token.strip()
     if not _valid_token(token):
         raise StoreRefused("the token is empty, too long, or not printable ASCII")
-    account = adapter.current_account()
-    if account is None:
+    identity = adapter.current_identity()
+    if identity is None:
         source = adapter.account_source()
         if os.path.lexists(source):
-            raise StoreRefused(f"{source} names no account this tool can trust: it must be a "
-                               "regular file you own that only you can write (not a link), "
-                               "with a login in it")
+            raise StoreRefused(f"{source} names no account and organization this tool can "
+                               "trust: it must be a regular file you own that only you can "
+                               "write (not a link), with a login in it")
         raise StoreRefused(f"no {adapter.harness} login found to bind the token to: log in "
                            "with the subscription the token belongs to, then store it again")
-    record = json.dumps({"schema": RECORD_SCHEMA, "account": account,
+    record = json.dumps({"schema": RECORD_SCHEMA, "account": identity.account,
+                         "organization": identity.organization,
                          "token": token.decode("ascii")}, sort_keys=True).encode("utf-8") + b"\n"
     path = adapter.record_path()
     fd = _open_store_dir(path)
@@ -560,25 +593,30 @@ def store_override(token: bytes, adapter: SeatCredentialAdapter | None = None) -
             raise
     finally:
         os.close(fd)
-    return account
+    return identity
 
 
 def override_status(adapter: SeatCredentialAdapter | None = None) -> dict[str, object]:
     """What the stored override is bound to and whether it applies now. Never the token."""
     adapter = adapter or ClaudeCredentialAdapter()
-    status: dict[str, object] = {"harness": adapter.harness, "record": str(adapter.record_path()),
-                                 "session_account": adapter.current_account()}
+    session = adapter.current_identity()
+    status: dict[str, object] = {
+        "harness": adapter.harness, "record": str(adapter.record_path()),
+        "session_account": session.account if session else None,
+        "session_organization": session.organization if session else None,
+        "bound_account": None, "bound_organization": None}
     try:
         record = adapter.read_override()
     except UnsafeOverride:
-        status.update(state="unsafe", bound_account=None)
+        status["state"] = "unsafe"
     else:
         if record is None:
-            status.update(state="unbound" if adapter.override_present() else "none",
-                          bound_account=None)
+            status["state"] = "unbound" if adapter.override_present() else "none"
+        elif record.identity is None:
+            status["state"] = "malformed"
         else:
-            status.update(state="stored" if record.account else "malformed",
-                          bound_account=record.account)
+            status.update(state="stored", bound_account=record.identity.account,
+                          bound_organization=record.identity.organization)
     decision = override_decision(adapter)
     status["applies"] = decision.applies
     status["notice"] = decision.notice or decision.refusal

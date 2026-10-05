@@ -55,14 +55,13 @@ def require_seat_uid() -> None:
 
 
 def require_seat_token() -> None:
-    """A Claude seat credential: the seat-token override, or the user's Claude login
-    (plan amendment A1)."""
-    from phase_loop_runtime import seat_credentials, seat_jail
+    """A Claude seat credential: a stored override that applies to this session (plan
+    amendment A4), or the user's Claude login (plan amendment A1)."""
+    from phase_loop_runtime import seat_credentials
 
-    if seat_jail.claude_seat_token_present():
-        if not seat_jail.claude_seat_token_ready():
-            pytest.skip(SEAT_TOKEN_PREREQUISITE)
-    elif seat_credentials.read_login_token() is None:
+    if seat_credentials.override_decision().applies:
+        return
+    if seat_credentials.read_login_token() is None:
         pytest.skip(SEAT_TOKEN_PREREQUISITE)
 
 
