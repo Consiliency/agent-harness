@@ -229,8 +229,11 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     # agent-harness#1132: the jailed seat's launch beside every other provider launch.
     ('panel_invoker.py', 'launch_provider'): 2,
     ('panel_invoker.py', '_exec_claude_agent_view_attempt'): 2,
-    # agent-harness#1132 (D8): the seat-uid-mapped holder and its slirp4netns.
-    ('sandbox_egress.py', 'isolated_network'): 4,
+    # The timed holder (unshare), the rules install and the name check (nsenter). The
+    # long-lived holders and their slirp4netns, the seat-uid-mapped pair of
+    # agent-harness#1132 included, go through `launch_provider` under
+    # `_infrastructure_launch` (PROVIDER_CALLS_WITHOUT_ENV): not agent CLIs, no decision.
+    ('sandbox_egress.py', 'isolated_network'): 3,
     ('tdd_receipts.py', 'record_content_tdd_receipt'): 2,
     ('verification_evidence.py', 'execute_proofgate_mutation_manifest._execute_one._execute_worktree'): 2,
 }
