@@ -224,3 +224,40 @@ SHA, prior verification and approval are invalidated, the bound suite produces
 digest-addressed evidence, and only then can the broker admit republish or
 review. A conflict is typed and resumable; autonomous runs still stop at
 `drafts_open`.
+
+## Sandbox placement roots (agent-harness#896)
+
+`PHASE_LOOP_SANDBOX_ROOT` selects where a review sandbox should be placed, and the
+selection is recorded in the leg's evidence as `sandbox_root_*`.
+
+- A bare path or `host:path` is record-only: the sandbox is staged locally and
+  `sandbox_root_applied` is false unless the path really is the stage's parent. Where the
+  local stage goes is set by agent-harness#1147's `PHASE_LOOP_SANDBOX_STAGING_DIR`, not by
+  this root.
+- A URL (`scheme://host/path`) names a placement backend. A scheme with no registered
+  backend is never probed (no ssh, DNS or socket); the leg falls back to local and the
+  reason names the scheme. The value is stripped, and anything containing `://` is read as
+  a URL: only its scheme, host, port and path are kept. A malformed scheme, a built-in
+  scheme written as a URL (`local://`, `hostpath://`), and a non-URL value carrying
+  `user:…@` or a query string are refused without a probe. Warnings and evidence render the
+  parsed form, never the configured text.
+- Instead of the single root, the user config (`advisor-boards.toml`) can name one root per
+  remote backend and the order to try them:
+
+  ```toml
+  [sandbox]
+  order = ["self-hosted", "e2b"]          # the default
+  roots.self-hosted = "https://sandbox.example/srv"
+  roots.e2b = "e2b://template"
+  ```
+
+  `PHASE_LOOP_SANDBOX_ROOT`, when set, is the only candidate. This release has no driver that
+  executes on a non-local backend, so a registered one is also a recorded local fallback
+  (`sandbox_placement_driver_unavailable`), and no stage is sent to it.
+- `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` covers seat legs only: every review-mode leg the
+  panel launches for a board seat. Advisory-mode boards are not governed by it. `1`, `true`, `yes` and `on` turn it on; unset, empty,
+  `0`, `false`, `no` and `off` leave it off; any other value is read as on, with a warning.
+  In this release it refuses every seat leg with `sandbox_placement_required_unavailable`.
+
+The contract every backend follows is in
+`phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`.

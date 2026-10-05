@@ -28,8 +28,14 @@ Environment overrides (all optional):
   scratch is created in. Honoured as given, even on a tmpfs (degraded, with a warning).
   ``TMPDIR`` is deliberately NOT this override: systems commonly point it at a tmpfs.
 * ``PHASE_LOOP_SANDBOX_REFUSE_RAM=1`` -- fail closed: refuse instead of the degraded fallback.
-* ``PHASE_LOOP_SANDBOX_ROOT`` -- the *selected* root (``host:path`` allowed), recorded in the
-  evidence as ``sandbox_root_*``; placement does not consume it yet (agent-harness#896).
+* ``PHASE_LOOP_SANDBOX_ROOT`` -- the *selected* root, recorded in the evidence as
+  ``sandbox_root_*``. A bare path or ``host:path`` is record-only. A URL (``scheme://host/path``)
+  names a placement backend (:mod:`phase_loop_runtime.sandbox_placement`); one with no
+  registered backend is never probed and falls back to local, with the scheme in the reason.
+  Userinfo and the query string are dropped when the value is parsed.
+* ``PHASE_LOOP_SANDBOX_REMOTE_REQUIRED`` -- fail closed: refuse a seat leg that was not placed
+  remotely (:func:`remote_required`). No release has a remote execution driver yet, so with
+  it on every seat leg refuses.
 * ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` -- free-space floor. When set it is used verbatim; the
   default (2 GiB) is lowered to a quarter of a filesystem smaller than 8 GiB, and is a quarter
   of a RAM-backed one.
@@ -66,12 +72,13 @@ from ipaddress import ip_address
 import os
 from pathlib import Path
 import re
-from typing import Mapping
+from typing import Callable, Mapping, Sequence
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 import warnings
 import weakref
 
@@ -81,6 +88,9 @@ __all__ = [
     "SandboxSpaceError",
     "EgressPolicy",
     "parse_location",
+    "remote_required",
+    "configured_roots",
+    "SandboxConfigError",
     "select_sandbox_root",
     "egress_allowlist",
     "configured_root",
@@ -141,8 +151,18 @@ class SandboxSpaceError(RuntimeError):
 class SandboxLocation:
     host: str | None
     path: Path
+    #: ``local``, ``hostpath``, a URL scheme naming a placement backend, or ``invalid``.
+    scheme: str = "local"
+    #: Written as a URL. Every rendering of it is rebuilt from the parsed parts.
+    url: bool = False
+    #: Why this root can never be used, as a fixed code; ``None`` when it can be.
+    refusal: str | None = None
 
     def __str__(self) -> str:
+        if self.scheme == "invalid":
+            return "<unrecognised sandbox root>"
+        if self.url:
+            return f"{self.scheme}://{self.host or ''}{self.path.as_posix()}"
         return f"{self.host}:{self.path}" if self.host else str(self.path)
 
 
@@ -152,22 +172,66 @@ class SandboxRootChoice:
     path: Path
     fell_back: bool
     reason: str = ""
+    scheme: str = "local"
+    #: The configured backend name this root came from (``[sandbox] roots``), if any.
+    name: str | None = None
+
+
+_URL_SCHEME = re.compile(r"[a-z][a-z0-9+.-]*")
+_BUILTIN_SCHEMES = ("local", "hostpath")
+# `user:secret@` in a value that is not a URL, whatever characters the secret holds. A slash
+# or backslash between the colon and the `@` means a path (`host:/p/a@b`, `C:\\Users\\a@b`),
+# not userinfo.
+_USERINFO_SHAPED = re.compile(r"[^/\\@]*:[^/\\@]*@")
+
+
+def _invalid(code: str) -> SandboxLocation:
+    return SandboxLocation(None, Path(), "invalid", refusal=code)
 
 
 def parse_location(value: str | os.PathLike[str]) -> SandboxLocation:
-    """Parse a root spec. Bare path -> local; ``host:path`` -> that host.
+    """Parse a root spec. Bare path -> local; ``host:path`` -> that host; a URL -> its scheme.
 
     A Windows drive letter is a path, not a host: splitting on the first colon would read
     ``C:\\work`` as the host ``C``. A single-character prefix is therefore treated as a
     drive, and a value with no colon at all is always local.
+
+    The value is stripped first. Anything containing ``://`` is a URL, recognised BEFORE the
+    colon split, which would otherwise read ``https`` as an ssh host. A URL keeps only its
+    scheme, host, port and path: userinfo, query and fragment are dropped here, at parse, so
+    they never reach ``repr``, ``asdict``, a warning or the evidence. A URL whose scheme is
+    malformed or built in (``local://``, ``hostpath://``), and a non-URL value carrying
+    ``user:secret@`` or a query string, parse as ``invalid`` with a fixed refusal code and
+    render as a placeholder -- they are never probed.
     """
-    text = str(value)
+    text = str(value).strip()
+    if "://" in text:
+        scheme, _, _rest = text.partition("://")
+        scheme = scheme.lower()
+        if not _URL_SCHEME.fullmatch(scheme):
+            return _invalid("sandbox_root_scheme_invalid")
+        try:
+            parts = urlsplit(text)
+            host = parts.hostname or ""
+            if parts.port is not None:
+                host = f"{host}:{parts.port}"
+        except ValueError:
+            return _invalid("sandbox_root_url_invalid")
+        return SandboxLocation(
+            host or None, Path(parts.path or "/"), scheme, url=True,
+            refusal="sandbox_root_scheme_builtin" if scheme in _BUILTIN_SCHEMES else None,
+        )
+    if "?" in text or _USERINFO_SHAPED.search(text):
+        return _invalid("sandbox_root_unrecognised")
     if ":" not in text:
         return SandboxLocation(None, Path(text))
     head, _, tail = text.partition(":")
     if len(head) <= 1 or not tail:
         return SandboxLocation(None, Path(text))
-    return SandboxLocation(head, Path(tail))
+    if any(ch.isspace() for ch in head):
+        # No host name contains whitespace.
+        return _invalid("sandbox_root_unrecognised")
+    return SandboxLocation(head, Path(tail), "hostpath")
 
 
 def _free_bytes(path: str | os.PathLike[str]) -> int:
@@ -249,7 +313,54 @@ def sandbox_enabled() -> bool:
 
 
 def configured_root() -> str | None:
-    return os.environ.get("PHASE_LOOP_SANDBOX_ROOT") or None
+    return os.environ.get("PHASE_LOOP_SANDBOX_ROOT", "").strip() or None
+
+
+def configured_roots() -> tuple[tuple[str | None, str], ...]:
+    """Every configured root, in the order to try them: ``(backend name, root)``.
+
+    ``PHASE_LOOP_SANDBOX_ROOT`` is the single-root form and an alias for one backend: when
+    it is set it is the only candidate. Otherwise the user config's ``[sandbox] roots``, one
+    per named backend, in ``[sandbox] order`` (default ``("self-hosted", "e2b")``; named
+    roots the order omits follow, in file order). A malformed table raises
+    :class:`SandboxConfigError`.
+    """
+    single = configured_root()
+    if single:
+        return ((None, single),)
+    from .advisor_board import config as _board_config
+
+    try:
+        return tuple(_board_config.load_sandbox_roots())
+    except _board_config.BoardConfigError as exc:
+        raise SandboxConfigError("sandbox_config_invalid") from exc
+
+
+class SandboxConfigError(ValueError):
+    """The ``[sandbox]`` configuration is malformed. ``str()`` is a fixed code."""
+
+
+_REMOTE_REQUIRED_ENV = "PHASE_LOOP_SANDBOX_REMOTE_REQUIRED"
+_ON = frozenset({"1", "true", "yes", "on"})
+_OFF = frozenset({"", "0", "false", "no", "off"})
+
+
+def remote_required() -> bool:
+    """Must a seat leg be placed remotely? Opt-in, and it fails closed.
+
+    Governs seat legs only: every review-mode leg ``_default_spawn`` launches for a board
+    seat, whether or not a tree was authorized (RD3, seats only). An unrecognised value is
+    read as ON, with a warning -- a typo in a fail-closed knob must not silently open it.
+    """
+    value = os.environ.get(_REMOTE_REQUIRED_ENV, "").strip().lower()
+    if value in _OFF:
+        return False
+    if value not in _ON:
+        warnings.warn(
+            f"{_REMOTE_REQUIRED_ENV} has an unrecognised value; treating it as on",
+            RuntimeWarning, stacklevel=2,
+        )
+    return True
 
 
 def _env_int(name: str, default: int) -> int:
@@ -797,45 +908,42 @@ def select_sandbox_root(
     *,
     floor_bytes: int | None = None,
     probe_timeout_s: float | None = None,
+    roots: "Sequence[tuple[str | None, str]] | None" = None,
+    accept: "Callable[[object], str | None] | None" = None,
 ) -> SandboxRootChoice:
     """Choose one root for a whole round, and say why.
 
     The choice is sticky per round, not per seat: four seats on different roots would have
     different speed and space characteristics while reviewing the same change, and cleanup
     would have to hunt in two places.
+
+    ``roots`` is the ordered list of ``(backend name, root)`` candidates
+    (:func:`configured_roots`); without it, ``configured`` is the single candidate. The
+    first usable one is chosen; each one passed over adds its reason, and with none usable
+    the round falls back to local. ``accept`` is asked about a candidate's placement backend
+    BEFORE it is chosen and returns a refusal code or ``None``; it must not call the backend.
+    A configured root is never rendered as written: every warning and reason uses the parsed,
+    sanitized form.
     """
     floor = _DEFAULT_FLOOR_BYTES if floor_bytes is None else floor_bytes
     timeout = _DEFAULT_PROBE_TIMEOUT_S if probe_timeout_s is None else probe_timeout_s
     local = Path(fallback) if fallback is not None else Path(tempfile.gettempdir())
+    if roots is None:
+        configured = str(configured).strip() if configured else None
+        roots = ((None, configured),) if configured else ()
 
-    if configured:
-        if _probe_with_deadline(configured, timeout):
-            parsed = parse_location(configured)
-            remote_free = _free_bytes_at(parsed, timeout)
-            # Unknown free space is not permission to proceed, but it is also not a
-            # reason to abandon a reachable root: treat it as satisfying the floor only
-            # when it cannot be measured at all, and record that in the reason.
-            if remote_free is None or remote_free >= floor:
-                return SandboxRootChoice(parsed.host, parsed.path, False)
-            warnings.warn(
-                f"sandbox root {configured} is below the free-space floor; falling back to {local}",
-                RuntimeWarning, stacklevel=2,
-            )
-            reason = f"{configured} below floor"
-        else:
-            warnings.warn(
-                f"sandbox root {configured} did not answer within {timeout}s; falling back to {local}",
-                RuntimeWarning, stacklevel=2,
-            )
-            reason = f"{configured} unreachable within {timeout}s"
-        free = _free_bytes_at(SandboxLocation(None, local), timeout) or 0
-        if free < floor:
-            raise SandboxSpaceError(
-                f"refusing to create a sandbox: {local} has {free} bytes of free space, "
-                f"below the {floor}-byte floor. Filling this filesystem would take the host "
-                f"down; a refused round is recoverable."
-            )
-        return SandboxRootChoice(None, local, True, reason)
+    reasons: list[str] = []
+    for name, raw in roots:
+        choice, reason = _try_root(name, raw, floor=floor, timeout=timeout, accept=accept)
+        if choice is not None:
+            return choice
+        label = f"{name}: {reason}" if name else reason
+        warnings.warn(
+            f"sandbox root {label}; falling back to {local}", RuntimeWarning, stacklevel=2,
+        )
+        reasons.append(label)
+    if reasons:
+        return _local_fallback(local, floor, timeout, "; ".join(reasons))
 
     free = _free_bytes_at(SandboxLocation(None, local), timeout) or 0
     if free < floor:
@@ -845,6 +953,55 @@ def select_sandbox_root(
                 f"down; a refused round is recoverable."
         )
     return SandboxRootChoice(None, local, False)
+
+
+def _try_root(
+    name: str | None, raw: str, *, floor: int, timeout: float,
+    accept: "Callable[[object], str | None] | None",
+) -> tuple[SandboxRootChoice | None, str]:
+    """One candidate: its choice, or why it was passed over (rendered sanitized)."""
+    parsed = parse_location(raw)
+    if parsed.refusal is not None:
+        return None, f"{parsed}: {parsed.refusal}"
+    if parsed.url:
+        # A URL root names a placement backend. It is NEVER probed here: no ssh, no DNS, no
+        # socket -- reachability is the backend's business, behind the placement seam.
+        from . import sandbox_placement
+
+        try:
+            backend = sandbox_placement.backend_for_scheme(parsed.scheme)
+        except sandbox_placement.PlacementUnavailable as exc:
+            return None, f"{parsed}: {exc.code}"
+        if backend is None:
+            return None, f"{parsed}: no placement backend registered for scheme {parsed.scheme!r}"
+        refusal = accept(backend) if accept is not None else None
+        if refusal is not None:
+            return None, f"{parsed}: {refusal}"
+        return SandboxRootChoice(
+            parsed.host, parsed.path, False, scheme=parsed.scheme, name=name,
+        ), ""
+    if _probe_with_deadline(str(parsed), timeout):
+        remote_free = _free_bytes_at(parsed, timeout)
+        # Unknown free space is not permission to proceed, but it is also not a reason to
+        # abandon a reachable root: treat it as satisfying the floor only when it cannot be
+        # measured at all.
+        if remote_free is None or remote_free >= floor:
+            return SandboxRootChoice(
+                parsed.host, parsed.path, False, scheme=parsed.scheme, name=name,
+            ), ""
+        return None, f"{parsed} below floor"
+    return None, f"{parsed} unreachable within {timeout}s"
+
+
+def _local_fallback(local: Path, floor: int, timeout: float, reason: str) -> SandboxRootChoice:
+    free = _free_bytes_at(SandboxLocation(None, local), timeout) or 0
+    if free < floor:
+        raise SandboxSpaceError(
+            f"refusing to create a sandbox: {local} has {free} bytes of free space, "
+            f"below the {floor}-byte floor. Filling this filesystem would take the host "
+            f"down; a refused round is recoverable."
+        )
+    return SandboxRootChoice(None, local, True, reason)
 
 
 @dataclass(frozen=True)

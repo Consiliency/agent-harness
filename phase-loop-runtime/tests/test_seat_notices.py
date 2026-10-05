@@ -853,8 +853,8 @@ def test_the_spawn_hands_its_leg_timeout_to_the_jailed_launch(monkeypatch, tmp_p
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
     monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
-                        lambda **k: types.SimpleNamespace(fell_back=False, path=tmp_path,
-                                                          host=None, reason=""))
+                        lambda **k: pi._sandbox_policy.SandboxRootChoice(
+                            host=None, path=tmp_path, fell_back=False, reason=""))
     monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
     monkeypatch.setattr(pi._review_stage, "stage_review_tree", _stage)
     monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
@@ -1108,8 +1108,8 @@ def test_degraded_spawn_keeps_the_ignored_override(monkeypatch, tmp_path, bounda
 
     monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage)
     monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
-                        lambda **k: types.SimpleNamespace(
-                            fell_back=False, path=tmp_path, host=None, reason=""))
+                        lambda **k: pi._sandbox_policy.SandboxRootChoice(
+                            host=None, path=tmp_path, fell_back=False, reason=""))
     monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
     monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
     monkeypatch.setattr(pi._seat_uid, "subordinate_range",
@@ -1130,3 +1130,18 @@ def test_degraded_spawn_keeps_the_ignored_override(monkeypatch, tmp_path, bounda
     expected = "jail_build" if boundary == "prepare" else "namespace"
     assert f"seat_sandbox_refused:{expected}" in spawned.seat_notices
     assert sc.OVERRIDE_OTHER_SUBSCRIPTION in spawned.seat_notices
+
+
+def test_a_placed_legs_seat_notices_survive_the_placement_rewrap(monkeypatch):
+    # agent-harness#896's `_with_placement` re-wraps a leg's result to attach its placement
+    # record; the leg's seat notices (agent-harness#1132) must come through unchanged.
+    placement = {"sandbox_placement_backend": "local", "sandbox_local_provider_spawns": 1}
+    monkeypatch.setattr(pi, "_sandbox_evidence", lambda: dict(placement))
+    original = pi._BrokeredSpawnResult(
+        "DEGRADED", "", "claude_seat_token_missing",
+        seat_notices=("claude_seat_token_missing", "seat_filesystem_unconfined"))
+    rewrapped = pi._with_placement(original)
+    assert rewrapped is not original
+    assert rewrapped.sandbox_placement_evidence == placement
+    assert rewrapped.seat_notices == ("claude_seat_token_missing", "seat_filesystem_unconfined")
+    assert tuple(rewrapped) == tuple(original)

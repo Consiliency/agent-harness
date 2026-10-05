@@ -12,7 +12,7 @@
   "evidence_sha256": "93b5cafe435808492ff8923e2fb7ef99d657497816f2734284fe01636b2fe5b4",
   "falsifier_layout": "execfind-falsifier-layout.v1:c1e0b88a103e9cdc0e0dfcbe60100fafebd7e47879f2887e4baf21cee77fe794",
   "issue": "agent-harness#1132",
-  "note": "public summary; the full evidence (host-bound) lives in the operator's per-host store. History on claw: the 2026-09-30 pass (evidence 2a407120..., digest aad69a4d...) was superseded by a re-qualification on 2026-10-03 at 17:12Z (evidence bebeb6c2..., same digest, host and layout), written by a test run; the jail's profile digest then changed with plan amendments A3/A3b and the round-7 repairs, and this pass for the current digest was recorded on 2026-10-04.",
+  "note": "public summary; the full evidence (host-bound) lives in the operator's per-host store. History on claw: the 2026-09-30 pass (evidence 2a407120..., profile digest aad69a4d...) was superseded by a re-qualification on 2026-10-03 at 17:12Z (evidence bebeb6c2..., same digest, host and layout), written by a test run. The profile digest then changed to ab6b0900... at a0193647 (the jailed launch's scratch decision and disk-backed seat TMPDIR), before plan amendments A3/A3b, which did not move it. The falsifier-layout digest changed at the main merge bb3eeb7d, because it hashes the EXECFIND falsifier and review-stage code that arrived from main. This pass for the current digest and layout was recorded on 2026-10-04.",
   "probe_attempts": {
     "create": {
       "ENOENT": 52

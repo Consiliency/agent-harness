@@ -8626,6 +8626,11 @@ def _run_legible_panel(
             "verdict": verdict,
             "text": outcome.text,
         }
+        placement_evidence = getattr(outcome, "sandbox_placement_evidence", None)
+        if isinstance(placement_evidence, Mapping) and placement_evidence:
+            # agent-harness#896: where this leg's sandbox was placed, for every leg that
+            # staged one -- failed and non-brokered legs included.
+            leg_payload["sandbox_placement_evidence"] = dict(placement_evidence)
         broker_evidence = getattr(outcome, "harden_isolation_evidence", None)
         if isinstance(broker_evidence, Mapping):
             # This is the actual parent_unix_broker_v1 observation from the

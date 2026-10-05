@@ -525,8 +525,8 @@ MUTATIONS: list[dict[str, object]] = [
      "nodes": [f"{T_AQ}::test_a_qualifier_that_reports_a_pass_but_records_none_is_a_failure"]},
     # Round 7, merge of agent-harness#1161 (scratch decision) and the suite isolation.
     {"id": "R7-jail-env-copied-after-decision", "file": PI,
-     "old": '        kwargs["env"] = env\n        return subprocess.Popen([*prefix, *argv], **kwargs)',
-     "new": '        kwargs["env"] = dict(env)\n        return subprocess.Popen([*prefix, *argv], **kwargs)',
+     "old": '        kwargs["env"] = env\n        jailed_process = subprocess.Popen([*prefix, *argv], **kwargs)',
+     "new": '        kwargs["env"] = dict(env)\n        jailed_process = subprocess.Popen([*prefix, *argv], **kwargs)',
      "nodes": [f"{T_HELP}::test_the_jailed_probe_and_launch_get_the_same_decided_env"]},
     {"id": "R7-jail-env-undecided", "file": PI,
      "old": "    return _sandbox_policy.child_scratch_env(_seat_uid._pythonpath_env(), decision)",
@@ -808,6 +808,23 @@ MUTATIONS: list[dict[str, object]] = [
      "old": '    return 0 if status["applies"] else 1',
      "new": '    return 0',
      "nodes": [f"{T_CRED}::test_the_store_says_which_account_it_bound_and_status_shows_it"]},
+    # Joins with agent-harness#896's placement seam (main merge 9bfb6700).
+    {"id": "M1-rewrap-drops-notices", "file": PI,
+     "old": "        seat_notices=getattr(value, \"seat_notices\", ()),\n",
+     "new": "",
+     "nodes": [f"{T_NOTE}::test_a_placed_legs_seat_notices_survive_the_placement_rewrap"]},
+    {"id": "M1-jailed-launch-uncounted", "file": PI,
+     "old": "        # placement record counts it); counted once the process exists.\n        _count_provider_spawn()\n",
+     "new": "        # placement record counts it); counted once the process exists.\n",
+     "nodes": [f"{T_PERM}::test_a_jailed_provider_launch_is_counted_as_a_provider_spawn"]},
+    {"id": "M1-infrastructure-keeps-egress-prefix", "file": PI,
+     "old": "    egress = _EGRESS_LAUNCH_PREFIX.set(())\n",
+     "new": "    egress = _EGRESS_LAUNCH_PREFIX.set(_EGRESS_LAUNCH_PREFIX.get())\n",
+     "nodes": [f"{T_PERM}::test_the_seat_uid_namespace_is_built_through_the_launch_interface_uncounted"]},
+    {"id": "M1-seat-holder-counted", "file": SE,
+     "old": "                with _infrastructure_launch():\n                    holder = launch_provider(\n                        [\"unshare\", \"--user\",",
+     "new": "                with contextlib.nullcontext():\n                    holder = launch_provider(\n                        [\"unshare\", \"--user\",",
+     "nodes": [f"{T_PERM}::test_the_seat_uid_namespace_is_built_through_the_launch_interface_uncounted"]},
 ]
 
 
