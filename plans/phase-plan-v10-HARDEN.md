@@ -271,6 +271,15 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     SL-5 disposes of them under agent-harness#742: agent-harness#1102 r7 and r8,
     agent-harness#1096, agent-harness#1020, and the historical native-fill model-hint
     edit identified by `historical_input_commit` in this plan's authority lifecycle.
+    Two later frozen-path edits merged after this authority was written and therefore
+    cannot truthfully use the pre-merge `sl0_repairs` grammar: agent-harness#1152 and
+    agent-harness#1246 (implementing agent-harness#896). The latest lifecycle authority
+    records them as `historical_frozen_dispositions.v1`, with exact source, merge, path,
+    old-blob, and new-blob facts. SL-5 accepts only those two transitions after proving
+    each merge's first-parent and resulting blobs from Git, its ancestry to the verified
+    commit, and continuity with the already accepted historical blob. The current
+    candidate and canonical-main focused/broad receipts then re-freeze the resulting
+    bytes prospectively; this disposition grants no retroactive review or test claim.
   - impl: Resolve agent-harness#770 with a dependency-light command whose input manifest
     names real retained raw/JUnit/CI/review/broker/role artifacts. Copy exact bytes into a
     fresh contained evidence root, derive canonical receipts and the closed aggregate,
