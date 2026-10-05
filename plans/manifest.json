@@ -4247,6 +4247,40 @@
             "scope": "Plan freshness and historical input provenance only; implementation and acceptance remain held"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-05T18:51:12Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "historical_frozen_dispositions": {
+              "entries": [
+                {
+                  "merge_commit": "452e5f4f7ced5eb8f6a8e383c3a594767c5cb568",
+                  "new_blob": "4da757a773c31aaa6bdec8bf600ee0484d0de1c5",
+                  "old_blob": "248a7ae613d971d250b852c3be68d7d2b2d5221c",
+                  "path": "phase-loop-runtime/tests/test_advisor_board_config.py",
+                  "source": "Consiliency/agent-harness#1152"
+                },
+                {
+                  "merge_commit": "f498c6f4fffeb2417caf38e86f24cf53fb72dba8",
+                  "new_blob": "404a3c6b1babbfc9d4ccd9749d89ea9774d72a4c",
+                  "old_blob": "17404e04f84f82e89a607f6996a83eec2d382b79",
+                  "path": "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+                  "source": "Consiliency/agent-harness#1246"
+                }
+              ],
+              "schema": "historical_frozen_dispositions.v1"
+            },
+            "plan_current_authority": {
+              "plan_sha256": "464360d5a98e42ccd3940db125f1eca6404b547d936fb9d6c2f9e3cd8af83ee6",
+              "predecessor_plan_sha256": "7687980b4d5a90997911f4e8e4c36b5102cdf355f3b1417dcf76af9d115c4087",
+              "roadmap_sha256": "8de75f9a4cc6a40a560e48d0752e2075ca79d3e602c0511d3789318acb183ccb",
+              "schema": "plan_current_authority.v1",
+              "source": "Consiliency/agent-harness#1261"
+            },
+            "scope": "Bounded historical disposition for two post-authority frozen-path transitions; implementation and acceptance remain held"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -4491,6 +4525,12 @@
           "roadmap_sha256": "8de75f9a4cc6a40a560e48d0752e2075ca79d3e602c0511d3789318acb183ccb",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1248"
+        },
+        {
+          "plan_sha256": "464360d5a98e42ccd3940db125f1eca6404b547d936fb9d6c2f9e3cd8af83ee6",
+          "roadmap_sha256": "8de75f9a4cc6a40a560e48d0752e2075ca79d3e602c0511d3789318acb183ccb",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1261"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
