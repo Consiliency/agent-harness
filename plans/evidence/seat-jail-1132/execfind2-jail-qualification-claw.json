@@ -9,10 +9,10 @@
     "protected_files_single_link": true,
     "sentinels_intact": true
   },
-  "evidence_sha256": "2a407120833537e29619af854b0871a5c61cd66afcab00f8a8c49ce4c577d0e1",
-  "falsifier_layout": "execfind-falsifier-layout.v1:175589eeea9b793f1fe2529e5f768b95a65f484896999e08514cd57b9bb066c9",
+  "evidence_sha256": "93b5cafe435808492ff8923e2fb7ef99d657497816f2734284fe01636b2fe5b4",
+  "falsifier_layout": "execfind-falsifier-layout.v1:c1e0b88a103e9cdc0e0dfcbe60100fafebd7e47879f2887e4baf21cee77fe794",
   "issue": "agent-harness#1132",
-  "note": "public summary; the full evidence (host-bound) lives in the operator's per-host store",
+  "note": "public summary; the full evidence (host-bound) lives in the operator's per-host store. History on claw: the 2026-09-30 pass (evidence 2a407120..., digest aad69a4d...) was superseded by a re-qualification on 2026-10-03 at 17:12Z (evidence bebeb6c2..., same digest, host and layout), written by a test run; the jail's profile digest then changed with plan amendments A3/A3b and the round-7 repairs, and this pass for the current digest was recorded on 2026-10-04.",
   "probe_attempts": {
     "create": {
       "ENOENT": 52
@@ -31,9 +31,9 @@
     "unix-path": "ENOENT"
   },
   "probe_resolved_protected_paths": 0,
-  "profile_digest": "aad69a4d159bed2e2279ce617b82e986e46305a1d3a6b50f23399f1e7cd9f5a9",
+  "profile_digest": "ab6b090028748bd1ed66f699a7be3f7cb182d5466e2d8f09842e6ffe30cee783",
   "protected_dir_count": 52,
-  "recorded_at": "2026-09-30T04:29:16+00:00",
+  "recorded_at": "2026-10-04T09:47:45+00:00",
   "result": "pass",
   "run_outcome": "green_on_head",
   "schema": "seat_jail_execfind2_qualification_summary.v1",
