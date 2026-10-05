@@ -16,8 +16,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `agy_cli_linux_x64.tar.gz` asset SHA256 `d4247430…`). Its help digest equals 1.2.15's
   (`8fcf4022…`). The set is now 1.2.11, 1.2.12, 1.2.14, 1.2.15 and 1.2.16.
 - All five members were requalified on the release tree (completion, cancel and
-  owner-loss each, then `--validate`), because agent-harness#1160 and agent-harness#1161
-  changed `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
+  owner-loss each, then `--validate`), because agent-harness#1160, agent-harness#1161 and
+  agent-harness#1246 changed `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
 - BAML v1 ships with `baml-bridge` 0.20.1 and `protobuf` 7.36.2 (the locked resolution of
   `protobuf>=6.31.1,<8`).
 

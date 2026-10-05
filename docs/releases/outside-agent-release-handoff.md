@@ -62,9 +62,13 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     (agent-harness#1247), which agent-harness#1241 had filtered in a test for the v0.7.22
     tag run;
   - CI offload authenticates with a Tailscale OAuth client (agent-harness#1237);
+  - a vendor-neutral remote sandbox placement seam, with today's local path behind it, and
+    stricter sandbox-root parsing (agent-harness#1246, agent-harness#896 plan 1a);
+  - plans only: the agent-harness#1244 seat route resolver and sandbox selection plans
+    (agent-harness#1245);
   - the qualified agy image set grows to 1.2.11, 1.2.12, 1.2.14, 1.2.15 and 1.2.16. 1.2.16
     shares 1.2.15's help digest (`8fcf4022…`). All five members were qualified live on this
-    release tree (validated 3 and `route_qualified` true for each; all 224 source pins
+    release tree (validated 3 and `route_qualified` true for each; all 225 source pins
     verified). The 1.2.16 asset is
     `d4247430e04cebdbe1ca93d9ccb483cd2f3daeb4cdb0ace5a71cd130e0bdab84`, checked against the
     GitHub API; its `antigravity` member is image
@@ -495,16 +499,16 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`) from a `git archive` export of `cf5590c9`, whose `phase-loop-runtime/` tree
-(`ac6d76cf`) is identical to the release commit `7769b01e` after the rebase onto agent-harness#1247.
-Later commits touch no packaged file. They are a
+`Consiliency/agent-harness#519`) from a `git archive` export of `03237a5a` (the release tree after the rebase onto
+agent-harness#1245 and agent-harness#1246; `phase-loop-runtime/` tree `858c6708`). Later
+commits touch no packaged file. They are a
 preparation measurement, not a publication record: the publishing workflow rebuilds from the
 tagged commit and verifies `SHA256SUMS`, and the published digests are recorded here after the
 tag push. As for `0.7.15`–`0.7.22`, the published digests are expected to differ, because
 archive bytes are timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `199a170349db1f1a2923be38900aab8a0d101fc41eb37589ab5d12aba60f90ec`
-- prepared direct-sdist sha256: `930c2e51e2f1633571963b4516d0af2e2aebc197eb8413b29637c96bc91dcb77`
+- prepared direct-wheel sha256: `bee17b42e9fb8fa1058f9d64a38e3d5efc563a87485ff885be9f797276841b67`
+- prepared direct-sdist sha256: `3e609f1135ce100c7aa41716a63a287d7057fc2750eba57c9143023c413a65a2`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.22 (published)
@@ -686,9 +690,9 @@ Measured on the prepared `0.7.23` build described above.
 - Wheel artifact: `phase_loop_runtime-0.7.23-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.23.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.23.data`, `phase_loop_runtime-0.7.23.dist-info`
-- Wheel file count: `482`
+- Wheel file count: `483`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `1015` regular files (`1150` archive members including directories)
+- Sdist file count: `1017` regular files (`1152` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
