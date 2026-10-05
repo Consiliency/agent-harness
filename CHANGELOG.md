@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A vendor-neutral sandbox placement seam, with today's local path behind it (agent-harness#896, plan 1a)
+
+- **Seam.** `phase_loop_runtime.sandbox_placement` defines the placement contract every
+  backend follows (prepare, revalidate, commit, execute, release), its receipts, the
+  `sandbox_root_applied` rule, closed capability and declaration vocabularies, and the
+  execution types a remote driver will use. Backends register under a URL scheme, directly
+  or through the `phase_loop_runtime.placement_backends` entry-point group, loaded only when
+  a configured root names that scheme. Local placement is unchanged, call for call.
+- **Roots.** `PHASE_LOOP_SANDBOX_ROOT` accepts a URL, and the user config's `[sandbox]`
+  table can name one root per remote backend with the order to try them (default
+  `["self-hosted", "e2b"]`); the single root is an alias for one backend. An unregistered
+  scheme is never probed and falls back to local with the scheme in the reason. Root
+  parsing is hardened: values are stripped, anything containing `://` is a URL keeping only
+  scheme, host, port and path, unusable forms are typed refusals that are never probed,
+  and only the parsed form is rendered. A registered non-local backend is refused before anything is
+  staged for it (`sandbox_placement_driver_unavailable`) until the execution driver lands.
+- **Evidence.** A staged leg records `sandbox_placement_backend`,
+  `sandbox_placement_receipts`, `sandbox_placement_verified`,
+  `sandbox_local_provider_spawns` and `sandbox_snapshot_sha256`, and the record reaches
+  `PanelLegResult.sandbox_placement_evidence` on every exit, failures included, and the
+  runner persists it in the leg's record.
+  `verify_harden_evidence.py` enumerates the sandbox keys of a broker record and checks the
+  `applied` rule.
+- **Knob.** `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` refuses a seat leg that was not executed
+  remotely; in this release that is every seat leg (`sandbox_placement_required_unavailable`).
+  An unrecognised value is read as on. Advisory-mode boards are not governed by it.
+- **Release note.** This changes runtime source, so the agy pin set drifts and the next
+  release cut requalifies agy.
+
 ### Sandbox staging and agent-CLI scratch stay off RAM; retention is sized to its filesystem (agent-harness#1147)
 
 - **Invariant.** Sandbox staging and spawned-CLI scratch are never RAM-backed while a

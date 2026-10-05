@@ -2359,6 +2359,86 @@ def verify_ci(store: ArtifactStore, data: Any, repo: Path, candidate: str, main:
         query_ci(store, ci, query, expected_event)
 
 
+SANDBOX_KEYS = frozenset({
+    "sandbox_root_host", "sandbox_root_path", "sandbox_root_fell_back", "sandbox_root_reason",
+    "sandbox_staged_at", "sandbox_root_applied", "sandbox_network_filtered",
+    "sandbox_network_mechanism", "sandbox_network_unfiltered_reason",
+    "sandbox_placement_backend", "sandbox_placement_receipts", "sandbox_placement_verified",
+    "sandbox_local_provider_spawns", "sandbox_snapshot_sha256",
+})
+SANDBOX_OPTIONAL_KEYS = frozenset({"sandbox_seat_identity", "sandbox_root_unapplied_reason"})
+PLACEMENT_RECEIPT_STEPS = ("prepared", "committed", "launched", "completed")
+PLACEMENT_REF = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+PLACEMENT_CAPABILITIES = frozenset({
+    "private_ranges_unreachable", "public_egress", "private_allowlist", "inbound_closed",
+    "filesystem_confined", "uid_isolated", "bounding_set_empty", "seccomp_filtered",
+    "resource_bounded", "one_shot_secret_channel", "operator_custody",
+})
+
+
+def verify_sandbox_placement(broker: dict[str, Any]) -> None:
+    """The placement contract (agent-harness#896): ``sandbox_root_applied=true`` must follow
+    the rule for the recorded backend, and backend receipts alone never support it.
+
+    ``sandbox_snapshot_sha256`` is the AUTHORIZATION's staged-tree digest, written by the
+    producer from the authorization and never from a receipt."""
+    authorized = text(broker["sandbox_snapshot_sha256"], "broker.sandbox_snapshot_sha256", pattern=HEX64)
+    backend = text(broker["sandbox_placement_backend"], "broker.sandbox_placement_backend")
+    spawns = integer(broker["sandbox_local_provider_spawns"], "broker.sandbox_local_provider_spawns")
+    verified = broker["sandbox_placement_verified"]
+    if not isinstance(verified, dict) or any(
+        key not in PLACEMENT_CAPABILITIES or method not in ("runtime_end_to_end", "backend_attested")
+        for key, method in verified.items()
+    ):
+        fail("broker sandbox placement verification is malformed")
+    receipts = broker["sandbox_placement_receipts"]
+    if not isinstance(receipts, list):
+        fail("broker sandbox placement receipts are malformed")
+    for receipt in receipts:
+        closed(receipt, {"step", "sandbox_ref", "snapshot_sha256", "attested_by"}, "broker sandbox placement receipt")
+        if (
+            receipt["step"] not in PLACEMENT_RECEIPT_STEPS
+            or receipt["attested_by"] not in ("runtime", "backend")
+            or not isinstance(receipt["sandbox_ref"], str)
+            or not PLACEMENT_REF.fullmatch(receipt["sandbox_ref"])
+        ):
+            fail("broker sandbox placement receipt is malformed")
+        text(receipt["snapshot_sha256"], "broker.sandbox_placement_receipt.snapshot_sha256", pattern=HEX64)
+    applied = broker["sandbox_root_applied"]
+    if not isinstance(applied, bool):
+        fail("broker sandbox_root_applied is not a boolean")
+    if applied == ("sandbox_root_unapplied_reason" in broker):
+        fail("broker sandbox unapplied reason does not match sandbox_root_applied")
+    if not applied:
+        return
+    if backend == "local":
+        staged_at = broker["sandbox_staged_at"]
+        if (
+            broker["sandbox_root_host"] is not None
+            or not isinstance(staged_at, str)
+            or not isinstance(broker["sandbox_root_path"], str)
+            or os.path.dirname(staged_at.rstrip("/")) != broker["sandbox_root_path"].rstrip("/")
+        ):
+            fail("broker local sandbox is recorded as applied off its selected root")
+        return
+    runtime = {r["step"]: r for r in receipts if r["attested_by"] == "runtime"}
+    committed, completed = runtime.get("committed"), runtime.get("completed")
+    if committed is None or completed is None:
+        fail("broker remote sandbox applied without runtime-attested commit and completion")
+    if (
+        committed["sandbox_ref"] != completed["sandbox_ref"]
+        or committed["snapshot_sha256"] != authorized
+        or completed["snapshot_sha256"] != authorized
+        or spawns != 0
+        or any(
+            r["attested_by"] == "backend"
+            and (r["sandbox_ref"] != committed["sandbox_ref"] or r["snapshot_sha256"] != authorized)
+            for r in receipts
+        )
+    ):
+        fail("broker remote sandbox placement does not bind the authorized tree")
+
+
 def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str, report: str) -> None:
     common = {
         "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls", "provider_response_status", "provider_response_sha256", "provider_response_bytes",
@@ -2369,7 +2449,13 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     if has_task_request:
         claude |= task_request
     gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified", "provider_stream_protocol", "provider_stream_chunk_count", "provider_stream_chunk_sha256", "provider_stream_chunk_bytes", "provider_stream_final_event_sha256", "provider_stream_acknowledgements", "provider_stream_result_count", "provider_stream_output_sha256", "provider_stream_output_bytes", "provider_stream_outcome", "provider_stream_acknowledgements_verified", "provider_stream_final_no_truncation"}
-    broker = closed(value, common | (claude if harness == "claude" else set()) | (gemini if harness == "gemini" else set()), "broker evidence")
+    # A sandboxed leg adds its placement record (agent-harness#896). Every key is ENUMERATED --
+    # never accepted by prefix -- and two are present only when they apply.
+    sandboxed = isinstance(value, dict) and bool((SANDBOX_KEYS | SANDBOX_OPTIONAL_KEYS).intersection(value))
+    sandbox = (SANDBOX_KEYS | (SANDBOX_OPTIONAL_KEYS & set(value))) if sandboxed else set()
+    broker = closed(value, common | sandbox | (claude if harness == "claude" else set()) | (gemini if harness == "gemini" else set()), "broker evidence")
+    if sandboxed:
+        verify_sandbox_placement(broker)
     for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256", "provider_response_sha256"):
         if text(broker[field], "broker." + field, pattern=HEX64) == "0" * 64:
             fail("broker digest placeholder")
