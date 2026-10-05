@@ -1,6 +1,6 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
-  "head": "2f21019c12753bf42d6a3fe0d98c099b49ce63fb",
+  "head": "17460ddd5d1dfe3eecce33538b82c60f9b8bd4c1",
   "issue": "agent-harness#1132",
   "receipts": [
     {
@@ -17,11 +17,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "49 passed, 1 warning in 0.70s"
+        "summary": "49 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 47 passed, 1 warning in 0.59s"
+        "summary": "2 failed, 47 passed, 1 warning in 0.64s"
       },
       "result": "red_as_required"
     },
@@ -39,11 +39,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.63s"
+        "summary": "2 passed, 1 warning in 0.61s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.80s"
+        "summary": "2 failed, 1 warning in 0.61s"
       },
       "result": "red_as_required"
     },
@@ -60,11 +60,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.47s"
+        "summary": "1 failed, 1 warning in 0.44s"
       },
       "result": "red_as_required"
     },
@@ -81,7 +81,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.44s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
@@ -103,11 +103,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.59s"
+        "summary": "2 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.73s"
+        "summary": "2 failed, 1 warning in 0.61s"
       },
       "result": "red_as_required"
     },
@@ -124,11 +124,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 0.48s"
+        "summary": "4 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 0.59s"
+        "summary": "4 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
@@ -145,11 +145,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.53s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.57s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -166,11 +166,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.56s"
+        "summary": "1 passed, 1 warning in 0.58s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -187,11 +187,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.44s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.49s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -208,11 +208,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.46s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.47s"
       },
       "result": "red_as_required"
     },
@@ -229,11 +229,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.56s"
+        "summary": "1 passed, 1 warning in 0.60s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.76s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -250,11 +250,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.42s"
+        "summary": "1 passed, 1 warning in 0.56s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.56s"
+        "summary": "1 failed, 1 warning in 0.60s"
       },
       "result": "red_as_required"
     },
@@ -271,11 +271,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.67s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.50s"
+        "summary": "1 failed, 1 warning in 0.59s"
       },
       "result": "red_as_required"
     },
@@ -292,7 +292,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 0.48s"
+        "summary": "4 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
@@ -313,11 +313,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.55s"
+        "summary": "1 failed, 1 warning in 0.45s"
       },
       "result": "red_as_required"
     },
@@ -334,11 +334,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.50s"
+        "summary": "1 failed, 1 warning in 0.47s"
       },
       "result": "red_as_required"
     },
@@ -355,11 +355,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.49s"
+        "summary": "1 failed, 1 warning in 0.66s"
       },
       "result": "red_as_required"
     },
@@ -376,11 +376,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.49s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.57s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -397,11 +397,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.48s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -418,11 +418,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.96s"
+        "summary": "1 passed, 1 warning in 0.79s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.77s"
+        "summary": "1 failed, 1 warning in 0.68s"
       },
       "result": "red_as_required"
     },
@@ -439,11 +439,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.43s"
+        "summary": "1 passed, 1 warning in 0.41s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.57s"
+        "summary": "1 failed, 1 warning in 0.47s"
       },
       "result": "red_as_required"
     },
@@ -460,11 +460,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 0.68s"
+        "summary": "4 passed, 1 warning in 0.62s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 1.75s"
+        "summary": "4 failed, 1 warning in 1.91s"
       },
       "result": "red_as_required"
     },
@@ -481,11 +481,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.50s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.48s"
+        "summary": "1 failed, 1 warning in 0.60s"
       },
       "result": "red_as_required"
     },
@@ -502,11 +502,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.46s"
+        "summary": "1 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -523,11 +523,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 5.74s"
+        "summary": "2 passed, 1 warning in 5.73s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.90s"
+        "summary": "2 failed, 1 warning in 0.66s"
       },
       "result": "red_as_required"
     },
@@ -544,11 +544,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.59s"
+        "summary": "1 passed, 1 warning in 0.49s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -565,11 +565,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.23s"
+        "summary": "1 passed, 1 warning in 3.33s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.23s"
+        "summary": "1 failed, 1 warning in 3.32s"
       },
       "result": "red_as_required"
     },
@@ -586,11 +586,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.25s"
+        "summary": "1 passed, 1 warning in 3.26s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.33s"
+        "summary": "1 failed, 1 warning in 3.28s"
       },
       "result": "red_as_required"
     },
@@ -607,11 +607,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.30s"
+        "summary": "1 passed, 1 warning in 3.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.32s"
+        "summary": "1 failed, 1 warning in 3.30s"
       },
       "result": "red_as_required"
     },
@@ -628,11 +628,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.31s"
+        "summary": "1 passed, 1 warning in 3.35s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.32s"
+        "summary": "1 failed, 1 warning in 3.36s"
       },
       "result": "red_as_required"
     },
@@ -649,11 +649,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 6.28s"
+        "summary": "1 passed, 1 warning in 6.25s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 5.95s"
+        "summary": "1 failed, 1 warning in 5.84s"
       },
       "result": "red_as_required"
     },
@@ -670,11 +670,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.44s"
+        "summary": "1 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.52s"
+        "summary": "1 failed, 1 warning in 0.43s"
       },
       "result": "red_as_required"
     },
@@ -691,11 +691,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.43s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -712,11 +712,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.41s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.46s"
       },
       "result": "red_as_required"
     },
@@ -736,11 +736,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 0.53s"
+        "summary": "4 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "4 failed, 1 warning in 0.78s"
+        "summary": "4 failed, 1 warning in 0.75s"
       },
       "result": "red_as_required"
     },
@@ -757,11 +757,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.51s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -778,11 +778,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.64s"
+        "summary": "1 passed, 1 warning in 0.56s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.52s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -799,11 +799,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.34s"
+        "summary": "1 passed, 1 warning in 3.29s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.73s"
+        "summary": "1 failed, 1 warning in 3.69s"
       },
       "result": "red_as_required"
     },
@@ -820,11 +820,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.54s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.57s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
@@ -841,11 +841,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.39s"
+        "summary": "1 passed, 1 warning in 3.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.40s"
+        "summary": "1 failed, 1 warning in 3.30s"
       },
       "result": "red_as_required"
     },
@@ -862,11 +862,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.36s"
+        "summary": "1 passed, 1 warning in 3.32s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.30s"
+        "summary": "1 failed, 1 warning in 3.29s"
       },
       "result": "red_as_required"
     },
@@ -883,11 +883,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.32s"
+        "summary": "1 passed, 1 warning in 3.23s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.36s"
+        "summary": "1 failed, 1 warning in 3.32s"
       },
       "result": "red_as_required"
     },
@@ -904,11 +904,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 3.16s"
+        "summary": "1 passed, 1 warning in 3.12s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.17s"
+        "summary": "1 failed, 1 warning in 3.14s"
       },
       "result": "red_as_required"
     },
@@ -925,11 +925,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.50s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -946,11 +946,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.50s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.58s"
+        "summary": "1 failed, 1 warning in 0.60s"
       },
       "result": "red_as_required"
     },
@@ -967,11 +967,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.46s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.55s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -988,11 +988,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.51s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.49s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -1009,7 +1009,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": "timeout",
@@ -1030,11 +1030,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.49s"
+        "summary": "2 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.57s"
+        "summary": "2 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
@@ -1051,11 +1051,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.53s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -1072,11 +1072,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.52s"
+        "summary": "1 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.65s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -1093,11 +1093,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 16.39s"
+        "summary": "1 passed, 1 warning in 8.24s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 8.75s"
+        "summary": "1 failed, 1 warning in 8.35s"
       },
       "result": "red_as_required"
     },
@@ -1114,11 +1114,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.60s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -1135,11 +1135,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "48 passed, 1 warning in 0.66s"
+        "summary": "48 passed, 1 warning in 0.72s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "48 failed, 1 warning in 1.82s"
+        "summary": "48 failed, 1 warning in 2.09s"
       },
       "result": "red_as_required"
     },
@@ -1163,7 +1163,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 2 passed, 1 warning in 1.06s"
+        "summary": "2 failed, 2 passed, 1 warning in 0.79s"
       },
       "result": "red_as_required"
     },
@@ -1183,11 +1183,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 0.77s"
+        "summary": "4 passed, 1 warning in 0.74s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 2 passed, 1 warning in 1.22s"
+        "summary": "2 failed, 2 passed, 1 warning in 0.81s"
       },
       "result": "red_as_required"
     },
@@ -1204,11 +1204,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.51s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.58s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -1225,11 +1225,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.52s"
+        "summary": "1 passed, 1 warning in 0.54s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -1246,11 +1246,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.25s"
+        "summary": "1 passed, 1 warning in 1.26s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.44s"
+        "summary": "1 failed, 1 warning in 1.50s"
       },
       "result": "red_as_required"
     },
@@ -1267,11 +1267,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.60s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.51s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -1292,7 +1292,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.62s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -1309,11 +1309,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.55s"
+        "summary": "1 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.59s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -1330,11 +1330,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.53s"
+        "summary": "1 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.64s"
+        "summary": "1 failed, 1 warning in 0.55s"
       },
       "result": "red_as_required"
     },
@@ -1351,11 +1351,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.49s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
@@ -1372,11 +1372,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.54s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -1393,11 +1393,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.55s"
+        "summary": "1 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -1414,11 +1414,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.52s"
+        "summary": "1 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.59s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -1435,11 +1435,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.50s"
+        "summary": "1 passed, 1 warning in 0.53s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.59s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -1456,11 +1456,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.49s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -1477,11 +1477,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.49s"
+        "summary": "1 passed, 1 warning in 1.00s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.65s"
+        "summary": "1 failed, 1 warning in 0.94s"
       },
       "result": "red_as_required"
     },
@@ -1498,11 +1498,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.65s"
+        "summary": "1 passed, 1 warning in 0.57s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.69s"
+        "summary": "1 failed, 1 warning in 0.62s"
       },
       "result": "red_as_required"
     },
@@ -1519,11 +1519,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.54s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -1540,11 +1540,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "3 passed, 1 warning in 0.46s"
+        "summary": "3 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "3 failed, 1 warning in 0.58s"
+        "summary": "3 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
@@ -1561,11 +1561,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "3 passed, 1 warning in 0.48s"
+        "summary": "3 passed, 1 warning in 0.41s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "3 failed, 1 warning in 0.52s"
+        "summary": "3 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -1582,11 +1582,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.46s"
+        "summary": "1 passed, 1 warning in 0.41s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.49s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -1603,7 +1603,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "12 passed, 1 warning in 0.42s"
+        "summary": "12 passed, 1 warning in 0.51s"
       },
       "mutated": {
         "returncode": 1,
@@ -1625,11 +1625,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.64s"
+        "summary": "2 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.54s"
+        "summary": "2 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -1646,11 +1646,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.50s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.52s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
@@ -1671,7 +1671,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.54s"
+        "summary": "1 failed, 1 warning in 0.44s"
       },
       "result": "red_as_required"
     },
@@ -1689,11 +1689,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.85s"
+        "summary": "2 passed, 1 warning in 1.16s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 4.67s"
+        "summary": "2 failed, 1 warning in 3.71s"
       },
       "result": "red_as_required"
     },
@@ -1710,11 +1710,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.47s"
+        "summary": "1 failed, 1 warning in 0.46s"
       },
       "result": "red_as_required"
     },
@@ -1731,11 +1731,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.39s"
+        "summary": "1 passed, 1 warning in 0.35s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.40s"
+        "summary": "1 failed, 1 warning in 0.38s"
       },
       "result": "red_as_required"
     },
@@ -1752,11 +1752,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.40s"
+        "summary": "1 passed, 1 warning in 0.35s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.38s"
+        "summary": "1 failed, 1 warning in 0.36s"
       },
       "result": "red_as_required"
     },
@@ -1777,7 +1777,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.41s"
+        "summary": "1 failed, 1 warning in 0.40s"
       },
       "result": "red_as_required"
     },
@@ -1794,11 +1794,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.37s"
+        "summary": "1 passed, 1 warning in 0.39s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.39s"
+        "summary": "1 failed, 1 warning in 0.41s"
       },
       "result": "red_as_required"
     },
@@ -1815,11 +1815,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.39s"
+        "summary": "1 passed, 1 warning in 0.38s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.45s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -1836,11 +1836,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.57s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.51s"
+        "summary": "1 failed, 1 warning in 0.47s"
       },
       "result": "red_as_required"
     },
@@ -1857,11 +1857,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.46s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.51s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -1879,11 +1879,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.44s"
+        "summary": "2 passed, 1 warning in 0.50s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.49s"
+        "summary": "2 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -1900,11 +1900,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.56s"
+        "summary": "1 passed, 1 warning in 0.63s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.67s"
+        "summary": "1 failed, 1 warning in 0.64s"
       },
       "result": "red_as_required"
     },
@@ -1921,7 +1921,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.37s"
+        "summary": "1 passed, 1 warning in 0.38s"
       },
       "mutated": {
         "returncode": 1,
@@ -1942,11 +1942,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.43s"
+        "summary": "1 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -1963,11 +1963,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.55s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.53s"
+        "summary": "1 failed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -1984,11 +1984,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.97s"
+        "summary": "1 passed, 1 warning in 1.01s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.90s"
+        "summary": "1 failed, 1 warning in 0.91s"
       },
       "result": "red_as_required"
     },
@@ -2005,11 +2005,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.97s"
+        "summary": "1 passed, 1 warning in 1.01s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 2.76s"
+        "summary": "1 failed, 1 warning in 2.77s"
       },
       "result": "red_as_required"
     },
@@ -2026,11 +2026,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.41s"
+        "summary": "1 passed, 1 warning in 0.55s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.42s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -2047,11 +2047,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.38s"
+        "summary": "1 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.46s"
+        "summary": "1 failed, 1 warning in 0.52s"
       },
       "result": "red_as_required"
     },
@@ -2068,11 +2068,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.44s"
+        "summary": "1 failed, 1 warning in 0.42s"
       },
       "result": "red_as_required"
     },
@@ -2089,11 +2089,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.36s"
+        "summary": "1 passed, 1 warning in 0.37s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.38s"
+        "summary": "1 failed, 1 warning in 0.44s"
       },
       "result": "red_as_required"
     },
@@ -2110,7 +2110,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
@@ -2135,7 +2135,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.48s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -2152,11 +2152,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.40s"
+        "summary": "1 passed, 1 warning in 0.37s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 8.36s"
+        "summary": "1 failed, 1 warning in 8.27s"
       },
       "result": "red_as_required"
     },
@@ -2174,11 +2174,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.44s"
+        "summary": "2 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.53s"
+        "summary": "2 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -2196,11 +2196,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.45s"
+        "summary": "2 passed, 1 warning in 0.43s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.48s"
+        "summary": "2 failed, 1 warning in 0.56s"
       },
       "result": "red_as_required"
     },
@@ -2220,11 +2220,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "4 passed, 1 warning in 0.43s"
+        "summary": "4 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 2 passed, 1 warning in 0.49s"
+        "summary": "2 failed, 2 passed, 1 warning in 0.51s"
       },
       "result": "red_as_required"
     },
@@ -2245,7 +2245,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.17s"
+        "summary": "1 failed, 1 warning in 1.13s"
       },
       "result": "red_as_required"
     },
@@ -2262,11 +2262,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.43s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.49s"
+        "summary": "1 failed, 1 warning in 0.54s"
       },
       "result": "red_as_required"
     },
@@ -2284,11 +2284,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.59s"
+        "summary": "2 passed, 1 warning in 0.58s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.61s"
+        "summary": "2 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -2305,11 +2305,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.43s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.42s"
+        "summary": "1 failed, 1 warning in 0.46s"
       },
       "result": "red_as_required"
     },
@@ -2331,7 +2331,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.56s"
+        "summary": "2 failed, 1 warning in 0.58s"
       },
       "result": "red_as_required"
     },
@@ -2348,11 +2348,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.39s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.62s"
+        "summary": "1 failed, 1 warning in 0.60s"
       },
       "result": "red_as_required"
     },
@@ -2370,11 +2370,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 3.29s"
+        "summary": "2 passed, 1 warning in 3.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 3.45s"
+        "summary": "2 failed, 1 warning in 3.00s"
       },
       "result": "red_as_required"
     },
@@ -2391,11 +2391,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.45s"
+        "summary": "1 failed, 1 warning in 0.40s"
       },
       "result": "red_as_required"
     },
@@ -2412,11 +2412,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.38s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.42s"
+        "summary": "1 failed, 1 warning in 0.41s"
       },
       "result": "red_as_required"
     },
@@ -2433,11 +2433,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.47s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.50s"
+        "summary": "1 failed, 1 warning in 0.57s"
       },
       "result": "red_as_required"
     },
@@ -2455,11 +2455,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 3.50s"
+        "summary": "2 passed, 1 warning in 3.53s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 passed, 1 warning, 1 error in 3.54s"
+        "summary": "1 failed, 1 passed, 1 warning, 1 error in 3.51s"
       },
       "result": "red_as_required"
     },
@@ -2477,11 +2477,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 8.41s"
+        "summary": "2 passed, 1 warning in 7.91s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 passed, 1 warning, 1 error in 8.40s"
+        "summary": "1 failed, 1 passed, 1 warning, 1 error in 7.98s"
       },
       "result": "red_as_required"
     },
@@ -2498,11 +2498,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.50s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.52s"
+        "summary": "1 failed, 1 warning in 0.50s"
       },
       "result": "red_as_required"
     },
@@ -2519,11 +2519,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.56s"
+        "summary": "1 passed, 1 warning in 0.45s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.55s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -2540,11 +2540,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.37s"
+        "summary": "1 passed, 1 warning in 0.31s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.36s"
+        "summary": "1 failed, 1 warning in 0.34s"
       },
       "result": "red_as_required"
     },
@@ -2562,11 +2562,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 3.25s"
+        "summary": "2 passed, 1 warning in 2.97s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 3.48s"
+        "summary": "2 failed, 1 warning in 3.08s"
       },
       "result": "red_as_required"
     },
@@ -2583,11 +2583,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.69s"
+        "summary": "1 passed, 1 warning in 0.64s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.65s"
+        "summary": "1 failed, 1 warning in 0.64s"
       },
       "result": "red_as_required"
     },
@@ -2608,7 +2608,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.71s"
+        "summary": "1 failed, 1 warning in 0.64s"
       },
       "result": "red_as_required"
     },
@@ -2625,11 +2625,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.48s"
+        "summary": "1 passed, 1 warning in 0.42s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.62s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -2647,11 +2647,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.38s"
+        "summary": "2 passed, 1 warning in 0.41s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.47s"
+        "summary": "2 failed, 1 warning in 0.39s"
       },
       "result": "red_as_required"
     },
@@ -2669,11 +2669,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.43s"
+        "summary": "2 passed, 1 warning in 0.36s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 passed, 1 warning in 0.48s"
+        "summary": "1 failed, 1 passed, 1 warning in 0.39s"
       },
       "result": "red_as_required"
     },
@@ -2691,11 +2691,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.44s"
+        "summary": "2 passed, 1 warning in 0.37s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 30.48s"
+        "summary": "2 failed, 1 warning in 30.47s"
       },
       "result": "red_as_required"
     },
@@ -2712,11 +2712,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.14s"
+        "summary": "1 passed, 1 warning in 1.09s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.25s"
+        "summary": "1 failed, 1 warning in 1.10s"
       },
       "result": "red_as_required"
     },
@@ -2733,11 +2733,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.18s"
+        "summary": "1 passed, 1 warning in 0.98s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.22s"
+        "summary": "1 failed, 1 warning in 0.98s"
       },
       "result": "red_as_required"
     },
@@ -2754,11 +2754,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.45s"
+        "summary": "1 passed, 1 warning in 0.34s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.44s"
+        "summary": "1 failed, 1 warning in 0.41s"
       },
       "result": "red_as_required"
     },
@@ -2775,11 +2775,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.56s"
+        "summary": "1 passed, 1 warning in 0.40s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.46s"
+        "summary": "1 failed, 1 warning in 0.39s"
       },
       "result": "red_as_required"
     },
@@ -2796,11 +2796,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.33s"
+        "summary": "1 passed, 1 warning in 0.99s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.32s"
+        "summary": "1 failed, 1 warning in 0.99s"
       },
       "result": "red_as_required"
     },
@@ -2821,7 +2821,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.52s"
+        "summary": "1 failed, 1 warning in 0.48s"
       },
       "result": "red_as_required"
     },
@@ -2838,11 +2838,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.40s"
+        "summary": "1 passed, 1 warning in 0.37s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.46s"
+        "summary": "1 failed, 1 warning in 0.40s"
       },
       "result": "red_as_required"
     },
@@ -2859,11 +2859,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.10s"
+        "summary": "1 passed, 1 warning in 0.92s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.61s"
+        "summary": "1 failed, 1 warning in 1.28s"
       },
       "result": "red_as_required"
     },
@@ -2880,11 +2880,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.14s"
+        "summary": "1 passed, 1 warning in 0.92s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 1.33s"
+        "summary": "1 failed, 1 warning in 0.94s"
       },
       "result": "red_as_required"
     },
@@ -2901,11 +2901,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 1.08s"
+        "summary": "1 passed, 1 warning in 0.91s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 3.87s"
+        "summary": "1 failed, 1 warning in 3.64s"
       },
       "result": "red_as_required"
     },
@@ -2923,11 +2923,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 1.95s"
+        "summary": "2 passed, 1 warning in 1.66s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 2.28s"
+        "summary": "2 failed, 1 warning in 1.73s"
       },
       "result": "red_as_required"
     },
@@ -2944,11 +2944,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.47s"
+        "summary": "1 passed, 1 warning in 0.46s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.56s"
+        "summary": "1 failed, 1 warning in 0.49s"
       },
       "result": "red_as_required"
     },
@@ -2965,11 +2965,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.51s"
+        "summary": "1 passed, 1 warning in 0.44s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.52s"
+        "summary": "1 failed, 1 warning in 0.46s"
       },
       "result": "red_as_required"
     },
@@ -2987,11 +2987,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.95s"
+        "summary": "2 passed, 1 warning in 0.68s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.82s"
+        "summary": "2 failed, 1 warning in 0.80s"
       },
       "result": "red_as_required"
     },
@@ -3009,11 +3009,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.61s"
+        "summary": "2 passed, 1 warning in 0.48s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.56s"
+        "summary": "2 failed, 1 warning in 0.55s"
       },
       "result": "red_as_required"
     },
@@ -3030,11 +3030,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.74s"
+        "summary": "1 passed, 1 warning in 0.71s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 2.69s"
+        "summary": "1 failed, 1 warning in 2.60s"
       },
       "result": "red_as_required"
     },
@@ -3051,11 +3051,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.68s"
+        "summary": "1 passed, 1 warning in 0.70s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 2.59s"
+        "summary": "1 failed, 1 warning in 2.58s"
       },
       "result": "red_as_required"
     },
@@ -3073,11 +3073,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.86s"
+        "summary": "2 passed, 1 warning in 0.81s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 60.43s (0:01:00)"
+        "summary": "2 failed, 1 warning in 60.38s (0:01:00)"
       },
       "result": "red_as_required"
     },
@@ -3095,11 +3095,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed, 1 warning in 0.65s"
+        "summary": "2 passed, 1 warning in 0.58s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed, 1 warning in 0.74s"
+        "summary": "2 failed, 1 warning in 0.59s"
       },
       "result": "red_as_required"
     },
@@ -3116,11 +3116,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed, 1 warning in 0.64s"
+        "summary": "1 passed, 1 warning in 0.57s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed, 1 warning in 0.75s"
+        "summary": "1 failed, 1 warning in 0.62s"
       },
       "result": "red_as_required"
     }

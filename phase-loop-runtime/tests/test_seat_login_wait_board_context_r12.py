@@ -8,7 +8,10 @@ cancellation and timeout context.
   does for both the mode and the preflight. As written, it called the preflight with no
   timeout, and a call with no timeout checks the default deadline's margin.
   ``test_the_board_pointer_preflight_uses_the_legs_timeout`` checks the same join through
-  ``invoke_board`` itself.
+  ``invoke_board`` itself. Both board-level tests also stub ``_claude_code_support_status``
+  to supported, as the other board suites do, so they do not depend on a ``claude`` CLI
+  being installed. Without that stub, an all-Claude board on a host without the CLI returns
+  before any seat runs.
 - The other tests pin the rest of the class: a quiescence-latch cancel or trip wakes the wait,
   and the board's cancel context does not leak outside the board.
 """
@@ -39,6 +42,7 @@ def test_login_wait_preserves_board_context(monkeypatch, tmp_path, case):
     monkeypatch.setattr(sc, "read_login_token",
                         lambda: sc.LoginToken(b"fake-access-token", 1600.0))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
     monkeypatch.setattr(seat_jail, "decide_seat_route",
                         lambda *a, **k: seat_jail.SeatRoute(True))
     monkeypatch.setattr(aq, "ensure_qualified", lambda *a: aq.Outcome(aq.QUALIFIED))
@@ -145,6 +149,7 @@ def test_the_board_pointer_preflight_uses_the_legs_timeout(monkeypatch, tmp_path
     monkeypatch.setattr(sc, "read_login_token",
                         lambda: sc.LoginToken(b"fake-access-token", 1600.0))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
     monkeypatch.setattr(seat_jail, "decide_seat_route",
                         lambda *a, **k: seat_jail.SeatRoute(True))
     monkeypatch.setattr(aq, "ensure_qualified", lambda *a: aq.Outcome(aq.QUALIFIED))
