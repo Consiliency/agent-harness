@@ -19,9 +19,10 @@ The agent-CLI names come from the runtime's own registries (``runtime_agent_bina
 so a new harness is covered without editing this file.
 
 Only spawns made BY THE RUNTIME are judged: the first frame outside the standard library
-must be inside the ``phase_loop_runtime`` package (a spawn with no such frame at all, such
-as a thread targeting ``subprocess.run``, is judged too). Test code that starts its own
-fake CLIs is not a runtime launch.
+and third-party packages must be inside the ``phase_loop_runtime`` package actually
+imported (the source tree, or an installed wheel in site-packages). A spawn with no such
+frame at all, such as a thread targeting ``subprocess.run``, is judged too. Test code that
+starts its own fake CLIs is not a runtime launch.
 
 ``install`` proves ENFORCEMENT before the suite relies on it: a real spawn of a harmless
 stub named like an agent CLI must be rejected with an undecided env and accepted with a
@@ -39,6 +40,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import site
 import sys
 import sysconfig
 from pathlib import Path
@@ -79,12 +81,34 @@ def runtime_agent_binaries() -> frozenset[str]:
 
 AGENT_CLIS = runtime_agent_binaries() | _ALIASES
 
-#: Directories whose code counts as the runtime. Tests may add one (a falsifier module).
-RUNTIME_ROOTS = [str(Path(__file__).resolve().parents[1] / "src" / "phase_loop_runtime") + os.sep]
-_STDLIB = tuple(
-    str(Path(p).resolve()) + os.sep
-    for p in {sysconfig.get_paths()["stdlib"], sysconfig.get_paths()["platstdlib"]}
+def _roots(paths) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(Path(p).resolve()) + os.sep for p in paths if p))
+
+
+def _runtime_package() -> str:
+    import phase_loop_runtime
+
+    return str(Path(phase_loop_runtime.__file__).resolve().parent)
+
+
+#: Directories whose code counts as the runtime: the package actually imported (in a
+#: wheel install that is site-packages, which the skips below would otherwise swallow)
+#: and the sibling source tree. Tests may add one (a falsifier module).
+RUNTIME_ROOTS = list(_roots([
+    _runtime_package(), Path(__file__).resolve().parents[1] / "src" / "phase_loop_runtime",
+]))
+_STDLIB = _roots(
+    sysconfig.get_paths(vars=scheme)[key]
+    for scheme in ({}, {"base": sys.base_prefix, "platbase": sys.base_exec_prefix})
+    for key in ("stdlib", "platstdlib")
 )
+#: Third-party packages, skipped like the standard library. Inside a venv ``platstdlib`` is
+#: ``<venv>/lib/pythonX.Y``, a prefix of its site-packages: they were once skipped only by
+#: that accident, which also hid an installed runtime from ``RUNTIME_ROOTS``.
+_SITE = _roots([
+    *site.getsitepackages(), site.getusersitepackages(),
+    sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"],
+])
 _HOOK_FILE = str(Path(__file__).resolve())
 
 violations: list[str] = []
@@ -151,14 +175,15 @@ def _runtime_caller() -> tuple[str, str] | None:
     frame = sys._getframe(2)
     while frame is not None:
         path = frame.f_code.co_filename
-        if path == _HOOK_FILE or path.startswith(_STDLIB) or path.startswith("<frozen"):
-            frame = frame.f_back
-            continue
-        resolved = str(Path(path).resolve()) if not path.startswith("<") else path
+        resolved = os.path.realpath(path) if not path.startswith("<") else path
         for root in RUNTIME_ROOTS:
             if resolved.startswith(root):
                 return (f"{resolved[len(root):]}:{frame.f_lineno} ({frame.f_code.co_name})",
                         frame.f_code.co_name)
+        if (resolved == _HOOK_FILE or resolved.startswith(_STDLIB) or resolved.startswith(_SITE)
+                or path.startswith("<frozen")):
+            frame = frame.f_back
+            continue
         return None
     return ("<unattributed: no frame outside the standard library>", "")
 
