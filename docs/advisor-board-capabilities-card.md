@@ -602,13 +602,22 @@ that launches them, so an override is used only while you are logged in to the a
 was stored for.
 - **Storing it:** store a long-lived `claude setup-token` token with the store command,
   while logged in to the account the token belongs to. The command reads the token with no
-  echo, or from stdin, and never prints it. It records the account beside the token. It
-  refuses if no login is found.
+  echo, or from stdin, and never prints it. It refuses a terminal that cannot hide the
+  input; pipe the token on stdin there. It stores the token and the account together as
+  one record. It refuses if no login is found.
 - **When it is used:** after `claude login` to another account, seats use the login, and
   their mode line and notices show `claude_seat_override_other_subscription`. An override
   stored by hand, without the command, is never used.
 - **What to store:** the override carries no expiry information, so it should be a
   long-lived token, not a copied login token.
+- **Checking it:** the store prints the account it bound the token to.
+  `phase-loop seat-sandbox token-status` shows that account, this session's account, and
+  whether the override applies now. It never shows the token.
+- **One per user:** there is one override per Unix user. Storing from another account
+  replaces it.
+- **Upgrading from an earlier release:** a hand-written override file is ignored until you
+  store it again with `store-token`. A host that never runs `claude login` cannot use an
+  override, because the store needs a login to bind the token to.
 
 ```bash
 claude setup-token                         # mint a long-lived subscription token
@@ -633,7 +642,9 @@ for it.
 
 **Replacing the seat token override.** The runtime reads the override at every jailed
 launch, so you can swap it between legs or rounds. Run `phase-loop seat-sandbox store-token`
-again: it writes the new token and its binding atomically, so no launch reads half a file. A leg that is already running keeps its own token. Replacing the token does not
+again. It replaces the record (the token and its account together) with one rename, so no
+launch reads half a record or a token bound to another account. A leg that is already
+running keeps its own token. Replacing the token does not
 change the jail's digest or invalidate its recorded qualification. If a leg reports
 `claude_seat_token_rate_limited`, the override's subscription hit a rate or usage limit. With
 the login, the same outcome is `claude_seat_login_rate_limited`. The leg's detail names the

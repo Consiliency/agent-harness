@@ -8,8 +8,9 @@ commit subject is random:
   must run ``git log -1 --format=%s`` in /seat/tree and quote the subject. This shows the
   token reaches the TUI only through the drained pipe named by
   ``CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`` and authenticates it.
-- ``rejected_token``: a syntactically valid DUMMY token, staged in a throwaway 0700
-  directory (only the token path moves; the jail's pass store stays put). It records the TUI's signature for a token the provider rejects. Only fixed
+- ``rejected_token``: a syntactically valid DUMMY token, planted as a bound override record
+  (plan amendment A4) in a throwaway 0700 directory (only the override's location moves; the
+  jail's pass store stays put). It records the TUI's signature for a token the provider rejects. Only fixed
   signature literals are recorded, never the PTY tail itself.
 
 The token's VALUE never appears in this record: it is recorded only as "present". Not
@@ -120,20 +121,31 @@ def main() -> int:
         (scratch / "seat").mkdir()
         seat_token = _jailed_leg(scratch / "seat")
         # The rejected-token leg reads a DUMMY token from a throwaway 0700 directory. Only the
-        # token path moves: the jail's pass store must stay where the launch gate reads it.
-        dummy = scratch / "dummy-credentials" / "claude"
+        # override's location moves: the jail's pass store must stay where the launch gate
+        # reads it. Since plan amendment A4 an override is used only as a bound record (the
+        # token with the session's account), so the dummy is planted as one; a raw token file
+        # would be ignored and the leg would run on the login instead.
+        from phase_loop_runtime import seat_credentials
+
+        dummy = scratch / "dummy-credentials" / "claude.override.json"
         dummy.parent.mkdir(mode=0o700)
         os.chmod(dummy.parent, 0o700)
+        account = seat_credentials.ClaudeCredentialAdapter().current_account()
+        if account is None:
+            raise SystemExit("no Claude login: the rejected-token leg needs the session account")
         fd = os.open(dummy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(DUMMY_TOKEN + b"\n")
-        real_path = seat_jail.claude_seat_token_path
-        seat_jail.claude_seat_token_path = lambda: dummy
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"schema": seat_credentials.RECORD_SCHEMA, "account": account,
+                       "token": DUMMY_TOKEN.decode("ascii")}, handle)
+        adapter = seat_credentials.ClaudeCredentialAdapter
+        real_paths = adapter.record_path, adapter.legacy_path
+        adapter.record_path = lambda self: dummy
+        adapter.legacy_path = lambda self: dummy.with_name("claude")
         try:
             (scratch / "rejected").mkdir()
             rejected = _jailed_leg(scratch / "rejected")
         finally:
-            seat_jail.claude_seat_token_path = real_path
+            adapter.record_path, adapter.legacy_path = real_paths
         # P2 ends by confirming the seat token still authenticates.
         (scratch / "after").mkdir()
         after = _jailed_leg(scratch / "after")

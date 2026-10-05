@@ -200,6 +200,9 @@ class SeatMode:
     position: int = -1
     #: Plan amendment A2: the jail was qualified on this host just before this board.
     qualified_now: bool = False
+    #: Notice codes beside ``code`` that the operator must also see (plan amendment A4: an
+    #: ignored seat-token override, whatever the login's own state).
+    also: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in SEAT_MODES:
@@ -208,16 +211,19 @@ class SeatMode:
     def as_json(self) -> dict[str, object]:
         return {"seat_key": self.seat_key, "leg": self.leg, "mode": self.mode,
                 "code": self.code, "why": self.why, "fix": self.fix,
-                "credential": self.credential, "qualified_now": self.qualified_now}
+                "credential": self.credential, "qualified_now": self.qualified_now,
+                "also": list(self.also)}
 
     def render(self) -> str:
         code = f" [{self.code}]" if self.code else ""
         fix = f"; fix: {self.fix}" if self.fix else ""
+        also = "".join(f"; also [{extra}]" for extra in self.also)
         if self.mode == MODE_DEGRADED:
             # Plan amendment A3b: said before the board starts, so the operator can act.
-            return f"seat {self.seat_key} ({self.leg}): degraded \u2014 will not run{code}: {self.why}{fix}"
+            return (f"seat {self.seat_key} ({self.leg}): degraded \u2014 will not run{code}: "
+                    f"{self.why}{fix}{also}")
         mode = f"{self.mode} (qualified now)" if self.qualified_now else self.mode
-        return f"seat {self.seat_key} ({self.leg}): {mode}{code} -- {self.why}{fix}"
+        return f"seat {self.seat_key} ({self.leg}): {mode}{code} -- {self.why}{fix}{also}"
 
 
 def write_modes_record(stream_dir: Path, modes: Sequence[SeatMode]) -> Path:

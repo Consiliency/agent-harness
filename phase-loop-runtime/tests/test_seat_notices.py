@@ -951,3 +951,133 @@ def test_an_ignored_override_is_on_the_jailed_mode_line(monkeypatch):
     assert claude.fix == seat_jail.NOTICES[sc.OVERRIDE_OTHER_SUBSCRIPTION][2]
     assert sc.OVERRIDE_OTHER_SUBSCRIPTION not in seat_jail.SEALED_FALLBACK_CODES
     assert not sc.OVERRIDE_OTHER_SUBSCRIPTION.startswith("seat_sandbox_")
+
+
+def test_a_short_login_keeps_the_ignored_override_notice_on_its_mode_line(monkeypatch,
+                                                                          tmp_path):
+    # agent-harness#1253 board round 1 (codex F005 / claude N1), codex's falsifier: an
+    # override bound to another account is ignored, and the login is short (awaiting its
+    # renewal): the mode line must still say the override was ignored.
+    import json
+
+    from phase_loop_runtime import seat_credentials as sc
+
+    from .test_seat_credentials import _store_override
+
+    _store_override(monkeypatch, tmp_path, bound_to="acct-B", session="acct-A")
+    login = tmp_path / "claude-config" / ".credentials.json"
+    login.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "fake-login-A", "expiresAt": (time.time() + 60) * 1000}}))
+    login.chmod(0o600)
+    monkeypatch.setenv(sc.WAIT_ENV, "900")
+    monkeypatch.setattr(pi, "_seat_route_for_spawn",
+                        lambda *args, **kwargs: (seat_jail.SeatRoute(True), [], None))
+    assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
+    assert sc.login_seconds_left(900) is not None
+    modes = pi._seat_launch_modes(
+        _mode_board(), mode="review", base_env={},
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64))
+    claude = next(mode for mode in modes if mode.leg == "claude")
+    assert claude.mode == "jailed" and claude.credential == sc.SOURCE_LOGIN
+    assert sc.OVERRIDE_OTHER_SUBSCRIPTION in claude.render()
+    assert sc.OVERRIDE_OTHER_SUBSCRIPTION in claude.as_json()["also"]
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1253 board round 1 (grok B1): an ignored seat-token override is reported
+# beside the refusal of a seat that does not run -- a sibling notice, never a second
+# refusal code -- on every path: the spawn's refusal, the login wait, the resolver, the
+# mode line.
+# --------------------------------------------------------------------------------------
+
+_IGNORED = "claude_seat_override_other_subscription"
+
+
+def _override_bound_elsewhere(monkeypatch, tmp_path):
+    from .test_seat_credentials import _store_override
+
+    _store_override(monkeypatch, tmp_path, bound_to="acct-B", session="acct-A")
+
+
+def test_a_seat_refused_for_no_credential_says_its_override_was_ignored(monkeypatch, tmp_path):
+    from phase_loop_runtime import seat_credentials as sc
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    monkeypatch.setattr(sc, "read_login_token", lambda: None)            # no login either
+    monkeypatch.setattr(pi._seat_jail, "seat_sandbox_capable", lambda: None)
+    spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
+    assert tuple(spawned)[0] == "DEGRADED"
+    assert spawned.seat_notices[0] == "claude_seat_token_missing"
+    assert _IGNORED in spawned.seat_notices[1:]
+    assert pi._finalize_leg_detail(tuple(spawned)[-1]) == "claude_seat_token_missing"
+
+
+@pytest.mark.parametrize("outcome, code", [
+    ("timeout", "claude_seat_login_token_expiring"),
+    ("missing", "claude_seat_token_missing"),
+])
+def test_a_seat_whose_login_wait_ends_short_says_its_override_was_ignored(monkeypatch,
+                                                                          tmp_path, outcome,
+                                                                          code):
+    from phase_loop_runtime import seat_credentials as sc
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
+                        lambda leg, **k: seat_jail.SeatRoute(True))
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
+                        lambda leg: aq.Outcome(aq.QUALIFIED))
+    monkeypatch.setattr(pi, "_await_claude_login",
+                        lambda *a, **k: sc.LoginWait(outcome, 1.0))
+    spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
+    assert tuple(spawned)[0] == "DEGRADED"
+    assert spawned.seat_notices[0] == code
+    assert _IGNORED in spawned.seat_notices[1:]
+
+
+@pytest.mark.parametrize("login_left, code", [
+    (None, "claude_seat_token_missing"),
+    (60.0, "claude_seat_login_token_expiring"),
+])
+def test_the_resolvers_refusal_carries_the_ignored_override(monkeypatch, tmp_path, login_left,
+                                                           code):
+    from phase_loop_runtime import seat_credentials as sc
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    login = None if login_left is None else sc.LoginToken(b"fake-login-A", 1000.0 + login_left)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+        sc.resolve_claude_seat_credential(900, now=lambda: 1000.0, read_login=lambda: login)
+    assert refused.value.code == code                      # still exactly one refusal code
+    assert getattr(refused.value, "also", ()) == (_IGNORED,)
+
+
+@pytest.mark.parametrize("login_left, code", [
+    (None, "claude_seat_token_missing"),
+    (60.0, "claude_seat_login_token_expiring"),
+])
+def test_a_degraded_mode_line_says_the_override_was_ignored(monkeypatch, tmp_path, login_left,
+                                                           code):
+    import json
+
+    from phase_loop_runtime import seat_credentials as sc
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    monkeypatch.setenv(sc.WAIT_ENV, "0")
+    if login_left is None:
+        monkeypatch.setattr(sc, "read_login_token", lambda: None)
+        route = seat_jail.SeatRoute(False, code)
+        refusal = code
+    else:
+        login = tmp_path / "claude-config" / ".credentials.json"
+        login.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "fake-login-A", "expiresAt": (time.time() + login_left) * 1000}}))
+        login.chmod(0o600)
+        route, refusal = seat_jail.SeatRoute(True), None
+    monkeypatch.setattr(pi, "_seat_route_for_spawn",
+                        lambda *a, **k: (route, [], refusal))
+    modes = pi._seat_launch_modes(
+        _mode_board(), mode="review", base_env={},
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64))
+    claude = next(mode for mode in modes if mode.leg == "claude")
+    assert claude.mode == "degraded" and claude.code == code
+    assert _IGNORED in claude.render()

@@ -1639,22 +1639,25 @@ def _seat_launch_modes(
         if margin not in credential:
             cred = _seat_credentials
             decision = cred.override_decision()
-            if decision.applies:
+            if decision.applies or decision.refusal is not None:
                 try:
                     cred.resolve_claude_seat_credential(margin)
-                    credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_OVERRIDE, None)
+                    credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_OVERRIDE, None, ())
                 except _seat_jail.SeatSandboxRefused as exc:
-                    credential[margin] = (sp.MODE_DEGRADED, exc.code, None, None)
+                    credential[margin] = (sp.MODE_DEGRADED, exc.code, None, None, exc.also)
             else:
+                # An override bound to another subscription is ignored, loudly, whatever
+                # the login's own state (plan amendment A4).
+                ignored = (decision.notice,) if decision.notice else ()
                 left = cred.login_seconds_left(margin)
                 if left is None:
-                    # An override bound to another subscription is ignored, loudly.
-                    credential[margin] = (sp.MODE_JAILED, decision.notice, cred.SOURCE_LOGIN, None)
+                    credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_LOGIN, None, ignored)
                 elif cred.login_refresh_wait_s() > 0:
                     credential[margin] = (sp.MODE_JAILED, _CLAUDE_LOGIN_AWAITING,
-                                          cred.SOURCE_LOGIN, left)
+                                          cred.SOURCE_LOGIN, left, ignored)
                 else:
-                    credential[margin] = (sp.MODE_DEGRADED, _CLAUDE_LOGIN_EXPIRING, None, left)
+                    credential[margin] = (sp.MODE_DEGRADED, _CLAUDE_LOGIN_EXPIRING, None, left,
+                                          ignored)
         return credential[margin]
 
     modes = []
@@ -1699,8 +1702,8 @@ def _seat_launch_modes(
         elif not route.jailed:
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
-            kind, code, source, left = (_claude_credential(leg) if leg == "claude"
-                                        else (sp.MODE_JAILED, None, None, None))
+            kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
+                                              else (sp.MODE_JAILED, None, None, None, ()))
             if leg not in qualified_now:
                 outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
                 qualified_now[leg] = (outcome is not None
@@ -1711,19 +1714,32 @@ def _seat_launch_modes(
                     key, leg, sp.MODE_JAILED, code,
                     f"{why} (expires in {_minutes(left)}m; waits up to "
                     f"{int(_seat_credentials.login_refresh_wait_s())} s, then will not run)",
-                    fix, source, position, qualified_now[leg]))
-            elif code is not None and kind == sp.MODE_JAILED:
-                # Jailed, with a notice the operator should see (an ignored override).
+                    fix, source, position, qualified_now[leg], also))
+            elif code is not None:
                 _what, why, fix = _seat_jail.NOTICES[code]
                 modes.append(sp.SeatMode(key, leg, kind, code, why, fix, source, position,
-                                         qualified_now[leg]))
-            elif code is not None:
-                modes.append(_coded(kind, code))
+                                         qualified_now[leg] if kind == sp.MODE_JAILED else False,
+                                         also))
+            elif also:
+                # Jailed on the login, and the operator must see why the override was not
+                # used (plan amendment A4).
+                _what, why, fix = _seat_jail.NOTICES[also[0]]
+                modes.append(sp.SeatMode(key, leg, sp.MODE_JAILED, also[0], why, fix, source,
+                                         position, qualified_now[leg], also[1:]))
             else:
                 modes.append(sp.SeatMode(
                     key, leg, sp.MODE_JAILED, None,
                     "full tools inside its per-seat jail", "",
                     source, position, qualified_now[leg]))
+    # agent-harness#1253 round 1: every Claude seat's mode says when a stored override was
+    # ignored -- above all when the seat does not run -- as a sibling notice, never as a
+    # second refusal code.
+    ignored = _ignored_override("claude") if any(m.leg == "claude" for m in modes) else ()
+    if ignored:
+        modes = [replace(m, also=(*m.also, *ignored))
+                 if (m.leg == "claude" and m.mode in (sp.MODE_JAILED, sp.MODE_DEGRADED)
+                     and ignored[0] not in (m.code, *m.also)) else m
+                 for m in modes]
     return tuple(modes)
 
 
@@ -9972,6 +9988,12 @@ def _seat_route_for_spawn(
     return route, [], "seat_jail_qualification_failed"
 
 
+def _ignored_override(leg: str) -> tuple[str, ...]:
+    """agent-harness#1253 round 1: a Claude seat that does not run still says when a stored
+    seat-token override was ignored (a sibling notice beside its refusal code)."""
+    return _seat_credentials.ignored_override_notices() if leg == "claude" else ()
+
+
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
                            *, brokered: bool, timeout_s: int | None = None) -> bool:
     """Will this seat's production brokered launch take the jailed route? The same J7
@@ -10129,7 +10151,7 @@ def _default_spawn(
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
-                                    seat_notices=(seat_refusal,))
+                                    seat_notices=(seat_refusal, *_ignored_override(leg)))
     jailed = seat_route is not None and seat_route.jailed
     # Plan amendment A3: a jailed Claude seat whose login is short of the launch margin
     # waits, read-only, for it to be renewed -- before staging, so no seat id or namespace is
@@ -10155,7 +10177,8 @@ def _default_spawn(
                 "not run (fix: %s)", code, _seat_jail.NOTICES[code][2])
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
-            return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code), seat_notices=(code,))
+            return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code),
+                                        seat_notices=(code, *_ignored_override(leg)))
         elif login_wait.outcome == _seat_credentials.LOGIN_REFRESHED:
             logging.getLogger(__name__).info(
                 "seat claude: jailed (login refreshed) after %d s", int(login_wait.waited_s))
@@ -10464,6 +10487,7 @@ def _default_spawn(
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
+                            seat_notices.extend(exc.also)
                             return "DEGRADED", ""
                         try:
                             claude_status, claude_text = _exec_jailed_claude_leg(

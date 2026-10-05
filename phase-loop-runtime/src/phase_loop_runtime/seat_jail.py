@@ -166,7 +166,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
     "claude_seat_token_missing": (
-        "leg refused", "no Claude login found and no seat token override; the seat does not run",
+        "leg refused",
+        "no Claude login found and no usable seat token override; the seat does not run",
         "run `claude auth login`, then re-run"),
     "claude_seat_token_rejected": (
         "leg ended", "the seat token override was rejected (revoked or expired)",
@@ -337,13 +338,16 @@ def render_notice(code: object, seat_key: object) -> Notice | None:
 
 
 class SeatSandboxRefused(RuntimeError):
-    """A pre-launch or runtime refusal. ``code`` is exactly one notice literal."""
+    """A pre-launch or runtime refusal. ``code`` is exactly one notice literal; ``also`` are
+    sibling notices that explain it (never a second refusal code), e.g. an ignored seat-token
+    override beside a missing login."""
 
-    def __init__(self, code: str, message: str = "") -> None:
-        if code not in NOTICES:
+    def __init__(self, code: str, message: str = "", also: tuple[str, ...] = ()) -> None:
+        if code not in NOTICES or any(extra not in NOTICES for extra in also):
             raise ValueError(f"unknown seat sandbox code {code!r}")
         super().__init__(message or code)
         self.code = code
+        self.also = tuple(also)
 
 
 def refused(sub: str) -> str:

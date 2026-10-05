@@ -1566,3 +1566,24 @@ pin seats to it.
     an interrupted store is ignored, and it never prints the token);
   - the launch path, the mode line, and the adapter-generic rule.
 - [ ] Every new behaviour has a mutation receipt.
+
+### A4 revision (2026-10-05, after board round 1)
+
+Two of A4's statements are revised; the rest stands.
+- **Design 2 (the store):** the token and its account are ONE record,
+  `<harness>.override.json` (`seat_credential_override.v1`), not a token file plus a separate
+  binding file.
+  - **The write:** it is relative to descriptors held on the checked directories, as a new
+    0600 file under a random name renamed into place.
+  - **The terminal:** a terminal that cannot hide the input is refused.
+- **Design 3 (at launch):** the record is read once, without following a link and without
+  blocking, and the launch uses the token bytes whose account was checked.
+  - **Unbound:** a hand-placed raw token file is unbound, and is never used.
+  - **Unsafe:** an unsafe record keeps A1's typed refusal (`token_file_unsafe`).
+  - **Malformed:** a malformed record binds nothing (login with the notice).
+  - **The mode line** keeps the ignored-override notice beside any login notice.
+
+**A4 acceptance, added:** a concurrent store during a launch's decision, two concurrent
+stores, a token replaced by hand, a linked ancestor and a swapped directory during a store,
+a non-regular account file, and a terminal that cannot hide input each have a falsifier that
+is red at the round-1 head.

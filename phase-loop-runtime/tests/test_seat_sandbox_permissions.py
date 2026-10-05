@@ -936,9 +936,6 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
     # 2026-10-05), so the launch uses it.
     from phase_loop_runtime import seat_credentials as sc
 
-    binding = path.with_name("claude.account")
-    binding.write_text(json.dumps({"schema": sc.BINDING_SCHEMA, "account": "acct-A"}))
-    os.chmod(binding, 0o600)
     cfg = tmp_path / "claude-config"
     cfg.mkdir()
     (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A"}}))
@@ -965,9 +962,9 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
         return panel_invoker._prepare_jailed_claude(review, tmp_path / name / "seat", auth, 1, 1,
                                          ("bundle", "instructions"))
 
-    _store_token(path, b"TOKEN-SUBSCRIPTION-A")
+    sc.store_override(b"TOKEN-SUBSCRIPTION-A")
     first = _launch("leg-1")
-    _store_token(path, b"TOKEN-SUBSCRIPTION-B")    # rotation between two legs
+    sc.store_override(b"TOKEN-SUBSCRIPTION-B")    # rotation between two legs (one rename)
     second = _launch("leg-2")
     assert delivered == [b"TOKEN-SUBSCRIPTION-A", b"TOKEN-SUBSCRIPTION-B"]
     # The running leg keeps its own token (its output scan uses it), whatever the file holds now.
@@ -986,15 +983,14 @@ def test_a_seat_launched_with_an_override_bound_elsewhere_uses_the_login(monkeyp
     path = seat_jail.claude_seat_token_path()
     path.parent.mkdir(parents=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    _store_token(path, b"TOKEN-OVERRIDE-SUBSCRIPTION-B")
-    binding = path.with_name("claude.account")
-    binding.write_text(json.dumps({"schema": sc.BINDING_SCHEMA, "account": "acct-B"}))
-    os.chmod(binding, 0o600)
     cfg = tmp_path / "claude-config"
     cfg.mkdir()
-    (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acct-A"}}))
-    os.chmod(cfg / ".claude.json", 0o600)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    for account in ("acct-B", "acct-A"):     # stored while on B; the session then moves to A
+        (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+        os.chmod(cfg / ".claude.json", 0o600)
+        if account == "acct-B":
+            sc.store_override(b"TOKEN-OVERRIDE-SUBSCRIPTION-B")
     monkeypatch.setattr(sc, "read_login_token",
                         lambda: sc.LoginToken(b"TOKEN-LOGIN-SUBSCRIPTION-A", None))
     delivered: list[bytes] = []

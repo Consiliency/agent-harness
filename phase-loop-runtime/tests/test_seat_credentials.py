@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 import types
 from pathlib import Path
 
@@ -146,24 +147,21 @@ def _session_account(monkeypatch, tmp_path, account: str | None):
     os.chmod(target, 0o600)
 
 
-def _bind_override(account: str | None) -> None:
-    binding = seat_jail.claude_seat_token_path().with_name("claude.account")
-    if account is None:
-        binding.unlink(missing_ok=True)
-        return
-    binding.write_text(json.dumps({"schema": sc.BINDING_SCHEMA, "account": account}))
-    os.chmod(binding, 0o600)
-
-
 def _store_override(monkeypatch, tmp_path, *, bound_to: str | None = "acct-A",
-                    session: str | None = "acct-A"):
+                    session: str | None = "acct-A", token: bytes = OVERRIDE):
+    """A stored override: through the real store while the session is on ``bound_to``
+    (``None``: an unbound, hand-placed raw token file), then the session moves to
+    ``session``."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    path = seat_jail.claude_seat_token_path()
-    path.parent.mkdir(parents=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    path.write_bytes(OVERRIDE + b"\n")
-    os.chmod(path, 0o600)
-    _bind_override(bound_to)
+    if bound_to is None:
+        path = seat_jail.claude_seat_token_path()
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        path.write_bytes(token + b"\n")
+        os.chmod(path, 0o600)
+    else:
+        _session_account(monkeypatch, tmp_path, bound_to)
+        sc.store_override(token)
     _session_account(monkeypatch, tmp_path, session)
 
 
@@ -274,28 +272,6 @@ def test_no_override_raises_no_notice(no_override, monkeypatch, tmp_path):
     assert got.notices == ()
 
 
-@pytest.mark.parametrize("shape", ["group-writable", "symlink", "wrong-schema", "not-json",
-                                   "dir-not-private"])
-def test_an_unsafe_or_malformed_binding_is_no_binding(monkeypatch, tmp_path, shape):
-    _store_override(monkeypatch, tmp_path, bound_to="acct-A", session="acct-A")
-    binding = seat_jail.claude_seat_token_path().with_name("claude.account")
-    if shape == "group-writable":
-        os.chmod(binding, 0o620)
-    elif shape == "symlink":
-        real = tmp_path / "elsewhere.json"
-        real.write_text(binding.read_text())
-        binding.unlink()
-        binding.symlink_to(real)
-    elif shape == "wrong-schema":
-        binding.write_text(json.dumps({"schema": "other", "account": "acct-A"}))
-    elif shape == "not-json":
-        binding.write_text("acct-A")
-    else:
-        os.chmod(binding.parent, 0o750)
-    assert sc.ClaudeCredentialAdapter().override_account() is None
-    assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
-
-
 def test_the_session_account_is_the_clis_own_oauth_account(monkeypatch, tmp_path):
     _session_account(monkeypatch, tmp_path, "acct-A")
     assert sc.ClaudeCredentialAdapter().current_account() == "acct-A"
@@ -306,30 +282,6 @@ def test_the_session_account_is_the_clis_own_oauth_account(monkeypatch, tmp_path
     assert sc.ClaudeCredentialAdapter().current_account() is None
 
 
-def test_the_rule_is_the_adapters_not_claudes(monkeypatch):
-    # Any harness adapter gets the same rule: present + both accounts known + equal.
-    class _Adapter:
-        harness = "other"
-        override_ignored_notice = "other_override_other_subscription"
-
-        def __init__(self, present, bound, current):
-            self._p, self._b, self._c = present, bound, current
-
-        def override_present(self):
-            return self._p
-
-        def override_account(self):
-            return self._b
-
-        def current_account(self):
-            return self._c
-
-    assert sc.override_decision(_Adapter(False, None, "x")) == sc.OverrideDecision(False)
-    assert sc.override_decision(_Adapter(True, "x", "x")) == sc.OverrideDecision(True)
-    assert sc.override_decision(_Adapter(True, "y", "x")) == sc.OverrideDecision(
-        False, "other_override_other_subscription")
-
-
 # --------------------------------------------------------------------------------------
 # `phase-loop seat-sandbox store-token` (maintainer decision 2026-10-05: "Store command
 # binds it"): the override is stored together with the account it belongs to.
@@ -338,22 +290,6 @@ def test_the_rule_is_the_adapters_not_claudes(monkeypatch):
 def _store_env(monkeypatch, tmp_path, session="acct-A"):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _session_account(monkeypatch, tmp_path, session)
-
-
-def test_store_binds_the_override_to_the_current_login(monkeypatch, tmp_path):
-    _store_env(monkeypatch, tmp_path)
-    sc.store_override(OVERRIDE + b"\n")
-    path = seat_jail.claude_seat_token_path()
-    binding = path.with_name("claude.account")
-    assert path.read_bytes() == OVERRIDE + b"\n"
-    assert json.loads(binding.read_text()) == {"schema": sc.BINDING_SCHEMA, "account": "acct-A"}
-    for target in (path, binding):
-        assert os.stat(target).st_mode & 0o777 == 0o600
-    assert os.stat(path.parent).st_mode & 0o777 == 0o700
-    # ... and the next launch uses it, until the session moves to another account.
-    assert sc.override_decision().applies
-    _session_account(monkeypatch, tmp_path, "acct-B")
-    assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
 
 
 def test_store_refuses_without_a_login_and_writes_nothing(monkeypatch, tmp_path):
@@ -381,22 +317,147 @@ def test_store_refuses_a_directory_that_is_not_private(monkeypatch, tmp_path):
     assert not seat_jail.claude_seat_token_path().exists()
 
 
-def test_an_interrupted_store_leaves_an_ignored_override(monkeypatch, tmp_path):
-    # Replacing a bound override: the old binding goes first, so a store interrupted
-    # before the new binding is written leaves an UNBOUND override, which is ignored.
+def test_the_cli_refuses_without_a_login(monkeypatch, tmp_path, capsys):
+    import io
+    import sys
+
+    from phase_loop_runtime import cli
+
+    _store_env(monkeypatch, tmp_path, session=None)
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(
+        isatty=lambda: False, buffer=io.BytesIO(b"fake-token-" + b"z" * 20)))
+    assert cli.main(["seat-sandbox", "store-token"]) == 1
+    assert "refused" in capsys.readouterr().err
+    assert not seat_jail.claude_seat_token_path().exists()
+
+
+#: The record schema, spelled out so the module collects anywhere (checked below).
+_SCHEMA = "seat_credential_override.v1"
+
+
+def _record():
+    return seat_jail.claude_seat_token_path().with_name("claude.override.json")
+
+
+@pytest.mark.parametrize("shape", ["group-writable", "symlink", "dir-not-private", "fifo"])
+def test_an_unsafe_override_record_refuses_the_launch(monkeypatch, tmp_path, shape):
+    # A1's contract for an unsafe override: the launch refuses, typed, before any effect,
+    # and the decision returns at once (no open of a FIFO blocks it).
+    import signal
+
+    _store_override(monkeypatch, tmp_path)
+    record = _record()
+    if shape == "group-writable":
+        os.chmod(record, 0o620)
+    elif shape == "symlink":
+        real = tmp_path / "elsewhere.json"
+        real.write_bytes(record.read_bytes())
+        os.chmod(real, 0o600)
+        record.unlink()
+        record.symlink_to(real)
+    elif shape == "dir-not-private":
+        os.chmod(record.parent, 0o750)
+    else:
+        record.unlink()
+        os.mkfifo(record, 0o600)
+
+    def _blocked(signum, frame):
+        raise AssertionError("the decision blocked on the override record")
+
+    previous = signal.signal(signal.SIGALRM, _blocked)
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    try:
+        assert sc.override_decision() == sc.OverrideDecision(False, refusal=sc.OVERRIDE_UNSAFE)
+        with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
+            sc.resolve_claude_seat_credential(900, read_login=lambda: _login(9e9))
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    assert refused.value.code == sc.OVERRIDE_UNSAFE
+
+
+@pytest.mark.parametrize("content", [
+    b"not json", b"[]", json.dumps({"schema": "other", "account": "acct-A", "token": "t"}).encode(),
+    json.dumps({"schema": _SCHEMA, "token": "fake-token"}).encode(),
+    json.dumps({"schema": _SCHEMA, "account": "acct-A"}).encode(),
+    json.dumps({"schema": _SCHEMA, "account": "acct-A", "token": "has space"}).encode(),
+])
+def test_a_malformed_override_record_binds_nothing(monkeypatch, tmp_path, content):
+    assert sc.RECORD_SCHEMA == _SCHEMA
+    _store_override(monkeypatch, tmp_path)
+    _record().write_bytes(content)
+    got = sc.resolve_claude_seat_credential(900, now=lambda: 1000.0,
+                                            read_login=lambda: _login(9000.0))
+    assert got.source == sc.SOURCE_LOGIN and got.notices == (sc.OVERRIDE_OTHER_SUBSCRIPTION,)
+
+
+def test_the_rule_is_the_adapters_not_claudes():
+    # Any harness adapter gets the same rule: a record whose account equals the session's.
+    class _Adapter:
+        harness = "other"
+        override_ignored_notice = "other_override_other_subscription"
+        sources = ("seat_token", "login")
+
+        def __init__(self, record, current, unsafe=False):
+            self._r, self._c, self._u = record, current, unsafe
+
+        def record_path(self):
+            return Path("/nonexistent")
+
+        def override_present(self):
+            return self._r is not None or self._u
+
+        def read_override(self):
+            if self._u:
+                raise sc.UnsafeOverride("x")
+            return self._r
+
+        def current_account(self):
+            return self._c
+
+        def account_source(self):
+            return Path("/nonexistent")
+
+    good = sc.OverrideRecord("x", b"fake-token-x")
+    assert sc.override_decision(_Adapter(None, "x")) == sc.OverrideDecision(False)
+    applied = sc.override_decision(_Adapter(good, "x"))
+    assert applied.applies and applied.token == b"fake-token-x"
+    assert sc.override_decision(_Adapter(good, "y")) == sc.OverrideDecision(
+        False, "other_override_other_subscription")
+    assert sc.override_decision(_Adapter(None, "x", unsafe=True)) == sc.OverrideDecision(
+        False, refusal=sc.OVERRIDE_UNSAFE)
+
+
+def test_store_binds_token_and_account_in_one_record(monkeypatch, tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    sc.store_override(OVERRIDE + b"\n")
+    record = _record()
+    assert json.loads(record.read_text()) == {
+        "schema": sc.RECORD_SCHEMA, "account": "acct-A", "token": OVERRIDE.decode()}
+    assert os.stat(record).st_mode & 0o777 == 0o600
+    assert os.stat(record.parent).st_mode & 0o777 == 0o700
+    assert [p.name for p in record.parent.iterdir()] == [record.name]   # no temp left behind
+    decision = sc.override_decision()
+    assert decision.applies and decision.token == OVERRIDE
+    _session_account(monkeypatch, tmp_path, "acct-B")
+    assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
+
+
+def test_an_interrupted_store_keeps_the_previous_record_whole(monkeypatch, tmp_path):
+    # The record is replaced by one rename: interrupted before it, the old record (token
+    # and account together) is still the one that applies, and no temp file is left.
     _store_env(monkeypatch, tmp_path)
     sc.store_override(b"fake-old-override-" + b"o" * 20)
-    real = sc._write_private
+    def _interrupt(*a, **k):
+        raise KeyboardInterrupt   # after the new record is written, before its rename
 
-    def _fail_on_binding(path, data):
-        if path.name.endswith(".account"):
-            raise OSError("interrupted")
-        real(path, data)
-
-    monkeypatch.setattr(sc, "_write_private", _fail_on_binding)
-    with pytest.raises(OSError):
-        sc.store_override(b"fake-new-override-" + b"n" * 20)
-    assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", _interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            sc.store_override(b"fake-new-override-" + b"n" * 20)
+    decision = sc.override_decision()
+    assert decision.applies and decision.token == b"fake-old-override-" + b"o" * 20
+    assert [p.name for p in _record().parent.iterdir()] == [_record().name]
 
 
 @pytest.mark.parametrize("tty", [False, True])
@@ -419,21 +480,287 @@ def test_the_cli_stores_without_ever_printing_the_token(monkeypatch, tmp_path, c
     assert cli.main(["seat-sandbox", "store-token"]) == 0
     out = capsys.readouterr()
     assert token.decode() not in out.out + out.err
-    assert seat_jail.claude_seat_token_path().read_bytes() == token + b"\n"
-    assert sc.override_decision().applies
+    decision = sc.override_decision()
+    assert decision.applies and decision.token == token
     if tty:
         assert prompts and "hidden" in prompts[0]
 
 
-def test_the_cli_refuses_without_a_login(monkeypatch, tmp_path, capsys):
+# --------------------------------------------------------------------------------------
+# agent-harness#1253 board round 1: the token the launch uses is the token whose binding was
+# checked, whatever runs concurrently; the store writes only where it checked; nothing blocks.
+# Each test hooks a seam that exists in every design (the session-account read, fsync, the
+# files themselves), so it measures behaviour, not internals.
+# --------------------------------------------------------------------------------------
+
+TOKEN_A, TOKEN_B = b"fake-override-of-A-" + b"a" * 16, b"fake-override-of-B-" + b"b" * 16
+
+
+def _two_sessions(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    configs = {}
+    for account in ("acct-A", "acct-B"):
+        cfg = tmp_path / f"cfg-{account}"
+        cfg.mkdir()
+        (cfg / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": account}}))
+        os.chmod(cfg / ".claude.json", 0o600)
+        configs[account] = cfg
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configs["acct-A"]))      # this session: A
+    return sc.ClaudeCredentialAdapter({"CLAUDE_CONFIG_DIR": str(configs["acct-B"])})
+
+
+def test_a_store_during_the_launchs_decision_cannot_swap_the_token(monkeypatch, tmp_path):
+    # Session B stores its token right after session A's launch has read the stored binding
+    # (the hook fires when the stored override's JSON is parsed): A must still get A's token
+    # (or the login), never B's.
+    adapter_b = _two_sessions(monkeypatch, tmp_path)
+    sc.store_override(TOKEN_A)
+    real_loads = sc.json.loads
+    fired = []
+
+    def loads(raw, *a, **k):
+        value = real_loads(raw, *a, **k)
+        if not fired and isinstance(value, dict) and value.get("account") == "acct-A":
+            fired.append(True)
+            sc.store_override(TOKEN_B, adapter_b)
+        return value
+
+    monkeypatch.setattr(sc.json, "loads", loads)
+    got = sc.resolve_claude_seat_credential(0, read_login=lambda: _login(None))
+    assert fired
+    assert got.token != TOKEN_B, "session A launched with account B's token"
+
+
+def test_two_concurrent_stores_never_leave_a_mixed_token_and_binding(monkeypatch, tmp_path):
+    # Store B runs to completion inside store A, while A is writing the file that binds its
+    # account (identified by name through /proc; the test is skipped without it): whatever
+    # the outcome, the token a session uses belongs to the account it was bound with.
+    if not os.path.exists("/proc/self/fd"):
+        pytest.skip("needs /proc to identify the file being written")
+    adapter_b = _two_sessions(monkeypatch, tmp_path)
+    real_fsync = os.fsync
+    fired = []
+
+    def fsync(fd):
+        real_fsync(fd)
+        name = os.readlink(f"/proc/self/fd/{fd}") if os.path.exists("/proc/self/fd") else ""
+        if not fired and (".account." in name or ".override.json." in name):
+            fired.append(True)
+            sc.store_override(TOKEN_B, adapter_b)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fsync)
+        sc.store_override(TOKEN_A)
+    assert fired
+    for session, own in (("acct-A", TOKEN_A), ("acct-B", TOKEN_B)):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / f"cfg-{session}"))
+        got = sc.resolve_claude_seat_credential(0, read_login=lambda: _login(None))
+        assert got.source == sc.SOURCE_LOGIN or got.token == own, (
+            f"session {session} launched with the other account's token")
+
+
+def test_a_token_file_replaced_by_hand_is_never_used(monkeypatch, tmp_path):
+    # A stored, bound override; then the raw token file is replaced by hand with another
+    # account's token (the A1-era rotation). The hand-placed token must not be used.
+    _two_sessions(monkeypatch, tmp_path)
+    sc.store_override(TOKEN_A)
+    raw = seat_jail.claude_seat_token_path()
+    staged = raw.with_name("claude.by-hand")
+    staged.write_bytes(TOKEN_B + b"\n")
+    os.chmod(staged, 0o600)
+    os.replace(staged, raw)
+    got = sc.resolve_claude_seat_credential(0, read_login=lambda: _login(None))
+    assert got.token != TOKEN_B, "a hand-placed token was used under the stored binding"
+
+
+def test_the_store_refuses_an_ancestor_link_and_writes_nothing_through_it(monkeypatch, tmp_path):
+    # A directory component below the state root is a link -- even to a private directory
+    # the user owns: the store refuses it rather than following it.
+    _store_env(monkeypatch, tmp_path)
+    path = seat_jail.claude_seat_token_path()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    os.chmod(elsewhere, 0o700)
+    path.parent.parent.parent.mkdir(parents=True)
+    path.parent.parent.symlink_to(elsewhere, target_is_directory=True)   # phase-loop -> elsewhere
+    with pytest.raises((sc.StoreRefused, OSError)):
+        sc.store_override(OVERRIDE)
+    assert not any(elsewhere.rglob("*")), "the store wrote through a linked ancestor"
+
+
+def test_the_store_refuses_a_parent_directory_others_can_write(monkeypatch, tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    parent = seat_jail.claude_seat_token_path().parent.parent      # phase-loop
+    parent.mkdir(parents=True)
+    os.chmod(parent, 0o777)
+    with pytest.raises(sc.StoreRefused, match="writable by others"):
+        sc.store_override(OVERRIDE)
+    assert not sc.override_decision().applies
+
+
+def test_the_store_writes_only_into_the_directory_it_checked(monkeypatch, tmp_path):
+    # The credentials directory is swapped for a link to a public directory after the store
+    # checked it, just before its first file is opened: nothing may land in the public
+    # directory.
+    _store_env(monkeypatch, tmp_path)
+    directory = seat_jail.claude_seat_token_path().parent
+    directory.mkdir(parents=True, mode=0o700)
+    public = tmp_path / "public"
+    public.mkdir()
+    os.chmod(public, 0o777)
+    real_open = os.open
+    swapped = []
+
+    def _open(path, *a, **k):
+        if not swapped and str(path).endswith(".tmp"):
+            swapped.append(True)
+            directory.rename(directory.with_name("checked"))
+            directory.symlink_to(public, target_is_directory=True)
+        return real_open(path, *a, **k)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", _open)
+        try:
+            sc.store_override(OVERRIDE)
+        except (sc.StoreRefused, OSError):
+            pass
+    assert swapped
+    assert not any(public.iterdir()), "the store wrote into a directory it never checked"
+
+
+def test_an_unreadable_session_account_file_never_blocks(monkeypatch, tmp_path):
+    # A FIFO where the CLI's account file should be: the decision returns at once, and the
+    # override is not used.
+    import signal
+
+    _store_override(monkeypatch, tmp_path)
+    account_file = tmp_path / "claude-config" / ".claude.json"
+    account_file.unlink()
+    os.mkfifo(account_file, 0o600)
+
+    def _blocked(signum, frame):
+        raise AssertionError("the decision blocked on the session's account file")
+
+    previous = signal.signal(signal.SIGALRM, _blocked)
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    try:
+        assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_the_store_names_an_unsafe_account_file_instead_of_saying_no_login(monkeypatch,
+                                                                           tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    account_file = tmp_path / "claude-config" / ".claude.json"
+    real = tmp_path / "dotfiles-claude.json"
+    real.write_bytes(account_file.read_bytes())
+    os.chmod(real, 0o600)
+    account_file.unlink()
+    account_file.symlink_to(real)
+    with pytest.raises(sc.StoreRefused) as refused:
+        sc.store_override(OVERRIDE)
+    assert ".claude.json" in str(refused.value) and "no claude login" not in str(refused.value)
+
+
+def test_store_token_refuses_a_terminal_that_cannot_hide_input(monkeypatch, tmp_path, capsys):
+    # getpass's fallback reads with echo ON (after a GetPassWarning): refuse instead.
     import io
     import sys
 
     from phase_loop_runtime import cli
 
-    _store_env(monkeypatch, tmp_path, session=None)
+    _store_env(monkeypatch, tmp_path)
+
+    class _Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            raise ValueError("no terminal descriptor")
+
+    real_open = os.open
+
+    def _no_tty(path, *a, **k):
+        if path == "/dev/tty":
+            raise OSError("no controlling terminal")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(os, "open", _no_tty)
+    monkeypatch.setattr(sys, "stdin", _Terminal("fake-seat-token-echoed\n"))
+    try:
+        result = cli.main(["seat-sandbox", "store-token"])
+    except Exception:          # an unhandled warning-as-error is still not a success
+        result = 1
+    monkeypatch.setattr(os, "open", real_open)
+    assert result != 0
+    assert not sc.override_decision().applies, "a token typed with echo on was stored"
+    assert "fake-seat-token-echoed" not in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1253 board round 1 (grok non-blocking): the store names the account; a
+# status shows the binding; stale temps of a killed store are swept; sources gate the rule.
+# --------------------------------------------------------------------------------------
+
+def test_the_store_says_which_account_it_bound_and_status_shows_it(monkeypatch, tmp_path,
+                                                                   capsys):
+    import io
+    import sys
+
+    from phase_loop_runtime import cli
+
+    _store_env(monkeypatch, tmp_path)
+    token = b"fake-status-override-" + b"s" * 20
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(
-        isatty=lambda: False, buffer=io.BytesIO(b"fake-token-" + b"z" * 20)))
-    assert cli.main(["seat-sandbox", "store-token"]) == 1
-    assert "refused" in capsys.readouterr().err
-    assert not seat_jail.claude_seat_token_path().exists()
+        isatty=lambda: False, buffer=io.BytesIO(token + b"\n")))
+    assert cli.main(["seat-sandbox", "store-token"]) == 0
+    assert "acct-A" in capsys.readouterr().out
+    assert cli.main(["seat-sandbox", "token-status"]) == 0
+    out = capsys.readouterr().out
+    assert "bound account: acct-A" in out and "applies to this session: yes" in out
+    _session_account(monkeypatch, tmp_path, "acct-B")
+    assert cli.main(["seat-sandbox", "token-status"]) == 0
+    out = capsys.readouterr().out
+    assert "applies to this session: no" in out and sc.OVERRIDE_OTHER_SUBSCRIPTION in out
+    assert token.decode() not in out
+
+
+def test_a_store_sweeps_stale_temps_a_killed_store_left(monkeypatch, tmp_path):
+    _store_env(monkeypatch, tmp_path)
+    sc.store_override(OVERRIDE)
+    directory = _record().parent
+    stale = directory / ".claude.override.json.dead.tmp"
+    young = directory / ".claude.override.json.live.tmp"
+    for leftover in (stale, young):
+        leftover.write_bytes(b"fake-leftover")
+        os.chmod(leftover, 0o600)
+    old = time.time() - 3600
+    os.utime(stale, (old, old))
+    sc.store_override(OVERRIDE)
+    assert not stale.exists() and young.exists()
+
+
+def test_an_adapter_without_the_override_source_never_uses_one():
+    class _LoginOnly:
+        harness = "other"
+        override_ignored_notice = "other_override_other_subscription"
+        sources = ("login",)
+
+        def record_path(self):
+            return Path("/nonexistent")
+
+        def override_present(self):
+            return True
+
+        def read_override(self):
+            return sc.OverrideRecord("x", b"fake-token-x")
+
+        def current_account(self):
+            return "x"
+
+        def account_source(self):
+            return Path("/nonexistent")
+
+    assert sc.override_decision(_LoginOnly()) == sc.OverrideDecision(False)
