@@ -588,7 +588,7 @@ def test_environment_inside_the_worker_is_the_allowlist(client):
     assert set(info["env"]) <= allowlist | {"BAML_PROFILE"}, set(info["env"]) - allowlist
     assert "BAML_PROFILE" in info["env"]
     assert "LC_CTYPE" not in info["env"] and "__PYVENV_LAUNCHER__" not in info["env"]
-    assert Path(info["cwd"]).resolve() == PKG.resolve()
+    assert Path(info["cwd"]).resolve() == Path(m.__file__).resolve().parent
     golden = [entry["v0"] for entry in _baseline("evidence_requests.json")["requests"].values()]
     assert [_request_view(r) for r in evidence] == golden
     blob = json.dumps([_request_view(r) for r in [*evidence, closeout]])

@@ -142,7 +142,7 @@ _LOCAL_ENV_TAIL_RE = re.compile(r"\s*=")
 
 
 def _local_env_matches(text: str) -> list[tuple[int, int]]:
-    """Exactly ``finditer`` of the `local_env_value` pattern. Its three alternatives start with
+    r"""Exactly ``finditer`` of the `local_env_value` pattern. Its three alternatives start with
     different characters, so at most one applies at a position. The first `]` after a prefix
     and the `\s*=` after that `]` are each looked up once and reused by later prefixes."""
     matches: list[tuple[int, int]] = []
