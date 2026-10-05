@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Callable
 
 try:  # Python 3.11+
@@ -51,7 +52,7 @@ from .schema import (
 )
 
 # Recognised keys — anything else is a hard error (no silent drop).
-_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president", "agy"})
+_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president", "agy", "sandbox"})
 # A repository file configures the president ladder only: repo-level boards are not a
 # feature, so a ``[[boards]]`` there is refused rather than silently ignored.
 _KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president"})
@@ -59,6 +60,11 @@ _KNOWN_PRESIDENT_KEYS: frozenset[str] = frozenset({"ladder"})
 # agent-harness#1076 D3: the USER file's ``[agy] self_qualification = false`` restores the
 # hard refusal of a non-release agy image. A repository file cannot carry it.
 _KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification"})
+# agent-harness#896: the USER file's ``[sandbox]`` names one root per remote placement
+# backend and the order to try them in. A repository file cannot carry it: roots name hosts.
+_KNOWN_SANDBOX_KEYS: frozenset[str] = frozenset({"roots", "order"})
+DEFAULT_SANDBOX_BACKEND_ORDER: tuple[str, ...] = ("self-hosted", "e2b")
+_SANDBOX_BACKEND_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 # Repository-level config, relative to the repository root.
 REPO_CONFIG_RELATIVE_PATH = ".agent-harness/advisor-boards.toml"
 _KNOWN_BOARD_KEYS: frozenset[str] = frozenset(
@@ -226,6 +232,46 @@ def _parse_agy(data: Mapping[str, Any], where: str) -> bool:
     return _require_bool(raw, "self_qualification", True, f"{where} [agy]")
 
 
+def _parse_sandbox(data: Mapping[str, Any], where: str) -> tuple[tuple[str, str], ...]:
+    """The user file's ``[sandbox]``, validated: ``(name, root)`` in the order to try them."""
+    raw = data.get("sandbox")
+    if raw is None:
+        return ()
+    if not isinstance(raw, Mapping):
+        raise BoardConfigError(f"{where}: 'sandbox' must be a table")
+    _reject_unknown(raw.keys(), _KNOWN_SANDBOX_KEYS, f"{where} [sandbox]")
+    roots = raw.get("roots", {})
+    if not isinstance(roots, Mapping):
+        raise BoardConfigError(f"{where} [sandbox]: 'roots' must be a table")
+    for name, root in roots.items():
+        # The root is never echoed: it may carry a credential.
+        if not isinstance(name, str) or not _SANDBOX_BACKEND_NAME.fullmatch(name):
+            raise BoardConfigError(f"{where} [sandbox] roots: invalid backend name")
+        if not isinstance(root, str) or not root.strip():
+            raise BoardConfigError(f"{where} [sandbox] roots.{name}: must be a non-empty string")
+    order = raw.get("order", list(DEFAULT_SANDBOX_BACKEND_ORDER))
+    if (
+        not isinstance(order, list)
+        or any(not isinstance(n, str) or not _SANDBOX_BACKEND_NAME.fullmatch(n) for n in order)
+        or len(set(order)) != len(order)
+    ):
+        raise BoardConfigError(f"{where} [sandbox] order: must be a list of distinct backend names")
+    ranked = [n for n in order if n in roots] + [n for n in roots if n not in order]
+    return tuple((name, str(roots[name]).strip()) for name in ranked)
+
+
+def load_sandbox_roots(*, path: Path | None = None) -> tuple[tuple[str, str], ...]:
+    """agent-harness#896: the configured remote placement roots, ``(backend name, root)``,
+    first to try first. Named roots the ``order`` omits follow, in file order. Reads the
+    user file only. A malformed table or an unknown key is a ``BoardConfigError``."""
+    user_path = path if path is not None else board_config_path(None)
+    user = _load_toml(user_path)
+    if user is None:
+        return ()
+    _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
+    return _parse_sandbox(user, str(user_path))
+
+
 def load_agy_self_qualification(*, path: Path | None = None) -> bool:
     """D3 (agent-harness#1076): whether first-use self-qualification is enabled.
 
@@ -372,6 +418,7 @@ def load_boards(
         _reject_unknown(data.keys(), _KNOWN_TOP_KEYS, str(cfg_path))
         _parse_president(data, str(cfg_path))  # a bad [president] fails at load too
         _parse_agy(data, str(cfg_path))  # and a bad [agy] (agent-harness#1076)
+        _parse_sandbox(data, str(cfg_path))  # and a bad [sandbox] (agent-harness#896)
         raw_boards = data.get("boards", [])
         if not isinstance(raw_boards, list):
             raise BoardConfigError(f"{cfg_path}: 'boards' must be an array of tables")

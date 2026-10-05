@@ -227,8 +227,8 @@ def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, 
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
     monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
-                        lambda **k: types.SimpleNamespace(fell_back=False, path=tmp_path,
-                                                          host=None, reason=""))
+                        lambda **k: pi._sandbox_policy.SandboxRootChoice(
+                            host=None, path=tmp_path, fell_back=False, reason=""))
     monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
     monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path / "staging")
     (tmp_path / "staging").mkdir(exist_ok=True)

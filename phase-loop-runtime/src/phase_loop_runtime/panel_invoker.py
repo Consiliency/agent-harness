@@ -115,6 +115,7 @@ from .advisor_board.schema import (
 )
 from . import review_stage as _review_stage
 from . import sandbox_egress as _sandbox_egress
+from . import sandbox_placement as _sandbox_placement
 from . import sandbox_policy as _sandbox_policy
 from . import sandbox_retention as _sandbox_retention
 from . import seat_credentials as _seat_credentials
@@ -1544,6 +1545,12 @@ class PanelLegResult:
         return getattr(self, "_harden_isolation_evidence", None)
 
     @property
+    def sandbox_placement_evidence(self) -> Mapping[str, object] | None:
+        """Where this leg's sandbox was placed, and what the runtime observed of it
+        (agent-harness#896). Outside result serialization, like the broker evidence."""
+        return getattr(self, "_sandbox_placement_evidence", None)
+
+    @property
     def review_monitoring(self) -> Mapping[str, object] | None:
         return getattr(self, "_review_monitoring", None)
 
@@ -1811,6 +1818,14 @@ def attach_harden_isolation_evidence(
 ) -> PanelLegResult:
     """Keep metadata-only broker facts with the runtime result, not review text."""
     object.__setattr__(leg, "_harden_isolation_evidence", dict(evidence))
+    return leg
+
+
+def attach_sandbox_placement_evidence(
+    leg: PanelLegResult, evidence: Mapping[str, object]
+) -> PanelLegResult:
+    """Keep the leg's sandbox placement record with the runtime result (agent-harness#896)."""
+    object.__setattr__(leg, "_sandbox_placement_evidence", dict(evidence))
     return leg
 
 
@@ -2504,6 +2519,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "review_monitoring_policy_mismatch", "review_monitoring_policy_invalid",
     "review_monitoring_timeout_conflict", "review_monitoring_unsupported_transport",
     "review_monitoring_unsupported_api_fallback",
+    # agent-harness#896: placement refusals
+    "sandbox_placement_required_unavailable", "sandbox_placement_driver_unavailable",
     # gemini (the broker's fixed vocabulary, folded in)
     "gemini_heartbeat_broker_required", "gemini_heartbeat_capability_unavailable",
     "gemini_heartbeat_admission_handshake_failed", "gemini_broker_diagnostic_invalid",
@@ -3712,6 +3729,73 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
+class _SpawnCounter:
+    """How many providers this leg spawned on THIS host (agent-harness#896).
+
+    A mutable cell, not an integer ContextVar: a copied context (the broker's serve thread
+    runs under `copy_context().run`) shares the same cell, so a spawn there is counted here.
+    A helper thread that does not copy the context is handed it with `_bind_spawn_counter`.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def increment(self, delta: int = 1) -> None:
+        with self._lock:
+            self._count += delta
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._count
+
+
+_LEG_SPAWNS: ContextVar["_SpawnCounter | None"] = ContextVar("_LEG_SPAWNS", default=None)
+
+
+@contextlib.contextmanager
+def _bind_spawn_counter(counter: "_SpawnCounter | None"):
+    token = _LEG_SPAWNS.set(counter)
+    try:
+        yield counter
+    finally:
+        _LEG_SPAWNS.reset(token)
+
+
+_INFRASTRUCTURE_LAUNCH: ContextVar[bool] = ContextVar("_INFRASTRUCTURE_LAUNCH", default=False)
+
+
+@contextlib.contextmanager
+def _infrastructure_launch():
+    """Launches inside this block are infrastructure (the egress namespace holder, its
+    uplink), not providers: they go through the launch interface but are never counted.
+
+    They build a namespace, so they are launched from the HOST: an egress prefix already in
+    effect (another seat's namespace, when two seats are set up in one thread) is not
+    composed into them (agent-harness#1132)."""
+    token = _INFRASTRUCTURE_LAUNCH.set(True)
+    egress = _EGRESS_LAUNCH_PREFIX.set(())
+    try:
+        yield
+    finally:
+        _EGRESS_LAUNCH_PREFIX.reset(egress)
+        _INFRASTRUCTURE_LAUNCH.reset(token)
+
+
+def _count_provider_spawn(delta: int = 1) -> None:
+    counter = _LEG_SPAWNS.get()
+    if counter is not None and not _INFRASTRUCTURE_LAUNCH.get():
+        counter.increment(delta)
+
+
+# This build has no driver that executes a leg on a non-local placement backend (plan 1b of
+# agent-harness#896 adds it, and sets this in the same change). While it is False, every
+# non-local backend is refused BEFORE `prepare` and before any of its methods is called, so
+# no stage is built for it and nothing leaves the host for a leg that would then run here.
+_NONLOCAL_EXECUTION_DRIVER = False
+
+
 def _seat_identity_switch(retain_caps=()) -> list[str]:
     """Run the seat as the operator's REAL uid and gid, then lock its capabilities down.
 
@@ -4101,7 +4185,11 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         kwargs["pass_fds"] = tuple(process_owner.pass_fds)
         kwargs["close_fds"] = True
         kwargs["env"] = env
-        return subprocess.Popen([*prefix, *argv], **kwargs)
+        jailed_process = subprocess.Popen([*prefix, *argv], **kwargs)
+        # A jailed provider is a local provider spawn like any other (agent-harness#896's
+        # placement record counts it); counted once the process exists.
+        _count_provider_spawn()
+        return jailed_process
     if _probes_seat(prefix, process_owner):
         if probe_owner is None:
             probe = prefix
@@ -4111,7 +4199,10 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         else:
             probe = _compose_launch_prefix(cwd, probe_owner, retain_caps)
         _require_seat_identity(probe, retain_caps)
-    return subprocess.Popen([*prefix, *argv], **kwargs)
+    process = subprocess.Popen([*prefix, *argv], **kwargs)
+    # Counted once the process exists: a launch that fails to exec is not a spawn.
+    _count_provider_spawn()
+    return process
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
@@ -4121,7 +4212,14 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
     prefix = _provider_launch_prefix(kwargs.get("cwd"))
     if _probes_seat(prefix):
         _require_seat_identity(prefix)
-    return subprocess.run([*prefix, *argv], **kwargs)
+    # Counted while it runs, so a record taken mid-run sees it; withdrawn when the process
+    # never started (`subprocess.run` raises OSError only when the exec itself fails).
+    _count_provider_spawn()
+    try:
+        return subprocess.run([*prefix, *argv], **kwargs)
+    except OSError:
+        _count_provider_spawn(-1)
+        raise
 
 
 def _record_sandbox_facts(
@@ -4130,6 +4228,7 @@ def _record_sandbox_facts(
     *,
     staged_at: Path,
     seat_identity: bool | None = None,
+    placement: "_sandbox_placement.LegPlacement | None" = None,
 ):
     """Remember what this leg chose, and return a token the caller MUST reset.
 
@@ -4144,14 +4243,31 @@ def _record_sandbox_facts(
     would publish a remote host into the evidence for a sandbox that never left this
     machine. Same shape as `enforcement_report`'s `available_but_unapplied`, and the same
     rule: the record states what happened, never what was intended (agent-harness#896).
+
+    ``placement`` is the leg's state behind the placement seam. With it, ``applied`` follows
+    the placement contract (`sandbox_placement.applied_rule`), and the receipts, the backend
+    and the local spawn count are added -- the count is read when the record is SERIALIZED
+    (`_sandbox_evidence`), so a record taken after a spawn can never report 0.
     """
-    applied = root_choice.host is None and Path(root_choice.path) == staged_at.parent
+    if placement is None:
+        applied = root_choice.host is None and Path(root_choice.path) == staged_at.parent
+        unapplied_reason = None if applied else (
+            "the selected root is recorded but NOT used for placement; remote "
+            "co-location is not implemented, so this sandbox was staged locally "
+            "(agent-harness#896)"
+        )
+    else:
+        applied, unapplied_reason = _sandbox_placement.applied_rule(
+            backend=placement.backend, host=root_choice.host, path=root_choice.path,
+            staged_at=staged_at, receipts=placement.receipts,
+            authorization_sha256=placement.authorization_sha256, local_spawns=0,
+        )
     facts: dict[str, object] = {
         "sandbox_root_host": root_choice.host,
         "sandbox_root_path": str(root_choice.path),
         "sandbox_root_fell_back": root_choice.fell_back,
         "sandbox_root_reason": root_choice.reason or None,
-        "sandbox_staged_at": str(staged_at),
+        "sandbox_staged_at": str(staged_at) if placement is None else placement.staged_at(),
         "sandbox_root_applied": applied,
         "sandbox_network_filtered": enforcement.get("network_filtered"),
         "sandbox_network_mechanism": enforcement.get("mechanism"),
@@ -4162,16 +4278,38 @@ def _record_sandbox_facts(
         # operator opt-out); a namespace whose seat identity is wrong refuses instead.
         facts["sandbox_seat_identity"] = "host_uid" if seat_identity else "unavailable"
     if not applied:
-        facts["sandbox_root_unapplied_reason"] = (
-            "the selected root is recorded but NOT used for placement; remote "
-            "co-location is not implemented, so this sandbox was staged locally "
-            "(agent-harness#896)"
-        )
+        facts["sandbox_root_unapplied_reason"] = unapplied_reason
+    if placement is not None:
+        facts["sandbox_placement_backend"] = placement.backend.name
+        facts["sandbox_snapshot_sha256"] = placement.authorization_sha256
+        facts[_PLACEMENT_FACT] = (placement, root_choice, _LEG_SPAWNS.get())
     return _SANDBOX_ROUND_FACTS.set(facts)
 
 
+# Live placement state, expanded only when the record is serialized.
+_PLACEMENT_FACT = "\0placement"
+
+
 def _sandbox_evidence() -> dict[str, object]:
-    return dict(_SANDBOX_ROUND_FACTS.get())
+    facts = dict(_SANDBOX_ROUND_FACTS.get())
+    live = facts.pop(_PLACEMENT_FACT, None)
+    if live is not None:
+        placement, root_choice, counter = live
+        spawns = counter.count if counter is not None else 0
+        receipts = placement.receipts_for(spawns)
+        applied, unapplied_reason = _sandbox_placement.applied_rule(
+            backend=placement.backend, host=root_choice.host, path=root_choice.path,
+            staged_at=placement.prepared.local_tree, receipts=receipts,
+            authorization_sha256=placement.authorization_sha256, local_spawns=spawns,
+        )
+        facts["sandbox_root_applied"] = applied
+        facts.pop("sandbox_root_unapplied_reason", None)
+        if not applied:
+            facts["sandbox_root_unapplied_reason"] = unapplied_reason
+        facts["sandbox_placement_receipts"] = [r.to_dict() for r in receipts]
+        facts["sandbox_placement_verified"] = dict(placement.verified)
+        facts["sandbox_local_provider_spawns"] = spawns
+    return facts
 
 
 # Legs whose brokered route CANNOT act on a sandbox, whatever is staged for them.
@@ -9908,17 +10046,21 @@ class _BrokeredSpawnResult(tuple):
     """Legacy tuple surface with non-serializing broker evidence for the caller.
 
     ``seat_notices`` (agent-harness#1132) are the leg's typed notice CODES, carried beside
-    the evidence -- never inside it, so a sealed launch's evidence record is unchanged."""
+    the evidence -- never inside it, so a sealed launch's evidence record is unchanged.
+    ``placement`` is the leg's sandbox placement record (agent-harness#896), kept apart
+    from the broker evidence: it exists on routes with no broker at all."""
 
     def __new__(
         cls, status: str, text: str, detail: str | None = None,
         *, evidence: Mapping[str, object] | None = None,
         seat_notices: Sequence[str] = (),
+        placement: Mapping[str, object] | None = None,
     ) -> "_BrokeredSpawnResult":
         value = (status, text) if detail is None else (status, text, detail)
         result = super().__new__(cls, value)
         result.harden_isolation_evidence = dict(evidence or {})
         result.seat_notices = tuple(seat_notices)
+        result.sandbox_placement_evidence = dict(placement or {})
         return result
 
 
@@ -9983,6 +10125,47 @@ def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAutho
 
 def _dedupe(codes: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(codes))
+
+
+def _with_placement(value: tuple) -> tuple:
+    """A launch branch's result, carrying this leg's placement record when it has one.
+    Unchanged -- the same object -- when nothing was placed."""
+    placement = _sandbox_evidence()
+    if not placement:
+        return value
+    return _BrokeredSpawnResult(
+        *value, evidence=getattr(value, "harden_isolation_evidence", None), placement=placement,
+        # agent-harness#1132: the leg's seat notices survive the re-wrap.
+        seat_notices=getattr(value, "seat_notices", ()),
+    )
+
+
+def _placement_gate(backend: object) -> str | None:
+    """The execution gate: a refusal code for a backend this build cannot execute on."""
+    if _sandbox_placement.is_local(backend) or _NONLOCAL_EXECUTION_DRIVER:
+        return None
+    return "sandbox_placement_driver_unavailable"
+
+
+def _refuse_unless_executed_remotely(mode: str, *, executed_remotely: bool) -> None:
+    """``PHASE_LOOP_SANDBOX_REMOTE_REQUIRED``: refuse a seat leg the runtime did not run
+    through a remote backend's ``execute``. Exemption is by EXECUTION, never by where
+    placement came from -- and this build cannot execute remotely, so with the knob on every
+    seat leg refuses."""
+    if mode == "review" and not executed_remotely and _sandbox_policy.remote_required():
+        raise _sandbox_placement.PlacementUnavailable("sandbox_placement_required_unavailable")
+
+
+def _placement_request(
+    leg: str, seat_key: str | None, repo: Path, placement: "_sandbox_placement.LegPlacement",
+    timeout_s: int | None, review_dir: Path,
+) -> "_sandbox_placement.PlacementRequest":
+    return _sandbox_placement.PlacementRequest(
+        leg=leg, round_id=str(seat_key or leg), repo=str(repo),
+        snapshot_sha256=placement.prepared.snapshot_sha256,
+        deadline_s=float(_leg_deadline_from(timeout_s, review_dir)[1]),
+        egress_needs=_sandbox_placement.EgressNeeds.from_policy(),
+    )
 
 
 def _has_injected_review_execution_seam(
@@ -10155,9 +10338,18 @@ def _default_spawn(
     # Set only when a sandbox was staged; it is what gates the egress acquisition after
     # the revalidations, so the two decisions stay in one place each.
     sandbox_root_choice: "_sandbox_policy.SandboxRootChoice | None" = None
+    # The leg's state behind the placement seam (agent-harness#896). Initialised before the
+    # `try` so the `finally` releases whatever exists, however the leg exits.
+    placement: "_sandbox_placement.LegPlacement | None" = None
     egress_stack = contextlib.ExitStack()
     broker: ParentUnixBroker | None = None
     quiescence_failed = False
+    spawn_counter = _SpawnCounter()
+    spawn_token = _LEG_SPAWNS.set(spawn_counter)
+    # The leg starts with NO sandbox facts, whatever its calling context holds, and the
+    # leg's own `finally` restores that context through this first token -- so a leg reports
+    # only facts it recorded, and the next leg on the thread can never inherit them.
+    facts_token = _SANDBOX_ROUND_FACTS.set({})
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
@@ -10191,44 +10383,50 @@ def _default_spawn(
                 # One root for the whole round. Unreachable falls back with a warning;
                 # below the free-space floor REFUSES, because filling this filesystem
                 # takes the host down while a refused round costs minutes.
+                # Under the fail-closed knob the outcome is already known here, so refuse
+                # before anything is selected, probed or staged. The launch-boundary check
+                # below is the backstop.
+                _refuse_unless_executed_remotely(mode, executed_remotely=False)
+                # Every configured root, tried in order (`[sandbox] roots` / `order`, or the
+                # single `PHASE_LOOP_SANDBOX_ROOT`). THE EXECUTION GATE is `accept`: it is
+                # asked before a non-local root is chosen, before `prepare` and before ANY
+                # backend method -- a build commits only what it will execute.
+                # Registration is a protocol check; without the gate, an installed backend
+                # would receive the tree while the seat ran here.
                 root_choice = _sandbox_policy.select_sandbox_root(
-                    configured=_sandbox_policy.configured_root(),
                     fallback=review_dir,
                     floor_bytes=staging_floor,
                     probe_timeout_s=_sandbox_policy.probe_timeout_s(),
+                    roots=_sandbox_policy.configured_roots(),
+                    accept=_placement_gate,
                 )
+                backend = _sandbox_placement.resolve_backend(root_choice)
+                if _placement_gate(backend) is not None:
+                    # Backstop: `select_sandbox_root` never returns a refused backend.
+                    raise _sandbox_placement.PlacementUnavailable(
+                        "sandbox_placement_driver_unavailable",
+                    )
                 # The namespace is acquired AFTER both revalidations, not here -- see
                 # `sandbox_root_choice` below.
                 sandbox_root_choice = root_choice
-                # CHECK THE FILESYSTEM THAT ACTUALLY RECEIVES THE CLONE. `root_choice`
-                # measured the root the policy SELECTED, and nothing consumes that
-                # selection for placement yet (agent-harness#896) -- the stage is always
-                # local. So a healthy configured root let staging proceed onto a local
-                # filesystem that was never measured. Recording `sandbox_root_applied=
-                # False` documents that; it does not prevent filling the disk the broker
-                # and the host run on (board round 7, codex, BLOCKING).
-                _sandbox_policy.ensure_staging_space(review_dir, staging_floor)
-                staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
-                # Track the ACTUAL path across the ownership transfer. If the rename
-                # fails, the hardened tree is still under its `pl-panel-stage-*` name,
-                # and cleanup that only knows the post-rename name would leave it --
-                # a bare `rmtree(ignore_errors=True)` cannot unlink through 0o500.
-                staged_tree_path = staged_tree
-                staged_tree.rename(review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME)
-                staged_tree_path = review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME
-                # Claim the scratch dir as ours, or retention will never reap it. Identity
-                # is a marker this runtime writes, precisely so a bystander directory that
-                # merely LOOKS like a sandbox is never deleted -- which means an unmarked
-                # real sandbox leaks forever. Tightening the check without writing the
-                # marker would trade a data-loss bug for a disk-leak bug.
-                _sandbox_retention.mark_as_sandbox(
-                    base if base is not None else review_dir, owner_pid=os.getpid(),
+                # `prepare` is RUNTIME code for every backend: stage locally, measuring the
+                # filesystem that ACTUALLY receives the clone (board round 7, codex,
+                # BLOCKING), and own the partial stage until it returns.
+                prepared = _sandbox_placement.prepare_local_stage(
+                    resolved_repo_dir, review_dir, floor_bytes=staging_floor,
+                    mark=base if base is not None else review_dir,
                 )
-                # Staging is a NEW effect introduced here, so it is validated here --
-                # unconditionally, not behind the injected-seam predicate that skips
-                # the broader revalidation below. Otherwise a test seam, or any future
-                # caller reaching this path, could hand a seat a tree nobody approved.
-                staged_tree_path = review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME
+                staged_tree_path = prepared.local_tree
+                placement = _sandbox_placement.LegPlacement(
+                    backend, prepared, scheme=root_choice.scheme,
+                    authorization_sha256=review_authorization.staged_tree_sha256,
+                )
+                # Recorded right after `prepare`, so a leg that fails later -- egress,
+                # revalidation -- still reports where its tree was. The leg's own `finally`
+                # restores the pre-leg value on every exit.
+                _record_sandbox_facts(
+                    root_choice, {}, staged_at=staged_tree_path, placement=placement,
+                )
             # Outside the digest branch on purpose: a lease that approves NO tree must
             # still refuse a tree someone planted in the staged dir. Keeping this inside
             # that branch left the case uncaught on an injected-seam path. It stays
@@ -10249,6 +10447,16 @@ def _default_spawn(
                 mode=mode, staged_dir=review_dir,
                 canonical_repo_authority=resolved_repo_dir,
             )
+        if placement is not None:
+            # `commit` follows BOTH revalidations: only the revalidated stage may leave the
+            # operator's custody. A no-op for the local backend.
+            placement.record_backend_receipt(placement.backend.commit(
+                placement.prepared,
+                _placement_request(leg, seat_key, resolved_repo_dir, placement, timeout_s, review_dir),
+            ))
+        # THE FAIL-CLOSED BACKSTOP, at the launch boundary and before egress, so an egress
+        # failure cannot pre-empt its code. Every seat leg reaches it, staged tree or not.
+        _refuse_unless_executed_remotely(mode, executed_remotely=False)
         if sandbox_root_choice is not None:
             # ORDER IS THE POINT. A refusal on the merits of the REQUEST -- a staged tree
             # the authorization never approved, artifact bytes that no longer bind -- must
@@ -10298,19 +10506,18 @@ def _default_spawn(
             sandbox_enforcement = _sandbox_egress.enforcement_report(
                 applied=bool(egress_prefix),
             )
-            # Reset the facts too. The recorder returns a token precisely because an
+            # The facts are reset by the leg's own `finally` through its FIRST token: an
             # earlier version set this and never reset it, so the NEXT leg on the same
-            # worker thread inherited this leg's isolation claim (board round 4). The
-            # recorder was fixed; the caller kept discarding the token.
-            facts_token = _record_sandbox_facts(
+            # worker thread inherited this leg's isolation claim (board round 4). A token
+            # parked on the egress stack only covered exits after egress came up.
+            _record_sandbox_facts(
                 sandbox_root_choice, sandbox_enforcement,
                 # WHERE IT IS, not where it was selected to go. `staged_tree_path` is the
-                # real stage; `sandbox_root_choice.path` is a policy decision nothing
-                # consumes for placement yet.
+                # real stage; `sandbox_root_choice.path` is a policy decision.
                 staged_at=staged_tree_path if staged_tree_path is not None else review_dir,
                 seat_identity=bool(egress_prefix),
+                placement=placement,
             )
-            egress_stack.callback(_SANDBOX_ROUND_FACTS.reset, facts_token)
             if not egress_prefix:
                 seat_notices.append("seat_sandbox_egress_opt_out")
             if sandbox_root_choice.fell_back:
@@ -10546,10 +10753,16 @@ def _default_spawn(
             })
             if leg_detail is not None and response["status"] == "OK":
                 leg_detail = None  # a detail only ever describes a failed leg
+            placement_evidence = _sandbox_evidence()
+            if placement_evidence:
+                # Re-read at serialization: the provider was spawned after the pre-launch
+                # snapshot above, and a record must not report 0 spawns after one.
+                probe.update(placement_evidence)
             return _BrokeredSpawnResult(
                 str(response["status"]), response_text,
                 gemini_detail if gemini_detail is not None else leg_detail, evidence=probe,
                 seat_notices=_dedupe(seat_notices),
+                placement=placement_evidence,
             )
         if leg == "claude":
             if quiescence_latch is not None:
@@ -10570,8 +10783,8 @@ def _default_spawn(
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
             if claude_sink and result[0] != "OK":
-                return result[0], result[1], claude_sink[-1]
-            return result
+                return _with_placement((result[0], result[1], claude_sink[-1]))
+            return _with_placement(result)
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
         rc, review_text, log_text = _exec_leg(
@@ -10615,8 +10828,8 @@ def _default_spawn(
             _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
         )
         if detail:
-            return status, review_text, detail
-        return status, review_text
+            return _with_placement((status, review_text, detail))
+        return _with_placement((status, review_text))
     except (ProviderProcessGroupQuiescenceError, gemini_heartbeat.GeminiQuiescenceError) as exc:
         quiescence_failed = True
         if isinstance(exc, gemini_heartbeat.GeminiQuiescenceError):
@@ -10637,27 +10850,46 @@ def _default_spawn(
         failure = _exception_failure(exc)
         if isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES:
             seat_notices.append(failure)
-        if review_monitor is not None or seat_notices:
+        #
+        # A placement that happened reaches the leg record on EVERY exit, monitor or not,
+        # broker or not (agent-harness#896). It travels on its own attribute: a non-empty
+        # `harden_isolation_evidence` is read downstream as a broker receipt. The leg's seat
+        # notices (agent-harness#1132) travel the same way, on their own attribute.
+        placement_evidence = _sandbox_evidence()
+        if broker is not None and placement_evidence:
+            broker.evidence.update(placement_evidence)
+        if review_monitor is not None:
             return _BrokeredSpawnResult("DEGRADED", "", failure,
                                        evidence=broker.evidence if broker is not None else None,
-                                       seat_notices=_dedupe(seat_notices))
-        return "DEGRADED", "", failure
+                                       seat_notices=_dedupe(seat_notices),
+                                       placement=placement_evidence)
+        return _BrokeredSpawnResult("DEGRADED", "", failure, seat_notices=_dedupe(seat_notices),
+                                   placement=placement_evidence)
     finally:
-        egress_stack.close()
-        if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
-            shutil.rmtree(provider_output_dir, ignore_errors=True)
-        if base is not None and not quiescence_failed:
-            # The staged tree is deliberately read-only, and `rmtree(ignore_errors=True)`
-            # cannot unlink through a 0o500 directory -- it would fail SILENTLY and leak
-            # the whole stage every round. Drop it first, through the helper that
-            # restores modes on the way down.
-            if staged_tree_path is not None:
-                _review_stage.remove_review_stage(staged_tree_path)
-            # The same helper for the rest: a panelist can leave a read-only directory in
-            # `work/` too, and a bare rmtree then leaks the whole scratch dir silently.
-            _review_stage.remove_review_stage(base)
-        if capture_scratch is not None and agy_capture is None and not quiescence_failed:
-            shutil.rmtree(capture_scratch, ignore_errors=True)
+        # Nested so that NO exit -- not even egress teardown raising -- skips the rest: the
+        # stage is released, and this leg's facts and spawn counter are reset, so the next
+        # leg on this thread can never carry them.
+        try:
+            egress_stack.close()
+        finally:
+            try:
+                if provider_output_dir is not None and agy_capture is None and not quiescence_failed:
+                    shutil.rmtree(provider_output_dir, ignore_errors=True)
+                if base is not None and not quiescence_failed:
+                    # The staged tree is deliberately read-only, and `rmtree(ignore_errors=
+                    # True)` cannot unlink through a 0o500 directory -- it would fail
+                    # SILENTLY and leak the whole stage every round. `release` drops it
+                    # first, through the helper that restores modes on the way down.
+                    if placement is not None:
+                        placement.backend.release(placement.prepared)
+                    # The same helper for the rest: a panelist can leave a read-only
+                    # directory in `work/` too, and a bare rmtree then leaks it silently.
+                    _review_stage.remove_review_stage(base)
+                if capture_scratch is not None and agy_capture is None and not quiescence_failed:
+                    shutil.rmtree(capture_scratch, ignore_errors=True)
+            finally:
+                _SANDBOX_ROUND_FACTS.reset(facts_token)
+                _LEG_SPAWNS.reset(spawn_token)
 
 
 # CS-0.8: routes the `_default_spawn` real-exec boundary through the
@@ -10734,6 +10966,7 @@ def _default_spawn_via_provider(
     # into a promotion BLOCK for every routine timeout, while the real diagnostic is lost.
     _diagnostic: list[str | None] = [None]
     _broker_evidence: list[Mapping[str, object] | None] = [None]
+    _placement_evidence: list[Mapping[str, object] | None] = [None]
     _quiescence_error: list[ProviderProcessGroupQuiescenceError | None] = [None]
 
     def _spawn_2tuple(request, register_process=None):
@@ -10753,6 +10986,7 @@ def _default_spawn_via_provider(
                 else exc
             )
             raise
+        _placement_evidence[0] = getattr(spawned, "sandbox_placement_evidence", None)
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
             _broker_evidence[0] = getattr(spawned, "harden_isolation_evidence", None)
@@ -10787,8 +11021,10 @@ def _default_spawn_via_provider(
     # Re-attach the diagnostic the seam could not carry, so the operator still learns WHY
     # a leg failed — and it stays in `detail`, never `text`.
     if _diagnostic[0]:
-        return _BrokeredSpawnResult(status, text, _diagnostic[0], evidence=_broker_evidence[0])
-    return _BrokeredSpawnResult(status, text, evidence=_broker_evidence[0])
+        return _BrokeredSpawnResult(status, text, _diagnostic[0], evidence=_broker_evidence[0],
+                                    placement=_placement_evidence[0])
+    return _BrokeredSpawnResult(status, text, evidence=_broker_evidence[0],
+                                placement=_placement_evidence[0])
 
 
 # Identity captures distinguish an explicit monkeypatched adapter test seam from
@@ -12466,6 +12702,9 @@ def invoke_board(
             if broker_evidence:
                 attach_harden_isolation_evidence(result, broker_evidence)
             attach_seat_notices(result, getattr(spawned, "seat_notices", ()))
+            placement_evidence = getattr(spawned, "sandbox_placement_evidence", None)
+            if placement_evidence:
+                attach_sandbox_placement_evidence(result, placement_evidence)
             if (
                 leg == "claude"
                 and (not _claude_tui_policy_model(seat.model) or _under_claude_code(base_env))
@@ -12530,6 +12769,7 @@ def invoke_board(
                                      invocation_id, index, operation_cancel)
             broker_evidence = None
             body_notices: tuple[str, ...] = ()
+            placement_evidence = None
             try:
                 monitor.observe()
                 if operation_cancel.is_set():
@@ -12538,6 +12778,7 @@ def invoke_board(
                     result = _run_seat_body(item, monitor)
                 broker_evidence = result.harden_isolation_evidence
                 body_notices = getattr(result, "_seat_notice_codes", ())
+                placement_evidence = result.sandbox_placement_evidence
                 if monitor.write_failed:
                     result = _skip(seat, seat.harness, "review_monitoring_write_failed")
                 if operation_cancel.is_set():
@@ -12558,6 +12799,8 @@ def invoke_board(
                 attach_harden_isolation_evidence(result, broker_evidence)
             if not getattr(result, "_seat_notice_codes", ()) and body_notices:
                 attach_seat_notices(result, body_notices)
+            if placement_evidence is not None:
+                attach_sandbox_placement_evidence(result, placement_evidence)
             object.__setattr__(result, "_review_monitoring", dict(monitor.record))
             return result
 

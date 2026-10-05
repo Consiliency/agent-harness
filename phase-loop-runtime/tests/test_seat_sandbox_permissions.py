@@ -960,3 +960,51 @@ def test_each_jailed_leg_launches_with_the_token_current_at_its_launch(monkeypat
     assert delivered == [b"TOKEN-SUBSCRIPTION-A", b"TOKEN-SUBSCRIPTION-B"]
     # The running leg keeps its own token (its output scan uses it), whatever the file holds now.
     assert first.token == b"TOKEN-SUBSCRIPTION-A" and second.token == b"TOKEN-SUBSCRIPTION-B"
+
+
+# --------------------------------------------------------------------------------------
+# Joins with agent-harness#896's placement record (main merge 9bfb6700).
+# --------------------------------------------------------------------------------------
+
+def test_a_jailed_provider_launch_is_counted_as_a_provider_spawn(monkeypatch, tmp_path):
+    # The placement record reports `sandbox_local_provider_spawns`; a jailed Claude provider
+    # is a local provider spawn, so the leg's counter must see it.
+    import types
+
+    jail = _fake_jail(tmp_path)
+    probe = _fake_jail(tmp_path / "probe")
+    monkeypatch.setattr(panel_invoker, "_require_qualified_jail", lambda j: None)
+    monkeypatch.setattr(panel_invoker, "_require_jailed_seat_identity", lambda *a, **k: None)
+    monkeypatch.setattr(panel_invoker, "_compose_seat_jail_prefix", lambda *a, **k: [])
+    monkeypatch.setattr(panel_invoker.subprocess, "Popen",
+                        lambda argv, **k: types.SimpleNamespace(argv=argv))
+    counter = panel_invoker._SpawnCounter()
+    try:
+        with panel_invoker._bind_spawn_counter(counter):
+            panel_invoker.launch_provider(["true"], process_owner=jail, probe_owner=probe)
+    finally:
+        seat_jail.close_jail_fds(jail)
+        seat_jail.close_jail_fds(probe)
+    assert counter.count == 1
+
+
+def test_the_seat_uid_namespace_is_built_through_the_launch_interface_uncounted(monkeypatch):
+    # The unmapped holder and its uplink go through `launch_provider` as infrastructure:
+    # never counted, and never composed into an egress prefix already in effect.
+    seen = []
+
+    def _launch(argv, **kwargs):
+        seen.append((argv[0], panel_invoker._INFRASTRUCTURE_LAUNCH.get(),
+                     panel_invoker._EGRESS_LAUNCH_PREFIX.get()))
+        raise OSError("stop after the first launch")
+
+    monkeypatch.setattr(panel_invoker, "launch_provider", _launch)
+    token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(("nsenter", "-t", "1", "--", "setpriv", "--"))
+    try:
+        with pytest.raises(OSError):
+            with sandbox_egress.isolated_network(timeout_s=None, required=True,
+                                                 seat_uid_map=True) as _prefix:
+                pass
+    finally:
+        panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert seen and seen[0] == ("unshare", True, ())
