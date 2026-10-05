@@ -18,8 +18,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - All five members were requalified on the release tree (completion, cancel and
   owner-loss each, then `--validate`), because agent-harness#1160, agent-harness#1161 and
   agent-harness#1246 changed `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
-- BAML v1 ships with `baml-bridge` 0.20.1 and `protobuf` 7.36.2 (the locked resolution of
-  `protobuf>=6.31.1,<8`).
 
 ### Gate A clean-room: the scratch audit hook judges an installed runtime (PR agent-harness#1247)
 
@@ -46,7 +44,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   table can name one root per remote backend with the order to try them (default
   `["self-hosted", "e2b"]`); the single root is an alias for one backend. An unregistered
   scheme is never probed and falls back to local with the scheme in the reason. Root
-  parsing is hardened: values are stripped, anything containing `://` is a URL keeping only
+  parsing is stricter: values are stripped, anything containing `://` is a URL keeping only
   scheme, host, port and path, unusable forms are typed refusals that are never probed,
   and only the parsed form is rendered. A registered non-local backend is refused before anything is
   staged for it (`sandbox_placement_driver_unavailable`) until the execution driver lands.
@@ -67,7 +65,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Planning only: two detailed plans for agent-harness#1244 (the seat route resolver and the
   sandbox selection evidence), registered in `plans/manifest.json`. No runtime change.
-
 
 ### Sandbox staging and agent-CLI scratch stay off RAM; retention is sized to its filesystem (agent-harness#1147)
 
@@ -151,8 +148,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   adapter looked in a directory that never exists, so a brokered Claude seat's progress and
   finished review went unseen and the seat hung until cancelled.
 - **agy requalification.** `panel_invoker.py`, `sandbox_policy.py`, `sandbox_retention.py`
-  and `harness_env_signatures.py` changed, so the agy pin set drifts: the next release cut
-  requalifies agy.
+  and `harness_env_signatures.py` changed, so the agy pin set drifted; this release
+  requalifies agy (see the agy entry above).
 
 ### BAML v1 0.20.1 (agent-harness#1135)
 
@@ -213,8 +210,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Pin-bump checklist** for any future `baml-bridge` change: re-run the `baml describe` builtin
   `spawn` audit, the release-notes review and Step 0-style parity against the v0 goldens.
 - **agy requalification at the release cut.** This change touches `phase_loop_runtime/**/*.py`
-  (including the new worker), so the next release cut requalifies both agy images and records
-  the `baml-bridge` and `protobuf` versions in the release notes.
+  (including the new worker), so this release requalifies every qualified agy image (see the
+  agy entry above).
+- **Shipped versions.** BAML v1 ships with `baml-bridge` 0.20.1 and `protobuf` 7.36.2 (the
+  locked resolution of `protobuf>=6.31.1,<8`).
 - **Full I1 interrupt sweep.** Pull requests run a fixed regression subset of the worker
   client's interrupt sweep; the full sweep (~40 min per Python) runs weekly and on dispatch in
   `baml-i1-sweep.yml`, and a green run on the release commit is required at the cut
