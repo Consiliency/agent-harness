@@ -1,0 +1,33 @@
+{
+  "issue": "agent-harness#1132",
+  "jail_pass": "pass",
+  "leg": {
+    "detail": null,
+    "notices": [],
+    "remaining_at_launch_s": 2050,
+    "signatures_in_tail": [],
+    "source": "login",
+    "status": "OK",
+    "subject_quoted": true
+  },
+  "live_tool_use_test": {
+    "returncode": 0,
+    "summary": "1 passed in 16.87s"
+  },
+  "login_token": "present",
+  "new_retention_records": [],
+  "override_moved_aside_and_restored": true,
+  "profile_digest": "aad69a4d159bed2e2279ce617b82e986e46305a1d3a6b50f23399f1e7cd9f5a9",
+  "recorded_at": "2026-10-03T05:21:01+00:00",
+  "result": "pass",
+  "schema": "seat_jail_a1_login_route.v1",
+  "seat_mode": {
+    "code": null,
+    "credential": "login",
+    "fix": "",
+    "leg": "claude",
+    "mode": "jailed",
+    "seat_key": "claude:a",
+    "why": "full tools inside its per-seat jail"
+  }
+}

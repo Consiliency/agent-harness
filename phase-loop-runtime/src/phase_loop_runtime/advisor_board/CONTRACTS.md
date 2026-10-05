@@ -563,6 +563,15 @@ only in a private 0600 per-leg file under the run's stream dir (`leg-logs/`, 070
 reasons or the board summary. Its name carries only closed fields:
 `leg-logs/<registry harness | leg>-<24 hex>.log`.
 
+**Seat-jail codes (agent-harness#1132, F030).** Every seat-jail notice code is an exact
+literal of `_HARNESS_DETAIL_CODES`: `seat_sandbox_unavailable_{host,seat_uid,tiocsti}`,
+`seat_sandbox_not_staged`, each `seat_sandbox_refused:<sub>` as its own literal
+(`jail_build`, `namespace`, `identity`, `preseed`, `token_file_unsafe`,
+`gemini_credential_unsafe`, `stage_not_private`, `stage_changed`, `output_unsafe`),
+`seat_sandbox_retained_after_teardown`, and the `claude_seat_*` / `gemini_seat_*` codes. No
+regex template admits a seat code, and there is no parallel vocabulary: `seat_jail.NOTICES`
+only renders each code's literal what/why/fix, and a test holds the two sets equal.
+
 **Threat model.** I3 defends against untrusted TEXT: CLI stdout/stderr, leg bodies, exception messages and PTY output. None of it can choose or enter `detail`. In-process Python code is trusted runtime code and is out of scope: it can do anything (for example `object.__setattr__` on arbitrary objects, or replacing this module's functions). The exact-type checks (`PanelLegResult` refuses any subclass instance; only an exact `_HarnessCode` / `_LegFailure` has provenance; contents are read with `str.__str__` and re-created as a fresh `_HarnessCode`) close the cheap structural bypasses, but they are not a sandbox against hostile in-process code.
 
 ## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
@@ -1042,6 +1051,215 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   verified pushed oid in its own `watch_push` entry, and reads both the record and the
   created PR back (the PR body's copy is display-only). "Up to date" requires that local record, `headRefOid` and `ls-remote` to
   agree. It refuses when it cannot prove its open-PR listing complete.
+
+## SEATJAIL — Full-permission review seats inside a per-seat jail (agent-harness#1132)
+
+Plan: `plans/detailed-seat-sandbox-permissions-1132-20260928.md`. Maintainer decisions D1-D8
+are recorded on agent-harness#1132.
+
+- **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
+  the public-entry authorization and before staging, in this order; the first failure wins
+  and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
+  recorded Gemini P4/P3 stop -> its code (today `gemini_seat_egress_unconfined`: the agy
+  token carries `cloud-platform`, and the "prove then enable" containment probe found jail
+  egress not limited to agy's inference hosts; P3 was not run and the tooled profile is not
+  built); (2) host capability -> `seat_sandbox_unavailable_host`,
+  `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
+  `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
+  `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
+  byte-identical to before, with that notice, except a Claude seat's step 3, which is not
+  run (plan amendment A3b, below). Codex and grok are not jailed
+  (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+- **No sealed fallback for a jail-eligible seat (plan amendment A3b).** A Claude seat that
+  would take the jailed route but cannot (no credential, a failed first-use qualification,
+  a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)
+  is DEGRADED and NOT RUN, typed, with a fix. It is never a toolless substitute.
+  `seat_jail.JAIL_NOT_RUN_CODES` names the route codes this applies to; none of them is in
+  `SEALED_FALLBACK_CODES`. The sealed route stays for hosts without the jail prerequisites,
+  an unstaged review and the Gemini seat (agent-harness#1244).
+- **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
+  seat always takes the sealed route with its typed notice, whatever its credential,
+  qualification or recorded stop; a tooled Gemini seat is agent-harness#1170.
+- **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
+  falsifier pass recorded on THIS host is REFUSED before any effect with
+  `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as
+  the fix.
+  - **Where passes live:** per user and per host, at
+    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`. A record qualifies only if it
+    binds all of:
+    - the digest;
+    - this host (sha256 of `/etc/machine-id`);
+    - the EC-EXECFIND-2 falsifier-run layout: `seat_jail.falsifier_layout_identity()`, a
+      digest of the EXECFIND staging and run code, so a change to either invalidates every
+      pass;
+    - the run's evidence file, which the gate re-hashes and which must name the same values.
+
+    The record and the evidence must be regular, operator-owned files that are not group- or
+    other-writable and are not links. They are read non-blocking with size caps.
+  - **The directory chain:** every directory up to the state home must be operator-owned,
+    must not be a link, and must not be other-writable. It may be group-writable only when
+    its group is the operator's user-private group, which is the umask-002 default. That
+    means all of the following hold:
+    - it is the operator's primary gid;
+    - the group is named after the operator;
+    - it lists no other member;
+    - no other account has it as its primary group.
+
+    Any other chain is refused with `seat_sandbox_refused:pass_store_unsafe`, whose notice
+    names the chmod. The recorder applies the same rule and never re-permissions an
+    existing directory.
+  - **One fail-closed boundary:** the whole evaluation is inside a single
+    `except Exception`. Any error is the typed refusal `jail_unqualified`, and no provider
+    is launched. The route detail stays the closed code. The verdict's typed reason
+    (`no_record`, `binding_mismatch`, `evidence_mismatch`, `store_unsafe:...` or
+    `error:<ExceptionClass>`) is logged, and is carried in the launch refusal's message.
+  - **Checked at launch:** qualification is re-checked against the jail actually built.
+  - **Threat model:** the operator's own account can forge a record, and is trusted to. The
+    store defends against the seat uid, stale records, other hosts and accidental reuse.
+  - **Why per host:** the digest binds the host's layout (maintainer decision, option A).
+    A shipped host-independent policy digest plus a first-use self-check is
+    agent-harness#1186.
+  - **Recording a pass:** `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail
+    falsifiers (`seat_jail_qualification`) against a real falsifier run, using the EXECFIND
+    staging, the dependency snapshot and the bounded bwrap runner:
+    - the run holds a nonce sentinel in every protected directory, a sentinel process, and
+      TCP, UDP, pathname Unix and abstract Unix listeners;
+    - concurrently, a probe program running as the seat in the production jail tries to
+      create entries, change sentinels, signal and connect, through the host paths and
+      through anything it resolves by device and inode;
+    - the parent judges the result: sentinels intact, no events, single-link protected
+      files, no seat mount or descriptor resolving to a protected object or an ancestor, and
+      the run `green_on_head`.
+
+    Only a pass is recorded.
+  - **`seat_sandbox_refused:identity`** remains the code for a jail that is not the
+    qualified profile at launch, or a failed identity probe.
+- **Jail profile (`seat_jail_v1`).** bwrap, no `--unshare-user` and no `--unshare-net`:
+  read-only `/usr` (merged-`/usr` links recreated), an `/etc` subset, the provider image at
+  `/seat/bin/<leg>`, the bundle and instructions as sealed memfds at `/seat/review/`, the
+  staged clone read-write at `/seat/tree`, fresh `/seat/home` and `/seat/out`, tmpfs `/tmp`
+  and `/dev/shm`, `--remount-ro /`, `--clearenv` plus a declared environment (the seat's
+  `TMPDIR` and `CLAUDE_CODE_TMPDIR` are `/seat/home/.tmp`, on the disk-backed staging root,
+  never the tmpfs `/tmp`; agent-harness#1147), and the J14
+  seccomp filter (architecture kill, x32 EPERM, nested user/mount namespaces, `setns`,
+  `clone3` ENOSYS, key syscalls, AF_ALG sockets, TIOCSTI/TIOCLINUX). The profile digest
+  covers the mount set, the flags and the filter digest.
+- **Seat uid (D8).** The seat runs as a subordinate uid leased from the operator's
+  `/etc/subuid` range, inside an egress holder namespace mapped by `newuidmap`/`newgidmap`
+  (in it, uid 0 is the operator). Launch order: fresh session keyring, `nsenter` into H,
+  the private-inode hand-off (`seat_sandbox_refused:stage_not_private` on any hard link),
+  bwrap with `--cap-drop ALL` then exactly `CAP_SETUID`, `CAP_SETGID`, `CAP_SETPCAP` (P5:
+  bwrap as namespace root otherwise keeps every capability), then `setpriv` to the seat
+  uid with every capability set, the bounding set included, emptied and no-new-privs set,
+  then `env --chdir=/seat/tree` as the seat. `/seat`, `/seat/bin`, `/seat/review` and
+  `/etc` are created 0755 and the tmpfs mounts 1777, so the seat uid can traverse and use
+  them (P5, P1).
+  The host prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`) is a
+  one-time root step by the maintainer, never run by the runtime.
+- **Credential channels (plan amendment A1).** The Claude credential is resolved afresh at
+  each jailed launch, in this order:
+  1. The seat-token override at `$XDG_STATE_HOME/phase-loop/seat-credentials/claude` (0600
+     in 0700, owned by the euid), when present.
+  2. Otherwise, the current Claude login's `claudeAiOauth.accessToken` only, never its
+     refresh token. It comes from the CLI's own store: `$CLAUDE_CONFIG_DIR/.credentials.json`
+     or `~/.claude/.credentials.json`, and the login Keychain on macOS.
+
+  - **The login token's margin:** it must have the seat's hard deadline (its explicit
+    per-leg timeout, else the 1800 s backstop) or `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`
+    left. One function (`_claude_seat_login_margin_s`) gives this margin to the pre-launch
+    seat mode, the wait and the launch.
+  - **A short login (plan amendment A3):** the harness never runs the Claude CLI to renew a
+    credential. The mode line carries `claude_seat_login_token_awaiting_refresh` with the
+    minutes left. Before staging, and before any seat id or namespace is held, the seat
+    waits: `seat_credentials.await_login_margin` reads the store read-only every
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S` (30 s), for up to
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (900 s; 0 means no wait).
+    - **Renewed:** the seat runs jailed (logged `jailed (login refreshed)`), re-reading the
+      token at launch.
+    - **Not renewed in time:** the seat is DEGRADED and NOT RUN with
+      `claude_seat_login_token_expiring`. A store that stops yielding a login ends it with
+      `claude_seat_token_missing`. Nothing is launched (plan amendment A3b).
+    - **Monitoring:** under `heartbeat_only` the wait is recorded as `login_wait` in the
+      monitoring record, not as a stall, and the stall clock starts after it. Under a
+      bounded policy it is charged to the leg's deadline. The monitor's cancel event and the
+      quiescence latch end it.
+  - **Delivery:** either credential is delivered only through one drained pipe named by
+    `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`. No credential is in any argv, environment
+    value, evidence or log.
+  - **The output scan:** seat output is scanned for the credential's bytes and its
+    standard, URL-safe and hex encodings (`claude_seat_token_in_output`).
+  - **The residual:** a seat can use the credential for its remaining lifetime. That is
+    hours for a login access token. The response is to log out and back in; the token also
+    expires on its own.
+  - **Gemini:** the D7 access-token-only copy (builder only; the tooled Gemini route is gated
+    on P4 then P3).
+- **Credential outcomes by source.** For the override: `claude_seat_token_rate_limited` and
+  `claude_seat_token_rejected`. For the login: `claude_seat_login_rate_limited` and
+  `claude_seat_login_rejected`. A login token at or past its launch-time expiry fails as
+  `claude_seat_login_token_expired`, in both the detail and the notice, and is safe to
+  relaunch. None of these is a `seat_sandbox_refused:*` code. On both the sealed and the
+  jailed route, an authentication failure in the PTY tail takes priority over the generic
+  journaled give-up (`claude_seat_provider_api_error`), so a credential outcome is never
+  hidden behind it; every typed give-up (limits, output budget, rejected transcript) keeps
+  its priority.
+- **First-use qualification (plan amendment A2; folds in agent-harness#1186 option C).** A
+  jailed route with no recorded pass for this host, digest and layout runs the host's jail
+  qualification once, before launch. It is serialized by an exclusive lock in the per-user
+  state directory, and on a pass it records the pass.
+  - **On a pass:** the seat stays jailed, and its mode reports `qualified_now`.
+  - **On a failure, or a run that cannot happen (a cached failure included):** the seat is
+    DEGRADED and NOT RUN with `seat_jail_qualification_failed` and a typed reason
+    (`prerequisite_missing`, `store_unsafe`, `falsifiers_failed`, `timeout` or `error`),
+    each with a literal fix (plan amendment A3b supersedes A2's sealed fallback).
+  - **The failure cache:** failures are cached per host, digest and layout for
+    `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default 3600 s). A lock timeout is not cached.
+  - **The launch-time re-check** against the built jail still refuses an unrecorded digest.
+- **Seat modes (plan amendment A1).** Before any seat launches, every board publishes one
+  mode per seat: `jailed`, `unconfined`, `sealed`, `degraded` or `native`. Each mode carries
+  its notice code, reason and fix, and the modes are delivered through `on_seat_modes`, the
+  log and `seat-modes.json`. The `advisor-board` CLI prints them to stderr and carries them as
+  `seat_modes` in `--json`.
+- **Launch helpers.** The pre-jail and in-namespace helpers (`seat_keyring_exec`, the
+  `seat_uid` handoff and its in-namespace verbs) run from the installation the parent
+  imported: `python -I` with this package's root put first on the import path
+  (`seat_uid.trusted_module_argv`), never `python -m`, whatever the launch's working
+  directory is. An inventory test fails on any `sys.executable -m` launch of a package
+  module.
+- **Scratch decision (agent-harness#1147).** A jailed launch's helper chain gets one env
+  from `child_scratch_env` (`_jail_launch_env`), and that same object is handed to the
+  identity probe and the launch. The seat never sees it: bwrap clears the environment and
+  sets the seat's own.
+- **Seat-token rotation.** The token file is read at each jailed launch and never cached
+  across legs or rounds. A token replaced between legs (atomic rename in the same 0700
+  directory) is used by the next launch; a running leg keeps the token it was launched with.
+  The token is per-launch input only: neither the jail profile digest nor an EC-EXECFIND-2
+  pass binds it, so replacing it trips no qualification check.
+- **A rate-limited seat token is not a jail fault.** When the provider refuses the seat
+  token's subscription for a rate or usage limit (the shared leg-failure classifier's
+  `usage_limit` class, with the provider's reset time when it gives one), the leg ends with
+  that detail and the notice `claude_seat_token_rate_limited`: rotate or replace the seat
+  token, or wait for the reset. It is never a `seat_sandbox_refused:*` code. A token the provider
+  rejects (the classifier's `auth_failure`, measured in P2) carries
+  `claude_seat_token_rejected`.
+- **Pointer-brief preflight.** On a `--pointer-brief` board, a seat whose launch takes the
+  jailed route (the same J7 decision and EC-EXECFIND-2 gate the launch applies) has file
+  access to the staged tree, so it is source-grounded and never marked
+  `seat_pointer_brief_unreadable`. A jail that would be refused is not counted as one.
+- **Pointer mode.** A jailed seat gets a pointer brief: jail-path preamble, the
+  AUTHORITATIVE INSTRUCTIONS inline, and POINTER frames naming the bundle (path, sha256,
+  size) and the tree (path, source commit, approved digest). Evidence records
+  `provider_input_mode: "pointer"`, `provider_input_inline: false`,
+  `sandbox_filesystem_confined: true` and the jail profile id and digests;
+  `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
+  agent-harness#361, D3) on every such record.
+- **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the
+  `advisor-board` payload (`notices`, `legs[].notices`) and text summary, and on the
+  governed path as one non-gating `seat_notice` finding per notice (L4b).
+- **Retention.** A failed in-namespace teardown keeps the seat directories under the leg's
+  operator-owned 0700 scratch dir, adds `seat_sandbox_retained_after_teardown`, and records
+  the path. `phase-loop seat-sandbox reap PATH` accepts only a recorded path under the
+  stage root, opened `O_NOFOLLOW|O_DIRECTORY` component by component, and owned by a
+  subordinate uid.
 
 ## ABDFALSIFY — Executable review findings (IF-0-EXECFIND-1)
 

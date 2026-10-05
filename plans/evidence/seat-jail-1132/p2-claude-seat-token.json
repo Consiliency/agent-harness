@@ -1,0 +1,39 @@
+{
+  "channel": "drained pipe named by CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+  "issue": "agent-harness#1132",
+  "jail_pass": "pass",
+  "legs": {
+    "rejected_token": {
+      "detail": "auth_failure",
+      "notices": [],
+      "signatures_in_tail": [],
+      "status": "DEGRADED",
+      "subject_quoted": false
+    },
+    "seat_token": {
+      "detail": null,
+      "notices": [],
+      "signatures_in_tail": [],
+      "status": "OK",
+      "subject_quoted": true
+    },
+    "seat_token_after": {
+      "detail": null,
+      "notices": [],
+      "signatures_in_tail": [],
+      "status": "OK",
+      "subject_quoted": true
+    }
+  },
+  "new_retention_records": [],
+  "not_measured": [
+    "token scope and expiry",
+    "billing to the subscription",
+    "revocation stops a later launch (needs a sacrificial token)"
+  ],
+  "profile_digest": "aad69a4d159bed2e2279ce617b82e986e46305a1d3a6b50f23399f1e7cd9f5a9",
+  "recorded_at": "2026-10-03T04:05:50+00:00",
+  "result": "pass",
+  "schema": "seat_jail_p2_claude_seat_token.v1",
+  "seat_token": "present"
+}

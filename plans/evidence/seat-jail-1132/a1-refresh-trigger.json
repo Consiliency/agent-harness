@@ -1,0 +1,14 @@
+{
+  "schema": "seat_jail_a1_refresh_trigger.v1",
+  "issue": "agent-harness#1132",
+  "recorded_at": "2026-10-03",
+  "cli_version": "2.1.288",
+  "question": "does `claude auth status --json` refresh a near-expiry login access token?",
+  "method": "on claw, poll the real store's expiresAt every 10 s; run `claude auth status --json` once the remaining lifetime is under 240 s; compare expiresAt before and after. No refresh was ever forced, and no copy of the store was used.",
+  "observed": {
+    "auth_status_with_55_min_left": "no change to expiresAt; no inference",
+    "before_the_trigger": "another Claude Code process on the host refreshed the login while between 433 s and 240 s remained; the new lifetime was about 28796 s"
+  },
+  "result": "inconclusive",
+  "consequence": "The runtime still runs `claude auth status` once for a short token and then re-reads; if the token is still short, the launch is refused with claude_seat_login_token_expiring (fix: `claude login`). A host with an active Claude Code session was observed keeping the login fresh on its own."
+}

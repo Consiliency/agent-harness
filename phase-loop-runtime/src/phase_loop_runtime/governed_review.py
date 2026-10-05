@@ -239,6 +239,16 @@ def _findings_from_panel(
                 f"record_digest={digest}; president ruling required")
 
     for leg in panel.legs:
+        # agent-harness#1132 (L4b): the leg's typed seat notices reach the governed path
+        # too, one non-gating finding each, rendered only from the notice table's literals.
+        for notice in getattr(leg, "seat_notices", ()):
+            findings.append(ReviewFinding(
+                code="seat_notice",
+                reason=(f"seat {notice.seat_key or leg.leg} notice {notice.code}: "
+                        f"{notice.what} / {notice.why} / fix: {notice.fix}"),
+                severity="warn",
+                reviewed_sha=reviewed_sha,
+            ))
         # agent-harness#1176: a heartbeat_only seat that went without genuine progress past its
         # notice window is recorded, whatever its final status. A warn: the notice is history,
         # never a verdict, and never permission to end a seat.

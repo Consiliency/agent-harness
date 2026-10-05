@@ -102,6 +102,12 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         RELOCATED, "panel_invoker.py:_exec_claude_tui_leg:_broker_leg_env"),
     ("panel_invoker.py", "_cleanup_claude_launch_timeout"): (
         RELOCATED, "panel_invoker.py:_exec_claude_tui_leg:_broker_leg_env"),
+    # agent-harness#1132: the jailed seat's helper chain (probe and launch, one decided
+    # env object).
+    ("panel_invoker.py", "_require_jailed_seat_identity"): (
+        RELOCATED, "panel_invoker.py:_jail_launch_env:child_scratch_env"),
+    ("seat_jail_qualification.py", "_run_probe_in_jail"): (
+        RELOCATED, "panel_invoker.py:_jail_launch_env:child_scratch_env"),
     # -- the named exceptions --------------------------------------------------------
     ("agy_canary_evidence.py", "ProviderLaunchAuthority.preflight"): (
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),
@@ -190,6 +196,18 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("runner.py", "_run_legible_operational_attestation"): (NOT_AGENT, "python -m pytest"),
     ("sandbox_egress.py", "isolated_network"): (NOT_AGENT, "unshare / slirp4netns / nsenter"),
     ("tdd_receipts.py", "record_content_tdd_receipt"): (NOT_AGENT, "pytest / git"),
+    # agent-harness#1132 seat jail helpers: each runs or execs the argv its caller hands it
+    # (the jail chain launched through launch_provider, with that launch's decided env).
+    ("seat_credentials.py", "read_login_store"): (
+        NOT_AGENT, "macOS `security find-generic-password` (the login Keychain read)"),
+    ("seat_keyring_exec.py", "main"): (
+        NOT_AGENT, "execs the jail chain it is handed; inherits the launch's decided env"),
+    ("seat_uid.py", "_main"): (
+        NOT_AGENT, "in-namespace helper: execs the jail chain it is handed (handoff)"),
+    ("seat_uid.py", "map_holder"): (NOT_AGENT, "newuidmap / newgidmap"),
+    ("seat_uid.py", "read_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
+    ("seat_uid.py", "run_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
+    ("seat_uid.py", "teardown_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
     ("train_runner.py", "_live_merge_pr"): (NOT_AGENT, "gh"),
     ("verification_evidence.py", "_interpreter_minor_version"): (NOT_AGENT, "python"),
     ("verification_evidence.py", "_interpreter_full_version"): (NOT_AGENT, "python"),
@@ -208,7 +226,13 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
     ('agy_canary_evidence.py', 'probe_capability'): 3,
     ('launcher.py', 'launch'): 2,
+    # agent-harness#1132: the jailed seat's launch beside every other provider launch.
+    ('panel_invoker.py', 'launch_provider'): 2,
     ('panel_invoker.py', '_exec_claude_agent_view_attempt'): 2,
+    # The timed holder (unshare), the rules install and the name check (nsenter). The
+    # long-lived holders and their slirp4netns, the seat-uid-mapped pair of
+    # agent-harness#1132 included, go through `launch_provider` under
+    # `_infrastructure_launch` (PROVIDER_CALLS_WITHOUT_ENV): not agent CLIs, no decision.
     ('sandbox_egress.py', 'isolated_network'): 3,
     ('tdd_receipts.py', 'record_content_tdd_receipt'): 2,
     ('verification_evidence.py', 'execute_proofgate_mutation_manifest._execute_one._execute_worktree'): 2,

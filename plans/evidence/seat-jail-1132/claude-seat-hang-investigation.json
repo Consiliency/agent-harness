@@ -1,0 +1,36 @@
+{
+  "schema": "seat_jail_claude_hang_investigation.v1",
+  "issue": "agent-harness#1132",
+  "pr": "agent-harness#1166",
+  "recorded_at": "2026-09-30T01:10:00+00:00",
+  "question": "Board round 1 Claude TUI seats hb1cl/hb1cl3 showed no genuine progress for 35-45 min on this PR's runtime (sealed route, XDG_STATE_HOME empty). Is the PR's runtime the cause?",
+  "method": "One claude seat via cr-board.py --only claude, heartbeat_only, XDG_STATE_HOME=<empty dir>, scratch venvs copied from ah-board-sys7 (PR runtime at 03319d42) and the same copy reinstalled with origin/main b6a482fa (main runtime); the pinned worktree of each as cwd.",
+  "tiny_bundle": {
+    "bundle_bytes": 81,
+    "pr_runtime": {"status": "OK", "elapsed_s": 61},
+    "main_runtime": {"status": "OK", "elapsed_s": 82}
+  },
+  "hb1cl3_bundle": {
+    "bundle_kib": 425.8,
+    "sealed_prompt_sha256": "93be1d37b36f0beb240bf09ead33e1e79863b31f3ce96f7837b7bf038c60600e",
+    "sealed_prompt_bytes": 439802,
+    "sealed_prompt_identical_across_runtimes": true,
+    "composed_instructions_identical_across_runtimes": true,
+    "tui_session_kwargs_identical_across_runtimes": "tests/data/seat_jail_1132_sealed_tui_session_golden.json (captured from main; asserted on this runtime)",
+    "main_runtime": {
+      "turns": [{"at": "2026-09-30T00:24:28Z", "stop_reason": "max_tokens", "output_tokens": 128000, "content": ["thinking"]}],
+      "status": "OK", "elapsed_s": 2333
+    },
+    "pr_runtime": {
+      "turns": [
+        {"at": "2026-09-30T00:24:49Z", "stop_reason": "max_tokens", "output_tokens": 128000, "content": ["thinking"]},
+        {"at": "2026-09-30T00:44:50Z", "stop_reason": "max_tokens", "output_tokens": 128000, "content": ["thinking"]},
+        {"at": "2026-09-30T01:04:18Z", "stop_reason": "max_tokens", "output_tokens": 128000, "content": ["thinking"]}
+      ],
+      "status": "stopped by the investigator after 65 min (third thinking-only turn)"
+    }
+  },
+  "finding": "Not caused by this PR's runtime. On both runtimes, with byte-identical argv, environment keys, prompt and session kwargs, Claude Opus 5.5 at effort max spends the full 128000-token output budget thinking on the 440 KB sealed prompt (~20 min per turn), hits max_tokens with no text, and Claude Code injects its own continuation. No text reaches the transcript during a thinking turn, so the monitor records no genuine progress for 20-60 min. How many thinking-only turns precede the review is stochastic (main: 1 then OK at 39 min; PR: 3 and still thinking at 65 min; n=1 each). The seat's TCP connection to the API stayed established throughout; the TUI was idle in ep_poll, not blocked on a modal.",
+  "not_caused_by": ["J7 sealed-route decision", "the notice path", "a first-run or trust modal (none: the prompt was submitted at 00:04:50 and the API connection was live)"],
+  "follow_up_suggestion": "outside this PR: bound thinking for sealed Claude seats on large bundles (lower effort, or a thinking budget), or deliver the bundle by pointer (the jailed route this PR adds, once agent-harness#1071 and P2 land)"
+}
