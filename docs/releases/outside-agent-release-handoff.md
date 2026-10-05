@@ -495,8 +495,9 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`) from a `git archive` export of `cf5590c9` (the release tree;
-later commits touch no packaged file). They are a
+`Consiliency/agent-harness#519`) from a `git archive` export of `cf5590c9`, whose `phase-loop-runtime/` tree
+(`ac6d76cf`) is identical to the release commit `7769b01e` after the rebase onto agent-harness#1247.
+Later commits touch no packaged file. They are a
 preparation measurement, not a publication record: the publishing workflow rebuilds from the
 tagged commit and verifies `SHA256SUMS`, and the published digests are recorded here after the
 tag push. As for `0.7.15`–`0.7.22`, the published digests are expected to differ, because
