@@ -1520,3 +1520,49 @@ seat keep the sealed route (agent-harness#1244).
 **A3b acceptance.**
 - [ ] Each path above ends degraded, not run and typed, with no launch at all (no sealed
   argv or spawn), and a mutant that re-routes it to sealed is red.
+
+## Amendment A4 (2026-10-05): the seat's credential follows the launching session
+
+Maintainer ruling, 2026-10-05: "It should autorotate with the session's sub that launched the
+leg." Maintainer decision on how: "Store command binds it." This builds on A1. The login stays
+the default. A stored override that belongs to a different subscription must not silently
+pin seats to it.
+
+**Inputs measured on claw (Claude Code 2.1.288).**
+- **The CLI's global config:** it is `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is
+  set, else `~/.claude.json`. This is read from the CLI bundle.
+- **The account identity:** the config carries `oauthAccount.accountUuid` (and
+  `organizationUuid`), so the launching session's account is readable without running the
+  CLI.
+- **The override:** a `setup-token` token records no account.
+
+**Design.**
+1. **Per-harness adapter.** `SeatCredentialAdapter` answers `override_present()`,
+   `override_path()`, `binding_path()`, `override_account()` and `current_account()`, and
+   declares its `sources` in precedence order. The rule lives once, in
+   `override_decision(adapter)`.
+2. **Storing.** `phase-loop seat-sandbox store-token` reads the token with no echo, or from
+   stdin, validates it, and reads the current account.
+   - **Refused** when there is no account, or when the credentials directory is not private.
+   - **Order:** it removes any old binding, then writes the token, then writes
+     `<override>.account` (`seat_credential_binding.v1`). Each write is 0600 and atomic, so
+     an interrupted store leaves an unbound override, which is ignored. The token is never
+     printed.
+3. **At launch.** The override is used only when both accounts are known and equal.
+   Otherwise the seat takes the login, and carries `claude_seat_override_other_subscription`
+   on the seat and its mode line. That notice is not a jail refusal and not a sealed
+   fallback. Every consumer of "is the override used" (presence, the margin, the A3 wait,
+   the modes) reads the same decision.
+4. **General.** Product code carries no fleet paths or vault specifics.
+
+**A4 acceptance.**
+- [ ] Fakes cover:
+  - a login on A with an override bound to B: the login is used, with the notice;
+  - an override bound to A: it is used;
+  - an undeterminable binding or account: the login is used, with the notice;
+  - a subscription swap;
+  - unsafe or malformed bindings;
+  - the store command (it binds, it refuses without a login, it refuses an unsafe directory,
+    an interrupted store is ignored, and it never prints the token);
+  - the launch path, the mode line, and the adapter-generic rule.
+- [ ] Every new behaviour has a mutation receipt.
