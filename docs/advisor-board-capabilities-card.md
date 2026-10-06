@@ -530,11 +530,8 @@ primary group. Anything else is refused with `seat_sandbox_refused:pass_store_un
 notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
 qualification nor the gate ever changes these permissions for you. The store defends against the
 seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
-`gemini_seat_egress_unconfined`: the agy access token carries `cloud-platform` and other
-scopes beyond inference, and under the maintainer's "prove then enable" ruling the seat
-gets tools only once jail egress is limited to agy's inference hosts. Today other Google
-Cloud APIs answer from inside the jail, because the egress namespace filters by address
-and Google API hosts share front-end addresses. Codex and grok are
+`gemini_seat_egress_unconfined` until its jail egress is limited to agy's inference hosts
+(agent-harness#1170). Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is

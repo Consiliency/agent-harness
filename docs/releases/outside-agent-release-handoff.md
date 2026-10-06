@@ -48,7 +48,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - `0.7.24` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
@@ -79,8 +79,30 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   (including the new seat modules), and `compileall` of the installed package succeeds under
   `-W error`.
 - Release tracking: agent-harness#1263; the appended plan-authority rows cite it.
-- Tag: not yet created. The signed `v0.7.24` tag push, which publishes to PyPI, is
-  maintainer-gated.
+- Tag: signed `v0.7.24` (tag object `d3f84c1aadca4abb1c28ea49527590dac52e6a5b`, tagger date
+  2026-10-06T10:02:32Z; good ED25519 signature, key
+  `SHA256:Eq5QKVIDgDCUb2tP264VAhjXlpywELmAMrCrrcrjuc0`; GitHub verification `valid`) →
+  `c3a29003d5d92e1056340ba17cac452bfa880059` (agent-harness#1267's release merge on `main`). The
+  release PR's last commit was a docs-only correction of the jailed-seat release notes; the
+  packaged tree at the tag (`efbc4e43`) is the one the agy series qualified.
+- Publication: trusted-publish workflow run `37447105615` (workflow `publish-pypi`, event
+  `push`, head branch `v0.7.24`, head SHA `c3a29003d5d92e1056340ba17cac452bfa880059`; job
+  `112214475634` build + verify wheel + sdist, including Gate A; job `112248374547` publish to
+  PyPI, trusted publishing); both succeeded, as did release-consistency run `37447105558` on
+  the tag. PyPI reports wheel
+  `c9daf7bd758951573d43f7a05bea21c0ca173819c715b7a78d12994e114f131c` and sdist
+  `34e05eff7a9b1fbe28cdeae5c6d2e20241b79da2f8298273456c7876f5e621e4`, and the files fetched
+  from PyPI have exactly those digests.
+- Content equivalence MEASURED: a local `uv build` (umask 022) of a `git archive v0.7.24`
+  export matches the published archives member by member: 489 wheel files and 1032 sdist
+  regular files, none added, missing or different.
+- Fresh install into a new Python 3.10 venv: `pip install --no-cache-dir
+  phase-loop-runtime==0.7.24` resolves `0.7.24` from the index, imports it, and
+  `phase-loop --help` loads.
+- GitHub release: https://github.com/Consiliency/agent-harness/releases/tag/v0.7.24, published
+  2026-10-06T11:36:59Z, neither a draft nor a prerelease.
+- Known after publication: the packaged `advisor_board/CONTRACTS.md` gate wording predates
+  first-use jail qualification (plan amendment A2); it is corrected with the next code change.
 
 ### Previous release: 0.7.23 (published)
 
@@ -552,17 +574,21 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.24 (prepared)
+### This release: 0.7.24 (published)
+
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`37447105615` from its build of the tagged commit `c3a29003`, equal to the digests PyPI
+reports: wheel `c9daf7bd758951573d43f7a05bea21c0ca173819c715b7a78d12994e114f131c`, sdist
+`34e05eff7a9b1fbe28cdeae5c6d2e20241b79da2f8298273456c7876f5e621e4`.
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
 `Consiliency/agent-harness#519`) from a `git archive` export of `49a0474c` (the release tree
 the agy series ran on; `phase-loop-runtime/` tree `efbc4e43`, identical at `8ddcb753` after the rebase onto
 agent-harness#1266). Later commits touch no
-packaged file. They are a preparation measurement, not a publication record: the publishing
-workflow rebuilds from the tagged commit and verifies `SHA256SUMS`, and the published digests
-are recorded here after the tag push. As for `0.7.15`–`0.7.23`, the published digests are
-expected to differ, because archive bytes are timestamp/toolchain-dependent.
+packaged file. They are a preparation measurement, not a publication record. As for
+`0.7.15`–`0.7.23`, the published digests differ, because archive bytes are
+timestamp/toolchain-dependent.
 
 - prepared direct-wheel sha256: `baef3f8beff5479ec21e12d9984ecc68dbf83c32e4d313b698f0e1f98b4b3409`
 - prepared direct-sdist sha256: `69b70d0b869d86f85c7939fdef827edcc9f836147f3bd69e64dcd393c4f7982d`
@@ -761,7 +787,8 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.24` build described above.
+Measured on the prepared `0.7.24` build described above; the published archives have the same
+member counts and contents.
 
 - Wheel artifact: `phase_loop_runtime-0.7.24-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.24.tar.gz`
@@ -774,10 +801,9 @@ Measured on the prepared `0.7.24` build described above.
 
 ## Governed-Pipeline Pinning
 
-`0.7.23` is published (PyPI, trusted-publish workflow `37334248609`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.23`. Once
-`0.7.24` is published (tag push → PyPI; this document records it as `prepared` until then),
-the pin may move to `phase-loop-runtime==0.7.24`. In either case, call:
+`0.7.24` is published (PyPI, trusted-publish workflow `37447105615`), so governed-pipeline
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.24`
+(`0.7.23`, workflow `37334248609`, remains a valid earlier pin). In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
