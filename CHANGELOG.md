@@ -6,7 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Full-permission review seats inside a per-seat jail (agent-harness#1132)
+## [0.7.24] - 2026-10-06
+
+### Qualified agy set adds 1.2.17 (agent-harness#1263)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
+  now admit agy 1.2.17 (Linux x64 image SHA256
+  `c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5`, from the upstream
+  `agy_cli_linux_x64.tar.gz` asset SHA256 `b0ed8a7c…`). Its help digest equals 1.2.15's and
+  1.2.16's (`8fcf4022…`). The set is now 1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16 and 1.2.17.
+- All six members were requalified on the release tree (completion, cancel and owner-loss
+  each, then `--validate`), because agent-harness#1166 and agent-harness#1253 changed
+  `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
+
+### Release records (PR agent-harness#1259)
+
+- The 0.7.23 handoff record is marked published, and the `[0.7.23]` section is tidied. This
+  is documentation only.
+
+### Full-permission review seats inside a per-seat jail (agent-harness#1132; PRs agent-harness#1166, agent-harness#1253, agent-harness#1265)
 
 - New `seat_jail`, `seat_uid` and `seat_keyring_exec` modules: a per-seat bwrap jail (J1
   mounts, `--remount-ro /`, declared environment and descriptors, the J14 seccomp filter),
@@ -22,27 +40,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `seat_filesystem_unconfined`. Notices appear in the `advisor-board` JSON payload
   (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
   closed detail vocabulary (F030).
-- **The jailed route is inert in this release.** A jail digest with no recorded
-  EC-EXECFIND-2 falsifier pass recorded on this host is refused
-  (`seat_sandbox_refused:jail_unqualified`, whose notice names the per-host qualification;
-  passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the digest,
-  the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence file, and
-  re-checked against the built jail at launch) before any
-  effect. The whole record check is one fail-closed boundary: any error is
-  `jail_unqualified`, and the typed reason, including the exception class, is logged. A pass
-  store whose directories are not private to the operator is refused with
-  `seat_sandbox_refused:pass_store_unsafe`. Group-writable is accepted only for the
-  operator's user-private group, the umask-002 default. `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail falsifiers
-  (`seat_jail_qualification`) against a real EXECFIND falsifier run and records this host's
-  pass; typed seat notices also reach the governed path as `seat_notice` findings (L4b).
-  Hosts also need the one-time root
+- A jailed launch needs an EC-EXECFIND-2 falsifier pass recorded on this host for the jail's
+  digest. Passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the
+  digest, the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence
+  file. A Claude seat with no recorded pass qualifies the jail on first use (plan amendment
+  A2, below); `phase-loop seat-sandbox qualify` runs the same qualification
+  (`seat_jail_qualification`) by hand against a real EXECFIND falsifier run and records this
+  host's pass. At launch the built jail is re-checked against its record inside one
+  fail-closed boundary: a record that does not hold is refused before any effect with
+  `seat_sandbox_refused:jail_unqualified`, and the typed reason, including the exception
+  class, is logged. A pass store whose directories are not private to the operator is
+  refused with `seat_sandbox_refused:pass_store_unsafe`; group-writable is accepted only for
+  the operator's user-private group, the umask-002 default. Typed seat notices also reach the
+  governed path as `seat_notice` findings (L4b). Hosts also need the one-time root
   prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
-  runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined`: live probe
-  P4 measured `cloud-platform`, `cclog` and `experimentsandconfigs` on the agy access token;
-  under the maintainer's "prove then enable" ruling the containment probe proved the
-  staged copy is access-token-only but found other Google Cloud APIs reachable from the
-  jail (the egress namespace filters by address only). The tooled Gemini profile (L3) is
-  not built.
+  runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined` until its jail
+  egress is limited to agy's inference hosts (agent-harness#1170); the tooled Gemini profile
+  (L3) is not built.
 - Live probes P5 and P1 passed on the D8 chain and changed the jail: `--cap-drop ALL` before
   the three `--cap-add`s (bwrap as namespace root otherwise keeps every capability), the
   seat enters `/seat/tree` after the drop, `/seat`, `/seat/bin`, `/seat/review` and `/etc`
@@ -61,9 +75,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and the filter count (read from the calling thread) each refuse a jail with no seccomp
   filter of its own, even under an inherited outer filter. The seccomp descriptor must be
   at offset 0, because bwrap reads from the current offset.
-- The capabilities card warns that storing the seat token before an EC-EXECFIND-2 pass is
-  recorded makes jailed-eligible Claude seats refuse (`seat_sandbox_refused:jail_unqualified`), and
-  gives the order: record the pass, then store the token.
 - `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361) on every tooled or pointer seat record.
 - New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;
@@ -119,8 +130,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   prerequisites and the Gemini seat keep the sealed route (agent-harness#1244).
 - The jailed seat's identity probe lists its descriptors from a child process, not a shell
   pipeline, so a correctly confined seat is no longer refused intermittently.
-- Plan amendment A4 (maintainer ruling 2026-10-05): a jailed Claude seat's credential
-  follows the subscription of the session that launched the leg.
+- Plan amendment A4 (maintainer ruling 2026-10-05; PR agent-harness#1253): the jailed Claude
+  seat uses the launching session's login. A stored override applies only when
+  `phase-loop seat-sandbox store-token` bound it to the same account and organization.
   - **Storing:** the new `phase-loop seat-sandbox store-token` stores the seat-token
     override and the account you are logged in to as one record (read with no echo, or
     from stdin; it is never printed). The record is written with one rename, through
@@ -137,16 +149,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     AND organization (`oauthAccount.accountUuid` and `organizationUuid`, record schema v2).
     It applies only when both equal the session's. A store with an unknown organization is
     refused, and `token-status` shows both, exiting 0 only when the override applies.
-  - **Hardening:** the record must be owner-only (any group or other bit refuses with
+  - **Record checks:** the record must be owner-only (any group or other bit refuses with
     `token_file_unsafe`), and the store refuses a state directory that is a link.
   - **Upgrade:** a hand-written override file is now ignored until it is stored again with
     `store-token`. That includes a hand-written file with unsafe permissions, which is now
     ignored rather than refused, because it is never used. A v1 (account-only) record is
     unbound and must be stored again. A host without a Claude login cannot store an
     override.
-- **Release cut:** agy requalification is required at the next release cut (both the sealed
-  and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
-  must pass on the final tree.
+- **agy requalification.** This release requalifies agy (see the agy entry above), and
+  `verify_qualified_agy_image.py --route-core` passes on the release tree. The tooled
+  profile is requalified once L3 ships.
 
 ## [0.7.23] - 2026-10-05
 
