@@ -1213,7 +1213,8 @@ are recorded on agent-harness#1132.
   - **On a pass:** the seat stays jailed, and its mode reports `qualified_now`.
   - **On a failure, or a run that cannot happen (a cached failure included):** the seat is
     DEGRADED and NOT RUN with `seat_jail_qualification_failed` and a typed reason
-    (`prerequisite_missing`, `store_unsafe`, `falsifiers_failed`, `timeout` or `error`),
+    (`prerequisite_missing`, `store_unsafe`, `uid_switch_denied`, `falsifiers_failed`, `timeout` or
+    `error`),
     each with a literal fix (plan amendment A3b supersedes A2's sealed fallback).
   - **The failure cache:** failures are cached per host, digest and layout for
     `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default 3600 s). A lock timeout is not cached.

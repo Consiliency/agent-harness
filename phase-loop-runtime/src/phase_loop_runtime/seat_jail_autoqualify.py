@@ -42,6 +42,13 @@ REASON_FIXES: Mapping[str, str] = {
         "make $XDG_STATE_HOME, its phase-loop directory and seat-jail-passes private "
         "(chmod go-w; group-writable is accepted only for your user-private group), then "
         "run `phase-loop seat-sandbox qualify`"),
+    "uid_switch_denied": (
+        "the host denied the seat's uid switch inside bwrap. On Ubuntu 24.04 and later the cause "
+        "is usually the AppArmor profile that confines bwrap's children (`unpriv_bwrap`, from "
+        "`bwrap-userns-restrict`), which denies capability setuid and setgid; "
+        "`journalctl -k | grep unpriv_bwrap` shows the denial. A host administrator has to permit "
+        "those capabilities for the jail's bwrap (see agent-harness#1276), then run "
+        "`phase-loop seat-sandbox qualify`. Until then the seat does not run"),
     "falsifiers_failed": (
         "run `phase-loop seat-sandbox qualify` to see which check failed, and report a defect"),
     "timeout": "another qualification is still running or hung; retry, or run "
@@ -200,6 +207,10 @@ def classify_failure(exc: BaseException) -> str:
             return "prerequisite_missing"
         if "no pass recorded" in text:
             return "store_unsafe"
+        # The probe's own `setpriv` could not switch to the seat uid: a host security policy
+        # (not a defect in a falsifier) is denying the capability. agent-harness#1276.
+        if "setresuid failed" in text or "setresgid failed" in text:
+            return "uid_switch_denied"
         return "falsifiers_failed"
     return "error"
 

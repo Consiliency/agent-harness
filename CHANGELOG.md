@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Seat jail: Python 3.10 to 3.13 support, and a typed reason when the host denies the uid switch (agent-harness#1276)
+
+- `seat_jail.memfd_with` no longer needs `fcntl.F_ADD_SEALS`, which CPython exports only from
+  3.14. It falls back to the kernel ABI values, so the jailed launch and the host
+  qualification work on every supported interpreter. Before this, the first jailed launch on
+  Python 3.10 to 3.13 raised `AttributeError`.
+- A qualification whose probe cannot switch to the seat uid (`setpriv: setresuid failed`,
+  `setresgid failed`) now fails with the typed reason `uid_switch_denied` and a literal fix, not
+  `falsifiers_failed` ("report a defect"). The usual cause is a host security policy, not a
+  defect: Ubuntu 24.04 and later confine bwrap's children with the AppArmor profile
+  `unpriv_bwrap`, which denies capability setuid and setgid. The jail itself is unchanged; a
+  host administrator has to permit those capabilities for it. The seat stays degraded and does
+  not run until then (plan amendment A3b).
+
 ## [0.7.24] - 2026-10-06
 
 ### Qualified agy set adds 1.2.17 (agent-harness#1263)
