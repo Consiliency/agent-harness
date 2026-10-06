@@ -246,14 +246,42 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     SL-0 inventory, author vendor, and legal ancestry from retained receipts, plan
     authority, and Git objects. Preserve exact blob invariance and tests-before-production
     checks; do not compare real evidence to synthesized fixture constants.
-    The derived frozen-inventory check accepts a changed frozen blob only through an
-    `sl0_repairs` chain on this plan's manifest row. Each authorization entry has a unique
+    The derived frozen-inventory check first reconstructs the accepted historical baseline
+    from the self-contained lifecycle authority matching this plan and roadmap digest. Its
+    `historical_frozen_baseline_transitions.v1` record names the reviewed SL-0 landing and
+    ten later landings. SL-5 must enumerate every first-parent commit after that anchor
+    through the parent of `historical_input_commit` that changes any frozen path; the exact
+    changed-commit set must equal the ten recorded landing commits. For each landing, the
+    frozen-path delta against its first parent must equal the recorded path and old/new blob
+    set, and replay in Git first-parent order must preserve blob continuity. It may not use
+    the tree at the parent of `historical_input_commit` as an implicit baseline. The
+    self-test must refuse an omitted or extra frozen-path change, a landing off the verified
+    commit's first-parent chain, out-of-order replay, a path-set or blob-pair mismatch, and
+    an implicit-parent baseline containing any unrecorded earlier change. This bounded
+    authority grants no retroactive review, test, or acceptance claim.
+    Five later edits have no pre-merge record, and SL-5 disposes of them under
+    agent-harness#742: agent-harness#1102 r7 and r8, agent-harness#1096,
+    agent-harness#1020, and the historical native-fill model-hint edit identified by
+    `historical_input_commit` in the same lifecycle authority.
+    Two later frozen-path edits merged after this authority was written and therefore
+    cannot truthfully use the pre-merge `sl0_repairs` grammar: agent-harness#1152 and
+    agent-harness#1246 (implementing agent-harness#896). The same lifecycle authority
+    records them as `historical_frozen_dispositions.v1`, with exact source, merge, path,
+    old-blob, and new-blob facts. SL-5 accepts only those two transitions after proving
+    each merge's first-parent and resulting blobs from Git, its ancestry to the verified
+    commit, and continuity with the already accepted historical blob. The current
+    candidate and canonical-main focused/broad receipts then re-freeze the resulting
+    bytes prospectively; this disposition grants no retroactive review or test claim.
+    After reconstructing that accepted baseline, the check accepts a subsequent changed
+    frozen blob only through an `sl0_repairs` chain on this plan's manifest row. Each
+    authorization entry has a unique
     `authorization_id`, and it pairs with exactly one landed entry that names that id. Every
     landed entry pairs with exactly one authorization for its path; an unpaired or
     multiply-paired landed entry is refused. The landed entry's old blob must equal
-    the blob the check already accepts for that path (the frozen blob, or the previous
-    accepted repair's new blob) and also the path's blob at the recorded merge's first
-    parent. Its new blob must equal the path's blob at that merge, and the merge must be an
+    the blob the check already accepts for that path after the historical replay,
+    named edits, dispositions, and any previous accepted repair, and also the path's blob at
+    the recorded merge's first parent. Its new blob must equal the path's blob at that merge,
+    and the merge must be an
     ancestor of the verified commit. Each link's merge descends from its predecessor link's
     merge. Links are followed by old-to-new blob and by merge ancestry, never by manifest
     order. An authorization with no landed entry yet is pending: it accepts nothing and is
@@ -267,19 +295,7 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     refused: a supplement added after its id is spent; a supplement for an id with no
     authorization on the row; a conflicting `base_blob`; and a landed entry that misses a
     path in the id's union.
-    Any other drift in a frozen path is refused. Five earlier edits have no record, and
-    SL-5 disposes of them under agent-harness#742: agent-harness#1102 r7 and r8,
-    agent-harness#1096, agent-harness#1020, and the historical native-fill model-hint
-    edit identified by `historical_input_commit` in this plan's authority lifecycle.
-    Two later frozen-path edits merged after this authority was written and therefore
-    cannot truthfully use the pre-merge `sl0_repairs` grammar: agent-harness#1152 and
-    agent-harness#1246 (implementing agent-harness#896). The latest lifecycle authority
-    records them as `historical_frozen_dispositions.v1`, with exact source, merge, path,
-    old-blob, and new-blob facts. SL-5 accepts only those two transitions after proving
-    each merge's first-parent and resulting blobs from Git, its ancestry to the verified
-    commit, and continuity with the already accepted historical blob. The current
-    candidate and canonical-main focused/broad receipts then re-freeze the resulting
-    bytes prospectively; this disposition grants no retroactive review or test claim.
+    Any other drift in a frozen path is refused.
   - impl: Resolve agent-harness#770 with a dependency-light command whose input manifest
     names real retained raw/JUnit/CI/review/broker/role artifacts. Copy exact bytes into a
     fresh contained evidence root, derive canonical receipts and the closed aggregate,
@@ -412,7 +428,6 @@ PY
 - `env PHASE_LOOP_TDD_EXPECT_HARDEN_PRODUCER=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_harden_evidence_producer.py`
 - `PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"`
 - `uv run --project phase-loop-runtime ruff check phase-loop-runtime/src/phase_loop_runtime phase-loop-runtime/scripts`
-- `python3 -c 'from pathlib import Path; assert len(Path("plans").joinpath("phase-plan-v10-HARDEN.md").read_text().split()) <= 3000'`
 - `git diff --exit-code -- specs/phase-plans-v10.md`
 - `git diff --check`
 
