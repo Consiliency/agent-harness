@@ -2230,31 +2230,78 @@ def _historical_frozen_baseline(
     if row is None:
         return {path: blob(repo, reviewed, path)[0] for path in frozen_paths}, None
     lifecycle = row.get("lifecycle", [])
-    historical = [
-        event.get("metadata", {}).get("historical_input_commit")
-        for event in lifecycle
-        if isinstance(event, dict) and isinstance(event.get("metadata"), dict)
-        and event["metadata"].get("historical_input_commit") is not None
-    ]
     accepted = {path: blob(repo, reviewed, path)[0] for path in frozen_paths}
-    if not historical:
+    if not isinstance(lifecycle, list):
+        fail("HARDEN lifecycle is malformed")
+    if not lifecycle:
         return accepted, None
-    if len(historical) != 1:
-        fail("HARDEN historical input authority is ambiguous")
+
+    _, plan_bytes = blob(repo, verified, "plans/phase-plan-v10-HARDEN.md")
+    _, roadmap_bytes = blob(repo, verified, "specs/phase-plans-v10.md")
+    plan_digest = sha256(plan_bytes)
+    roadmap_digest = sha256(roadmap_bytes)
+    matching_metadata: list[dict[str, Any]] = []
+    for event in lifecycle:
+        if not isinstance(event, dict) or not isinstance(event.get("metadata"), dict):
+            continue
+        metadata = event["metadata"]
+        authority = metadata.get("plan_current_authority")
+        if not isinstance(authority, dict):
+            continue
+        if (
+            authority.get("plan_sha256") == plan_digest
+            and authority.get("roadmap_sha256") == roadmap_digest
+        ):
+            matching_metadata.append(metadata)
+    if not matching_metadata:
+        return accepted, None
+    if len(matching_metadata) != 1:
+        fail("HARDEN current historical authority is ambiguous")
+    metadata = matching_metadata[0]
+    current_authority = closed(
+        metadata.get("plan_current_authority"),
+        {
+            "schema",
+            "source",
+            "predecessor_plan_sha256",
+            "plan_sha256",
+            "roadmap_sha256",
+        },
+        "HARDEN current plan authority",
+    )
+    if current_authority["schema"] != "plan_current_authority.v1":
+        fail("HARDEN current plan authority schema is unsupported")
+    if re.fullmatch(
+        r"Consiliency/agent-harness#[1-9][0-9]*",
+        text(current_authority["source"], "HARDEN current plan authority source"),
+    ) is None:
+        fail("HARDEN current plan authority source is not qualified")
+    text(
+        current_authority["predecessor_plan_sha256"],
+        "HARDEN predecessor plan digest",
+        pattern=HEX64,
+    )
+    if (
+        current_authority["plan_sha256"] != plan_digest
+        or current_authority["roadmap_sha256"] != roadmap_digest
+    ):
+        fail("HARDEN current plan authority digest mismatch")
+
     historical_commit = text(
-        historical[0], "HARDEN historical input commit", pattern=HEX40
+        metadata.get("historical_input_commit"),
+        "HARDEN historical input commit",
+        pattern=HEX40,
     )
     ancestor(repo, landing, historical_commit, "HARDEN historical input")
     ancestor(repo, historical_commit, verified, "HARDEN historical input")
 
-    _, plan_bytes = blob(repo, verified, "plans/phase-plan-v10-HARDEN.md")
     try:
         plan_text = plan_bytes.decode("utf-8", "strict")
     except UnicodeDecodeError:
         fail("HARDEN plan is not UTF-8")
     disposition = re.search(
-        r"Five earlier edits have no record, and(?P<body>.*?)"
-        r"historical_input_commit` in this plan's authority lifecycle\.",
+        r"Five later edits have no pre-merge record, and(?P<body>.*?)"
+        r"historical_input_commit` in (?:the same lifecycle authority|this plan's authority lifecycle)\.",
         plan_text,
         flags=re.DOTALL,
     )
@@ -2279,6 +2326,114 @@ def _historical_frozen_baseline(
     if not expected_tokens:
         fail("HARDEN historical frozen-path dispositions are empty")
 
+    baseline_record = closed(
+        metadata.get("historical_frozen_baseline_transitions"),
+        {"schema", "reviewed_sl0_landing", "landings"},
+        "HARDEN historical frozen baseline",
+    )
+    if baseline_record["schema"] != "historical_frozen_baseline_transitions.v1":
+        fail("HARDEN historical frozen baseline schema is unsupported")
+    anchor_record = closed(
+        baseline_record["reviewed_sl0_landing"],
+        {"commit", "source"},
+        "HARDEN reviewed SL-0 landing",
+    )
+    anchor_commit = text(
+        anchor_record["commit"], "HARDEN reviewed SL-0 landing commit", pattern=HEX40
+    )
+    anchor_source = text(
+        anchor_record["source"], "HARDEN reviewed SL-0 landing source"
+    )
+    if (
+        anchor_commit != landing
+        or re.fullmatch(r"Consiliency/agent-harness#[1-9][0-9]*", anchor_source) is None
+    ):
+        fail("HARDEN reviewed SL-0 landing authority mismatch")
+    historical_parents = commit_parents(
+        repo, historical_commit, "HARDEN historical input commit"
+    )
+    if not historical_parents:
+        fail("HARDEN historical input has no parent")
+    historical_parent = historical_parents[0]
+    ancestor(repo, anchor_commit, historical_parent, "HARDEN historical baseline")
+    baseline_first_parent = _git_lines(
+        repo,
+        "rev-list",
+        "--first-parent",
+        "--reverse",
+        f"{anchor_commit}..{historical_parent}",
+        label="HARDEN historical baseline first-parent history",
+    )
+    changed_baseline_commits = [
+        commit_id
+        for commit_id in baseline_first_parent
+        if changed_paths(
+            repo,
+            commit_parents(repo, commit_id, "HARDEN historical baseline landing")[0],
+            commit_id,
+        ) & frozen_paths
+    ]
+    raw_landings = baseline_record["landings"]
+    if not isinstance(raw_landings, list) or not raw_landings:
+        fail("HARDEN historical frozen baseline landings are empty")
+    parsed_landings: list[dict[str, Any]] = []
+    for raw_landing in raw_landings:
+        item = closed(
+            raw_landing,
+            {"source", "landing_commit", "files"},
+            "HARDEN historical frozen baseline landing",
+        )
+        source = text(item["source"], "HARDEN historical baseline source")
+        if re.fullmatch(r"Consiliency/agent-harness#[1-9][0-9]*", source) is None:
+            fail("HARDEN historical baseline source is not qualified")
+        text(
+            item["landing_commit"],
+            "HARDEN historical baseline landing commit",
+            pattern=HEX40,
+        )
+        files = item["files"]
+        if not isinstance(files, list) or not files:
+            fail("HARDEN historical baseline landing files are empty")
+        parsed_files: list[dict[str, Any]] = []
+        paths: set[str] = set()
+        for raw_file in files:
+            file = closed(
+                raw_file,
+                {"path", "old_blob", "new_blob"},
+                "HARDEN historical baseline file",
+            )
+            path = text(file["path"], "HARDEN historical baseline path")
+            if path not in frozen_paths or path in paths:
+                fail("HARDEN historical baseline path inventory is invalid")
+            paths.add(path)
+            text(file["old_blob"], "HARDEN historical baseline old blob", pattern=HEX40)
+            text(file["new_blob"], "HARDEN historical baseline new blob", pattern=HEX40)
+            parsed_files.append(file)
+        parsed_landings.append({**item, "files": parsed_files})
+    if [item["landing_commit"] for item in parsed_landings] != changed_baseline_commits:
+        fail("HARDEN historical baseline changed-commit set mismatch")
+
+    accepted = {path: blob(repo, anchor_commit, path)[0] for path in frozen_paths}
+    for item in parsed_landings:
+        commit_id = item["landing_commit"]
+        parent = commit_parents(repo, commit_id, "HARDEN historical baseline landing")[0]
+        by_path = {file["path"]: file for file in item["files"]}
+        if changed_paths(repo, parent, commit_id) & frozen_paths != set(by_path):
+            fail("HARDEN historical baseline path-set mismatch")
+        for path, file in by_path.items():
+            if (
+                accepted[path] != file["old_blob"]
+                or blob(repo, parent, path)[0] != file["old_blob"]
+                or blob(repo, commit_id, path)[0] != file["new_blob"]
+            ):
+                fail("HARDEN historical baseline blob chain mismatch")
+            accepted[path] = file["new_blob"]
+    if any(
+        accepted[path] != blob(repo, historical_parent, path)[0]
+        for path in frozen_paths
+    ):
+        fail("HARDEN historical baseline does not reach the historical input parent")
+
     first_parent_commits = _git_lines(
         repo,
         "rev-list",
@@ -2287,19 +2442,20 @@ def _historical_frozen_baseline(
         f"{landing}..{verified}",
         label="HARDEN first-parent history",
     )
-    historical_merge: str | None = None
-    token_merges: dict[tuple[str, str | None], str] = {}
-    merge_changes: dict[str, set[str]] = {}
+    token_landings: dict[tuple[str, str | None], str] = {}
+    landing_changes: dict[str, set[str]] = {}
 
-    def integration_merge(commit_id: str) -> str:
-        return _first_parent_integration_merge(
-            repo,
-            commit_id,
-            first_parent_commits,
-            "HARDEN historical input",
-        )
+    def integration_landing(commit_id: str) -> str:
+        matches = [
+            candidate
+            for candidate in first_parent_commits
+            if _is_ancestor(repo, commit_id, candidate)
+        ]
+        if not matches:
+            fail("HARDEN historical input has no first-parent integration")
+        return matches[0]
 
-    historical_merge = integration_merge(historical_commit)
+    historical_landing = integration_landing(historical_commit)
     for token in expected_tokens:
         issue, round_number = token
         pattern = rf"agent-harness#{re.escape(issue)}"
@@ -2321,59 +2477,43 @@ def _historical_frozen_baseline(
                 )
                 if re.fullmatch(rf"Merge pull request #{re.escape(issue)}\b.*", subject):
                     candidates.append(merge_commit)
-        merges: set[str] = set()
+        landings: set[str] = set()
         for commit_id in candidates:
             parents = commit_parents(repo, commit_id, "HARDEN historical disposition commit")
             if not parents or not (changed_paths(repo, parents[0], commit_id) & frozen_paths):
                 continue
-            merges.add(integration_merge(commit_id))
-        if len(merges) != 1:
-            fail("HARDEN historical disposition spans zero or multiple merges")
-        token_merges[token] = next(iter(merges))
+            landings.add(integration_landing(commit_id))
+        if len(landings) != 1:
+            fail("HARDEN historical disposition spans zero or multiple landings")
+        token_landings[token] = next(iter(landings))
 
-    for merge_commit in {historical_merge, *token_merges.values()}:
-        parents = commit_parents(repo, merge_commit, "HARDEN historical merge")
-        changed = changed_paths(repo, parents[0], merge_commit) & frozen_paths
+    for landing_commit in {historical_landing, *token_landings.values()}:
+        parents = commit_parents(repo, landing_commit, "HARDEN historical landing")
+        changed = changed_paths(repo, parents[0], landing_commit) & frozen_paths
         if changed:
-            merge_changes[merge_commit] = changed
-    if historical_merge is None or set(token_merges) != expected_tokens:
+            landing_changes[landing_commit] = changed
+    if set(token_landings) != expected_tokens:
         fail("HARDEN historical frozen-path dispositions are incomplete")
 
-    historical_parent = commit_parents(
-        repo, historical_merge, "HARDEN historical input merge"
-    )[0]
-    # The authority lifecycle deliberately records the point from which SL-5
-    # resumes historical accounting. Earlier admitted sibling history is the
-    # baseline; the named historical edit and every later exception are then
-    # replayed, rather than accepting the verified tree wholesale.
-    accepted = {path: blob(repo, historical_parent, path)[0] for path in frozen_paths}
-    authorized_merges = {historical_merge, *token_merges.values()}
+    authorized_landings = {historical_landing, *token_landings.values()}
     last_merge: str | None = None
-    for merge_commit in first_parent_commits:
-        if merge_commit not in authorized_merges:
+    for landing_commit in first_parent_commits:
+        if landing_commit not in authorized_landings:
             continue
-        parents = commit_parents(repo, merge_commit, "HARDEN historical disposition")
+        parents = commit_parents(repo, landing_commit, "HARDEN historical disposition")
         if last_merge is not None:
-            ancestor(repo, last_merge, merge_commit, "HARDEN historical disposition")
-        for path in merge_changes.get(merge_commit, set()):
+            ancestor(repo, last_merge, landing_commit, "HARDEN historical disposition")
+        for path in landing_changes.get(landing_commit, set()):
             old_blob = blob(repo, parents[0], path)[0]
             if accepted[path] != old_blob:
                 fail("HARDEN historical frozen-path chain is discontinuous")
-            accepted[path] = blob(repo, merge_commit, path)[0]
-        last_merge = merge_commit
+            accepted[path] = blob(repo, landing_commit, path)[0]
+        last_merge = landing_commit
 
-    disposition_records = [
-        event["metadata"]["historical_frozen_dispositions"]
-        for event in lifecycle
-        if isinstance(event, dict)
-        and isinstance(event.get("metadata"), dict)
-        and "historical_frozen_dispositions" in event["metadata"]
-    ]
-    if len(disposition_records) > 1:
-        fail("HARDEN post-authority frozen dispositions are ambiguous")
-    if disposition_records:
+    disposition_record = metadata.get("historical_frozen_dispositions")
+    if disposition_record is not None:
         record = closed(
-            disposition_records[0],
+            disposition_record,
             {"schema", "entries"},
             "HARDEN post-authority frozen dispositions",
         )
@@ -4733,6 +4873,147 @@ def _self_repair_chain(
     return repo, reviewed, landing, verified, first_path
 
 
+def _self_historical_baseline_chain(
+    root: Path,
+    mutation: str | None = None,
+) -> tuple[Path, str, str, str, dict[str, str]]:
+    """Construct a digest-bound historical frozen-path replay fixture."""
+    repo, refs = _self_git(root)
+    reviewed = refs["reviewed_sl0"][0]
+    landing = refs["landing"][0]
+    _run(["git", "checkout", "-qb", "historical-baseline", landing], repo)
+
+    plan = repo / "plans/phase-plan-v10-HARDEN.md"
+    plan.write_text(
+        plan.read_text()
+        + "\nFive later edits have no pre-merge record, and SL-5 disposes of "
+        "them under agent-harness#742: agent-harness#1102 r7, and the "
+        "historical native-fill edit identified by `historical_input_commit` "
+        "in this plan's authority lifecycle.\n"
+    )
+    roadmap = repo / "specs/phase-plans-v10.md"
+    roadmap.parent.mkdir(parents=True, exist_ok=True)
+    roadmap.write_text("# self-test roadmap\n")
+    _run(["git", "add", str(plan.relative_to(repo)), str(roadmap.relative_to(repo))], repo)
+    _run(["git", "commit", "-qm", "bind self-test historical authority"], repo)
+
+    records: list[dict[str, Any]] = []
+
+    def frozen_landing(path: str, content: str, subject: str) -> dict[str, Any]:
+        old_blob = blob(repo, "HEAD", path)[0]
+        (repo / path).write_text(content)
+        _run(["git", "add", path], repo)
+        _run(["git", "commit", "-qm", subject], repo)
+        commit_id = _run(["git", "rev-parse", "HEAD"], repo)
+        return {
+            "source": "Consiliency/agent-harness#739",
+            "landing_commit": commit_id,
+            "files": [{
+                "path": path,
+                "old_blob": old_blob,
+                "new_blob": blob(repo, commit_id, path)[0],
+            }],
+        }
+
+    if mutation == "implicit-parent-baseline":
+        hidden_path = FROZEN_SL0_PATHS[2]
+        (repo / hidden_path).write_text("unrecorded earlier frozen change\n")
+        _run(["git", "add", hidden_path], repo)
+        _run(["git", "commit", "-qm", "unrecorded earlier frozen change"], repo)
+
+    records.append(frozen_landing(
+        FROZEN_SL0_PATHS[0],
+        "first recorded historical transition\n",
+        "first recorded historical landing",
+    ))
+
+    off_chain_record: dict[str, Any] | None = None
+    if mutation == "off-first-parent-chain":
+        branch_point = _run(["git", "rev-parse", "HEAD"], repo)
+        _run(["git", "checkout", "-qb", "off-chain", branch_point], repo)
+        off_chain_record = frozen_landing(
+            FROZEN_SL0_PATHS[1],
+            "off-chain frozen transition\n",
+            "off-chain historical landing",
+        )
+        _run(["git", "checkout", "-q", "historical-baseline"], repo)
+
+    records.append(frozen_landing(
+        FROZEN_SL0_PATHS[1],
+        "second recorded historical transition\n",
+        "second recorded historical landing",
+    ))
+    historical_input_parent = _run(["git", "rev-parse", "HEAD"], repo)
+
+    (repo / FROZEN_SL0_PATHS[0]).write_text("historical input transition\n")
+    _run(["git", "add", FROZEN_SL0_PATHS[0]], repo)
+    _run(["git", "commit", "-qm", "historical native-fill input"], repo)
+    historical_input = _run(["git", "rev-parse", "HEAD"], repo)
+    if commit_parents(repo, historical_input, "self-test historical input") != (
+        historical_input_parent,
+    ):
+        raise AssertionError("self-test historical input topology drifted")
+
+    (repo / FROZEN_SL0_PATHS[1]).write_text("named post-authority transition\n")
+    _run(["git", "add", FROZEN_SL0_PATHS[1]], repo)
+    _run(["git", "commit", "-qm", "named transition (agent-harness#1102 r7)"], repo)
+
+    authority_records = copy.deepcopy(records)
+    if mutation == "omitted-landing":
+        authority_records.pop()
+    elif mutation == "extra-landing":
+        authority_records.append(copy.deepcopy(authority_records[-1]))
+    elif mutation == "off-first-parent-chain":
+        assert off_chain_record is not None
+        authority_records[1] = off_chain_record
+    elif mutation == "out-of-order-replay":
+        authority_records.reverse()
+    elif mutation == "path-set-mismatch":
+        authority_records[0]["files"] = []
+    elif mutation == "blob-pair-mismatch":
+        authority_records[0]["files"][0]["new_blob"] = "0" * 40
+
+    plan_digest = sha256(plan.read_bytes())
+    roadmap_digest = sha256(roadmap.read_bytes())
+    manifest = strict_json_loads(
+        (repo / "plans/manifest.json").read_bytes(),
+        "self-test historical manifest",
+    )
+    row = next(item for item in manifest["plans"] if item.get("phase_alias") == "HARDEN")
+    row["lifecycle"] = [{
+        "at": "2026-01-01T00:00:00Z",
+        "by": "self-test",
+        "transition": "committed",
+        "metadata": {
+            "historical_input_commit": historical_input,
+            "historical_frozen_baseline_transitions": {
+                "schema": "historical_frozen_baseline_transitions.v1",
+                "reviewed_sl0_landing": {
+                    "commit": landing,
+                    "source": "Consiliency/agent-harness#726",
+                },
+                "landings": authority_records,
+            },
+            "plan_current_authority": {
+                "schema": "plan_current_authority.v1",
+                "source": "Consiliency/agent-harness#1264",
+                "predecessor_plan_sha256": "1" * 64,
+                "plan_sha256": plan_digest,
+                "roadmap_sha256": roadmap_digest,
+            },
+        },
+    }]
+    (repo / "plans/manifest.json").write_bytes(canonical_bytes(manifest))
+    _run(["git", "add", "plans/manifest.json"], repo)
+    _run(["git", "commit", "-qm", "record self-test historical authority"], repo)
+    verified = _run(["git", "rev-parse", "HEAD"], repo)
+    expected = {
+        path: blob(repo, verified, path)[0]
+        for path in FROZEN_SL0_PATHS
+    }
+    return repo, reviewed, landing, verified, expected
+
+
 # Fixture data only: the fleet-default routes in each lane's invocation form at
 # the time of writing.  The verifier never compares against this table -- a
 # retained request carrying any other registry-derived routes verifies alike.
@@ -6061,6 +6342,46 @@ def self_test() -> None:
                 landing,
                 verified,
                 set(FROZEN_SL0_PATHS),
+            )
+
+        def exercise_historical_baseline(
+            name: str,
+            mutation: str | None = None,
+        ) -> tuple[dict[str, str], dict[str, str]]:
+            historical_root = root / name
+            historical_root.mkdir()
+            repo, reviewed, landing, verified, expected = (
+                _self_historical_baseline_chain(historical_root, mutation)
+            )
+            accepted = accepted_frozen_blobs(
+                repo,
+                reviewed,
+                landing,
+                verified,
+                set(FROZEN_SL0_PATHS),
+            )
+            return accepted, expected
+
+        historical_accepted, historical_expected = exercise_historical_baseline(
+            "valid-historical-baseline"
+        )
+        if historical_accepted != historical_expected:
+            raise AssertionError("valid historical baseline did not reach verified Git")
+        for historical_mutation in (
+            "omitted-landing",
+            "extra-landing",
+            "off-first-parent-chain",
+            "out-of-order-replay",
+            "path-set-mismatch",
+            "blob-pair-mismatch",
+            "implicit-parent-baseline",
+        ):
+            direct_rejected(
+                "historical-baseline-" + historical_mutation,
+                lambda historical_mutation=historical_mutation: exercise_historical_baseline(
+                    "historical-baseline-" + historical_mutation,
+                    historical_mutation,
+                ),
             )
 
         valid_repair = exercise_repair_chain("valid-repair-chain")
