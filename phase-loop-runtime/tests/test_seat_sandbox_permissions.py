@@ -62,11 +62,29 @@ def test_j7_step1_recorded_gemini_stop_beats_qualification():
     assert route.code == "gemini_seat_stream_split_unavailable"
 
 
+_REPO = Path(__file__).resolve().parents[2]
+_P4_EVIDENCE = ("plans/evidence/seat-jail-1132/p4-agy-d7-credential.json",
+                "plans/evidence/seat-jail-1132/p4-containment.json")
+
+
+def _sparse_excluded(rel: str) -> bool:
+    """Gate A's clean room is a sparse clone (scripts/gate_a_cleanroom.sh) that leaves
+    plans/ out. The signal is the record's own index entry carrying skip-worktree
+    (`git ls-files -t` tag ``S``): in the tree, excluded from this working copy. A
+    checkout that merely lost the record (tag ``H``, or no entry) must still fail."""
+    proc = subprocess.run(["git", "-C", str(_REPO), "ls-files", "-t", "--", rel],
+                          capture_output=True, text=True, check=False)
+    return proc.stdout.startswith("S ")
+
+
+@pytest.mark.skipif(any(_sparse_excluded(rel) for rel in _P4_EVIDENCE),
+                    reason="the P4 evidence records are sparse-excluded from this clean-room "
+                           "clone (Gate A); the checkout lanes run this test")
 def test_j7_gemini_stays_sealed_on_the_recorded_p4_stop():
     """P4 found scopes beyond inference; the "prove then enable" containment probe proved
     the access-token-only copy (a) and failed host-level egress (b). The recorded stop wins
     at step 1, and it is witnessed by the pinned evidence records."""
-    evidence = Path(__file__).resolve().parents[2] / "plans" / "evidence" / "seat-jail-1132"
+    evidence = _REPO / "plans" / "evidence" / "seat-jail-1132"
     assert seat_jail.GEMINI_RECORDED_STOP == "gemini_seat_egress_unconfined"
     scope = json.loads((evidence / "p4-agy-d7-credential.json").read_text())
     assert scope["gemini_route_code"] == "gemini_seat_token_scope_excess"
