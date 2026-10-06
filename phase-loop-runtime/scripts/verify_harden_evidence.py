@@ -2582,35 +2582,31 @@ def _historical_frozen_baseline(
     raw_repairs = row.get("sl0_repairs", [])
     if not isinstance(raw_repairs, list):
         fail("HARDEN sl0_repairs is malformed")
-    repair_merges = [
-        entry.get("merge_commit")
-        for entry in raw_repairs
-        if isinstance(entry, dict)
-        and entry.get("entry") == "landed"
-        and isinstance(entry.get("merge_commit"), str)
-        and entry.get("merge_commit") in first_parent_order
-    ]
-    disposition_boundary = verified
-    if repair_merges:
-        first_repair = min(repair_merges, key=first_parent_order.__getitem__)
-        repair_parents = commit_parents(
-            repo, first_repair, "HARDEN first prospective repair merge"
-        )
-        if not repair_parents:
-            fail("HARDEN first prospective repair merge has no parent")
-        disposition_boundary = repair_parents[0]
     assert last_merge is not None
+    repair_merges: list[str] = []
+    for entry in raw_repairs:
+        if not isinstance(entry, dict) or entry.get("entry") != "landed":
+            continue
+        repair_merge = text(
+            entry.get("merge_commit"), "HARDEN prospective repair merge", pattern=HEX40
+        )
+        if repair_merge not in first_parent_order:
+            fail("HARDEN repair merge is outside first-parent history")
+        ancestor(repo, last_merge, repair_merge, "HARDEN repair merge order")
+        repair_merges.append(repair_merge)
+    repair_merge_set = set(repair_merges)
     disposition_first_parent = _git_lines(
         repo,
         "rev-list",
         "--first-parent",
         "--reverse",
-        f"{last_merge}..{disposition_boundary}",
+        f"{last_merge}..{verified}",
         label="HARDEN frozen disposition first-parent history",
     )
     changed_disposition_merges = [
         commit_id
         for commit_id in disposition_first_parent
+        if commit_id not in repair_merge_set
         if changed_paths(
             repo,
             commit_parents(repo, commit_id, "HARDEN frozen disposition merge")[0],
@@ -2923,6 +2919,10 @@ def accepted_frozen_blobs(
         authorization_id, item = earliest[0]
         merge_commit = item["landing"]["merge_commit"]
         first_parent = item["landing"]["merge_first_parent"]
+        if changed_paths(repo, first_parent, merge_commit) & frozen_paths != set(
+            item["files"]
+        ):
+            fail("HARDEN repair landing frozen path-set mismatch")
         for path, file in item["files"].items():
             if path not in accepted:
                 accepted[path] = file["old_blob"]
@@ -5342,6 +5342,78 @@ def _self_historical_baseline_chain(
     (repo / "plans/manifest.json").write_bytes(canonical_bytes(manifest))
     _run(["git", "add", "plans/manifest.json"], repo)
     _run(["git", "commit", "-qm", "record self-test historical authority"], repo)
+    if mutation == "unrecorded-post-repair-edit-restore":
+        path = FROZEN_SL0_PATHS[0]
+        authorization_id = "agent-harness#self-test:historical-repair"
+        base_blob = blob(repo, "HEAD", path)[0]
+        manifest = strict_json_loads(
+            (repo / "plans/manifest.json").read_bytes(),
+            "self-test historical repair manifest",
+        )
+        row = next(
+            item for item in manifest["plans"] if item.get("phase_alias") == "HARDEN"
+        )
+        row["sl0_repairs"] = [{
+            "authorization_id": authorization_id,
+            "entry": "authorization",
+            "issue": "Consiliency/agent-harness#self-test",
+            "decision": "self-test historical repair authorization",
+            "frozen_by": "HARDEN self-test",
+            "reason": "exercise post-repair historical replay",
+            "files": [{
+                "path": path,
+                "base_blob": base_blob,
+                "nodes": ["SelfTest::historical-repair"],
+            }],
+            "landed": None,
+            "landed_note": "self-test historical repair landing follows",
+        }]
+        (repo / "plans/manifest.json").write_bytes(canonical_bytes(manifest))
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", "authorize historical frozen repair"], repo)
+
+        _run(["git", "checkout", "-qb", "historical-repair"], repo)
+        (repo / path).write_text("authorized historical frozen repair\n")
+        _run(["git", "add", path], repo)
+        _run(["git", "commit", "-qm", "apply historical frozen repair"], repo)
+        _run(["git", "checkout", "-q", "historical-baseline"], repo)
+        _run(["git", "merge", "--no-ff", "-qm", "merge historical frozen repair", "historical-repair"], repo)
+        repair_merge = _run(["git", "rev-parse", "HEAD"], repo)
+        repair_parent = commit_parents(
+            repo, repair_merge, "self-test historical repair merge"
+        )[0]
+        manifest = strict_json_loads(
+            (repo / "plans/manifest.json").read_bytes(),
+            "self-test historical repair landing manifest",
+        )
+        row = next(
+            item for item in manifest["plans"] if item.get("phase_alias") == "HARDEN"
+        )
+        row["sl0_repairs"].append({
+            "authorization_id": authorization_id,
+            "entry": "landed",
+            "issue": "Consiliency/agent-harness#self-test",
+            "merge_commit": repair_merge,
+            "merge_first_parent": repair_parent,
+            "files": [{
+                "path": path,
+                "nodes": ["SelfTest::historical-repair"],
+                "old_blob": base_blob,
+                "new_blob": blob(repo, repair_merge, path)[0],
+            }],
+            "note": "self-test historical repair landed record",
+        })
+        (repo / "plans/manifest.json").write_bytes(canonical_bytes(manifest))
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", "record historical frozen repair landing"], repo)
+
+        repaired_bytes = (repo / path).read_bytes()
+        (repo / path).write_text("unrecorded post-repair frozen edit\n")
+        _run(["git", "add", path], repo)
+        _run(["git", "commit", "-qm", "unrecorded post-repair frozen edit"], repo)
+        (repo / path).write_bytes(repaired_bytes)
+        _run(["git", "add", path], repo)
+        _run(["git", "commit", "-qm", "restore post-repair frozen edit"], repo)
     verified = _run(["git", "rev-parse", "HEAD"], repo)
     expected = {
         path: blob(repo, verified, path)[0]
@@ -6730,6 +6802,7 @@ def self_test() -> None:
             "disposition-path-mismatch",
             "disposition-blob-mismatch",
             "unrecorded-disposition-change",
+            "unrecorded-post-repair-edit-restore",
         ):
             direct_rejected(
                 "historical-baseline-" + historical_mutation,
