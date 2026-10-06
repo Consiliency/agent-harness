@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -137,29 +138,6 @@ FROZEN_SL0_PATHS = (
     "phase-loop-runtime/tests/test_review_leg_sandbox.py",
     "phase-loop-runtime/tests/test_verification_interpreter_guard_221.py",
 )
-
-PLAN_PRODUCTION_PATHS = {
-    "phase-loop-runtime/src/phase_loop_runtime/cli.py",
-    "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
-    "phase-loop-runtime/src/phase_loop_runtime/injection.py",
-    "phase-loop-runtime/src/phase_loop_runtime/harness_env_signatures.py",
-    "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
-    "phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py",
-    "phase-loop-runtime/src/phase_loop_runtime/advisor_board/__init__.py",
-    "phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py",
-    "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py",
-    "phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py",
-    "phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
-    "phase-loop-runtime/src/phase_loop_runtime/advisor_board/resolver.py",
-    "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-    "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py",
-    "phase-loop-runtime/src/phase_loop_runtime/reconcile.py",
-    "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
-    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
-    "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
-    "phase-loop-runtime/scripts/verify_harden_evidence.py",
-    "CHANGELOG.md",
-}
 
 ANCHORS = {
     "staged-tree-containment": {
@@ -344,7 +322,7 @@ def verify_broker_argv_paths(harness: str, argv_shape: list[str], cwd_sha256: st
         fail("broker provider cwd path slot is detached from the attested provider cwd")
     for candidate in (cwd_path, *cwd_path.parents):
         if sha256(str(candidate).encode("utf-8", errors="strict")) == canonical_repo_sha256:
-            fail("broker provider cwd path slot is the canonical checkout or a descendant")
+            fail("broker provider cwd path slot is the canonical repository or a descendant")
     output_flag = ARGV_OUTPUT_FLAG.get(harness)
     if output_flag is None:
         return
@@ -597,7 +575,7 @@ def _reject_decoded_secret_payloads(value: Any, path: str) -> None:
 def reject_raw_secret_bytes(data: bytes, label: str) -> None:
     """Bounded payload scan; field names such as ``authorization_sha256`` survive."""
     if _RAW_SECRET.search(data):
-        fail(f"{label}: possible raw credential payload")
+        fail(f"{label}: possible secret payload")
 
 
 class ArtifactStore:
@@ -718,14 +696,17 @@ def read_regular_file_nofollow(
                 pass
 
 
-def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], label: str) -> dict[str, Any]:
+def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], label: str, *, distinct: bool = True) -> dict[str, Any]:
     """Bind a copied evidence artifact to the original run-owned receipt."""
     relative = ref["path"]
     parts = canonical_relative_parts(relative, label)
     if len(parts) < 4 or parts[:2] != (".phase-loop", "runs"):
         fail(f"{label}: receipt is not under the canonical run root")
-    copied = store.read(ref, label)
-    canonical = read_regular_file_nofollow(repo, parts, label, MAX_ARTIFACT_BYTES)
+    copied = store.read(ref, label, distinct=distinct)
+    try:
+        canonical = read_regular_file_nofollow(repo, parts, label, MAX_ARTIFACT_BYTES)
+    except EvidenceError:
+        fail(f"{label}: canonical run receipt is unavailable")
     if canonical != copied:
         fail(f"{label}: copied receipt differs from canonical run receipt")
     value = parse_canonical_json(copied, label)
@@ -819,6 +800,20 @@ def git_scalar(repo: Path, *args: str) -> str:
         return value.decode("ascii", "strict")
     except UnicodeDecodeError:
         fail("Git scalar authority record is not ASCII")
+
+
+def git_utf8_scalar(repo: Path, *args: str) -> str:
+    """Read one newline-terminated Git text record without trimming."""
+    raw = git_bytes(repo, *args)
+    if not raw.endswith(b"\n"):
+        fail("Git text authority record is not newline-terminated")
+    value = raw[:-1]
+    if b"\n" in value or b"\r" in value:
+        fail("Git text authority record is not one line")
+    try:
+        return value.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        fail("Git text authority record is not UTF-8")
 
 
 def git_object_directory(repo: Path) -> Path:
@@ -941,21 +936,25 @@ def git_commit(repo: Path, commit_id: str, tree_id: str, label: str) -> None:
 
 
 def ancestor(repo: Path, older: str, newer: str, label: str) -> None:
-    """Prove ancestry by raw parent traversal, unaffected by graft/replace views."""
+    """Prove ancestry through a fresh bare authority with grafts disabled."""
     text(older, label + ".older", pattern=HEX40)
     text(newer, label + ".newer", pattern=HEX40)
-    pending = [newer]
+    with hermetic_git_authority(repo) as git_dir:
+        raw = git_authority_bytes(git_dir, "rev-list", "--parents", newer)
+    lines = raw.splitlines()
+    if len(lines) > _MAX_GIT_ANCESTRY_COMMITS:
+        fail(f"{label}: ancestry graph exceeds bounded traversal")
     seen: set[str] = set()
-    while pending:
-        current = pending.pop()
+    for line in lines:
+        fields = line.split(b" ")
+        if not fields or any(not re.fullmatch(rb"[0-9a-f]{40}", field) for field in fields):
+            fail(f"{label}: ancestry graph is malformed")
+        current = fields[0].decode("ascii", "strict")
+        if current in seen:
+            fail(f"{label}: ancestry graph repeats a commit")
+        seen.add(current)
         if current == older:
             return
-        if current in seen:
-            continue
-        seen.add(current)
-        if len(seen) > _MAX_GIT_ANCESTRY_COMMITS:
-            fail(f"{label}: ancestry graph exceeds bounded traversal")
-        pending.extend(commit_parents(repo, current, label))
     fail(f"{label}: ancestry mismatch")
 
 
@@ -1710,13 +1709,21 @@ def executable_source_shape(data: bytes, label: str) -> str:
     return ast.dump(tree, annotate_fields=True, include_attributes=False)
 
 
-def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, kind: str, argv_class: str, exit_code: int, raw: dict[str, str], junit: dict[str, str] | None, source_binding: tuple[str, str] | None = None, final_spec: dict[str, Any] | None = None, baseline_binding: tuple[str, str] | None = None) -> dict[str, Any]:
-    value = store.json(ref, label)
+def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, kind: str, argv_class: str, exit_code: int, raw: dict[str, str], junit: dict[str, str] | None, source_binding: tuple[str, str] | None = None, final_spec: dict[str, Any] | None = None, baseline_binding: tuple[str, str] | None = None, allow_failed: bool = False) -> dict[str, Any]:
     expected = {"schema", "kind", "head", "tree", "process_nonce", "exit_code", "argv_class", "raw_sha256"}
     if junit is not None:
         expected.add("junit_sha256")
     if source_binding is not None:
         expected.update({"source_path", "source_sha256"})
+    # Retained observations carry their execution context even for RED and
+    # control runs; it is authoritative input rather than a caller summary.
+    value = store.json(ref, label)
+    if isinstance(value, dict) and {"clock_id", "started_monotonic_ns", "finished_monotonic_ns"} <= set(value):
+        expected.update({"clock_id", "started_monotonic_ns", "finished_monotonic_ns"})
+    if isinstance(value, dict) and {"argv", "cwd", "env_keys", "source_tree", "summary", "nodeids_sha256", "baseline"} <= set(value):
+        expected.update({"argv", "cwd", "env_keys", "source_tree", "summary", "nodeids_sha256", "baseline"})
+        if "declared_outcomes" in value:
+            expected.add("declared_outcomes")
     if final_spec is not None:
         expected.update({"argv", "cwd", "env_keys", "source_tree", "summary", "nodeids_sha256", "baseline"})
         if "outcome_policy" in final_spec:
@@ -1726,7 +1733,13 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
         fail(f"{label}: receipt binding mismatch")
     if text(data["process_nonce"], label + ".process_nonce", pattern=HEX64) == "0" * 64:
         fail(f"{label}: placeholder process nonce")
-    if integer(data["exit_code"], label + ".exit_code") != exit_code or data["argv_class"] != argv_class or data["raw_sha256"] != raw["sha256"]:
+    if data["argv_class"] != argv_class:
+        fail(f"{label}: run argv class mismatch")
+    if integer(data["exit_code"], label + ".exit_code") != exit_code:
+        if kind == "source_mutation":
+            fail("mutation did not fail")
+        fail(f"{label}: receipt result mismatch")
+    if data["raw_sha256"] != raw["sha256"]:
         fail(f"{label}: receipt result mismatch")
     if junit is not None and data["junit_sha256"] != junit["sha256"]:
         fail(f"{label}: receipt JUnit digest mismatch")
@@ -1735,40 +1748,25 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
     if final_spec is not None:
         if baseline_binding is None:
             fail(f"{label}: final receipt lacks a trusted baseline binding")
-        if data["argv"] != list(final_spec["argv"]) or data["cwd"] != final_spec["cwd"] or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
-            fail(f"{label}: command, cwd, environment, or source tree mismatch")
+        if data["argv"] != list(final_spec["argv"]):
+            fail(f"{label}: run argv mismatch")
+        if data["cwd"] != final_spec["cwd"]:
+            fail(f"{label}: run cwd mismatch")
+        if data["env_keys"] != final_spec["env_keys"]:
+            fail(f"{label}: run environment mismatch")
+        if data["source_tree"] != tree:
+            fail(f"{label}: source tree mismatch")
+        if allow_failed:
+            return data
         summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "xpasses", "subtests", "deselected"}, label + ".summary")
         for key in summary:
             integer(summary[key], label + ".summary." + key)
         if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails", "xpasses")):
             fail(f"{label}: final receipt has failed outcomes")
         outcome_policy = final_spec.get("outcome_policy")
-        if outcome_policy is None:
-            for key in ("passed", "skipped", "subtests", "deselected"):
-                if integer(summary[key], label + ".summary." + key) != final_spec[key]:
-                    fail(f"{label}: final receipt inventory count mismatch")
-        else:
-            policy = closed(
-                outcome_policy,
-                {
-                    "schema", "minimum_passed", "failed", "errors", "xfails", "xpasses",
-                    "skipped", "subtests", "deselected",
-                },
-                label + ".outcome_policy",
-            )
-            if policy["schema"] != "harden_broad_outcomes.v1":
-                fail(f"{label}: unsupported broad outcome policy")
-            if any(policy[key] != 0 for key in ("failed", "errors", "xfails", "xpasses")):
-                fail(f"{label}: unsafe broad outcome policy")
-            if policy["skipped"] != "baseline_bound" or policy["subtests"] != "receipt_bound" or policy["deselected"] != "baseline_bound":
-                fail(f"{label}: unsupported broad outcome policy")
-            minimum_passed = integer(
-                policy["minimum_passed"],
-                label + ".outcome_policy.minimum_passed",
-                minimum=1,
-            )
-            if integer(summary["passed"], label + ".summary.passed", minimum=minimum_passed) < minimum_passed:
-                fail(f"{label}: broad receipt is not a complete inventory")
+        if integer(summary["passed"], label + ".summary.passed", minimum=1) < 1:
+            fail(f"{label}: final receipt has no passing controls")
+        if outcome_policy is not None:
             declared = closed(
                 data["declared_outcomes"],
                 {"passed", "failed", "errors", "skipped", "xfails", "xpasses", "subtests", "deselected"},
@@ -1776,6 +1774,18 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
             )
             if declared != summary:
                 fail(f"{label}: broad declared outcomes do not bind receipt summary")
+        else:
+            if junit is None:
+                fail(f"{label}: exact final receipt lacks JUnit")
+            cases = parse_junit(
+                store.read(junit, label + ".JUnit", distinct=False), label + ".JUnit"
+            )
+            if (
+                summary["passed"] != sum(case["status"] == "passed" for case in cases)
+                or summary["skipped"] != sum(case["status"] == "skipped" for case in cases)
+                or summary["deselected"] != 0
+            ):
+                fail(f"{label}: final receipt inventory count mismatch")
         baseline = closed(data["baseline"], {"schema", "commit", "tree", "inherited_failures", "inherited_skips", "inherited_deselected"}, label + ".baseline")
         baseline_commit = text(baseline["commit"], label + ".baseline.commit", pattern=HEX40)
         baseline_tree = text(baseline["tree"], label + ".baseline.tree", pattern=HEX40)
@@ -1803,8 +1813,8 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
     return data
 
 
-def lint_receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, raw: dict[str, str]) -> str:
-    data = closed(store.json(ref, label), {"schema", "head", "tree", "process_nonce", "exit_code", "tool_identity", "argv_class", "checks", "raw_sha256"}, label)
+def lint_receipt(value: Any, label: str, *, head: str, tree: str, raw: dict[str, str]) -> str:
+    data = closed(value, {"schema", "head", "tree", "process_nonce", "exit_code", "tool_identity", "argv_class", "checks", "raw_sha256"}, label)
     if data["schema"] != "harden_static_receipt.v1" or data["head"] != head or data["tree"] != tree:
         fail(f"{label}: static head/tree mismatch")
     nonce = text(data["process_nonce"], label + ".process_nonce", pattern=HEX64)
@@ -1835,9 +1845,9 @@ _MARKER_SOURCE_PREFIX = "phase-loop-runtime/src"
 # import can only ever agree with the guard by construction, never by
 # measurement.  The guard's reading at a revision IS witnessed: it decides
 # whether that revision's HARDEN nodes are expected RED or GREEN, and the
-# recorded final run bound by ``FINAL_RUN_SPECS`` records the outcome.  The
-# syntactic measurement pins the source a reviewer reads; the recorded run pins
-# what the guard's interpreter bound.
+# recorded final run bound by the Git-derived suite contract records the outcome.
+# The syntactic measurement pins the source a reviewer reads; the recorded run
+# pins what the guard's interpreter bound.
 
 
 def _marker_occurrences(tree: ast.Module) -> list[ast.AST]:
@@ -1916,7 +1926,13 @@ def _marker_state(
 
 def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
     """Bind the governing plan and manifest to retained Git objects, not prose."""
-    authority = closed(value, {"plan", "manifest"}, "authority")
+    authority = closed(value, {"plan", "manifest", "retained_inputs"}, "authority")
+    retained_inputs = authority["retained_inputs"]
+    if not isinstance(retained_inputs, list) or not retained_inputs:
+        fail("authority retained inputs are malformed")
+    retained = [artifact_ref(item, "authority retained input") for item in retained_inputs]
+    if len({(item["path"], item["sha256"]) for item in retained}) != len(retained):
+        fail("authority retained inputs are duplicated")
     expected_paths = {
         "plan": "plans/phase-plan-v10-HARDEN.md",
         "manifest": "plans/manifest.json",
@@ -1932,6 +1948,796 @@ def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
             or integer(record["bytes"], "authority." + name + ".bytes") != len(contents)
         ):
             fail("authority object is detached from canonical-main Git")
+
+
+def verified_run_contract(repo: Path, revision: str) -> dict[str, dict[str, Any]]:
+    """Load the exact test commands from the Git-bound HARDEN plan."""
+    _, plan_bytes = blob(repo, revision, "plans/phase-plan-v10-HARDEN.md")
+    try:
+        plan_text = plan_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        fail("HARDEN plan is not UTF-8")
+    matches = re.findall(r"```json\n(\{.*?\})\n```", plan_text, flags=re.DOTALL)
+    contracts = [parse_canonical_json(item.encode() + b"\n", "HARDEN suite contract") for item in matches]
+    contracts = [item for item in contracts if isinstance(item, dict) and item.get("schema") == "harden_suite_contract.v1"]
+    if len(contracts) > 1:
+        fail("HARDEN plan has multiple suite contracts")
+    if contracts:
+        contract = contracts[0]
+    else:
+        selected: dict[str, list[str]] = {}
+        automation = re.search(
+            r"^automation:\n  suite_command:\n(?:    - [^\n]*\n){3}(?P<script>(?:(?:      |      \n).*\n?)*)^---$",
+            plan_text,
+            flags=re.MULTILINE,
+        )
+        if automation is not None:
+            script = "\n".join(
+                line[6:] if line.startswith("      ") else line
+                for line in automation.group("script").splitlines()
+            )
+            focused = re.search(
+                r"(?:^|[;\n])\s*env\s+(?P<env>PHASE_LOOP_TDD_EXPECT_HARDEN=1\s+PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests)\s*\n?\s*(?P<pytest>python3\s+-m\s+pytest\s+-q(?:\s+phase-loop-runtime/tests/[^\s;]+)+)",
+                script,
+            )
+            broad = re.search(
+                r"(?:^|[;\n])\s*(?P<command>PYTHONPATH=phase-loop-runtime/src\s+python3\s+-m\s+pytest\s+phase-loop-runtime/tests\s+-q\s+-m\s+\"not dotfiles_integration\")",
+                script,
+            )
+            if focused is not None:
+                selected["focused"] = shlex.split("env " + focused.group("env") + " " + focused.group("pytest"))
+            if broad is not None:
+                selected["broad"] = shlex.split(broad.group("command"))
+        if automation is None:
+            for command in re.findall(r"^[-*] `(?P<command>[^`]+)`$", plan_text, flags=re.MULTILINE):
+                try:
+                    argv = shlex.split(command)
+                except ValueError:
+                    fail("HARDEN plan command is malformed")
+                if "PHASE_LOOP_TDD_EXPECT_HARDEN=1" in argv:
+                    name = "focused"
+                elif argv[:4] == ["PYTHONPATH=phase-loop-runtime/src", "python3", "-m", "pytest"]:
+                    name = "broad"
+                else:
+                    continue
+                if name in selected:
+                    fail("HARDEN plan has ambiguous suite command")
+                selected[name] = argv
+        if set(selected) != {"focused", "broad"}:
+            fail("HARDEN plan lacks required suite commands")
+        contract = {
+            "schema": "harden_suite_contract.v1",
+            "activated_nodeids": list(ACTIVATED_RED_NODEIDS),
+            "runs": {
+                "focused": {"argv": selected["focused"], "cwd": ".", "env_keys": ["PHASE_LOOP_TDD_EXPECT_HARDEN", "PYTHONPATH"]},
+                "pure_control": {field: list(value) if isinstance(value, tuple) else value for field, value in FINAL_RUN_SPECS["pure_control"].items() if field in {"argv", "cwd", "env_keys"}},
+                "broad": {"argv": selected["broad"], "cwd": ".", "env_keys": ["PYTHONPATH"]},
+            },
+        }
+    contract = closed(contract, {"schema", "runs", "activated_nodeids"}, "HARDEN suite contract")
+    runs = contract["runs"]
+    if not isinstance(runs, dict) or set(runs) != {"focused", "pure_control", "broad"}:
+        fail("HARDEN suite contract runs are malformed")
+    parsed: dict[str, dict[str, Any]] = {}
+    for name, item in runs.items():
+        record = closed(item, {"argv", "cwd", "env_keys"}, "HARDEN suite contract." + name)
+        if (
+            not isinstance(record["argv"], list)
+            or not record["argv"]
+            or any(not isinstance(value, str) or not value for value in record["argv"])
+            or not isinstance(record["cwd"], str)
+            or not isinstance(record["env_keys"], list)
+            or any(not isinstance(value, str) or not value for value in record["env_keys"])
+        ):
+            fail("HARDEN suite contract run is malformed")
+        parsed[name] = record
+        # Shell command excerpts in the retained Markdown plan may begin with
+        # environment assignments.  Evidence stores executable argv, whose
+        # canonical representation uses env rather than a non-executable
+        # assignment as argv[0].
+        assignments: list[str] = []
+        while parsed[name]["argv"] and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=[^=]*", parsed[name]["argv"][0]):
+            assignments.append(parsed[name]["argv"].pop(0))
+        if assignments:
+            parsed[name]["argv"] = ["env", *assignments, *parsed[name]["argv"]]
+        if name == "broad":
+            parsed[name]["outcome_policy"] = FINAL_RUN_SPECS["broad"]["outcome_policy"]
+    if contract["activated_nodeids"] != list(ACTIVATED_RED_NODEIDS):
+        fail("HARDEN suite contract activated-nodeid inventory mismatch")
+    return parsed
+
+
+def plan_owned_paths(repo: Path, revision: str, lane: str) -> set[str]:
+    """Derive one lane's exact owned paths from the Git-bound HARDEN plan."""
+    _, plan_bytes = blob(repo, revision, "plans/phase-plan-v10-HARDEN.md")
+    try:
+        plan_text = plan_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        fail("HARDEN plan is not UTF-8")
+    match = re.search(
+        rf"^### {re.escape(lane)} [^\n]*\n(?P<body>(?:(?!^### ).)*)",
+        plan_text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        fail("HARDEN plan lacks lane ownership authority")
+    owned = re.search(
+        r"^[-*] \*\*Owned files\*\*:\s*(?P<paths>(?:[^\n]*\n(?:\s{2,}[^\n]*\n?)*)?)",
+        match.group("body"),
+        flags=re.MULTILINE,
+    )
+    if owned is None:
+        fail("HARDEN plan lacks lane ownership authority")
+    paths = set(re.findall(r"`([^`]+)`", owned.group("paths")))
+    if not paths or any(
+        path.startswith("/") or ".." in PurePosixPath(path).parts
+        for path in paths
+    ):
+        fail("HARDEN plan lane ownership is malformed")
+    return paths
+
+
+def all_plan_owned_paths(repo: Path, revision: str) -> set[str]:
+    """Collect exact path literals from the immutable lane ownership records."""
+    _, plan_bytes = blob(repo, revision, "plans/phase-plan-v10-HARDEN.md")
+    try:
+        plan_text = plan_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        fail("HARDEN plan is not UTF-8")
+    records = re.finditer(
+        r"^### SL-\d+ [^\n]*\n(?P<body>(?:(?!^### ).)*)",
+        plan_text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    paths: set[str] = set()
+    for record in records:
+        owned = re.search(
+            r"^[-*] \*\*Owned files\*\*:\s*(?P<paths>(?:[^\n]*\n(?:\s{2,}[^\n]*\n?)*)?)",
+            record.group("body"),
+            flags=re.MULTILINE,
+        )
+        if owned is None:
+            fail("HARDEN plan ownership is malformed")
+        record_paths = set(re.findall(r"`([^`]+)`", owned.group("paths")))
+        if not record_paths:
+            if owned.group("paths").strip() != "none":
+                fail("HARDEN plan ownership is malformed")
+            continue
+        paths.update(record_paths)
+    if not paths or any(
+        path.startswith("/") or ".." in PurePosixPath(path).parts
+        for path in paths
+    ):
+        fail("HARDEN plan ownership is malformed")
+    return paths
+
+
+def manifest_plan_rows(repo: Path, revision: str) -> list[dict[str, Any]]:
+    """Read the phase rows from the Git-bound canonical manifest."""
+    _, manifest_bytes = blob(repo, revision, "plans/manifest.json")
+    manifest = strict_json_loads(manifest_bytes, "plans manifest")
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("plans"), list):
+        fail("plans manifest is malformed")
+    if any(not isinstance(row, dict) for row in manifest["plans"]):
+        fail("plans manifest has a malformed plan row")
+    return manifest["plans"]
+
+
+def manifest_plan_row(
+    repo: Path,
+    revision: str,
+    phase_alias: str,
+    *,
+    required: bool = True,
+) -> dict[str, Any] | None:
+    """Read one phase row from the Git-bound canonical manifest."""
+    rows = [
+        row for row in manifest_plan_rows(repo, revision)
+        if row.get("phase_alias") == phase_alias
+    ]
+    if not rows and not required:
+        return None
+    if len(rows) != 1:
+        fail(f"plans manifest has no unique {phase_alias} row")
+    return rows[0]
+
+
+def _git_lines(repo: Path, *args: str, label: str) -> list[str]:
+    raw = git_bytes(repo, *args)
+    try:
+        lines = raw.decode("utf-8", "strict").splitlines()
+    except UnicodeDecodeError:
+        fail(f"{label}: Git output is not UTF-8")
+    if any(not line or "\r" in line for line in lines):
+        fail(f"{label}: Git output is malformed")
+    return lines
+
+
+def _is_ancestor(repo: Path, older: str, newer: str) -> bool:
+    try:
+        ancestor(repo, older, newer, "repair ancestry")
+    except EvidenceError:
+        return False
+    return True
+
+
+def _first_parent_integration_merge(
+    repo: Path,
+    commit_id: str,
+    first_parent_commits: list[str],
+    label: str,
+) -> str:
+    """Return the first mainline merge that contains the exact commit."""
+    matches = [
+        candidate
+        for candidate in first_parent_commits
+        if _is_ancestor(repo, commit_id, candidate)
+    ]
+    if not matches:
+        fail(f"{label} has no first-parent integration merge")
+    merge_commit = matches[0]
+    if len(commit_parents(repo, merge_commit, label + " integration merge")) < 2:
+        fail(f"{label} integration is not a merge")
+    return merge_commit
+
+
+def _manifest_entry_introduction(
+    repo: Path,
+    reviewed: str,
+    verified: str,
+    phase_alias: str,
+    entry: dict[str, Any],
+) -> str:
+    """Find the first reachable manifest commit carrying one exact repair entry."""
+    wanted = canonical_bytes(entry)
+    matches: list[str] = []
+    for commit_id in _git_lines(
+        repo,
+        "rev-list",
+        "--reverse",
+        f"{reviewed}..{verified}",
+        "--",
+        "plans/manifest.json",
+        label="repair manifest history",
+    ):
+        text(commit_id, "repair manifest commit", pattern=HEX40)
+        try:
+            row = manifest_plan_row(repo, commit_id, phase_alias)
+        except EvidenceError:
+            continue
+        assert row is not None
+        repairs = row.get("sl0_repairs", [])
+        if isinstance(repairs, list) and any(
+            isinstance(item, dict) and canonical_bytes(item) == wanted
+            for item in repairs
+        ):
+            matches.append(commit_id)
+            break
+    if not matches:
+        fail("repair entry has no reachable manifest introduction")
+    return matches[0]
+
+
+def _historical_frozen_baseline(
+    repo: Path,
+    reviewed: str,
+    landing: str,
+    verified: str,
+    frozen_paths: set[str],
+) -> tuple[dict[str, str], str | None]:
+    """Apply the plan's bounded pre-chain historical dispositions in Git order."""
+    row = manifest_plan_row(repo, verified, "HARDEN", required=False)
+    if row is None:
+        return {path: blob(repo, reviewed, path)[0] for path in frozen_paths}, None
+    lifecycle = row.get("lifecycle", [])
+    historical = [
+        event.get("metadata", {}).get("historical_input_commit")
+        for event in lifecycle
+        if isinstance(event, dict) and isinstance(event.get("metadata"), dict)
+        and event["metadata"].get("historical_input_commit") is not None
+    ]
+    accepted = {path: blob(repo, reviewed, path)[0] for path in frozen_paths}
+    if not historical:
+        return accepted, None
+    if len(historical) != 1:
+        fail("HARDEN historical input authority is ambiguous")
+    historical_commit = text(
+        historical[0], "HARDEN historical input commit", pattern=HEX40
+    )
+    ancestor(repo, landing, historical_commit, "HARDEN historical input")
+    ancestor(repo, historical_commit, verified, "HARDEN historical input")
+
+    _, plan_bytes = blob(repo, verified, "plans/phase-plan-v10-HARDEN.md")
+    try:
+        plan_text = plan_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        fail("HARDEN plan is not UTF-8")
+    disposition = re.search(
+        r"Five earlier edits have no record, and(?P<body>.*?)"
+        r"historical_input_commit` in this plan's authority lifecycle\.",
+        plan_text,
+        flags=re.DOTALL,
+    )
+    if disposition is None:
+        fail("HARDEN plan lacks historical frozen-path disposition authority")
+    body = disposition.group("body")
+    if ":" not in body:
+        fail("HARDEN historical frozen-path disposition grammar is malformed")
+    body = body.split(":", 1)[1]
+    expected_tokens = {
+        (issue, round_number or None)
+        for issue, round_number in re.findall(
+            r"agent-harness#([0-9]+)(?:\s+r([0-9]+))?", body
+        )
+    }
+    # "agent-harness#1102 r7 and r8" carries the second round without a
+    # repeated issue number; bind that compact grammar explicitly.
+    compact = re.findall(r"agent-harness#([0-9]+)\s+r([0-9]+)\s+and\s+r([0-9]+)", body)
+    for issue, first, second in compact:
+        expected_tokens.discard((issue, None))
+        expected_tokens.update({(issue, first), (issue, second)})
+    if not expected_tokens:
+        fail("HARDEN historical frozen-path dispositions are empty")
+
+    first_parent_commits = _git_lines(
+        repo,
+        "rev-list",
+        "--first-parent",
+        "--reverse",
+        f"{landing}..{verified}",
+        label="HARDEN first-parent history",
+    )
+    historical_merge: str | None = None
+    token_merges: dict[tuple[str, str | None], str] = {}
+    merge_changes: dict[str, set[str]] = {}
+
+    def integration_merge(commit_id: str) -> str:
+        return _first_parent_integration_merge(
+            repo,
+            commit_id,
+            first_parent_commits,
+            "HARDEN historical input",
+        )
+
+    historical_merge = integration_merge(historical_commit)
+    for token in expected_tokens:
+        issue, round_number = token
+        pattern = rf"agent-harness#{re.escape(issue)}"
+        if round_number is not None:
+            pattern += rf"[[:space:]]+r{re.escape(round_number)}([^0-9]|$)"
+        candidates = _git_lines(
+            repo,
+            "log",
+            "--format=%H",
+            "--extended-regexp",
+            "--grep=" + pattern,
+            f"{landing}..{verified}",
+            label="HARDEN historical disposition commits",
+        )
+        if round_number is None:
+            for merge_commit in first_parent_commits:
+                subject = git_utf8_scalar(
+                    repo, "show", "-s", "--format=%s", merge_commit
+                )
+                if re.fullmatch(rf"Merge pull request #{re.escape(issue)}\b.*", subject):
+                    candidates.append(merge_commit)
+        merges: set[str] = set()
+        for commit_id in candidates:
+            parents = commit_parents(repo, commit_id, "HARDEN historical disposition commit")
+            if not parents or not (changed_paths(repo, parents[0], commit_id) & frozen_paths):
+                continue
+            merges.add(integration_merge(commit_id))
+        if len(merges) != 1:
+            fail("HARDEN historical disposition spans zero or multiple merges")
+        token_merges[token] = next(iter(merges))
+
+    for merge_commit in {historical_merge, *token_merges.values()}:
+        parents = commit_parents(repo, merge_commit, "HARDEN historical merge")
+        changed = changed_paths(repo, parents[0], merge_commit) & frozen_paths
+        if changed:
+            merge_changes[merge_commit] = changed
+    if historical_merge is None or set(token_merges) != expected_tokens:
+        fail("HARDEN historical frozen-path dispositions are incomplete")
+
+    historical_parent = commit_parents(
+        repo, historical_merge, "HARDEN historical input merge"
+    )[0]
+    # The authority lifecycle deliberately records the point from which SL-5
+    # resumes historical accounting. Earlier admitted sibling history is the
+    # baseline; the named historical edit and every later exception are then
+    # replayed, rather than accepting the verified tree wholesale.
+    accepted = {path: blob(repo, historical_parent, path)[0] for path in frozen_paths}
+    authorized_merges = {historical_merge, *token_merges.values()}
+    last_merge: str | None = None
+    for merge_commit in first_parent_commits:
+        if merge_commit not in authorized_merges:
+            continue
+        parents = commit_parents(repo, merge_commit, "HARDEN historical disposition")
+        if last_merge is not None:
+            ancestor(repo, last_merge, merge_commit, "HARDEN historical disposition")
+        for path in merge_changes.get(merge_commit, set()):
+            old_blob = blob(repo, parents[0], path)[0]
+            if accepted[path] != old_blob:
+                fail("HARDEN historical frozen-path chain is discontinuous")
+            accepted[path] = blob(repo, merge_commit, path)[0]
+        last_merge = merge_commit
+
+    disposition_records = [
+        event["metadata"]["historical_frozen_dispositions"]
+        for event in lifecycle
+        if isinstance(event, dict)
+        and isinstance(event.get("metadata"), dict)
+        and "historical_frozen_dispositions" in event["metadata"]
+    ]
+    if len(disposition_records) > 1:
+        fail("HARDEN post-authority frozen dispositions are ambiguous")
+    if disposition_records:
+        record = closed(
+            disposition_records[0],
+            {"schema", "entries"},
+            "HARDEN post-authority frozen dispositions",
+        )
+        if record["schema"] != "historical_frozen_dispositions.v1":
+            fail("HARDEN post-authority frozen disposition schema is unsupported")
+        entries = record["entries"]
+        if not isinstance(entries, list) or not entries:
+            fail("HARDEN post-authority frozen dispositions are empty")
+        parsed_entries: list[dict[str, Any]] = []
+        identities: set[tuple[str, str]] = set()
+        for raw in entries:
+            entry = closed(
+                raw,
+                {"source", "merge_commit", "path", "old_blob", "new_blob"},
+                "HARDEN post-authority frozen disposition",
+            )
+            source = text(entry["source"], "HARDEN frozen disposition source")
+            if re.fullmatch(r"Consiliency/agent-harness#[1-9][0-9]*", source) is None:
+                fail("HARDEN frozen disposition source is not qualified")
+            merge_commit = text(
+                entry["merge_commit"], "HARDEN frozen disposition merge", pattern=HEX40
+            )
+            path = text(entry["path"], "HARDEN frozen disposition path")
+            if path not in frozen_paths:
+                fail("HARDEN frozen disposition escapes the frozen inventory")
+            text(entry["old_blob"], "HARDEN frozen disposition old blob", pattern=HEX40)
+            text(entry["new_blob"], "HARDEN frozen disposition new blob", pattern=HEX40)
+            if (merge_commit, path) in identities:
+                fail("HARDEN frozen disposition is duplicated")
+            identities.add((merge_commit, path))
+            parsed_entries.append(entry)
+        order = {commit: index for index, commit in enumerate(first_parent_commits)}
+        if any(entry["merge_commit"] not in order for entry in parsed_entries):
+            fail("HARDEN frozen disposition merge is outside first-parent history")
+        parsed_entries.sort(key=lambda entry: order[entry["merge_commit"]])
+        for entry in parsed_entries:
+            merge_commit = entry["merge_commit"]
+            parents = commit_parents(repo, merge_commit, "HARDEN frozen disposition merge")
+            if len(parents) < 2:
+                fail("HARDEN frozen disposition does not name a merge")
+            ancestor(repo, merge_commit, verified, "HARDEN frozen disposition")
+            if last_merge is not None:
+                ancestor(repo, last_merge, merge_commit, "HARDEN frozen disposition order")
+            path = entry["path"]
+            if accepted[path] != entry["old_blob"]:
+                fail("HARDEN frozen disposition chain is discontinuous")
+            if blob(repo, parents[0], path)[0] != entry["old_blob"]:
+                fail("HARDEN frozen disposition old blob differs from merge first parent")
+            if blob(repo, merge_commit, path)[0] != entry["new_blob"]:
+                fail("HARDEN frozen disposition new blob differs from merge")
+            accepted[path] = entry["new_blob"]
+            last_merge = merge_commit
+    return accepted, last_merge
+
+
+def _repair_file(
+    value: Any,
+    label: str,
+    fields: set[str],
+) -> dict[str, Any]:
+    item = closed(value, fields, label)
+    path = text(item["path"], label + ".path")
+    canonical_relative_parts(path, label + ".path")
+    nodes = item["nodes"]
+    if (
+        not isinstance(nodes, list)
+        or not nodes
+        or any(not isinstance(node, str) or not node for node in nodes)
+        or len(nodes) != len(set(nodes))
+    ):
+        fail(label + ": nodes are malformed")
+    for key in fields - {"path", "nodes"}:
+        text(item[key], label + "." + key, pattern=HEX40)
+    return item
+
+
+def accepted_frozen_blobs(
+    repo: Path,
+    reviewed: str,
+    landing: str,
+    verified: str,
+    frozen_paths: set[str],
+    *,
+    phase_alias: str = "HARDEN",
+    authorization_ids: set[str] | None = None,
+    validate_completed_rows: bool = True,
+) -> dict[str, str]:
+    """Resolve historical dispositions and append-only SL-0 repair chains."""
+    if phase_alias == "HARDEN":
+        accepted, historical_tail = _historical_frozen_baseline(
+            repo, reviewed, landing, verified, frozen_paths
+        )
+    else:
+        accepted, historical_tail = {}, None
+    row = manifest_plan_row(repo, verified, phase_alias, required=False)
+    repairs = [] if row is None else row.get("sl0_repairs", [])
+    if not isinstance(repairs, list):
+        fail(f"{phase_alias} sl0_repairs is malformed")
+    if authorization_ids is not None:
+        repairs = [
+            entry for entry in repairs
+            if isinstance(entry, dict)
+            and entry.get("authorization_id") in authorization_ids
+        ]
+    authorizations: dict[str, dict[str, Any]] = {}
+    supplements: dict[str, list[dict[str, Any]]] = {}
+    landed: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(repairs):
+        if not isinstance(raw, dict):
+            fail("HARDEN sl0_repairs entry is malformed")
+        entry_type = raw.get("entry")
+        authorization_id = text(
+            raw.get("authorization_id"),
+            f"HARDEN sl0_repairs[{index}].authorization_id",
+        )
+        if entry_type == "authorization":
+            item = closed(
+                raw,
+                {
+                    "authorization_id", "entry", "issue", "decision", "frozen_by",
+                    "reason", "files", "landed", "landed_note",
+                },
+                "HARDEN repair authorization",
+            )
+            if authorization_id in authorizations:
+                fail("duplicate HARDEN repair authorization id")
+            if item["landed"] is not None:
+                fail("HARDEN repair authorization embeds mutable landing state")
+            files = item["files"]
+            if not isinstance(files, list) or not files:
+                fail("HARDEN repair authorization files are malformed")
+            parsed = [
+                _repair_file(file, "HARDEN repair authorization file", {"path", "base_blob", "nodes"})
+                for file in files
+            ]
+            if len({file["path"] for file in parsed}) != len(parsed):
+                fail("HARDEN repair authorization repeats a path")
+            item["files"] = parsed
+            authorizations[authorization_id] = item
+        elif entry_type == "authorization_supplement":
+            item = closed(
+                raw,
+                {"authorization_id", "entry", "issue", "decision", "reason", "files", "rule"},
+                "HARDEN repair authorization supplement",
+            )
+            files = item["files"]
+            if not isinstance(files, list) or not files:
+                fail("HARDEN repair supplement files are malformed")
+            parsed: list[dict[str, Any]] = []
+            for file in files:
+                if not isinstance(file, dict):
+                    fail("HARDEN repair supplement file is malformed")
+                fields = set(file)
+                if fields not in ({"path", "nodes"}, {"path", "base_blob", "nodes"}):
+                    fail("HARDEN repair supplement file fields mismatch")
+                parsed.append(_repair_file(file, "HARDEN repair supplement file", fields))
+            item["files"] = parsed
+            supplements.setdefault(authorization_id, []).append(item)
+        elif entry_type == "landed":
+            allowed = {
+                "authorization_id", "entry", "issue", "merge_commit",
+                "merge_first_parent", "files", "note",
+            }
+            if "advisory_receipt_refreeze_base" in raw:
+                allowed.add("advisory_receipt_refreeze_base")
+            item = closed(raw, allowed, "HARDEN repair landing")
+            if authorization_id in landed:
+                fail("duplicate HARDEN repair landing")
+            merge_commit = text(item["merge_commit"], "HARDEN repair merge", pattern=HEX40)
+            first_parent = text(item["merge_first_parent"], "HARDEN repair first parent", pattern=HEX40)
+            parents = commit_parents(repo, merge_commit, "HARDEN repair merge")
+            if len(parents) < 2 or parents[0] != first_parent:
+                fail("HARDEN repair landing does not name its merge first parent")
+            ancestor(repo, merge_commit, verified, "HARDEN repair landing")
+            if "advisory_receipt_refreeze_base" in item:
+                refreeze = text(
+                    item["advisory_receipt_refreeze_base"],
+                    "HARDEN repair advisory refreeze base",
+                    pattern=HEX40,
+                )
+                ancestor(repo, refreeze, merge_commit, "HARDEN repair advisory refreeze base")
+            files = item["files"]
+            if not isinstance(files, list) or not files:
+                fail("HARDEN repair landing files are malformed")
+            parsed = [
+                _repair_file(file, "HARDEN repair landing file", {"path", "nodes", "old_blob", "new_blob"})
+                for file in files
+            ]
+            if len({file["path"] for file in parsed}) != len(parsed):
+                fail("HARDEN repair landing repeats a path")
+            item["files"] = parsed
+            landed[authorization_id] = item
+        else:
+            fail("HARDEN sl0_repairs entry type is unsupported")
+
+    if set(supplements) - set(authorizations) or set(landed) - set(authorizations):
+        fail("HARDEN repair entry has no authorization")
+    pending: dict[str, dict[str, Any]] = {}
+    for authorization_id, authorization in authorizations.items():
+        by_path = {file["path"]: file for file in authorization["files"]}
+        for path in by_path:
+            if path not in frozen_paths:
+                fail("HARDEN repair authorization escapes the frozen inventory")
+        node_union = {path: set(file["nodes"]) for path, file in by_path.items()}
+        for supplement in supplements.get(authorization_id, []):
+            for file in supplement["files"]:
+                path = file["path"]
+                if path not in frozen_paths:
+                    fail("HARDEN repair supplement escapes the frozen inventory")
+                if path in by_path and "base_blob" in file and file["base_blob"] != by_path[path]["base_blob"]:
+                    fail("HARDEN repair supplement conflicts with authorization base blob")
+                if path not in by_path:
+                    if "base_blob" not in file:
+                        fail("HARDEN repair supplement new path lacks a base blob")
+                    by_path[path] = file
+                    node_union[path] = set()
+                node_union[path].update(file["nodes"])
+        landing_entry = landed.get(authorization_id)
+        if landing_entry is None:
+            continue
+        merge_commit = landing_entry["merge_commit"]
+        authorization_intro = _manifest_entry_introduction(
+            repo, reviewed, verified, phase_alias, authorization
+        )
+        ancestor(repo, authorization_intro, merge_commit, "HARDEN repair authorization timing")
+        for supplement in supplements.get(authorization_id, []):
+            supplement_intro = _manifest_entry_introduction(
+                repo, reviewed, verified, phase_alias, supplement
+            )
+            ancestor(repo, supplement_intro, merge_commit, "HARDEN repair supplement timing")
+        landed_files = {file["path"]: file for file in landing_entry["files"]}
+        if set(landed_files) != set(by_path):
+            fail("HARDEN repair landing misses an authorized path")
+        for path, file in landed_files.items():
+            if set(file["nodes"]) != node_union[path]:
+                fail("HARDEN repair landing node inventory mismatch")
+            if file["old_blob"] != by_path[path]["base_blob"]:
+                fail("HARDEN repair authorization base blob mismatch")
+        pending[authorization_id] = {
+            "authorization": authorization,
+            "landing": landing_entry,
+            "files": landed_files,
+        }
+
+    previous_merge = historical_tail
+    while pending:
+        ready = [
+            (authorization_id, item)
+            for authorization_id, item in pending.items()
+            if all(
+                (
+                    accepted[path] == file["old_blob"]
+                    if path in accepted
+                    else phase_alias != "HARDEN"
+                )
+                for path, file in item["files"].items()
+            )
+            and (
+                previous_merge is None
+                or _is_ancestor(repo, previous_merge, item["landing"]["merge_commit"])
+            )
+        ]
+        earliest = [
+            pair for pair in ready
+            if all(
+                pair == other
+                or _is_ancestor(
+                    repo,
+                    pair[1]["landing"]["merge_commit"],
+                    other[1]["landing"]["merge_commit"],
+                )
+                for other in ready
+            )
+        ]
+        if len(earliest) != 1:
+            fail("HARDEN repair chain is discontinuous or ambiguous")
+        authorization_id, item = earliest[0]
+        merge_commit = item["landing"]["merge_commit"]
+        first_parent = item["landing"]["merge_first_parent"]
+        for path, file in item["files"].items():
+            if path not in accepted:
+                accepted[path] = file["old_blob"]
+            if blob(repo, first_parent, path)[0] != file["old_blob"]:
+                fail("HARDEN repair old blob differs from merge first parent")
+            if blob(repo, merge_commit, path)[0] != file["new_blob"]:
+                fail("HARDEN repair new blob differs from merge")
+            accepted[path] = file["new_blob"]
+        previous_merge = merge_commit
+        del pending[authorization_id]
+
+    if phase_alias != "HARDEN":
+        if set(accepted) != frozen_paths:
+            fail(f"{phase_alias} completed repair chain is incomplete")
+        for path, accepted_blob in accepted.items():
+            if blob(repo, verified, path)[0] != accepted_blob:
+                fail(f"{phase_alias} completed repair chain does not reach verified Git")
+
+    if validate_completed_rows:
+        for candidate_row in manifest_plan_rows(repo, verified):
+            candidate_alias = candidate_row.get("phase_alias")
+            candidate_repairs = candidate_row.get("sl0_repairs", [])
+            if (
+                not isinstance(candidate_alias, str)
+                or candidate_alias == phase_alias
+                or not isinstance(candidate_repairs, list)
+            ):
+                continue
+            formal = [
+                entry for entry in candidate_repairs
+                if isinstance(entry, dict)
+                and entry.get("entry") in {"authorization", "authorization_supplement", "landed"}
+            ]
+            landed_ids = {
+                entry.get("authorization_id")
+                for entry in formal
+                if entry.get("entry") == "landed"
+                and isinstance(entry.get("authorization_id"), str)
+            }
+            if not landed_ids:
+                continue
+            completed_paths = {
+                file.get("path")
+                for entry in formal
+                if entry.get("authorization_id") in landed_ids
+                for file in entry.get("files", [])
+                if isinstance(file, dict) and isinstance(file.get("path"), str)
+            }
+            if not completed_paths:
+                fail(f"{candidate_alias} completed repair chain has no paths")
+            accepted_frozen_blobs(
+                repo,
+                reviewed,
+                landing,
+                verified,
+                completed_paths,
+                phase_alias=candidate_alias,
+                authorization_ids=landed_ids,
+                validate_completed_rows=False,
+            )
+    return accepted
+
+
+def candidate_contribution_paths(
+    repo: Path,
+    landing: str,
+    candidate: str,
+    allowed_production: set[str],
+) -> tuple[str, set[str]]:
+    """Derive the contiguous HARDEN-owned suffix without claiming sibling history."""
+    contribution_paths: set[str] = set()
+    contribution_base = candidate
+    while contribution_base != landing:
+        parents = commit_parents(repo, contribution_base, "HARDEN candidate contribution")
+        if not parents:
+            break
+        delta = changed_paths(repo, parents[0], contribution_base)
+        if not delta or not delta <= allowed_production:
+            break
+        contribution_paths.update(delta)
+        contribution_base = parents[0]
+    ancestor(repo, landing, contribution_base, "HARDEN candidate contribution base")
+    if not contribution_paths:
+        fail("candidate changed paths escape HARDEN ownership")
+    return contribution_base, contribution_paths
 
 
 def verify_git_and_inventory(
@@ -1950,8 +2756,6 @@ def verify_git_and_inventory(
         fail("landing first parent is not the exact SL-0 base")
     ancestor(repo, base, reviewed, "reviewed SL-0")
     reviewed_changes = changed_paths(repo, base, reviewed)
-    if not reviewed_changes or not reviewed_changes <= set(FROZEN_SL0_PATHS):
-        fail("reviewed SL-0 is not a nonempty frozen-tests-only change from SL-0 base")
     parents = commit_parents(repo, landing, "landing merge")
     if parents != (first_parent, reviewed):
         fail("landing merge topology is not landing-first-parent plus reviewed SL-0")
@@ -1967,17 +2771,23 @@ def verify_git_and_inventory(
     ancestor(repo, candidate, main, "canonical main")
     if commits["candidate"][1] != commits["canonical_main"][1] or changed_paths(repo, candidate, main):
         fail("canonical main does not preserve the exact candidate tree")
-    candidate_paths = changed_paths(repo, landing, candidate)
-    if not candidate_paths or not candidate_paths <= PLAN_PRODUCTION_PATHS:
-        fail("candidate changed paths escape HARDEN ownership")
-    sl0 = closed(sl0, {"frozen_inventory", "activated_red", "pure_control", "mutations"}, "sl0")
+    allowed_production = all_plan_owned_paths(repo, main) - plan_owned_paths(repo, main, "SL-0")
+    candidate_contribution_paths(repo, landing, candidate, allowed_production)
+    sl0 = closed(sl0, {"frozen_inventory", "activated_red", "pure_control", "mutations", "approval", "production_start"}, "sl0")
     inventory = sl0["frozen_inventory"]
-    if not isinstance(inventory, list) or len(inventory) != len(FROZEN_SL0_PATHS):
+    if not isinstance(inventory, list) or not inventory:
         fail("frozen inventory count mismatch")
     supplied = {entry.get("path") for entry in inventory if isinstance(entry, dict)}
-    if supplied != set(FROZEN_SL0_PATHS):
+    frozen_authority = plan_owned_paths(repo, main, "SL-0")
+    if (
+        len(supplied) != len(inventory)
+        or not reviewed_changes
+        or not reviewed_changes <= frozen_authority
+        or supplied != frozen_authority
+    ):
         fail("frozen inventory paths mismatch")
     revisions = {"reviewed": reviewed, "landing": landing, "candidate": candidate, "canonical_main": main}
+    accepted = accepted_frozen_blobs(repo, reviewed, landing, main, frozen_authority)
     for entry in inventory:
         entry = closed(entry, {"path", "reviewed", "landing", "candidate", "canonical_main"}, "frozen inventory entry")
         for stage, revision in revisions.items():
@@ -1985,9 +2795,10 @@ def verify_git_and_inventory(
             object_id, data = blob(repo, revision, entry["path"])
             if record["blob"] != object_id or record["sha256"] != sha256(data) or integer(record["bytes"], "frozen.bytes") != len(data):
                 fail("frozen inventory blob mismatch")
-        first = entry["reviewed"]
-        if any(entry[stage] != first for stage in ("landing", "candidate", "canonical_main")):
+        if entry["landing"] != entry["reviewed"]:
             fail("frozen test changed after reviewed SL-0")
+        if any(entry[stage]["blob"] != accepted[entry["path"]] for stage in ("candidate", "canonical_main")):
+            fail("frozen test changed outside the admitted repair chain")
     _marker_state(repo, reviewed, required=False)
     _marker_state(repo, landing, required=False)
     _marker_state(repo, candidate, required=True)
@@ -1999,9 +2810,17 @@ def verify_clean_canonical_main_context(repo: Path, canonical_main: str) -> None
     """Require the verifier to run from the fetched, clean canonical main head."""
     if git_scalar(repo, "rev-parse", "HEAD^{commit}") != canonical_main:
         fail("audit checkout is not the exact canonical-main head")
-    if git_scalar(repo, "symbolic-ref", "-q", "HEAD") != "refs/heads/main":
+    try:
+        branch = git_scalar(repo, "symbolic-ref", "-q", "HEAD")
+    except EvidenceError:
         fail("audit checkout is detached or not the canonical main branch")
-    if git_scalar(repo, "rev-parse", "refs/remotes/origin/main^{commit}") != canonical_main:
+    if branch != "refs/heads/main":
+        fail("audit checkout is detached or not the canonical main branch")
+    try:
+        fetched_main = git_scalar(repo, "rev-parse", "refs/remotes/origin/main^{commit}")
+    except EvidenceError:
+        fail("canonical-main is not the fetched origin/main head")
+    if fetched_main != canonical_main:
         fail("canonical-main is not the fetched origin/main head")
     if git_bytes(repo, "status", "--porcelain=v1", "--untracked-files=all"):
         fail("audit checkout is not clean")
@@ -2013,26 +2832,141 @@ def claim_nonce(value: str, used: set[str], label: str) -> None:
     used.add(value)
 
 
-def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: str, reviewed_tree: str, sl0_base: tuple[str, str], used_nonces: set[str], repo: Path) -> None:
+def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: str, reviewed_tree: str, sl0_base: tuple[str, str], used_nonces: set[str], repo: Path, run_specs: dict[str, dict[str, Any]], execution: dict[str, Any]) -> None:
+    production_start = closed(
+        run_owned_receipt(
+            store,
+            repo,
+            artifact_ref(sl0["production_start"], "production start"),
+            "production start",
+            distinct=False,
+        ),
+        {
+            "schema", "head", "tree", "clock_id", "observed_monotonic_ns",
+            "operation_nonce", "sl0_approval", "preproduction_runs",
+            "source_mutations",
+        },
+        "production start",
+    )
+    production_runs = production_start["preproduction_runs"]
+    if (
+        not isinstance(production_runs, dict)
+        or set(production_runs)
+        != {"preproduction_red", "preproduction_control"}
+    ):
+        fail("production start preproduction run inventory is malformed")
+    for run_name in ("preproduction_red", "preproduction_control"):
+        if artifact_ref(
+            execution["runs"][run_name], "retained execution run " + run_name
+        ) != artifact_ref(
+            production_runs[run_name], "production start " + run_name
+        ):
+            fail("retained execution run differs from production start")
+    mutation_index = closed(
+        run_owned_receipt(
+            store,
+            repo,
+            artifact_ref(
+                production_start["source_mutations"],
+                "production start source mutations",
+            ),
+            "production start source mutations",
+            distinct=False,
+        ),
+        {"schema", "annotation", "mutations"},
+        "production start source mutations",
+    )
+    if (
+        mutation_index["schema"] != "harden_source_mutations.v1"
+        or not isinstance(mutation_index["mutations"], list)
+    ):
+        fail("production start source mutations are invalid")
+
+    def bind_retained_observation(
+        run_name: str,
+        raw_ref: dict[str, str],
+        junit_ref: dict[str, str],
+        record: dict[str, Any],
+        label: str,
+    ) -> None:
+        observation_ref = artifact_ref(
+            execution["runs"][run_name], label + ".observation"
+        )
+        observation = closed(
+            run_owned_receipt(
+                store,
+                repo,
+                observation_ref,
+                label + ".retained run observation",
+                distinct=False,
+            ),
+            {
+                "schema", "kind", "head", "tree", "clock_id",
+                "started_monotonic_ns", "finished_monotonic_ns",
+                "process_nonce", "exit_code", "argv_class", "argv", "cwd",
+                "env_keys", "source_tree", "raw", "junit", "baseline",
+            },
+            label + ".retained run observation",
+        )
+        if (
+            observation["schema"] != "harden_run_observation.v1"
+            or observation["kind"] != run_name
+        ):
+            fail(label + ": retained run observation schema mismatch")
+        integer(
+            observation["exit_code"],
+            label + ".retained run observation.exit_code",
+        )
+        if (
+            artifact_ref(observation["raw"], label + ".observed raw") != raw_ref
+            or artifact_ref(observation["junit"], label + ".observed JUnit")
+            != junit_ref
+        ):
+            fail(label + ": retained run observation result mismatch")
+        for field in (
+            "head", "tree", "process_nonce", "exit_code", "argv_class", "argv",
+            "cwd", "env_keys", "source_tree", "baseline",
+        ):
+            if observation[field] != record[field]:
+                fail(label + ": retained run observation " + field + " mismatch")
+
     activated = closed(sl0["activated_red"], {"receipt", "raw", "junit"}, "activated RED")
     raw = artifact_ref(activated["raw"], "activated RED.raw")
     junit = artifact_ref(activated["junit"], "activated RED.junit")
-    claim_nonce(receipt(store, artifact_ref(activated["receipt"], "activated RED.receipt"), "activated RED receipt", head=reviewed, tree=reviewed_tree, kind="activated_red", argv_class="pytest_harden_activated_v1", exit_code=1, raw=raw, junit=junit)["process_nonce"], used_nonces, "activated RED")
+    activated_receipt = receipt(store, artifact_ref(activated["receipt"], "activated RED.receipt"), "activated RED receipt", head=reviewed, tree=reviewed_tree, kind="activated_red", argv_class="pytest_harden_activated_v1", exit_code=1, raw=raw, junit=junit, final_spec=run_specs["focused"], baseline_binding=sl0_base, allow_failed=True)
+    bind_retained_observation(
+        "preproduction_red", raw, junit, activated_receipt, "activated RED"
+    )
+    claim_nonce(activated_receipt["process_nonce"], used_nonces, "activated RED")
     raw_text = store.read(raw, "activated RED raw").decode("utf-8", "replace")
     cases = parse_junit(store.read(junit, "activated RED JUnit"), "activated RED JUnit")
     failures = [case for case in cases if case["status"] == "failure"]
     passed = [case for case in cases if case["status"] == "passed"]
     skipped = [case for case in cases if case["status"] == "skipped"]
-    if len(failures) != 16 or len(passed) != 439 or len(skipped) != 3 or any(case["status"] == "error" for case in cases):
-        fail("activated RED shape must be 16 failed, 439 passed, 3 skipped")
+    summary = closed(activated_receipt["summary"], {"passed", "failed", "errors", "skipped", "xfails", "xpasses", "subtests", "deselected"}, "activated RED summary")
+    for field in summary:
+        integer(summary[field], "activated RED summary." + field)
+    if (summary["failed"], summary["passed"], summary["skipped"]) != (len(failures), len(passed), len(skipped)) or summary["errors"] or summary["xfails"] or summary["xpasses"] or any(case["status"] == "error" for case in cases):
+        fail("activated RED receipt does not bind JUnit outcomes")
+    if {case["node"] for case in failures} != {
+        "::".join(pytest_junit_identity(nodeid, "activated RED"))
+        for nodeid in ACTIVATED_RED_NODEIDS
+    }:
+        fail("activated RED contains an unrelated failure")
     for nodeid in ACTIVATED_RED_NODEIDS:
-        exact_case(cases, nodeid, "failure", "activated RED")
+        try:
+            exact_case(cases, nodeid, "failure", "activated RED")
+        except EvidenceError:
+            fail("named RED test is missing or invalid")
     for item in ANCHORS.values():
-        exact_case(cases, item["nodeid"], "failure", "activated RED")
+        case = exact_case(cases, item["nodeid"], "failure", "activated RED")
+        if item["anchor"] not in case["detail"]:
+            fail("activated RED anchor JUnit mismatch")
         expected_count = _ACTIVATED_REVIEW_RED_COUNT if item is ANCHORS["review-leg-isolation"] else 1
         if raw_text.count(item["anchor"]) != expected_count:
             fail("activated RED anchor count mismatch")
-    if re.search(r"\b(?:ERROR|XFAIL|XPASS)\b", raw_text) or "16 failed, 439 passed, 3 skipped" not in raw_text or "17 subtests passed" not in raw_text:
+    verify_pytest_raw_summary(raw_text, summary, "activated RED")
+    if re.search(r"\b(?:ERROR|XFAIL|XPASS)\b", raw_text):
         fail("activated RED has unrelated outcome")
     pure = closed(sl0["pure_control"], {"receipt", "raw", "junit"}, "pre-production pure control")
     pure_raw = artifact_ref(pure["raw"], "pre-production pure raw")
@@ -2042,34 +2976,50 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
         "pre-production pure receipt", head=reviewed, tree=reviewed_tree,
         kind="pure_control", argv_class="pytest_harden_pure_control_v1",
         exit_code=0, raw=pure_raw, junit=pure_junit,
-        final_spec=FINAL_RUN_SPECS["pure_control"],
+        final_spec=run_specs["pure_control"],
         baseline_binding=sl0_base,
+    )
+    bind_retained_observation(
+        "preproduction_control",
+        pure_raw,
+        pure_junit,
+        pure_receipt,
+        "pre-production pure control",
     )
     claim_nonce(pure_receipt["process_nonce"], used_nonces, "pre-production pure")
     pure_cases = parse_junit(store.read(pure_junit, "pre-production pure junit"), "pre-production pure junit")
     all_passed(pure_cases, "pre-production pure control")
-    if len(pure_cases) != FINAL_RUN_SPECS["pure_control"]["passed"]:
+    if len(pure_cases) != pure_receipt["summary"]["passed"]:
         fail("pre-production pure control inventory is incomplete")
+    verify_pytest_raw_summary(
+        store.read(pure_raw, "pre-production pure raw").decode("utf-8", "replace"),
+        pure_receipt["summary"],
+        "pre-production pure control",
+    )
     mutations = sl0["mutations"]
     if not isinstance(mutations, list) or len(mutations) != len(ANCHORS):
         fail("source-entered mutation coverage is incomplete")
+    if canonical_bytes(mutations) != canonical_bytes(mutation_index["mutations"]):
+        fail("source-entered mutation evidence differs from retained mutation index")
     seen: set[str] = set()
     for entry in mutations:
         entry = closed(entry, {"case_id", "source_path", "nodeid", "mutated_source", "restored_source", "mutation", "restored"}, "mutation entry")
         case_id = text(entry["case_id"], "mutation case")
         expected = ANCHORS.get(case_id)
         if expected is None or case_id in seen or entry["source_path"] != expected["source"] or entry["nodeid"] != expected["nodeid"]:
-            fail("mutation source/case binding mismatch")
+            fail("mutation source binding mismatch")
         seen.add(case_id)
         reviewed_blob, reviewed_bytes = blob(repo, reviewed, expected["source"])
         restored_source = artifact_ref(entry["restored_source"], "restored source")
         mutated_source = artifact_ref(entry["mutated_source"], "mutated source")
         restored_bytes = store.read(restored_source, "restored source")
         mutated_bytes = store.read(mutated_source, "mutated source")
-        if restored_bytes != reviewed_bytes or restored_source["sha256"] != sha256(reviewed_bytes) or mutated_bytes == reviewed_bytes:
-            fail("source mutation/restoration bytes do not bind reviewed source")
+        if restored_bytes != reviewed_bytes or restored_source["sha256"] != sha256(reviewed_bytes):
+            fail("restoration digest mismatch")
+        if mutated_bytes == reviewed_bytes:
+            fail("mutation source binding mismatch")
         if executable_source_shape(mutated_bytes, "mutated source") == executable_source_shape(reviewed_bytes, "reviewed source"):
-            fail("source mutation is comment-only or otherwise non-executable")
+            fail("mutation comment-only or otherwise non-executable")
         for phase, expected_kind, expected_exit, expected_argv, expected_status, marker in (
             ("mutation", "source_mutation", 1, "pytest_harden_source_mutation_v1", "failure", "HARDEN-MUTATION-BITE::" + case_id),
             ("restored", "restored_control", 0, "pytest_harden_restored_control_v1", "passed", "HARDEN-RESTORED-CONTROL::" + case_id),
@@ -2078,26 +3028,317 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
             phase_raw = artifact_ref(result["raw"], "mutation raw")
             phase_junit = artifact_ref(result["junit"], "mutation junit")
             source_sha = mutated_source["sha256"] if phase == "mutation" else restored_source["sha256"]
-            record = receipt(store, artifact_ref(result["receipt"], "mutation receipt"), "mutation receipt", head=reviewed, tree=reviewed_tree, kind=expected_kind, argv_class=expected_argv, exit_code=expected_exit, raw=phase_raw, junit=phase_junit, source_binding=(expected["source"], source_sha))
+            receipt_ref = artifact_ref(result["receipt"], "mutation receipt")
+            run_owned_receipt(
+                store,
+                repo,
+                receipt_ref,
+                "mutation receipt",
+                distinct=False,
+            )
+            record = receipt(store, receipt_ref, "mutation receipt", head=reviewed, tree=reviewed_tree, kind=expected_kind, argv_class=expected_argv, exit_code=expected_exit, raw=phase_raw, junit=phase_junit, source_binding=(expected["source"], source_sha))
+            if not {
+                "clock_id", "started_monotonic_ns", "finished_monotonic_ns"
+            } <= set(record):
+                fail("mutation receipt lacks production-start chronology")
+            text(record["clock_id"], "mutation receipt.clock_id")
+            integer(
+                record["started_monotonic_ns"],
+                "mutation receipt.started_monotonic_ns",
+                minimum=1,
+            )
+            integer(
+                record["finished_monotonic_ns"],
+                "mutation receipt.finished_monotonic_ns",
+                minimum=1,
+            )
             claim_nonce(record["process_nonce"], used_nonces, "mutation receipt")
             raw_text = store.read(phase_raw, "mutation raw").decode("utf-8", "replace")
             cases = parse_junit(store.read(phase_junit, "mutation junit"), "mutation junit")
             if marker not in raw_text:
                 fail("mutation chronology marker absent")
-            exact_case(cases, expected["nodeid"], expected_status, "mutation chronology")
+            if len(cases) != 1:
+                fail("mutation JUnit case count mismatch")
+            try:
+                exact_case(cases, expected["nodeid"], expected_status, "mutation chronology")
+            except EvidenceError:
+                fail("mutation node id mismatch")
             if phase == "mutation":
                 if len(cases) != 1 or cases[0]["status"] != "failure":
-                    fail("mutation was not uniquely biting")
+                    fail("mutation did not fail")
             else:
                 all_passed(cases, "restored control")
     if seen != set(ANCHORS):
         fail("mutation cases do not cover every HARDEN anchor")
 
 
-def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: str, tree_id: str, baseline: tuple[str, str], used_nonces: set[str]) -> None:
+def retained_input_nonces(store: ArtifactStore, retained: Any) -> set[str]:
+    """Validate the raw nonce closure and return reusable input identities."""
+    if not isinstance(retained, list) or not retained:
+        fail("retained authority inputs are malformed")
+    values: set[str] = set()
+    reusable: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"operation_nonce", "process_nonce", "run_nonce"}:
+                    nonce = text(item, "input operation nonce", pattern=HEX64)
+                    if nonce in values:
+                        fail("duplicate input operation nonce")
+                    values.add(nonce)
+                    if key == "operation_nonce":
+                        reusable.add(nonce)
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        raw = store.read(ref, "authority retained input", distinct=False)
+        reject_raw_secret_bytes(raw, "authority retained input")
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_canonical_json(raw, "authority retained input")
+        reject_secret_payloads(value, "authority retained input")
+        collect(value)
+        # Historical approval seats are the pre-production review operation
+        # identities.  They are not output seats, so protect them from reuse
+        # alongside the explicit raw operation nonces.
+        if isinstance(value, dict) and value.get("schema") == "harden_sl0_approval.v1":
+            seats = value.get("seats")
+            if isinstance(seats, list):
+                for seat in seats:
+                    if isinstance(seat, dict) and "session_sha256" in seat:
+                        reusable.add(text(seat["session_sha256"], "historical reviewer operation nonce", pattern=HEX64))
+    return reusable
+
+
+def retained_execution_runs(
+    store: ArtifactStore, retained: Any
+) -> dict[str, Any]:
+    """Return the sole retained final-run index and its authority closure."""
+    if not isinstance(retained, list) or not retained:
+        fail("retained authority inputs are malformed")
+    retained_refs: set[tuple[str, str]] = set()
+    indexes: list[dict[str, Any]] = []
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        retained_refs.add((ref["path"], ref["sha256"]))
+        raw = store.read(ref, "authority retained input", distinct=False)
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_canonical_json(raw, "authority retained input")
+        reject_secret_payloads(value, "authority retained input")
+        if isinstance(value, dict) and value.get("schema") == "harden_execution_runs.v1":
+            indexes.append(value)
+    if len(indexes) != 1:
+        fail("retained authority must contain exactly one execution index")
+    execution = closed(
+        indexes[0],
+        {"schema", "annotation", "runs", "groups"},
+        "retained execution index",
+    )
+    text(execution["annotation"], "retained execution index.annotation")
+    expected_runs = {
+        "preproduction_red",
+        "preproduction_control",
+        "candidate_focused",
+        "candidate_pure_control",
+        "candidate_broad",
+        "candidate_lint",
+        "canonical_main_focused",
+        "canonical_main_pure_control",
+        "canonical_main_broad",
+        "canonical_main_lint",
+    }
+    runs = execution["runs"]
+    if not isinstance(runs, dict) or set(runs) != expected_runs:
+        fail("retained execution run inventory is malformed")
+    for name, value in runs.items():
+        ref = artifact_ref(value, "retained execution run " + name)
+        if (ref["path"], ref["sha256"]) not in retained_refs:
+            fail("retained execution run is absent from retained authority inputs")
+    groups = execution["groups"]
+    if not isinstance(groups, dict) or set(groups) != {"candidate", "canonical_main"}:
+        fail("retained execution group inventory is malformed")
+    for name, value in groups.items():
+        group = closed(
+            value, {"run_nonce", "head", "tree"}, "retained execution group " + name
+        )
+        text(group["run_nonce"], "retained execution group run_nonce", pattern=HEX64)
+        text(group["head"], "retained execution group head", pattern=HEX40)
+        text(group["tree"], "retained execution group tree", pattern=HEX40)
+    return execution
+
+
+def verify_historical_sl0(
+    store: ArtifactStore,
+    repo: Path,
+    sl0: dict[str, Any],
+    retained: Any,
+    base: str,
+    reviewed: str,
+    reviewed_tree: str,
+    landing: str,
+    landing_tree: str,
+    coordinator_session: str,
+    author_session: str,
+    reviewer_session: str,
+    final_seat_sessions: set[str],
+) -> None:
+    """Bind the pre-production approval and start records to retained authority."""
+    retained_refs = {
+        (artifact_ref(item, "authority retained input")["path"], artifact_ref(item, "authority retained input")["sha256"])
+        for item in retained
+    }
+
+    def retained_run(ref_value: Any, label: str) -> dict[str, Any]:
+        ref = artifact_ref(ref_value, label)
+        if (ref["path"], ref["sha256"]) not in retained_refs:
+            fail(label + ": record is absent from retained authority inputs")
+        return run_owned_receipt(store, repo, ref, label)
+
+    approval_ref = artifact_ref(sl0["approval"], "SL-0 approval")
+    approval = retained_run(approval_ref, "SL-0 approval")
+    approval = closed(
+        approval,
+        {"schema", "base_commit", "head", "tree", "patch_sha256", "clock_id", "observed_monotonic_ns", "operation_nonce", "seats"},
+        "SL-0 approval",
+    )
+    if approval["schema"] != "harden_sl0_approval.v1" or approval["base_commit"] != base or approval["head"] != reviewed or approval["tree"] != reviewed_tree:
+        fail("SL-0 approval identity does not bind the reviewed tests-only head")
+    if text(approval["patch_sha256"], "SL-0 approval patch", pattern=HEX64) != sha256(git_bytes(repo, "diff", "--no-ext-diff", base, reviewed)):
+        fail("SL-0 approval patch does not bind the reviewed delta")
+    clock = text(approval["clock_id"], "SL-0 approval clock")
+    approved_at = integer(approval["observed_monotonic_ns"], "SL-0 approval time", minimum=1)
+    text(approval["operation_nonce"], "SL-0 approval operation nonce", pattern=HEX64)
+    seats = approval["seats"]
+    if not isinstance(seats, list) or len(seats) != 4:
+        fail("SL-0 approval lacks four historical reviewer seats")
+    sessions: set[str] = set()
+    harnesses: set[str] = set()
+    for seat in seats:
+        seat = closed(seat, {"harness", "session_sha256", "status", "report", "report_sha256", "report_bytes"}, "SL-0 approval seat")
+        harness = text(seat["harness"], "SL-0 approval harness")
+        session = text(seat["session_sha256"], "SL-0 approval session", pattern=HEX64)
+        report = text(seat["report"], "SL-0 approval report")
+        if seat["status"] != "usable" or report.rstrip().splitlines()[-1:] != ["AGREE"]:
+            fail("SL-0 approval has an unusable historical reviewer")
+        if text(seat["report_sha256"], "SL-0 approval report digest", pattern=HEX64) != sha256(report.encode("utf-8", errors="strict")) or integer(seat["report_bytes"], "SL-0 approval report bytes", minimum=1) != len(report.encode("utf-8", errors="strict")):
+            fail("SL-0 approval report is detached from historical reviewer")
+        harnesses.add(harness)
+        if session in sessions:
+            fail("duplicate input operation nonce")
+        sessions.add(session)
+    if harnesses != {"claude", "codex", "gemini", "grok"}:
+        fail("SL-0 approval reviewer harness inventory is incomplete")
+    if sessions & {coordinator_session, author_session, reviewer_session}:
+        fail("historical reviewer role independence failed")
+    if sessions & final_seat_sessions:
+        fail("duplicate input operation nonce")
+
+    start_ref = artifact_ref(sl0["production_start"], "production start")
+    start = retained_run(start_ref, "production start")
+    start = closed(
+        start,
+        {"schema", "head", "tree", "clock_id", "observed_monotonic_ns", "operation_nonce", "sl0_approval", "preproduction_runs", "source_mutations"},
+        "production start",
+    )
+    if start["schema"] != "harden_production_start.v1" or start["head"] != landing or start["tree"] != landing_tree or start["clock_id"] != clock:
+        fail("production start identity or clock is invalid")
+    started_at = integer(start["observed_monotonic_ns"], "production start time", minimum=1)
+    text(start["operation_nonce"], "production start operation nonce", pattern=HEX64)
+    if started_at <= approved_at:
+        fail("SL-0 approval is not earlier than production start")
+    if artifact_ref(start["sl0_approval"], "production start approval") != approval_ref:
+        fail("production start does not bind the retained SL-0 approval")
+    runs = start["preproduction_runs"]
+    if not isinstance(runs, dict) or set(runs) != {"preproduction_red", "preproduction_control"}:
+        fail("production start preproduction run inventory is malformed")
+    for name, expected_exit in (("preproduction_red", 1), ("preproduction_control", 0)):
+        observation = retained_run(runs[name], "production start " + name)
+        expected = {"schema", "kind", "head", "tree", "clock_id", "started_monotonic_ns", "finished_monotonic_ns", "process_nonce", "exit_code", "argv_class", "argv", "cwd", "env_keys", "source_tree", "raw", "junit", "baseline"}
+        observation = closed(observation, expected, "production start " + name)
+        observed_exit = integer(
+            observation["exit_code"],
+            "production start " + name + ".exit_code",
+        )
+        if observation["clock_id"] != clock:
+            fail("preproduction clock mismatch")
+        if observation["schema"] != "harden_run_observation.v1" or observation["kind"] != name or observation["head"] != reviewed or observation["tree"] != reviewed_tree or observation["source_tree"] != reviewed_tree or observed_exit != expected_exit:
+            fail("production start preproduction observation is invalid")
+        began = integer(observation["started_monotonic_ns"], "preproduction start time", minimum=1)
+        ended = integer(observation["finished_monotonic_ns"], "preproduction end time", minimum=1)
+        text(observation["process_nonce"], "preproduction process nonce", pattern=HEX64)
+        if began <= approved_at:
+            fail("preproduction approval chronology is invalid")
+        if began > ended:
+            fail("preproduction interval chronology is invalid")
+        if began >= started_at:
+            fail("preproduction chronology is invalid")
+        if ended >= started_at:
+            fail("preproduction finish chronology is invalid")
+        if not approved_at < began <= ended < started_at:
+            fail("preproduction chronology is invalid")
+    mutations = retained_run(start["source_mutations"], "production start source mutations")
+    mutations = closed(mutations, {"schema", "annotation", "mutations"}, "production start source mutations")
+    if mutations["schema"] != "harden_source_mutations.v1" or not isinstance(mutations["mutations"], list):
+        fail("production start source mutations are invalid")
+    for entry in mutations["mutations"]:
+        entry = closed(entry, {"case_id", "source_path", "nodeid", "mutated_source", "restored_source", "mutation", "restored"}, "production start mutation")
+        for phase in ("mutation", "restored"):
+            result = closed(entry[phase], {"receipt", "raw", "junit"}, "production start mutation " + phase)
+            record = store.json(
+                artifact_ref(result["receipt"], "production start mutation receipt"),
+                "production start mutation receipt",
+                distinct=False,
+            )
+            record = closed(
+                record,
+                {"schema", "kind", "head", "tree", "clock_id", "started_monotonic_ns", "finished_monotonic_ns", "process_nonce", "exit_code", "argv_class", "raw_sha256", "junit_sha256", "source_path", "source_sha256"},
+                "production start mutation receipt",
+            )
+            began = integer(record["started_monotonic_ns"], "mutation preproduction start time", minimum=1)
+            ended = integer(record["finished_monotonic_ns"], "mutation preproduction end time", minimum=1)
+            if record["clock_id"] != clock:
+                fail("preproduction clock mismatch")
+            if began <= approved_at:
+                fail("preproduction approval chronology is invalid")
+            if began > ended:
+                fail("preproduction interval chronology is invalid")
+            if began >= started_at:
+                fail("preproduction chronology is invalid")
+            if ended >= started_at:
+                fail("preproduction finish chronology is invalid")
+            if not approved_at < began <= ended < started_at:
+                fail("preproduction chronology is invalid")
+
+
+def verify_final_group(
+    store: ArtifactStore,
+    repo: Path,
+    group: Any,
+    label: str,
+    round_name: str,
+    commit_id: str,
+    tree_id: str,
+    baseline: tuple[str, str],
+    used_nonces: set[str],
+    run_specs: dict[str, dict[str, Any]],
+    execution: dict[str, Any],
+) -> None:
     data = closed(group, {"commit", "tree", "run_nonce", "focused", "pure_control", "broad", "lint"}, label)
     if data["commit"] != commit_id or data["tree"] != tree_id:
         fail(f"{label}: head/tree mismatch")
+    execution_group = execution["groups"][round_name]
+    if execution_group != {
+        "run_nonce": data["run_nonce"],
+        "head": data["commit"],
+        "tree": data["tree"],
+    }:
+        fail(f"{label}: retained execution group mismatch")
     run_nonce = text(data["run_nonce"], label + ".run_nonce", pattern=HEX64)
     if run_nonce == "0" * 64 or run_nonce in used_nonces:
         fail(f"{label}: reused or placeholder process nonce")
@@ -2110,7 +3351,35 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         result = closed(data[key], {"receipt", "raw", "junit"}, label + "." + key)
         raw = artifact_ref(result["raw"], label + "." + key + ".raw")
         junit = artifact_ref(result["junit"], label + "." + key + ".junit")
-        record = receipt(store, artifact_ref(result["receipt"], label + "." + key + ".receipt"), label + "." + key + ".receipt", head=commit_id, tree=tree_id, kind=kind, argv_class=argv, exit_code=0, raw=raw, junit=junit, final_spec=FINAL_RUN_SPECS[key], baseline_binding=baseline)
+        record = receipt(store, artifact_ref(result["receipt"], label + "." + key + ".receipt"), label + "." + key + ".receipt", head=commit_id, tree=tree_id, kind=kind, argv_class=argv, exit_code=0, raw=raw, junit=junit, final_spec=run_specs[key], baseline_binding=baseline)
+        run_name = round_name + "_" + key
+        observation_ref = artifact_ref(
+            execution["runs"][run_name], label + "." + key + ".observation"
+        )
+        observation = closed(
+            run_owned_receipt(
+                store,
+                repo,
+                observation_ref,
+                label + "." + key + ".retained run observation",
+            ),
+            {"schema", "kind", "head", "tree", "process_nonce", "exit_code", "argv_class", "argv", "cwd", "env_keys", "source_tree", "raw", "junit", "baseline"},
+            label + "." + key + ".retained run observation",
+        )
+        if observation["schema"] != "harden_run_observation.v1" or observation["kind"] != run_name:
+            fail(f"{label}.{key}: retained run observation schema mismatch")
+        integer(
+            observation["exit_code"],
+            label + "." + key + ".retained run observation.exit_code",
+        )
+        if artifact_ref(observation["raw"], label + "." + key + ".observed raw") != raw or artifact_ref(observation["junit"], label + "." + key + ".observed JUnit") != junit:
+            fail(f"{label}.{key}: retained run observation result mismatch")
+        for field in (
+            "head", "tree", "process_nonce", "exit_code", "argv_class", "argv",
+            "cwd", "env_keys", "source_tree", "baseline",
+        ):
+            if observation[field] != record[field]:
+                fail(f"{label}.{key}: retained run observation {field} mismatch")
         nonce = record["process_nonce"]
         if nonce in used_nonces:
             fail(f"{label}: reused fresh-process nonce")
@@ -2119,7 +3388,7 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         summary = record["summary"]
         counts = {status: sum(case["status"] == status for case in cases) for status in ("passed", "failure", "error", "skipped")}
         if counts["failure"] or counts["error"] or counts["passed"] != summary["passed"] or counts["skipped"] != summary["skipped"]:
-            fail(f"{label}.{key}: JUnit inventory does not bind receipt summary")
+            fail(f"{label}.{key}: raw/JUnit count mismatch")
         if sha256(canonical_bytes(sorted(case["node"] for case in cases))) != record["nodeids_sha256"]:
             fail(f"{label}.{key}: JUnit nodeids do not bind receipt")
         if key == "focused":
@@ -2129,7 +3398,19 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         verify_pytest_raw_summary(raw_text, summary, label + "." + key)
     lint = closed(data["lint"], {"receipt", "raw"}, label + ".lint")
     lint_raw = artifact_ref(lint["raw"], label + ".lint.raw")
-    lint_nonce = lint_receipt(store, artifact_ref(lint["receipt"], label + ".lint.receipt"), label + ".lint.receipt", head=commit_id, tree=tree_id, raw=lint_raw)
+    lint_ref = artifact_ref(lint["receipt"], label + ".lint.receipt")
+    expected_lint_ref = artifact_ref(
+        execution["runs"][round_name + "_lint"], label + ".lint.observation"
+    )
+    if lint_ref != expected_lint_ref:
+        fail(f"{label}: retained lint observation mismatch")
+    lint_nonce = lint_receipt(
+        run_owned_receipt(store, repo, lint_ref, label + ".lint.retained run observation"),
+        label + ".lint.receipt",
+        head=commit_id,
+        tree=tree_id,
+        raw=lint_raw,
+    )
     if lint_nonce in used_nonces:
         fail(f"{label}: reused lint process nonce")
     used_nonces.add(lint_nonce)
@@ -2654,7 +3935,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
             fail("review input head/tree binding mismatch")
         content = text(input_record["content"], "review input content")
         if content != git_bound_review_input(repo, base_head, base_tree, head, tree, kind):
-            fail("retained review input is not independently Git-bound")
+            fail("Git-bound review input is not independently bound")
         input_digests[kind] = sha256(content.encode("utf-8"))
         input_contents[kind] = content
     sealed_prompt = broker_sealed_prompt(input_contents["bundle"], input_contents["instructions"])
@@ -2712,6 +3993,13 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
             fail("seat artifact is detached from its run-owned broker receipt")
         seat_id = text(seat["seat_id"], "seat identity", pattern=IDENTITY)
         session = text(seat["session_sha256"], "seat session", pattern=HEX64)
+        observed_session = (
+            runtime["broker"].get("claude_session_id_sha256")
+            if harness == "claude"
+            else sha256(canonical_bytes(runtime))
+        )
+        if not isinstance(observed_session, str) or session != observed_session:
+            fail("reviewer session is detached from run-owned receipt")
         if seat_id in used_seat_ids or session in seat_sessions:
             fail("reused review seat/session identity")
         used_seat_ids.add(seat_id)
@@ -2730,7 +4018,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         fail("review round lacks a required route")
 
 
-def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_coordinator_session: str, expected_author_session: str, seat_sessions: set[str]) -> None:
+def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_coordinator_session: str, expected_author_session: str, expected_author_vendor: str, seat_sessions: set[str]) -> None:
     roles = closed(value, {"coordinator", "author", "reviewer"}, "roles")
     identities: set[str] = set()
     sessions: set[str] = set()
@@ -2749,8 +4037,8 @@ def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_co
         identities.add(identity)
         sessions.add(session)
         if role == "coordinator" and session != expected_coordinator_session:
-            fail("coordinator session does not match external authority")
-        if role == "author" and (record["vendor"] != "codex-gpt-5.6-terra" or session != expected_author_session):
+            fail("role session mismatch")
+        if role == "author" and (record["vendor"] != expected_author_vendor or session != expected_author_session):
             fail("sole author session/vendor provenance mismatch")
         if role == "reviewer":
             derived = sha256("\0".join(sorted(seat_sessions)).encode())
@@ -2758,45 +4046,240 @@ def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_co
                 fail("reviewer identity/session is not derived from all brokered seats")
 
 
+@contextmanager
+def _reuse_registry_descriptor(
+    registry_path: Path,
+    *,
+    writable: bool,
+) -> Iterator[tuple[int, int]]:
+    """Open one registry leaf through its pinned, non-symlink parent."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None or not registry_path.name:
+        fail("external reuse registry nofollow support is unavailable")
+    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    absolute = _registry_absolute_path(registry_path)
+    parent_fd = os.open(
+        "/",
+        os.O_RDONLY | directory | nofollow | close_on_exec,
+    )
+    file_fd = -1
+    try:
+        for component in absolute.parts[1:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | directory | nofollow | close_on_exec,
+                dir_fd=parent_fd,
+            )
+            os.close(parent_fd)
+            parent_fd = next_fd
+        file_fd = os.open(
+            absolute.name,
+            (os.O_RDWR if writable else os.O_RDONLY) | nofollow | close_on_exec,
+            dir_fd=parent_fd,
+        )
+        yield parent_fd, file_fd
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(parent_fd)
+
+
+def _registry_absolute_path(registry_path: Path) -> Path:
+    if ".." in registry_path.parts:
+        fail("external reuse registry contains parent traversal")
+    return Path(os.path.abspath(registry_path))
+
+
+def _require_current_registry_parent(parent_fd: int, registry_path: Path) -> None:
+    absolute = _registry_absolute_path(registry_path)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    flags = os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
+    current_fd = os.open("/", flags)
+    try:
+        for component in absolute.parts[1:-1]:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        expected = os.fstat(parent_fd)
+        current = os.fstat(current_fd)
+        if (expected.st_dev, expected.st_ino) != (current.st_dev, current.st_ino):
+            fail("external reuse registry parent changed during verification")
+    finally:
+        os.close(current_fd)
+
+
+def _require_current_registry_inode(parent_fd: int, file_fd: int, name: str) -> None:
+    opened = os.fstat(file_fd)
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(current.st_mode)
+        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        fail("external reuse registry changed during verification")
+
+
+def _read_registry_descriptor(file_fd: int) -> bytes:
+    size = os.fstat(file_fd).st_size
+    if size < 0 or size > MAX_JSON_BYTES:
+        fail("reuse registry exceeds the size limit")
+    os.lseek(file_fd, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    remaining = size + 1
+    while remaining:
+        chunk = os.read(file_fd, min(remaining, 64 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    raw = b"".join(chunks)
+    if len(raw) != size:
+        fail("reuse registry changed while being read")
+    return raw
+
+
+def _reuse_registry_values(raw: bytes) -> tuple[dict[str, Any], list[str], list[str]]:
+    records = raw.splitlines(keepends=True)
+    if not records or any(not record.endswith(b"\n") for record in records):
+        fail("reuse registry contains an incomplete claim")
+    registry = closed(
+        parse_canonical_json(records[0], "reuse registry"),
+        {"schema", "evidence_ids", "operation_nonces"},
+        "reuse registry",
+    )
+    if (
+        registry["schema"] != "harden_evidence_registry.v1"
+        or not isinstance(registry["evidence_ids"], list)
+        or not isinstance(registry["operation_nonces"], list)
+    ):
+        fail("reuse registry schema mismatch")
+    ids = [
+        text(item, "registered evidence id", pattern=HEX64)
+        for item in registry["evidence_ids"]
+    ]
+    nonces = [
+        text(item, "registered operation nonce", pattern=HEX64)
+        for item in registry["operation_nonces"]
+    ]
+    id_set = set(ids)
+    nonce_set = set(nonces)
+    if len(ids) != len(id_set) or len(nonces) != len(nonce_set):
+        fail("reuse registry contains a duplicate claim")
+    prefix_digest = hashlib.sha256(records[0])
+    for record in records[1:]:
+        claim = closed(
+            parse_canonical_json(record, "reuse registry claim"),
+            {"schema", "previous_sha256", "evidence_id", "operation_nonces"},
+            "reuse registry claim",
+        )
+        if claim["schema"] != "harden_evidence_registry_claim.v1":
+            fail("reuse registry claim schema mismatch")
+        if text(
+            claim["previous_sha256"],
+            "reuse registry claim predecessor",
+            pattern=HEX64,
+        ) != prefix_digest.hexdigest():
+            fail("reuse registry claim predecessor mismatch")
+        claim_id = text(
+            claim["evidence_id"], "registered evidence id", pattern=HEX64
+        )
+        if not isinstance(claim["operation_nonces"], list):
+            fail("reuse registry claim schema mismatch")
+        claim_nonces = [
+            text(item, "registered operation nonce", pattern=HEX64)
+            for item in claim["operation_nonces"]
+        ]
+        if (
+            claim_id in id_set
+            or len(claim_nonces) != len(set(claim_nonces))
+            or set(claim_nonces) & nonce_set
+        ):
+            fail("reuse registry contains a duplicate claim")
+        ids.append(claim_id)
+        nonces.extend(claim_nonces)
+        id_set.add(claim_id)
+        nonce_set.update(claim_nonces)
+        prefix_digest.update(record)
+    registry = {
+        "schema": "harden_evidence_registry.v1",
+        "evidence_ids": ids,
+        "operation_nonces": nonces,
+    }
+    return registry, ids, nonces
+
+
 def verify_reuse_registry(registry_path: Path, evidence_root: Path, evidence_id: str, operation_nonces: set[str]) -> None:
     try:
         entry = registry_path.lstat()
         root = evidence_root.resolve(strict=True)
         resolved = registry_path.resolve(strict=True)
+        with _reuse_registry_descriptor(registry_path, writable=False) as (parent_fd, file_fd):
+            _require_current_registry_parent(parent_fd, registry_path)
+            _require_current_registry_inode(parent_fd, file_fd, registry_path.name)
+            raw = _read_registry_descriptor(file_fd)
+            _require_current_registry_parent(parent_fd, registry_path)
+            _require_current_registry_inode(parent_fd, file_fd, registry_path.name)
     except OSError:
         fail("external reuse registry is unavailable")
     if stat.S_ISLNK(entry.st_mode) or not stat.S_ISREG(entry.st_mode) or root in (resolved, *resolved.parents):
         fail("reuse registry must be an external regular file")
-    registry = closed(parse_canonical_json(registry_path.read_bytes(), "reuse registry"), {"schema", "evidence_ids", "operation_nonces"}, "reuse registry")
-    if registry["schema"] != "harden_evidence_registry.v1" or not isinstance(registry["evidence_ids"], list) or not isinstance(registry["operation_nonces"], list):
-        fail("reuse registry schema mismatch")
-    ids = [text(item, "registered evidence id", pattern=HEX64) for item in registry["evidence_ids"]]
-    nonces = [text(item, "registered operation nonce", pattern=HEX64) for item in registry["operation_nonces"]]
-    if len(ids) != len(set(ids)) or len(nonces) != len(set(nonces)) or evidence_id in ids or operation_nonces & set(nonces):
-        fail("evidence or operation nonce was already used")
+    _registry, ids, nonces = _reuse_registry_values(raw)
+    if len(ids) != len(set(ids)) or evidence_id in ids:
+        fail("reused evidence_id")
+    if len(nonces) != len(set(nonces)) or operation_nonces & set(nonces):
+        fail("reused operation nonce")
+
+
+def _write_all(file_fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(file_fd, view)
+        if written <= 0:
+            raise OSError("short reuse-registry write")
+        view = view[written:]
+
+
+def _append_registry_descriptor(file_fd: int, before: bytes, claim: bytes) -> None:
+    """Append one hash-chained claim without weakening earlier registry state."""
+    if len(before) + len(claim) > MAX_JSON_BYTES:
+        raise OSError("reuse registry exceeds the size limit")
+    if _read_registry_descriptor(file_fd) != before:
+        raise OSError("reuse registry changed before claim append")
+    if os.lseek(file_fd, 0, os.SEEK_END) != len(before):
+        raise OSError("reuse registry size changed before claim append")
+    _write_all(file_fd, claim)
+    os.fsync(file_fd)
+    if _read_registry_descriptor(file_fd) != before + claim:
+        raise OSError("reuse registry changed during claim append")
 
 
 def claim_reuse_registry(registry_path: Path, evidence_id: str, operation_nonces: set[str]) -> None:
-    """Atomically consume a post-completion evidence identity exactly once."""
+    """Durably consume a post-completion evidence identity exactly once."""
     try:
-        with registry_path.open("r+b") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            raw = handle.read()
-            registry = closed(parse_canonical_json(raw, "reuse registry"), {"schema", "evidence_ids", "operation_nonces"}, "reuse registry")
-            if registry["schema"] != "harden_evidence_registry.v1":
-                fail("reuse registry schema mismatch")
-            ids = [text(item, "registered evidence id", pattern=HEX64) for item in registry["evidence_ids"]]
-            nonces = [text(item, "registered operation nonce", pattern=HEX64) for item in registry["operation_nonces"]]
+        with _reuse_registry_descriptor(registry_path, writable=True) as (parent_fd, file_fd):
+            fcntl.flock(parent_fd, fcntl.LOCK_EX)
+            _require_current_registry_parent(parent_fd, registry_path)
+            _require_current_registry_inode(parent_fd, file_fd, registry_path.name)
+            before = _read_registry_descriptor(file_fd)
+            _registry, ids, nonces = _reuse_registry_values(before)
             if len(ids) != len(set(ids)) or len(nonces) != len(set(nonces)) or evidence_id in ids or operation_nonces & set(nonces):
                 fail("evidence or operation nonce was already used")
-            registry["evidence_ids"] = [*ids, evidence_id]
-            registry["operation_nonces"] = [*nonces, *sorted(operation_nonces)]
-            encoded = canonical_bytes(registry)
-            handle.seek(0)
-            handle.truncate()
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
+            claim = canonical_bytes({
+                "schema": "harden_evidence_registry_claim.v1",
+                "previous_sha256": sha256(before),
+                "evidence_id": evidence_id,
+                "operation_nonces": sorted(operation_nonces),
+            })
+            _append_registry_descriptor(file_fd, before, claim)
+            try:
+                _require_current_registry_parent(parent_fd, registry_path)
+                _require_current_registry_inode(
+                    parent_fd, file_fd, registry_path.name
+                )
+            except EvidenceError:
+                raise OSError("reuse registry changed after claim append") from None
     except OSError:
         fail("external reuse registry cannot record completion")
 
@@ -2830,17 +4313,22 @@ def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, ma
     matches = 0
     for line in ledger.splitlines():
         event = strict_json_loads(line, "completion ledger event")
+        reject_secret_payloads(event, "completion ledger event")
         if not isinstance(event, dict):
             fail("completion ledger event is not an object")
         if event.get("phase") != "HARDEN" or event.get("status") != "complete":
             continue
+        matches += 1
+        if event.get("action") != "phase_execute":
+            fail("completion event action mismatch")
         metadata = event.get("metadata")
         if not isinstance(metadata, dict) or "harden_completion" not in metadata:
-            continue
+            fail("missing HARDEN completion proof")
         proof = closed(metadata["harden_completion"], {"schema", "evidence_sha256", "canonical_commit", "canonical_tree", "visual_render_declared"}, "completion authority")
+        if type(proof["visual_render_declared"]) is not bool:
+            fail("completion visual_render_declared type mismatch")
         if proof != {"schema": "harden_completion.v1", "evidence_sha256": evidence_digest, "canonical_commit": main, "canonical_tree": tree, "visual_render_declared": False}:
             fail("completion authority does not bind verified evidence")
-        matches += 1
     if matches != 1:
         fail("completion ledger has missing or duplicate HARDEN completion")
 
@@ -2854,6 +4342,7 @@ def verify(
     expected_coordinator_session: str,
     expected_author_session: str,
     ci_query: Path = CANONICAL_GH,
+    claim_reuse: bool = True,
 ) -> None:
     evidence_bytes = evidence_path.read_bytes()
     evidence = parse_canonical_json(evidence_bytes, "verification evidence")
@@ -2865,9 +4354,7 @@ def verify(
     if evidence_id == "0" * 64:
         fail("placeholder evidence_id")
     text(expected_coordinator_session, "expected coordinator session", pattern=HEX64)
-    required_author = sha256(b"01a04424-61d9-7712-94a6-e058cbe1349e")
-    if text(expected_author_session, "expected author session", pattern=HEX64) != required_author:
-        fail("expected author session is not the sole-author authority")
+    text(expected_author_session, "expected author session", pattern=HEX64)
     if text(data["repository"], "repository", pattern=IDENTITY) != "Consiliency/agent-harness":
         fail("verification evidence is not bound to Consiliency/agent-harness")
     store = ArtifactStore(evidence_root)
@@ -2878,11 +4365,64 @@ def verify(
     main, main_tree = commits["canonical_main"]
     verify_clean_canonical_main_context(repo, main)
     verify_authority_paths(repo, main, data["authority"])
+    preproduction_run_specs = verified_run_contract(repo, reviewed)
+    final_run_specs = verified_run_contract(repo, main)
+    retained_authority = data["authority"]["retained_inputs"]
+    author_vendor = None
+    for item in retained_authority:
+        if not isinstance(item, dict) or not str(item.get("path", "")).endswith(".json"):
+            continue
+        retained_value = store.json(
+            artifact_ref(item, "authority retained input"),
+            "authority retained input",
+            distinct=False,
+        )
+        if isinstance(retained_value, dict) and retained_value.get("schema") == "harden_plan_authority.v1":
+            author_vendor = retained_value.get("author_vendor")
+            break
+    if not isinstance(author_vendor, str):
+        fail("retained plan authority lacks author vendor")
+    input_nonces = retained_input_nonces(store, retained_authority)
+    execution_runs = retained_execution_runs(store, retained_authority)
     nonces: set[str] = set()
-    verify_preproduction(store, data["sl0"], reviewed, reviewed_tree, commits["sl0_base"], nonces, repo)
+    verify_preproduction(
+        store,
+        data["sl0"],
+        reviewed,
+        reviewed_tree,
+        commits["sl0_base"],
+        nonces,
+        repo,
+        preproduction_run_specs,
+        execution_runs,
+    )
     verification = closed(data["verification"], {"candidate", "canonical_main"}, "verification")
-    verify_final_group(store, verification["candidate"], "candidate verification", candidate, candidate_tree, commits["landing"], nonces)
-    verify_final_group(store, verification["canonical_main"], "canonical-main verification", main, main_tree, commits["landing"], nonces)
+    verify_final_group(
+        store,
+        repo,
+        verification["candidate"],
+        "candidate verification",
+        "candidate",
+        candidate,
+        candidate_tree,
+        commits["landing"],
+        nonces,
+        final_run_specs,
+        execution_runs,
+    )
+    verify_final_group(
+        store,
+        repo,
+        verification["canonical_main"],
+        "canonical-main verification",
+        "canonical_main",
+        main,
+        main_tree,
+        commits["landing"],
+        nonces,
+        final_run_specs,
+        execution_runs,
+    )
     verify_ci(store, data["ci"], repo, candidate, main, data["repository"], ci_query)
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
@@ -2891,10 +4431,17 @@ def verify(
     verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", landing, landing_tree, main, main_tree, seat_ids, seat_sessions, nonces)
     if len(seat_sessions) != 8:
         fail("reviewer authority lacks eight unique seat sessions")
-    verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, seat_sessions)
+    verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions)
+    verify_historical_sl0(
+        store, repo, data["sl0"], retained_authority,
+        commits["sl0_base"][0], reviewed, reviewed_tree, landing, landing_tree,
+        expected_coordinator_session, expected_author_session,
+        sha256("\0".join(sorted(seat_sessions)).encode()), seat_sessions,
+    )
+    nonces.update(input_nonces)
     verify_reuse_registry(reuse_registry, evidence_root, evidence_id, nonces)
     verify_completion(store, data["completion"], normalized_precompletion_digest(data), main, main_tree, repo)
-    if data["completion"].get("mode") == "post_completion":
+    if data["completion"].get("mode") == "post_completion" and claim_reuse:
         claim_reuse_registry(reuse_registry, evidence_id, nonces)
 
 
@@ -2966,8 +4513,36 @@ def _self_git(
             target.write_text("HARDEN_SOURCE = " + repr(anchor["source"]) + "\n")
     plan = repo / "plans/phase-plan-v10-HARDEN.md"
     plan.parent.mkdir(parents=True, exist_ok=True)
-    plan.write_text("# HARDEN self-test plan\n\nAuthoritative review instructions.\n")
-    (repo / "plans/manifest.json").write_text("{\"plans\":[]}\n")
+    suite_contract = {
+        "schema": "harden_suite_contract.v1",
+        "activated_nodeids": list(ACTIVATED_RED_NODEIDS),
+        "runs": {
+            name: {
+                field: list(value) if isinstance(value, tuple) else value
+                for field, value in FINAL_RUN_SPECS[name].items()
+                if field in {"argv", "cwd", "env_keys"}
+            }
+            for name in ("focused", "pure_control", "broad")
+        },
+    }
+    plan.write_text(
+        "# HARDEN self-test plan\n\n"
+        "### SL-0 — tests-first\n\n- **Owned files**: "
+        + ", ".join(f"`{path}`" for path in FROZEN_SL0_PATHS)
+        + "\n\n### SL-1 — production\n\n- **Owned files**: "
+        "`phase-loop-runtime/src/phase_loop_runtime/runner.py`, "
+        "`phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`\n\n"
+        "## Verification commands\n\n```json\n"
+        + canonical_bytes(suite_contract).decode("utf-8").rstrip()
+        + "\n```\n"
+    )
+    (repo / "plans/manifest.json").write_bytes(canonical_bytes({
+        "plans": [{
+            "phase_alias": "HARDEN",
+            "lifecycle": [],
+            "sl0_repairs": [],
+        }],
+    }))
     workflow = repo / CANONICAL_CI_WORKFLOW_PATH
     workflow.parent.mkdir(parents=True, exist_ok=True)
     workflow.write_text(
@@ -3025,6 +4600,139 @@ def _self_git(
     return repo, {"sl0_base": record(base), "landing_first_parent": record(first_parent), "reviewed_sl0": record(reviewed), "landing": record(landing), "candidate": record(candidate), "canonical_main": record(main)}
 
 
+def _self_repair_chain(
+    root: Path,
+    mutation: str | None = None,
+    *,
+    phase_alias: str = "HARDEN",
+) -> tuple[Path, str, str, str, str]:
+    """Construct one real append-only authorization/supplement/landing chain."""
+    repo, refs = _self_git(root)
+    reviewed = refs["reviewed_sl0"][0]
+    landing = refs["landing"][0]
+    if phase_alias == "HARDEN":
+        first_path, second_path = FROZEN_SL0_PATHS[:2]
+    else:
+        first_path = "phase-loop-runtime/tests/test_external_phase_one.py"
+        second_path = "phase-loop-runtime/tests/test_external_phase_two.py"
+        for path in (first_path, second_path):
+            (repo / path).write_text("external frozen baseline " + path + "\n")
+        _run(["git", "add", first_path, second_path], repo)
+        _run(["git", "commit", "-qm", "external frozen baseline"], repo)
+
+    def manifest() -> dict[str, Any]:
+        return strict_json_loads((repo / "plans/manifest.json").read_bytes(), "self-test repair manifest")
+
+    def write_repairs(repairs: list[dict[str, Any]]) -> None:
+        value = manifest()
+        rows = [row for row in value["plans"] if row.get("phase_alias") == phase_alias]
+        if not rows:
+            rows = [{"phase_alias": phase_alias, "lifecycle": [], "sl0_repairs": []}]
+            value["plans"].append(rows[0])
+        rows[0]["sl0_repairs"] = repairs
+        (repo / "plans/manifest.json").write_bytes(canonical_bytes(value))
+
+    authorization_id = "agent-harness#self-test:repair"
+    first_blob = blob(repo, "HEAD", first_path)[0]
+    second_blob = blob(repo, "HEAD", second_path)[0]
+    authorization = {
+        "authorization_id": authorization_id,
+        "entry": "authorization",
+        "issue": "Consiliency/agent-harness#self-test",
+        "decision": "self-test authorization",
+        "frozen_by": phase_alias + " self-test",
+        "reason": "exercise the append-only repair chain",
+        "files": [{
+            "path": first_path,
+            "base_blob": first_blob,
+            "nodes": ["SelfTest::first"],
+        }],
+        "landed": None,
+        "landed_note": "self-test landing follows",
+    }
+    supplement = {
+        "authorization_id": authorization_id,
+        "entry": "authorization_supplement",
+        "issue": "Consiliency/agent-harness#self-test",
+        "decision": "self-test supplement",
+        "reason": "exercise union semantics",
+        "files": [{
+            "path": second_path,
+            "base_blob": second_blob,
+            "nodes": ["SelfTest::second"],
+        }],
+        "rule": "self-test supplement rule",
+    }
+    if mutation == "conflicting-base-blob":
+        supplement["files"] = [{
+            "path": first_path,
+            "base_blob": "0" * 40,
+            "nodes": ["SelfTest::supplement"],
+        }]
+    if mutation == "unknown-supplement-id":
+        supplement["authorization_id"] = authorization_id + ":unknown"
+    repairs = [authorization]
+    if mutation == "duplicate-authorization":
+        repairs.append(copy.deepcopy(authorization))
+    if mutation != "supplement-after-spent":
+        repairs.append(supplement)
+    write_repairs(repairs)
+    _run(["git", "add", "plans/manifest.json"], repo)
+    _run(["git", "commit", "-qm", "authorize frozen repair"], repo)
+
+    _run(["git", "checkout", "-qb", "repair"], repo)
+    (repo / first_path).write_text("repaired first frozen path\n")
+    if mutation != "conflicting-base-blob":
+        (repo / second_path).write_text("repaired second frozen path\n")
+    _run(["git", "add", first_path, second_path], repo)
+    _run(["git", "commit", "-qm", "apply frozen repair"], repo)
+    _run(["git", "checkout", "-q", "main"], repo)
+    _run(["git", "merge", "--no-ff", "-qm", "merge frozen repair", "repair"], repo)
+    merge_commit = _run(["git", "rev-parse", "HEAD"], repo)
+    merge_first_parent = commit_parents(repo, merge_commit, "self-test repair merge")[0]
+    landed_files = [{
+        "path": first_path,
+        "nodes": ["SelfTest::first"],
+        "old_blob": first_blob,
+        "new_blob": blob(repo, merge_commit, first_path)[0],
+    }]
+    if mutation not in {"misses-supplement-path", "conflicting-base-blob"}:
+        landed_files.append({
+            "path": second_path,
+            "nodes": ["SelfTest::second"],
+            "old_blob": second_blob,
+            "new_blob": blob(repo, merge_commit, second_path)[0],
+        })
+    if mutation == "wrong-old-blob":
+        landed_files[0]["old_blob"] = "1" * 40
+    if mutation == "wrong-new-blob":
+        landed_files[0]["new_blob"] = "2" * 40
+    landing_entry = {
+        "authorization_id": authorization_id,
+        "entry": "landed",
+        "issue": "Consiliency/agent-harness#self-test",
+        "merge_commit": merge_commit,
+        "merge_first_parent": merge_first_parent,
+        "files": landed_files,
+        "note": "self-test landed record",
+    }
+    current = next(
+        row["sl0_repairs"]
+        for row in manifest()["plans"]
+        if row.get("phase_alias") == phase_alias
+    )
+    if mutation == "supplement-after-spent":
+        current.append(supplement)
+    current.append(landing_entry)
+    if mutation == "duplicate-landing":
+        current.append(copy.deepcopy(landing_entry))
+    write_repairs(current)
+    _run(["git", "add", "plans/manifest.json"], repo)
+    _run(["git", "commit", "-qm", "record frozen repair landing"], repo)
+    verified = _run(["git", "rev-parse", "HEAD"], repo)
+    return repo, reviewed, landing, verified, first_path
+
+
 # Fixture data only: the fleet-default routes in each lane's invocation form at
 # the time of writing.  The verifier never compares against this table -- a
 # retained request carrying any other registry-derived routes verifies alike.
@@ -3058,6 +4766,16 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         (artifacts / path).parent.mkdir(parents=True, exist_ok=True)
         (artifacts / path).write_bytes(data)
         return {"path": path, "sha256": sha256(data)}
+    def put_run_owned(path: str, value: dict[str, Any]) -> dict[str, str]:
+        """Retain a canonical run record both in the audit checkout and store."""
+        data = canonical_bytes(value)
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        retained = artifacts / path
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        retained.write_bytes(data)
+        return {"path": path, "sha256": sha256(data)}
     def nonce(label: str) -> str: return sha256(label.encode())
     reviewed, reviewed_tree = refs["reviewed_sl0"]
     candidate, candidate_tree = refs["candidate"]
@@ -3076,6 +4794,20 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         item: dict[str, Any] = {"schema": "harden_pytest_receipt.v1", "kind": kind, "head": head, "tree": tree, "process_nonce": nonce(f"receipt-{serial}-{kind}"), "exit_code": exit_code, "argv_class": argv, "raw_sha256": raw["sha256"]}
         if junit_ref is not None: item["junit_sha256"] = junit_ref["sha256"]
         if source is not None: item.update({"source_path": source[0], "source_sha256": source[1]})
+        if kind in {"source_mutation", "restored_control"}:
+            began = 1_500 if kind == "source_mutation" else 1_600
+            item.update(
+                {
+                    "clock_id": "self-test-history-clock",
+                    "started_monotonic_ns": began,
+                    "finished_monotonic_ns": began + 50,
+                }
+            )
+        if kind in {"source_mutation", "restored_control"}:
+            return put_run_owned(
+                f".phase-loop/runs/self-{serial}-{kind}/pytest-receipt.json",
+                item,
+            )
         return put("receipt-" + kind, item)
     def pytest_art(kind: str, head: str, tree: str, status: str, nodeid: str, argv: str, marker: str = "") -> dict[str, Any]:
         raw = put("raw-" + kind, (marker or (kind + ": " + ("1 passed" if status == "passed" else "1 failed"))).encode(), raw=True)
@@ -3091,7 +4823,28 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     red_cases += "".join(f'<testcase classname="tests.preexisting" name="pass_{index}" />' for index in range(439))
     red_cases += "".join(f'<testcase classname="tests.preexisting" name="skip_{index}"><skipped /></testcase>' for index in range(3))
     red_junit = put("activated-red.xml", ("<testsuite>" + red_cases + "</testsuite>").encode(), raw=True)
-    activated = {"receipt": receipt_art("activated_red", reviewed, reviewed_tree, red_raw, red_junit, 1, "pytest_harden_activated_v1"), "raw": red_raw, "junit": red_junit}
+    activated_nodes = [
+        "::".join(fixture_junit_identity(nodeid)) for nodeid in ACTIVATED_RED_NODEIDS
+    ] + [
+        "tests.preexisting::pass_" + str(index) for index in range(439)
+    ] + [
+        "tests.preexisting::skip_" + str(index) for index in range(3)
+    ]
+    activated_receipt = {
+        "schema": "harden_pytest_receipt.v1", "kind": "activated_red",
+        "head": reviewed, "tree": reviewed_tree,
+        "process_nonce": nonce("activated-red-receipt"), "exit_code": 1,
+        "argv_class": "pytest_harden_activated_v1", "raw_sha256": red_raw["sha256"],
+        "junit_sha256": red_junit["sha256"],
+        "argv": list(FINAL_RUN_SPECS["focused"]["argv"]),
+        "cwd": FINAL_RUN_SPECS["focused"]["cwd"],
+        "env_keys": FINAL_RUN_SPECS["focused"]["env_keys"],
+        "source_tree": reviewed_tree,
+        "summary": {"passed": 439, "failed": len(ACTIVATED_RED_NODEIDS), "errors": 0, "skipped": 3, "xfails": 0, "xpasses": 0, "subtests": 17, "deselected": 0},
+        "nodeids_sha256": sha256(canonical_bytes(sorted(activated_nodes))),
+        "baseline": {"schema": "harden_broad_baseline.v1", "commit": refs["sl0_base"][0], "tree": refs["sl0_base"][1], "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
+    }
+    activated = {"receipt": put("activated-red.receipt", activated_receipt), "raw": red_raw, "junit": red_junit}
     pure_nodes = [
         "phase-loop-runtime/tests/test_panel_native_fill_183.py::test_" + str(index)
         for index in range(20)
@@ -3142,6 +4895,8 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             object_id, contents = blob(repo, commit_id, path)
             entry[{"reviewed_sl0": "reviewed", "landing": "landing", "candidate": "candidate", "canonical_main": "canonical_main"}[stage]] = {"blob": object_id, "sha256": sha256(contents), "bytes": len(contents)}
         inventory.append(entry)
+    final_observations: dict[str, dict[str, str]] = {}
+
     def final_group(label: str, head: str, tree: str) -> dict[str, Any]:
         group: dict[str, Any] = {"commit": head, "tree": tree, "run_nonce": nonce("run-" + label)}
         landing, landing_tree = refs["landing"]
@@ -3191,8 +4946,34 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             if "outcome_policy" in spec:
                 receipt_value["declared_outcomes"] = dict(summary)
             group[key] = {"receipt": put(label + "-" + key + ".receipt", receipt_value), "raw": raw_ref, "junit": junit_ref}
+            run_name = label + "_" + key
+            final_observations[run_name] = put_run_owned(
+                f".phase-loop/runs/self-{run_name}/observation.json",
+                {
+                    "schema": "harden_run_observation.v1",
+                    "kind": run_name,
+                    "head": head,
+                    "tree": tree,
+                    "process_nonce": receipt_value["process_nonce"],
+                    "exit_code": receipt_value["exit_code"],
+                    "argv_class": receipt_value["argv_class"],
+                    "argv": receipt_value["argv"],
+                    "cwd": receipt_value["cwd"],
+                    "env_keys": receipt_value["env_keys"],
+                    "source_tree": receipt_value["source_tree"],
+                    "raw": raw_ref,
+                    "junit": junit_ref,
+                    "baseline": receipt_value["baseline"],
+                },
+            )
         lint_raw = put(label + "-lint.raw", (label + ": py_compile ruff git diff --check passed\n").encode(), raw=True)
-        group["lint"] = {"raw": lint_raw, "receipt": put(label + "-lint.receipt", {"schema": "harden_static_receipt.v1", "head": head, "tree": tree, "process_nonce": nonce("lint-" + label), "exit_code": 0, "tool_identity": "harden_static_gate.v1", "argv_class": "harden_static_metadata_only_v1", "checks": ["py_compile", "ruff", "git_diff_check"], "raw_sha256": lint_raw["sha256"]})}
+        lint_name = label + "_lint"
+        lint_receipt_ref = put_run_owned(
+            f".phase-loop/runs/self-{lint_name}/lint-receipt.json",
+            {"schema": "harden_static_receipt.v1", "head": head, "tree": tree, "process_nonce": nonce("lint-" + label), "exit_code": 0, "tool_identity": "harden_static_gate.v1", "argv_class": "harden_static_metadata_only_v1", "checks": ["py_compile", "ruff", "git_diff_check"], "raw_sha256": lint_raw["sha256"]},
+        )
+        final_observations[lint_name] = lint_receipt_ref
+        group["lint"] = {"raw": lint_raw, "receipt": lint_receipt_ref}
         return group
 
     def broker(harness: str, requested: str, resolved: str, label: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str) -> dict[str, Any]:
@@ -3278,6 +5059,8 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "provider_stream_final_no_truncation": True,
             })
         return common
+    review_sessions: list[str] = []
+
     def review(round_name: str, head: str, tree: str) -> dict[str, Any]:
         landing, landing_tree = refs["landing"]
         seats_request = [{"harness": h, "requested_model": route[0]} for h, route in SELF_TEST_ROUTES.items()]
@@ -3301,31 +5084,34 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "provider_response_sha256": sha256(report.encode()),
                 "provider_response_bytes": len(report.encode()),
             })
-            runtime_receipt = put_runtime_receipt(
-                round_name,
-                harness,
-                {
-                    "schema": "harden_broker_run_receipt.v1",
-                    "head": head,
-                    "tree": tree,
-                    "harness": harness,
-                    "model": resolved,
-                    "seat_key": round_name + "-" + harness + "-seat",
-                    "status": "OK",
-                    "report": report,
-                    "report_sha256": sha256(report.encode()),
-                    "report_bytes": len(report.encode()),
-                    "broker": broker_record,
-                },
+            runtime = {
+                "schema": "harden_broker_run_receipt.v1",
+                "head": head,
+                "tree": tree,
+                "harness": harness,
+                "model": resolved,
+                "seat_key": round_name + "-" + harness + "-seat",
+                "status": "OK",
+                "report": report,
+                "report_sha256": sha256(report.encode()),
+                "report_bytes": len(report.encode()),
+                "broker": broker_record,
+            }
+            runtime_receipt = put_runtime_receipt(round_name, harness, runtime)
+            session = (
+                broker_record["claude_session_id_sha256"]
+                if harness == "claude"
+                else sha256(canonical_bytes(runtime))
             )
-            seat = put("seat-" + round_name + "-" + harness, {"schema": "harden_review_seat.v1", "round": round_name, "head": head, "tree": tree, "request_sha256": request["sha256"], "harness": harness, "requested_model": requested, "resolved_model": resolved, "seat_id": round_name + "-" + harness + "-seat", "session_sha256": nonce(round_name + harness + "session"), "harness_provenance": "brokered_subscription_cli", "status": "usable", "result_kind": "real_subscription_inference", "report": report, "report_sha256": sha256(report.encode()), "report_bytes": len(report.encode()), "broker": broker_record, "runtime_receipt": runtime_receipt})
+            review_sessions.append(session)
+            seat = put("seat-" + round_name + "-" + harness, {"schema": "harden_review_seat.v1", "round": round_name, "head": head, "tree": tree, "request_sha256": request["sha256"], "harness": harness, "requested_model": requested, "resolved_model": resolved, "seat_id": round_name + "-" + harness + "-seat", "session_sha256": session, "harness_provenance": "brokered_subscription_cli", "status": "usable", "result_kind": "real_subscription_inference", "report": report, "report_sha256": sha256(report.encode()), "report_bytes": len(report.encode()), "broker": broker_record, "runtime_receipt": runtime_receipt})
             seats.append({"harness": harness, "artifact": seat})
         return {"head": head, "tree": tree, "request": request, "seats": seats}
     reviews = {"candidate": review("candidate", candidate, candidate_tree), "canonical_main": review("canonical_main", main, main_tree)}
     evidence_id = nonce("evidence")
     coordinator_session = nonce("role-coordinator")
     author_session = sha256(b"01a04424-61d9-7712-94a6-e058cbe1349e")
-    reviewer_session = sha256("\0".join(sorted(nonce(round_name + harness + "session") for round_name in ("candidate", "canonical_main") for harness in SELF_TEST_ROUTES)).encode())
+    reviewer_session = sha256("\0".join(sorted(review_sessions)).encode())
     roles = {}
     for role, identity, vendor, session in (("coordinator", "coordinator-1", "coordinator", coordinator_session), ("author", "author-1", "codex-gpt-5.6-terra", author_session), ("reviewer", "reviewer-" + reviewer_session[:32], "reviewer", reviewer_session)):
         roles[role] = put("role-" + role, {"schema": "harden_role_attestation.v1", "role": role, "identity": identity, "vendor": vendor, "session_sha256": session, "evidence_id": evidence_id, "issued_at": "2026-08-27T00:00:00Z"})
@@ -3385,13 +5171,91 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             "path": path, "blob": object_id,
             "sha256": sha256(contents), "bytes": len(contents),
         }
+    historical_clock = "self-test-history-clock"
+    historical_approval = {
+        "schema": "harden_sl0_approval.v1",
+        "base_commit": refs["sl0_base"][0], "head": reviewed, "tree": reviewed_tree,
+        "patch_sha256": sha256(git_bytes(repo, "diff", "--no-ext-diff", refs["sl0_base"][0], reviewed)),
+        "clock_id": historical_clock, "observed_monotonic_ns": 1_000,
+        "operation_nonce": nonce("historical-approval"), "seats": [],
+    }
+    for harness in ("claude", "codex", "gemini", "grok"):
+        report = f"Reviewed tests-only head {reviewed}, tree {reviewed_tree}, as {harness}.\nAGREE\n"
+        historical_approval["seats"].append({
+            "harness": harness, "session_sha256": nonce("historical-" + harness + "-session"),
+            "status": "usable", "report": report, "report_sha256": sha256(report.encode()),
+            "report_bytes": len(report.encode()),
+        })
+    approval = put_run_owned(".phase-loop/runs/self-sl0-review/approval.json", historical_approval)
+    observations: dict[str, dict[str, str]] = {}
+    for name, proof, record, began, ended in (
+        ("preproduction_red", activated, activated_receipt, 1_100, 1_200),
+        ("preproduction_control", pure, pure_receipt, 1_300, 1_400),
+    ):
+        observations[name] = put_run_owned(
+            f".phase-loop/runs/self-{name}/observation.json",
+            {
+                "schema": "harden_run_observation.v1", "kind": name,
+                "head": reviewed, "tree": reviewed_tree, "clock_id": historical_clock,
+                "started_monotonic_ns": began, "finished_monotonic_ns": ended,
+                "process_nonce": record["process_nonce"],
+                "exit_code": record["exit_code"],
+                "argv_class": record["argv_class"],
+                "argv": record["argv"], "cwd": record["cwd"],
+                "env_keys": record["env_keys"], "source_tree": record["source_tree"],
+                "raw": proof["raw"], "junit": proof["junit"],
+                "baseline": record["baseline"],
+            },
+        )
+    historical_mutations = put_run_owned(
+        ".phase-loop/runs/self-sl0-mutations/index.json",
+        {
+            "schema": "harden_source_mutations.v1",
+            "annotation": "self-test",
+            "mutations": mutations,
+        },
+    )
+    production_start = put_run_owned(
+        ".phase-loop/runs/self-production/start.json",
+        {
+            "schema": "harden_production_start.v1", "head": refs["landing"][0], "tree": refs["landing"][1],
+            "clock_id": historical_clock, "observed_monotonic_ns": 2_000,
+            "operation_nonce": nonce("historical-production-start"), "sl0_approval": approval,
+            "preproduction_runs": observations, "source_mutations": historical_mutations,
+        },
+    )
+    verification = {
+        "candidate": final_group("candidate", candidate, candidate_tree),
+        "canonical_main": final_group("canonical_main", main, main_tree),
+    }
+    execution_runs = put(
+        "retained-execution-runs.json",
+        {
+            "schema": "harden_execution_runs.v1",
+            "annotation": "self-test",
+            "runs": {**observations, **final_observations},
+            "groups": {
+                round_name: {
+                    "run_nonce": group["run_nonce"],
+                    "head": group["commit"],
+                    "tree": group["tree"],
+                }
+                for round_name, group in verification.items()
+            },
+        },
+    )
+    authority["retained_inputs"] = [put("retained-plan-authority.json", {
+        "schema": "harden_plan_authority.v1",
+        "author_vendor": "codex-gpt-5.6-terra",
+    }), approval, production_start, historical_mutations, execution_runs,
+        *observations.values(), *final_observations.values()]
 
     evidence: dict[str, Any] = {
         "schema": SCHEMA, "evidence_id": evidence_id, "repository": CANONICAL_CI_REPOSITORY,
         "git": {name: {"commit": commit_id, "tree": tree} for name, (commit_id, tree) in refs.items()},
         "authority": authority,
-        "sl0": {"frozen_inventory": inventory, "activated_red": activated, "pure_control": pure, "mutations": mutations},
-        "verification": {"candidate": final_group("candidate", candidate, candidate_tree), "canonical_main": final_group("main", main, main_tree)},
+        "sl0": {"frozen_inventory": inventory, "activated_red": activated, "pure_control": pure, "mutations": mutations, "approval": approval, "production_start": production_start},
+        "verification": verification,
         "ci": {
             "candidate": ci_record("candidate", 98, candidate, CANONICAL_CI_EVENTS["candidate"]),
             "canonical_main": ci_record("canonical-main", 99, main, CANONICAL_CI_EVENTS["canonical_main"]),
@@ -3461,6 +5325,255 @@ def self_test() -> None:
                 direct_rejections += 1
                 return
             raise AssertionError(name + " was accepted")
+
+        integration_root = root / "exact-integration-merge"
+        integration_root.mkdir()
+        integration_repo, integration_refs = _self_git(
+            integration_root,
+            intervening_first_parent=True,
+        )
+        first_parent_commits = _git_lines(
+            integration_repo,
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            f"{integration_refs['sl0_base'][0]}..{integration_refs['landing'][0]}",
+            label="self-test first-parent integration history",
+        )
+        if _first_parent_integration_merge(
+            integration_repo,
+            integration_refs["reviewed_sl0"][0],
+            first_parent_commits,
+            "self-test reviewed input",
+        ) != integration_refs["landing"][0]:
+            raise AssertionError("exact reviewed commit selected the wrong integration merge")
+
+        registry_schema = {
+            "schema": "harden_evidence_registry.v1",
+            "evidence_ids": [],
+            "operation_nonces": [],
+        }
+        registry_swap_root = root / "reuse-registry-swap"
+        registry_swap_root.mkdir()
+        swapped_registry = registry_swap_root / "registry.json"
+        swapped_target = registry_swap_root / "swapped.json"
+        swapped_registry.write_bytes(canonical_bytes(registry_schema))
+        swapped_target.write_bytes(canonical_bytes(registry_schema))
+        swapped_registry.unlink()
+        swapped_registry.symlink_to(swapped_target)
+        direct_rejected(
+            "reuse-registry-symlink-claim",
+            lambda: claim_reuse_registry(
+                swapped_registry,
+                "1" * 64,
+                {"2" * 64},
+            ),
+        )
+
+        registry_ancestor_root = root / "reuse-registry-ancestor-symlink"
+        registry_ancestor_root.mkdir()
+        actual_registry_parent = registry_ancestor_root / "actual"
+        actual_registry_parent.mkdir()
+        registry_selector = registry_ancestor_root / "selector"
+        registry_selector.symlink_to(actual_registry_parent, target_is_directory=True)
+        ancestor_registry = registry_selector / "registry.json"
+        ancestor_registry.write_bytes(canonical_bytes(registry_schema))
+        direct_rejected(
+            "reuse-registry-ancestor-symlink-claim",
+            lambda: claim_reuse_registry(
+                ancestor_registry,
+                "9" * 64,
+                {"a" * 64},
+            ),
+        )
+
+        lexical_root = root / "reuse-registry-lexical-parent"
+        lexical_root.mkdir()
+        lexical_actual = root / "reuse-registry-lexical-actual"
+        lexical_actual.mkdir()
+        lexical_child = lexical_actual / "child"
+        lexical_child.mkdir()
+        lexical_selector = lexical_root / "selector"
+        lexical_selector.symlink_to(lexical_child, target_is_directory=True)
+        lexical_registry = lexical_root / "registry.json"
+        lexical_registry.write_bytes(canonical_bytes(registry_schema))
+        direct_rejected(
+            "reuse-registry-lexical-parent-traversal",
+            lambda: claim_reuse_registry(
+                lexical_selector / ".." / "registry.json",
+                "b" * 64,
+                {"c" * 64},
+            ),
+        )
+
+        detached_parent_root = root / "reuse-registry-detached-parent"
+        detached_parent = detached_parent_root / "live"
+        detached_parent.mkdir(parents=True)
+        detached_registry = detached_parent / "registry.json"
+        detached_registry.write_bytes(canonical_bytes(registry_schema))
+        detached_copy = detached_parent_root / "detached"
+        original_flock = fcntl.flock
+        detached_once = False
+
+        def detach_registry_parent(file_fd: int, operation: int) -> None:
+            nonlocal detached_once
+            if not detached_once:
+                detached_once = True
+                detached_parent.rename(detached_copy)
+                detached_parent.mkdir()
+                detached_registry.write_bytes(canonical_bytes(registry_schema))
+            original_flock(file_fd, operation)
+
+        globals()["fcntl"].flock = detach_registry_parent
+        try:
+            direct_rejected(
+                "reuse-registry-detached-parent",
+                lambda: claim_reuse_registry(
+                    detached_registry,
+                    "d" * 64,
+                    {"e" * 64},
+                ),
+            )
+        finally:
+            globals()["fcntl"].flock = original_flock
+        if detached_registry.read_bytes() != canonical_bytes(registry_schema):
+            raise AssertionError("claim modified replacement registry parent")
+
+        registry_failure_root = root / "reuse-registry-write-failure"
+        registry_failure_root.mkdir()
+        failure_registry = registry_failure_root / "registry.json"
+        failure_bytes = canonical_bytes({
+            **registry_schema,
+            "evidence_ids": ["3" * 64],
+            "operation_nonces": ["4" * 64],
+        })
+        failure_registry.write_bytes(failure_bytes)
+        original_write_all = _write_all
+
+        def failed_registry_write(_file_fd: int, _data: bytes) -> None:
+            raise OSError("self-test registry write failure")
+
+        globals()["_write_all"] = failed_registry_write
+        try:
+            direct_rejected(
+                "reuse-registry-write-failure",
+                lambda: claim_reuse_registry(
+                    failure_registry,
+                    "5" * 64,
+                    {"6" * 64},
+                ),
+            )
+        finally:
+            globals()["_write_all"] = original_write_all
+        if failure_registry.read_bytes() != failure_bytes:
+            raise AssertionError("failed registry update damaged canonical authority")
+
+        original_fsync = os.fsync
+        failed_file_fsync = False
+
+        def fail_first_file_fsync(file_fd: int) -> None:
+            nonlocal failed_file_fsync
+            if not failed_file_fsync and stat.S_ISREG(os.fstat(file_fd).st_mode):
+                failed_file_fsync = True
+                raise OSError("self-test registry fsync failure")
+            original_fsync(file_fd)
+
+        globals()["os"].fsync = fail_first_file_fsync
+        try:
+            direct_rejected(
+                "reuse-registry-file-fsync-failure",
+                lambda: claim_reuse_registry(
+                    failure_registry,
+                    "b" * 64,
+                    {"c" * 64},
+                ),
+            )
+        finally:
+            globals()["os"].fsync = original_fsync
+        _registry, fsync_ids, fsync_nonces = _reuse_registry_values(
+            failure_registry.read_bytes()
+        )
+        if "b" * 64 not in fsync_ids or "c" * 64 not in fsync_nonces:
+            raise AssertionError("complete registry append was reusable after fsync failure")
+        failure_registry.write_bytes(failure_bytes)
+
+        def partial_registry_write(file_fd: int, _data: bytes) -> None:
+            os.write(file_fd, b"partial")
+            raise OSError("self-test partial registry write")
+
+        globals()["_write_all"] = partial_registry_write
+        try:
+            direct_rejected(
+                "reuse-registry-partial-write-failure",
+                lambda: claim_reuse_registry(
+                    failure_registry,
+                    "d" * 64,
+                    {"e" * 64},
+                ),
+            )
+        finally:
+            globals()["_write_all"] = original_write_all
+        try:
+            _reuse_registry_values(failure_registry.read_bytes())
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("partial registry append remained reusable")
+        failure_registry.write_bytes(failure_bytes)
+
+        replacement_registry = registry_failure_root / "replacement.json"
+        replacement_bytes = canonical_bytes({
+            **registry_schema,
+            "evidence_ids": ["d" * 64],
+            "operation_nonces": ["e" * 64],
+        })
+        replacement_registry.write_bytes(replacement_bytes)
+        original_append = _append_registry_descriptor
+
+        def replace_registry_after_append(
+            file_fd: int, before: bytes, claim: bytes
+        ) -> None:
+            original_append(file_fd, before, claim)
+            os.replace(replacement_registry, failure_registry)
+
+        globals()["_append_registry_descriptor"] = replace_registry_after_append
+        try:
+            direct_rejected(
+                "reuse-registry-leaf-replacement",
+                lambda: claim_reuse_registry(
+                    failure_registry,
+                    "f" * 64,
+                    {"0" * 64},
+                ),
+            )
+        finally:
+            globals()["_append_registry_descriptor"] = original_append
+        if failure_registry.read_bytes() != replacement_bytes:
+            raise AssertionError("registry leaf replacement was not preserved")
+
+        registry_race_root = root / "reuse-registry-race"
+        registry_race_root.mkdir()
+        race_registry = registry_race_root / "registry.json"
+        race_registry.write_bytes(canonical_bytes(registry_schema))
+
+        def concurrent_registry_claim(_index: int) -> bool:
+            try:
+                claim_reuse_registry(race_registry, "7" * 64, {"8" * 64})
+            except EvidenceError:
+                return False
+            return True
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claim_outcomes = sorted(executor.map(concurrent_registry_claim, range(2)))
+        race_value, _race_ids, _race_nonces = _reuse_registry_values(
+            race_registry.read_bytes()
+        )
+        if claim_outcomes != [False, True] or race_value != {
+            **registry_schema,
+            "evidence_ids": ["7" * 64],
+            "operation_nonces": ["8" * 64],
+        }:
+            raise AssertionError("concurrent registry claims were not exactly once")
 
         direct_rejected(
             "run-root-parent-traversal",
@@ -3930,6 +6043,61 @@ def self_test() -> None:
                 {"missing.py"},
             ),
         )
+
+        def exercise_repair_chain(
+            name: str,
+            mutation: str | None = None,
+            *,
+            phase_alias: str = "HARDEN",
+        ) -> dict[str, str]:
+            repair_root = root / name
+            repair_root.mkdir()
+            repair_repo, reviewed, landing, verified, _path = _self_repair_chain(
+                repair_root, mutation, phase_alias=phase_alias
+            )
+            return accepted_frozen_blobs(
+                repair_repo,
+                reviewed,
+                landing,
+                verified,
+                set(FROZEN_SL0_PATHS),
+            )
+
+        valid_repair = exercise_repair_chain("valid-repair-chain")
+        valid_repo = root / "valid-repair-chain" / "repo"
+        if valid_repair[FROZEN_SL0_PATHS[0]] != blob(
+            valid_repo, "HEAD", FROZEN_SL0_PATHS[0]
+        )[0]:
+            raise AssertionError("valid frozen repair chain did not advance the accepted blob")
+        exercise_repair_chain(
+            "valid-cross-row-repair-chain",
+            phase_alias="EXECFIND",
+        )
+        direct_rejected(
+            "cross-row-repair-chain-wrong-new-blob",
+            lambda: exercise_repair_chain(
+                "cross-row-repair-chain-wrong-new-blob",
+                "wrong-new-blob",
+                phase_alias="EXECFIND",
+            ),
+        )
+        for repair_mutation in (
+            "supplement-after-spent",
+            "unknown-supplement-id",
+            "conflicting-base-blob",
+            "misses-supplement-path",
+            "duplicate-authorization",
+            "duplicate-landing",
+            "wrong-old-blob",
+            "wrong-new-blob",
+        ):
+            direct_rejected(
+                "repair-chain-" + repair_mutation,
+                lambda repair_mutation=repair_mutation: exercise_repair_chain(
+                    "repair-chain-" + repair_mutation,
+                    repair_mutation,
+                ),
+            )
         baseline = root / "baseline"
         baseline.mkdir()
         evidence_path, artifacts, repo, evidence, registry, coordinator, author = _fixture(baseline)
@@ -4522,7 +6690,7 @@ def self_test() -> None:
         post_path = post_root / "evidence.json"; post_model = parse_canonical_json(post_path.read_bytes(), "post-completion evidence")
         main = post_model["git"]["canonical_main"]
         event = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": normalized_precompletion_digest(post_model), "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": False}}}
-        ledger = (json.dumps(event, sort_keys=True) + "\n").encode(); ledger_ref = {"path": "completion-ledger.jsonl", "sha256": sha256(ledger)}
+        ledger = canonical_bytes(event); ledger_ref = {"path": "completion-ledger.jsonl", "sha256": sha256(ledger)}
         (post_root / "artifacts" / ledger_ref["path"]).write_bytes(ledger)
         canonical_ledger = post_root / "repo" / ".phase-loop" / "events.jsonl"
         canonical_ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -4530,6 +6698,37 @@ def self_test() -> None:
         post_model["completion"] = {"mode": "post_completion", "ledger": ledger_ref}
         _write_evidence(post_path, post_model)
         verify(post_path, post_root / "artifacts", post_root / "repo", reuse_registry=post_root / "operator-reuse-registry.json", expected_coordinator_session=coordinator, expected_author_session=author, ci_query=post_root / "fake-gh")
+        noncanonical_root = root / "noncanonical-completion-ledger"
+        shutil.copytree(post_root, noncanonical_root, symlinks=True)
+        noncanonical_ledger = json.dumps(event, sort_keys=True, indent=2).encode() + b"\n"
+        noncanonical_ref = {
+            "path": "completion-ledger.jsonl",
+            "sha256": sha256(noncanonical_ledger),
+        }
+        (noncanonical_root / "artifacts" / noncanonical_ref["path"]).write_bytes(
+            noncanonical_ledger
+        )
+        (noncanonical_root / "repo" / ".phase-loop" / "events.jsonl").write_bytes(
+            noncanonical_ledger
+        )
+        noncanonical_model = parse_canonical_json(
+            (noncanonical_root / "evidence.json").read_bytes(),
+            "noncanonical completion evidence",
+        )
+        noncanonical_model["completion"]["ledger"] = noncanonical_ref
+        _write_evidence(noncanonical_root / "evidence.json", noncanonical_model)
+        direct_rejected(
+            "noncanonical-completion-ledger",
+            lambda: verify(
+                noncanonical_root / "evidence.json",
+                noncanonical_root / "artifacts",
+                noncanonical_root / "repo",
+                reuse_registry=noncanonical_root / "operator-reuse-registry.json",
+                expected_coordinator_session=coordinator,
+                expected_author_session=author,
+                ci_query=noncanonical_root / "fake-gh",
+            ),
+        )
         detached_root = root / "detached-completion-ledger"
         shutil.copytree(post_root, detached_root, symlinks=True)
         (detached_root / "repo" / ".phase-loop" / "events.jsonl").write_bytes(b"{}\n")
@@ -4679,6 +6878,83 @@ def self_test() -> None:
             red = model["sl0"]["activated_red"]; replace(red["raw"], artifact_root, (artifact_root / red["raw"]["path"]).read_bytes() + b"\nHARDEN-RED-ANCHOR::staged-tree-containment\n")
             mutate_json(red["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("raw_sha256", red["raw"]["sha256"]))
         rejected("extra-red", extra_anchor)
+        def unrelated_red_failure(
+            model: dict[str, Any], local_root: Path, artifact_root: Path
+        ) -> None:
+            red = model["sl0"]["activated_red"]
+            junit_bytes = (artifact_root / red["junit"]["path"]).read_bytes().replace(
+                b"</testsuite>",
+                b'<testcase classname="tests.preexisting" name="test_unrelated_failure">'
+                b"<failure>AssertionError</failure></testcase></testsuite>",
+            )
+            replace(red["junit"], artifact_root, junit_bytes)
+            raw_bytes = (artifact_root / red["raw"]["path"]).read_bytes().replace(
+                b"16 failed", b"17 failed", 1
+            )
+            replace(
+                red["raw"],
+                artifact_root,
+                raw_bytes
+                + b"\nFAILED tests/preexisting.py::test_unrelated_failure - AssertionError\n",
+            )
+
+            def reseal_receipt(value: dict[str, Any]) -> None:
+                value["raw_sha256"] = red["raw"]["sha256"]
+                value["junit_sha256"] = red["junit"]["sha256"]
+                value["summary"]["failed"] += 1
+                cases = parse_junit(junit_bytes, "self-test unrelated RED JUnit")
+                value["nodeids_sha256"] = sha256(
+                    canonical_bytes(sorted(case["node"] for case in cases))
+                )
+
+            mutate_json(red["receipt"], artifact_root, reseal_receipt)
+            retained = model["authority"]["retained_inputs"]
+            execution_ref = next(
+                item
+                for item in retained
+                if item["path"].endswith("retained-execution-runs.json")
+            )
+            execution = parse_canonical_json(
+                (artifact_root / execution_ref["path"]).read_bytes(),
+                "self-test retained execution runs",
+            )
+            observation_ref = execution["runs"]["preproduction_red"]
+            observation = parse_canonical_json(
+                (artifact_root / observation_ref["path"]).read_bytes(),
+                "self-test preproduction RED observation",
+            )
+            observation["raw"] = dict(red["raw"])
+            observation["junit"] = dict(red["junit"])
+            observation_bytes = canonical_bytes(observation)
+            replace(observation_ref, artifact_root, observation_bytes)
+            (local_root / "repo" / observation_ref["path"]).write_bytes(
+                observation_bytes
+            )
+
+            production_start_ref = model["sl0"]["production_start"]
+            production_start = parse_canonical_json(
+                (artifact_root / production_start_ref["path"]).read_bytes(),
+                "self-test production start",
+            )
+            production_start["preproduction_runs"]["preproduction_red"] = dict(
+                observation_ref
+            )
+            production_start_bytes = canonical_bytes(production_start)
+            replace(production_start_ref, artifact_root, production_start_bytes)
+            (local_root / "repo" / production_start_ref["path"]).write_bytes(
+                production_start_bytes
+            )
+            replace(execution_ref, artifact_root, canonical_bytes(execution))
+            for retained_ref in retained:
+                for changed_ref in (
+                    observation_ref,
+                    production_start_ref,
+                    execution_ref,
+                ):
+                    if retained_ref["path"] == changed_ref["path"]:
+                        retained_ref["sha256"] = changed_ref["sha256"]
+
+        rejected("unrelated-red-failure", unrelated_red_failure)
         def skipped_junit(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             red = model["sl0"]["activated_red"]; replace(red["junit"], artifact_root, b'<testsuite><testcase classname="pkg" name="x"><skipped/></testcase></testsuite>')
             mutate_json(red["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("junit_sha256", red["junit"]["sha256"]))
@@ -5216,6 +7492,22 @@ def self_test() -> None:
             event = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": digest, "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": False}}}
             body = canonical_bytes(event) + canonical_bytes(event); ref = {"path": "duplicate-ledger.jsonl", "sha256": sha256(body)}; (artifact_root / ref["path"]).write_bytes(body); model["completion"] = {"mode": "post_completion", "ledger": ref}
         rejected("duplicate-ledger", duplicate_ledger)
+        def proofless_ledger(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            digest = normalized_precompletion_digest(model); main = model["git"]["canonical_main"]
+            proved = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": digest, "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": False}}}
+            proofless = {"timestamp": "2026-08-27T00:00:01Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {}}
+            body = canonical_bytes(proved) + canonical_bytes(proofless); ref = {"path": "proofless-ledger.jsonl", "sha256": sha256(body)}; (artifact_root / ref["path"]).write_bytes(body); model["completion"] = {"mode": "post_completion", "ledger": ref}
+        rejected("proofless-ledger", proofless_ledger)
+        def wrong_ledger_action(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            digest = normalized_precompletion_digest(model); main = model["git"]["canonical_main"]
+            event = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "not_phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": digest, "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": False}}}
+            body = canonical_bytes(event); ref = {"path": "wrong-action-ledger.jsonl", "sha256": sha256(body)}; (artifact_root / ref["path"]).write_bytes(body); model["completion"] = {"mode": "post_completion", "ledger": ref}
+        rejected("wrong-ledger-action", wrong_ledger_action)
+        def integer_visual_ledger(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            digest = normalized_precompletion_digest(model); main = model["git"]["canonical_main"]
+            event = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": digest, "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": 0}}}
+            body = canonical_bytes(event); ref = {"path": "integer-visual-ledger.jsonl", "sha256": sha256(body)}; (artifact_root / ref["path"]).write_bytes(body); model["completion"] = {"mode": "post_completion", "ledger": ref}
+        rejected("integer-visual-ledger", integer_visual_ledger)
         def wrong_ledger_binding(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             main = model["git"]["canonical_main"]
             event = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": "0" * 64, "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": False}}}
