@@ -2379,6 +2379,21 @@ def _historical_frozen_baseline(
             text(file["new_blob"], "HARDEN historical baseline new blob", pattern=HEX40)
             parsed_files.append(file)
         parsed_landings.append({**item, "files": parsed_files})
+    first_parent_commits = _git_lines(
+        repo,
+        "rev-list",
+        "--first-parent",
+        "--reverse",
+        f"{landing}..{verified}",
+        label="HARDEN first-parent history",
+    )
+    first_parent_order = {
+        commit_id: index for index, commit_id in enumerate(first_parent_commits)
+    }
+    if any(
+        item["landing_commit"] not in first_parent_order for item in parsed_landings
+    ):
+        fail("HARDEN historical baseline landing is outside first-parent history")
     if [item["landing_commit"] for item in parsed_landings] != changed_baseline_commits:
         fail("HARDEN historical baseline changed-commit set mismatch")
 
@@ -2403,17 +2418,6 @@ def _historical_frozen_baseline(
     ):
         fail("HARDEN historical baseline does not reach the historical input parent")
 
-    first_parent_commits = _git_lines(
-        repo,
-        "rev-list",
-        "--first-parent",
-        "--reverse",
-        f"{landing}..{verified}",
-        label="HARDEN first-parent history",
-    )
-    first_parent_order = {
-        commit_id: index for index, commit_id in enumerate(first_parent_commits)
-    }
     named_record = closed(
         metadata.get("historical_named_frozen_transitions"),
         {"schema", "entries"},
@@ -2575,6 +2579,45 @@ def _historical_frozen_baseline(
             accepted[path] = new_blob
         last_merge = integration_commit
 
+    raw_repairs = row.get("sl0_repairs", [])
+    if not isinstance(raw_repairs, list):
+        fail("HARDEN sl0_repairs is malformed")
+    repair_merges = [
+        entry.get("merge_commit")
+        for entry in raw_repairs
+        if isinstance(entry, dict)
+        and entry.get("entry") == "landed"
+        and isinstance(entry.get("merge_commit"), str)
+        and entry.get("merge_commit") in first_parent_order
+    ]
+    disposition_boundary = verified
+    if repair_merges:
+        first_repair = min(repair_merges, key=first_parent_order.__getitem__)
+        repair_parents = commit_parents(
+            repo, first_repair, "HARDEN first prospective repair merge"
+        )
+        if not repair_parents:
+            fail("HARDEN first prospective repair merge has no parent")
+        disposition_boundary = repair_parents[0]
+    assert last_merge is not None
+    disposition_first_parent = _git_lines(
+        repo,
+        "rev-list",
+        "--first-parent",
+        "--reverse",
+        f"{last_merge}..{disposition_boundary}",
+        label="HARDEN frozen disposition first-parent history",
+    )
+    changed_disposition_merges = [
+        commit_id
+        for commit_id in disposition_first_parent
+        if changed_paths(
+            repo,
+            commit_parents(repo, commit_id, "HARDEN frozen disposition merge")[0],
+            commit_id,
+        ) & frozen_paths
+    ]
+
     disposition_record = metadata.get("historical_frozen_dispositions")
     if disposition_record is not None:
         record = closed(
@@ -2628,24 +2671,6 @@ def _historical_frozen_baseline(
             disposition_merges, key=first_parent_order.__getitem__
         ):
             fail("HARDEN frozen disposition merges are out of order")
-        assert last_merge is not None
-        disposition_first_parent = _git_lines(
-            repo,
-            "rev-list",
-            "--first-parent",
-            "--reverse",
-            f"{last_merge}..{disposition_merges[-1]}",
-            label="HARDEN frozen disposition first-parent history",
-        )
-        changed_disposition_merges = [
-            commit_id
-            for commit_id in disposition_first_parent
-            if changed_paths(
-                repo,
-                commit_parents(repo, commit_id, "HARDEN frozen disposition merge")[0],
-                commit_id,
-            ) & frozen_paths
-        ]
         if disposition_merges != changed_disposition_merges:
             fail("HARDEN frozen disposition merge set mismatch")
         for merge_commit, merge_entries in disposition_groups:
@@ -2669,6 +2694,8 @@ def _historical_frozen_baseline(
                     fail("HARDEN frozen disposition new blob differs from merge")
                 accepted[path] = entry["new_blob"]
             last_merge = merge_commit
+    elif changed_disposition_merges:
+        fail("HARDEN frozen disposition record is missing")
     return accepted, last_merge
 
 
@@ -5092,9 +5119,30 @@ def _self_historical_baseline_chain(
         "named post-authority transition r8\n",
         "named transition (agent-harness#1102 r8)",
     )
+    if mutation == "named-integration-path-set-extra":
+        source_transition(
+            FROZEN_SL0_PATHS[2],
+            "unrecorded named-integration transition\n",
+            "unrecorded named-integration transition",
+        )
     _run(["git", "checkout", "-q", "historical-baseline"], repo)
+    if mutation == "unrecorded-named-integration":
+        frozen_landing(
+            FROZEN_SL0_PATHS[2],
+            "unrecorded first-parent named transition\n",
+            "unrecorded first-parent named transition",
+        )
     _run(["git", "merge", "--no-ff", "-qm", "integrate named transitions", "named-sources"], repo)
     named_integration = _run(["git", "rev-parse", "HEAD"], repo)
+    unintegrated_named: dict[str, Any] | None = None
+    if mutation == "source-not-integration-ancestor":
+        _run(["git", "checkout", "-q", "named-sources"], repo)
+        unintegrated_named = source_transition(
+            FROZEN_SL0_PATHS[1],
+            "ordered but unintegrated named transition\n",
+            "ordered but unintegrated named transition",
+        )
+        _run(["git", "checkout", "-q", "historical-baseline"], repo)
 
     named_records = [
         {
@@ -5116,6 +5164,13 @@ def _self_historical_baseline_chain(
             "files": named_second["files"],
         },
     ]
+    if unintegrated_named is not None:
+        named_records.append({
+            "source": "Consiliency/agent-harness#1102",
+            "source_commit": unintegrated_named["source_commit"],
+            "integration_commit": named_integration,
+            "files": unintegrated_named["files"],
+        })
     if mutation == "swapped-source-commit":
         named_records[0]["source_commit"], named_records[1]["source_commit"] = (
             named_records[1]["source_commit"], named_records[0]["source_commit"]
@@ -5136,6 +5191,100 @@ def _self_historical_baseline_chain(
         named_records[0]["files"][0]["path"] = FROZEN_SL0_PATHS[2]
     elif mutation == "named-blob-mismatch":
         named_records[-1]["files"][0]["new_blob"] = "0" * 40
+
+    def disposition_merge(
+        branch: str,
+        path: str,
+        content: str,
+        source: str,
+        *,
+        target: str = "historical-baseline",
+    ) -> dict[str, str]:
+        first_parent = _run(["git", "rev-parse", "HEAD"], repo)
+        old_blob = blob(repo, first_parent, path)[0]
+        _run(["git", "checkout", "-qb", branch, first_parent], repo)
+        (repo / path).write_text(content)
+        _run(["git", "add", path], repo)
+        _run(["git", "commit", "-qm", "source " + branch], repo)
+        _run(["git", "checkout", "-q", target], repo)
+        _run(["git", "merge", "--no-ff", "-qm", "integrate " + branch, branch], repo)
+        merge_commit = _run(["git", "rev-parse", "HEAD"], repo)
+        return {
+            "source": source,
+            "merge_commit": merge_commit,
+            "path": path,
+            "old_blob": old_blob,
+            "new_blob": blob(repo, merge_commit, path)[0],
+        }
+
+    _run(["git", "checkout", "-qb", "off-chain-disposition", named_integration], repo)
+    off_chain_disposition = disposition_merge(
+        "off-chain-disposition-source",
+        FROZEN_SL0_PATHS[0],
+        "off-chain disposition transition\n",
+        "Consiliency/agent-harness#1152",
+        target="off-chain-disposition",
+    )
+    _run(["git", "checkout", "-q", "historical-baseline"], repo)
+
+    disposition_records = [
+        disposition_merge(
+            "disposition-1152",
+            FROZEN_SL0_PATHS[2],
+            "first disposition transition\n",
+            "Consiliency/agent-harness#1152",
+        ),
+        disposition_merge(
+            "disposition-1246",
+            FROZEN_SL0_PATHS[0],
+            "second disposition transition\n",
+            "Consiliency/agent-harness#1246",
+        ),
+    ]
+    if mutation == "unrecorded-disposition-change":
+        disposition_merge(
+            "unrecorded-disposition",
+            FROZEN_SL0_PATHS[1],
+            "unrecorded disposition transition\n",
+            "Consiliency/agent-harness#1246",
+        )
+
+    first_parent = _run(["git", "rev-parse", "HEAD"], repo)
+    _run(["git", "checkout", "-qb", "non-frozen-integration", first_parent], repo)
+    (repo / "non-frozen.txt").write_text("not part of the frozen inventory\n")
+    _run(["git", "add", "non-frozen.txt"], repo)
+    _run(["git", "commit", "-qm", "non-frozen source"], repo)
+    _run(["git", "checkout", "-q", "historical-baseline"], repo)
+    _run(["git", "merge", "--no-ff", "-qm", "integrate non-frozen source", "non-frozen-integration"], repo)
+    non_frozen_merge = _run(["git", "rev-parse", "HEAD"], repo)
+
+    if mutation == "omitted-disposition":
+        disposition_records.pop()
+    elif mutation == "extra-disposition":
+        path = FROZEN_SL0_PATHS[1]
+        unchanged_blob = blob(repo, non_frozen_merge, path)[0]
+        disposition_records.append({
+            "source": "Consiliency/agent-harness#1246",
+            "merge_commit": non_frozen_merge,
+            "path": path,
+            "old_blob": unchanged_blob,
+            "new_blob": unchanged_blob,
+        })
+    elif mutation == "reversed-dispositions":
+        disposition_records.reverse()
+    elif mutation == "disposition-off-chain":
+        disposition_records[0] = off_chain_disposition
+    elif mutation == "disposition-path-mismatch":
+        merge_commit = disposition_records[0]["merge_commit"]
+        path = FROZEN_SL0_PATHS[1]
+        parents = commit_parents(repo, merge_commit, "self-test disposition")
+        disposition_records[0].update({
+            "path": path,
+            "old_blob": blob(repo, parents[0], path)[0],
+            "new_blob": blob(repo, merge_commit, path)[0],
+        })
+    elif mutation == "disposition-blob-mismatch":
+        disposition_records[-1]["new_blob"] = "0" * 40
 
     authority_records = copy.deepcopy(records)
     if mutation == "omitted-landing":
@@ -5176,6 +5325,10 @@ def _self_historical_baseline_chain(
             "historical_named_frozen_transitions": {
                 "schema": "historical_named_frozen_transitions.v1",
                 "entries": named_records,
+            },
+            "historical_frozen_dispositions": {
+                "schema": "historical_frozen_dispositions.v1",
+                "entries": disposition_records,
             },
             "plan_current_authority": {
                 "schema": "plan_current_authority.v1",
@@ -6561,12 +6714,22 @@ def self_test() -> None:
             "swapped-source-commit",
             "reversed-source-order",
             "source-not-ancestor",
+            "source-not-integration-ancestor",
             "omitted-source",
             "extra-source",
             "omitted-integration",
             "extra-integration",
             "named-path-mismatch",
             "named-blob-mismatch",
+            "unrecorded-named-integration",
+            "named-integration-path-set-extra",
+            "omitted-disposition",
+            "extra-disposition",
+            "reversed-dispositions",
+            "disposition-off-chain",
+            "disposition-path-mismatch",
+            "disposition-blob-mismatch",
+            "unrecorded-disposition-change",
         ):
             direct_rejected(
                 "historical-baseline-" + historical_mutation,
