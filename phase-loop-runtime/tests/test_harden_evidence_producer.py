@@ -3471,7 +3471,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             ),
         )
 
-    rejected("wrong-named-red-junit", wrong_red_node, "named RED test")
+    rejected("wrong-named-red-junit", wrong_red_node, "unrelated failure")
 
     def reused_reviewer_session(context: dict[str, Any]) -> None:
         observed_identity_attack(context, "coherent-replay")
