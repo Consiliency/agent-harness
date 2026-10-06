@@ -1038,6 +1038,19 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Load the BOM from a fixture JSON instead of live registries (CI/test wiring).",
     )
+    # seat-sandbox reap (agent-harness#1132, F022): remove a jailed seat's directory that
+    # teardown retained. Only a path recorded by a retention notice is accepted.
+    seat_sandbox_sub = subparsers.add_parser(
+        "seat-sandbox",
+        help=("Jailed review-seat maintenance: `qualify` runs the EC-EXECFIND-2 jail "
+              "falsifiers on this host and records its pass; `reap PATH` removes a retained "
+              "seat directory; `store-token` stores a Claude seat-token override (read with no "
+              "echo, or from stdin) bound to the account you are logged in to now; "
+              "`token-status` shows that binding (never the token)."),
+    )
+    seat_sandbox_sub.add_argument("seat_sandbox_action",
+                                  choices=("qualify", "reap", "store-token", "token-status"))
+    seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH", nargs="?")
     # train-status: non-mutating inspection of the cross-repo train ledger (#45).
     # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
     train_status_sub = subparsers.add_parser(
@@ -1543,6 +1556,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _task_message_broker_serve_command(args=args)
     if command == "advisor-board":
         return _advisor_board_command(args=args)
+    if command == "seat-sandbox":
+        return _seat_sandbox_command(args=args)
     if command == "docs-audit":
         from . import docs_audit
 
@@ -2324,6 +2339,14 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     elif getattr(args, "native_president", None) is not None:
         print("advisor-board: --native-president requires --landing-tier", file=sys.stderr)
         return 2
+    # agent-harness#1132 (plan amendment A1): every seat's launch mode, printed before any
+    # seat launches and carried into the JSON payload.
+    seat_modes: list = []
+
+    def _on_seat_modes(modes) -> None:
+        seat_modes.extend(modes)
+        _print_seat_modes(modes)
+
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
             invoke_kwargs: dict[str, object] = {
@@ -2333,6 +2356,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 **({"brief_ref": advisory_brief_ref} if advisory else {}),
                 "agy_canary_capture": capture,
                 **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
+                "on_seat_modes": _on_seat_modes,
             }
             if pointer_brief:
                 # agent-harness#1204: the preflight's notices are printed BEFORE any launch.
@@ -2441,6 +2465,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             "requested_seats": requested_seats,
             "delivered_seats": usable_count,
             "shortfall": shortfall,
+            # agent-harness#1132: typed seat notices, board-wide and per leg.
+            "notices": _board_notices_json(result.legs),
+            # agent-harness#1132 (plan amendment A1): each seat's launch mode, decided before
+            # any seat launched.
+            "seat_modes": [mode.as_json() for mode in seat_modes],
             "independence": {
                 "level": independence.level,
                 # The sealed evidence floor derives these from concrete leg
@@ -2461,6 +2490,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                     # ABDNATIVE (#183): a deferred claude seat carries the
                     # typed native-fill request the harness must run; None otherwise.
                     "needs_native_agent": _native_agent_request_json(leg),
+                    "notices": [notice.as_json() for notice in leg.seat_notices],
+                    # agent-harness#1176: a heartbeat_only seat's monitoring record (progress
+                    # notice, provider terminal state); absent under the bounded policy.
+                    **({"review_monitoring": dict(leg.review_monitoring)}
+                       if leg.review_monitoring is not None else {}),
                 }
                 for leg in result.legs
             ],
@@ -2468,11 +2502,13 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         if pointer_brief:
             # agent-harness#1204: present only for a pointer-brief board, so every other
             # payload (and the closed capture schema) is unchanged.
+            # The preflight notices join the seat notices (agent-harness#1132); neither
+            # list replaces the other.
             payload["grounded_seats"] = grounded_count
-            payload["notices"] = [n.as_json() for n in result.seat_preflight_notices]
+            payload["notices"] += [n.as_json() for n in result.seat_preflight_notices]
             for entry, leg in zip(payload["legs"], result.legs):
                 entry["source_grounded"] = leg.source_grounded
-                entry["notices"] = [n.as_json() for n in leg.seat_preflight_notices]
+                entry["notices"] += [n.as_json() for n in leg.seat_preflight_notices]
         if advisory:
             payload.update(_advisory_labels(review_brief, composed_board=board.name))
         if capture is not None:
@@ -2492,9 +2528,18 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 capture.close()
                 return 2
             payload["agy_canary_capture"] = expected_capture
+            # The private capture board has its own closed schema, which predates seat
+            # notices and seat modes (agent-harness#1132); it is written without them,
+            # byte-for-byte as before.
+            capture_payload = {key: value for key, value in payload.items()
+                               if key not in ("notices", "seat_modes")}
+            capture_payload["legs"] = [
+                {key: value for key, value in leg.items() if key != "notices"}
+                for leg in payload["legs"]
+            ]
             try:
                 private = write_private_board(
-                    capture=capture, basename=private_board_name, payload=payload
+                    capture=capture, basename=private_board_name, payload=capture_payload
                 )
             except AgyCanaryEvidenceError as exc:
                 print(f"advisor-board: private capture sink failed: {exc}", file=sys.stderr)
@@ -2518,6 +2563,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         shown = _finalize_leg_detail(leg.detail)
         detail = f" — {shown}" if shown else ""
         print(f"  [{leg.status}] {leg.seat_key}{detail}")
+        for notice in leg.seat_notices:
+            print(f"      notice {notice.code}: {notice.what} / {notice.why} / fix: {notice.fix}")
         for notice in leg.seat_preflight_notices:
             # agent-harness#1204: once per seat, from the notice table's literals.
             print(f"      notice {notice.code}: {notice.what} -- fix: {notice.fix}")
@@ -2530,6 +2577,19 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
     # The statuses/verdicts are ADVISORY evidence — the operator reconciles them; a
     # non-OK leg (DEGRADED/UNAVAILABLE/…) is a gap to fill, not a passed review.
     print("advisor-board: verdicts are advisory — reconcile the legs; check each leg status.")
+    # agent-harness#1176: a heartbeat_only seat that went without genuine progress past its
+    # notice window says so in the board summary, whatever its final status.
+    for leg in result.legs:
+        monitoring = leg.review_monitoring or {}
+        count = monitoring.get("progress_notice_count")
+        if isinstance(count, int) and count > 0:
+            window = monitoring.get("stall_notice_s")
+            window_s = f"{int(window)}s" if isinstance(window, (int, float)) else "its window"
+            print(
+                f"advisor-board:   [seat_progress_stalled] {leg.seat_key} — no genuine progress "
+                f"for {window_s} ({count} notice(s)); final status {leg.status}",
+                file=sys.stderr,
+            )
     # #183: surface the requested-vs-delivered shortfall LOUDLY (stderr) so a
     # floor-satisfying board is never mistaken for the full requested board, and
     # name the seats a native harness can fill itself.
@@ -2558,6 +2618,109 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             file=sys.stderr,
         )
     return exit_code
+
+
+def _seat_store_token() -> int:
+    """`seat-sandbox store-token`: the token is read with no echo (or from stdin when it is
+    not a terminal) and is never printed; it is stored bound to the current login's account."""
+    import getpass
+
+    from . import seat_credentials
+
+    if sys.stdin.isatty():
+        import warnings
+
+        # getpass falls back to reading with echo ON when it cannot control the terminal,
+        # warning first; make that warning a refusal, raised before anything is read.
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                token = getpass.getpass("Claude seat token (input hidden): ").encode("utf-8")
+        except getpass.GetPassWarning:
+            print("seat-sandbox store-token: refused: this terminal cannot hide the input; "
+                  "pipe the token on stdin instead", file=sys.stderr)
+            return 1
+    else:
+        token = sys.stdin.buffer.read(64 * 1024)
+    try:
+        identity = seat_credentials.store_override(token)
+    except seat_credentials.StoreRefused as exc:
+        print(f"seat-sandbox store-token: refused: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"seat-sandbox store-token: failed ({type(exc).__name__})", file=sys.stderr)
+        return 1
+    print(f"seat-sandbox store-token: stored, bound to account {identity.account} in "
+          f"organization {identity.organization} (the login you are using now); seats use it "
+          "only while you are logged in to that account and organization. "
+          "`phase-loop seat-sandbox token-status` shows the binding.")
+    return 0
+
+
+def _seat_token_status() -> int:
+    """`seat-sandbox token-status`: the stored override's binding and whether it applies to
+    this session. Never prints the token. Exits 0 only when the override applies."""
+    from . import seat_credentials
+
+    status = seat_credentials.override_status()
+    print(f"seat-sandbox token-status: override {status['state']}"
+          f" (bound: account {status['bound_account'] or '-'},"
+          f" organization {status['bound_organization'] or '-'};"
+          f" this session: account {status['session_account'] or 'unknown'},"
+          f" organization {status['session_organization'] or 'unknown'});"
+          f" applies to this session: {'yes' if status['applies'] else 'no'}"
+          + (f" [{status['notice']}]" if status['notice'] else ""))
+    return 0 if status["applies"] else 1
+
+
+def _seat_sandbox_command(args: argparse.Namespace) -> int:
+    from . import seat_uid
+
+    if args.seat_sandbox_action == "store-token":
+        return _seat_store_token()
+    if args.seat_sandbox_action == "token-status":
+        return _seat_token_status()
+
+    if args.seat_sandbox_action == "qualify":
+        from . import seat_jail_autoqualify, seat_jail_qualification
+
+        try:
+            # The same host lock as a first-use run, so the two never race the store.
+            with seat_jail_autoqualify.qualification_lock():
+                return seat_jail_qualification.main([])
+        except seat_jail_qualification.QualificationError as exc:
+            print(f"seat-sandbox qualify: cannot run: {exc}", file=sys.stderr)
+            return 1
+        except TimeoutError:
+            print("seat-sandbox qualify: cannot run: another qualification holds the lock",
+                  file=sys.stderr)
+            return 1
+    if not args.seat_sandbox_path:
+        print("seat-sandbox reap: PATH is required", file=sys.stderr)
+        return 2
+
+    try:
+        seat_uid.reap(str(args.seat_sandbox_path))
+    except seat_uid.ReapRefused as exc:
+        print(f"seat-sandbox reap: refused: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"seat-sandbox reap: failed ({type(exc).__name__}); {seat_uid.PREREQUISITE}",
+              file=sys.stderr)
+        return 1
+    print(f"seat-sandbox reap: removed {args.seat_sandbox_path}")
+    return 0
+
+
+def _board_notices_json(legs) -> list[dict[str, str]]:
+    """Every leg's typed seat notices (agent-harness#1132), rendered from literals."""
+    return [notice.as_json() for leg in legs for notice in leg.seat_notices]
+
+
+def _print_seat_modes(modes) -> None:
+    """agent-harness#1132 (plan amendment A1): one line per seat, before any seat launches."""
+    for mode in modes:
+        print(f"advisor-board: seat mode: {mode.render()}", file=sys.stderr)
 
 
 def _print_seat_preflight(notices) -> None:

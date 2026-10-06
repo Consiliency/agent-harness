@@ -39,7 +39,7 @@ def test_runtime_launch_references_match_the_classified_inventory():
     for row in records:
         assert row['role'] in {'owned', 'host-helper', 'operator-out-of-scope',
                                'qualification', 'supervisor', 'contained-falsifier',
-                               'helper:keyring-exec', 'host-io'}
+                               'helper:keyring-exec', 'host-io', 'python-worker'}
         key = (row['module'], row['function'], row['primitive'])
         assert key not in expected
         expected[key] = row['count']

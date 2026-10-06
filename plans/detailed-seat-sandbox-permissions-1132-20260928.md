@@ -2,7 +2,7 @@
 type: detailed
 status: planned
 owner_skill: claude-plan-detailed
-input_base_commit: b687e311
+input_base_commit: 3c61b270
 related_issues: [agent-harness#1132, agent-harness#848, agent-harness#895, agent-harness#1104, agent-harness#983, agent-harness#1109, agent-harness#1102, agent-harness#1096, agent-harness#1098, agent-harness#1076, agent-harness#1050, agent-harness#1071, agent-harness#1130, agent-harness#1134, agent-harness#361]
 automation:
   suite_command: "PYTHONPATH=phase-loop-runtime/src python -m pytest -q phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_sandbox_permissions.py phase-loop-runtime/tests/test_seat_notices.py phase-loop-runtime/tests/test_review_leg_sandbox.py phase-loop-runtime/tests/test_harden_evidence_producer.py phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py phase-loop-runtime/tests/test_verify_qualified_agy_route_core.py"
@@ -12,9 +12,9 @@ automation:
 
 # Detailed plan: full-permission review seats inside the per-seat sandbox (agent-harness#1132)
 
-Status: round-7 revision for board and president review. Maintainer decisions D1–D8 were
-recorded 2026-09-28. This is a planning artifact only; no source
-file changes.
+Status: merged plan (agent-harness#1133), amended by the implementation PR with the
+president follow-ups F030, F038, F035, F022 and F020. Maintainer decisions D1–D8 were
+recorded 2026-09-28.
 Spec: agent-harness#1132 and its maintainer decision of 2026-09-28. A seat launched inside the
 per-seat sandbox gets full tool permissions regardless of local tool settings, because the
 sandbox is the boundary. Outside a sandbox nothing changes. Decisions D1–D8 were ruled by the maintainer
@@ -92,8 +92,10 @@ These are inputs, not outputs.
   (`shortfall`, `legs[].detail`).
 - **Evidence verifier.** `scripts/verify_harden_evidence.py` requires
   `provider_input_inline is True` and `provider_live_tree_cwd is False` on every broker record.
-- **agy route-core.** `scripts/verify_qualified_agy_image.py` defines
-  `ROUTE_CORE = ("gemini_heartbeat.py", "qualify_gemini_heartbeat.py")`.
+- **agy route-core.** `agy_qualification.ROUTE_CORE` (agent-harness#1130) is
+  `("gemini_heartbeat.py", "agy_qualification.py", "agy_provenance.py")`, and
+  `scripts/verify_qualified_agy_image.py --route-core` checks every qualification record
+  against it.
 - **Governing criteria.** EC-HARDEN-5 is at `specs/phase-plans-v10.md`. EC-EXECFIND-2 and
   EC-EXECFIND-4 are in the same file, under Phase 15.
 
@@ -258,6 +260,74 @@ work continues.
     case:
     - subagent and tool events cannot be told apart reliably by type;
     - any workspace file that agy loads cannot be disabled.
+
+### Probe records (pinned 2026-09-29, claw; host prerequisite in place)
+
+| probe | record (`plans/evidence/seat-jail-1132/`) | sha256 | result |
+|---|---|---|---|
+| P5 | `p5-seat-uid.json` | `36c9d77d198bfd41d10a0e75bf82a3f660e1e0dd7f76944dfe029f29c84ee8b7` | pass |
+| P1 | `p1-claude-config-pty.json` | `bec8bd08b9ccb99c7d3e774396a27b37b04a615347e77fb43356d2fbf7cf7ad3` | pass |
+| P2 (2026-10-03) | `p2-claude-seat-token.json` | `8dead61a7c935d411ca7a6408f6b583523dabeee35fdb1999115518b4a9b4d3d` | **pass**: fd route authenticates and the seat quotes a tool's output; a rejected token is `auth_failure`. Not measured: scope/expiry, billing, revocation (sacrificial token) |
+| P4 | `p4-agy-d7-credential.json` | `121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035` | **stop**: `gemini_seat_token_scope_excess` |
+| P4 containment (maintainer ruling "prove then enable") | `p4-containment.json` | `fe71bb819a2e701e5e60685e79aa33602e9ab56c8d19b42d70a49b0d6b6cab45` | **stop**: `gemini_seat_egress_unconfined`; (a) holds, (b) fails |
+| P3 | — | — | not run: P3 runs only after P4 passes |
+| EC-EXECFIND-2 jail falsifiers (claw) | `execfind2-jail-qualification-claw.json` (public summary; full evidence in the per-host store) | see file | **pass**, against the EXECFIND falsifier-run layout (agent-harness#1163/#1164) |
+
+**Measured deviations from the plan's literal argv (accepted by the lead 2026-09-29; the
+board ratifies them).** P5 changed the D8 launch order as measured. None of these is a P5
+stop, because each restores a property the plan requires:
+- bwrap run as H-root keeps every capability. `--cap-drop ALL` therefore precedes the three
+  `--cap-add`s, and the effective set before the drop is exactly SETUID, SETGID and SETPCAP.
+- With no DAC capability, H-root cannot `--chdir` into the seat's 0700 tree. The seat enters
+  `/seat/tree` after the drop, with `/usr/bin/env --chdir`.
+- bwrap creates the parent of a file bind as 0700 root. `/seat`, `/seat/bin`, `/seat/review`
+  and `/etc` are therefore created 0755.
+- P1 found the tmpfs mounts must be 1777.
+
+**P1 pinned the Claude pre-seed:** `hasCompletedOnboarding`, `bypassPermissionsModeAccepted`
+and `projects["/seat/tree"].hasTrustDialogAccepted`. Removing any one of them brings back
+exactly one modal. P1 also recorded:
+- the bypass-acknowledgement text;
+- that bypass mode is refused for uid 0;
+- that input is accepted;
+- that planted `CLAUDE.md`, hooks and `.mcp.json` did not load.
+
+The P1 token was a dummy on the production fd channel, because P2 is pending.
+
+**Gemini scope ruling ("prove then enable", maintainer, 2026-09-29).** Gemini gets its
+tools only if a live probe proves two things:
+- **(a)** the jailed copy holds only a short-lived access token;
+- **(b)** jail egress reaches only agy's inference hosts.
+
+The containment probe proved (a):
+- the staged copy's keys are `auth_method`, `token.access_token`, `token.expiry` and
+  `token.token_type`, with no refresh token, client secret or id token;
+- about 36 minutes of lifetime remained at staging;
+- the turn succeeds, the copy is unchanged afterwards, no token appears in any
+  seat-writable directory, and an expired copy fails.
+
+The probe failed (b):
+- agy's only inference host is `daily-cloudcode-pa.googleapis.com`;
+- `storage`, `cloudresourcemanager`, `compute` and `iam.googleapis.com` all return real
+  HTTP replies (400/404) from inside the jail;
+- `iam.googleapis.com` resolves to the same front-end addresses as the inference host;
+- the egress namespace filters by destination CIDR only.
+
+Gemini therefore stays sealed with `gemini_seat_egress_unconfined`. The scopes are not
+recorded as a contained residual. P3 was not run and L3 is not built.
+
+**The original P4 stop.** agy completed a turn on the D7 copy, delivered as a read-only directory with
+`installation_id` provided and only `cache/` writable. But the access token's scopes
+include `cloud-platform`, `cclog` and `experimentsandconfigs`, which go beyond inference.
+Gemini therefore stays sealed with `gemini_seat_token_scope_excess` until the maintainer
+rules and P4 is re-run, and L3 is dropped from this PR.
+
+P4 also recorded:
+- the expiry signature: `authentication failed or timed out`, after a 60 s wait for
+  interactive OAuth;
+- that the outside refresh `agy models` works.
+
+It did not measure whether agy picks up a copy renamed in mid-session.
 
 ## Invariants (each has a named falsifier in "Tests")
 
@@ -542,8 +612,13 @@ it does block every later namespace or key operation.
   and the leg carries `seat_sandbox_retained_after_teardown`, which names the retained path.
   - The retained directory may hold anything the seat wrote, its token included, so it stays
     owned by the seat uid and unreadable to other local users.
+  - **F020.** Every retained directory sits under the leg's `mkdtemp` scratch directory,
+    which is owned by the operator and mode 0700, so no other local user can reach it.
   - `phase-loop seat-sandbox reap` removes it later. It builds a new mapped namespace through
     the same `newuidmap` path and runs the same fd-relative teardown.
+  - **F022.** `reap` accepts only a path recorded by a retention notice, under the stage
+    root, opened `O_NOFOLLOW|O_DIRECTORY` one component at a time, and owned by a
+    subordinate uid. Anything else is refused, and a falsifier proves each refusal.
 
 **Launcher integration.** These are the named `panel_invoker.py` sites:
 - `_compose_launch_prefix` composes the D8 order above for a `SeatJail` owner. It replaces the
@@ -865,9 +940,12 @@ puts two obligations on this plan:
 
 `review_summary.py` and `_broker_subscription_env` are not touched.
 - agent-harness#1130 has landed (`f9d9726a`). Its `panel_invoker.py` hunks
-  (`president_findings_from_legs`, the `_HARNESS_DETAIL_CODES` vocabulary,
-  `_preflight_gemini_heartbeat` and `invoke_board`) are now part of main. None of them is a
-  named site.
+  (`president_findings_from_legs`, `_preflight_gemini_heartbeat` and `invoke_board`) are
+  part of main and are not named sites.
+- **F030.** `_HARNESS_DETAIL_CODES` IS a named site: every leg-ending code joins it as an
+  exact literal (each `seat_sandbox_refused:<sub>` separately), with no regex template and
+  no parallel vocabulary. The delivery test asserts that `legs[].detail` equals the literal
+  after `_finalize_leg_detail`; dropping one code from the set turns it red.
 - At the time of writing, the open agent-harness#1071 changes these `panel_invoker.py` hunks:
   `PanelLegResult.usable`, `attach_native_agent_request`, `terminal_verdict` and
   `_president_ruling_complete`. None of these is a named site either.
@@ -900,7 +978,9 @@ At rebase, re-check the #1071 hunks, together with `_ReviewMonitor.owned_command
   host: `apt install uidmap`, then `usermod --add-subuids` and `--add-subgids` for the
   operator. The runtime and the lanes never run these.
 - **L5 live.** Replay the probes that were reached, and any recorded stop, on the final
-  candidate. Run the boards in "Acceptance". If L3 is in scope, requalify agy.
+  candidate. Run the boards in "Acceptance". Requalify agy for both the sealed and, if L3
+  is in scope, the tooled profile, and require `verify_qualified_agy_image.py --route-core`
+  to exit 0 on the final tree (F035).
 
 Everything lands in one implementation PR. agent-harness#1134 and agent-harness#1130 have
 already landed, so the PR waits only for agent-harness#1071.
@@ -1229,7 +1309,8 @@ areas are:
     (J7 step 1). The board run must also show that no tooled Gemini launch and no
     full-credential Gemini launch occurred. P3 is replayed only if P4 passed.
   - A forced no-sandbox board showing `seat_sandbox_unavailable_host`.
-  - agy requalified, if L3 is in scope.
+  - agy requalified for the sealed profile, and for the tooled profile if L3 is in scope;
+    `verify_qualified_agy_image.py --route-core` exits 0 on the final tree (F035).
 - [ ] The D3 residual text above is recorded in agent-harness#361. agent-harness#1134 has
   landed (merged).
 - [ ] EC-EXECFIND-2's jail falsifiers pass against the shipped jail's profile digest, using the
@@ -1248,3 +1329,276 @@ Non-goals:
 - Resource limits beyond the leg deadline (named in D3).
 - The parent-held tree-identity half of agent-harness#895.
 - Toolchains outside `/usr`.
+
+## Amendment A1 (2026-10-03): the seat uses the Claude login's access token by default
+
+Maintainer decision, 2026-10-03, relayed by the team lead. It **supersedes D2**. D2's text
+above is kept as the record of the earlier ruling. Its sentence "The operator's primary login
+never enters the jail" no longer holds, and its sealed fallback now applies only when neither
+credential source exists.
+
+**Goal.** A user runs the harness, and the jailed Claude seat works on the subscription they
+are logged in with. There is no token placement step, and the seat is never silently left
+without tools.
+
+**Inputs measured on claw (Claude Code 2.1.288).**
+- **The login store:** on Linux, the login lives at `$CLAUDE_CONFIG_DIR/.credentials.json`,
+  else `~/.claude/.credentials.json`. The file is 0600. Its `claudeAiOauth` object has the keys
+  `accessToken`, `refreshToken`, `expiresAt` (epoch milliseconds), `refreshTokenExpiresAt`,
+  `scopes`, `subscriptionType` and `rateLimitTier`.
+- **macOS:** the CLI keeps the same JSON in the login Keychain. The generic-password service
+  is `Claude Code-credentials`. When `CLAUDE_CONFIG_DIR` is set, the service gets the suffix
+  `-<first 8 hex of sha256(config dir)>`. The account is `$USER`. This is read from the CLI
+  bundle, and it is tested with a fake, not on a Mac.
+- **Windows:** the file store. This is tested with a fake, not on a Windows host.
+- **Delivery:** the team lead measured that the CLI accepts the login's short-lived access
+  token through `CLAUDE_CODE_OAUTH_TOKEN` in an empty HOME. This amendment's live run measures
+  the production fd channel.
+- **The refresh trigger:** `claude auth status --json` makes no inference call. Its key set is
+  `analyticsDisabled`, `apiProvider`, `authMethod`, `configDirectory`, `email`, `loggedIn`,
+  `orgId`, `orgName`, `projectsDirectory` and `subscriptionType`. Whether it refreshes a
+  near-expiry token is recorded in the evidence. A refresh is never forced on a copy of the
+  store.
+
+**Design.**
+1. **Credential source, resolved fresh at each jailed launch.**
+   - (a) If the seat-token file exists, it is used. This is an optional override, for example
+     to bill another subscription. It is expected to be a long-lived `setup-token`.
+   - (b) Otherwise, the current login's `claudeAiOauth.accessToken` is used. Nothing else is
+     taken: not the refresh token, not the file, and not the account blob.
+   - Both go over the existing drained-pipe channel, and both are output-scanned.
+2. **Expiry.** The login token's remaining lifetime must cover a margin. The default margin is
+   the leg's deadline. `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` overrides it.
+   - **If it is short:** the host runs the CLI's own `claude auth status --json`, never with
+     the refresh token and never in the seat, and then re-reads.
+   - **If it is still short:** the leg is refused before launch with
+     `claude_seat_login_token_expiring` (fix: `claude login`).
+   - **An auth failure on a login-sourced leg:** at or past the launch-time `expiresAt` it is
+     `claude_seat_login_token_expired`, as both the detail and the notice, and it is safe to
+     relaunch with a fresh token. Before that time it is `claude_seat_login_rejected`. An
+     override keeps `claude_seat_token_rejected`.
+3. **No silent degrading.** Before any seat launches, every board publishes one mode per seat:
+   `jailed` (with tools), `sealed` (no tools) or `degraded` (refused before launch). Each mode
+   carries its notice code, reason and one-line fix. It is published as `seat_modes` in the
+   `advisor-board --json` payload, as one stderr line per seat, and as `seat-modes.json` in the
+   stream directory. Post-run notices are unchanged. A host that is jail-capable but has no
+   recorded EC-EXECFIND-2 pass now shows `degraded` with
+   `seat_sandbox_refused:jail_unqualified` by default, because a login is normally present.
+4. **Rate limits by source.** A rate or usage limit is `claude_seat_login_rate_limited` for the
+   login and `claude_seat_token_rate_limited` for the override. The reset time stays in the
+   leg detail, because notices render only from literals.
+5. **Residual.** A seat can use the access token for the token's remaining lifetime, which is
+   hours, not a year-long setup token. The response to a suspected leak is to log out and back
+   in. The token also expires on its own. This is documented in CONTRACTS and on the card.
+6. **General.** Product code carries no fleet paths, pool names or vendor-vault specifics.
+
+**A1 acceptance.**
+- [ ] Fakes cover each platform source (Linux, macOS and Windows), the precedence, the expiry
+  margin and the refresh trigger, the fail-closed refusal, the preflight mode lines, and the
+  mid-run expiry classification.
+- [ ] Every new behaviour has a mutation receipt.
+- [ ] A live run on claw passes end to end on the login route, with the override moved aside
+  and restored.
+
+## Amendment A2 (2026-10-03): the jail is qualified on first use
+
+Maintainer ruling, 2026-10-03, relayed by the team lead. It supersedes A1 item 3's
+"`degraded` with `seat_sandbox_refused:jail_unqualified` by default". It also folds in
+agent-harness#1186's first-use self-check (option C). That issue's shipped host-independent
+policy digest, and its N2 prerequisite, stay open there.
+
+**Rule.** A Claude seat that would take the jailed route, on a host with no EC-EXECFIND-2
+pass recorded for this host, jail profile digest and falsifier-run layout, is handled as
+follows. A Claude seat is never refused for this.
+- **Run once:** the harness runs the host's jail qualification itself, once, before
+  launching. It is the same procedure as `phase-loop seat-sandbox qualify`, and on a pass it
+  records the pass in the per-host store.
+- **Serialized:** an exclusive lock in the per-user state directory serializes the run, so
+  concurrent seats and boards run it once and the others wait, then re-read the store.
+- **On a pass:** the seat runs jailed with tools, and its mode line reads
+  `jailed (qualified now)`.
+- **On a failure, or when the run cannot happen** (missing prerequisites, an unsafe store, a
+  timeout or an error): the seat takes the sealed route with
+  `seat_jail_qualification_failed`. Its mode line names the typed reason (`prerequisite_missing`,
+  `store_unsafe`, `falsifiers_failed`, `timeout` or `error`) and that reason's literal fix.
+- **The failure cache:** a failure is cached for this host, digest and layout only, so it is
+  not retried on every seat. It is retried after `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S`
+  (default 3600 s), or as soon as the digest or the layout changes. A lock timeout is not
+  cached.
+- **The injected gate:** an injected `pass_recorded` (a test seam) keeps the gate alone, so
+  no pass is still `seat_sandbox_refused:jail_unqualified`.
+- **The launch-time re-check** against the built jail is unchanged, and still refuses an
+  unrecorded digest.
+- **In tests:** a suite-wide guard fails any test that would reach a real first-use
+  qualification.
+
+**A2 acceptance.**
+- [ ] Fakes cover: no record, qualified, then jailed; a failure, then sealed and loud;
+  concurrent first use running once; a cached failure not retried until its TTL, digest or
+  layout changes; and an existing pass skipping the run.
+- [ ] Every new behaviour has a mutation receipt.
+- [ ] Live on claw: with the pass record moved aside and restored afterwards, a first-use
+  qualification followed by a jailed launch works.
+
+## Round 7 repairs (2026-10-03)
+
+Board round 7 at 34c6cf40. These clarify A1 and A2; they add no new rule.
+- **One login margin.** A1's margin "the leg deadline" is the leg's hard deadline before
+  staging: its explicit per-leg timeout, else the 1800 s backstop, or
+  `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S`. The pre-launch seat mode and the launch both get
+  it from one function, so A1 item 3's `degraded` mode covers a token that is too short for
+  the launch.
+- **Credential outcomes are not hidden.** On both routes, an authentication failure named by
+  the PTY tail takes priority over the generic journaled give-up
+  (`claude_seat_provider_api_error`). Every typed give-up keeps its priority.
+- **Launch helpers** run from the trusted package only (`seat_uid.trusted_module_argv`).
+- **Fix literal.** The fix line for the login codes is `claude auth login` (Claude CLI
+  2.1.288 has no top-level `login` command); this corrects A1's `claude login`.
+- **Scratch (merge of agent-harness#1161).** The jailed launch's helper chain takes the
+  agent-harness#1147 scratch decision, one decided env for the probe and the launch. The
+  seat's `TMPDIR` and `CLAUDE_CODE_TMPDIR` are `/seat/home/.tmp` on the disk-backed staging
+  root, not the jail's tmpfs `/tmp`. The jail digest changes; hosts re-qualify on first use.
+- **Suite isolation.** Tests see an empty `CLAUDE_CONFIG_DIR` and seat state root; only
+  the live jailed-seat test (marker `host_seat_credentials`) reads the host's.
+
+## Amendment A3 (2026-10-04): no host-side refresh; preflight and wait for the login to renew
+
+Maintainer ruling, 2026-10-04, relayed by the team lead. It supersedes A1's "short token:
+the host runs `claude auth status` once and re-reads" and the later refresh repairs (board
+rounds 8 to 11). The harness never runs the Claude CLI to renew a credential.
+
+**Rule.**
+- **Preflight:** before seats launch, the login token's expiry is read read-only from the
+  platform store, with the same reader A1 uses. Nothing that reads Claude configuration is
+  executed.
+- **Awaiting notice:** if the remaining lifetime is under the seat's margin (the one margin
+  function), the seat's mode line, text and JSON carry
+  `claude_seat_login_token_awaiting_refresh`, with the minutes left and the fix "use Claude
+  or run `claude auth login`". Other seats are not held.
+- **Wait:** the store is polled read-only, every 30 s by default
+  (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`). Once a renewed token clears the margin, the seat
+  launches jailed as normal, logged as `jailed (login refreshed)`. The token is re-read at
+  launch, as before.
+- **Bound:** the wait is at most `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S`, default 900 s;
+  0 means do not wait. On timeout the seat runs sealed (no tools) with
+  `claude_seat_login_token_expiring` and the fix "run `claude auth login`, then re-run". A
+  store that stops yielding a login during the wait seals the seat with
+  `claude_seat_token_missing`. The board is never refused, as in A2.
+- **Monitoring:** the wait happens before staging, before any seat id or namespace is
+  held. Under `heartbeat_only` it is recorded as a login wait, not as a stall, and the stall
+  clock starts after it. Under a bounded policy it is charged to the leg's deadline.
+  Cancellation interrupts the wait.
+
+**A3 acceptance.**
+- [ ] Fakes cover: short, renewed mid-wait, then jailed; short, timeout, then sealed; a
+  wait of 0, then sealed at once; the store unreadable mid-wait, then typed; cancellation
+  during the wait; and no CLI executed at any point.
+- [ ] Every new behaviour has a mutation receipt.
+
+## Amendment A3b (2026-10-04): no sealed fallback
+
+Maintainer ruling, 2026-10-04, relayed by the team lead. It supersedes A2's sealed fallback
+and A3's "runs sealed": a sealed review wastes tokens and chokes on inlined context.
+
+**Rule.** A jail-eligible Claude seat that cannot run jailed is DEGRADED and NOT RUN, with a
+typed notice and its fix. It never falls back to the toolless (sealed) route. This covers:
+- a failed first-use qualification, a cached failure included (`seat_jail_qualification_failed`
+  with its reason and fix);
+- a login not renewed within the A3 wait, or a store that stops yielding a login
+  (`claude_seat_login_token_expiring`, fix "run `claude auth login` (or use Claude to refresh
+  it), then re-run"; `claude_seat_token_missing`);
+- no credential at all (`claude_seat_token_missing`);
+- the existing refusals (`seat_sandbox_refused:jail_unqualified`, the launch-time re-check, an
+  unsafe override), which were already not run.
+
+The pre-launch mode line shows each as `degraded — will not run [<code>]: <reason>; fix:
+<command>`, before the board starts. None of these codes is a sealed fallback code.
+
+**Out of scope here:** hosts without the jail prerequisites, an unstaged review and the Gemini
+seat keep the sealed route (agent-harness#1244).
+
+**A3b acceptance.**
+- [ ] Each path above ends degraded, not run and typed, with no launch at all (no sealed
+  argv or spawn), and a mutant that re-routes it to sealed is red.
+
+## Amendment A4 (2026-10-05): the seat's credential follows the launching session
+
+Maintainer ruling, 2026-10-05: "It should autorotate with the session's sub that launched the
+leg." Maintainer decision on how: "Store command binds it." This builds on A1. The login stays
+the default. A stored override that belongs to a different subscription must not silently
+pin seats to it.
+
+**Inputs measured on claw (Claude Code 2.1.288).**
+- **The CLI's global config:** it is `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is
+  set, else `~/.claude.json`. This is read from the CLI bundle.
+- **The account identity:** the config carries `oauthAccount.accountUuid` (and
+  `organizationUuid`), so the launching session's account is readable without running the
+  CLI.
+- **The override:** a `setup-token` token records no account.
+
+**Design.**
+1. **Per-harness adapter.** `SeatCredentialAdapter` answers `override_present()`,
+   `override_path()`, `binding_path()`, `override_account()` and `current_account()`, and
+   declares its `sources` in precedence order. The rule lives once, in
+   `override_decision(adapter)`.
+2. **Storing.** `phase-loop seat-sandbox store-token` reads the token with no echo, or from
+   stdin, validates it, and reads the current account.
+   - **Refused** when there is no account, or when the credentials directory is not private.
+   - **Order:** it removes any old binding, then writes the token, then writes
+     `<override>.account` (`seat_credential_binding.v1`). Each write is 0600 and atomic, so
+     an interrupted store leaves an unbound override, which is ignored. The token is never
+     printed.
+3. **At launch.** The override is used only when both accounts are known and equal.
+   Otherwise the seat takes the login, and carries `claude_seat_override_other_subscription`
+   on the seat and its mode line. That notice is not a jail refusal and not a sealed
+   fallback. Every consumer of "is the override used" (presence, the margin, the A3 wait,
+   the modes) reads the same decision.
+4. **General.** Product code carries no fleet paths or vault specifics.
+
+**A4 acceptance.**
+- [ ] Fakes cover:
+  - a login on A with an override bound to B: the login is used, with the notice;
+  - an override bound to A: it is used;
+  - an undeterminable binding or account: the login is used, with the notice;
+  - a subscription swap;
+  - unsafe or malformed bindings;
+  - the store command (it binds, it refuses without a login, it refuses an unsafe directory,
+    an interrupted store is ignored, and it never prints the token);
+  - the launch path, the mode line, and the adapter-generic rule.
+- [ ] Every new behaviour has a mutation receipt.
+
+### A4 revision (2026-10-05, after board round 1)
+
+Two of A4's statements are revised; the rest stands.
+- **Design 2 (the store):** the token and its account are ONE record,
+  `<harness>.override.json` (`seat_credential_override.v1`), not a token file plus a separate
+  binding file.
+  - **The write:** it is relative to descriptors held on the checked directories, as a new
+    0600 file under a random name renamed into place.
+  - **The terminal:** a terminal that cannot hide the input is refused.
+- **Design 3 (at launch):** the record is read once, without following a link and without
+  blocking, and the launch uses the token bytes whose account was checked.
+  - **Unbound:** a hand-placed raw token file is unbound, and is never used.
+  - **Unsafe:** an unsafe record keeps A1's typed refusal (`token_file_unsafe`).
+  - **Malformed:** a malformed record binds nothing (login with the notice).
+  - **The mode line** keeps the ignored-override notice beside any login notice.
+
+**A4 acceptance, added:** a concurrent store during a launch's decision, two concurrent
+stores, a token replaced by hand, a linked ancestor and a swapped directory during a store,
+a non-regular account file, and a terminal that cannot hide input each have a falsifier that
+is red at the round-1 head.
+
+### A4 revision 2 (2026-10-05, president ruling on agent-harness#1253)
+
+- **The binding:** maintainer ruling 2026-10-05: the override binds the login's account AND
+  organization. Both are read from the same `oauthAccount` (`accountUuid`,
+  `organizationUuid`), and the record schema becomes v2.
+  - **When it applies:** only when both are known and both equal the session's. A v1 or
+    organization-less record binds nothing.
+  - **The store:** it refuses when the organization is unknown.
+- **The record:** it must be owner-only (any group or other bit is `token_file_unsafe`), and
+  the store's link refusal includes the state root itself.
+- **Refusals:** a refusal raised after the credential is resolved carries the
+  ignored-override notice beside its one refusal code.
+- **Rotation:** `store-token` is the only rotation path. A raw token file, unsafe or not, is
+  never read; the A1-era raw-file readers are removed.

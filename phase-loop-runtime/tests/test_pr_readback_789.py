@@ -306,9 +306,11 @@ assert evidence.terminal_state == ("effect_terminal_observed" if final == "match
         expected.append(f"publication-confirmation round=3 classification={reason} continue=false")
     assert process.stdout == ""
     # Cold imports may emit these existing compile-time warnings outside this fix.
-    warning_path = re.escape(str(root / "src/phase_loop_runtime/fab_delta.py"))
+    # Any runtime module's invalid-escape SyntaxWarning (two lines: the warning and the source
+    # line), e.g. fab_delta.py and credential_redaction.py, is filtered; it is not a diagnostic.
+    warning_root = re.escape(str(root / "src/phase_loop_runtime"))
     diagnostics = re.sub(
-        rf'^{warning_path}:\d+: SyntaxWarning: [^\n]*invalid escape sequence[^\n]*\n  [^\n]*\n',
+        rf'^{warning_root}/[^\n:]+\.py:\d+: SyntaxWarning: [^\n]*invalid escape sequence[^\n]*\n  [^\n]*\n',
         "", process.stderr, flags=re.MULTILINE,
     )
     assert diagnostics.splitlines() == expected

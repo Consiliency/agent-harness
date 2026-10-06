@@ -412,7 +412,11 @@ class PresidentInvoke:
                     quiescence_latch=latch, review_monitor=monitor, gemini_profile=profile,
                 )
         else:
-            with _president_agy_environment(subscription_env) as env:
+            # Bounded: agy runs on the host, so its scratch is relocated like a leg's
+            # (agent-harness#1147); only the heartbeat jail above has a private /tmp.
+            with _president_agy_environment(
+                panel_invoker._broker_leg_env(self.base_env, "gemini"),
+            ) as env:
                 try:
                     proc = panel_invoker._run_leg_with_liveness(
                         command, cwd=out_dir, env=env, deadline_s=deadline_s,
@@ -456,7 +460,7 @@ class PresidentInvoke:
                 prompt=prompt,
                 output_file=out_dir / "president-claude.txt",
                 timeout_s=timeout_s,
-                env=panel_invoker._broker_subscription_env(self.base_env),
+                env=panel_invoker._broker_leg_env(self.base_env, "claude"),
                 mode="president",
                 backstop_s=backstop_s,
                 stall_threshold_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
@@ -533,18 +537,28 @@ def _president_agy_environment(env: Mapping[str, str]):
         finally:
             profile.__exit__(None, None, None)
         return
-    with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-") as empty_home:
-        # Same fixed deny-all action profile the broker profile carries, so an agy that
-        # runs at all under the credential-less HOME still cannot act.
-        config_dir = Path(empty_home) / ".gemini" / "antigravity-cli"
-        config_dir.mkdir(parents=True, mode=0o700)
-        settings_path = config_dir / "settings.json"
-        settings_path.write_bytes(panel_invoker._broker_agy_settings_bytes())
-        settings_path.chmod(0o400)
-        bare = dict(env)
-        bare["HOME"] = empty_home
-        bare["XDG_CONFIG_HOME"] = str(Path(empty_home) / ".config")
-        yield bare
+    from . import sandbox_retention
+
+    claimed: Path | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="phase-loop-president-agy-",
+                                         dir=env.get("TMPDIR") or None) as empty_home:
+            claimed = Path(empty_home)  # swept only once this process is gone
+            sandbox_retention.claim_scratch_dir(claimed)
+            # Same fixed deny-all action profile the broker profile carries, so an agy that
+            # runs at all under the credential-less HOME still cannot act.
+            config_dir = Path(empty_home) / ".gemini" / "antigravity-cli"
+            config_dir.mkdir(parents=True, mode=0o700)
+            settings_path = config_dir / "settings.json"
+            settings_path.write_bytes(panel_invoker._broker_agy_settings_bytes())
+            settings_path.chmod(0o400)
+            bare = dict(env)
+            bare["HOME"] = empty_home
+            bare["XDG_CONFIG_HOME"] = str(Path(empty_home) / ".config")
+            yield bare
+    finally:
+        if claimed is not None:
+            sandbox_retention.release_scratch_dir(claimed)
 
 
 def build_president_invoke(

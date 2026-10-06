@@ -265,7 +265,10 @@ def test_the_claude_rung_hands_the_broker_latch_to_the_tui_session(tmp_path):
 @pytest.mark.parametrize("mode,stop_reason,expected_log", [
     ("president", "end_turn", "claude_tui_broker_terminal_nonconforming"),
     ("president", None, "review_operation_cancelled"),
-    ("review", "end_turn", "review_operation_cancelled"),
+    # agent-harness#1194 r3: a completed review turn without a verdict is a terminal outcome and
+    # is handed back as it is (governed: a nonconforming review), never left waiting; this row
+    # expected the leg to wait until cancelled.
+    ("review", "end_turn", "claude_tui_broker_terminal_nonconforming"),
 ])
 def test_terminal_nonconforming_claude_turn_reaches_president_reask(
     tmp_path, monkeypatch, mode, stop_reason, expected_log,

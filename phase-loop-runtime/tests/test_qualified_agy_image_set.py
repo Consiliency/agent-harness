@@ -23,6 +23,11 @@ CATALOG = EVIDENCE / "qualified-provider-images.json"
 AGY_1211 = "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56"
 AGY_1212 = "ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca"
 HELP_1211_1212 = "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755"
+AGY_1214 = "0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029"
+AGY_1215 = "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164"
+HELP_1215 = "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976"
+AGY_1216 = "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86"
+AGY_1217 = "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5"
 
 needs_repo = pytest.mark.skipif(
     not SCRIPT.is_file() or not CATALOG.is_file(),
@@ -32,7 +37,9 @@ needs_repo = pytest.mark.skipif(
 
 def test_the_qualified_image_set_is_exactly_the_reviewed_members():
     """Golden: widening or narrowing the admitted set is a reviewed change to this test."""
-    assert gh.QUALIFIED_IMAGES == {AGY_1211: HELP_1211_1212, AGY_1212: HELP_1211_1212}
+    assert gh.QUALIFIED_IMAGES == {AGY_1211: HELP_1211_1212, AGY_1212: HELP_1211_1212,
+                                    AGY_1214: HELP_1211_1212, AGY_1215: HELP_1215,
+                                    AGY_1216: HELP_1215, AGY_1217: HELP_1215}
 
 
 @pytest.fixture
@@ -47,7 +54,7 @@ def verifier():
 def test_every_runtime_member_has_its_own_catalogued_record(verifier):
     records = verifier.validate_records(verify_sources=False)
     assert {(r["image_sha256"], r["help_sha256"]) for r in records} == set(gh.QUALIFIED_IMAGES.items())
-    assert sorted(r["release_version"] for r in records) == ["1.2.11", "1.2.12"]
+    assert sorted(r["release_version"] for r in records) == ["1.2.11", "1.2.12", "1.2.14", "1.2.15", "1.2.16", "1.2.17"]
 
 
 @needs_repo

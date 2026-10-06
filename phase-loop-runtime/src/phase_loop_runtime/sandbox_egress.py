@@ -321,6 +321,7 @@ def isolated_network(
     *,
     timeout_s: float | None = 3600.0,
     required: bool | None = None,
+    seat_uid_map: bool = False,
 ):
     """Hold a filtered network namespace open and yield an argv PREFIX for it.
 
@@ -343,6 +344,12 @@ def isolated_network(
 
     With ``required=False`` the degraded branches still ``yield ()`` and warn, so a
     best-effort caller can record truthfully rather than assume.
+
+    ``seat_uid_map`` (agent-harness#1132, D8) is the jailed-seat variant: the holder's user
+    namespace H is created WITHOUT a map and waits on a gate pipe while the parent maps it
+    with ``newuidmap``/``newgidmap`` (H uid 0 = the operator, 1..count = the operator's
+    subordinate range). Every other route keeps the historical ``--map-root-user`` holder
+    byte-for-byte.
     """
     if required is None:
         required = egress_required()
@@ -392,17 +399,53 @@ def isolated_network(
         owner_read = owner_write = None
         holder = None
         slirp = None
+        gate_read = gate_write = None
         try:
-            if timeout_s is None:
-                from .panel_invoker import launch_provider
+            if seat_uid_map:
+                from . import seat_uid
+                from .panel_invoker import _infrastructure_launch, launch_provider
+
+                # Unmapped holder: the gate is read BEFORE anything that needs the map.
+                gate_read, gate_write = os.pipe()
+                owner_read, owner_write = os.pipe() if timeout_s is None else (None, None)
+                lifetime = (f"read -r _owner_lifetime <&{owner_read}" if timeout_s is None
+                            else f"{helpers['sleep']} {timeout_s}")
+                # Infrastructure, not a provider: through the one launch interface, never
+                # counted as a leg's provider spawn.
+                with _infrastructure_launch():
+                    holder = launch_provider(
+                        [helpers["unshare"], "--user", "--net", "--mount", helpers["bash"], "-c",
+                         f'read -r _gate <&{gate_read} || exit 8; '
+                         f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
+                         f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; {lifetime}'],
+                        pass_fds=(gate_read,) if owner_read is None else (gate_read, owner_read),
+                        close_fds=True,
+                    )
+                os.close(gate_read)
+                gate_read = None
+                try:
+                    # The map can only be written once the holder IS in its new user
+                    # namespace; `Popen` returns before `unshare` has made the call.
+                    _wait_for_new_user_namespace(holder)
+                    seat_uid.map_holder(holder.pid)
+                except (OSError, subprocess.SubprocessError, ValueError):
+                    yield _degrade("network namespace did not come up; launch is UNISOLATED")
+                    return
+                os.write(gate_write, b"mapped\n")
+                os.close(gate_write)
+                gate_write = None
+            elif timeout_s is None:
+                from .panel_invoker import _infrastructure_launch, launch_provider
 
                 owner_read, owner_write = os.pipe()
-                holder = launch_provider(
-                    [helpers["unshare"], "--net", "--mount", "--map-root-user", helpers["bash"], "-c",
-                     f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
-                     f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; read -r _owner_lifetime'],
-                    stdin=owner_read, close_fds=True,
-                )
+                # Infrastructure, not a provider: never counted as a leg's provider spawn.
+                with _infrastructure_launch():
+                    holder = launch_provider(
+                        [helpers["unshare"], "--net", "--mount", "--map-root-user", helpers["bash"], "-c",
+                         f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
+                         f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; read -r _owner_lifetime'],
+                        stdin=owner_read, close_fds=True,
+                    )
             else:
                 holder = subprocess.Popen(
                     [helpers["unshare"], "--net", "--mount", "--map-root-user", helpers["bash"], "-c",
@@ -418,12 +461,14 @@ def isolated_network(
             nspid = Path(pidfile).read_text(encoding="utf-8").strip()
 
             if timeout_s is None:
-                slirp = launch_provider(
-                    [helpers["slirp4netns"], "--configure", "--mtu=65520", "--enable-sandbox", "--enable-seccomp",
-                     "--disable-host-loopback", f"--exit-fd={owner_read}", nspid, "tap0"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    pass_fds=(owner_read,), close_fds=True,
-                )
+                with _infrastructure_launch():
+                    slirp = launch_provider(
+                        [helpers["slirp4netns"], "--configure", "--mtu=65520", "--enable-sandbox",
+                         "--enable-seccomp", "--disable-host-loopback", f"--exit-fd={owner_read}",
+                         nspid, "tap0"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        pass_fds=(owner_read,), close_fds=True,
+                    )
             else:
                 slirp = subprocess.Popen(
                     [helpers["slirp4netns"], "--configure", "--mtu=65520", "--enable-sandbox", "--enable-seccomp",
@@ -502,6 +547,9 @@ def isolated_network(
                 return
             yield prefix
         finally:
+            for gate in (gate_read, gate_write):
+                if gate is not None:
+                    os.close(gate)
             if owner_read is not None:
                 os.close(owner_read)
             if owner_write is not None:
@@ -518,3 +566,18 @@ def isolated_network(
                         except subprocess.TimeoutExpired:
                             process.kill()
                             process.wait(timeout=2)
+
+
+def _wait_for_new_user_namespace(process: "subprocess.Popen[bytes]", timeout_s: float = 15.0) -> None:
+    own = os.readlink("/proc/self/ns/user")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise OSError("namespace holder exited before it was mapped")
+        try:
+            if os.readlink(f"/proc/{process.pid}/ns/user") != own:
+                return
+        except OSError:
+            pass
+        time.sleep(0.01)
+    raise OSError("namespace holder never entered its user namespace")

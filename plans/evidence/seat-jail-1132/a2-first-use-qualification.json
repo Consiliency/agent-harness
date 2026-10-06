@@ -1,0 +1,31 @@
+{
+  "issue": "agent-harness#1132",
+  "leg": {
+    "detail": null,
+    "notices": [],
+    "signatures_in_tail": [],
+    "status": "OK",
+    "subject_quoted": true
+  },
+  "mode_line": "seat claude:a (claude): jailed (qualified now) -- full tools inside its per-seat jail",
+  "new_retention_records": [],
+  "original_pass_restored": true,
+  "profile_digest": "aad69a4d159bed2e2279ce617b82e986e46305a1d3a6b50f23399f1e7cd9f5a9",
+  "qualification_wall_s": 7.7,
+  "recorded_at": "2026-10-03T17:18:08+00:00",
+  "restore_baseline": "annotated 2026-10-05: the record this probe moved aside and restored byte-identical was the 2026-10-03 17:12Z re-qualification (evidence bebeb6c2...), written by a test run minutes earlier; it was not the 2026-09-30 record (evidence 2a407120...), which that run had already superseded.",
+  "result": "pass",
+  "schema": "seat_jail_a2_first_use_qualification.v1",
+  "seat_mode": {
+    "code": null,
+    "credential": "seat_token",
+    "fix": "",
+    "leg": "claude",
+    "mode": "jailed",
+    "qualified_now": true,
+    "seat_key": "claude:a",
+    "why": "full tools inside its per-seat jail"
+  },
+  "verdict_after_first_use": "pass",
+  "verdict_after_move_aside": "no_record"
+}

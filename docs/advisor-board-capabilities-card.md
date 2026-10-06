@@ -435,8 +435,12 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 The Gemini extension (agent-harness#905) admits only a closed set of qualified
 `agy` Linux x64 entry images, `gemini_heartbeat.QUALIFIED_IMAGES`:
-1.2.11 (SHA256 `ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`)
-and 1.2.12 (SHA256 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`),
+1.2.11 (SHA256 `ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56`),
+1.2.12 (SHA256 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`),
+1.2.14 (SHA256 `0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029`),
+1.2.15 (SHA256 `5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164`),
+1.2.16 (SHA256 `a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86`)
+and 1.2.17 (SHA256 `c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5`),
 so a host that has not yet auto-updated keeps its Gemini seat (agent-harness#1008).
 It requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, stdin input (one event when the sealed prompt fits one
@@ -493,3 +497,168 @@ exit or owner death closes them. The provider ownership namespace is created
 after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
+
+## Jailed review seats (agent-harness#1132)
+
+A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
+staged clone and the review bundle through tools instead of receiving the bundle inline.
+The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
+changes: the seat keeps the sealed inline route and reports why in a typed notice.
+
+A jailed launch needs an EC-EXECFIND-2 falsifier
+pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
+at `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`, and uses
+agent-harness#1071's falsifier-run layout. The digest binds this host's layout, so a pass
+does not carry over from another host, and an OS upgrade that changes `/lib*` or the `/etc`
+subset needs a new pass. With no recorded pass, a Claude seat qualifies the jail on
+first use (see below); `phase-loop seat-sandbox qualify` runs the same qualification by hand,
+against a real falsifier run, and records the pass. At launch the built jail is re-checked
+against its record, and a launch whose record does not hold is refused before any effect
+with `seat_sandbox_refused:jail_unqualified`.
+A pass record binds this host, the falsifier-run layout and the
+run's evidence, which is re-hashed on every check. A copied, stale or hand-written record
+does not qualify another host or another run. The operator's own account can still forge
+one, and that is accepted, because the operator is trusted.
+
+**The pass store's directories must be private to you.** This applies to
+`$XDG_STATE_HOME` (usually `~/.local/state`), its `phase-loop` directory and
+`phase-loop/seat-jail-passes`. Each must be a directory you own, must not be a link, and
+must not be writable by others. A group-writable directory is accepted only when its group
+is your own user-private group. That is the usual umask-002 layout, where your primary
+group is named after you and has no other members, and no other account uses it as its
+primary group. Anything else is refused with `seat_sandbox_refused:pass_store_unsafe`. Its
+notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
+qualification nor the gate ever changes these permissions for you. The store defends against the
+seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
+`gemini_seat_egress_unconfined` until its jail egress is limited to agy's inference hosts
+(agent-harness#1170). Codex and grok are
+not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+
+**Where the host supports the jail, Claude seats are jailed by default, and the jail is
+qualified on first use.** The seat's credential is your Claude login, which is normally
+present (see below). So on a host that has the prerequisite below, every brokered Claude
+seat with a staged tree takes the jailed route.
+- **No recorded pass:** if no EC-EXECFIND-2 pass is recorded for this host and jail, the
+  harness runs the host's jail qualification itself, once, before launching. This is the
+  same as `phase-loop seat-sandbox qualify`. Concurrent seats and boards wait for that one
+  run.
+- **On a pass:** the pass is recorded, and the seat runs jailed. Its mode line reads
+  `jailed (qualified now)`.
+- **On a failure, or if the run cannot happen:** the seat is degraded and does not run (it
+  never falls back to a toolless seat), and its mode line names
+  `seat_jail_qualification_failed`, the reason and the fix.
+- **Retrying:** a failure is not retried on every seat. It is retried after
+  `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default one hour), or as soon as the jail or the
+  host layout changes.
+
+**Seat modes.** Before any seat launches, the board prints one line per seat
+(`advisor-board: seat mode: ...`), and the `--json` payload carries `seat_modes`. The modes
+are:
+- `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
+- `unconfined`: tools on the staged tree without a jail (codex, grok).
+- `sealed`: no tools; the bundle is inlined.
+- `degraded`: will not run. The line reads `degraded — will not run [<code>]: <reason>;
+  fix: <command>`, before the board starts.
+- `native`: filled by the driving session.
+
+Every mode other than `jailed` names its notice code, its reason and a one-line fix. The
+same modes are written to `seat-modes.json` in the stream directory.
+
+**Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
+`usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
+conventional). The runtime never runs these. Without them the seat stays sealed with
+`seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
+
+**Claude seat credential.** By default, the seat uses the subscription you are logged in
+with.
+- **What is read, and when:** at every jailed launch, the runtime reads only the current
+  login's access token from the Claude CLI's own store. That is
+  `$CLAUDE_CONFIG_DIR/.credentials.json`, else `~/.claude/.credentials.json`, and the login
+  Keychain on macOS. It never reads or uses the refresh token.
+- **A short token:** if the token has less lifetime left than the seat's deadline (its
+  per-leg timeout, else 1800 s), the seat waits for you to renew the login. The harness never
+  runs the Claude CLI for this. Set `PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S` (seconds) to
+  override the deadline as the margin.
+  - **Before any seat launches:** the mode line says
+    `claude_seat_login_token_awaiting_refresh`, with the minutes left. Use Claude, or run
+    `claude auth login`.
+  - **The wait:** the seat re-reads the store (read-only) every 30 s
+    (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`), for up to
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (default 900 s; 0 means do not wait). Other seats
+    are not held. A renewed login runs the seat jailed, and the log says
+    `jailed (login refreshed)`.
+  - **Not renewed in time:** the seat is degraded and does not run, with
+    `claude_seat_login_token_expiring` (fix: run `claude auth login`, or use Claude to
+    refresh it, then re-run). The rest of the board runs.
+  - A token that expires during a run ends the leg with `claude_seat_login_token_expired`.
+    Re-running it reads a fresh token.
+- **Switching subscriptions:** `claude auth login` to another subscription takes effect at the
+  next launch.
+- **No credential:** with no login and no override, the seat is degraded and does not run,
+  with `claude_seat_token_missing` (fix: `claude auth login`, then re-run).
+
+**Optional override: a dedicated seat token.** Seats follow the subscription of the session
+that launches them, so an override is used only while you are logged in to the account it
+was stored for.
+- **Storing it:** store a long-lived `claude setup-token` token with the store command,
+  while logged in to the account the token belongs to. The command reads the token with no
+  echo, or from stdin, and never prints it. It refuses a terminal that cannot hide the
+  input; pipe the token on stdin there. It stores the token and the account together as
+  one record. It refuses if no login is found.
+- **When it is used:** after `claude login` to another account, seats use the login, and
+  their mode line and notices show `claude_seat_override_other_subscription`. An override
+  stored by hand, without the command, is never used.
+- **What to store:** the override carries no expiry information, so it should be a
+  long-lived token, not a copied login token.
+- **Checking it:** the store prints the account and organization it bound the token to.
+  `phase-loop seat-sandbox token-status` shows them, this session's, and whether the
+  override applies now. It exits 0 only when the override applies, and never shows the
+  token. Logging in to another organization of the same account also moves seats to the
+  login.
+- **One per user:** there is one override per Unix user. Storing from another account
+  replaces it.
+- **Upgrading from an earlier release:** a hand-written override file is ignored until you
+  store it again with `store-token`, as is an override stored by an earlier version of this
+  release (which recorded the account only). A host that never runs `claude login` cannot
+  use an override, because the store needs a login to bind the token to.
+
+```bash
+claude setup-token                         # mint a long-lived subscription token
+phase-loop seat-sandbox store-token        # paste it (hidden); bound to your current login
+```
+
+The stored file must stay 0600 in a 0700 directory owned by you, or the leg is refused with
+`seat_sandbox_refused:token_file_unsafe`.
+
+Either credential reaches the seat only through one drained pipe. It never appears in an
+argv, an environment value, a log or an evidence record, and the seat's output is scanned
+for it.
+- **The residual:** a jailed seat can read the credential it was given and use it for that
+  credential's remaining lifetime. That is hours for a login access token, or the setup
+  token's lifetime for an override. This residual is recorded under agent-harness#361
+  (EC-HARDEN-5 is UNMET for tooled seats, maintainer decision D3).
+- **If a leg reports `claude_seat_token_in_output`**, or `seat_sandbox_retained_after_teardown`
+  on a suspect leg:
+  - **With the login:** log out and back in (`claude auth logout`, then `claude auth login`). The
+    access token also expires on its own within hours.
+  - **With an override:** revoke it from your Claude account settings, and mint a new one.
+
+**Replacing the seat token override.** The runtime reads the override at every jailed
+launch, so you can swap it between legs or rounds. Run `phase-loop seat-sandbox store-token`
+again. It replaces the record (the token and its account together) with one rename, so no
+launch reads half a record or a token bound to another account. A leg that is already
+running keeps its own token. Replacing the token does not
+change the jail's digest or invalidate its recorded qualification. If a leg reports
+`claude_seat_token_rate_limited`, the override's subscription hit a rate or usage limit. With
+the login, the same outcome is `claude_seat_login_rate_limited`. The leg's detail names the
+reset time when the provider gives one. Rotate or replace the credential, or wait for the
+reset. The jail itself is fine.
+
+**Notices.** Each seat's notices are `{code, seat_key, what, why, fix}` in the
+`advisor-board --json` payload (`notices`, `legs[].notices`) and in the text summary. The
+full vocabulary is in `advisor_board/CONTRACTS.md` ("SEATJAIL").
+
+**Retained directories.** If teardown cannot remove a seat's directories, they are kept
+under the leg's private 0700 scratch directory and the leg carries
+`seat_sandbox_retained_after_teardown`. Remove them with
+`phase-loop seat-sandbox reap PATH`; it accepts only a path recorded by that notice.

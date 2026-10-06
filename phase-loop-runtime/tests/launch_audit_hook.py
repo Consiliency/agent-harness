@@ -124,6 +124,27 @@ def provider_executable(executable, env=None, hashes=()):
     return digest.hexdigest() in hashes
 
 
+_TOLERATED = [0]
+
+
+def _tolerated():
+    return _TOLERATED[0] > 0
+
+
+class tolerate_unowned:
+    """Within this block an unowned provider start is recorded, not failed. Only for a test
+    whose subject is ANOTHER launch guard and that starts such a launch on purpose (the
+    agent-harness#1147 scratch-hook falsifiers)."""
+
+    def __enter__(self):
+        _TOLERATED[0] += 1
+        return self
+
+    def __exit__(self, *exc):
+        _TOLERATED[0] -= 1
+        return False
+
+
 def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
     """Record executable/caller metadata only, without arguments or environment."""
     hashes = set(hashes)
@@ -209,7 +230,7 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
             os.write(descriptor, (json.dumps(record, sort_keys=True) + "\n").encode())
             if event == 'subprocess.Popen' and installed_inference(args[1]):
                 raise RuntimeError('test selected an installed provider for inference; use a fixture CLI')
-            if fail and provider and not owned:
+            if fail and provider and not owned and not _tolerated():
                 raise RuntimeError("provider launch lacks the owned launch marker")
         finally:
             _local.observing = False

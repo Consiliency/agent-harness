@@ -95,9 +95,15 @@ def _chunker114_board(tmp_path, *, pointer_brief=True, verdict="PARTIALLY AGREE"
 
 
 @pytest.fixture
-def staged_tree(monkeypatch):
-    """The review stages an exact-head tree (the production default)."""
+def staged_tree(monkeypatch, tmp_path):
+    """The review stages an exact-head tree (the production default). The chunker#114 seats
+    have no seat credential, so this host's own seat token, Claude login and jail passes are
+    not read: with them, the preflight would put a Claude seat on the jailed route
+    (agent-harness#1132)."""
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "no-seat-state"))
+    # ... nor this host's Claude login (plan amendment A1): these seats have no credential.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-claude-login"))
 
 
 def test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_still_run(
@@ -196,7 +202,7 @@ def test_reviewer_floor_counts_grounded_seats_only():
 _REAL_COMPOSE = None
 
 
-def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True):
+def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True, modes=()):
     """Drive ``advisor-board`` with composition, authorization and dispatch patched, so the
     run does not depend on which vendor CLIs this host has installed."""
     import os
@@ -221,6 +227,8 @@ def _run_cli(tmp_path, monkeypatch, legs, *, pointer_brief=True):
         captured.update(kwargs)
         if kwargs.get("on_seat_preflight") is not None:
             kwargs["on_seat_preflight"](tuple(n for leg in legs for n in leg.seat_preflight_notices))
+        if modes:
+            kwargs["on_seat_modes"](tuple(modes))
         return PanelResult(legs=tuple(legs))
 
     monkeypatch.setattr(cli, "invoke_board", fake_invoke_board, raising=False)
@@ -251,13 +259,29 @@ def test_cli_pointer_brief_prints_preflight_and_floors_on_grounded_seats(tmp_pat
         "codex": True, "grok": True, "claude": False, "gemini": False}
 
 
+def test_cli_pointer_brief_keeps_the_seat_notices_beside_the_preflight_notices(
+        tmp_path, monkeypatch):
+    # agent-harness#1132: a leg's seat notice and its preflight notice are both published;
+    # the preflight list is appended to the seat notices, never put in their place.
+    legs = [_leg("codex", "AGREE", grounded=True), _leg("grok", "AGREE", grounded=True),
+            _leg("claude", "PARTIALLY AGREE", grounded=False)]
+    object.__setattr__(legs[2], "_seat_notice_codes", ("claude_seat_token_missing",))
+    _code, out, _err, _captured = _run_cli(tmp_path, monkeypatch, legs)
+    payload = json.loads(out)
+    assert [n["code"] for n in payload["notices"]] == ["claude_seat_token_missing", UNREADABLE]
+    claude = next(e for e in payload["legs"] if e["leg"] == "claude")
+    assert [n["code"] for n in claude["notices"]] == ["claude_seat_token_missing", UNREADABLE]
+
+
 def test_cli_without_pointer_brief_keeps_the_payload_unchanged(tmp_path, monkeypatch):
     legs = [_leg(leg, "AGREE", grounded=True) for leg in ("codex", "grok", "claude")]
     code, out, _err, captured = _run_cli(tmp_path, monkeypatch, legs, pointer_brief=False)
     assert "pointer_brief" not in captured and code == 0
     payload = json.loads(out)
-    assert not {"grounded_seats", "notices"} & set(payload)
-    assert all("source_grounded" not in e and "notices" not in e for e in payload["legs"])
+    # The `notices` keys belong to the seat notices (agent-harness#1132) and are always
+    # present; without the flag the preflight adds nothing to them.
+    assert "grounded_seats" not in payload and payload["notices"] == []
+    assert all("source_grounded" not in e and e["notices"] == [] for e in payload["legs"])
 
 
 def test_the_stream_record_is_published_atomically(tmp_path):
@@ -459,3 +483,97 @@ def test_r1_the_all_native_early_path_still_publishes_its_preflight(tmp_path, mo
         on_seat_preflight=published.append)
     assert published == [()]
     assert all(leg.status == "UNAVAILABLE" and leg.source_grounded for leg in result.legs)
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1132: a jailed Claude seat has its tools in the staged tree, so it CAN read
+# the pointer brief; the preflight reads the same jailed-route facts the launch acts on.
+# --------------------------------------------------------------------------------------
+
+def _jailed_route(leg, **_k):
+    from phase_loop_runtime import seat_jail
+
+    if leg == "claude":
+        return seat_jail.SeatRoute(True)
+    if leg == "gemini":
+        return seat_jail.SeatRoute(False, "gemini_seat_egress_unconfined")
+    return None
+
+
+@pytest.mark.parametrize("qualified, unreadable", [
+    (True, ["gemini"]),               # the jailed Claude seat reads its brief
+    (False, ["claude", "gemini"]),    # a jail that cannot be qualified: the seat runs sealed
+])
+def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _jailed_route)
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
+                        lambda leg: aq.Outcome(aq.QUALIFIED) if qualified
+                        else aq.Outcome(aq.FAILED, "falsifiers_failed"))
+    board = types.SimpleNamespace(seats=[_seat("claude"), _seat("gemini"), _seat("codex")])
+    notices = pi._publish_seat_preflight(
+        board, pointer_brief=True, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        base_env={}, stream_dir=None, on_seat_preflight=None)
+    assert [n.leg for n in notices] == unreadable
+    assert all(n.code == UNREADABLE for n in notices)
+
+
+def test_cli_prints_every_seat_mode_and_carries_it_in_the_payload(tmp_path, monkeypatch):
+    # agent-harness#1132 (plan amendment A1): no seat is silently left without tools.
+    from phase_loop_runtime import seat_jail
+
+    _what, why, fix = seat_jail.NOTICES["seat_sandbox_refused:jail_unqualified"]
+    modes = (sp.SeatMode("claude:a", "claude", sp.MODE_DEGRADED,
+                         "seat_sandbox_refused:jail_unqualified", why, fix, None, 0),
+             sp.SeatMode("codex:a", "codex", sp.MODE_UNCONFINED, "seat_filesystem_unconfined",
+                         "tools", "jail", None, 1))
+    legs = [_leg(leg, "AGREE", grounded=True) for leg in ("codex", "grok", "claude")]
+    _code, out, err, _captured = _run_cli(tmp_path, monkeypatch, legs, pointer_brief=False,
+                                          modes=modes)
+    # Plan amendment A3b: a degraded seat is announced as one that will not run.
+    assert ("advisor-board: seat mode: seat claude:a (claude): degraded \u2014 will not run "
+            "[seat_sandbox_refused:jail_unqualified]") in err
+    assert f"fix: {fix}" in err
+    assert json.loads(out)["seat_modes"] == [m.as_json() for m in modes]
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1132 round 8: every board path hands its per-leg timeouts to the seat
+# modes, so the mode line checks the margin the launch will check.
+# --------------------------------------------------------------------------------------
+
+def _record_mode_timeouts(monkeypatch):
+    seen: list = []
+    real = pi._publish_seat_modes
+
+    def _publish(*args, **kwargs):
+        seen.append(kwargs.get("timeouts_by_leg"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pi, "_publish_seat_modes", _publish)
+    return seen
+
+
+def test_the_board_path_hands_its_leg_timeouts_to_the_seat_modes(monkeypatch):
+    harden_require("review-leg-isolation")
+    seen = _record_mode_timeouts(monkeypatch)
+    invoke_sanctioned_board_control(
+        DEFAULT_BOARD, "artifact", spawn=lambda leg, artifact: ("OK", "AGREE"),
+        base_env={}, max_concurrency=1, timeouts_by_leg={"claude": 3600})
+    assert seen == [{"claude": 3600}]
+
+
+def test_the_all_native_path_hands_its_leg_timeouts_to_the_seat_modes(monkeypatch):
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    from phase_loop_runtime.advisor_board.schema import Board
+
+    claude = next(seat for seat in DEFAULT_SEATS if seat.harness == "claude")
+    board = Board(name="all-claude", purpose="premerge-review", seats=(claude,))
+    seen = _record_mode_timeouts(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    invoke_sanctioned_board_control(
+        board, "artifact", base_env={"CLAUDECODE": "1"}, timeouts_by_leg={"claude": 3600})
+    assert seen == [{"claude": 3600}]

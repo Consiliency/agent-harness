@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -29,6 +30,27 @@ from _quarantine import deselect_quarantined
 if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
     os.environ.setdefault("PHASE_LOOP_LAUNCH_AUDIT_PATH", str(Path.cwd() / "seat-launch-audit.jsonl"))
     os.environ["PHASE_LOOP_LAUNCH_AUDIT_FAIL"] = "1"
+
+import _scratch_audit_hook
+
+# agent-harness#1147: every agent-CLI spawn the RUNTIME makes, by any API, must carry the
+# scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
+_scratch_audit_hook.install()
+_scratch_audit_hook.enabled = True
+_scratch_audit_hook.log_path = os.path.join(
+    tempfile.mkdtemp(prefix="pl-scratch-audit-"), "violations.log")
+
+
+@pytest.fixture(autouse=True)
+def _every_agent_spawn_has_a_scratch_decision():
+    _scratch_audit_hook.drain()
+    yield
+    found = _scratch_audit_hook.drain()
+    assert not found, "agent-CLI spawn without a scratch decision:\n" + "\n".join(found)
+
+
+#: The developer's real home, captured before any test patches HOME (agent-harness#1147).
+_REAL_HOME = Path(os.path.abspath(Path.home()))
 
 _CONFORM_BODY_COUNTER_ENV = "PHASE_LOOP_CONFORM_BODY_COUNTER"
 
@@ -94,9 +116,94 @@ def _isolate_host_state(monkeypatch, tmp_path):
     authority_root = tmp_path / "fabpub-authority-isolated"
     authority_root.mkdir()
     monkeypatch.setenv(FABPUB_AUTHORITY_ROOT_ENV, str(authority_root))
+    # Review scratch defaults to a per-user cache dir (agent-harness#1147); keep the
+    # suite's rounds -- and the retention sweep they trigger -- out of the real one.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "sandbox-staging"))
     for name in list(os.environ):
         if name.startswith(_CUSTOMIZATION_ENV_PREFIXES) and name not in _CUSTOMIZATION_ENV_EXEMPT:
             monkeypatch.delenv(name)
+    # The suite must not depend on whether THIS host's /tmp is a tmpfs (agent-harness#1147):
+    # by default no mount table is readable, which the policy treats as disk. A test about
+    # RAM-backed placement fakes the mount table itself; one that needs the real table sets
+    # `_MOUNTINFO` back. Nor may it write the developer's real per-user cache dir: a cache
+    # dir that resolves under the real home becomes the test's own. (Not via
+    # XDG_CACHE_HOME: an XDG_CACHE_* variable counts as an agy customization source.)
+    from phase_loop_runtime import sandbox_policy
+
+    monkeypatch.setattr(sandbox_policy, "_MOUNTINFO", tmp_path / "no-mountinfo")
+    real_cache_dir = sandbox_policy._user_cache_dir
+
+    def _test_cache_dir():
+        found = real_cache_dir()
+        where = None if found is None else Path(os.path.abspath(found))
+        if where is not None and where.is_relative_to(_REAL_HOME) and not where.is_relative_to(tmp_path):
+            return tmp_path / "user-cache"
+        return found
+
+    monkeypatch.setattr(sandbox_policy, "_user_cache_dir", _test_cache_dir)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_first_use_jail_qualification(monkeypatch):
+    """agent-harness#1132 (plan amendment A2): a Claude seat whose jail has no recorded
+    EC-EXECFIND-2 pass on this host qualifies it on first use -- a REAL falsifier run on
+    the seat-uid chain. A test that reaches that path without injecting a qualifier fails
+    here instead of running one. Tests of the first-use path inject ``qualify=``; the live
+    qualification tests call ``seat_jail_qualification`` directly."""
+    from phase_loop_runtime import seat_jail_autoqualify
+
+    def _refuse(leg):
+        pytest.fail("a test reached a REAL first-use jail qualification; inject qualify=")
+
+    monkeypatch.setattr(seat_jail_autoqualify, "_default_qualify", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_long_real_login_wait(monkeypatch):
+    """agent-harness#1132 (plan amendment A3): a jailed Claude seat whose login is short
+    waits up to 15 minutes for it to be renewed. A test that reaches that real wait with a
+    long bound fails here instead of sleeping; tests inject the wait or set a short
+    ``PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S``."""
+    from phase_loop_runtime import seat_credentials
+
+    real = seat_credentials.await_login_margin
+
+    def _guarded(margin_s, *, max_wait_s, **kwargs):
+        if max_wait_s > 60 and kwargs.get("monotonic") is None:   # a real clock
+            pytest.fail("a test reached a real login wait of %ss; inject it or bound it"
+                        % max_wait_s)
+        return real(margin_s, max_wait_s=max_wait_s, **kwargs)
+
+    monkeypatch.setattr(seat_credentials, "await_login_margin", _guarded)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
+    """agent-harness#1132: keep the suite off the host's Claude login and seat state.
+
+    A production route that decides a Claude seat reads the CLI's login store
+    (``$CLAUDE_CONFIG_DIR``, else ``~/.claude``), the seat-token override and the recorded
+    jail passes (``seat_jail.state_home()``: ``$XDG_STATE_HOME``, else ``~/.local/state``).
+    On a host with a login and a recorded pass such a test would take the jailed route and
+    handle a real credential. Both point at empty per-test directories here. The state root
+    is pinned through ``state_home`` rather than the variable, which ``_isolate_host_state``
+    keeps out of the environment; a test that sets ``XDG_STATE_HOME`` itself still wins.
+    Only a test marked ``host_seat_credentials`` (the live jailed-seat check) sees the
+    host's own state."""
+    if request.node.get_closest_marker("host_seat_credentials") is not None:
+        return
+    from phase_loop_runtime import seat_jail
+
+    config = tmp_path / "claude-config-isolated"
+    state = tmp_path / "seat-state-isolated"
+    config.mkdir(mode=0o700)
+    state.mkdir(mode=0o700)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    real_state_home = seat_jail.state_home
+    monkeypatch.setattr(
+        seat_jail, "state_home",
+        lambda: real_state_home() if os.environ.get("XDG_STATE_HOME") else state,
+    )
 
 
 @pytest.fixture(autouse=True)

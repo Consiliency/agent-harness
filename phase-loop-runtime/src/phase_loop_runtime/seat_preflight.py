@@ -168,3 +168,70 @@ def uncounted_president_items(leg: object, terminal_verdict: Callable[[str], str
     if terminal_verdict(getattr(leg, "text", "")) == "DISAGREE":
         return None
     return [f"not counted (not source-grounded: {POINTER_BRIEF_UNREADABLE})"]
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1132 (plan amendment A1): every seat's launch MODE, published before any seat
+# launches, so a seat is never silently left without tools.
+# --------------------------------------------------------------------------------------
+
+MODE_JAILED = "jailed"          # full tools inside its per-seat jail
+MODE_UNCONFINED = "unconfined"  # tools on the staged tree, not jailed (codex, grok)
+MODE_SEALED = "sealed"          # no tools: the bundle is inlined
+MODE_DEGRADED = "degraded"      # refused before launch
+MODE_NATIVE = "native"          # filled by the driving session
+SEAT_MODES = (MODE_JAILED, MODE_UNCONFINED, MODE_SEALED, MODE_DEGRADED, MODE_NATIVE)
+
+MODES_FILE = "seat-modes.json"
+MODES_SCHEMA = "seat_modes.v1"
+
+
+@dataclass(frozen=True)
+class SeatMode:
+    seat_key: str
+    leg: str
+    mode: str
+    #: The notice code behind a non-jailed mode (rendered from the notice table), or ``None``.
+    code: str | None
+    why: str
+    fix: str
+    #: For a jailed Claude seat: ``login`` or ``seat_token``.
+    credential: str | None = None
+    position: int = -1
+    #: Plan amendment A2: the jail was qualified on this host just before this board.
+    qualified_now: bool = False
+    #: Notice codes beside ``code`` that the operator must also see (plan amendment A4: an
+    #: ignored seat-token override, whatever the login's own state).
+    also: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.mode not in SEAT_MODES:
+            raise ValueError(f"unknown seat mode {self.mode!r}")
+
+    def as_json(self) -> dict[str, object]:
+        return {"seat_key": self.seat_key, "leg": self.leg, "mode": self.mode,
+                "code": self.code, "why": self.why, "fix": self.fix,
+                "credential": self.credential, "qualified_now": self.qualified_now,
+                "also": list(self.also)}
+
+    def render(self) -> str:
+        code = f" [{self.code}]" if self.code else ""
+        fix = f"; fix: {self.fix}" if self.fix else ""
+        also = "".join(f"; also [{extra}]" for extra in self.also)
+        if self.mode == MODE_DEGRADED:
+            # Plan amendment A3b: said before the board starts, so the operator can act.
+            return (f"seat {self.seat_key} ({self.leg}): degraded \u2014 will not run{code}: "
+                    f"{self.why}{fix}{also}")
+        mode = f"{self.mode} (qualified now)" if self.qualified_now else self.mode
+        return f"seat {self.seat_key} ({self.leg}): {mode}{code} -- {self.why}{fix}{also}"
+
+
+def write_modes_record(stream_dir: Path, modes: Sequence[SeatMode]) -> Path:
+    """Publish the modes to the stream directory before any seat launches."""
+    Path(stream_dir).mkdir(parents=True, exist_ok=True)
+    path = Path(stream_dir) / MODES_FILE
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"schema": MODES_SCHEMA, "modes": [m.as_json() for m in modes]},
+                              indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path

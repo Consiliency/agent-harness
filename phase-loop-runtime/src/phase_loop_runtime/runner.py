@@ -60,7 +60,7 @@ class _DispatchPrep(NamedTuple):
     autosel_provenance: object = None
 
 from .broker import validate_delegation_request
-from .baml_modular import BamlValidationError
+from .baml_modular import BamlValidationError, BamlWorkerError
 from .capability_registry import (
     default_executor_for_work_unit,
     describe_dispatch_decision,
@@ -4059,68 +4059,98 @@ def run_loop(
                         if automation_status == "delegated":
                             delegation_request = child_automation.get("delegation_request")
                             if isinstance(delegation_request, DelegationRequest):
-                                delegated_outcome = launch_delegated_child(
-                                    repo=repo,
-                                    roadmap=roadmap,
-                                    parent_phase=alias,
-                                    parent_action=launch_action,
-                                    parent_executor=spec.executor,
-                                    parent_run_id=artifacts.get("root").name if artifacts.get("root") else None,
-                                    plan=plan,
-                                    request=delegation_request,
-                                    dry_run=dry_run,
-                                    json_output=json_output,
-                                    stream_output=stream_output,
-                                    bypass_approvals=bypass_approvals,
-                                    heartbeat_interval_seconds=heartbeat_interval_seconds,
-                                    quiet_warning_seconds=quiet_warning_seconds,
-                                    quiet_blocker_seconds=quiet_blocker_seconds,
-                                )
-                                child_automation["delegated_child"] = delegated_outcome
-                                closeout = (
-                                    delegated_outcome.get("launch_metadata", {})
-                                    .get("parent_child", {})
-                                    .get("child_closeout_result", {})
-                                )
-                                delegated_status_reason = "delegated_child_reduction"
-                                if isinstance(closeout, dict):
-                                    status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
-                                    if event_blocker is None:
-                                        # agent-harness#245: re-check the produced-gates + goal-coverage
-                                        # closeout gates HERE — this is the only reduction point for a
-                                        # delegated child's OWN completion. It never reaches the direct
-                                        # closeout re-check above (there, automation_status == "delegated",
-                                        # not "complete", so both gates trivially pass). Route through the
-                                        # SAME _closeout_gate_recheck() helper the direct site uses so
-                                        # PHASE_LOOP_VERIFY_ENFORCE / PHASE_LOOP_ACCEPTANCE_ENFORCE stay in
-                                        # parity between the direct and delegated paths. ``closeout`` is
-                                        # normalized with an explicit terminal status (its native
-                                        # "status" key doesn't match what validate_produced_gates()
-                                        # expects); _delegated_child_closeout_result() also carries the
-                                        # child's real produced_if_gates onto ``closeout`` (see
-                                        # _delegated_child_produced_if_gates()) whenever the child emitted a
-                                        # native BAML closeout, so validate_produced_gates() evaluates the
-                                        # actual gate list here rather than the NATIVE-compatibility
-                                        # warn-pass. That warn-pass still applies only to a genuine
-                                        # legacy/plain-text child closeout with no native payload at all.
-                                        closeout["automation_status"] = status_after_launch
-                                        _delegated_gate_plan = post_launch_plan or plan
-                                        _delegated_gate_outcome = _closeout_gate_recheck(
-                                            repo, roadmap, _delegated_gate_plan, closeout, status_after_launch, event_blocker,
-                                        )
-                                        if _delegated_gate_outcome.blocked_reason is not None:
-                                            status_after_launch = "blocked"
-                                            event_blocker = _delegated_gate_outcome.event_blocker
-                                            delegated_status_reason = _delegated_gate_outcome.blocked_reason
-                                else:
+                                # agent-harness#1135 (#22/#24): a BAML failure while building the
+                                # child's prompt means the child was NOT launched.  Record it on
+                                # the parent through the branch's blocked flow, so the parent's
+                                # result is always persisted.  A fault after the child launched is
+                                # recorded on the child by its own _parsed_child_automation path.
+                                delegated_outcome = None
+                                try:
+                                    delegated_outcome = launch_delegated_child(
+                                        repo=repo,
+                                        roadmap=roadmap,
+                                        parent_phase=alias,
+                                        parent_action=launch_action,
+                                        parent_executor=spec.executor,
+                                        parent_run_id=artifacts.get("root").name if artifacts.get("root") else None,
+                                        plan=plan,
+                                        request=delegation_request,
+                                        dry_run=dry_run,
+                                        json_output=json_output,
+                                        stream_output=stream_output,
+                                        bypass_approvals=bypass_approvals,
+                                        heartbeat_interval_seconds=heartbeat_interval_seconds,
+                                        quiet_warning_seconds=quiet_warning_seconds,
+                                        quiet_blocker_seconds=quiet_blocker_seconds,
+                                    )
+                                except BamlWorkerError as exc:
                                     status_after_launch = "blocked"
                                     event_blocker = {
                                         "human_required": False,
-                                        "blocker_class": "repeated_verification_failure",
-                                        "blocker_summary": "Delegated child did not return closeout metadata.",
+                                        "blocker_class": "unretryable_external_outage",
+                                        "blocker_summary": (
+                                            f"delegated child NOT launched: BAML worker {exc.kind} after the retry budget"
+                                        ),
                                         "required_human_inputs": (),
                                         "access_attempts": (),
                                     }
+                                    delegated_status_reason = "delegated_child_not_launched"
+                                except BamlValidationError as exc:
+                                    status_after_launch = "blocked"
+                                    event_blocker = {
+                                        "human_required": False,
+                                        "blocker_class": "contract_bug",
+                                        "blocker_summary": f"delegated child NOT launched: closeout contract render refused ({exc})",
+                                        "required_human_inputs": (),
+                                        "access_attempts": (),
+                                    }
+                                    delegated_status_reason = "delegated_child_not_launched"
+                                if delegated_outcome is not None:
+                                    child_automation["delegated_child"] = delegated_outcome
+                                    closeout = (
+                                        delegated_outcome.get("launch_metadata", {})
+                                        .get("parent_child", {})
+                                        .get("child_closeout_result", {})
+                                    )
+                                    delegated_status_reason = "delegated_child_reduction"
+                                    if isinstance(closeout, dict):
+                                        status_after_launch, event_blocker = _delegated_child_status_and_blocker(closeout)
+                                        if event_blocker is None:
+                                            # agent-harness#245: re-check the produced-gates + goal-coverage
+                                            # closeout gates HERE — this is the only reduction point for a
+                                            # delegated child's OWN completion. It never reaches the direct
+                                            # closeout re-check above (there, automation_status == "delegated",
+                                            # not "complete", so both gates trivially pass). Route through the
+                                            # SAME _closeout_gate_recheck() helper the direct site uses so
+                                            # PHASE_LOOP_VERIFY_ENFORCE / PHASE_LOOP_ACCEPTANCE_ENFORCE stay in
+                                            # parity between the direct and delegated paths. ``closeout`` is
+                                            # normalized with an explicit terminal status (its native
+                                            # "status" key doesn't match what validate_produced_gates()
+                                            # expects); _delegated_child_closeout_result() also carries the
+                                            # child's real produced_if_gates onto ``closeout`` (see
+                                            # _delegated_child_produced_if_gates()) whenever the child emitted a
+                                            # native BAML closeout, so validate_produced_gates() evaluates the
+                                            # actual gate list here rather than the NATIVE-compatibility
+                                            # warn-pass. That warn-pass still applies only to a genuine
+                                            # legacy/plain-text child closeout with no native payload at all.
+                                            closeout["automation_status"] = status_after_launch
+                                            _delegated_gate_plan = post_launch_plan or plan
+                                            _delegated_gate_outcome = _closeout_gate_recheck(
+                                                repo, roadmap, _delegated_gate_plan, closeout, status_after_launch, event_blocker,
+                                            )
+                                            if _delegated_gate_outcome.blocked_reason is not None:
+                                                status_after_launch = "blocked"
+                                                event_blocker = _delegated_gate_outcome.event_blocker
+                                                delegated_status_reason = _delegated_gate_outcome.blocked_reason
+                                    else:
+                                        status_after_launch = "blocked"
+                                        event_blocker = {
+                                            "human_required": False,
+                                            "blocker_class": "repeated_verification_failure",
+                                            "blocker_summary": "Delegated child did not return closeout metadata.",
+                                            "required_human_inputs": (),
+                                            "access_attempts": (),
+                                        }
                                 set_phase_status(
                                     repo,
                                     roadmap,
@@ -8596,6 +8626,11 @@ def _run_legible_panel(
             "verdict": verdict,
             "text": outcome.text,
         }
+        placement_evidence = getattr(outcome, "sandbox_placement_evidence", None)
+        if isinstance(placement_evidence, Mapping) and placement_evidence:
+            # agent-harness#896: where this leg's sandbox was placed, for every leg that
+            # staged one -- failed and non-brokered legs included.
+            leg_payload["sandbox_placement_evidence"] = dict(placement_evidence)
         broker_evidence = getattr(outcome, "harden_isolation_evidence", None)
         if isinstance(broker_evidence, Mapping):
             # This is the actual parent_unix_broker_v1 observation from the
@@ -10420,6 +10455,20 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
     native_failure: dict[str, object] | None = None
     for source, candidate in _native_closeout_text_candidates(result, spec, text):
         native = _parse_native_closeout_status(candidate)
+        if native.get("baml_worker_outage"):
+            # agent-harness#1135 (#24): the closeout was NOT evaluated.  No later
+            # candidate may stand in for it; the outage is the result.
+            native["native_closeout_source"] = source
+            log_path = getattr(result, "log_path", None)
+            if log_path:
+                # The operator deciding whether to re-run needs the preserved output.
+                native["automation_blocker_summary"] = str(native["automation_blocker_summary"]).replace(
+                    "preserved in the launch log", f"preserved at {log_path}"
+                )
+            parsed = native
+            text = candidate
+            native_failure = None
+            break
         if native and not native.get("automation_parse_error"):
             native["native_closeout_source"] = source
             parsed = native
@@ -10450,7 +10499,7 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
         spec.executor == "codex" and result.codex_turn_completion is not None
         and (not result.codex_turn_completion.get("completed") or not parsed)
     )
-    if not result.dry_run and result.returncode is not None and (
+    if not result.dry_run and result.returncode is not None and not parsed.get("baml_worker_outage") and (
         missing_completed_closeout or parsed.get("automation_status") == "executing"
     ):
         summary = (
@@ -10492,6 +10541,26 @@ def _parse_native_closeout_status(text: str) -> dict[str, object]:
         return {}
     try:
         payload, parse_errors = parse_closeout_payload_doc(json.dumps(extracted), kind="native_closeout")
+    except BamlWorkerError as exc:
+        # agent-harness#1135 (#24): the worker could not evaluate the closeout.
+        # That is "not evaluated", never a verdict on the closeout content.
+        summary = (
+            f"closeout NOT evaluated: BAML worker {exc.kind} (rc={exc.rc}) after the retry budget; "
+            "executor output preserved in the launch log"
+        )
+        return {
+            "automation_status": "blocked",
+            "automation_next_skill": "codex-plan-phase",
+            "automation_next_command": "none",
+            "automation_human_required": "false",
+            "automation_blocker_class": "unretryable_external_outage",
+            "automation_blocker_summary": summary,
+            "automation_required_human_inputs": [],
+            "automation_verification_status": "blocked",
+            "automation_parse_error": summary,
+            "automation_parse_error_blocker_class": "unretryable_external_outage",
+            "baml_worker_outage": exc.kind,
+        }
     except BamlValidationError as exc:
         return {
             "automation_status": "blocked",

@@ -1,4 +1,22 @@
-"""Standalone stdlib final link for an owned seat launch."""
+"""Join a fresh anonymous session keyring, then exec the rest of the argv (J3, D8).
+
+Possession of a key is independent of uid, so a seat that merely changed uid would still
+possess the operator's session keyring; joining a fresh anonymous one first leaves it none
+of the operator's keys. It runs before the seccomp filter, which denies ``keyctl``.
+
+Two call shapes, one module. It stays standalone stdlib (no package imports), because the
+owned route runs it as a bound file under ``python3 -I -S``:
+
+* the jailed seat (agent-harness#1132): ``python -m phase_loop_runtime.seat_keyring_exec
+  -- <argv...>``, the first element of the jail's launch prefix;
+* the owned seat launch: ``python3 -I -S <this file> <seccomp-fd> <argv...>``, the final
+  link inside the owner: it joins the keyring, sets no-new-privs, installs the sealed
+  filter read from ``<seccomp-fd>`` and execs the argv.
+
+No keyutils binary is needed: the calls are made through ``syscall(2)``.
+"""
+
+from __future__ import annotations
 
 import ctypes
 import errno
@@ -6,6 +24,9 @@ import fcntl
 import os
 import platform
 import sys
+
+KEYCTL_JOIN_SESSION_KEYRING = 1
+_KEYCTL_NR = {"x86_64": 250, "aarch64": 219}
 
 
 class _Filter(ctypes.Structure):
@@ -17,6 +38,21 @@ class _Program(ctypes.Structure):
     _fields_ = [("length", ctypes.c_ushort), ("filter", ctypes.POINTER(_Filter))]
 
 
+def join_fresh_session_keyring() -> int:
+    """Join a new anonymous session keyring and return its serial (> 0)."""
+    number = _KEYCTL_NR.get(platform.machine().lower())
+    if number is None:
+        raise OSError("seat_keyring_exec: unsupported architecture")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    serial = libc.syscall(ctypes.c_long(number), ctypes.c_long(KEYCTL_JOIN_SESSION_KEYRING),
+                          ctypes.c_void_p(None))
+    if serial < 0:
+        code = ctypes.get_errno()
+        raise OSError(code, f"keyctl(JOIN_SESSION_KEYRING) failed: {os.strerror(code)}")
+    return int(serial)
+
+
 def _checked(value):
     if value < 0:
         raise OSError(ctypes.get_errno(), "seat_keyring_unavailable")
@@ -24,6 +60,8 @@ def _checked(value):
 
 
 def _join_session(libc, number):
+    # A long-lived process can hold a revoked or expired session keyring (pam_keyinit
+    # revokes it at logout): that is "no prior keyring", and the join below still works.
     try:
         before = _checked(libc.syscall(number, 0, -3, 1))
     except OSError as exc:
@@ -60,8 +98,7 @@ def execute(libc, keyctl_number, seccomp_number, descriptor, command):
     os.execv(command[0], command)
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+def _owned_main(argv):
     try:
         descriptor = int(argv[0])
         command = argv[1:]
@@ -79,5 +116,22 @@ def main(argv=None):
     return 127
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] != ["--"]:
+        return _owned_main(args)
+    args = args[1:]
+    if not args:
+        print("usage: python -m phase_loop_runtime.seat_keyring_exec -- <argv...>", file=sys.stderr)
+        return 2
+    try:
+        join_fresh_session_keyring()
+    except OSError as exc:
+        print(f"seat_keyring_exec: {exc}", file=sys.stderr)
+        return 126
+    os.execvp(args[0], args)
+    return 127  # pragma: no cover - execvp does not return
+
+
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())

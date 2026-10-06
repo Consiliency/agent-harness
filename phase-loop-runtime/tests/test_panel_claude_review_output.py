@@ -755,7 +755,9 @@ def test_president_route_rejects_a_record_level_api_error(tmp_path):
     record = _asst("Upstream failure", mid="m", uuid="a1")
     record["isApiErrorMessage"] = True
     path = _jsonl(tmp_path, [_user("u1"), record])
-    assert pi._final_assistant_text_from_jsonl(path) == "Upstream failure"
+    # agent-harness#1194 r2: an API-error record is never answer text on any route (it was
+    # returned as the answer here before); the president route still fails closed.
+    assert pi._final_assistant_text_from_jsonl(path) == ""
     assert pi._final_assistant_text_from_jsonl(path, require_terminal=True) == ""
 
 
