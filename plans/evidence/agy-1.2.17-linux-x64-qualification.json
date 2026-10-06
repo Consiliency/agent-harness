@@ -1,7 +1,7 @@
 {
   "architecture": "x86_64",
   "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
-  "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+  "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
   "isolation_profile": "agy_memfd_home_deny_all_v1",
   "platform": "linux",
   "provider": "gemini",
@@ -16,13 +16,13 @@
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": false,
-        "provider_image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "provider_image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_owned_fds_closed": true,
         "sandbox_network_filtered": true
       },
       "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
-      "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+      "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -35,7 +35,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -46,16 +46,16 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "90e04f279f10bbcb18dfa71f794e4687d84d1e8923481c6e573c06e3ef671ccd",
-      "raw_receipt_sha256": "b5bd76a19659766b22833a7b62f38a27ac55712b6e7d9c77d46a2bb8cd258cac",
+      "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
+      "raw_receipt_sha256": "e9b24b05f863eca80903f8e8383b7e2cf4a28ed7e50b12567e58bee98e9478d2",
       "record_sha256": {
-        "broker": "fb1d8f808e89282f5fb2cb1a67cd331120b1568f1fcddd87cc8bfd4b63d319fe",
-        "monitoring": "e7c722a846f78667703dd03bdbd6229ead0f2a9f9c68883e44169062d5d08451",
-        "observer": "3b378dfef73c31d5bebd03cd2a87ad81b465cf010346cf15a9ed8eb227773c98",
-        "result": "924acec5c5d449b3160ac1b4d2da77ef085a32d359a9ed5bba819d0356eb9464"
+        "broker": "79a647db395610c7d9a628c5b1baf4389955618ed10465daf47818eb3e6de9a4",
+        "monitoring": "b9c4a5bed6dd198503eb1c6d17f09d185b81bb1945d77c88d9b1e9184c861f4f",
+        "observer": "41ed3b4d6e3ed700ad609c37f3d2b7d375fd89d9312c9fa953c776211cba9e58",
+        "result": "576e0751bf6410c90e7ec56278884c631b3cfd2b4b1f7233e093cd07c1c4391c"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -77,13 +77,13 @@
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": true,
-        "provider_image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "provider_image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
         "provider_owned_fds_closed": true,
         "sandbox_network_filtered": true
       },
       "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
-      "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+      "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -96,7 +96,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -107,15 +107,15 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "90e04f279f10bbcb18dfa71f794e4687d84d1e8923481c6e573c06e3ef671ccd",
-      "raw_receipt_sha256": "1e568694c74d979e95f0e53601055c174cfdae1e5f630a48f9762c67a2992639",
+      "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
+      "raw_receipt_sha256": "46794a5264c470572a98d78820ee74627cc44ee9927571ca358e073a5b4e4b0a",
       "record_sha256": {
-        "broker": "062c4a6518a68c2a93080081c93971953ac27308433e6a10a044dd0aa6d0191a",
-        "monitoring": "e91773b446561ca688adfbdd97797e9bc6ede9b4af7ccd89bb05baa99f263048",
-        "observer": "bfc9e7892e8451f84c35a9e2ca5cb344121a03cf99df441c88b4a60c525f47b9",
+        "broker": "fefefdca35125c1cd4aaf05698438688836a3d01cee74efa097550988a30572f",
+        "monitoring": "7e25da45b357705d3e29c623c44eadcb7f5eab298c03c7f3dc52c9037fac1c62",
+        "observer": "750841b795b6b1c4c088a038d621d364a7b12c47e01fe6c28660c30d9b443d75",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -144,7 +144,7 @@
         "sandbox_network_filtered": null
       },
       "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
-      "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+      "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
       "monitoring": {
         "effective_policy": "heartbeat_only",
         "model_deadline_s": null,
@@ -157,7 +157,7 @@
         "credential_target_regular_before": true,
         "home_removed": true,
         "image_readonly": true,
-        "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "init_exited": true,
         "live_namespace_members": [],
         "network_rules_verified": true,
@@ -168,15 +168,15 @@
       "profile": {
         "home": "/dev/phase-loop-agy",
         "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
-      "profile_sha256": "90e04f279f10bbcb18dfa71f794e4687d84d1e8923481c6e573c06e3ef671ccd",
-      "raw_receipt_sha256": "2a3fd8ec841ee6162821700498d3e2ed3a7a4615d5f3c6d5eb0a4c96ad032a34",
+      "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
+      "raw_receipt_sha256": "66d9c97a1fe8dc47ead90784c2c024f85ed96d21908c6f6451a409fc0aebf94c",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "13b5fc643e5474779b67baa9b0d4640527766bc0665a075914895ba51b18437f",
-        "observer": "53ba1ebcf76a8dab8dd52d070d750d71196505cce14b47404d2e1f281925477f",
+        "monitoring": "e7c3719f18cea16a2bb8038b8a6901440da75c9355f8e1f6b1dbe7fe19c23e8e",
+        "observer": "c6ec397bd536175fa95880b93c30ff2a38b49b46e3b0a21ae3b91ee7e765b854",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -191,12 +191,12 @@
       }
     }
   ],
-  "release_version": "1.2.16",
+  "release_version": "1.2.17",
   "role": "redacted qualification evidence; runtime admission remains the checked executable digest",
   "route": "brokered_subscription_heartbeat_only",
-  "schema": "agy_1216_redacted_qualification_summary.v1",
+  "schema": "agy_1217_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "58c5858f9c94c8f75d5c401cb87cb526e1f67b264b7fd08a048e6821a9b60e16",
+    "__init__.py": "6ac9b32dc6cd0c68029621cb6b4b94f593db9c435253d8ea7962deec8250ed0e",
     "_baml_worker.py": "682b0bdd0177aad2492b5818530ce45003d02f10198b89062f1650ecac115148",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "3e85adcad049c0a26f6937ade48a35c44a7756b060fc2f04b0c3e9e29367a02f",
@@ -230,7 +230,7 @@
     "classifier.py": "a4f7b39e8e9e0595e0e993d0563781dc05754bf4d23e315bf35b5c6b5cd0b0b5",
     "claude_agent_view.py": "eb07b8901e62163e4e2e6f603c2686b7adf812a0c4488abeeed3aef4b3b74464",
     "claude_channel_sidecar.py": "cf85ec7992d6035dcac5758b7bccaf238821f1463f2741cd551fb2eb906fe715",
-    "cli.py": "774cddee5c2f2dc2c1df251ec944942c9ba63b49bd58e117adfbd09d615e94f1",
+    "cli.py": "c5dfe9c45e3ec8f0a6ef2d45d6291f5c8b5aeeea7cb1d10a9a7fe21545595132",
     "closeout.py": "219ea8d93f15dfc61d885e3a33efcc841b08f46a86108bce979bf4fcaae7eab6",
     "closeout_classifier.py": "d2ed11b0c52359443d8bec81bb4b5cadfba9c1e8a29c71ee55f833c58592dc46",
     "closeout_evidence_audit.py": "7ff11eb393ea1ecb1c1a2f042dc75653ffea99eb978f178619970b1ef517ffc0",
@@ -306,7 +306,7 @@
     "fleet_metrics.py": "ac6ee05199a6f1faa7c708a6e21995cf1ccb54fc358dcecb2cf954a8bf784954",
     "fleet_metrics_export.py": "cbb858559663b3ef0235402c80d1604bc7f9d5a98f93af5a9d6e468145f2504d",
     "gate_posture.py": "6530a147ac9c7c5507ed055704ddae29b32197a67ad3f2f36f1cc99f51bebe30",
-    "gemini_heartbeat.py": "e0feac178b02627207ae854ba075352a5e7f6214bc9849fdd905106887fa5aa0",
+    "gemini_heartbeat.py": "808249ad56efd94739630460341fc7de5d3587e58e7672364de90421913a3238",
     "generated_outputs.py": "be70abadccf4d94fb521c6de2bec9d3c281b41bd19091e9712891f484973010e",
     "git_discipline.py": "fbcd91c6849f04ffbbaa35bed6290aa4f3eb76a117bc2e5557994736e758f030",
     "git_ops.py": "2113ef93f3dc9024851ec7102f3b4a0d477f5e41c8f97efa553535a14f31c743",
@@ -314,7 +314,7 @@
     "goal_coverage.py": "f51594f87aae01f93553f4ad12fb55d770bec1e052245830a5b2a313d9031ae5",
     "governed_bundle.py": "0c11f6538215c4480282fd7c0184fea768524bb4b44bd391e74d1c8131acd3ce",
     "governed_premerge.py": "af16fc35ce771e731089046d0e4b121c63212fae033ec2c2804d2a603bd4a4fe",
-    "governed_review.py": "583b538897dd2499cf25f55c2cbb2ad93cb77e196c688f2082e5f9953ab6d90e",
+    "governed_review.py": "7174e18739b18a181c4c65740b61f9a1cf6cd064deffe682455a568e8aff98e6",
     "handoff.py": "2d59d3e9cc92935f72745c38b267af1af28110ba87d5e38f70a4070252f71e6d",
     "handoff_path.py": "97c50b874d65a04327e6eeb2f112fc51e311d98518d5c0baa78e04a59e977ab3",
     "harness_env_signatures.py": "3a783b9b21aaef6c0f08c50bc96237543d9eb63840d23a7fe135bbeb51212d2f",
@@ -329,7 +329,7 @@
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "4d4663078be68781c3e2ab65d2c9b5f428e65b3ba224ab4c91d55fb1466605fa",
-    "panel_invoker.py": "d4f71e6dfc059866d285256b7d572d97415df8201f7b1b351c1c518b85f6f127",
+    "panel_invoker.py": "43758bc123e14749b17536865308b1330f64a418a3c32d6f13d15c511b0967a8",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
     "pipeline_adapter/__init__.py": "a7a88428e2b814b7621bbd5421e1c564491ab0ab41dea59d3011906f26df8a6a",
@@ -362,7 +362,7 @@
     "review_stage.py": "49d6b973dcf206dde08f9b40c7214f001a958cebbd20ee4a46039e6da84da7fc",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "f93e094b8c3ff7868069383872aa6d4c66b0aaae592f581135a75db9aca0786d",
+    "roadmap_assumptions.py": "092471c7913afab4fd8c77138560543d2c517c458389c5ddfe0e6d44e4aa6585",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
@@ -374,12 +374,18 @@
     "runtime_paths.py": "d44eee38190c8a28eb0e0967c475a1ee18062a968cd2656c5d7e1648b2911b72",
     "runtime_projection.py": "a01e299bb7c4713fee2a6f49ebb97fc745027b81206422f8efc8ad947f0150a3",
     "runtime_resources.py": "7e74aa86cb601a5a6fe58a2b0d21f10cb59add29101193fb7a1dec6a2b38f1a8",
-    "sandbox_egress.py": "fe9ae0ce771f23acea3d07773ce642217f2f740fc63c0015a4f92db9dde96c40",
+    "sandbox_egress.py": "fb193ba76e47f4e48a65f0c5a065b854b82cd31912df4ba838e579e96e647f68",
     "sandbox_placement.py": "761d722a3ce358a7c4e70e958352207e75409cc876ad00c45667a5cf5343a1b1",
     "sandbox_policy.py": "d0a43801a102180296b897d9004dfaee26274e1f3b3cb7203f1239b8e9c0ffb2",
     "sandbox_retention.py": "c127c71238755644052bb52d324508a917aebf630cbde8ad1a4b858f5e07defa",
     "schema_export.py": "64d86d86108b448b151d18382621327eeee21ae7a351e30e8429745680a0c4f8",
-    "seat_preflight.py": "5d8d1c13056c0a13dcbff9f5cffb41b56f79a39b9f2f5fdda137058bd135b569",
+    "seat_credentials.py": "28a7ae40f6a88c584876adbabe6d6b27bad2e6cfe7fd55569d4ebb6205ebd9b8",
+    "seat_jail.py": "8d3f6b159643a0be7b1925ecb7598d3804182d5877fc52d355c7af09b9ff595d",
+    "seat_jail_autoqualify.py": "15d10facdf7d33f0736e831d20dd304c429c1e06f08924b1b2948a9f476b7d96",
+    "seat_jail_qualification.py": "1ac2515a78fff2944da6ed3866050bb2a7ec56b4294eaa29a8f7636d001f3613",
+    "seat_keyring_exec.py": "6f8a18c51c7ecd58a652ebd69260ae42c1f09e2d6eabf94100606afa5ed2240e",
+    "seat_preflight.py": "efdae23f35e760a823ea5c4a4246f26e92959a22bcbdfc9346a2b3ea0c04fcf6",
+    "seat_uid.py": "0eecc59768c0befa1a3141e3e0a5d0ec1267ff2cedda93ed364f54901962a97c",
     "skill_install.py": "d429111acefdd193b232b1b62d54ea1da96f4102b3a545db04e7b1f748f2102f",
     "skill_inventory.py": "3a6be53da5f0d05431c6362b127e26c4b36c65e641740130ad412619806870d7",
     "skill_paths.py": "ea8af9efc17615341e9293d2352efd26ae29e04232ff1d6cc0269aed1f661828",
@@ -423,8 +429,8 @@
     "worktree_index.py": "377002709d6b703a189b59e921bf118cd285f1735699524382bbe7c15c55b7ed"
   },
   "upstream_asset_name": "agy_cli_linux_x64.tar.gz",
-  "upstream_asset_sha256": "d4247430e04cebdbe1ca93d9ccb483cd2f3daeb4cdb0ace5a71cd130e0bdab84",
-  "upstream_release_url": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.16",
+  "upstream_asset_sha256": "b0ed8a7c375b5af3af973f08a601e41aebb38bac7e80b922ab54d973a4275493",
+  "upstream_release_url": "https://github.com/google-antigravity/antigravity-cli/releases/tag/1.2.17",
   "validator": {
     "operations": [
       "cancel",
