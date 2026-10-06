@@ -124,6 +124,48 @@ def _strict_json(path: Path) -> Any:
     return value
 
 
+def _strict_registry(path: Path) -> dict[str, Any]:
+    records = path.read_bytes().splitlines(keepends=True)
+    assert records and all(record.endswith(b"\n") for record in records)
+
+    def parse(record: bytes) -> dict[str, Any]:
+        value = json.loads(
+            record,
+            object_pairs_hook=_no_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+        assert isinstance(value, dict)
+        assert record == _canonical_bytes(value)
+        return value
+
+    registry = parse(records[0])
+    assert set(registry) == {"schema", "evidence_ids", "operation_nonces"}
+    assert registry["schema"] == "harden_evidence_registry.v1"
+    evidence_ids = list(registry["evidence_ids"])
+    operation_nonces = list(registry["operation_nonces"])
+    assert len(evidence_ids) == len(set(evidence_ids))
+    assert len(operation_nonces) == len(set(operation_nonces))
+    prefix_digest = hashlib.sha256(records[0])
+    for record in records[1:]:
+        claim = parse(record)
+        assert set(claim) == {
+            "schema", "previous_sha256", "evidence_id", "operation_nonces"
+        }
+        assert claim["schema"] == "harden_evidence_registry_claim.v1"
+        assert claim["previous_sha256"] == prefix_digest.hexdigest()
+        assert claim["evidence_id"] not in evidence_ids
+        assert not set(claim["operation_nonces"]) & set(operation_nonces)
+        assert len(claim["operation_nonces"]) == len(set(claim["operation_nonces"]))
+        evidence_ids.append(claim["evidence_id"])
+        operation_nonces.extend(claim["operation_nonces"])
+        prefix_digest.update(record)
+    return {
+        "schema": "harden_evidence_registry.v1",
+        "evidence_ids": evidence_ids,
+        "operation_nonces": operation_nonces,
+    }
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -4044,7 +4086,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         assert not any(
             path.is_symlink() for path in context["evidence_root"].rglob("*")
         )
-        registry = _strict_json(context["registry"])
+        registry = _strict_registry(context["registry"])
         assert len(registry["evidence_ids"]) == len(registry_before["evidence_ids"]) + 1
         assert set(registry["evidence_ids"]) == {
             *registry_before["evidence_ids"],
