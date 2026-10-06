@@ -2295,37 +2295,6 @@ def _historical_frozen_baseline(
     ancestor(repo, landing, historical_commit, "HARDEN historical input")
     ancestor(repo, historical_commit, verified, "HARDEN historical input")
 
-    try:
-        plan_text = plan_bytes.decode("utf-8", "strict")
-    except UnicodeDecodeError:
-        fail("HARDEN plan is not UTF-8")
-    disposition = re.search(
-        r"Five later edits have no pre-merge record, and(?P<body>.*?)"
-        r"historical_input_commit` in (?:the same lifecycle authority|this plan's authority lifecycle)\.",
-        plan_text,
-        flags=re.DOTALL,
-    )
-    if disposition is None:
-        fail("HARDEN plan lacks historical frozen-path disposition authority")
-    body = disposition.group("body")
-    if ":" not in body:
-        fail("HARDEN historical frozen-path disposition grammar is malformed")
-    body = body.split(":", 1)[1]
-    expected_tokens = {
-        (issue, round_number or None)
-        for issue, round_number in re.findall(
-            r"agent-harness#([0-9]+)(?:\s+r([0-9]+))?", body
-        )
-    }
-    # "agent-harness#1102 r7 and r8" carries the second round without a
-    # repeated issue number; bind that compact grammar explicitly.
-    compact = re.findall(r"agent-harness#([0-9]+)\s+r([0-9]+)\s+and\s+r([0-9]+)", body)
-    for issue, first, second in compact:
-        expected_tokens.discard((issue, None))
-        expected_tokens.update({(issue, first), (issue, second)})
-    if not expected_tokens:
-        fail("HARDEN historical frozen-path dispositions are empty")
-
     baseline_record = closed(
         metadata.get("historical_frozen_baseline_transitions"),
         {"schema", "reviewed_sl0_landing", "landings"},
@@ -2442,73 +2411,169 @@ def _historical_frozen_baseline(
         f"{landing}..{verified}",
         label="HARDEN first-parent history",
     )
-    token_landings: dict[tuple[str, str | None], str] = {}
-    landing_changes: dict[str, set[str]] = {}
-
-    def integration_landing(commit_id: str) -> str:
-        matches = [
-            candidate
-            for candidate in first_parent_commits
-            if _is_ancestor(repo, commit_id, candidate)
-        ]
-        if not matches:
-            fail("HARDEN historical input has no first-parent integration")
-        return matches[0]
-
-    historical_landing = integration_landing(historical_commit)
-    for token in expected_tokens:
-        issue, round_number = token
-        pattern = rf"agent-harness#{re.escape(issue)}"
-        if round_number is not None:
-            pattern += rf"[[:space:]]+r{re.escape(round_number)}([^0-9]|$)"
-        candidates = _git_lines(
-            repo,
-            "log",
-            "--format=%H",
-            "--extended-regexp",
-            "--grep=" + pattern,
-            f"{landing}..{verified}",
-            label="HARDEN historical disposition commits",
+    first_parent_order = {
+        commit_id: index for index, commit_id in enumerate(first_parent_commits)
+    }
+    named_record = closed(
+        metadata.get("historical_named_frozen_transitions"),
+        {"schema", "entries"},
+        "HARDEN named historical frozen transitions",
+    )
+    if named_record["schema"] != "historical_named_frozen_transitions.v1":
+        fail("HARDEN named historical frozen transition schema is unsupported")
+    raw_named_entries = named_record["entries"]
+    if not isinstance(raw_named_entries, list) or not raw_named_entries:
+        fail("HARDEN named historical frozen transitions are empty")
+    named_entries: list[dict[str, Any]] = []
+    source_commits: set[str] = set()
+    prior_named_source: str | None = None
+    for raw_entry in raw_named_entries:
+        entry = closed(
+            raw_entry,
+            {"source", "source_commit", "integration_commit", "files"},
+            "HARDEN named historical frozen transition",
         )
-        if round_number is None:
-            for merge_commit in first_parent_commits:
-                subject = git_utf8_scalar(
-                    repo, "show", "-s", "--format=%s", merge_commit
-                )
-                if re.fullmatch(rf"Merge pull request #{re.escape(issue)}\b.*", subject):
-                    candidates.append(merge_commit)
-        landings: set[str] = set()
-        for commit_id in candidates:
-            parents = commit_parents(repo, commit_id, "HARDEN historical disposition commit")
-            if not parents or not (changed_paths(repo, parents[0], commit_id) & frozen_paths):
-                continue
-            landings.add(integration_landing(commit_id))
-        if len(landings) != 1:
-            fail("HARDEN historical disposition spans zero or multiple landings")
-        token_landings[token] = next(iter(landings))
+        source = text(entry["source"], "HARDEN named transition source")
+        if re.fullmatch(r"Consiliency/agent-harness#[1-9][0-9]*", source) is None:
+            fail("HARDEN named transition source is not qualified")
+        source_commit = text(
+            entry["source_commit"], "HARDEN named transition source commit", pattern=HEX40
+        )
+        integration_commit = text(
+            entry["integration_commit"],
+            "HARDEN named transition integration commit",
+            pattern=HEX40,
+        )
+        if source_commit in source_commits:
+            fail("HARDEN named transition source commit is duplicated")
+        if prior_named_source is not None:
+            ancestor(
+                repo,
+                prior_named_source,
+                source_commit,
+                "HARDEN named transition source order",
+            )
+        source_commits.add(source_commit)
+        prior_named_source = source_commit
+        files = entry["files"]
+        if not isinstance(files, list) or not files:
+            fail("HARDEN named transition files are empty")
+        parsed_files: list[dict[str, Any]] = []
+        paths: set[str] = set()
+        for raw_file in files:
+            file = closed(
+                raw_file,
+                {"path", "old_blob", "new_blob"},
+                "HARDEN named transition file",
+            )
+            path = text(file["path"], "HARDEN named transition path")
+            if path not in frozen_paths or path in paths:
+                fail("HARDEN named transition path inventory is invalid")
+            paths.add(path)
+            text(file["old_blob"], "HARDEN named transition old blob", pattern=HEX40)
+            text(file["new_blob"], "HARDEN named transition new blob", pattern=HEX40)
+            parsed_files.append(file)
+        source_parents = commit_parents(
+            repo, source_commit, "HARDEN named transition source commit"
+        )
+        if not source_parents:
+            fail("HARDEN named transition source commit has no parent")
+        if changed_paths(repo, source_parents[0], source_commit) & frozen_paths != paths:
+            fail("HARDEN named transition source path-set mismatch")
+        for file in parsed_files:
+            if (
+                blob(repo, source_parents[0], file["path"])[0] != file["old_blob"]
+                or blob(repo, source_commit, file["path"])[0] != file["new_blob"]
+            ):
+                fail("HARDEN named transition source blob mismatch")
+        named_entries.append({**entry, "files": parsed_files})
+    if named_entries[0]["source_commit"] != historical_commit:
+        fail("HARDEN historical input does not name the first frozen transition")
 
-    for landing_commit in {historical_landing, *token_landings.values()}:
-        parents = commit_parents(repo, landing_commit, "HARDEN historical landing")
-        changed = changed_paths(repo, parents[0], landing_commit) & frozen_paths
-        if changed:
-            landing_changes[landing_commit] = changed
-    if set(token_landings) != expected_tokens:
-        fail("HARDEN historical frozen-path dispositions are incomplete")
-
-    authorized_landings = {historical_landing, *token_landings.values()}
-    last_merge: str | None = None
-    for landing_commit in first_parent_commits:
-        if landing_commit not in authorized_landings:
+    named_groups: list[tuple[str, list[dict[str, Any]]]] = []
+    seen_integrations: set[str] = set()
+    for entry in named_entries:
+        integration_commit = entry["integration_commit"]
+        if named_groups and named_groups[-1][0] == integration_commit:
+            named_groups[-1][1].append(entry)
             continue
-        parents = commit_parents(repo, landing_commit, "HARDEN historical disposition")
-        if last_merge is not None:
-            ancestor(repo, last_merge, landing_commit, "HARDEN historical disposition")
-        for path in landing_changes.get(landing_commit, set()):
-            old_blob = blob(repo, parents[0], path)[0]
-            if accepted[path] != old_blob:
-                fail("HARDEN historical frozen-path chain is discontinuous")
-            accepted[path] = blob(repo, landing_commit, path)[0]
-        last_merge = landing_commit
+        if integration_commit in seen_integrations:
+            fail("HARDEN named transition integration order is discontinuous")
+        seen_integrations.add(integration_commit)
+        named_groups.append((integration_commit, [entry]))
+    integration_commits = [commit_id for commit_id, _entries in named_groups]
+    if any(commit_id not in first_parent_order for commit_id in integration_commits):
+        fail("HARDEN named transition integration is outside first-parent history")
+    if integration_commits != sorted(
+        integration_commits, key=first_parent_order.__getitem__
+    ):
+        fail("HARDEN named transition integrations are out of order")
+    baseline_tail = parsed_landings[-1]["landing_commit"]
+    named_first_parent = _git_lines(
+        repo,
+        "rev-list",
+        "--first-parent",
+        "--reverse",
+        f"{baseline_tail}..{integration_commits[-1]}",
+        label="HARDEN named transition first-parent history",
+    )
+    changed_named_integrations = [
+        commit_id
+        for commit_id in named_first_parent
+        if changed_paths(
+            repo,
+            commit_parents(repo, commit_id, "HARDEN named integration")[0],
+            commit_id,
+        ) & frozen_paths
+    ]
+    if integration_commits != changed_named_integrations:
+        fail("HARDEN named transition integration set mismatch")
+
+    last_merge: str | None = None
+    for integration_commit, entries in named_groups:
+        parents = commit_parents(
+            repo, integration_commit, "HARDEN named transition integration"
+        )
+        if len(parents) < 2:
+            fail("HARDEN named transition integration does not name a merge")
+        prior_source: str | None = None
+        expected_old: dict[str, str] = {}
+        expected_new: dict[str, str] = {}
+        for entry in entries:
+            source_commit = entry["source_commit"]
+            ancestor(
+                repo,
+                source_commit,
+                integration_commit,
+                "HARDEN named transition source integration",
+            )
+            if prior_source is not None:
+                ancestor(
+                    repo,
+                    prior_source,
+                    source_commit,
+                    "HARDEN named transition source order",
+                )
+            prior_source = source_commit
+            for file in entry["files"]:
+                path = file["path"]
+                current = expected_new.get(path, accepted[path])
+                if current != file["old_blob"]:
+                    fail("HARDEN named transition blob chain is discontinuous")
+                expected_old.setdefault(path, file["old_blob"])
+                expected_new[path] = file["new_blob"]
+        if changed_paths(repo, parents[0], integration_commit) & frozen_paths != set(
+            expected_new
+        ):
+            fail("HARDEN named transition integration path-set mismatch")
+        for path, new_blob in expected_new.items():
+            if (
+                blob(repo, parents[0], path)[0] != expected_old[path]
+                or blob(repo, integration_commit, path)[0] != new_blob
+            ):
+                fail("HARDEN named transition integration blob mismatch")
+            accepted[path] = new_blob
+        last_merge = integration_commit
 
     disposition_record = metadata.get("historical_frozen_dispositions")
     if disposition_record is not None:
@@ -2545,26 +2610,64 @@ def _historical_frozen_baseline(
                 fail("HARDEN frozen disposition is duplicated")
             identities.add((merge_commit, path))
             parsed_entries.append(entry)
-        order = {commit: index for index, commit in enumerate(first_parent_commits)}
-        if any(entry["merge_commit"] not in order for entry in parsed_entries):
+        if any(entry["merge_commit"] not in first_parent_order for entry in parsed_entries):
             fail("HARDEN frozen disposition merge is outside first-parent history")
-        parsed_entries.sort(key=lambda entry: order[entry["merge_commit"]])
+        disposition_groups: list[tuple[str, list[dict[str, Any]]]] = []
+        seen_merges: set[str] = set()
         for entry in parsed_entries:
             merge_commit = entry["merge_commit"]
+            if disposition_groups and disposition_groups[-1][0] == merge_commit:
+                disposition_groups[-1][1].append(entry)
+                continue
+            if merge_commit in seen_merges:
+                fail("HARDEN frozen disposition merge order is discontinuous")
+            seen_merges.add(merge_commit)
+            disposition_groups.append((merge_commit, [entry]))
+        disposition_merges = [commit_id for commit_id, _entries in disposition_groups]
+        if disposition_merges != sorted(
+            disposition_merges, key=first_parent_order.__getitem__
+        ):
+            fail("HARDEN frozen disposition merges are out of order")
+        assert last_merge is not None
+        disposition_first_parent = _git_lines(
+            repo,
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            f"{last_merge}..{disposition_merges[-1]}",
+            label="HARDEN frozen disposition first-parent history",
+        )
+        changed_disposition_merges = [
+            commit_id
+            for commit_id in disposition_first_parent
+            if changed_paths(
+                repo,
+                commit_parents(repo, commit_id, "HARDEN frozen disposition merge")[0],
+                commit_id,
+            ) & frozen_paths
+        ]
+        if disposition_merges != changed_disposition_merges:
+            fail("HARDEN frozen disposition merge set mismatch")
+        for merge_commit, merge_entries in disposition_groups:
             parents = commit_parents(repo, merge_commit, "HARDEN frozen disposition merge")
             if len(parents) < 2:
                 fail("HARDEN frozen disposition does not name a merge")
             ancestor(repo, merge_commit, verified, "HARDEN frozen disposition")
             if last_merge is not None:
                 ancestor(repo, last_merge, merge_commit, "HARDEN frozen disposition order")
-            path = entry["path"]
-            if accepted[path] != entry["old_blob"]:
-                fail("HARDEN frozen disposition chain is discontinuous")
-            if blob(repo, parents[0], path)[0] != entry["old_blob"]:
-                fail("HARDEN frozen disposition old blob differs from merge first parent")
-            if blob(repo, merge_commit, path)[0] != entry["new_blob"]:
-                fail("HARDEN frozen disposition new blob differs from merge")
-            accepted[path] = entry["new_blob"]
+            by_path = {entry["path"]: entry for entry in merge_entries}
+            if len(by_path) != len(merge_entries):
+                fail("HARDEN frozen disposition repeats a merge path")
+            if changed_paths(repo, parents[0], merge_commit) & frozen_paths != set(by_path):
+                fail("HARDEN frozen disposition path-set mismatch")
+            for path, entry in by_path.items():
+                if accepted[path] != entry["old_blob"]:
+                    fail("HARDEN frozen disposition chain is discontinuous")
+                if blob(repo, parents[0], path)[0] != entry["old_blob"]:
+                    fail("HARDEN frozen disposition old blob differs from merge first parent")
+                if blob(repo, merge_commit, path)[0] != entry["new_blob"]:
+                    fail("HARDEN frozen disposition new blob differs from merge")
+                accepted[path] = entry["new_blob"]
             last_merge = merge_commit
     return accepted, last_merge
 
@@ -4945,18 +5048,94 @@ def _self_historical_baseline_chain(
     ))
     historical_input_parent = _run(["git", "rev-parse", "HEAD"], repo)
 
-    (repo / FROZEN_SL0_PATHS[0]).write_text("historical input transition\n")
-    _run(["git", "add", FROZEN_SL0_PATHS[0]], repo)
-    _run(["git", "commit", "-qm", "historical native-fill input"], repo)
-    historical_input = _run(["git", "rev-parse", "HEAD"], repo)
-    if commit_parents(repo, historical_input, "self-test historical input") != (
-        historical_input_parent,
-    ):
-        raise AssertionError("self-test historical input topology drifted")
+    def source_transition(path: str, content: str, subject: str) -> dict[str, Any]:
+        old_blob = blob(repo, "HEAD", path)[0]
+        (repo / path).write_text(content)
+        _run(["git", "add", path], repo)
+        _run(["git", "commit", "-qm", subject], repo)
+        source_commit = _run(["git", "rev-parse", "HEAD"], repo)
+        return {
+            "source_commit": source_commit,
+            "files": [{
+                "path": path,
+                "old_blob": old_blob,
+                "new_blob": blob(repo, source_commit, path)[0],
+            }],
+        }
 
-    (repo / FROZEN_SL0_PATHS[1]).write_text("named post-authority transition\n")
-    _run(["git", "add", FROZEN_SL0_PATHS[1]], repo)
-    _run(["git", "commit", "-qm", "named transition (agent-harness#1102 r7)"], repo)
+    _run(["git", "checkout", "-qb", "not-integrated-source", historical_input_parent], repo)
+    off_chain_source = source_transition(
+        FROZEN_SL0_PATHS[0],
+        "historical input transition\n",
+        "unintegrated historical native-fill input",
+    )["source_commit"]
+
+    _run(["git", "checkout", "-qb", "native-source", historical_input_parent], repo)
+    native = source_transition(
+        FROZEN_SL0_PATHS[0],
+        "historical input transition\n",
+        "historical native-fill input",
+    )
+    historical_input = native["source_commit"]
+    _run(["git", "checkout", "-q", "historical-baseline"], repo)
+    _run(["git", "merge", "--no-ff", "-qm", "integrate native-fill input", "native-source"], repo)
+    native_integration = _run(["git", "rev-parse", "HEAD"], repo)
+
+    _run(["git", "checkout", "-qb", "named-sources", native_integration], repo)
+    named_first = source_transition(
+        FROZEN_SL0_PATHS[1],
+        "named post-authority transition r7\n",
+        "named transition (agent-harness#1102 r7)",
+    )
+    named_second = source_transition(
+        FROZEN_SL0_PATHS[1],
+        "named post-authority transition r8\n",
+        "named transition (agent-harness#1102 r8)",
+    )
+    _run(["git", "checkout", "-q", "historical-baseline"], repo)
+    _run(["git", "merge", "--no-ff", "-qm", "integrate named transitions", "named-sources"], repo)
+    named_integration = _run(["git", "rev-parse", "HEAD"], repo)
+
+    named_records = [
+        {
+            "source": "Consiliency/agent-harness#994",
+            "source_commit": historical_input,
+            "integration_commit": native_integration,
+            "files": native["files"],
+        },
+        {
+            "source": "Consiliency/agent-harness#1102",
+            "source_commit": named_first["source_commit"],
+            "integration_commit": named_integration,
+            "files": named_first["files"],
+        },
+        {
+            "source": "Consiliency/agent-harness#1102",
+            "source_commit": named_second["source_commit"],
+            "integration_commit": named_integration,
+            "files": named_second["files"],
+        },
+    ]
+    if mutation == "swapped-source-commit":
+        named_records[0]["source_commit"], named_records[1]["source_commit"] = (
+            named_records[1]["source_commit"], named_records[0]["source_commit"]
+        )
+    elif mutation == "reversed-source-order":
+        named_records[1], named_records[2] = named_records[2], named_records[1]
+    elif mutation == "source-not-ancestor":
+        named_records[0]["source_commit"] = off_chain_source
+    elif mutation == "omitted-source":
+        named_records.pop()
+    elif mutation == "extra-source":
+        named_records.append(copy.deepcopy(named_records[-1]))
+    elif mutation == "omitted-integration":
+        named_records = named_records[1:]
+    elif mutation == "extra-integration":
+        named_records[-1]["integration_commit"] = named_records[-1]["source_commit"]
+    elif mutation == "named-path-mismatch":
+        named_records[0]["files"][0]["path"] = FROZEN_SL0_PATHS[2]
+    elif mutation == "named-blob-mismatch":
+        named_records[-1]["files"][0]["new_blob"] = "0" * 40
 
     authority_records = copy.deepcopy(records)
     if mutation == "omitted-landing":
@@ -4993,6 +5172,10 @@ def _self_historical_baseline_chain(
                     "source": "Consiliency/agent-harness#726",
                 },
                 "landings": authority_records,
+            },
+            "historical_named_frozen_transitions": {
+                "schema": "historical_named_frozen_transitions.v1",
+                "entries": named_records,
             },
             "plan_current_authority": {
                 "schema": "plan_current_authority.v1",
@@ -6375,6 +6558,15 @@ def self_test() -> None:
             "path-set-mismatch",
             "blob-pair-mismatch",
             "implicit-parent-baseline",
+            "swapped-source-commit",
+            "reversed-source-order",
+            "source-not-ancestor",
+            "omitted-source",
+            "extra-source",
+            "omitted-integration",
+            "extra-integration",
+            "named-path-mismatch",
+            "named-blob-mismatch",
         ):
             direct_rejected(
                 "historical-baseline-" + historical_mutation,
