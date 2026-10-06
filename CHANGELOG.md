@@ -40,27 +40,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `seat_filesystem_unconfined`. Notices appear in the `advisor-board` JSON payload
   (`notices`, `legs[].notices`) and text summary; every code is an exact literal of the
   closed detail vocabulary (F030).
-- **The jailed route is inert in this release.** A jail digest with no recorded
-  EC-EXECFIND-2 falsifier pass recorded on this host is refused
-  (`seat_sandbox_refused:jail_unqualified`, whose notice names the per-host qualification;
-  passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the digest,
-  the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence file, and
-  re-checked against the built jail at launch) before any
-  effect. The whole record check is one fail-closed boundary: any error is
-  `jail_unqualified`, and the typed reason, including the exception class, is logged. A pass
-  store whose directories are not private to the operator is refused with
-  `seat_sandbox_refused:pass_store_unsafe`. Group-writable is accepted only for the
-  operator's user-private group, the umask-002 default. `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail falsifiers
-  (`seat_jail_qualification`) against a real EXECFIND falsifier run and records this host's
-  pass; typed seat notices also reach the governed path as `seat_notice` findings (L4b).
-  Hosts also need the one-time root
+- A jailed launch needs an EC-EXECFIND-2 falsifier pass recorded on this host for the jail's
+  digest. Passes live in `$XDG_STATE_HOME/phase-loop/seat-jail-passes/`, each bound to the
+  digest, the host (`/etc/machine-id`), the falsifier-run layout and a re-hashed evidence
+  file. A Claude seat with no recorded pass qualifies the jail on first use (plan amendment
+  A2, below); `phase-loop seat-sandbox qualify` runs the same qualification
+  (`seat_jail_qualification`) by hand against a real EXECFIND falsifier run and records this
+  host's pass. At launch the built jail is re-checked against its record inside one
+  fail-closed boundary: a record that does not hold is refused before any effect with
+  `seat_sandbox_refused:jail_unqualified`, and the typed reason, including the exception
+  class, is logged. A pass store whose directories are not private to the operator is
+  refused with `seat_sandbox_refused:pass_store_unsafe`; group-writable is accepted only for
+  the operator's user-private group, the umask-002 default. Typed seat notices also reach the
+  governed path as `seat_notice` findings (L4b). Hosts also need the one-time root
   prerequisite (`apt install uidmap`, `usermod --add-subuids/--add-subgids`), which the
-  runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined`: live probe
-  P4 measured `cloud-platform`, `cclog` and `experimentsandconfigs` on the agy access token;
-  under the maintainer's "prove then enable" ruling the containment probe proved the
-  staged copy is access-token-only but found other Google Cloud APIs reachable from the
-  jail (the egress namespace filters by address only). The tooled Gemini profile (L3) is
-  not built.
+  runtime never runs. Gemini stays sealed with `gemini_seat_egress_unconfined` until its jail
+  egress is limited to agy's inference hosts (agent-harness#1170); the tooled Gemini profile
+  (L3) is not built.
 - Live probes P5 and P1 passed on the D8 chain and changed the jail: `--cap-drop ALL` before
   the three `--cap-add`s (bwrap as namespace root otherwise keeps every capability), the
   seat enters `/seat/tree` after the drop, `/seat`, `/seat/bin`, `/seat/review` and `/etc`
@@ -79,9 +75,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and the filter count (read from the calling thread) each refuse a jail with no seccomp
   filter of its own, even under an inherited outer filter. The seccomp descriptor must be
   at offset 0, because bwrap reads from the current offset.
-- The capabilities card warns that storing the seat token before an EC-EXECFIND-2 pass is
-  recorded makes jailed-eligible Claude seats refuse (`seat_sandbox_refused:jail_unqualified`), and
-  gives the order: record the pass, then store the token.
 - `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361) on every tooled or pointer seat record.
 - New `phase-loop seat-sandbox reap PATH` removes a seat directory that teardown retained;

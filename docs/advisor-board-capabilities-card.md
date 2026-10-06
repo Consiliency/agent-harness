@@ -505,15 +505,16 @@ staged clone and the review bundle through tools instead of receiving the bundle
 The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
 changes: the seat keeps the sealed inline route and reports why in a typed notice.
 
-**Status in this release: inert.** A jailed launch also needs an EC-EXECFIND-2 falsifier
+A jailed launch needs an EC-EXECFIND-2 falsifier
 pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
 at `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`, and uses
 agent-harness#1071's falsifier-run layout. The digest binds this host's layout, so a pass
 does not carry over from another host, and an OS upgrade that changes `/lib*` or the `/etc`
-subset needs a new pass. Until a pass is recorded, a seat that would be jailed is refused
-with `seat_sandbox_refused:jail_unqualified`, whose notice names that per-host
-qualification as the fix. Run the qualification with `phase-loop seat-sandbox qualify`,
-which runs EC-EXECFIND-2's jail falsifiers against a real falsifier run and records the pass.
+subset needs a new pass. With no recorded pass, a Claude seat qualifies the jail on
+first use (see below); `phase-loop seat-sandbox qualify` runs the same qualification by hand,
+against a real falsifier run, and records the pass. At launch the built jail is re-checked
+against its record, and a launch whose record does not hold is refused before any effect
+with `seat_sandbox_refused:jail_unqualified`.
 A pass record binds this host, the falsifier-run layout and the
 run's evidence, which is re-hashed on every check. A copied, stale or hand-written record
 does not qualify another host or another run. The operator's own account can still forge
