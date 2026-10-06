@@ -4502,6 +4502,285 @@
             "scope": "Self-contained historical authority for the reviewed SL-0 anchor, ten pre-existing first-parent frozen-path landings, five named historical inputs, and the agent-harness#1152/agent-harness#1246 dispositions; no retroactive review, test, or acceptance claim; removes a stale non-applicable local word-count gate"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-06T17:41:12Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "historical_named_frozen_transitions": {
+              "entries": [
+                {
+                  "files": [
+                    {
+                      "new_blob": "a1b8573022681e27a6b2278cd07012244ab75eb0",
+                      "old_blob": "395dfe49c1c13534fb71a6f3d9134a02924de4f8",
+                      "path": "phase-loop-runtime/tests/test_panel_native_fill_183.py"
+                    }
+                  ],
+                  "integration_commit": "85bbe26d2dc18d06ce57e3c39480d581add11d32",
+                  "source": "Consiliency/agent-harness#994",
+                  "source_commit": "94709c18a357e758de9b59325907a56019ac7e07"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "fdba7c363df751b3fbb9602037c6f500beb2928b",
+                      "old_blob": "0d48a92ed1ee5658da2e58258cf0d45e3ec35fcb",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_golden.py"
+                    }
+                  ],
+                  "integration_commit": "87247d9903440ad0eaf0ad5230a741a80a176ce1",
+                  "source": "Consiliency/agent-harness#1020",
+                  "source_commit": "93ce7d6c6b1b7cea65c1805d6560a7b820cb30b0"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "b74b4bc7583c4c2ea721ec2947f8180f65d44701",
+                      "old_blob": "8857ec93a164c718bb89a60df0e50ee30b612a85",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_advisory_mode.py"
+                    }
+                  ],
+                  "integration_commit": "75c878253fc59b084b0ccca514de5184c097dd8e",
+                  "source": "Consiliency/agent-harness#1096",
+                  "source_commit": "fbdab2cc4733e1987054ec09f8e8be45a34fcd0a"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "77b79b10272d3488e9ff4b65d745ff7477b9adf4",
+                      "old_blob": "cea9ae6203fbe311fad906ad080549e374340e20",
+                      "path": "phase-loop-runtime/tests/test_panel_invoker.py"
+                    },
+                    {
+                      "new_blob": "47a3f074da751631403fa503019f040d52af7d6c",
+                      "old_blob": "f47525cf9c975748c5ff854bbf4ef31a11ed3cbf",
+                      "path": "phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py"
+                    }
+                  ],
+                  "integration_commit": "75c878253fc59b084b0ccca514de5184c097dd8e",
+                  "source": "Consiliency/agent-harness#1102",
+                  "source_commit": "9b9e7d5bb8c59ccf1c5f6df8d7af16fd3bb1adfc"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "9bf0a16b0438532873ec0f812ac103e74d47dcf4",
+                      "old_blob": "47a3f074da751631403fa503019f040d52af7d6c",
+                      "path": "phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py"
+                    }
+                  ],
+                  "integration_commit": "75c878253fc59b084b0ccca514de5184c097dd8e",
+                  "source": "Consiliency/agent-harness#1102",
+                  "source_commit": "ab4a097db55d83eb05a4063781eee1f429c9a872"
+                }
+              ],
+              "schema": "historical_named_frozen_transitions.v1"
+            },
+            "historical_frozen_dispositions": {
+              "entries": [
+                {
+                  "merge_commit": "452e5f4f7ced5eb8f6a8e383c3a594767c5cb568",
+                  "new_blob": "4da757a773c31aaa6bdec8bf600ee0484d0de1c5",
+                  "old_blob": "248a7ae613d971d250b852c3be68d7d2b2d5221c",
+                  "path": "phase-loop-runtime/tests/test_advisor_board_config.py",
+                  "source": "Consiliency/agent-harness#1152"
+                },
+                {
+                  "merge_commit": "f498c6f4fffeb2417caf38e86f24cf53fb72dba8",
+                  "new_blob": "404a3c6b1babbfc9d4ccd9749d89ea9774d72a4c",
+                  "old_blob": "17404e04f84f82e89a607f6996a83eec2d382b79",
+                  "path": "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+                  "source": "Consiliency/agent-harness#1246"
+                }
+              ],
+              "schema": "historical_frozen_dispositions.v1"
+            },
+            "historical_input_commit": "94709c18a357e758de9b59325907a56019ac7e07",
+            "historical_frozen_baseline_transitions": {
+              "landings": [
+                {
+                  "files": [
+                    {
+                      "new_blob": "8d7feb916fd35c570250a9013493b2a0ba6feb8a",
+                      "old_blob": "84352a954dc1cfe7b101815172a7c6d200b04739",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_backcompat.py"
+                    },
+                    {
+                      "new_blob": "efa0ac113641bfee736effd4c53bcf92faa6069b",
+                      "old_blob": "3889f66916c1b17eb0e234d953b95128017acc02",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py"
+                    },
+                    {
+                      "new_blob": "b52607c4f287a00a7a2aaeb06584f0f3cc3807bf",
+                      "old_blob": "163605f969d99550cc03b730e3916d0c3d972e83",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_golden.py"
+                    },
+                    {
+                      "new_blob": "a15945168ac2a21deb8fe375fc9bfa63aa1a484f",
+                      "old_blob": "8d24ee63d9f4c06946bf7759adfc829e636c8c11",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_integration.py"
+                    },
+                    {
+                      "new_blob": "dbc648aebdba64452bc1cc6959e51df2c6b4d524",
+                      "old_blob": "cad7d587ece49fcda0444f7cd88e77be51e28a39",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_observability.py"
+                    },
+                    {
+                      "new_blob": "05b69878c7b505d310233da8936151c685f76f5f",
+                      "old_blob": "2a3a67b2a4fcc0354eae82831491e5d8dbcaaaf8",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_presets.py"
+                    },
+                    {
+                      "new_blob": "39092772f7ecfadd3c30073a31d9bf2e90f8851f",
+                      "old_blob": "7e2cc5f6a7a7ddb54de60f320a41b509fffebd01",
+                      "path": "phase-loop-runtime/tests/test_panel_native_fill_183.py"
+                    }
+                  ],
+                  "landing_commit": "9d559eceec5ff6f29a8b57b833a79ad2d0b8ed0d",
+                  "source": "Consiliency/agent-harness#739"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "9d2a3fafe22107882ec89e8bbf4b2009fedaf24c",
+                      "old_blob": "3e7cd45258469bc6b0b1d9d725445174675ee418",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py"
+                    }
+                  ],
+                  "landing_commit": "0820da64f6e556f2d3f18386c90d053e8cef79fc",
+                  "source": "Consiliency/agent-harness#738"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "b325f7c0784aa4bb4f670db4e5e8087c436b5dde",
+                      "old_blob": "2b7c792f02333364507571146028163ef665ed49",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_composition.py"
+                    },
+                    {
+                      "new_blob": "cea9ae6203fbe311fad906ad080549e374340e20",
+                      "old_blob": "145be954673cd816114b81aee1aefb9d905faa88",
+                      "path": "phase-loop-runtime/tests/test_panel_invoker.py"
+                    }
+                  ],
+                  "landing_commit": "e9859b6e500112fd77b653c23bf46c957c8531a9",
+                  "source": "Consiliency/agent-harness#750"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "f1a88189f83f0614bfe2e3ea62adf075f1e7d196",
+                      "old_blob": "b52607c4f287a00a7a2aaeb06584f0f3cc3807bf",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_golden.py"
+                    },
+                    {
+                      "new_blob": "6bc833428a547e3141e86307d9d69945072dee66",
+                      "old_blob": "05b69878c7b505d310233da8936151c685f76f5f",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_presets.py"
+                    }
+                  ],
+                  "landing_commit": "b405e3a4fb8dca55089f633f34cbeb982569d676",
+                  "source": "Consiliency/agent-harness#777"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "8167b51def478f6b89b8b97fb4b21b56d02c1b90",
+                      "old_blob": "39092772f7ecfadd3c30073a31d9bf2e90f8851f",
+                      "path": "phase-loop-runtime/tests/test_panel_native_fill_183.py"
+                    }
+                  ],
+                  "landing_commit": "eabfec6c0e4683eba6d5682d7783b92485d198c0",
+                  "source": "Consiliency/agent-harness#890"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "395dfe49c1c13534fb71a6f3d9134a02924de4f8",
+                      "old_blob": "8167b51def478f6b89b8b97fb4b21b56d02c1b90",
+                      "path": "phase-loop-runtime/tests/test_panel_native_fill_183.py"
+                    }
+                  ],
+                  "landing_commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
+                  "source": "Consiliency/agent-harness#921"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "3f3fdb5478ce90d62d7084a6f761c8bd812efa62",
+                      "old_blob": "9826b1dc3c9bc4121672a7f7061e34e0ec7832d8",
+                      "path": "phase-loop-runtime/tests/test_harden_evidence_verifier.py"
+                    }
+                  ],
+                  "landing_commit": "dc47379d6ebc51f7dc2b2536a930be7271d4b4df",
+                  "source": "Consiliency/agent-harness#937"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "17404e04f84f82e89a607f6996a83eec2d382b79",
+                      "old_blob": "3f3fdb5478ce90d62d7084a6f761c8bd812efa62",
+                      "path": "phase-loop-runtime/tests/test_harden_evidence_verifier.py"
+                    }
+                  ],
+                  "landing_commit": "939b9b3a15e5b8faf60df6f57c18cf2966719cb8",
+                  "source": "Consiliency/agent-harness#974"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "08555a54145969ead97df49624a8d76712fce44a",
+                      "old_blob": "b325f7c0784aa4bb4f670db4e5e8087c436b5dde",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_composition.py"
+                    },
+                    {
+                      "new_blob": "5d8bab1e15537b50611e43b99d8c40a705f157a0",
+                      "old_blob": "f1a88189f83f0614bfe2e3ea62adf075f1e7d196",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_golden.py"
+                    },
+                    {
+                      "new_blob": "d888d05bb5bfb45e810db9322549c9d2f93ede29",
+                      "old_blob": "6bc833428a547e3141e86307d9d69945072dee66",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_presets.py"
+                    }
+                  ],
+                  "landing_commit": "8d3137899b44d626d9cfe76fd11aad136b71a7d8",
+                  "source": "Consiliency/agent-harness#982"
+                },
+                {
+                  "files": [
+                    {
+                      "new_blob": "0d48a92ed1ee5658da2e58258cf0d45e3ec35fcb",
+                      "old_blob": "5d8bab1e15537b50611e43b99d8c40a705f157a0",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_golden.py"
+                    },
+                    {
+                      "new_blob": "8cf72583422d4251d8ed634edf6d142236266dd0",
+                      "old_blob": "d888d05bb5bfb45e810db9322549c9d2f93ede29",
+                      "path": "phase-loop-runtime/tests/test_advisor_board_presets.py"
+                    }
+                  ],
+                  "landing_commit": "a1f41a38633f687a8b09bca74013e51c38b17a7f",
+                  "source": "Consiliency/agent-harness#991"
+                }
+              ],
+              "reviewed_sl0_landing": {
+                "commit": "e3a2c0296b1eb8b58f88f75eabcaa0920c3f98c7",
+                "source": "Consiliency/agent-harness#726"
+              },
+              "schema": "historical_frozen_baseline_transitions.v1"
+            },
+            "plan_current_authority": {
+              "plan_sha256": "0b4dfd29adaf278f7859b4974734e48904c6fe47b306124ab88fd193c94deb71",
+              "predecessor_plan_sha256": "6325c1f3e48937af7e6c6c6c5c4d0bd287614085f6f4e11744fb2b9bac2347c1",
+              "roadmap_sha256": "59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef",
+              "schema": "plan_current_authority.v1",
+              "source": "Consiliency/agent-harness#1264"
+            },
+            "scope": "Append-only authority for five named historical frozen-path transitions, carrying forward the reviewed baseline and dispositions; no retroactive review, test, or acceptance claim"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -4764,6 +5043,12 @@
           "roadmap_sha256": "59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1264"
+        },
+        {
+          "plan_sha256": "0b4dfd29adaf278f7859b4974734e48904c6fe47b306124ab88fd193c94deb71",
+          "roadmap_sha256": "59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1264"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -4777,7 +5062,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-04T16:25:00Z",
+      "updated_at": "2026-10-06T17:41:12Z",
       "sl0_repairs": [
         {
           "authorization_id": "agent-harness#1078:PANEL-SL1:HARDEN",

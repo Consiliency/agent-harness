@@ -262,12 +262,25 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     Five later edits have no pre-merge record, and SL-5 disposes of them under
     agent-harness#742: agent-harness#1102 r7 and r8, agent-harness#1096,
     agent-harness#1020, and the historical native-fill model-hint edit identified by
-    `historical_input_commit` in the same lifecycle authority.
-    Two later frozen-path edits merged after this authority was written and therefore
-    cannot truthfully use the pre-merge `sl0_repairs` grammar: agent-harness#1152 and
-    agent-harness#1246 (implementing agent-harness#896). The same lifecycle authority
-    records them as `historical_frozen_dispositions.v1`, with exact source, merge, path,
-    old-blob, and new-blob facts. SL-5 accepts only those two transitions after proving
+    `historical_input_commit` in the same lifecycle authority. Its
+    `historical_named_frozen_transitions.v1` record binds each edit's qualified source,
+    source commit, first-parent integration commit, and exact path/old-blob/new-blob
+    delta. SL-5 proves each source delta from Git, source ancestry and order, and source
+    ancestry to the named integration. It enumerates every first-parent frozen-path
+    change after the ten-landing baseline through the last named integration; the exact
+    integration set and each integration's complete path/blob delta must equal the
+    record. Entries that share an integration are grouped, and replay must preserve each
+    path's old-to-new blob continuity across every group. Its self-test refuses a swapped
+    source commit, reversed source order, a source that is not an ancestor of its named
+    integration, omitted or extra source or integration, and any path or blob mismatch.
+    Two subsequent frozen-path merges lacked prospective `sl0_repairs` authorization at
+    their merge times and therefore cannot truthfully use that pre-merge grammar:
+    agent-harness#1152 and agent-harness#1246 (implementing agent-harness#896). An earlier
+    lifecycle event records them as `historical_frozen_dispositions.v1`; this authority
+    carries forward the same exact source, merge, path, old-blob, and new-blob facts.
+    SL-5 enumerates and refuses any unrecorded first-parent frozen-path change after the
+    last named integration through those two disposition merges, and accepts only the two
+    recorded transitions after proving
     each merge's first-parent and resulting blobs from Git, its ancestry to the verified
     commit, and continuity with the already accepted historical blob. The current
     candidate and canonical-main focused/broad receipts then re-freeze the resulting
@@ -277,11 +290,12 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     authorization entry has a unique
     `authorization_id`, and it pairs with exactly one landed entry that names that id. Every
     landed entry pairs with exactly one authorization for its path; an unpaired or
-    multiply-paired landed entry is refused. The landed entry's old blob must equal
-    the blob the check already accepts for that path after the historical replay,
-    named edits, dispositions, and any previous accepted repair, and also the path's blob at
-    the recorded merge's first parent. Its new blob must equal the path's blob at that merge,
-    and the merge must be an
+    multiply-paired landed entry is refused. The landed entry's old blob follows PANEL
+    SL-1's accepted-blob rule: for HARDEN, the first repair's `frozen blob` is the blob
+    accepted for that path after the historical replay, named edits, and dispositions,
+    while a later repair uses the previous accepted repair's new blob. It must also equal
+    the path's blob at the recorded merge's first parent. Its new blob must equal the
+    path's blob at that merge, and the merge must be an
     ancestor of the verified commit. Each link's merge descends from its predecessor link's
     merge. Links are followed by old-to-new blob and by merge ancestry, never by manifest
     order. An authorization with no landed entry yet is pending: it accepts nothing and is
